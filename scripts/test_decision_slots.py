@@ -1,11 +1,23 @@
 """The repository's Markdown layout is a contract with Git's ordinary union merge."""
+from functools import partial
 from pathlib import Path
+import re
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
 from check_repository import ROOT, decision_errors
-from decision_slots import extend, integration_slot_errors, slot_errors
+from decision_slots import extend, slot_errors
+
+
+def fixture_git(repo, *args):
+    return subprocess.check_output(
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+         "-c", "commit.gpgSign=false", "-c", "core.hooksPath=/dev/null", *args],
+        cwd=repo, text=True, stderr=subprocess.PIPE,
+    ).strip()
 
 
 class DecisionSlots(unittest.TestCase):
@@ -87,13 +99,11 @@ class DecisionSlots(unittest.TestCase):
         extended = extend(base, through=465)
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            def git(*args):
-                return subprocess.check_output(
-                    ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
-                     "-c", "commit.gpgSign=false", *args], cwd=repo, text=True, stderr=subprocess.PIPE,
-                ).strip()
+            git = partial(fixture_git, repo)
 
             git("init", "-q")
+            (repo / "scripts").mkdir()
+            shutil.copyfile(ROOT / "scripts/decision_slots.py", repo / "scripts/decision_slots.py")
             index = repo / "docs/decisions/README.md"
             index.parent.mkdir(parents=True)
             index.write_text(base)
@@ -111,10 +121,15 @@ class DecisionSlots(unittest.TestCase):
                 index.write_text(author)
                 git("commit", "-qam", "fill a slot beyond the fork point")
                 self.assertEqual(slot_errors(author), [])
-                self.assertTrue(any(str(number) in e for e in integration_slot_errors(repo, index.read_text())))
+                refused = subprocess.run([sys.executable, "scripts/decision_slots.py"], cwd=repo,
+                                         capture_output=True, text=True)
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn(str(number), refused.stderr)
+                self.assertEqual(index.read_text(), author)
                 git("checkout", "-q", "--detach", dev)
                 index.write_text(author)
-                self.assertEqual(integration_slot_errors(repo, index.read_text()), [])
+                subprocess.run([sys.executable, "scripts/decision_slots.py"], cwd=repo, check=True)
+                self.assertEqual(index.read_text(), author)
                 git("restore", "--", "docs/decisions/README.md")
 
     def test_replenishing_an_unterminated_marker_keeps_it_on_its_own_line(self):
@@ -131,3 +146,50 @@ class DecisionSlots(unittest.TestCase):
                 "- [0399](0399-choice.md) A\n- [0400](0400-choice.md) B\n- [0400](0399-choice.md) C\n"
             )
             self.assertTrue(any("0400" in e and "more than once" in e for e in decision_errors(directory)))
+
+    def test_protected_checker_reuses_identical_trees_with_different_parents(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "fixture"
+            subprocess.run(["git", "clone", "-q", "--shared", "--no-checkout", str(ROOT), str(repo)], check=True)
+            git = partial(fixture_git, repo)
+
+            head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+            git("checkout", "-q", "--detach", head)
+            for script in ("check_repository.py", "decision_slots.py"):
+                shutil.copyfile(ROOT / "scripts" / script, repo / "scripts" / script)
+            decisions = repo / "docs/decisions"
+            index = decisions / "README.md"
+            layout = index.read_text()
+            filled = set(re.findall(r"^- \[(\d{4})\]\(", layout, re.MULTILINE))
+            number = next(n for n in re.findall(r"^<!-- ADR (\d{4}) -->$", layout, re.MULTILINE)
+                          if int(n) > 403 and n not in filled)
+            marker = f"<!-- ADR {number} -->\n"
+            index.write_text(layout.replace(marker, ""))
+            git("add", ".")
+            git("commit", "-qm", "old base without the insertion point")
+            old = git("rev-parse", "HEAD")
+            index.write_text(layout)
+            git("commit", "-qam", "dev shares the insertion point")
+            shared = git("rev-parse", "HEAD")
+            git("update-ref", "refs/remotes/origin/dev", shared)
+            name = f"{number}-tree-evidence.md"
+            (decisions / name).write_text(f"# {number}. Tree evidence\n")
+            index.write_text(extend(layout.replace(marker, f"- [{number}]({name}) Tree evidence.\n" + marker)))
+            git("add", ".")
+            tree = git("write-tree")
+            verdicts = []
+            author_verdicts = []
+            for parent in (old, shared):
+                commit = git("commit-tree", tree, "-p", parent, "-m", "identical complete tree")
+                git("checkout", "-q", "--detach", commit)
+                self.assertEqual(git("rev-parse", "HEAD^{tree}"), tree)
+                checked = subprocess.run([sys.executable, "scripts/check_repository.py"], cwd=repo,
+                                         capture_output=True, text=True)
+                verdicts.append((checked.returncode, checked.stdout + checked.stderr))
+                authored = subprocess.run([sys.executable, "scripts/decision_slots.py"], cwd=repo,
+                                          capture_output=True, text=True)
+                author_verdicts.append((authored.returncode, authored.stderr))
+                self.assertEqual(git("diff", "--name-only", "HEAD"), "")
+            self.assertEqual([code for code, _ in verdicts], [0, 0], verdicts)
+            self.assertEqual([code for code, _ in author_verdicts], [1, 0], author_verdicts)
+            self.assertIn(f"ADR {number} needs its empty slot on dev", author_verdicts[0][1])

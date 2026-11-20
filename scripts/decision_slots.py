@@ -8,7 +8,8 @@ FIRST = 401  # The first number after the index layout changed.
 BLOCK = 32
 ENTRY = re.compile(r"^- \[(\d{4})\]\(")
 MARKER = re.compile(r"<!-- ADR (\d{4}) -->")
-INDEX = Path(__file__).resolve().parent.parent / "docs/decisions/README.md"
+ROOT = Path(__file__).resolve().parent.parent
+INDEX = ROOT / "docs/decisions/README.md"
 
 
 def reserve_end(number):
@@ -84,4 +85,10 @@ if __name__ == "__main__":
     through = parser.parse_args().through
     if not FIRST <= through <= 9999:
         parser.error(f"number must be between {FIRST} and 9999")
-    INDEX.write_text(extend(INDEX.read_text(), through))
+    index = INDEX.read_text()
+    updated = extend(index, through)
+    errors = slot_errors(updated) + integration_slot_errors(ROOT, updated)
+    if errors:
+        raise SystemExit("\n".join(errors))
+    if updated != index:
+        INDEX.write_text(updated)

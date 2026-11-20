@@ -14,9 +14,11 @@ can check out the higher-numbered head first.
 ## Decision
 
 Give upcoming numbers hidden Markdown comments. An author inserts the complete link and
-description immediately before its numbered comment and keeps that comment in place. The repository check verifies the
-layout and keeps a block of slots available ahead of the newest decision. For numbers issued
-after this migration, the marker must already exist at the branch's merge base with dev.
+description immediately before its numbered comment and keeps that comment in place. The protected
+repository check validates the layout using the tree contents, so its result applies to any
+commit with that tree. The author's
+`scripts/decision_slots.py` verifies that each marker used after this migration exists at
+the branch's merge base with dev. It replenishes the empty reserve in blocks.
 A reservation that exhausts the reserve needs a shared empty extension before use.
 
 ## Alternatives

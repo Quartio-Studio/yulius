@@ -10,7 +10,7 @@ import sys
 import tomllib
 from urllib.parse import quote, unquote, urlsplit
 
-from decision_slots import integration_slot_errors, slot_errors
+from decision_slots import slot_errors
 
 ROOT = Path(__file__).resolve().parent.parent
 SKILL_BODY_LINES = 200
@@ -162,7 +162,7 @@ def link_errors(path, root):
     return errors
 
 
-def decision_errors(directory, *, integration_root=None):
+def decision_errors(directory):
     """Each decision record has its own number, also in its title and index line, so "ADR-NNNN"
     names one record.
 
@@ -175,8 +175,6 @@ def decision_errors(directory, *, integration_root=None):
         return [f"{directory}: missing README.md index of the decision records"]
     index = readme.read_text()
     errors.extend(f"{readme}: {error}" for error in slot_errors(index))
-    if integration_root is not None:
-        errors.extend(f"{readme}: {error}" for error in integration_slot_errors(integration_root, index))
     numbers = re.findall(r"^- \[(\d{4})\]\(", index, re.MULTILINE)
     links = set(re.findall(r"^- \[(\d{4})\]\(([^)]+)\)", index, re.MULTILINE))
     for number, count in Counter(numbers).items():
@@ -794,7 +792,7 @@ def check():
     for path in skills:
         errors.extend(skill_errors(path))
     errors.extend(skill_deployment_errors(ROOT / ".apm/skills", [ROOT / ".agents/skills", ROOT / ".claude/skills"]))
-    errors.extend(decision_errors(ROOT / "docs/decisions", integration_root=ROOT))
+    errors.extend(decision_errors(ROOT / "docs/decisions"))
     errors.extend(instruction_errors())
     errors.extend(ui_errors())
     channel = tomllib.loads((ROOT / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
