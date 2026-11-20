@@ -2251,6 +2251,31 @@ fn a_squash_lands_one_commit_on_the_remote_branch_or_names_the_conflicts() -> Te
     Ok(())
 }
 
+/// Git stores path bytes. Rendering two different non-UTF-8 names must preserve both conflicts.
+#[cfg(unix)]
+#[test]
+fn conflict_paths_preserve_distinct_non_utf8_names() -> TestResult {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let fx = Fixture::new()?;
+    let (_, repo) = fx.repo_with_remote()?;
+    let branch = fx.path("branch");
+    fx.git.worktree_add(&repo, &branch, "feat/names", "main")?;
+    let names = [b"x\"\\\t\x90", b"x\"\\\t\x91"];
+    for (tree, content) in [(&repo, "base"), (&branch, "task")] {
+        for name in names {
+            fs::write(tree.join(OsStr::from_bytes(name)), content)?;
+        }
+        fx.git.commit_all(tree, content, &author())?;
+    }
+    assert_eq!(
+        fx.git.merge_conflicts(&branch, "main", "HEAD")?,
+        Some(vec![r#""x\"\\\t\220""#.into(), r#""x\"\\\t\221""#.into()]),
+    );
+    Ok(())
+}
+
 /// SPEC-134 (review C1): CD reads a project's scripts from a mirror only Yulius writes. A
 /// replacement planted in the sandbox clone (`git replace`, writable by its agents) never reaches
 /// it, a tracking ref that moved away from the expected commit is refused, and the exported tree
