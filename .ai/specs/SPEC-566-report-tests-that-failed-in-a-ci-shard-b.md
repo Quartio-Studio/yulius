@@ -1,6 +1,6 @@
 ---
 yulius-task: b3816b60-8bc9-472d-ba69-3ca74df8ffc4
-status: in-progress
+status: done
 ---
 
 # SPEC-566 Report test failures observed before CI stopped a sibling
@@ -26,7 +26,7 @@ The supplied audit found five quartio-v2 runs with 4, 1, 38, 4 and 1 distinct te
 - [x] Specify which stopped siblings have reportable evidence
 - [x] Report partial observations in the red-run notification
 - [x] Expose the stored blocks through CI run details
-- [ ] Verify the fixture and deliver the reviewed change
+- [x] Verify the fixture and deliver the reviewed change
 
 ## Acceptance criteria
 
@@ -50,3 +50,6 @@ Use the runner's persisted sibling-stop reason and the existing failure-block pa
 - The representative fixture's notification includes “failed: `quality` exited 100 (failing tests: phone::resume_signout); `onboarding` cancelled (partial failing tests: onboarding::checkbox). Read `ci_status` with run_id r1. Set job to a listed name for its full details.”
 - The 38-name fixture verifies five distinct names and 33 more for the head and candidate. Additional blocks omitted at capture are counted separately. The run-detail fixture exhausts the aggregate budget and recovers the stored assertion through named-job lookup.
 - Independent review found that preceding job tails could push the sibling lookup past MCP's 256 KiB response limit. The 16-tail regression failed on the reviewed commit. The fix puts every partial job's lookup before output. All 19 MCP renderer tests then passed, including named retrieval and both jobs' lookup instructions within the response prefix.
+- The second independent review approved commit `9c016fd83` after running all 40 focused tests. The quick checks passed. Vidoc was disabled for the project.
+- `scripts/dev mutants` reported 39 listed, 37 caught, 0 missed, 0 timed out, 2 unviable and 0 not reached. Its unmutated workspace baseline passed 3,212 tests.
+- `scripts/dev mutants --base 953654ab6` reported 5 listed, 5 caught, 0 missed, 0 timed out, 0 unviable and 0 not reached on the review fix. The task delivery record identifies the exact CI and merge results.
