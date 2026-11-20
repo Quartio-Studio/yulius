@@ -2160,7 +2160,7 @@ impl App {
         let sandbox = self
             .dlv_require_sandbox(ctx, sandbox_id, Action::View)
             .await?;
-        let revision = self.observed_pulls.begin();
+        let observation = self.observed_pulls.begin(&sandbox.id).await?;
         let profile = delivery_profile(&sandbox);
         let (owner, name) = (&sandbox.repo_owner, &sandbox.repo_name);
         let repo = self.sandbox_repo(&sandbox.id);
@@ -2382,8 +2382,7 @@ impl App {
             tasks.push(view);
         }
         // The "needs you" counts read what this overview said (sandboxes.rs, #147).
-        self.observed_pulls
-            .record(&sandbox.id, revision, overview_complete, observed);
+        observation.record(overview_complete, observed);
 
         let mut recent_commits = Vec::new();
         if cloned {

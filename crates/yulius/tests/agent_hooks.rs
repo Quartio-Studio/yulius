@@ -2599,6 +2599,16 @@ async fn a_failing_same_branch_pr_from_a_fork_does_not_keep_an_answered_task_liv
     let overview = f.h.app.git_overview(&owner, f.sandbox.as_str()).await?;
     assert!(
         overview
+            .tasks
+            .iter()
+            .find(|row| row.task_id == f.task.as_str())
+            .ok_or("task")?
+            .pr
+            .is_none(),
+        "a fork does not own the local task row"
+    );
+    assert!(
+        overview
             .pulls
             .iter()
             .any(|p| p.number == 1461 && p.checks == "failure")
@@ -2998,5 +3008,58 @@ async fn incomplete_git_overviews_preserve_the_current_parked_pr_observation() -
             u32::from(open)
         );
     }
+    // A full upstream reply may still omit the external PR from the capped overview.
+    {
+        let mut pulls = f.h.github.pulls.lock().map_err(|_| "pulls")?;
+        let external = yulius_app::ports::github::GhPull {
+            number: 1462,
+            head: "feat/2-x".into(),
+            head_sha: "external".into(),
+            base: "release".into(),
+            ..pulls[0].clone()
+        };
+        pulls.push(external);
+    }
+    f.h.app.git_overview(&owner, f.sandbox.as_str()).await?;
+    let cap = yulius_app::delivery::MAX_PULLS;
+    {
+        let mut pulls = f.h.github.pulls.lock().map_err(|_| "pulls")?;
+        for i in 1..cap {
+            let other = yulius_app::ports::github::GhPull {
+                number: u64::try_from(i)?,
+                head: format!("other-{i}"),
+                ..pulls[0].clone()
+            };
+            pulls.insert(0, other);
+        }
+    }
+    let limited = f.h.app.git_overview(&owner, f.sandbox.as_str()).await?;
+    assert_eq!(limited.pulls.len(), cap);
+    assert!(limited.pulls.iter().all(|pr| pr.number != 1462));
+    assert_eq!(
+        f.h.app.list_sandboxes(&owner).await?[0]
+            .counts
+            .needs_attention,
+        1
+    );
+    f.h.github
+        .pulls
+        .lock()
+        .map_err(|_| "pulls")?
+        .retain(|pr| pr.number != 1462);
+    assert_eq!(
+        f.h.app
+            .git_overview(&owner, f.sandbox.as_str())
+            .await?
+            .pulls
+            .len(),
+        cap
+    );
+    assert_eq!(
+        f.h.app.list_sandboxes(&owner).await?[0]
+            .counts
+            .needs_attention,
+        0
+    );
     Ok(())
 }

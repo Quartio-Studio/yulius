@@ -1,8 +1,9 @@
 //! Sandbox (project) queries and views (SPEC-001 §5.2). Creation/import lives with the Git and
 //! GitHub integration.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Arc, Mutex};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use yulius_contracts::api::sandboxes::{Profile, RepoRef, Sandbox, SandboxCounts};
 use yulius_domain::ids::{SandboxId, TaskId};
@@ -29,87 +30,174 @@ impl ObservedPull {
     }
 }
 
+/// Maximum number of overlapping responses held for start-order publication per sandbox.
+const OVERVIEW_WINDOW: usize = 30;
+
+type PullRows = HashMap<TaskId, Option<ObservedPull>>;
+
+#[derive(Debug)]
+struct Overview {
+    complete: bool,
+    rows: PullRows,
+}
+
+impl Overview {
+    fn reading(&self, task: &TaskId, prior: Option<ObservedPull>) -> Option<ObservedPull> {
+        let read = *self.rows.get(task)?;
+        if !self.complete
+            && let Some(open) = prior.filter(|pr| pr.open())
+            && read.is_none_or(|pr| !pr.open() && pr.number != open.number)
+        {
+            return Some(open);
+        }
+        read
+    }
+}
+
+#[derive(Debug)]
+enum ReadState {
+    Pending,
+    Published(Overview),
+    Cancelled,
+}
+
+#[derive(Debug)]
+struct Slot {
+    // The permit covers the observation until all earlier reads have settled.
+    _permit: OwnedSemaphorePermit,
+    id: u64,
+    state: ReadState,
+}
+
 #[derive(Debug, Default)]
+struct ReadOrder {
+    next: u64,
+    committed: Option<HashMap<TaskId, ObservedPull>>,
+    slots: VecDeque<Slot>,
+}
+
+impl ReadOrder {
+    fn finish(&mut self, id: u64, result: ReadState) {
+        let Some(slot) = self.slots.iter_mut().find(|slot| slot.id == id) else {
+            return;
+        };
+        if !matches!(slot.state, ReadState::Pending) {
+            return;
+        }
+        slot.state = result;
+        while self
+            .slots
+            .front()
+            .is_some_and(|slot| !matches!(slot.state, ReadState::Pending))
+        {
+            if let Some(Slot {
+                state: ReadState::Published(read),
+                ..
+            }) = self.slots.pop_front()
+            {
+                let prior = self.committed.get_or_insert_with(HashMap::new);
+                *prior = read
+                    .rows
+                    .keys()
+                    .filter_map(|task| {
+                        read.reading(task, prior.get(task).copied())
+                            .map(|pr| (task.clone(), pr))
+                    })
+                    .collect();
+            }
+        }
+    }
+
+    fn current(&self, task: &TaskId) -> Option<Option<ObservedPull>> {
+        let mut known = self.committed.as_ref().map(|rows| rows.get(task).copied());
+        for slot in &self.slots {
+            if let ReadState::Published(read) = &slot.state {
+                known = Some(read.reading(task, known.flatten()));
+            }
+        }
+        known
+    }
+}
+
+#[derive(Debug)]
 struct SandboxPulls {
-    revision: u64,
-    // Keep confirmed absence as evidence too: an older request may still be reading an open PR.
-    rows: HashMap<TaskId, RowObservation>,
+    capacity: Arc<Semaphore>,
+    order: Mutex<ReadOrder>,
 }
 
+/// A bounded per-sandbox publication window. Home/MCP can read a finished
+/// response immediately, including when an earlier request is still in flight.
 #[derive(Debug, Default)]
-struct RowObservation {
-    revision: u64,
-    pull: Option<ObservedPull>,
+pub(crate) struct ObservedPulls(Mutex<HashMap<SandboxId, Arc<SandboxPulls>>>);
+
+pub(crate) struct OverviewRead {
+    cache: Arc<SandboxPulls>,
+    id: u64,
 }
 
-/// Bounded by the tasks in the latest overview. The readers publish evidence
-/// under one lock after their I/O. Missing rows in a partial read say nothing.
-#[derive(Debug, Default)]
-pub(crate) struct ObservedPulls {
-    sequence: std::sync::atomic::AtomicU64,
-    sandboxes: Mutex<HashMap<SandboxId, SandboxPulls>>,
+impl OverviewRead {
+    pub(crate) fn record(self, complete: bool, rows: PullRows) {
+        if let Ok(mut order) = self.cache.order.lock() {
+            order.finish(self.id, ReadState::Published(Overview { complete, rows }));
+        }
+    }
+}
+
+impl Drop for OverviewRead {
+    fn drop(&mut self) {
+        if let Ok(mut order) = self.cache.order.lock() {
+            order.finish(self.id, ReadState::Cancelled);
+        }
+    }
 }
 
 impl ObservedPulls {
-    pub(crate) fn begin(&self) -> u64 {
-        self.sequence
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            + 1
-    }
-
-    pub(crate) fn record(
-        &self,
-        sandbox: &SandboxId,
-        revision: u64,
-        complete: bool,
-        pulls: HashMap<TaskId, Option<ObservedPull>>,
-    ) {
-        let Ok(mut sandboxes) = self.sandboxes.lock() else {
-            return;
+    pub(crate) async fn begin(&self, sandbox: &SandboxId) -> AppResult<OverviewRead> {
+        let cache = self
+            .0
+            .lock()
+            .map_err(crate::error::AppError::internal)?
+            .entry(sandbox.clone())
+            .or_insert_with(|| {
+                Arc::new(SandboxPulls {
+                    capacity: Arc::new(Semaphore::new(OVERVIEW_WINDOW)),
+                    order: Mutex::default(),
+                })
+            })
+            .clone();
+        // Only overlapping Git overview requests acquire a slot. Cancelling
+        // this wait or dropping an admitted request releases its place.
+        let permit = cache
+            .capacity
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(crate::error::AppError::internal)?;
+        let id = {
+            let mut order = cache
+                .order
+                .lock()
+                .map_err(crate::error::AppError::internal)?;
+            let id = order.next;
+            order.next = order.next.wrapping_add(1);
+            order.slots.push_back(Slot {
+                _permit: permit,
+                id,
+                state: ReadState::Pending,
+            });
+            id
         };
-        let cached = sandboxes.entry(sandbox.clone()).or_default();
-        let latest = revision >= cached.revision;
-        if latest {
-            cached.rows.retain(|task, _| pulls.contains_key(task));
-            cached.revision = revision;
-        }
-        for (task, read) in pulls {
-            let row = if latest {
-                cached.rows.entry(task).or_default()
-            } else if let Some(row) = cached.rows.get_mut(&task) {
-                row
-            } else {
-                continue;
-            };
-            if revision < row.revision {
-                continue;
-            }
-            if !complete
-                && (read.is_none()
-                    || row.pull.is_some_and(|prior| {
-                        prior.open()
-                            && read.is_some_and(|pr| !pr.open() && pr.number != prior.number)
-                    }))
-            {
-                continue;
-            }
-            *row = RowObservation {
-                revision,
-                pull: read,
-            };
-        }
+        Ok(OverviewRead { cache, id })
     }
 
-    /// Outer None means no overview since startup. Inner None means no PR signal.
     fn get(&self, sandbox: &SandboxId, task: &TaskId) -> Option<Option<PullSignal>> {
-        let sandboxes = self.sandboxes.lock().ok()?;
-        sandboxes.get(sandbox).map(|cached| {
-            cached
-                .rows
-                .get(task)
-                .and_then(|row| row.pull)
-                .and_then(|pr| pr.signal)
-        })
+        let cache = self.0.lock().ok()?.get(sandbox)?.clone();
+        cache
+            .order
+            .lock()
+            .ok()?
+            .current(task)
+            .map(|pr| pr.and_then(|pr| pr.signal))
     }
 }
 
@@ -361,66 +449,85 @@ pub(crate) fn plan_open(steps: &[crate::model::StepRecord]) -> bool {
 mod overview_tests {
     use super::*;
 
-    #[test]
-    fn overlapping_overviews_update_each_tasks_last_authoritative_pr_read() -> AppResult<()> {
+    #[tokio::test]
+    async fn overlapping_overviews_update_each_tasks_last_authoritative_pr_read() -> AppResult<()> {
         let cache = ObservedPulls::default();
         let sandbox = SandboxId::parse("sandbox").map_err(crate::error::AppError::internal)?;
         let task = TaskId::parse("task").map_err(crate::error::AppError::internal)?;
-        let old = cache.begin();
-        let next = cache.begin();
+        let rows = |pull| HashMap::from([(task.clone(), pull)]);
         let red = Some(ObservedPull {
             number: 2,
             signal: Some(PullSignal::Failing),
         });
-        let record = |revision, complete, pull| {
-            cache.record(
-                &sandbox,
-                revision,
-                complete,
-                HashMap::from([(task.clone(), pull)]),
-            )
-        };
-        // An incomplete read with no information cannot suppress a slower complete observation.
-        record(next, false, None);
-        record(old, true, red);
-        assert_eq!(cache.get(&sandbox, &task), Some(Some(PullSignal::Failing)));
         let landed = Some(ObservedPull {
             number: 1,
             signal: Some(PullSignal::Merged),
         });
-        record(cache.begin(), false, landed);
-        assert_eq!(
-            cache.get(&sandbox, &task),
-            Some(Some(PullSignal::Failing)),
-            "an older recorded merge cannot clear the replacement"
-        );
-        // The owner observed this PR's closure even though the whole list was unavailable.
-        record(
-            cache.begin(),
-            false,
-            Some(ObservedPull {
-                number: 2,
-                signal: None,
-            }),
-        );
+        for (complete, later, expected) in [
+            (false, None, Some(PullSignal::Failing)),
+            (false, landed, Some(PullSignal::Failing)),
+            (
+                false,
+                Some(ObservedPull {
+                    number: 2,
+                    signal: None,
+                }),
+                None,
+            ),
+            (true, None, None),
+            (true, landed, Some(PullSignal::Merged)),
+        ] {
+            for reverse in [false, true] {
+                let earlier = cache.begin(&sandbox).await?;
+                let newer = cache.begin(&sandbox).await?;
+                if reverse {
+                    newer.record(complete, rows(later));
+                    earlier.record(true, rows(red));
+                } else {
+                    earlier.record(true, rows(red));
+                    newer.record(complete, rows(later));
+                }
+                assert_eq!(cache.get(&sandbox, &task), Some(expected));
+                cache.begin(&sandbox).await?.record(true, HashMap::new());
+            }
+        }
+
+        let older = cache.begin(&sandbox).await?;
+        cache.begin(&sandbox).await?.record(true, HashMap::new());
+        older.record(false, rows(red));
         assert_eq!(cache.get(&sandbox, &task), Some(None));
-        record(next, true, red);
-        assert_eq!(
-            cache.get(&sandbox, &task),
-            Some(None),
-            "a late red report cannot reopen the confirmed closure"
-        );
-        record(cache.begin(), false, red);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancelling_an_older_overview_releases_its_publication_window() -> AppResult<()> {
+        let cache = ObservedPulls::default();
+        let sandbox = SandboxId::parse("one").map_err(crate::error::AppError::internal)?;
+        let other = SandboxId::parse("two").map_err(crate::error::AppError::internal)?;
+        let task = TaskId::parse("task").map_err(crate::error::AppError::internal)?;
+        let old = cache.begin(&sandbox).await?;
+        let red = Some(ObservedPull {
+            number: 2,
+            signal: Some(PullSignal::Failing),
+        });
+        for _ in 1..OVERVIEW_WINDOW {
+            cache
+                .begin(&sandbox)
+                .await?
+                .record(false, HashMap::from([(task.clone(), red)]));
+        }
+        let waiting = cache.begin(&sandbox);
+        tokio::pin!(waiting);
+        tokio::select! {
+            biased;
+            _ = &mut waiting => panic!("overviews bypassed the publication window"),
+            () = std::future::ready(()) => {}
+        }
         assert_eq!(cache.get(&sandbox, &task), Some(Some(PullSignal::Failing)));
-        record(cache.begin(), true, landed);
-        assert_eq!(cache.get(&sandbox, &task), Some(Some(PullSignal::Merged)));
-        cache.record(&sandbox, cache.begin(), true, HashMap::new());
-        record(next, false, red);
-        assert_eq!(
-            cache.get(&sandbox, &task),
-            Some(None),
-            "a late response cannot reinsert a removed task"
-        );
+        cache.begin(&other).await?.record(true, HashMap::new());
+        drop(old);
+        waiting.await?.record(true, HashMap::new());
+        assert_eq!(cache.get(&sandbox, &task), Some(None));
         Ok(())
     }
 }
