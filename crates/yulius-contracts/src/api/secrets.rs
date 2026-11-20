@@ -206,6 +206,9 @@ pub struct AgentSecretView {
     /// them into spaces): it must be pasted again. Told only to people who manage it.
     #[serde(default)]
     pub flattened: bool,
+    /// For managers, a previously accepted name that sets an interpreter option (ADR-0408).
+    #[serde(default)]
+    pub interpreter_name: bool,
     /// Whether the caller may change or delete it.
     pub can_manage: bool,
     /// A production secret: the copy an agent of the listed project asked for (SPEC-440), in a

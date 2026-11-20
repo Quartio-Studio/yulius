@@ -1877,6 +1877,7 @@ fn a_task_run_gets_the_project_variables() -> TestResult {
                 "OVH_ENDPOINT".into(),
                 "LANGFUSE_BASE_URL".into(),
                 "SHOP_TOKEN".into(),
+                "PERL5LIB".into(),
                 "RUST_TEST_THREADS".into(),
             ],
             ..FakeAgentOptions::default()
@@ -1919,11 +1920,33 @@ fn a_task_run_gets_the_project_variables() -> TestResult {
         )
         .await?;
 
+        // Seed a pre-ADR-0408 row. This run still receives its interpreter-named placeholder.
+        let old = app
+            .create_agent_secret(
+                &ctx,
+                sandbox.as_str(),
+                &yulius_contracts::api::secrets::AgentSecretInput {
+                    name: "OLD_KEY".into(),
+                    value: "synthetic-old-value-123".into(),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let saved = app
+            .deps
+            .store
+            .vault_get(&old.id)
+            .await?
+            .ok_or("old secret")?;
+        let mut legacy = saved.clone();
+        legacy.name = "PERL5LIB".into();
+        assert!(app.deps.store.vault_update(&legacy, &saved).await?);
+
         let id = new_task(&app, &sandbox, &user, "Vars").await?;
         wait_for("the run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
-            async move { screen(&app, &id).contains("ENV SHOP_TOKEN=") }
+            async move { screen(&app, &id).contains("ENV RUST_TEST_THREADS=") }
         })
         .await?;
         let shown = screen(&app, &id);
@@ -1940,6 +1963,13 @@ fn a_task_run_gets_the_project_variables() -> TestResult {
         let placeholder = "yulius-secret-SHOP_TOKEN";
         assert!(
             shown.contains(&format!("ENV SHOP_TOKEN=set len={}", placeholder.len())),
+            "{shown}"
+        );
+        assert!(
+            shown.contains(&format!(
+                "ENV PERL5LIB=set len={}",
+                "yulius-secret-PERL5LIB".len()
+            )),
             "{shown}"
         );
         Ok(())

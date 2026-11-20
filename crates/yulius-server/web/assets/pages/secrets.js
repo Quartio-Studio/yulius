@@ -846,6 +846,7 @@ function mountAgents(ctx, sandbox, host, actions, scope = 'sandbox') {
         // SPEC-193 MLK-003: saved before #591, a key whose line breaks became spaces; it is not
         // rewritten, since the spaces cannot all be told from the key's own.
         secret.flattened ? h('span', { class: 'small' }, 'Its line breaks were lost when it was saved, so it no longer works as a key file. Edit it and paste the key again: they are kept now.') : null,
+        secret.interpreter_name ? h('span', { class: 'small' }, `This name sets an interpreter setting in runs that receive its placeholder. Use Edit to rename it to APP_${secret.name} and update its references.`) : null,
         ...agentSwitch(ctx, sandbox, secret, act),
         ...agentHosts(ctx, secret, act, changedRequest(secret)),
         ...agentEnvFiles(ctx, secret, act),
