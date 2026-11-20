@@ -820,6 +820,122 @@ async fn assert_no_playground_squash(h: &Harness, owner: &Creds) -> TestResult {
     Ok(())
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AttributeFixtureChecks {
+    Absent,
+    Configured,
+    RemovedOnDev,
+}
+
+/// Both the delivery view and the real squash apply the attributes of the checkout that
+/// performs the merge. A CI candidate starts on the task head. A raw squash runs in the clone.
+async fn changed_merge_attribute(checks: AttributeFixtureChecks, added: bool) -> TestResult {
+    let checked = checks != AttributeFixtureChecks::Absent;
+    let (h, owner) = if checked {
+        ci_world().await?
+    } else {
+        world().await?
+    };
+    let body = if checked {
+        ci_playground(&h, &owner).await?
+    } else {
+        from_template(&h, &owner, "shop").await?.body
+    };
+    let rule = "notes merge=union\n";
+    let base_files = if added {
+        vec![("notes", "base\n")]
+    } else {
+        vec![("notes", "base\n"), (".gitattributes", rule)]
+    };
+    push_to_dev(&h, &body, &base_files)?;
+    let repo = sandbox_dir(&h, &body).join("repo");
+    git(&repo, &["fetch", "-q", "origin"])?;
+    git(&repo, &["checkout", "-q", "--detach", "origin/dev"])?;
+    let worktree =
+        playground_task(&h, &body, "t1", &[("notes", "base\ntask\n")], &["done"]).await?;
+    commit_in(&worktree, &[(".gitattributes", added.then_some(rule))])?;
+    let mut dev = push_to_dev(&h, &body, &[("notes", "integration\n")])?;
+    if checks == AttributeFixtureChecks::RemovedOnDev {
+        git(&repo, &["fetch", "-q", "origin"])?;
+        git(&repo, &["checkout", "-q", "--detach", "origin/dev"])?;
+        dev = commit_in(&repo, &[("yulius.toml", None)])?;
+        git(&repo, &["push", "-q", "origin", "HEAD:dev"])?;
+    }
+    let view = call(
+        &h.router,
+        Method::GET,
+        "/api/tasks/t1/delivery",
+        None,
+        &owner,
+    )
+    .await?;
+    assert_eq!(view.status, StatusCode::OK, "{}", view.body);
+    let result = merge(&h, &owner, "t1").await?;
+    let clean = (checks == AttributeFixtureChecks::Configured) == added;
+    if clean {
+        let merged = if checked {
+            assert!(
+                text(&result).contains("Yulius CI is testing"),
+                "{}",
+                result.body
+            );
+            ci_settle(&h, &owner, &body).await?;
+            assert_delivery_ci(&h, &owner, &body, None).await?;
+            merge(&h, &owner, "t1").await?
+        } else {
+            result
+        };
+        assert_eq!(merged.status, StatusCode::OK, "{}", merged.body);
+        assert_eq!(view.body["next_actions"], json!(["merge"]), "{}", view.body);
+        let notes = file_at(&origin_of(&h, &body), "dev", "notes")?;
+        assert!(
+            notes.contains("task") && notes.contains("integration"),
+            "{notes}"
+        );
+    } else {
+        assert_eq!(result.status, StatusCode::CONFLICT, "{}", result.body);
+        assert!(text(&result).contains("notes"), "{}", result.body);
+        assert_eq!(view.body["next_actions"], json!([]), "{}", view.body);
+        assert!(
+            view.body["blocked"][0]["reason"]
+                .as_str()
+                .is_some_and(|r| r.contains("notes"))
+        );
+        assert_eq!(
+            git(&origin_of(&h, &body), &["rev-parse", "dev"])?.trim(),
+            dev
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_unchecked_squash_uses_the_clone_when_the_task_adds_a_merge_attribute() -> TestResult {
+    changed_merge_attribute(AttributeFixtureChecks::Absent, true).await
+}
+
+#[tokio::test]
+async fn an_unchecked_squash_uses_the_clone_when_the_task_removes_a_merge_attribute() -> TestResult
+{
+    changed_merge_attribute(AttributeFixtureChecks::Absent, false).await
+}
+
+#[tokio::test]
+async fn a_checked_squash_uses_the_task_that_adds_a_merge_attribute() -> TestResult {
+    changed_merge_attribute(AttributeFixtureChecks::Configured, true).await
+}
+
+#[tokio::test]
+async fn a_checked_squash_uses_the_task_that_removes_a_merge_attribute() -> TestResult {
+    changed_merge_attribute(AttributeFixtureChecks::Configured, false).await
+}
+
+#[tokio::test]
+async fn a_merge_attribute_on_the_task_does_not_override_the_clone_after_dev_removed_the_jobs()
+-> TestResult {
+    changed_merge_attribute(AttributeFixtureChecks::RemovedOnDev, true).await
+}
+
 /// PLY-007: a branch that conflicts with the playground's `dev` is refused naming the files and
 /// the remedy.
 #[tokio::test]
