@@ -64,7 +64,7 @@ upgrade prerequisite for older live wrappers has not been established. Open PR #
 - [x] Identify the next twenty actionable open issues
 - [x] Correct playground delivery and cross-sandbox request actions
 - [x] Repair repository test and decision indexes
-- [ ] Measure complete CPU samples and synchronize access and cockpit tests
+- [x] Measure complete CPU samples and synchronize access and cockpit tests
 - [x] Preserve attention and held prompts across overlapping hooks
 - [x] Resume eligible subscriptions and classify workflow limits consistently
 - [x] Bound provider usage reads before buffering the response
@@ -123,3 +123,8 @@ process ownership rules while applying the individual fixes.
 - #1249. The extended five-crate run passed all 272 selected tests. The upgraded database preserved child rows and leases. IPv4 and IPv6 listeners held ranges, as did a browser connection after its proxy listener ended. Schema versions 73 and 74 apply the port and held-prompt migrations in that order.
 - #1361. With a 3,500 ms delay, all three original Cockpit cases identified the dropped first probe within 4.19–6.71 seconds. The injected delay was removed.
 - The full Chromium suite passed 1,157 tests with one opt-in agent test skipped. The stricter short-list assertion also passed twenty times after the full run began. The scoped access and delivery rerun passed 125 tests. Vidoc was disabled by the instance or project setting. Host-move verification used fixtures.
+- The Cockpit suite passed all 76 cases in each of twenty consecutive runs with CPU contention (1,520 executions). All 153 adjacent runtime checks passed using synthetic provider responses.
+
+- First independent review requested five changes to e32eba4b1. The notes test now observes the timers that actually issue each sandbox GET. A constant 2,000 ms retry passed the former test and failed the corrected one. Purging and reusing a range formerly re-created both holder directories. The new lifecycle test and 49 neighboring cases passed with the directories absent.
+- A worker question replacing a main question during reattachment could be cleared by main-session work. The new overlap test failed before recovery took the same lock as replacement. A predecessor's continuing Stop could keep an abandoned submit heartbeat alive. The fake-clock case failed before Stop stopped refreshing that heartbeat. Both regressions exercise the runtime entry points.
+- The playground delivery view offered Merge even when its branch and dev pointed at the same commit. A GET regression reproduced the offered action. Both the view and the squash now use the same ahead check against the refreshed local integration branch.
