@@ -3829,9 +3829,18 @@ on, after a restart as before one. The same holds for a question that took a sec
 flag over.
 
 A live `yulius wait` under Codex counts as a wait whether Codex execs it directly or launches
-it through a shell. The process probe excludes waits adopted by the sandbox init. A failed PR
-check has its own action in the task strip. The terminal reply banner is for a person's turn
-or an explicit request ([SPEC-552](../.ai/specs/SPEC-552-on-codex-agent-keeps-calling-me-even-if.md)).
+it through a shell. The process probe excludes waits adopted by the sandbox init. Every task in
+Needs you carries a unified redacted `NeedsYouNoticeView` (`App::resolve_needs_you_notice`) naming
+what happened, what to do, and where to act—shown beside the task status (even when stopped or
+parked), in the attention bar, Needs you lists, notifications, and identically across `tasks_list`
+and `task_get`, with deduplicated timestamped episodes persisted in `task_wait_messages`. Browser
+handoffs (`browser_request_user_action`) persist on `tasks.needs_you` and clear across tab state,
+persisted requests, and legacy browser `tasks.attention` when answered, dismissed, superseded,
+closed, viewer-cleared (`clear_action`), or ended; untold failed Yulius CI runs on a live session
+and newer progressing CI runs keep the task in Working until human action is needed
+([SPEC-552](../.ai/specs/SPEC-552-on-codex-agent-keeps-calling-me-even-if.md),
+[SPEC-578](../.ai/specs/SPEC-578-show-an-actionable-message-whenever-a-ta.md),
+[ADR-0414](decisions/0414-actionable-needs-you-notices-and-wait-history.md)).
 
 Needs you means a person has to act. An idle agent that stopped reads "Your turn" under Needs you only
 while its work is visibly unfinished: plan steps open, or a goal that Claude Code last recorded as set,
