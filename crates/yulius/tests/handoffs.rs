@@ -483,7 +483,11 @@ async fn ask_stores_a_request_the_owner_answers_in_a_browser() -> TestResult {
             shown["prompt"].as_str(),
             shown["target_sandbox"].as_str()
         ),
-        (Some("requested"), Some("Add GET /v1/items"), Some("acme/api")),
+        (
+            Some("requested"),
+            Some("Add GET /v1/items"),
+            Some("acme/api")
+        ),
         "{}",
         page.body
     );

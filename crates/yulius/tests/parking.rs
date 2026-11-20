@@ -1444,6 +1444,28 @@ fn a_handed_off_tasks_outcome_reaches_its_source() -> TestResult {
                 created_at: app.now(),
             })
             .await?;
+        // While the source shows its person a prompt, nothing is typed (review round 1).
+        TaskStore::transition_task(
+            app.deps.store.as_ref(),
+            &id,
+            None,
+            TaskStatus::Running,
+            Some(Activity::NeedsAttention),
+            app.now(),
+        )
+        .await?;
+        assert_eq!(app.tell_handoff_outcomes().await, 0);
+        assert!(!screen(&app, &id).contains("the task you handed off"));
+        assert_eq!(app.deps.store.untold_handoffs().await?.len(), 1);
+        TaskStore::transition_task(
+            app.deps.store.as_ref(),
+            &id,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Waiting),
+            app.now(),
+        )
+        .await?;
         wait_for("the outcome told", Duration::from_secs(30), || async {
             app.tell_handoff_outcomes().await;
             let shown = screen(&app, &id);

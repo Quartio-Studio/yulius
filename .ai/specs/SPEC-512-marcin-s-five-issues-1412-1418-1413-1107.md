@@ -248,7 +248,8 @@ only ask a person with `needs_you`. Nothing records where a task came from.
   `instance.handoffs.set`, shown in Settings. Off, nothing below exists for task agents.
 - **HOF-002 A sandbox opts out.** Its writers turn "Accept handoffs from other sandboxes" off
   (`PUT /api/sandboxes/{sid}/handoffs` `{"accept"}`, on by default; stored in the sandbox's
-  profile; audited `sandbox.handoffs`), shown on its Settings page.
+  profile, kept by a save of its delivery profile; audited `sandbox.handoffs`), shown on its Git
+  page.
 - **HOF-003 The tool.** `sandbox_handoff` `{sandbox, title, prompt}` with `task_create`'s
   `harness`, `model`, `effort` and `mode`, served to task agents only while the mode is not off
   (in `tools/list` and in the call). Refused with a reason the agent reads: an automation's task
@@ -457,6 +458,18 @@ only ask a person with `needs_you`. Nothing records where a task came from.
   task it refuses (the onboarding gate) leaves its files in the person's drafts folder, removed
   with the other drafts after a week.
 
+- **Handoffs: a request waits on the source task's page, not in the Needs you list.** The issue
+  names both; the page is where the owner reads the full prompt and options before approving, and
+  a Needs-you entry would offer the task to anyone who answers requests (ADR-0370). The task's
+  agent says in its own words, or with `needs_you`, that it waits.
+- **A handed-off task's outcome wakes a parked source.** Part 1 decided that Yulius's news does not
+  wake a parked task; the outcome is the answer the source asked for, so it resumes it, as a
+  person's message would. An open `needs_you` does not hold the outcome either (the tool tells an
+  agent to end with one while it waits); a prompt on screen, a pause or an update's hold do.
+- **Known limit: depth counts handoffs only.** A handed-off task that starts a task in its own
+  sandbox (`task_create`) starts a fresh chain, since a task records no parent; the daily bound
+  limits such a ping-pong.
+
 ## Evidence
 
 ### Part 5 (#1106, handoffs)
@@ -469,6 +482,18 @@ only ask a person with `needs_you`. Nothing records where a task came from.
 | An opted-out sandbox, one the owner cannot work in (not found) and an automation's task refused | `handoffs::automatic_creates_the_task_as_the_owner_within_the_checks`; e2e "a sandbox's writers close it to handoffs" |
 | The target shows its source; the source gets the outcome; `task.handoff` on both | `handoffs::automatic_…` (`from`, audits on s1 and s2 without the prompt), `parking::a_handed_off_tasks_outcome_reaches_its_source` (real processes: the source's session reads the outcome, told once), `handoffs::an_outcome_waits_for_the_targets_end`; e2e "a handed-off task shows where it came from"; store `a_handoff_is_decided_once_and_told_once` |
 | Docs and ADR | ADR-0395 (amends ADR-0227), `docs/product.md`, `docs/api.md`, `docs/architecture.md`, `docs/changes.md` |
+
+Review round 1 (head 9ea4cd1b3, CHANGES REQUESTED), answered test-first:
+
+| Finding | Change | Test |
+|---|---|---|
+| A delivery profile save dropped the opt-out | `update_sandbox_profile` keeps `accept_handoffs` | `handoffs::automatic_…` (opt out, save the profile, still refused; failed before) |
+| Approval was check-then-act | the request is claimed (`requested` → `creating`) before creating; a failure puts it back; a decline needs `requested` | `handoffs::two_approvals_at_once_create_one_task` (fails without the claim: mutation) |
+| The outcome was typed over a prompt on screen | not typed while the source needs its person, is paused or an update holds starts (an open `needs_you` does not hold it: Decisions) | `parking::a_handed_off_tasks_outcome_reaches_its_source` (real session: nothing typed while it needs attention; fails without the guard: mutation), `handoffs::an_outcome_waits_while_the_source_needs_its_person` |
+| Invisible text and a disabled owner were not audited; a full hour left a live request | every refusal goes through `refuse_handoff`; in automatic mode the hourly slot is taken before storing | `handoffs::every_refusal_is_audited_and_a_full_hour_leaves_no_request` |
+| The request card had no styles and could push Approve off screen | it floats over the terminal, bounded, its prompt scrolls; every request is listed first | e2e "a long handoff floats over the terminal and its answer stays in view" (fails when static: mutation) |
+| The pull request link lacked the owner | `owner/name`, none for a playground | `parking::a_handed_off_tasks_outcome_reaches_its_source` (merged, `https://github.com/<owner>/api/pull/7`) |
+| Minors | `past_merge` for merged; a gone task is not asked again; answers audited as their person, `approved` after creation; prompts bounded; an agent secret of the source sandbox refused; `owner/name` labels; the told title is the one asked for; `tools/call` over `/mcp` tested; docs (Git page, ADR-0227's Status, Decisions) | `handoffs::every_refusal_…` (secret), `handoffs::the_tool_is_called_over_mcp` |
 
 Also in this pull request (a part 4 defect found while building part 5): `/task acme/app` (a
 project's full repository name) named no project, because owner and name are stored apart;
