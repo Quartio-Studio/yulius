@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock, touchTask } from './support.ts';
+import { axeViolations, failOnPageErrors, firstShown, mock, touchTask } from './support.ts';
 
 failOnPageErrors();
 
@@ -73,7 +73,7 @@ test('"Keep as one task" creates the task as written', async ({ app, browser, sc
 test('a short request starts at once and "Run after" chains it', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
   // The choices are the sandbox's tasks: wait until the list has loaded.
-  await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
+  await firstShown(screen.getByRole('link', /Checkout API/).first());
   await screen.getByRole('button', /Run after: Start now/).click();
   await screen.getByRole('menuitemradio', /^#12 Checkout API/).click();
   const prompt = screen.getByRole('textbox', 'Task prompt');
@@ -88,8 +88,13 @@ test('a short request starts at once and "Run after" chains it', async ({ app, b
 const BROAD = 'Harden the security of the whole product: headers, secrets and every endpoint.';
 
 test('a broad request started now is stopped and offered as a supertask; "Run as a supertask" creates one (SPEC-188)', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio'));
-  await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
+  await app.open(mock('/s/studio', '&hold=/api/sandboxes/sb_studio/tasks'));
+  // Simulate a first list response that arrives after the ordinary five-second assertion budget.
+  await browser.evaluate(() => {
+    const db = (window as unknown as { __yuliusMock: { release(): void } }).__yuliusMock;
+    setTimeout(() => db.release(), 6_500);
+  });
+  await firstShown(screen.getByRole('link', /Checkout API/).first());
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.fill(BROAD);
   await prompt.press('ControlOrMeta+Enter');
@@ -113,7 +118,7 @@ test('a broad request started now is stopped and offered as a supertask; "Run as
 
 test('"Start as chosen" keeps the chosen start; the card says a supertask replaces "Run after" (SPEC-188)', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
-  await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
+  await firstShown(screen.getByRole('link', /Checkout API/).first());
   await screen.getByRole('button', /Run after: Start now/).click();
   await screen.getByRole('menuitemradio', /^#12 Checkout API/).click();
   const prompt = screen.getByRole('textbox', 'Task prompt');
@@ -129,7 +134,7 @@ test('"Start as chosen" keeps the chosen start; the card says a supertask replac
 
 test('"Run as a supertask" replaces a chosen "Run after" (SPEC-188)', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
-  await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
+  await firstShown(screen.getByRole('link', /Checkout API/).first());
   await screen.getByRole('button', /Run after: Start now/).click();
   await screen.getByRole('menuitemradio', /^#12 Checkout API/).click();
   await screen.getByRole('textbox', 'Task prompt').fill(BROAD);
@@ -145,7 +150,7 @@ test('"Run as a supertask" replaces a chosen "Run after" (SPEC-188)', async ({ a
 
 test('changing the start choice closes the supertask proposal, so it never names a stale choice (SPEC-188)', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
-  await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
+  await firstShown(screen.getByRole('link', /Checkout API/).first());
   await screen.getByRole('button', /Run after: Start now/).click();
   await screen.getByRole('menuitemradio', /^#12 Checkout API/).click();
   await screen.getByRole('textbox', 'Task prompt').fill(BROAD);
@@ -162,7 +167,7 @@ test('changing the start choice closes the supertask proposal, so it never names
 
 test('the supertask proposal closes when its "Run after" task leaves the list (SPEC-234, #587)', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
-  await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
+  await firstShown(screen.getByRole('link', /Checkout API/).first());
   await screen.getByRole('button', /Run after: Start now/).click();
   await screen.getByRole('menuitemradio', /^#12 Checkout API/).click();
   const prompt = screen.getByRole('textbox', 'Task prompt');
@@ -183,7 +188,7 @@ test('the supertask proposal closes when its "Run after" task leaves the list (S
 
 test('a broad task prepared "When I decide" is never stopped (SPEC-188)', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
-  await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
+  await firstShown(screen.getByRole('link', /Checkout API/).first());
   await screen.getByRole('button', /Run after: Start now/).click();
   await screen.getByRole('menuitemradio', /^When I decide/).click();
   await screen.getByRole('textbox', 'Task prompt').fill(BROAD);
@@ -196,7 +201,7 @@ test('a broad task prepared "When I decide" is never stopped (SPEC-188)', async 
 
 test('closing the supertask proposal keeps the prompt; a chosen Supertask and focused work are never stopped (SPEC-188)', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
-  await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
+  await firstShown(screen.getByRole('link', /Checkout API/).first());
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.fill(BROAD);
   await screen.getByRole('button', 'Start task').click();
@@ -270,7 +275,7 @@ test('picked conditions become the canonical start rule text (unit, in the page)
 
 test('"Run after" builds a start rule from picked conditions; the task waits for it', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
-  await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
+  await firstShown(screen.getByRole('link', /Checkout API/).first());
   await screen.getByRole('button', /Run after: Start now/).click();
   await screen.getByRole('menuitemradio', /^When a rule is true/).click();
 
@@ -308,7 +313,7 @@ test('"Run after" builds a start rule from picked conditions; the task waits for
 
 test('a picked rule opens again with its conditions, can be changed, and Start now clears it', async ({ app, screen }) => {
   await app.open(mock('/s/studio'));
-  await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
+  await firstShown(screen.getByRole('link', /Checkout API/).first());
   await screen.getByRole('button', /Run after: Start now/).click();
   await screen.getByRole('menuitemradio', /^When a rule is true/).click();
   let editor = screen.getByRole('dialog', 'Start when a rule is true');
@@ -353,7 +358,7 @@ test('a picked rule opens again with its conditions, can be changed, and Start n
 
 test('the rule editor builds at most 16 conditions', async ({ app, screen }) => {
   await app.open(mock('/s/studio'));
-  await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
+  await firstShown(screen.getByRole('link', /Checkout API/).first());
   await screen.getByRole('button', /Run after: Start now/).click();
   await screen.getByRole('menuitemradio', /^When a rule is true/).click();
   const editor = screen.getByRole('dialog', 'Start when a rule is true');
