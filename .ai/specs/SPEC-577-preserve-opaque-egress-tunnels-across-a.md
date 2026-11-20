@@ -324,3 +324,16 @@ without adoption support or a remote peer that times out can end a tunnel.
 - The final mutation run on the clock and connected-endpoint cleanup fixes passed all
   3,292 selected baseline tests. Its summary was 11 listed, 9 caught, 0 missed,
   0 timed out, 2 unviable and 0 not reached.
+- PR #1540 landed at dev squash `2571d8155`. PR run `f0d72521-e19a-4b4d-a275-e709064c3dec`
+  passed at `fb8bc445c`, and dev run `f0fb5457-e381-4b67-a8cb-0091fbbbd02c` passed on
+  the identical tree. Both shards, quality and e2e passed. Vidoc was disabled.
+  [Dev verification](https://yulius.quartio.ai/api/tasks/35adb14d-65fe-4a9f-b9fa-370d776d4139/delivery/evidence/2571d8155c21b530a887a918e718e238ffca6931?run_id=f0fb5457-e381-4b67-a8cb-0091fbbbd02c)
+- On the custody-only code the two direct-server tests failed. The original client got EOF
+  instead of the downtime marker, and an invalid handoff directory produced no diagnostic.
+  With the direct proxy integrated both passed in 0.41 s. The domain, egress and sandbox
+  suites passed 918 tests, with two host-environment cases ignored. The same two-server
+  Rust fixture using the production holder forward and manager relay still failed with EOF.
+- Four earlier mutations removed the HTTP transport's scalar or vectored write capability
+  or bypassed flush and write-half shutdown. A synthetic scalar writer exposed the incorrect
+  capability and missing flush before correction. The scalar and real TCP fixtures caught
+  all four mutations on the corrected adapter.

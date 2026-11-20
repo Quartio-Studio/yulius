@@ -33,6 +33,12 @@ stream. This also closes the connection when a duplicate descriptor is still que
 successor's control socket. The socket name
 is removed on adoption or orderly exit. Payload bytes live in memory.
 
+Under a delegated Linux service, the helper joins the sessions unit's service-owned legacy
+leaf. If that unit is unavailable and the server unit delegates controllers to its children,
+retaining the helper there requires a systemd version that can restart that layout. Failed
+placement ends the handoff before acknowledgement so the server can restart.
+[ADR-0298](0298-sessions-live-in-their-own-unit.md)
+
 ## Alternatives
 
 A permanently running proxy would also need current admission policy, host bindings, eviction
@@ -43,6 +49,8 @@ TLS session.
 
 ## Consequences
 
-The handoff protocol must carry pending bytes, half-closes and accounting when the server paths
-are wired. An incompatible successor, an elapsed deadline or a crash before deposit can end a
+An established direct opaque agent tunnel in Linux legacy mode carries its original socket pair,
+pending bytes, write-half state, admission owner, byte activity and absolute expiry. Namespace
+mode also requires the matching host-side relay and its live holder. An incompatible successor,
+an elapsed deadline or a crash before deposit can end a
 tunnel. Intercepted traffic reconnects through the successor's host-bound credential checks.

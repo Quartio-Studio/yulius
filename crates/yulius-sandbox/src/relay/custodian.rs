@@ -403,6 +403,28 @@ pub fn run(directory: &Path) -> io::Result<()> {
         })
 }
 
+/// Collect the replies to a bounded capture in admission order. Keep each original
+/// deadline running while other copies finish pausing. Dropped senders yield no pair.
+///
+/// # Errors
+/// Rejects too many captures or a failed collection task. The caller bounds the whole wait.
+pub async fn collect(replies: Vec<tokio::sync::oneshot::Receiver<Pair>>) -> io::Result<Vec<Pair>> {
+    check_capacity(replies.len(), 0)?;
+    let mut pending = PendingDelivery((0..replies.len()).map(|_| None).collect());
+    let mut waiting = tokio::task::JoinSet::new();
+    for (index, reply) in replies.into_iter().enumerate() {
+        waiting.spawn(async move { (index, reply.await.ok()) });
+    }
+    while let Some(result) = pending
+        .during(async { Ok(waiting.join_next().await) })
+        .await?
+    {
+        let (index, pair) = result?;
+        pending.0[index] = pair;
+    }
+    Ok(pending.release())
+}
+
 /// Send a batch to a helper that survives this process. On success the helper has bound its
 /// single-consumer listener and holds all the sockets. An empty batch starts no helper.
 ///
@@ -484,6 +506,29 @@ mod tests {
     use std::fs::Permissions;
     use std::os::unix::fs::PermissionsExt as _;
 
+    #[tokio::test]
+    async fn expiry_while_another_copy_is_still_pausing_releases_both_peers() -> io::Result<()> {
+        let (send, short) = tokio::sync::oneshot::channel();
+        let (delayed, other) = tokio::sync::oneshot::channel();
+        let (left, mut client) = UnixStream::pair()?;
+        let (right, mut upstream) = UnixStream::pair()?;
+        let _ = send.send(Pair {
+            sockets: [left.into_std()?.into(), right.into_std()?.into()],
+            state: b"expired".to_vec(),
+            expires: Some(monotonic_ms() + 200),
+        });
+        let collection = tokio::spawn(collect(vec![short, other]));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            assert_eq!(client.read(&mut [0]).await?, 0);
+            assert_eq!(upstream.read(&mut [0]).await?, 0);
+            io::Result::Ok(())
+        })
+        .await??;
+        assert!(!collection.is_finished());
+        drop(delayed);
+        assert!(collection.await??.is_empty());
+        Ok(())
+    }
     #[test]
     fn handoff_clock_uses_the_same_epoch_as_other_processes() -> io::Result<()> {
         use rustix::time::{ClockId, clock_gettime};

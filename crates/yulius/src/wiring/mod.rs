@@ -21,6 +21,8 @@ pub mod session;
 pub mod split;
 pub mod system;
 pub mod telegram;
+#[cfg(target_os = "linux")]
+pub(crate) mod tunnel_handoff;
 pub mod update_files;
 pub mod usage;
 pub mod vidoc;
