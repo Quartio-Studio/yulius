@@ -841,6 +841,13 @@ paths = ["crates/web/**"]   # optional: 1-50 globs of the files it tests (scope-
                             #   base with the integration branch) gets it skipped with "no file this
                             #   job tests changed (paths: …)"; the branches' own runs, a change to
                             #   yulius.toml and an unknown change run it (ADR-0343)
+after_merge = true          # optional: part of the full suite. While the integration head has a
+                            #   merge-first [cd.<name>], pull request heads, merge trains and
+                            #   playground tasks skip it with "part of the full suite: it runs on
+                            #   the merged revision (merge-first)"; the branches' runs run it and
+                            #   never reuse a tree that skipped it. A change's own new or changed
+                            #   job runs on its pull request. At least one job must not set it
+                            #   (ADR-0410)
 # or, for one job: [commands] gate = "…"   (not both)
 # [commands] test, lint, build = "…": for agents to read; Yulius only reads whether test and
 #                            lint are set (the briefing says so when one is missing)
@@ -977,6 +984,11 @@ drill = "dev"                       # the dev-stage environment whose drill prov
 
 [cd.platform]                       # another environment: the same keys, and
 stage = "prod"                      # "dev" or "prod" (fixed for [cd.dev] and [cd.prod])
+
+[cd.staging]                        # a dev-stage environment may be the shared staging target:
+stage = "dev"
+merge_first = true                  # at most one; needs deploy, verify and rollback; moves the
+                                    #   after_merge jobs off pull requests (SPEC-575, ADR-0410)
 ```
 
 A run deploys the commit GitHub reports for the branch, taken into a mirror only Yulius writes

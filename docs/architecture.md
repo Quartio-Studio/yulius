@@ -1574,6 +1574,9 @@ reads them per day with the minutes from arming to merge and the last ten dissol
 reason (`merge_queue::queue_numbers`; the Pipeline tab's Merge queue card)
 ([decision 0357](decisions/0357-a-merge-candidate-is-decided-by-its-own-run.md)).
 
+The armed merge verdict uses the SHA returned by the protected merge and the head GitHub accepted.
+It names the base when the closed PR confirms it. A train also names the candidate commit whose run passed.
+
 Each kept decision leaves a sentence in the armed slot (`ArmedSlot::note`), which `yulius wait`
 (`merge_train`), `delivery_status` and the task page show. `delivery_merge` for an armed head
 keeps it and its place. A merge found made, by anyone, is judged by its head's own run: a passed
@@ -3968,6 +3971,17 @@ line.
   read it after the merge. That is the commit's own, except for a pull request that did not
   change it: then it is the integration branch's. An invalid one fails the run at once with a
   failed job `yulius.toml` and the other jobs skipped.
+- **The full suite after the merge** ([decision 0410](decisions/0410-the-full-suite-runs-on-the-merged-revision-beside-a-merge-first-staging-target.md),
+  [SPEC-575](../.ai/specs/SPEC-575-make-task-local-testing-and-one-staging.md) MFS-002). While the
+  integration head has a merge-first staging target (a dev-stage `[cd.<name>]` with
+  `merge_first = true` that deploys), its `after_merge` jobs end skipped, with their reason, on
+  pull request heads, merge trains and playground tasks (`dom::after_merge_skip`, applied in
+  `ci_queue_placed` before `paths`). They run on the integration and production branches' runs,
+  which never reuse a tree whose run skipped them (`dom::skipped_after_merge`, kept through
+  copied verdicts by `dom::copied_job_reason`), even after a change turned the move off. Without
+  such a target `App::ci_jobs_at` clears the flag (`dom::after_merge_in_force`), so every job
+  runs on every head, and a change's own "(this change)" jobs never carry it. Staging deploys
+  are not gated on that run yet (SPEC-575's staging queue).
 - **Episodes** in which a sandbox's CI has no gate because of its configuration are audited
   (`ci.config_blocked`, `ci.config_unblocked`) and counted as minutes by the merge-queue read.
 
@@ -3980,6 +3994,7 @@ flowchart TD
   C["a commit on its way: pull request, merge candidate, playground merge"] --> K{"its yulius.toml as read after the merge valid?"}
   K -->|no| F["run fails at once: job yulius.toml, the parser's message"]
   K -->|yes| R["run with the gate in force, its own changed jobs beside (never instead)"]
+  R -->|"merge-first target at the integration head"| Q["after_merge jobs skipped: they run on the merged revision"]
 ```
 
 ## CI job output

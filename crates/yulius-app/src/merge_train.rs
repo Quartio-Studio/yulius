@@ -54,7 +54,7 @@ use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::task::{Activity, TaskStatus};
 use yulius_domain::time::Timestamp;
 
-use crate::agent_wait::{ArmedMerge, ArmedNow, Deciding, QueueNote, Verdict};
+use crate::agent_wait::{ArmedMerge, ArmedNow, Deciding, QUEUE_BASE_GUIDANCE, QueueNote, Verdict};
 use crate::auth::AuthContext;
 use crate::ci::{CiJobRecord, CiRunRecord};
 use crate::context::App;
@@ -297,7 +297,7 @@ fn note_of(train: &Train, task: &str) -> Option<QueueNote> {
             )
         };
         return Some(QueueNote {
-            text,
+            text: format!("{text} {QUEUE_BASE_GUIDANCE}"),
             awaits_own_run: train
                 .own_wait
                 .is_some_and(|(pr, _)| pr == train.members[index].pr),
@@ -1176,7 +1176,7 @@ impl App {
             .merge_task_pr_for_task(&auth, &task.id.to_string())
             .await
         {
-            Ok(_) => {
+            Ok(merged) => {
                 let others: Vec<u64> = train
                     .members
                     .iter()
@@ -1208,12 +1208,15 @@ impl App {
                 let next = self
                     .after_merge_of(task, crate::agent_wait::PROFILE_ASKS)
                     .await;
+                let peers = if others.is_empty() {
+                    String::new()
+                } else {
+                    format!(" with {}", listed(&others))
+                };
                 let text = format!(
-                    "Yulius merged pull request #{} into `{integration}` at {} in a merge train \
-                     with {}: Yulius CI passed on their combined result. {next}",
-                    member.pr,
-                    short(&head),
-                    listed(&others)
+                    "{} in a merge train{peers}. Yulius CI passed on the candidate at {}. {next}",
+                    merged.receipt,
+                    short(&train.commit)
                 );
                 (Verdict::Decided(text), Step::Merged)
             }
@@ -1331,7 +1334,11 @@ impl App {
                     command: job.command.clone(),
                     matrix: job.matrix.clone(),
                     state,
-                    reason: Some(note.clone()),
+                    // A full-suite skip stays one through the copy (SPEC-575 MFS-002).
+                    reason: Some(yulius_domain::ci::copied_job_reason(
+                        job.reason.as_deref(),
+                        &note,
+                    )),
                     exit_code: Some(exit_code),
                     output: format!("{note}.\n"),
                     failures: None,

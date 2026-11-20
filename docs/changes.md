@@ -7,6 +7,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-20
 
 - A parked task’s detail identifies the ordinary PR blocking Done, including when another PR on the same branch is green. Unfinished local work also keeps it under Needs you (SPEC-558).
+- A project with a shared staging target can mark it `merge_first = true` and its long jobs
+  `after_merge = true`. Pull requests then wait only for the quick checks, and the full suite
+  runs once on the merged revision instead of on every head. Projects without such a target keep
+  their full suite on pull requests. Staging deploys are not yet gated on that run; SPEC-575's
+  staging queue adds the gate ([ADR-0410](decisions/0410-the-full-suite-runs-on-the-merged-revision-beside-a-merge-first-staging-target.md), [SPEC-575](../.ai/specs/SPEC-575-make-task-local-testing-and-one-staging.md)).
+- Armed PRs get explicit guidance that Yulius handles base updates. Merge verdicts distinguish the landed commit from the checked PR head and name train peers only when present. [SPEC-576](../.ai/specs/SPEC-576-verify-queue-batching-and-guidance-when.md)
+
 - New agent secrets reserve interpreter settings. Managers can rename affected older secrets on the Secrets page. Host-bound GitHub token overrides remain available. [SPEC-574](../.ai/specs/SPEC-574-protect-interpreter-settings-while-prese.md)
 
 - Home and MCP retain a parked task’s known failing PR when another Git overview returns incomplete data. A newer confirmed closure clears it (SPEC-558).

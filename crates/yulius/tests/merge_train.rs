@@ -751,6 +751,18 @@ async fn armed_pull_requests_merge_together_on_one_run() -> TestResult {
     app.merge_armed(&f.sandbox).await;
     assert_eq!(f.merges(), ["merge_pull #1 squash"]);
     assert!(f.train_runs(&app).await?.is_empty());
+    let first_landing = git(&f.origin, &["rev-parse", "dev"])?;
+    let first_head = git(&worktrees[0], &["rev-parse", "HEAD"])?;
+    let first = f.wait(1, &worktrees[0]).await?;
+    let outcome = first["merge_outcome"].as_str().ok_or("merge outcome")?;
+    assert!(
+        outcome.contains(&format!("into `dev` at {}", &first_landing[..9])),
+        "{outcome}"
+    );
+    assert!(
+        outcome.contains(&format!("PR head {}", &first_head[..9])),
+        "{outcome}"
+    );
     app.merge_armed(&f.sandbox).await;
     let trains = f.train_runs(&app).await?;
     assert_eq!(trains.len(), 1, "{trains:?}");
@@ -816,11 +828,26 @@ async fn armed_pull_requests_merge_together_on_one_run() -> TestResult {
         assert_eq!(f.status_of(&head).as_deref(), Some("success"), "#{n}");
         let state = f.wait(n, worktree).await?;
         let outcome = state["merge_outcome"].as_str().unwrap_or_default();
+        let landed = git(
+            &f.origin,
+            &["rev-parse", if n == 2 { "dev^" } else { "dev" }],
+        )?;
+        let peer = if n == 2 { 3 } else { 2 };
         assert!(
-            outcome.starts_with(&format!("Yulius merged pull request #{n} into `dev`"))
-                && outcome.contains("in a merge train"),
-            "{state} {}",
-            f.trains_file(&app)
+            outcome.contains(&format!("into `dev` at {}", &landed[..9])),
+            "{outcome}"
+        );
+        assert!(
+            outcome.contains(&format!("PR head {}", &head[..9])),
+            "{outcome}"
+        );
+        assert!(
+            outcome.contains(&format!("in a merge train with #{peer}.")),
+            "{outcome}"
+        );
+        assert!(
+            outcome.contains(&format!("candidate at {}", &train.sha[..9])),
+            "{outcome}"
         );
         // A train's merge of a part is not the task's end either; a whole plan's is.
         let goes_on = outcome
@@ -1674,6 +1701,40 @@ async fn a_passed_candidate_merges_while_a_members_own_run_goes() -> TestResult 
         RunState::Passed,
         "merged on the candidate's run alone"
     );
+    // Quartio-v2 #331 / PR #1481: the checked head and the landed squash have the same
+    // tree, but the checked head is not part of dev's ancestry.
+    let checked = git(&one, &["rev-parse", "HEAD"])?;
+    let landed = git(&f.origin, &["rev-parse", "dev"])?;
+    assert_eq!(f.origin_tree(&checked)?, f.origin_tree(&landed)?);
+    assert_eq!(
+        Origin(f.origin.clone()).contains(&checked, &landed),
+        Some(false)
+    );
+    let ctx = owner_ctx(&f, 1).await?;
+    let merge = app.merge_state_for_person(&ctx, "t1").await?;
+    let text = merge["last"]["text"].as_str().ok_or("last train verdict")?;
+    assert!(
+        text.contains(&format!("into `dev` at {}", &landed[..9])),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("PR head {}", &checked[..9])),
+        "{text}"
+    );
+    assert!(text.contains("in a merge train."), "{text}");
+    assert!(
+        text.contains(&format!("candidate at {}", &train.sha[..9])),
+        "{text}"
+    );
+    let delivery = app.task_delivery(&ctx, "t1").await?;
+    assert!(
+        delivery.notes.iter().any(
+            |note| note.contains(&format!("into `dev` at {}", &landed[..9]))
+                && note.contains(&format!("PR head {}", &checked[..9]))
+        ),
+        "{:?}",
+        delivery.notes
+    );
     Ok(())
 }
 
@@ -2440,6 +2501,72 @@ async fn arming_the_same_head_again_keeps_its_place() -> TestResult {
     Ok(())
 }
 
+/// Four green heads arriving during a running candidate share the first candidate after it.
+#[tokio::test]
+async fn four_heads_that_pass_during_a_candidate_join_the_next_one_in_arm_order() -> TestResult {
+    let f = fixture().await?;
+    let app = &f.h.app;
+    let mut worktrees = Vec::new();
+    for n in 1..=5 {
+        worktrees.push(f.task(n, &[(&format!("file-{n}"), "change\n")]).await?);
+    }
+    f.arm(1, &worktrees[0]).await?;
+    f.record_passed(app, 1, &git(&worktrees[0], &["rev-parse", "HEAD"])?)
+        .await?;
+    let release = f.h._dir.path().join("release-candidate");
+    f.advance_dev_with("yulius.toml", &format!(
+        "[[ci.jobs]]\nname = \"check\"\ncommand = 'while [ ! -f \"{}\" ]; do sleep 0.05; done'\n",
+        release.display()
+    ))?;
+    app.merge_armed(&f.sandbox).await;
+    let first = f.train_runs(app).await?.pop().ok_or("first candidate")?;
+    assert_eq!(first.reference, CiRef::Train(vec![1]));
+    app.ci_dispatch().await;
+    f.decide_until(app, || async {
+        Ok(app
+            .deps
+            .store
+            .ci_run(&first.id)
+            .await?
+            .ok_or("first run")?
+            .state
+            == RunState::Running)
+    })
+    .await?;
+    for n in [4, 2, 5, 3] {
+        let worktree = &worktrees[n as usize - 1];
+        f.arm(n, worktree).await?;
+        f.record_passed(app, n, &git(worktree, &["rev-parse", "HEAD"])?)
+            .await?;
+        app.merge_armed(&f.sandbox).await;
+    }
+    let active = f.train_runs(app).await?;
+    assert_eq!(active.len(), 1, "{active:?}");
+    assert_eq!(active[0].state, RunState::Running);
+    assert!(f.merges().is_empty());
+    std::fs::write(release, "")?;
+    assert_eq!(run_candidate(&f, app, &first.id).await?, RunState::Passed);
+    app.merge_armed(&f.sandbox).await;
+    assert_eq!(f.merges(), ["merge_pull #1 squash"]);
+    app.merge_armed(&f.sandbox).await;
+    let runs = f.train_runs(app).await?;
+    assert_eq!(runs.len(), 2, "{runs:?}");
+    let next = runs
+        .iter()
+        .find(|r| r.id != first.id)
+        .ok_or("next candidate")?;
+    assert_eq!(next.reference, CiRef::Train(vec![4, 2, 5, 3]));
+    assert_eq!(run_candidate(&f, app, &next.id).await?, RunState::Passed);
+    f.decide_until(app, || async { f.merged(app, 3).await })
+        .await?;
+    let state = f.wait(2, &worktrees[1]).await?;
+    let text = state["merge_outcome"]
+        .as_str()
+        .ok_or("multi-member verdict")?;
+    assert!(text.contains("in a merge train with #4, #5, #3."), "{text}");
+    Ok(())
+}
+
 /// SPEC-441 MQ-007: every armed pull request says where it stands, in `yulius wait` and in
 /// `delivery_status`: one in the merge candidate under test, one green behind it waiting for the
 /// next candidate, and one whose agent is busy.
@@ -2509,6 +2636,12 @@ async fn every_armed_pull_request_says_where_it_stands() -> TestResult {
         third.contains("as soon as your turn ends with everything committed"),
         "{third}"
     );
+    for note in [&first, &second, &third] {
+        assert!(
+            note.contains("Do not merge the integration branch yourself"),
+            "{note}"
+        );
+    }
     // Nothing here can be decided before the candidate's run ends: the fast pass leaves the
     // sandbox alone (review M1: it fetched and asked GitHub every 20 seconds for an hour).
     let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
@@ -2548,8 +2681,16 @@ async fn a_green_current_pull_request_merges_on_the_next_pass() -> TestResult {
     assert_eq!(f.h.github.writes().len(), writes);
     f.record_passed(&app, 2, &git(&second, &["rev-parse", "HEAD"])?)
         .await?;
+    // The protected merge returns a commit even if the read confirming its base fails.
+    f.h.github.fail_merged_reads.store(true, Ordering::SeqCst);
     app.merge_decidable_everywhere().await;
+    f.h.github.fail_merged_reads.store(false, Ordering::SeqCst);
     assert_eq!(f.merges(), ["merge_pull #2 squash"]);
+    let sha = git(&f.origin, &["rev-parse", "dev"])?;
+    let state = f.wait(2, &second).await?;
+    let text = state["merge_outcome"].as_str().ok_or("merge outcome")?;
+    assert!(text.contains(&format!("at {}", &sha[..9])), "{text}");
+    assert!(!text.contains("into `dev`"), "unconfirmed base: {text}");
     // The stale candidate makes way for one on the new base, and #1 lands on it.
     f.decide_until(&app, || async {
         f.settle(&app).await?;
@@ -2575,7 +2716,8 @@ async fn a_pinned_hand_merge_on_a_green_head_counts() -> TestResult {
     f.arm(1, &worktree).await?;
     let head = git(&worktree, &["rev-parse", "HEAD"])?;
     f.record_passed(&app, 1, &head).await?;
-    app.deps
+    let landed = app
+        .deps
         .github
         .merge_pull(&person, "acme", "app", 1, "squash", &head)
         .await?;
@@ -2584,11 +2726,9 @@ async fn a_pinned_hand_merge_on_a_green_head_counts() -> TestResult {
     assert_eq!(state["merge_armed"], false, "{state}");
     let outcome = state["merge_outcome"].as_str().unwrap_or_default();
     assert!(
-        outcome.starts_with(&format!(
-            "Pull request #1 is merged into `dev` at {}, whose own Yulius CI run passed: it \
-             counts as merged on green Yulius CI, whoever merged it.",
-            &head[..9]
-        )),
+        outcome.contains(&format!("into `dev` at {}", &landed[..9]))
+            && outcome.contains(&format!("PR head {}", &head[..9]))
+            && outcome.contains("it counts as merged on green Yulius CI, whoever merged it."),
         "{outcome}"
     );
     let again = support::mcp_tool(
@@ -2615,6 +2755,39 @@ async fn a_pinned_hand_merge_on_a_green_head_counts() -> TestResult {
                 .is_some_and(|n| n.contains("counts as merged on green")))),
         "{status}"
     );
+    // A stale read of an open PR or a different closed PR cannot identify this landing.
+    for (merged, misnumbered) in [(false, false), (true, true)] {
+        f.h.github
+            .misnumber_merged_reads
+            .store(misnumbered, Ordering::SeqCst);
+        f.h.github
+            .pulls
+            .lock()
+            .map_err(|_| "pulls")?
+            .iter_mut()
+            .find(|pull| pull.number == 1)
+            .ok_or("merged PR")?
+            .merged = merged;
+        let again = support::mcp_tool(
+            &f.h,
+            "tok-t1",
+            "delivery_merge",
+            json!({"reviewed_head": head, "review_summary": "approve"}),
+        )
+        .await?;
+        let again = support::tool_text(&again);
+        assert!(
+            again["next"]
+                .as_str()
+                .is_some_and(|note| note.contains("could not read its merged head")
+                    && !note.contains("into `dev`")
+                    && !note.contains(&landed[..9])),
+            "{again}"
+        );
+    }
+    f.h.github
+        .misnumber_merged_reads
+        .store(false, Ordering::SeqCst);
 
     // Without the ruleset, a head that never passed is merged by hand: it does not count.
     f.h.github.strict.store(false, Ordering::SeqCst);
@@ -2625,6 +2798,14 @@ async fn a_pinned_hand_merge_on_a_green_head_counts() -> TestResult {
         .github
         .merge_pull(&person, "acme", "app", 2, "squash", &red)
         .await?;
+    f.h.github
+        .pulls
+        .lock()
+        .map_err(|_| "pulls")?
+        .iter_mut()
+        .find(|pull| pull.number == 2)
+        .ok_or("merged PR")?
+        .merge_commit_sha = None;
     app.merge_armed(&f.sandbox).await;
     let outcome = f.wait(2, &second).await?["merge_outcome"]
         .as_str()
@@ -2632,6 +2813,11 @@ async fn a_pinned_hand_merge_on_a_green_head_counts() -> TestResult {
         .to_owned();
     assert!(
         outcome.contains("but Yulius CI did not pass at that head (no run): it does not count"),
+        "{outcome}"
+    );
+    assert!(!outcome.contains("into `dev` at"), "{outcome}");
+    assert!(
+        outcome.contains(&format!("PR head {}", &red[..9])),
         "{outcome}"
     );
     Ok(())
@@ -2861,7 +3047,8 @@ async fn a_member_that_cannot_be_updated_goes_one_by_one() -> TestResult {
     assert!(
         state["merge_train"]
             .as_str()
-            .is_some_and(|n| n.contains("is behind `dev`")),
+            .is_some_and(|n| n.contains("is behind `dev`")
+                && n.contains("Do not merge the integration branch yourself")),
         "{state}"
     );
     std::fs::remove_file(&lock)?;
@@ -3539,6 +3726,75 @@ async fn a_merge_github_reports_first_is_news_too() -> TestResult {
         status_of_task(&f, &next).await,
         Some(TaskStatus::Chained),
         "its agent has not heard of the merge"
+    );
+    Ok(())
+}
+
+/// SPEC-575 MFS-002 (review round 1): with a merge-first environment a merge train skips the
+/// full suite like its members' heads, and the integration branch's run after the train merged
+/// runs it, never reusing the train's tree that skipped it.
+#[tokio::test]
+async fn a_train_skips_the_full_suite_and_the_merged_head_runs_it() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    f.advance_dev_with(
+        "yulius.toml",
+        &format!(
+            "{YULIUS_TOML}\n[[ci.jobs]]\nname = \"full\"\ncommand = 'echo full suite ran'\n\
+             after_merge = true\n\n[cd.dev]\n[cd.prod]\n\n[cd.staging]\nstage = \"dev\"\n\
+             merge_first = true\ndeploy = \"d\"\nverify = \"v\"\nrollback = \"r\"\n\
+             migrations = \"none: stateless\"\n"
+        ),
+    )?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    f.settle(&app).await?;
+    let mut worktrees = Vec::new();
+    for (n, file) in [(1u32, "a.txt"), (2, "b.txt")] {
+        worktrees.push(f.task(n, &[(file, "x\n")]).await?);
+    }
+    for (n, worktree) in (1u32..).zip(&worktrees) {
+        f.arm(n, worktree).await?;
+        f.record_passed(&app, n, &git(worktree, &["rev-parse", "HEAD"])?)
+            .await?;
+    }
+    f.advance_dev("other.txt")?;
+    f.decide_until(&app, || async {
+        app.ci_sync_sandbox(&sandbox).await?;
+        f.settle(&app).await?;
+        Ok(f.merged(&app, 1).await? && f.merged(&app, 2).await?)
+    })
+    .await?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    f.settle(&app).await?;
+    let mut trains = 0;
+    for run in f.runs(&app).await? {
+        if !matches!(run.reference, CiRef::Train(_)) {
+            continue;
+        }
+        trains += 1;
+        let jobs = app.deps.store.ci_jobs(&run.id, true).await?;
+        assert!(
+            jobs.iter()
+                .filter(|j| j.key == "full")
+                .all(|j| j.state == RunState::Skipped && !j.output.contains("full suite ran")),
+            "{jobs:?}"
+        );
+    }
+    assert!(trains > 0, "a train judged the two");
+    let dev = git(&f.origin, &["rev-parse", "dev"])?;
+    let head_run = f
+        .runs(&app)
+        .await?
+        .into_iter()
+        .find(|r| r.sha == dev && matches!(r.reference, CiRef::Branch(_)))
+        .ok_or("dev head run")?;
+    let jobs = app.deps.store.ci_jobs(&head_run.id, true).await?;
+    assert!(
+        jobs.iter().any(|j| j.key == "full"
+            && j.state == RunState::Passed
+            && j.output.contains("full suite ran")),
+        "the merged head ran the full suite: {head_run:?} {jobs:?}"
     );
     Ok(())
 }
