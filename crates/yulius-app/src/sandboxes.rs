@@ -66,11 +66,17 @@ where
 /// GitHub for every sandbox list. Replaced per sandbox on every overview read; bounded by the
 /// sandboxes' tasks; empty after a restart until the next overview read.
 #[derive(Debug, Default)]
-pub(crate) struct ObservedPulls(Mutex<HashMap<SandboxId, HashMap<TaskId, PullSignal>>>);
+pub(crate) struct ObservedPulls(Mutex<HashMap<SandboxId, HashMap<TaskId, ObservedPull>>>);
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ObservedPull {
+    pub(crate) number: u64,
+    pub(crate) signal: PullSignal,
+}
 
 impl ObservedPulls {
     /// Records one overview read of a sandbox.
-    pub(crate) fn record(&self, sandbox: &SandboxId, pulls: HashMap<TaskId, PullSignal>) {
+    pub(crate) fn record(&self, sandbox: &SandboxId, pulls: HashMap<TaskId, ObservedPull>) {
         if let Ok(mut map) = self.0.lock() {
             map.insert(sandbox.clone(), pulls);
         }
@@ -78,7 +84,7 @@ impl ObservedPulls {
 
     /// The last observed pull request of a task: `Some(None)` when the overview listed the task
     /// without one, `None` when its sandbox was not read since the server started.
-    fn get(&self, sandbox: &SandboxId, task: &TaskId) -> Option<Option<PullSignal>> {
+    pub(crate) fn get(&self, sandbox: &SandboxId, task: &TaskId) -> Option<Option<ObservedPull>> {
         let map = self.0.lock().ok()?;
         map.get(sandbox).map(|pulls| pulls.get(task).copied())
     }
@@ -280,7 +286,7 @@ impl App {
         // open and no unfinished goal, an idle agent answered (SPEC-429).
         let (pull, plan_open, spec_unfinished) = if finished {
             let pull = match self.observed_pulls.get(&task.sandbox_id, &task.id) {
-                Some(observed) => observed,
+                Some(observed) => observed.map(|pr| pr.signal),
                 // Not read since the server started: a merge recorded earlier is still known.
                 None => store
                     .delivery(&task.id)

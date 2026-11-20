@@ -113,6 +113,14 @@ pub(crate) struct ParkedPullRead {
 }
 
 impl ParkedPullRead {
+    fn note_closed(&mut self, pull: &GhPull) {
+        if !is_open(pull)
+            && let Some(pr) = self.pr.as_mut().filter(|pr| pr.number == pull.number)
+        {
+            pr.open = false;
+        }
+    }
+
     pub(crate) fn recorded(record: Option<&DeliveryRecord>) -> Self {
         let pr = record.and_then(|r| {
             let open = r.stage == DeliveryStage::PrOpen;
@@ -2398,12 +2406,16 @@ impl App {
                     conflicts: false,
                 });
             }
-            if let Some(signal) = view
-                .pr
-                .as_ref()
-                .and_then(|pr| PullSignal::from_wire(&pr.state, &pr.checks, pr.conflicts))
+            if let Some(pr) = &view.pr
+                && let Some(signal) = PullSignal::from_wire(&pr.state, &pr.checks, pr.conflicts)
             {
-                observed.insert(task.id.clone(), signal);
+                observed.insert(
+                    task.id.clone(),
+                    crate::sandboxes::ObservedPull {
+                        number: pr.number,
+                        signal,
+                    },
+                );
             }
             tasks.push(view);
         }
@@ -4151,7 +4163,29 @@ impl App {
         let sandbox = self.dlv_sandbox_of(task).await?;
         // A playground or an instance with no GitHub App can still park an answered task.
         // A known open PR requires verification, even when its installation is unavailable.
+        let merged = record
+            .filter(|r| past_merge(&r.stage))
+            .and_then(|r| r.pr_number);
         if sandbox.is_playground() || !self.github_configured().await? {
+            // An overview read with the owner's token may have seen an external
+            // PR that the installation cannot verify. Its last green also needs
+            // fresh confirmation before this task can count as Done.
+            if let Some(known) = self
+                .observed_pulls
+                .get(&task.sandbox_id, &task.id)
+                .flatten()
+                && known.signal != PullSignal::Merged
+                && Some(known.number) != merged
+            {
+                observed.pr = Some(yulius_contracts::api::tasks::ParkedPr {
+                    number: known.number,
+                    open: true,
+                });
+                if known.signal == PullSignal::Failing {
+                    observed.signal = Some(PullSignal::Failing);
+                }
+                return Ok(None);
+            }
             return Ok(tracked.is_none().then(ParkingPrs::default));
         }
         let token = self.dlv_installation_token(&sandbox).await?;
@@ -4169,7 +4203,12 @@ impl App {
                     Some(branch),
                 )
                 .await?;
-            pulls.retain(|pull| !pull.from_fork && pull.head == branch && is_open(pull));
+            pulls.retain(|pull| {
+                !pull.from_fork
+                    && pull.head == branch
+                    && is_open(pull)
+                    && Some(pull.number) != merged
+            });
             pulls.sort_unstable_by_key(|pull| pull.number);
             Ok::<_, AppError>(pulls)
         };
@@ -4194,9 +4233,6 @@ impl App {
         let checkout = self.verification_checkout(task, purpose).await?;
         let mut pulls = Vec::new();
         for number in numbers {
-            if record.is_some_and(|r| past_merge(&r.stage) && r.pr_number == Some(number)) {
-                continue;
-            }
             let checks = if purpose == PrVerification::WatchPending && watched != Some(number) {
                 PrVerification::Settled
             } else {
@@ -4211,12 +4247,6 @@ impl App {
             // A successor needs the current open deliveries. Old checks on a PR
             // already merged cannot block the verified replacement.
             if pull.merged && purpose != PrVerification::WatchPending {
-                if observed.pr.is_some_and(|p| p.number == number) {
-                    observed.pr = Some(yulius_contracts::api::tasks::ParkedPr {
-                        number,
-                        open: false,
-                    });
-                }
                 continue;
             }
             if let Some(head) = &checkout
@@ -4273,6 +4303,7 @@ impl App {
         };
         let pull = read().await?;
         if !is_open(&pull) {
+            observed.note_closed(&pull);
             return Ok(pull.merged.then_some(pull));
         }
         if pull.behind {
@@ -4332,6 +4363,7 @@ impl App {
         }
         // Checks and local conflict detection can take long enough for another push.
         let current = read().await?;
+        observed.note_closed(&current);
         let same_open_head = is_open(&current)
             && !current.behind
             && current.head_sha == pull.head_sha

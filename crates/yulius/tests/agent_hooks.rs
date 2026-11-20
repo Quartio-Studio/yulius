@@ -2343,28 +2343,31 @@ async fn a_step_writer_in_progress_defers_parking_until_its_update_finishes() ->
     Ok(())
 }
 
+fn compatibility_pull() -> yulius_app::ports::github::GhPull {
+    yulius_app::ports::github::GhPull {
+        number: 1461,
+        html_url: "https://github.test/acme/fixture/pull/1461".into(),
+        title: "Compatibility".into(),
+        state: "open".into(),
+        merged: false,
+        base: "dev".into(),
+        head: "feat/1-x".into(),
+        head_sha: "abc123".into(),
+        mergeable: Some(true),
+        behind: false,
+        from_fork: false,
+        merge_commit_sha: None,
+    }
+}
+
 async fn install_compatibility_pull(f: &Fixture) -> TestResult {
-    use yulius_app::ports::github::GhPull;
     use yulius_domain::delivery::DeliveryStage;
     install_app(f).await?;
     f.h.github
         .pulls
         .lock()
         .map_err(|_| "pull fixture")?
-        .push(GhPull {
-            number: 1461,
-            html_url: "https://github.test/acme/fixture/pull/1461".into(),
-            title: "Compatibility".into(),
-            state: "open".into(),
-            merged: false,
-            base: "dev".into(),
-            head: "feat/1-x".into(),
-            head_sha: "abc123".into(),
-            mergeable: Some(true),
-            behind: false,
-            from_fork: false,
-            merge_commit_sha: None,
-        });
+        .push(compatibility_pull());
     f.h.app
         .deps
         .store
@@ -3017,12 +3020,33 @@ async fn parked_list_home_and_mcp_classify_a_green_head_while_the_first_is_slow(
             .needs_attention,
         1
     );
+    // MCP all orders by activity. Seven other rows and the slow PR precede
+    // the healthy PR at the boundary of the second batch.
+    f.h.store
+        .set_activity(
+            &TaskId::parse("t-other")?,
+            Some(Activity::Working),
+            Timestamp(now.0 + 1),
+        )
+        .await?;
+    let caller = crate::task_message::superagent(&f.sandbox, &slow.created_by, "admin");
+    let all =
+        f.h.app
+            .tool_tasks_list(&caller, &json!({"scope":"all","limit":9}))
+            .await?;
+    let rows = all["tasks"].as_array().ok_or("rows")?;
+    assert!(
+        rows[..8]
+            .iter()
+            .any(|row| row["task_id"] == slow_id.as_str() && row["shows"] == "needs_you")
+    );
+    assert_eq!(rows[8]["task_id"], f.task.as_str());
+    assert_eq!(rows[8]["shows"], "done");
     // The healthy task is newest for MCP. Apply the owner's limit only after
     // filtering Needs you, otherwise the slow task disappears from the page.
     f.h.store
         .set_activity(&f.task, Some(Activity::Waiting), Timestamp(now.0 + 2))
         .await?;
-    let caller = crate::task_message::superagent(&f.sandbox, &slow.created_by, "admin");
     let listing =
         f.h.app
             .tool_tasks_list(&caller, &serde_json::json!({"scope":"needs_you","limit":1}))
@@ -3102,6 +3126,94 @@ async fn a_partial_overview_still_resolves_the_parked_tasks_recorded_pr() -> Tes
     let summary = serde_json::to_value(detail)?;
     assert_eq!(summary["parked_needs_you"], false);
     assert_eq!(summary["parked_pr"], json!({"number": 1461, "open": true}));
+    let held = f.h.github.hold_checks();
+    let app = f.h.app.clone();
+    let parked = app.deps.store.task(&f.task).await?.ok_or("parked task")?;
+    let reading = tokio::spawn(async move { app.task_summary(&parked).await });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        f.h.github.checks_entered.notified(),
+    )
+    .await?;
+    f.h.github.pulls.lock().map_err(|_| "pulls")?[0].state = "closed".into();
+    f.h.github.release_checks(&held);
+    let during = serde_json::to_value(reading.await??)?;
+    assert_eq!(during["parked_needs_you"], true);
+    assert_eq!(during["parked_pr"], json!({"number": 1461, "open": false}));
+    let summary = serde_json::to_value(f.h.app.task_detail(&owner, f.task.as_str()).await?)?;
+    assert_eq!(summary["parked_needs_you"], true);
+    assert_eq!(summary["parked_pr"], json!({"number": 1461, "open": false}));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_parked_external_pr_seen_by_its_owner_requires_verification_without_an_app() -> TestResult
+{
+    let f = fixture().await?;
+    let owner = idle_for_parking(&f).await?;
+    sign_in_with_github(&f, "u1", "alice").await?;
+    f.h.app
+        .deps
+        .store
+        .transition_task(
+            &f.task,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Done),
+            f.h.app.now(),
+        )
+        .await?;
+    f.h.github
+        .pulls
+        .lock()
+        .map_err(|_| "pulls")?
+        .push(yulius_app::ports::github::GhPull {
+            base: "release".into(),
+            ..compatibility_pull()
+        });
+    f.h.github
+        .set_checks("abc123", yulius_app::ports::github::ChecksState::Failure);
+    let overview = f.h.app.git_overview(&owner, f.sandbox.as_str()).await?;
+    assert!(
+        overview
+            .tasks
+            .iter()
+            .find(|t| t.task_id == f.task.as_str())
+            .and_then(|t| t.pr.as_ref())
+            .is_some_and(|pr| pr.checks == "failure")
+    );
+    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let list =
+        f.h.app
+            .tool_tasks_list(&caller, &json!({"scope":"needs_you"}))
+            .await?;
+    assert_eq!(list["tasks"][0]["task_id"], f.task.as_str());
+    assert_eq!(
+        list["tasks"][0]["wait_reason"],
+        "The agent stopped and its pull request checks are failing."
+    );
+    assert_eq!(
+        f.h.app.list_sandboxes(&owner).await?[0]
+            .counts
+            .needs_attention,
+        1
+    );
+    let detail = serde_json::to_value(f.h.app.task_detail(&owner, f.task.as_str()).await?)?;
+    assert_eq!(detail["parked_needs_you"], true);
+    assert_eq!(detail["parked_pr"], json!({"number":1461, "open":true}));
+    // Even a previously green head needs current evidence from the installation.
+    f.h.github
+        .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
+    f.h.app.git_overview(&owner, f.sandbox.as_str()).await?;
+    assert_eq!(
+        serde_json::to_value(f.h.app.task_detail(&owner, f.task.as_str()).await?)?["parked_needs_you"],
+        true
+    );
+    install_app(&f).await?;
+    assert_eq!(
+        serde_json::to_value(f.h.app.task_detail(&owner, f.task.as_str()).await?)?["parked_needs_you"],
+        false
+    );
     Ok(())
 }
 

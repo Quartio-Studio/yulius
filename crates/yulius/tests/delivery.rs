@@ -8406,7 +8406,7 @@ async fn a_merged_pull_request_github_still_lists_as_open_reads_merged() -> Test
         .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
         .await?;
     commit_file(&wt, "feature.txt", "hello", "Add feature")?;
-    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    commit_file(&wt, SPEC_PATH, &finished_spec("t1"), "Spec")?;
     let opened = f
         .req(Method::POST, "/api/tasks/t1/delivery/pr", None, &f.bob)
         .await?;
@@ -8448,6 +8448,20 @@ async fn a_merged_pull_request_github_still_lists_as_open_reads_merged() -> Test
         "not among the open pull requests: {}",
         page.body
     );
+    let id = TaskId::parse("t1")?;
+    f.h.store
+        .transition_task(
+            &id,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Done),
+            f.h.app.now(),
+        )
+        .await?;
+    let task = f.h.store.task(&id).await?.ok_or("parked task")?;
+    let summary = serde_json::to_value(f.h.app.task_summary(&task).await?)?;
+    assert_eq!(summary["parked_needs_you"], false);
+    assert_eq!(summary["parked_pr"], json!({"number":1,"open":false}));
     Ok(())
 }
 
