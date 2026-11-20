@@ -746,7 +746,7 @@ impl App {
             .task_summary_with(task, project, &steps, requested, false)
             .await?;
         if let Some(read) = status {
-            let parked_needs_you = read.needs_you
+            let parked_needs_you = read.facts.needs_you()
                 || summary.spec_unfinished
                 || summary.goal_unfinished
                 || summary.needs_you.is_some()

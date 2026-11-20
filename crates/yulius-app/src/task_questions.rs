@@ -69,6 +69,8 @@ pub fn group_name(group: TaskGroup) -> &'static str {
 fn derived_wait_reason(facts: &AttentionFacts) -> Option<&'static str> {
     if facts.browser_request {
         Some("A request for a person was pending when the task list was read.")
+    } else if facts.held_prompt {
+        Some("A prompt was held for a decision when the task was checked.")
     } else if facts.pull == Some(PullSignal::Failing) {
         Some("The agent stopped and its pull request checks are failing.")
     } else if facts.plan_open {
@@ -77,6 +79,22 @@ fn derived_wait_reason(facts: &AttentionFacts) -> Option<&'static str> {
         Some("The agent stopped before its spec was finished.")
     } else if facts.goal_unfinished {
         Some("The agent stopped before its goal was achieved.")
+    } else if facts.status == yulius_domain::task::TaskStatus::Parked {
+        match facts.pull {
+            Some(PullSignal::InReview) => {
+                Some("The parked task is waiting for its pull request checks.")
+            }
+            Some(PullSignal::Errored) => {
+                Some("The parked task's pull request could not be verified.")
+            }
+            Some(PullSignal::Behind) => {
+                Some("The parked task's pull request needs to be updated with its base branch.")
+            }
+            Some(PullSignal::Conflicting) => {
+                Some("The parked task's pull request has a merge conflict.")
+            }
+            _ => None,
+        }
     } else {
         None
     }
@@ -135,23 +153,37 @@ impl App {
             .flatten()
             .map_or(task.updated_at.0, |times| times.state_at.0);
 
-        let raw = if facts.held_prompt
-            && let Ok(Some(held)) = store.pending_hold(&task.id).await
-        {
-            NeedsYouNoticeView {
-                source: "system".to_owned(),
-                episode: format!("held:{}", held.id),
-                happened: format!(
-                    "A typed prompt ({}) was held by the scope check.",
-                    held.class.as_str()
-                ),
-                problem: None,
-                action: "Open the task and decide whether to send, dismiss, run in parallel, or queue it after.".to_owned(),
-                link: task_link,
-                decision: true,
-                browser_tab: None,
-                at: rfc3339(held.created_at),
-                at_ms: held.created_at.0,
+        let raw = if facts.held_prompt {
+            if let Ok(Some(held)) = store.pending_hold(&task.id).await {
+                NeedsYouNoticeView {
+                    source: "system".to_owned(),
+                    episode: format!("held:{}", held.id),
+                    happened: format!(
+                        "A typed prompt ({}) was held by the scope check.",
+                        held.class.as_str()
+                    ),
+                    problem: None,
+                    action: "Open the task and decide whether to send, dismiss, run in parallel, or queue it after.".to_owned(),
+                    link: task_link,
+                    decision: true,
+                    browser_tab: None,
+                    at: rfc3339(held.created_at),
+                    at_ms: held.created_at.0,
+                }
+            } else {
+                NeedsYouNoticeView {
+                    source: "system".to_owned(),
+                    episode: format!("held:checked:{episode_at_ms}"),
+                    happened: "A prompt was held for a decision when the task was checked."
+                        .to_owned(),
+                    problem: None,
+                    action: "Open the task to review or send your prompt.".to_owned(),
+                    link: task_link,
+                    decision: true,
+                    browser_tab: None,
+                    at: rfc3339(Timestamp(episode_at_ms)),
+                    at_ms: episode_at_ms,
+                }
             }
         } else if let Some(req) = self.needs_you_view(task).await {
             let is_browser = req.browser_tab.is_some();
@@ -429,17 +461,22 @@ impl App {
             let (kind, happened, action) = match facts.pull {
                 Some(PullSignal::Conflicting) => (
                     "conflict",
-                    "The task is parked and its pull request has merge conflicts.",
+                    "The parked task's pull request has a merge conflict.",
                     "Open the task and resume it to resolve the pull request conflicts.",
+                ),
+                Some(PullSignal::Behind) => (
+                    "behind",
+                    "The parked task's pull request needs to be updated with its base branch.",
+                    "Open the task and resume it to update the branch with its base.",
                 ),
                 Some(PullSignal::InReview) => (
                     "in_review",
-                    "The task is parked while its pull request is still open and not yet green.",
+                    "The parked task is waiting for its pull request checks.",
                     "Open the task to review the pull request status or resume the task.",
                 ),
                 Some(PullSignal::Errored) => (
                     "errored",
-                    "The task is parked and its pull request CI run could not complete.",
+                    "The parked task's pull request could not be verified.",
                     "Open the task and resume it or rerun CI.",
                 ),
                 _ => (

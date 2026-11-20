@@ -45,9 +45,19 @@ pub(crate) fn fair_batches<T>(
 
 /// Display result of one bounded read. An early timeout may precede the plan lookup.
 pub(crate) struct ParkedStatus {
-    pub(crate) needs_you: bool,
+    pub(crate) facts: AttentionFacts,
     pub(crate) pr: Option<ParkedPr>,
     pub(crate) steps: Option<Vec<StepRecord>>,
+}
+
+impl ParkedStatus {
+    pub(crate) fn new(task: &TaskRecord) -> Self {
+        Self {
+            facts: AttentionFacts::new(task.status, task.activity),
+            pr: None,
+            steps: None,
+        }
+    }
 }
 
 /// PR facts the Git overview supplied for a single task. A closed, unmerged PR
@@ -318,15 +328,23 @@ impl App {
         parked.retain(|(task, _)| task.status == TaskStatus::Parked);
         let mut statuses = HashMap::with_capacity(parked.len());
         for (batch, until) in fair_batches(&parked, self.status_deadline(), PARKED_READS) {
-            let reads = batch.iter().map(|&(task, requests)| async move {
-                (
-                    task.id.clone(),
-                    self.parked_status(task, requests, until).await,
-                )
-            });
-            statuses.extend(futures::future::join_all(reads).await);
+            statuses.extend(self.read_parked_batch(batch, until).await);
         }
         statuses
+    }
+
+    pub(crate) async fn read_parked_batch(
+        &self,
+        batch: &[(&TaskRecord, &OnceCell<HashSet<String>>)],
+        deadline: Instant,
+    ) -> Vec<(TaskId, ParkedStatus)> {
+        let reads = batch.iter().map(|&(task, requests)| async move {
+            (
+                task.id.clone(),
+                self.parked_status(task, requests, deadline).await,
+            )
+        });
+        futures::future::join_all(reads).await
     }
 
     pub(crate) async fn list_groups(&self, tasks: &[TaskRecord]) -> AppResult<Vec<TaskGroup>> {
@@ -346,11 +364,7 @@ impl App {
         let mut groups = Vec::with_capacity(tasks.len());
         for task in tasks {
             let group = if let Some(status) = parked.get(&task.id) {
-                if status.needs_you {
-                    TaskGroup::NeedsYou
-                } else {
-                    TaskGroup::Done
-                }
+                status.facts.group()
             } else {
                 let requested = requests
                     .get_or_init(|| self.browser_requests(&task.sandbox_id))
@@ -374,66 +388,65 @@ impl App {
         // Seed from memory before waiting on any store or browser lock. Once
         // the record is read, a timed-out lookup can still name its delivery.
         let mut observed = self.known_parked_pull(task, None);
-        let mut steps = None;
+        let mut status = ParkedStatus::new(task);
         let check = async {
             let record = self.deps.store.delivery(&task.id).await?;
             observed = self.known_parked_pull(task, record.as_ref());
             let requested = requests
                 .get_or_init(|| self.browser_requests(&task.sandbox_id))
                 .await;
-            if !self
-                .parked_chain_clear(task, Some(requested), &mut steps)
-                .await?
-            {
-                return Ok(true);
+            self.read_parked_local_work(task, Some(requested), &mut status)
+                .await?;
+            if status.facts.parked_has_local_work_or_request() {
+                return Ok(());
             }
-            let Some(prs) = self
+            let prs = self
                 .verify_task_prs(
                     task,
                     record.as_ref(),
                     PrVerification::Display,
                     &mut observed,
                 )
-                .await?
-            else {
-                return Ok(true);
-            };
-            if !self
-                .parked_evidence_current(
+                .await?;
+            let current = if let Some(prs) = prs {
+                self.parked_evidence_current(
                     task,
                     record.as_ref(),
                     &prs,
                     PrVerification::Display,
                     &mut observed,
-                    &mut steps,
+                    &mut status,
                 )
                 .await?
-            {
-                return Ok(true);
-            }
-            let mut facts = AttentionFacts::new(task.status, task.activity);
-            facts.pull = observed.pr.map(|pr| {
-                if pr.open {
-                    PullSignal::Tested
+            } else {
+                // A person or a plan change can arrive while even a failing check is in flight.
+                self.read_parked_local_work(task, None, &mut status).await?;
+                false
+            };
+            if !status.facts.parked_has_local_work_or_request() {
+                status.facts.pull = if current {
+                    observed.pr.map(|pr| {
+                        if pr.open {
+                            PullSignal::Tested
+                        } else {
+                            PullSignal::Merged
+                        }
+                    })
                 } else {
-                    PullSignal::Merged
-                }
-            });
-            Ok::<_, crate::error::AppError>(facts.needs_you())
+                    Some(observed.signal.unwrap_or(PullSignal::Errored))
+                };
+            }
+            Ok::<_, crate::error::AppError>(())
         };
-        let needs_you = !matches!(
-            tokio::time::timeout_at(deadline, check).await,
-            Ok(Ok(false))
-        );
+        if !matches!(tokio::time::timeout_at(deadline, check).await, Ok(Ok(()))) {
+            status.facts.pull = Some(PullSignal::Errored);
+        }
         crate::race::reached(
             crate::race::Point::ParkedStatusRead,
             std::path::Path::new(task.id.as_str()),
         );
-        ParkedStatus {
-            needs_you,
-            pr: observed.pr,
-            steps,
-        }
+        status.pr = observed.pr;
+        status
     }
 
     /// The facts that place the task in its sidebar group and explain a derived wait.

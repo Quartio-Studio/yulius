@@ -200,7 +200,14 @@ async fn stopped_task_with_five_open_steps_explains_reason_and_deduplicates_hist
 #[tokio::test]
 async fn failing_pr_check_distinguishes_agent_recoverable_progressing_and_human_action()
 -> TestResult {
+    use yulius_app::ports::store::InstanceStore as _;
     let h = harness()?;
+    h.store.init_instance("https://yulius.test", "x").await?;
+    let cfg = json!({"app_id": 1, "slug": "yulius-test", "client_id": "c",
+        "client_secret": "s", "private_key_pem": "k", "webhook_secret": null});
+    let sealed = h.app.deps.crypto.seal(cfg.to_string().as_bytes())?;
+    h.store.set_github_app(&sealed, "acme", "org").await?;
+    h.store.set_installation(Some(7)).await?;
     let _alice = seed_github_user(&h, "u-alice", "alice").await?;
     seed_sandbox(&h, "s1", "yulius", "u-alice").await?;
     h.github.set_perm("alice", "acme/yulius", perms("write"));
@@ -296,6 +303,9 @@ async fn failing_pr_check_distinguishes_agent_recoverable_progressing_and_human_
     // Case 1: Live running session (live attempt exists) with untold failed Yulius CI run ->
     // agent-recoverable (`pr_news_due` keeps task Working, NOT Needs You!).
     seed_live_attempt(&h, "t1", TOKEN).await?;
+    if let Some(attempt) = h.store.live_attempt(&task_id).await? {
+        std::fs::create_dir_all(&attempt.run_dir)?;
+    }
     let recoverable = h.app.tool_task_get(&caller, &json!({"number": 1})).await?;
     assert_eq!(
         recoverable["shows"], "working",

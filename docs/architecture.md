@@ -2116,6 +2116,8 @@ run for these reads per application. Each keeps its permit until Git returns.
 
 Task lists share one 750 ms PR verification budget. Each batch of up to eight parked rows receives a share of the remaining time. Home verifies parked rows across all visible projects before it counts live rows. A slow local Git read for a running task cannot spend the parked rows’ lookup time. The HTTP response uses the plan read by the verifier for both progress and detailed steps. [ADR-0412](decisions/0412-share-parked-pr-read-time-across-task-lists.md)
 
+MCP parked task reads use the verifier’s plan snapshot for progress and detailed steps. The Needs you filter uses the group rendered with the owner’s current decision. Each page shares one parked PR lookup budget. [ADR-0416](decisions/0416-parked-mcp-rows-use-the-verified-plan-and-pr.md)
+
 The end-of-day digest (`yulius-app/src/digest.rs`, SPEC-512 part 3,
 [decision 0380](decisions/0380-an-end-of-day-digest-built-from-task-state.md)) runs from the same
 tick: `digest_tick` reads `instance.digest`, and once today's time (UTC) passed takes the run with
@@ -3793,7 +3795,9 @@ the copy resumes any pending write-half shutdown before marking that half closed
 [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
 The Linux `sandbox-host hold-tunnels` helper holds a bounded batch of connected descriptors
 and private copy state for one successor. Its two-minute deadline includes the time spent
-receiving and returning the batch. The server integration is tracked in SPEC-577.
+receiving and returning the batch. Each timed pair also retains its original monotonic
+deadline. The helper releases expired pairs while a successor receives the remaining live
+records. The server integration is tracked in SPEC-577.
 [ADR-0413](decisions/0413-a-bounded-helper-holds-connected-tunnel-sockets-between-servers.md)
 The proxy also counts each connection's run (agent run, CI job, Superagent shell). When nothing was
 idle for 5 minutes, a full sandbox share takes the oldest connection of its busiest other run, and

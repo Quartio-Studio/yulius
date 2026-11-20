@@ -528,6 +528,8 @@ gives its `number` and whether it is `open`. A branch lookup can identify a repl
 for an older recorded delivery. With outstanding local work, the detail keeps an owner-observed open PR
 or the recorded delivery identity. Unfinished work and unreadable checks keep the task under Needs you.
 
+The MCP tools `task_get` and `tasks_list` use the verified parked group and include `parked_pr` when the verifier can identify the PR. A parked row’s `wait_reason` explains a current check failure, pending checks, an unreadable PR, a conflict, a required base update or unfinished local work. A stored owner decision or held prompt supplies its own fields. The `needs_you` scope keeps activity order and applies its limit after filtering. The `archived` scope reads archived tasks.
+
 A `queued` task not held by a supertask carries `queue_reason`, one line: "Waiting for a free
 session: N of M in use", "Waiting for the Yulius update to finish", or "Starting: a session is
 free" (the queue's next pass starts it) (SPEC-512 PRK-007); null otherwise, and in `tasks_list`

@@ -22,7 +22,10 @@ when the batch and listener are ready. Admission, destination checks, intercepti
 credential handling stay in the serving process.
 
 The batch accommodates 256 opaque tunnels and 256 relay pairs. Each pair has up to 32 KiB of
-private state. One two-minute deadline covers receipt, adoption and delivery. On expiry,
+private state. One two-minute deadline covers receipt, adoption and delivery. Each timed
+record also carries its original monotonic deadline. Its expiry shuts down its two sockets
+throughout the exchange. The successor drains the expired frame and adopts the live remainder.
+Once every pair expires the helper releases its only place. On batch expiry,
 disconnection or invalid input the helper drops its descriptors and state. During delivery it
 retains the original descriptors until the successor acknowledges the entire batch and the
 helper confirms adoption. If that exchange fails, the helper shuts down both halves of every
