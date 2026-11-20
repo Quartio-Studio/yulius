@@ -31,7 +31,7 @@ disable`); CI sets it.
 | `attention.e2e.ts` | Task flags explain what needs attention, where to respond and who can use the terminal. |
 | `content-security-policy.e2e.ts` | The page receives its policy. The harness detects blocked scripts, images and evaluation, and exercises permitted form submission and recording playback. |
 | `digest.e2e.ts` | Administrator digest settings, notification delivery across tabs, offline arrival, dismissal and navigation to the digest. |
-| `initial-load.e2e.ts` | Initial document and script network interruptions recover once. Ordinary failures, a second interruption and later navigation surface their errors. |
+| `initial-load.e2e.ts` | Consecutive document and script network interruptions share one recovery deadline. Ordinary failures, persistent interruption and later navigation surface their errors. |
 | `instance-limits.e2e.ts` | Instance administrators inspect host limits, validate overrides, recover failed reads and saves, and reconcile settings after a host move. |
 | `production-protection.e2e.ts` | Git page protection settings follow administrator access, server refusals, redraws and navigation. Playgrounds refuse the switch. |
 | `shared-needs-you.e2e.ts` | Tasks reporting the same sandbox problem share a request card and one notification across projects. |
@@ -130,7 +130,7 @@ rejection or `console.error` (`failOnPageErrors()` in `tests/support.ts`). In th
 `app.open` and `browser.reload` of a mock page return once the mock is installed, so a test can
 use `window.__yuliusMock` right away. If Chromium reports `net::ERR_NETWORK_CHANGED` for the
 initial mock document or one of its startup scripts and the mock cannot start, the harness logs
-the interruption and loads that page once more. A second interruption fails the test (ADR-0385). A test that calls `window.monaco.editor` waits for
+each interruption and paces recovery within one 30-second deadline. Persistent interruption fails startup (ADR-0385). A test that calls `window.monaco.editor` waits for
 `editorShown(browser)` first: the Editor's first opening loads Monaco (its own budget,
 `MONACO_LOAD_MS`), and an API call while it loads breaks the editor (#394, ADR-0122). The editor
 shows nothing before its first file's model is set (#1087), so `editorShown` is also when that

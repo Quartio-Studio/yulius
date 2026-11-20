@@ -54,6 +54,8 @@ pub fn group_name(group: TaskGroup) -> &'static str {
 fn derived_wait_reason(facts: &AttentionFacts) -> Option<&'static str> {
     if facts.browser_request {
         Some("A request for a person was pending when the task list was read.")
+    } else if facts.held_prompt {
+        Some("A prompt was held for a decision when the task was checked.")
     } else if facts.pull == Some(PullSignal::Failing) {
         Some("The agent stopped and its pull request checks are failing.")
     } else if facts.plan_open {
@@ -62,6 +64,22 @@ fn derived_wait_reason(facts: &AttentionFacts) -> Option<&'static str> {
         Some("The agent stopped before its spec was finished.")
     } else if facts.goal_unfinished {
         Some("The agent stopped before its goal was achieved.")
+    } else if facts.status == yulius_domain::task::TaskStatus::Parked {
+        match facts.pull {
+            Some(PullSignal::InReview) => {
+                Some("The parked task is waiting for its pull request checks.")
+            }
+            Some(PullSignal::Errored) => {
+                Some("The parked task's pull request could not be verified.")
+            }
+            Some(PullSignal::Behind) => {
+                Some("The parked task's pull request needs to be updated with its base branch.")
+            }
+            Some(PullSignal::Conflicting) => {
+                Some("The parked task's pull request has a merge conflict.")
+            }
+            _ => None,
+        }
     } else {
         None
     }
