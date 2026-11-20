@@ -51,6 +51,8 @@ new request after the old sockets reach EOF. The issue requires the original con
 - [x] Hold connected socket pairs and bounded copy state for one successor
 - [x] Obtain independent approval for the socket custodian slice
 - [x] Resume established direct opaque CONNECT sockets in the replacement server
+- [x] Keep each original deadline during custody and preserve the live remainder of a mixed batch
+- [ ] Obtain independent approval for the custody deadline slice
 - [ ] Obtain independent approval for the proxy restart slice
 - [ ] Hand established opaque connections and matching relay sockets to the restarted server
 - [ ] Verify same-socket continuity, admission limits and intercepted traffic through restart
@@ -248,3 +250,18 @@ without adoption support or a remote peer that times out can end a tunnel.
   the entire sealed batch through final confirmation. With the successor and its duplicates
   still open, the helper exits and the directory lock becomes available. All 16 custodian
   unit tests passed with that correction.
+- Round three at `e07e8d4ff` confirmed the helper releases its place after last expiry,
+  including during a stalled acknowledgement. It found that a short-lived, half-closed TCP
+  pair could expire after both pairs were queued as descriptor messages. Linux then returned
+  `NotConnected` for the expired pair. The successor rejected the entire batch and both peers
+  of the longer-lived tunnel observed EOF. A real TCP regression reproduced errno 107 on
+  the reviewed implementation. The protocol now validates descriptor type and family on
+  every frame, reads its absolute deadline before requiring live peers, and drains expired
+  records with the same framing and capacity checks.
+- The mixed-batch fix and original-deadline custody are being delivered separately. The
+  direct proxy and service wiring tested above are saved for the following review and PR.
+  The serve path on dev still ends established streams at restart.
+- On the separated custody implementation, 37 relay tests and all four Linux helper-process
+  tests passed. They include the real mixed TCP queue regression, malformed expired frames,
+  an unconnected live stream, independent expiry before adoption and lock release when a
+  successor keeps its received descriptors open without acknowledging them.

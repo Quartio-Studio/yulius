@@ -6,7 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
-- Direct agent CONNECT tunnels in Linux legacy mode keep their original TCP peers and pending bytes through an orderly server restart. Intercepted connections reconnect through the host-bound secret policy. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
+- The Linux tunnel custodian enforces each socket pair’s original lifetime during receipt, waiting and delivery. Expired TCP pairs release their peers while the successor receives the live remainder. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
+
 - Task lists and Home check parked PRs in bounded batches. A stalled check leaves its task under Needs you and gives later tasks time to verify their own checks (SPEC-558).
 - Added the Linux tunnel handoff helper. It retains connected sockets and private copy state for one successor for up to two minutes. [ADR-0413](decisions/0413-a-bounded-helper-holds-connected-tunnel-sockets-between-servers.md)
 

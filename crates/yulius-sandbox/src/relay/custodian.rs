@@ -51,19 +51,35 @@ fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
-fn connected(fd: &OwnedFd) -> io::Result<()> {
+fn stream_socket(fd: &OwnedFd) -> io::Result<()> {
     if net::sockopt::socket_type(fd)? == SocketType::STREAM
-        && net::getpeername(fd)?.is_some_and(|addr| {
-            matches!(
-                addr.address_family(),
-                AddressFamily::INET | AddressFamily::INET6 | AddressFamily::UNIX
-            )
-        })
+        && matches!(
+            net::sockopt::socket_domain(fd)?,
+            AddressFamily::INET | AddressFamily::INET6 | AddressFamily::UNIX
+        )
     {
         Ok(())
     } else {
-        Err(invalid("handoff requires connected stream sockets"))
+        Err(invalid("handoff requires stream sockets"))
     }
+}
+
+// Linux can forget the TCP peer after shutdown even while SCM_RIGHTS holds a duplicate.
+// A deadline may pass between the syscall and checking its result. A still-live frame
+// must have two connected peers; an expired one is drained under the same size bounds.
+fn require_live_peers(sockets: &[OwnedFd; 2], expires: Option<u64>) -> io::Result<()> {
+    for fd in sockets {
+        let error = match net::getpeername(fd) {
+            Ok(Some(_)) => continue,
+            Ok(None) => invalid("handoff requires connected streams"),
+            Err(error) => error.into(),
+        };
+        if expires.is_none_or(|end| end > monotonic_ms()) {
+            return Err(error);
+        }
+        break;
+    }
+    Ok(())
 }
 
 async fn header(stream: &UnixStream) -> io::Result<Option<([OwnedFd; 2], bool)>> {
@@ -96,7 +112,7 @@ async fn header(stream: &UnixStream) -> io::Result<Option<([OwnedFd; 2], bool)>>
                         .try_into()
                         .map_err(|_| invalid("expected a socket pair"))?;
                     for fd in &pair {
-                        connected(fd)?;
+                        stream_socket(fd)?;
                     }
                     Ok(Some((pair, tag[0] == b'D')))
                 }
@@ -121,6 +137,7 @@ async fn receive(stream: &mut UnixStream) -> io::Result<PendingDelivery> {
         } else {
             None
         };
+        require_live_peers(&sockets, expires)?;
         // Track the original deadline even while the producer is still writing the state.
         pending.0.push(Some(Pair {
             sockets,
@@ -377,28 +394,6 @@ pub fn run(directory: &Path) -> io::Result<()> {
         })
 }
 
-/// Collect the replies to a bounded capture in admission order. Keep each original
-/// deadline running while other copies finish pausing. Dropped senders yield no pair.
-///
-/// # Errors
-/// Rejects too many captures or a failed collection task. The caller bounds the whole wait.
-pub async fn collect(replies: Vec<tokio::sync::oneshot::Receiver<Pair>>) -> io::Result<Vec<Pair>> {
-    check_capacity(replies.len(), 0)?;
-    let mut pending = PendingDelivery((0..replies.len()).map(|_| None).collect());
-    let mut waiting = tokio::task::JoinSet::new();
-    for (index, reply) in replies.into_iter().enumerate() {
-        waiting.spawn(async move { (index, reply.await.ok()) });
-    }
-    while let Some(result) = pending
-        .during(async { Ok(waiting.join_next().await) })
-        .await?
-    {
-        let (index, pair) = result?;
-        pending.0[index] = pair;
-    }
-    Ok(pending.release())
-}
-
 /// Send a batch to a helper that survives this process. On success the helper has bound its
 /// single-consumer listener and holds all the sockets. An empty batch starts no helper.
 ///
@@ -476,29 +471,6 @@ mod tests {
     use std::fs::Permissions;
     use std::os::unix::fs::PermissionsExt as _;
 
-    #[tokio::test]
-    async fn expiry_while_another_copy_is_still_pausing_releases_both_peers() -> io::Result<()> {
-        let (send, short) = tokio::sync::oneshot::channel();
-        let (delayed, other) = tokio::sync::oneshot::channel();
-        let (left, mut client) = UnixStream::pair()?;
-        let (right, mut upstream) = UnixStream::pair()?;
-        let _ = send.send(Pair {
-            sockets: [left.into_std()?.into(), right.into_std()?.into()],
-            state: b"expired".to_vec(),
-            expires: Some(monotonic_ms() + 200),
-        });
-        let collection = tokio::spawn(collect(vec![short, other]));
-        tokio::time::timeout(Duration::from_secs(2), async {
-            assert_eq!(client.read(&mut [0]).await?, 0);
-            assert_eq!(upstream.read(&mut [0]).await?, 0);
-            io::Result::Ok(())
-        })
-        .await??;
-        assert!(!collection.is_finished());
-        drop(delayed);
-        assert!(collection.await??.is_empty());
-        Ok(())
-    }
     #[test]
     fn handoff_clock_uses_the_same_epoch_as_other_processes() -> io::Result<()> {
         use rustix::time::{ClockId, clock_gettime};
@@ -616,6 +588,99 @@ mod tests {
             Ok(())
         })
         .await?
+    }
+
+    #[tokio::test]
+    async fn queued_expired_tcp_rights_do_not_discard_the_live_tcp_transfer() -> io::Result<()> {
+        use tokio::net::{TcpListener, TcpStream};
+        async fn tcp_pair() -> io::Result<(Pair, [TcpStream; 2])> {
+            let listener = TcpListener::bind("127.0.0.1:0").await?;
+            let address = listener.local_addr()?;
+            let a = TcpStream::connect(address).await?;
+            let (left, _) = listener.accept().await?;
+            let b = TcpStream::connect(address).await?;
+            let (right, _) = listener.accept().await?;
+            Ok((
+                Pair {
+                    sockets: [left.into_std()?.into(), right.into_std()?.into()],
+                    state: b"private cursor".to_vec(),
+                    expires: Some(monotonic_ms() + 60_000),
+                },
+                [a, b],
+            ))
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (mut short, [mut closing, _]) = tcp_pair().await?;
+            let (long, [mut client, mut peer]) = tcp_pair().await?;
+            short.expires = Some(monotonic_ms() + 100);
+            // The helper queues both descriptor frames before the successor reads them.
+            let (mut sender, mut receiver) = UnixStream::pair()?;
+            send_record(&mut sender, &short).await?;
+            send_record(&mut sender, &long).await?;
+            sender.write_all(b"E").await?;
+            drop(long);
+            closing.shutdown().await?;
+            // On real TCP a completed FIN exchange makes getpeername return ENOTCONN,
+            // even on the descriptors already in the receiver's Unix socket queue.
+            let mut held = PendingDelivery(vec![Some(short)]);
+            assert_eq!(held.during(closing.read(&mut [0])).await?, 0);
+            client.write_all(b"queued").await?;
+            let mut batch = receive(&mut receiver).await?.release();
+            assert_eq!(batch.len(), 1);
+            let survivor = batch
+                .pop()
+                .ok_or_else(|| invalid("missing live TCP pair"))?;
+            let [left, right] = survivor.sockets;
+            let mut left = TcpStream::from_std(left.into())?;
+            let mut right = TcpStream::from_std(right.into())?;
+            let mut incoming = [0; 6];
+            left.read_exact(&mut incoming).await?;
+            assert_eq!(&incoming, b"queued");
+            right.write_all(b"fresh").await?;
+            let mut marker = [0; 5];
+            peer.read_exact(&mut marker).await?;
+            assert_eq!(&marker, b"fresh");
+            Ok(())
+        })
+        .await?
+    }
+
+    #[tokio::test]
+    async fn expiration_preserves_frame_bounds_and_stream_type_checks() -> io::Result<()> {
+        let (mut sender, mut receiver) = UnixStream::pair()?;
+        let (record, _peers) = pair(Vec::new())?;
+        send_header(&sender, &record.sockets, b'D').await?;
+        sender.write_u64(0).await?;
+        sender
+            .write_u32(u32::try_from(MAX_STATE + 1).map_err(io::Error::other)?)
+            .await?;
+        assert!(
+            receive(&mut receiver)
+                .await
+                .is_err_and(|e| e.kind() == io::ErrorKind::InvalidData)
+        );
+
+        let (mut sender, mut receiver) = UnixStream::pair()?;
+        let (datagram, _peer) = std::os::unix::net::UnixDatagram::pair()?;
+        let [left, _] = record.sockets;
+        send_header(&sender, &[left, datagram.into()], b'D').await?;
+        sender.write_u64(0).await?;
+        sender.write_u32(0).await?;
+        sender.write_all(b"E").await?;
+        assert!(
+            receive(&mut receiver)
+                .await
+                .is_err_and(|e| e.kind() == io::ErrorKind::InvalidData)
+        );
+
+        let (mut sender, mut receiver) = UnixStream::pair()?;
+        let (mut live, _peers) = pair(Vec::new())?;
+        live.expires = Some(monotonic_ms() + 60_000);
+        // A listening socket has the correct domain and type but no connected peer.
+        live.sockets[0] = std::net::TcpListener::bind("127.0.0.1:0")?.into();
+        send(&mut sender, &[live]).await?;
+        assert!(receive(&mut receiver).await.is_err());
+        Ok(())
     }
 
     #[tokio::test]

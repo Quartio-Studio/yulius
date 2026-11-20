@@ -22,21 +22,16 @@ when the batch and listener are ready. Admission, destination checks, intercepti
 credential handling stay in the serving process.
 
 The batch accommodates 256 opaque tunnels and 256 relay pairs. Each pair has up to 32 KiB of
-private state. One two-minute deadline covers receipt, adoption and delivery. Each opaque
-connection also carries its original 24-hour deadline. Expiry during the transfer shuts down
-its two sockets while longer-lived connections remain available. On batch expiry,
+private state. One two-minute deadline covers receipt, adoption and delivery. Each timed
+record also carries its original monotonic deadline. Its expiry shuts down its two sockets
+throughout the exchange. The successor drains the expired frame and adopts the live remainder.
+Once every pair expires the helper releases its only place. On batch expiry,
 disconnection or invalid input the helper drops its descriptors and state. During delivery it
 retains the original descriptors until the successor acknowledges the entire batch and the
 helper confirms adoption. If that exchange fails, the helper shuts down both halves of every
 stream. This also closes the connection when a duplicate descriptor is still queued in the
 successor's control socket. The socket name
 is removed on adoption or orderly exit. Payload bytes live in memory.
-
-Under a delegated Linux service, use the sessions unit's service-owned legacy leaf for the
-helper. If that unit is unavailable and the server unit passes controllers to its children,
-only an older systemd that can restart this layout can retain the helper. Failed placement
-ends the handoff before acknowledgement. The server's restart takes precedence.
-[ADR-0298](0298-sessions-live-in-their-own-unit.md)
 
 ## Alternatives
 
@@ -48,7 +43,6 @@ TLS session.
 
 ## Consequences
 
-A direct agent tunnel in Linux legacy mode carries its original socket pair, pending bytes,
-write-half state, admission owner, byte activity and absolute expiry. Namespace mode also
-requires the matching host-side relay and its live holder. An incompatible successor, an elapsed deadline or a crash before deposit can end a
+The handoff protocol must carry pending bytes, half-closes and accounting when the server paths
+are wired. An incompatible successor, an elapsed deadline or a crash before deposit can end a
 tunnel. Intercepted traffic reconnects through the successor's host-bound credential checks.
