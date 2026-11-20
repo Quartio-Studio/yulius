@@ -37,7 +37,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Report the blocking ordinary PR in parked HTTP task details
 - [x] Give parked PRs fair status reads in task lists and Home
 - [x] Return the verified plan snapshot with parked HTTP task rows
-- [ ] Filter and explain verified parked rows in MCP task reads
+- [x] Filter and explain verified parked rows in MCP task reads
 - [ ] Refresh parked page and sidebar status independently of the Git overview
 - [ ] Keep failed integration candidates with their original owner
 - [ ] Deliver bounded Codex goal continuation to dev
@@ -65,6 +65,11 @@ Capture a separate screen at the park decision because exiting can clear the ent
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
 ## Evidence
+
+- The full MCP branch campaign reported `mutants: 185 listed, 68 caught, 12 missed, 0 timed out, 105 unviable, 0 not reached (bound 30 min, took 1648 s)`. Regression assertions subsequently failed on all twelve surviving changes. Three changed the reported reason for confirmed external failure, pending checks, or an unreadable source. In one case the mutated response showed Done despite the unreadable source. The intact external-check fixture passed all three cases. The expanded suite passed 120 scoped tests. Live verification on historical Quartio tasks requires the platform release.
+
+- Independent review approved `ea8f54f43681109f7044f0f0679f468a9c814bea` against dev at `646ce4f1e`. The reviewer independently ran ten MCP tests. All 118 scoped tests passed on the approved revision, as did repository contracts, formatting and Clippy. Vidoc was disabled. Mutation testing of the review fix reported `mutants: 22 listed, 7 caught, 0 missed, 0 timed out, 15 unviable, 0 not reached (bound 30 min, took 709 s)`.
+- The branch mutation tests ran on immutable checkouts. Replaying generated mutations against stronger assertions reproduced a missing plan reason after a browser timeout, Done after a verified hold was dismissed, a missing archived task, an oversized unfiltered page and a check past the final slot of the second filtered window. A separate fixture places four healthy parked rows ahead of two stalled rows. It caught four mutations that changed how much read time remained for the final pair, including both early timeout and exceeding the request budget.
 
 - Independent review of `7a280bd1c` found two regressions. A one-row Needs You search read session capacity for an earlier queued nonmatch. Dismissing a held prompt at `ParkedStatusRead` left the parked row with no reason for its Needs You classification. Both tests failed on that head. The filter now skips rendering ordinary nonmatches, and the historical hold explanation contains no prompt text. The same queued row still gets its capacity explanation when returned in an unfiltered list.
 

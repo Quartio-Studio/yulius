@@ -4786,6 +4786,48 @@ async fn a_parked_detail_bounds_its_initial_browser_lookup_and_keeps_the_recorde
 }
 
 #[tokio::test]
+async fn parked_mcp_uses_the_visible_plan_when_browser_verification_times_out() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let id = TaskId::parse("t1")?;
+    f.add_task("t1", "Finish the plan", "feat/1-finish", "dev")
+        .await?;
+    f.h.store
+        .transition_task(
+            &id,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Done),
+            f.h.app.now(),
+        )
+        .await?;
+    set_steps(&f, "t1", &["done", "in_progress"]).await?;
+    let caller = crate::task_message::superagent(
+        &SandboxId::parse("s1")?,
+        &UserId::parse("alice")?,
+        "admin",
+    );
+    let browser = Arc::new(HeldBrowserLookup::default());
+    browser.calls.store(1, std::sync::atomic::Ordering::SeqCst);
+    let mut deps = f.h.app.deps.clone();
+    deps.browser = browser.clone();
+    let app = yulius_app::context::App::new(f.h.app.config.clone(), deps);
+    let reading =
+        tokio::spawn(async move { app.tool_task_get(&caller, &json!({"task_id":"t1"})).await });
+    tokio::time::timeout(Duration::from_secs(5), browser.entered.notified()).await?;
+    let row = tokio::time::timeout(Duration::from_secs(3), reading).await;
+    browser.release.notify_one();
+    let row = row???;
+    assert_eq!(row["shows"], "needs_you");
+    assert_eq!(row["steps"]["done"], 1);
+    assert_eq!(row["steps"]["total"], 2);
+    assert_eq!(
+        row["wait_reason"],
+        "The agent stopped with unfinished steps in its plan."
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_parked_successor_waits_if_its_owner_resumes_during_the_final_browser_read() -> TestResult
 {
     let f = fixture(&DeliveryProfile::standard()).await?;

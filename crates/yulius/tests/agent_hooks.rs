@@ -4374,22 +4374,33 @@ async fn a_parked_task_keeps_a_confirmed_failure_in_an_incomplete_check_report()
     use yulius_app::ports::github::{ChecksReport, ChecksSource, ChecksState};
     let (f, owner) = owner_observed_external_pr().await?;
     install_app(&f).await?;
-    f.h.github.set_checks_report(
-        "abc123",
-        ChecksReport {
-            state: ChecksState::Failure,
-            unreadable: vec![ChecksSource::CommitStatuses],
-        },
-    );
     let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
-    let brief =
-        f.h.app
-            .tool_task_get(&caller, &json!({"task_id":f.task.as_str()}))
-            .await?;
-    assert_eq!(
-        brief["wait_reason"],
-        "The agent stopped and its pull request checks are failing."
-    );
+    for (state, unreadable, reason) in [
+        (
+            ChecksState::Failure,
+            vec![ChecksSource::CommitStatuses],
+            "The agent stopped and its pull request checks are failing.",
+        ),
+        (
+            ChecksState::Pending,
+            vec![],
+            "The parked task is waiting for its pull request checks.",
+        ),
+        (
+            ChecksState::Success,
+            vec![ChecksSource::CommitStatuses],
+            "The parked task's pull request could not be verified.",
+        ),
+    ] {
+        f.h.github
+            .set_checks_report("abc123", ChecksReport { state, unreadable });
+        let brief =
+            f.h.app
+                .tool_task_get(&caller, &json!({"task_id":f.task.as_str()}))
+                .await?;
+        assert_eq!(brief["shows"], "needs_you");
+        assert_eq!(brief["wait_reason"], reason);
+    }
     Ok(())
 }
 
@@ -4600,6 +4611,7 @@ async fn tasks_list_skips_queue_capacity_reads_for_needs_you_nonmatches() -> Tes
         f.h.app
             .tool_tasks_list(&caller, &json!({"scope":"all","limit":1}))
             .await?;
+    assert_eq!(all["tasks"].as_array().ok_or("tasks")?.len(), 1);
     assert_eq!(all["tasks"][0]["task_id"], queued.id.as_str());
     assert!(read.load(Ordering::SeqCst));
     Ok(())
@@ -4622,6 +4634,71 @@ async fn archived_task_list_spends_its_limit_on_archived_rows() -> TestResult {
             .tool_tasks_list(&caller, &json!({"scope":"archived","limit":1}))
             .await?;
     assert_eq!(result["tasks"][0]["task_id"], archived.id.as_str());
+    let all =
+        f.h.app
+            .tool_tasks_list(&caller, &json!({"scope":"all"}))
+            .await?;
+    let rows = all["tasks"].as_array().ok_or("tasks")?;
+    assert!(rows.iter().any(|row| row["task_id"] == f.task.as_str()));
+    assert!(
+        rows.iter()
+            .any(|row| row["task_id"] == archived.id.as_str())
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn parked_needs_you_list_gives_two_stalled_rows_the_whole_remaining_window() -> TestResult {
+    let (f, owner) = owner_observed_external_pr().await?;
+    install_app(&f).await?;
+    let store = &f.h.app.deps.store;
+    let mut peer = store.task(&f.task).await?.ok_or("parked task")?;
+    peer.id = TaskId::parse("second-held-pr")?;
+    peer.updated_at = Timestamp(f.h.app.now().0 + 1);
+    store.insert_task(&peer).await?;
+    // Two earlier windows verify healthy parked rows. The final pair gets all
+    // the unused time after those four rows leave the eligible count.
+    {
+        let mut pulls = f.h.github.pulls.lock().map_err(|_| "pulls")?;
+        let healthy = yulius_app::ports::github::GhPull {
+            number: 1462,
+            head: "feat/healthy".into(),
+            head_sha: "healthy".into(),
+            ..pulls[0].clone()
+        };
+        pulls.push(healthy);
+    }
+    f.h.github
+        .set_checks("healthy", yulius_app::ports::github::ChecksState::Success);
+    for offset in 2..6 {
+        let mut healthy = peer.clone();
+        healthy.id = TaskId::parse(&format!("healthy-before-stall-{offset}"))?;
+        healthy.branch = Some("feat/healthy".into());
+        healthy.updated_at = Timestamp(f.h.app.now().0 + offset);
+        store.insert_task(&healthy).await?;
+    }
+    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let mut config = f.h.app.config.clone();
+    config.parked_pr_read_ms = 2400;
+    let budget = std::time::Duration::from_millis(config.parked_pr_read_ms);
+    let app = yulius_app::context::App::new(config, f.h.app.deps.clone());
+    let hold = f.h.github.hold_checks_for("abc123")?;
+    let start = tokio::time::Instant::now();
+    let args = json!({"scope":"needs_you","limit":2});
+    let reading = tokio::time::timeout(budget * 7 / 4, app.tool_tasks_list(&caller, &args)).await;
+    f.h.github.release_checks(&hold);
+    let reading =
+        reading.map_err(|_| "two parked rows exceeded their shared MCP read budget")??;
+    let rows = reading["tasks"].as_array().ok_or("tasks")?;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["task_id"], peer.id.as_str());
+    assert_eq!(rows[1]["task_id"], f.task.as_str());
+    assert!(
+        start.elapsed() >= budget,
+        "the two parked rows timed out before their shared window expired: {:?}",
+        start.elapsed()
+    );
     Ok(())
 }
 
@@ -4756,14 +4833,14 @@ async fn parked_list_home_and_mcp_classify_a_green_head_while_the_first_is_slow(
             .await?;
     assert_eq!(listing["tasks"].as_array().ok_or("tasks")?.len(), 1);
     assert_eq!(listing["tasks"][0]["task_id"], slow_id.as_str());
-    // Eight newer local decisions qualify before the held PR is reached.
+    // Ten newer local decisions qualify before the held PR is reached.
     // Consume the preceding MCP lookup's signal, then catch any needless read.
     tokio::time::timeout(
         std::time::Duration::from_secs(5),
         f.h.github.checks_entered.notified(),
     )
     .await?;
-    for number in 20..28 {
+    for number in 20..30 {
         let mut asks = slow.clone();
         asks.id = TaskId::parse(&format!("decision-{number}"))?;
         asks.branch = None;
@@ -4786,7 +4863,16 @@ async fn parked_list_home_and_mcp_classify_a_green_head_while_the_first_is_slow(
         result = f.h.app.tool_tasks_list(&caller, &args) => result?,
         () = f.h.github.checks_entered.notified() => return Err("read a later parked PR after the first page was filled".into()),
     };
-    assert_eq!(listing["tasks"][0]["task_id"], "decision-27");
+    assert_eq!(listing["tasks"][0]["task_id"], "decision-29");
+    // The last slot of a nine-row page is in the second verification window.
+    let args = json!({"scope":"needs_you","limit":9});
+    let listing = tokio::select! {
+        result = f.h.app.tool_tasks_list(&caller, &args) => result?,
+        () = f.h.github.checks_entered.notified() => return Err("read beyond the last slot of the second window".into()),
+    };
+    let rows = listing["tasks"].as_array().ok_or("tasks")?;
+    assert_eq!(rows.len(), 9);
+    assert_eq!(rows[8]["task_id"], "decision-21");
     f.h.github.release_checks(&hold);
     Ok(())
 }
