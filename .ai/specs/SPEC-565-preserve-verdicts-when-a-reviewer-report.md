@@ -1,6 +1,6 @@
 ---
 yulius-task: 92636ff0-3e0c-43ab-a520-97e4666a2df5
-status: in-progress
+status: done
 ---
 
 # SPEC-565 Preserve verdicts when a reviewer reports again
@@ -30,7 +30,7 @@ On dev `645eff207`, repeating the completion update moves the end time, and appr
 - [x] Order recovery against the continued round’s own cut-off
 - [x] Attribute replayed transcript observations to the review round that ran
 - [x] Preserve same-model answers and recovery during a delayed account write
-- [ ] Verify the fix and obtain independent approval for delivery
+- [x] Verify the fix and obtain independent approval for delivery
 
 ## Acceptance criteria
 
@@ -75,4 +75,6 @@ Use the start after a report as the round boundary. Comparing verdicts or report
 - The isolated mutation run for the cut-off ordering fix listed 16, caught 10, missed 0, timed out 0, found 6 unviable and reached all 16. It supersedes an earlier run from a worktree that changed under the runner.
 - Rerunning all 23 first follow-up mutants with the link-outcome regression caught 15, missed 0, timed out 0, found 8 unviable and reached all 23. This includes the previously missed inverted link count.
 - The isolated transcript-attribution mutation run listed 46, caught 23, missed 0, timed out 0, found 23 unviable and reached all 46.
-- The last recovery mutation run found a redundant synthetic-model guard. The Claude parser already removes the synthetic model before the watcher sees the observation. A fixture now puts a synthetic notice between two real answers. Removing the parser filter in a negative control produced a spurious third answer and failed the fixture. With the parser restored and the duplicate watcher guard removed, the fixture passed. The integration merge also brought ADR-0399 into the index. The quick check caught its ordering with ADR-0400 and passed after they were sorted.
+- The recovery mutation run listed 37, caught 22, missed 1, timed out 0, found 14 unviable and reached all 37. Its missed mutation exposed a redundant synthetic-model guard. The Claude parser already removes the synthetic model before the watcher sees the observation. A fixture now puts a synthetic notice between two real answers. Removing the parser filter in a negative control produced a spurious third answer and failed the fixture. With the parser restored and the duplicate watcher guard removed, the fixture passed. The integration merge also brought ADR-0399 into the index. The quick check caught its ordering with ADR-0400 and passed after they were sorted.
+- The post-approval mutation run listed 3, caught 2, missed 0, timed out 0, found 1 unviable and reached all 3. All 40 focused tests passed again on `ac7e6304f`.
+- Previously overwritten verdicts cannot be reconstructed from the affected rows. Undated replay with several candidate rounds leaves them untouched. Local behavioral evidence uses synthetic hooks and transcripts with the real Git, SQLite, HTTP and supervisor paths.
