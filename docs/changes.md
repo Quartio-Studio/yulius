@@ -17,6 +17,18 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
+- Session search redacts dotenv results across index refreshes and server restarts. Upgrading clears old search passages and rebuilds them on demand (SPEC-535, #1453).
+- After a server restart, a run at its usage limit can resume on an available subscription with its new owner’s MCP servers. A delayed move for the old attempt leaves the replacement running (SPEC-547, #1286).
+- A prompt-mode task now remembers a person’s open Claude goal across manual subscription
+  moves, pool rotations and resumes past a usage limit. Its first clean Stop waits for the
+  evaluator before showing “Your turn” (SPEC-540, #1182).
+- An end-of-day digest, off by default (SPEC-512 part 3, task #494, #1413, ADR-0380): an
+  instance administrator turns it on in Settings with a time (UTC) and an optional idle
+  threshold. Once a day each person gets what waits for them, what was parked with the end of its
+  last message, and how many tasks still work, under the bell (`/digest`) and in their Telegram
+  chat; with a threshold it first parks quiet tasks that ask nobody (never Done or waiting ones).
+- Codex tasks stay under Working while waiting for Yulius. Failed PR checks no longer display a terminal reply prompt (SPEC-552, #1482).
+
 - Claude Code's scheduled wake-ups preserve unsent drafts, achieved goals and open requests for a person, including when the hook carries plain text (SPEC-541, #1225).
 - A Claude run refused after its subscription signs in again now moves or waits while the new
   sign-in stays available (SPEC-539, #1365).

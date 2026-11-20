@@ -1541,3 +1541,125 @@ fn a_workflow_agent_s_model_refusal_names_its_model_in_the_meta_file() -> TestRe
     }
     Ok(())
 }
+
+#[test]
+fn resume_evaluates_only_the_last_open_goal() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("conversation.jsonl");
+    for (last, forget, expected) in [
+        (
+            serde_json::json!({"met": false, "sentinel": true}),
+            false,
+            true,
+        ),
+        (serde_json::json!({"met": false}), false, true),
+        (serde_json::json!({"met": true}), false, false),
+        (
+            serde_json::json!({"met": false, "failed": true}),
+            false,
+            false,
+        ),
+        (
+            serde_json::json!({"met": true, "sentinel": true}),
+            false,
+            false,
+        ),
+        (serde_json::json!({"met": false}), true, false),
+    ] {
+        let record = |condition, mut status: Value, side| {
+            status["type"] = "goal_status".into();
+            status["condition"] = Value::String(condition);
+            serde_json::json!({"type":"attachment","isSidechain":side,"attachment":status})
+        };
+        let history = [
+            record("older".into(), serde_json::json!({"met":false}), false),
+            record("last".into(), last, false),
+            record("side goal".into(), serde_json::json!({"met":false}), true),
+        ];
+        std::fs::write(
+            &path,
+            history.iter().map(|r| format!("{r}\n")).collect::<String>(),
+        )?;
+        let mut args = vec!["--transcript", path.to_str().ok_or("path")?, "--resume"];
+        if forget {
+            args.push("--forget-goal");
+        }
+        let out = run(&args, "check the result\ncheck once more\n/exit\n")?;
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let goals: Vec<_> = read_jsonl(&path)?
+            .into_iter()
+            .skip(history.len())
+            .filter_map(|r| {
+                r.get("attachment")
+                    .filter(|a| a["type"] == "goal_status")
+                    .cloned()
+            })
+            .collect();
+        assert_eq!(goals.len(), usize::from(expected));
+        if expected {
+            assert_eq!(goals[0]["condition"], "last");
+            assert_eq!(goals[0]["met"], true);
+            assert_ne!(goals[0]["sentinel"], true);
+        }
+    }
+    Ok(())
+}
+
+/// After a dropped goal submission, an Enter in the empty prompt box starts no turn.
+#[test]
+fn a_blank_retry_does_not_evaluate_a_restored_goal() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("conversation.jsonl");
+    let history = serde_json::json!({
+        "type":"attachment", "attachment":{"type":"goal_status","condition":"previous","met":false,"sentinel":true}
+    });
+    for queued in [false, true] {
+        std::fs::write(&path, format!("{history}\n"))?;
+        let mut args = vec![
+            "--transcript",
+            path.to_str().ok_or("path")?,
+            "--resume",
+            "--drop-lines",
+            "1",
+        ];
+        if queued {
+            args.push("--queue-prompts");
+        }
+        let output = run(&args, "/goal typed goal\n\n/exit\n")?;
+        assert!(output.status.success());
+        assert!(stdout(&output).contains("GOAL RESTORED"));
+        assert_eq!(
+            read_jsonl(&path)?,
+            std::slice::from_ref(&history),
+            "a bare Enter created a turn, queued={queued}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn enter_submits_a_restored_draft_and_ignores_an_empty_prompt_box() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("conversation.jsonl");
+    for queued in [false, true] {
+        std::fs::write(&path, "")?;
+        let mut args = vec!["--tui", "--transcript", path.to_str().ok_or("path")?];
+        if queued {
+            args.push("--queue-prompts");
+        }
+        let output = run(&args, "\nmy draft\x13/color\n\n\n")?;
+        assert!(output.status.success());
+        let records = read_jsonl(&path)?;
+        let prompts: Vec<_> = records
+            .iter()
+            .filter(|r| r["type"] == "user")
+            .map(|r| r["message"]["content"].as_str())
+            .collect();
+        assert_eq!(prompts, [Some("my draft")], "queued={queued}");
+    }
+    Ok(())
+}

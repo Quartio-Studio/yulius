@@ -585,7 +585,10 @@ fn a_workflow_paused_at_a_limit_is_known_after_a_restart() -> TestResult {
     let second = runtime()?;
     second.block_on(async {
         let app = build_with(&data, &fake, probe.clone(), workflow_agent(true))?;
+        let (paused, release) =
+            crate::pool_supervision::hold_pool_move(yulius_app::race::Point::LimitPauseStored, &id);
         app.reconcile().await?;
+        crate::support::point_reached(paused).await?;
         // The new server knows nothing but what the transcripts say.
         wait_for(
             "the workflow, read again",
@@ -603,7 +606,11 @@ fn a_workflow_paused_at_a_limit_is_known_after_a_restart() -> TestResult {
         assert_eq!(app.deps.store.attempts(&id).await?.len(), 1);
         probe.set("b-second", usage(0.0, 5 * HOUR, 30.0, 100));
         refresh(&app, &user, "b-second").await?;
-        let _ = app.resume_round().await;
+        // Replay still owns the move. The first pass schedules a prompt recheck,
+        // which the server's capacity loop drives when the restored workflow can resume.
+        assert_eq!(app.resume_round().await, Duration::from_secs(1));
+        app.start_capacity_loop();
+        release.send(())?;
         wait_for("the resumed run", Duration::from_secs(60), || {
             second_run_lives(&app, &id)
         })

@@ -1779,6 +1779,11 @@ watcher's tail opens it the same way at its name); the sandbox adapter reads the
 most 1 MiB of a regular file, and hands people's identity files the text; `record_number` lists
 a numbered directory from the sandbox directory down; the quota's disk usage is measured from
 folder handles; and the task review reads an untracked file from the worktree's folder.
+Session search restores the parser’s dotenv context by replaying the indexed prefix when it resumes
+from the byte and line offsets committed with its passages.
+[Decision 0382](decisions/0382-session-index-resumption-replays-redaction-context.md) describes the
+read budget and the one-time rebuild of historical passages.
+
 Where Git, not the server, would write (it resolves the path it is given and follows links), the
 work moves out of the sandbox instead: an import's snapshot is checked out, filled and committed
 in `<data>/import-worktrees/<sandbox>/import-<job>[-<n>]` (0700, the name taken with a create-new
@@ -2051,6 +2056,19 @@ browser request) is open
 resume waits `queued` with its prompt. A queued task's summary carries `queue_reason` (the session
 limit or an update), and `GET /api/capacity` counts working, idle, parked and queued sessions for
 the Capacity card.
+
+The end-of-day digest (`yulius-app/src/digest.rs`, SPEC-512 part 3,
+[decision 0380](decisions/0380-an-end-of-day-digest-built-from-task-state.md)) runs from the same
+tick: `digest_tick` reads `instance.digest`, and once today's time (UTC) passed takes the run with
+a conditional write of `digest_ran_at`. `send_digests_now` first parks, with
+`ParkRule::Digest(threshold)`, running tasks whose agent waits for its turn and that ask nobody
+(the same `park_task_now`, every guard of `ParkFacts`) and waits until those sessions ended, then
+builds one `DigestView` per person who can see each task's project (`can_view`) from task state
+and the transcript's last assistant message (`read_tail`), redacted with `redact_for_sandbox`,
+listing as parked what parked after the last listing and up to this one's mark
+(`digest_listed_at`: its value taken before the build, written after it), keeps it in `digests` (last seven), publishes `digest.ready` to that person and enqueues
+the text on their linked Telegram chat when `notify_digest` is on. The run is spawned off the
+tick.
 
 ```mermaid
 stateDiagram-v2
@@ -2462,8 +2480,12 @@ the task owner's alone (SPEC-490), so nobody else's words reach a run holding th
 server. `TaskRuntime::personal_mcp_of` records whose servers a live run was started with (the run
 directory's `personal-mcp-of` gives that back to a server that restarted, which also restarts a
 run whose record names someone who is not the task's holder any more, SPEC-483 RST-001); a
-hand-over resumes such a run with the new
-owner's servers. `App::mcp_secret_values` adds the servers' literal secret values to
+hand-over resumes such a run with the new owner's servers. After a replayed refusal the
+hand-over places the interrupted turn on an available subscription and carries the reporting
+attempt's model-change notice into its replacement. A deferred limit move acts only on the
+attempt that reported it. The capacity loop defers the persisted pause while that hand-over runs
+([ADR-0389](decisions/0389-a-reattach-finishes-its-hand-over-before-a-limit-moves-the-run.md)).
+`App::mcp_secret_values` adds the servers' literal secret values to
 `App::matcher_for`, so redaction covers them with the agent secrets (MCP changes bump the vault
 generation).
 
@@ -3648,7 +3670,10 @@ that waits in `yulius wait` goes on by itself. Its task reads Working ("Waiting 
 merge"), even with a complete plan and a tested pull request; only an achieved goal makes it Done.
 
 While a goal is open, a clean Stop reads idle only after the goal verdict (or the turn record, or
-20 s). A proactive switch waits for any of this background work
+20 s). For a prompt-mode Claude resume, the supervisor reads the conversation’s last goal
+status before spawning the process. The new attempt still counts its turns and usage from its
+own start. [ADR-0386](decisions/0386-prompt-goals-follow-the-resumed-claude-conversation.md).
+A proactive switch waits for any of this background work
 ([ADR-0063](decisions/0063-background-work-and-goal-verdict-from-the-transcript.md)), also when
 the look at the session's processes gives no answer (`background_work_now` is `None`: not known
 counts as running for everyone who asks before a session ends, so a host whose look never
@@ -3709,6 +3734,11 @@ every agent mid-turn: a run that is watched again takes the time back from the f
 (`watch_answerable_flag`), so the task reads Working once the person answered and the agent goes
 on, after a restart as before one. The same holds for a question that took a secret request's
 flag over.
+
+A live `yulius wait` under Codex counts as a wait whether Codex execs it directly or launches
+it through a shell. The process probe excludes waits adopted by the sandbox init. A failed PR
+check has its own action in the task strip. The terminal reply banner is for a person's turn
+or an explicit request ([SPEC-552](../.ai/specs/SPEC-552-on-codex-agent-keeps-calling-me-even-if.md)).
 
 Needs you means a person has to act. An idle agent that stopped reads "Your turn" under Needs you only
 while its work is visibly unfinished: plan steps open, or a goal that Claude Code last recorded as set,

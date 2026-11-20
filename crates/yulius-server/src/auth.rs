@@ -153,6 +153,7 @@ pub fn guest_may_reach(method: &Method, path: &str) -> bool {
     match path {
         "/api/me"
         | "/api/me/notes"
+        | "/api/me/digest"
         | "/api/auth/logout"
         | "/api/events"
         | "/api/archived-tasks"

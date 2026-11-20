@@ -9,6 +9,7 @@ mod browser;
 mod cd;
 mod ci;
 mod delivery;
+mod digest;
 mod events;
 mod files;
 mod git;
@@ -287,6 +288,12 @@ pub fn public() -> Router<AppState> {
             "/api/admin/limits/{key}",
             put(limits::set).delete(limits::remove),
         )
+        // The end-of-day digest (SPEC-512 DIG-001, DIG-005).
+        .route(
+            "/api/admin/digest",
+            get(digest::setting).put(digest::set_setting),
+        )
+        .route("/api/me/digest", get(digest::mine))
         // The personal Telegram channel's bot (SPEC-498 TGC-001).
         .route(
             "/api/admin/telegram",

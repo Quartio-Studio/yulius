@@ -36,6 +36,7 @@ import { mountMcpPage } from './pages/mcp.js';
 import { mountDashboardPage } from './pages/dashboard.js';
 import { mountUsersPage, mountAccountsPage, mountGithubPage } from './pages/admin.js';
 import { mountSettingsPage } from './pages/settings.js';
+import { mountDigestPage } from './digest.js';
 import { mountInstancePage } from './pages/instance.js';
 import { createUpdateBanner, createUpdateButton } from './updates.js';
 import { createDiskAlert } from './diskalert.js';
@@ -763,6 +764,7 @@ function createApp(root, transport) {
     switch (route.name) {
       case 'archived': setCenter('archived', () => mountArchivedPage(ctx)); break;
       case 'settings': setCenter('settings', () => mountSettingsPage(ctx)); break;
+      case 'digest': setCenter('digest', () => mountDigestPage(ctx)); break;
       // Team secrets without a sandbox (the user menu); agent secrets need one.
       case 'secrets': setCenter('secrets', () => mountSecretsPage(ctx, null, route)); break;
       case 'design': setCenter('design', () => mountDesignPage(ctx)); break;

@@ -1268,6 +1268,13 @@ async fn first_turn(
     let id = task_of_model(app, &sandbox, &user, "Appended", model).await?;
     ready(app, &id).await?;
     app.send_input(&id, b"hello\r").await?;
+    Ok((id, user, first_turn_transcript(data).await?))
+}
+
+/// Wait for the fake agent's complete transcript record for its first answer.
+pub(crate) async fn first_turn_transcript(
+    data: &Path,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let mut transcript = None;
     wait_for("the first turn", Duration::from_secs(30), || {
         transcript = session_transcript(data, "msg_fake_1");
@@ -1275,7 +1282,23 @@ async fn first_turn(
         async move { written }
     })
     .await?;
-    Ok((id, user, transcript.ok_or("transcript")?))
+    Ok(transcript.ok_or("transcript")?)
+}
+
+/// A default task switched to Fable meets its credit limit, with Opus also full here.
+pub(crate) async fn append_switched_fable_limit(app: &App, data: &Path) -> TestResult {
+    let transcript = first_turn_transcript(data).await?;
+    opus_out(app, &["a-first"]).await?;
+    append_lines(
+        &transcript,
+        "switched",
+        &[
+            Line::Prompt,
+            Line::RequestOfFable,
+            Line::CreditsRefusal,
+            Line::TurnDuration,
+        ],
+    )
 }
 
 /// Claude Code paused the goal with no limit before it, which asks a person. Then a check-in
