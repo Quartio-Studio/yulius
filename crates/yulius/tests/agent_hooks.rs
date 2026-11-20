@@ -3205,10 +3205,49 @@ async fn owner_observed_external_pr()
 }
 
 #[tokio::test]
+async fn released_parked_check_reads_leave_the_next_two_reads_unblocked() -> TestResult {
+    use yulius_app::model::Secret;
+    use yulius_app::ports::github::GitHubPort;
+    let github = support::FakeGitHub::default();
+    let hold = github.hold_checks();
+    github.release_checks(&hold);
+    let token = Secret("fixture".into());
+    for sha in ["first", "second"] {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            github.checks(&token, "acme", "fixture", sha),
+        )
+        .await??;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_parked_detail_keeps_the_failed_pr_when_another_pr_opens_during_checks() -> TestResult {
-    for durable in [false, true] {
+    use yulius_domain::delivery::DeliveryStage;
+    for (durable, recorded_elsewhere) in
+        [(false, false), (true, false), (false, true), (true, true)]
+    {
         let (f, owner) = owner_observed_external_pr().await?;
         install_app(&f).await?;
+        if recorded_elsewhere {
+            f.h.github.pulls.lock().map_err(|_| "pulls")?[0].head = "published-elsewhere".into();
+            assert!(
+                f.h.app
+                    .deps
+                    .store
+                    .transition_delivery(
+                        &DeliveryStage::None,
+                        &yulius_app::delivery::DeliveryRecord {
+                            task_id: f.task.clone(),
+                            stage: DeliveryStage::PrOpen,
+                            pr_number: Some(1461),
+                            updated_at: f.h.app.now(),
+                        },
+                    )
+                    .await?
+            );
+        }
         let held = f.h.github.hold_checks();
         let mut config = f.h.app.config.clone();
         config.ci.enabled = false;
@@ -3249,7 +3288,11 @@ async fn a_parked_detail_keeps_the_failed_pr_when_another_pr_opens_during_checks
         f.h.github.release_checks(&held);
         let detail = serde_json::to_value(reading.await??)?;
         assert_eq!(detail["parked_needs_you"], true);
-        assert_eq!(detail["parked_pr"], json!({"number":1461,"open":true}));
+        assert_eq!(
+            detail["parked_pr"],
+            json!({"number":1461,"open":true}),
+            "durable={durable}, recorded_elsewhere={recorded_elsewhere}"
+        );
     }
     Ok(())
 }
@@ -3428,6 +3471,17 @@ async fn a_parked_task_with_open_steps_keeps_its_owner_observed_pr() -> TestResu
         serde_json::to_value(row.parked_pr)?,
         json!({"number":1461,"open":true})
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn parking_a_finished_turn_without_an_app_uses_its_own_delivery_record() -> TestResult {
+    let (f, owner) = owner_observed_external_pr().await?;
+    idle_for_parking(&f).await?;
+    f.h.github
+        .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
+    f.h.app.git_overview(&owner, f.sandbox.as_str()).await?;
+    assert_eq!(f.h.app.park_idle_sessions_now().await, 1);
     Ok(())
 }
 

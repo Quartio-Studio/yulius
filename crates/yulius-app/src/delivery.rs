@@ -4123,7 +4123,7 @@ impl App {
         record: Option<&DeliveryRecord>,
         purpose: PrVerification,
     ) -> AppResult<Option<ParkingPrs>> {
-        let mut observed = self.known_parked_pull(task, record);
+        let mut observed = ParkedPullRead::recorded(record);
         self.verify_task_prs(task, record, purpose, &mut observed)
             .await
     }
@@ -4309,21 +4309,25 @@ impl App {
         };
         let changed = current.iter().rev().find(|candidate| !unchanged(candidate));
         if changed.is_some() || current.len() != branch.len() {
+            // A recorded PR can be published on a different branch. In that
+            // case its direct reads are independent of both branch listings.
+            let survives = |number, head: Option<&str>| {
+                if let Some(pr) = current.iter().find(|pr| pr.number == number) {
+                    unchanged(pr) && head.is_none_or(|sha| sha == pr.head_sha)
+                } else {
+                    tracked == Some(number) && branch.iter().all(|pr| pr.number != number)
+                }
+            };
             let blocker_survived = !verified
-                && observed.pr.is_some_and(|pr| {
-                    pr.open
-                        && current
-                            .iter()
-                            .any(|candidate| candidate.number == pr.number && unchanged(candidate))
-                });
+                && observed
+                    .pr
+                    .is_some_and(|pr| pr.open && survives(pr.number, None));
             if !blocker_survived {
                 // A newly listed PR has no check result yet. A durable ordinary
                 // failure on a still-current, directly verified head takes priority.
-                facts.pulls.retain(|(number, sha)| {
-                    current
-                        .iter()
-                        .any(|pr| pr.number == *number && pr.head_sha == *sha && unchanged(pr))
-                });
+                facts
+                    .pulls
+                    .retain(|(number, sha)| survives(*number, Some(sha)));
                 if let Some(number) = self.parking_ci_blocker(task, &facts).await? {
                     observed.pr =
                         Some(yulius_contracts::api::tasks::ParkedPr { number, open: true });

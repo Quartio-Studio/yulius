@@ -5207,6 +5207,49 @@ async fn a_parked_successor_waits_for_the_replacement_ordinary_pr() -> TestResul
 }
 
 #[tokio::test]
+async fn parked_detail_checks_a_local_conflict_only_against_its_integration_base() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let owner =
+        f.h.app
+            .authenticate_bearer(f.alice.bearer.as_deref().ok_or("token")?)
+            .await?
+            .ok_or("owner")?;
+    let (wt, head) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
+    f.h.store
+        .transition_task(
+            &TaskId::parse("t1")?,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Done),
+            f.h.app.now(),
+        )
+        .await?;
+    *f.h.github.remote.lock().map_err(|_| "remote fixture")? = None;
+    f.h.github.set_checks(&head, ChecksState::Success);
+    edit_pull(&f, 1, |pr| pr.mergeable = Some(false));
+    assert_eq!(
+        f.h.app.task_detail(&owner, "t1").await?.parked_needs_you,
+        Some(false),
+        "the integration base merges cleanly with the configured Git drivers"
+    );
+    advance_base(&f, "dev", "feature.txt", "conflicting addition\n")?;
+    git(&wt, &["fetch", "origin", "dev"])?;
+    edit_pull(&f, 1, |pr| pr.mergeable = Some(true));
+    assert_eq!(
+        f.h.app.task_detail(&owner, "t1").await?.parked_needs_you,
+        Some(true),
+        "the actual integration base now conflicts"
+    );
+    edit_pull(&f, 1, |pr| pr.base = "release".into());
+    assert_eq!(
+        f.h.app.task_detail(&owner, "t1").await?.parked_needs_you,
+        Some(false),
+        "the release base has its own mergeability"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn overlapping_parked_status_reads_bound_git_workers_after_timeouts() -> TestResult {
     let f = fixture(&DeliveryProfile::standard()).await?;
     let owner =

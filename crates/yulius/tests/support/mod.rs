@@ -1378,6 +1378,9 @@ impl FakeGitHub {
     }
     /// Lets the held checks read (and every later one) go on.
     pub fn release_checks(&self, hold: &tokio::sync::Notify) {
+        if let Ok(mut h) = self.checks_hold.lock() {
+            *h = None;
+        }
         hold.notify_waiters();
         hold.notify_one();
     }
