@@ -110,9 +110,10 @@ What exists today (map of 2026-11-20, `dev` at f80f42cad):
   - A request whose run passed before the crash is marked `verified` from the run.
   - A second request in the same tick creates no second row or run.
 - **MFS-009 Production from verified staging.**
-  - With a merge-first environment, a person's production deploy that promotes is refused until
-    the integration head is the revision that environment serves, verified. Promotion merges the
-    integration branch, so the promoted revision is exactly the verified one (ADR-0411).
+  - With a merge-first environment, every promotion (a person's production deploy, the Delivery
+    page's Promote, the profile's automatic one) is refused until the integration head is the
+    revision that environment serves, verified. Promotion merges the integration branch, so the
+    promoted revision is exactly the verified one (ADR-0411).
   - The authorization rules are unchanged: an administrator types the slug, and the rollback
     gate applies.
 - **MFS-010 Task-local deployment.**

@@ -73,18 +73,29 @@ that failed.
   - A failed deploy or verify fails its request and restores staging: each part's current kept
     release (its last verified one, since a failed deploy records none) is redeployed and
     verified once, as a rollback run.
+  - A part for which the failed deploy announced a rollback barrier is not restored (RBK-022).
+    Its request says why, and a person decides. The run's end keeps each announced barrier as a
+    fixed last line of its stored output (`rollback::failed_barrier_line`), where the restore
+    reads it.
   - A person's cancel of the deploy stands: the request ends `deploy_failed`, and nothing deploys
     it again by itself.
 - **Restarts.** A deploying request whose run ended in error (a restart reconciles a running run
   to an error) or was never recorded is ready again, until 3 attempts ended. A merge-first
   target's deploy scripts are idempotent by contract. A run that passed before the crash
   verifies the request at the next round. Each new attempt forgets the previous run.
-- **The task hears of it.** Its outcome (verified, included, gate failed with the run and failed
-  jobs, deploy failed with the run) is typed into its session once, or resumes it when parked.
-  `cd_status` and the CD page list the queue with its revisions and run ids.
-- **Production from verified staging.** With a merge-first target, a person's production deploy
-  that promotes is refused unless the integration head is the revision staging serves and a
-  verified request deployed it.
+- **The task hears of it.**
+  - Its outcome is typed into its session once, or resumes it when parked: verified, included,
+    gate failed with the run, deploy failed with the run and what happened to staging, or
+    superseded by Yulius.
+  - Ticks never overlap.
+  - `cd_status` and the CD page list the queue with its revisions and run ids, and the revision
+    staging serves.
+- **Production from verified staging.** With a merge-first target at the integration head, every
+  promotion is refused unless that head is the revision staging serves and a verified request
+  deployed it. That covers a person's production deploy, the Delivery page's Promote and the
+  profile's automatic promotion (`dlv_promote_exactly`).
+- **Deleted tasks.** A deleted task's requests stay, without the task, so what staging verified
+  stays known.
 - **Who moves it.** The background tick advances every queue with a request on its way (and for
   an hour after a failed deploy), each sandbox under one lock; a request kicks its queue at once.
 
