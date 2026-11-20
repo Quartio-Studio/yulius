@@ -48,6 +48,8 @@ new request after the old sockets reach EOF. The issue requires the original con
 - [x] Obtain independent approval for the relay lifecycle slice
 - [x] Preserve buffered bytes and half-closes when an established copy pauses
 - [x] Obtain independent approval for the resumable copy slice
+- [x] Hold connected socket pairs and bounded copy state for one successor
+- [x] Obtain independent approval for the socket custodian slice
 - [ ] Hand established opaque connections and matching relay sockets to the restarted server
 - [ ] Verify same-socket continuity, admission limits and intercepted traffic through restart
 - [ ] Independent review in a fresh session, findings fixed test-first
@@ -133,3 +135,44 @@ without adoption support or a remote peer that times out can end a tunnel.
 - The mutation run against the review fixes (`scripts/dev mutants --base 5ee4cb804`) listed
   6 mutants and caught all 6, with 0 missed, 0 timed out, 0 unviable and 0 not reached.
   Its unmutated baseline passed 3,256 tests (2 skipped).
+- PR #1536 landed at dev squash `4b1cc7149`. PR run `3888a35a-e5d9-4cfe-9f6c-9b103513cbd1` passed at `f4bcc2dc7`. Dev run `e35dfcce-4bd1-40c5-9148-9a3cdd6c2fb0` passed on the identical tree. Both test shards, quality and e2e passed. Security was disabled.
+  [Dev verification](https://yulius.quartio.ai/api/tasks/35adb14d-65fe-4a9f-b9fa-370d776d4139/delivery/evidence/4b1cc7149715864179372061203b05bf0b3ea852?run_id=e35dfcce-4bd1-40c5-9148-9a3cdd6c2fb0)
+- After #1536 the retained client still read EOF in the two-server restart probe. In an
+  isolated helper process fixture, the old executable rejected the handoff command and closed
+  the control connection. With the helper, a successor obtained the original descriptors and
+  private state, read bytes queued during the gap and wrote fresh bytes to the original peer.
+  The first helper implementation failed with address-in-use on a stale socket name. The
+  regression test starts with that exact condition. An exclusive lock on the private directory
+  now protects stale socket cleanup and prevents a second deposit from displacing a live one.
+- The isolated PR-watch timeout on #1536 was absent on the base (1.26 s), its reviewed head
+  (1.80 s), and four concurrent head runs sharing one CPU (2.57–2.66 s). Both revisions
+  observed the draft, held the news, saw the cleared box, delivered the news, then observed idle.
+- Review of `61ea0c680` found the helper released its directory lock before sending the
+  batch. A real stalled consumer left a first helper blocked while a second deposit obtained
+  an acknowledgement. The integration regression failed at the lock assertion. The helper
+  now holds the lock through delivery and bounds its kernel send queue. The test observes
+  both peer closures and the lock becoming available after dropping the stalled consumer.
+- The reviewer also requested an actual depositor exit. The revised process fixture waits
+  for its depositing subprocess to exit, queues bytes in both directions, and adopts from a
+  surviving process. Coupling the helper's lifetime to the depositor experimentally produced
+  a connection reset and failed the assertion. With the production lifetime, the original
+  peers carry the queued and fresh bytes and the second adoption finds no socket.
+- At `de8e028c5`, deadline expiry left a peer connected if a stalled consumer retained a
+  descriptor it had already received. The synthetic test retained both descriptors after
+  receiving the batch and triggered expiry. It timed out awaiting peer EOF. The helper now
+  keeps the original handles until it confirms receipt of the complete batch. On incomplete
+  delivery it shuts down both stream halves before dropping its originals. With the consumer
+  and its duplicate handles still open, both fixture peers now observe EOF.
+- Independent round three approved `79d5c112b`. The reviewer passed all 12 custodian unit tests and three Linux process tests. All 32 relay tests, targeted Clippy and quick checks passed locally. The instance disabled Vidoc.
+- A separate Linux process fixture exercised the production deadline at the approved head.
+  It connected a successor and left the descriptor messages unread in the kernel. The helper
+  exited after 120.0 seconds, and both original peers read EOF while the successor socket
+  was still open.
+- The mutation run on `61ea0c680` passed its unmutated baseline of 3,268 tests, caught 51
+  mutants and found five that did not compile. The run on the lock correction at `de8e028c5`
+  caught its one mutant. Neither run missed a mutant, timed out or left one untested.
+- For the acknowledgement correction, the default mutation filter omitted the existing Linux
+  process tests and missed both inverted acknowledgement checks. Running `scripts/dev mutants
+  --base de8e028c5 --tests 'test(/^tunnel_handoff::/)'` on the same head selected those tests.
+  The original-peer test failed on each inverted check. All 3,271 baseline tests passed,
+  seven mutants were caught and one did not compile. None were missed, timed out or untested.
