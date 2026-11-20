@@ -599,6 +599,8 @@ fn ci_run(value: &Value, wanted: Option<&str>) -> Option<String> {
     }
     let mut hidden = false;
     let mut failures_left = FAILURES_SHOWN;
+    let lookup_position = out.len();
+    let mut partial_jobs = Vec::new();
     for job in jobs {
         push_line(&mut out, &format!("- {}", job_state(job, reason)));
         // A skipped job's output says why nothing was checked (SPEC-162).
@@ -611,6 +613,9 @@ fn ci_run(value: &Value, wanted: Option<&str>) -> Option<String> {
                 text(job, "failures").unwrap_or_default(),
             )
             .is_empty();
+        if wanted.is_none() && partial {
+            partial_jobs.push(job_name(job));
+        }
         if show {
             push_line(
                 &mut out,
@@ -657,6 +662,13 @@ fn ci_run(value: &Value, wanted: Option<&str>) -> Option<String> {
             Some(_) => hidden = true,
             None => {}
         }
+    }
+    // MCP may truncate long output tails. Keep every partial job's lookup ahead of them.
+    if !partial_jobs.is_empty() {
+        out.insert_str(lookup_position, &format!(
+            "Partial failing tests in {}. For full details, set job to its name with this run_id.\n",
+            partial_jobs.join(", ")
+        ));
     }
     if hidden {
         push_line(
@@ -1552,6 +1564,41 @@ mod tests {
         assert!(
             !overview.contains("Partial failing tests") && !overview.contains("retained assertion")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn partial_job_lookups_survive_the_mcp_result_limit() -> TestResult {
+        let tail = "x".repeat(16 * 1024);
+        let mut jobs: Vec<_> = (1..=16)
+            .map(|n| job(&format!("scan-{n}"), "skipped", Some(78), None, &tail))
+            .collect();
+        jobs.push(job("quality", "failed", Some(1), None, "end"));
+        for name in ["web-1", "web-2"] {
+            let mut stopped = job(
+                name,
+                "cancelled",
+                None,
+                Some("stopped early: job quality failed"),
+                "",
+            );
+            stopped.failures = Some(format!("---- {name} stdout ----\nretained assertion\n"));
+            jobs.push(stopped);
+        }
+        let value = serde_json::to_value(run("big", "PR #7", "failed", jobs))?;
+        let overview = render("ci_status", &json!({"run_id":"big"}), &value);
+        let visible = overview
+            .get(..crate::mcp::MAX_RESULT_BYTES)
+            .ok_or("fixture must reach the MCP limit")?;
+        assert!(
+            visible.contains("Partial failing tests")
+                && visible.contains("web-1")
+                && visible.contains("web-2")
+                && visible.contains("set job"),
+            "both lookups must precede truncation"
+        );
+        let named = render("ci_status", &json!({"run_id":"big","job":"web-2"}), &value);
+        assert!(named.len() < crate::mcp::MAX_RESULT_BYTES && named.contains("retained assertion"));
         Ok(())
     }
 

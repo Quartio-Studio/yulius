@@ -32,7 +32,7 @@ The supplied audit found five quartio-v2 runs with 4, 1, 38, 4 and 1 distinct te
 
 - AC1 A PR #1472-shaped SQLite fixture reaches the real PR watch as one message naming both tests with their respective job outcomes. Another pass produces no duplicate.
 - AC2 A stopped sibling with 38 distinct names shows five and counts 33 more. A candidate retains its instructions. Jobs without structured evidence and other cancellation reasons add no observation.
-- AC3 Run detail identifies each eligible sibling and offers job-specific access to its full retained blocks when the aggregate budget is exhausted. A cancelled run does not volunteer partial sibling failures.
+- AC3 Run detail identifies each eligible sibling and offers job-specific access to its full retained blocks when the aggregate failure budget or the MCP response limit is exhausted. A cancelled run does not volunteer partial sibling failures.
 - AC4 The reviewed change reaches dev through ordinary green CI delivery.
 
 ## Test plan
@@ -49,3 +49,4 @@ Use the runner's persisted sibling-stop reason and the existing failure-block pa
 - `cargo nextest run --no-fail-fast --locked -p yulius-app -p yulius -E 'test(/^pr_watch::/) | test(/^mcp_text::/)'` passed all 39 selected tests. The SQLite fixture delivered one notice and kept the next pass quiet. Its separate red run with an empty stopped sibling reported only the terminal job.
 - The representative fixture's notification includes “failed: `quality` exited 100 (failing tests: phone::resume_signout); `onboarding` cancelled (partial failing tests: onboarding::checkbox). Read `ci_status` with run_id r1. Set job to a listed name for its full details.”
 - The 38-name fixture verifies five distinct names and 33 more for the head and candidate. Additional blocks omitted at capture are counted separately. The run-detail fixture exhausts the aggregate budget and recovers the stored assertion through named-job lookup.
+- Independent review found that preceding job tails could push the sibling lookup past MCP's 256 KiB response limit. The 16-tail regression failed on the reviewed commit. The fix puts every partial job's lookup before output. All 19 MCP renderer tests then passed, including named retrieval and both jobs' lookup instructions within the response prefix.
