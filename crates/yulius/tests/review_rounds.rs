@@ -492,6 +492,48 @@ async fn a_cut_off_continuation_keeps_its_recovery_on_older_hooks() -> TestResul
     Ok(())
 }
 
+/// Replaying the current round's own start before its cutoff was observed is still a replay.
+#[tokio::test]
+async fn a_replayed_continuation_start_cannot_clear_a_later_cut_off() -> TestResult {
+    use crate::subscription_pool::hook_sent_at;
+    use std::sync::atomic::Ordering;
+    let h = harness()?;
+    seed(&h).await?;
+    let account = add_account(&h, "acc-1", None).await?;
+    let task = running_task(&h, TaskMode::Prompt, &account).await?;
+    a_round(&h, "rev", Some("Verdict: request changes")).await?;
+    let start = json!({"agent_id":"rev","agent_type":"yulius-reviewer"});
+    h.clock.0.fetch_add(1, Ordering::SeqCst);
+    let sent = h.app.now().0;
+    hook_sent_at(
+        &h.internal,
+        "claude",
+        "SubagentStart",
+        start.clone(),
+        Some(sent),
+    )
+    .await?;
+    h.clock.0.fetch_add(1, Ordering::SeqCst);
+    h.app.cut_off_review_for_test(&task, "rev").await;
+    hook_sent_at(
+        &h.internal,
+        "claude",
+        "SubagentStart",
+        start.clone(),
+        Some(sent),
+    )
+    .await?;
+    assert_eq!(
+        h.app.review_recovery_for_test(&task),
+        (Some("rev".to_owned()), true)
+    );
+    h.clock.0.fetch_add(1, Ordering::SeqCst);
+    hook(&h.internal, "SubagentStart", start).await?;
+    assert_eq!(h.app.review_recovery_for_test(&task), (None, false));
+    assert_eq!(rounds(&h, &task, true).await?.len(), 2);
+    Ok(())
+}
+
 /// The detached start handler can still be reading Git when the reviewer reports.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_continued_report_survives_its_start_time_head_lookup() -> TestResult {
