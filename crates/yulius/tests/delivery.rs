@@ -9312,6 +9312,23 @@ async fn post_merge_evidence_reconciles_an_external_merge_against_its_original_b
                     .req(Method::GET, "/api/sandboxes/s1/git", None, &f.bob)
                     .await?;
                 assert_eq!(page.status, StatusCode::OK);
+                // Read the permalink before a task delivery read gets a chance to recover it.
+                let proof = f
+                    .req(
+                        Method::GET,
+                        &format!("/api/tasks/t1/delivery/evidence/{sha}"),
+                        None,
+                        &f.rita,
+                    )
+                    .await?;
+                assert_eq!(
+                    proof.status,
+                    if landed_on_dev {
+                        StatusCode::OK
+                    } else {
+                        StatusCode::NOT_FOUND
+                    }
+                );
             }
             let view = f.delivery("t1").await?;
             let proof = f

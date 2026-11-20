@@ -1,6 +1,6 @@
 ---
 yulius-task: f23d1af1-2f37-46dc-8c4c-e334d51e1c3f
-status: in-progress
+status: done
 ---
 
 # SPEC-562 Post-merge verification evidence
@@ -27,7 +27,7 @@ An idle task's completion uses its declared steps and spec status. Spec synchron
 - [x] Expose task-bound merge and CI evidence
 - [x] Associate exact deployment attempts and check outcomes
 - [x] Prove the verification-only handoff and document its limits
-- [ ] Review and deliver the verified change
+- [x] Review and deliver the verified change
 
 ## Acceptance criteria
 
@@ -45,14 +45,13 @@ Associate by exact commit and recorded source identity. A deploy of a descendant
 
 ## Evidence
 
-- The original CI and CD delivery regressions both failed on the pre-feature revision. All four delivery evidence regressions failed on the first reviewed revision. With the fixes, `cargo nextest run -p yulius -E 'test(/delivery::post_merge_evidence/)'` passed all four.
-- The representative fixture merged the setup guide and its changelog, cited the exact integration run in the remaining step through MCP, and recorded the security job as skipped. The task finished both steps with one PR and an unchanged, clean worktree. A later failed scan kept its own run ID and verdict.
-- The race fixtures advanced the integration branch, retargeted a PR at merge, emitted misleading CD phase markers and inserted a newer CI attempt between archive pages. The access fixture denied a signed-in nonreader and excluded another sandbox's run at the identical SHA.
-- `cargo test -p yulius-domain --lib briefing::` passed 31 tests. `scripts/dev quick` passed the repository contracts and formatting check. Chromium E2E passed 1,167 tests, including the task delivery evidence link. The model-dependent test was skipped. `scripts/dev security` reported Vidoc disabled.
+- The setup-guide fixture in `crates/yulius/tests/delivery.rs` merged the required guide and changelog, then cited the exact integration CI run with `step_update`. Both task steps finished with one PR and a clean worktree. The security job remained skipped. A later failed scan kept its own run ID and verdict.
+- The CI and CD regressions failed on the pre-feature revision. The race fixtures reject an ancestor, a later change, a train candidate and a different environment commit. They keep a failed CD wrapper unconfirmed even when project output claims its phases passed. Missing commands and runs remain visible. A signed-in nonreader was denied, and another sandbox's run at the identical SHA was excluded.
+- The task agent on the second reviewed head could only read its first page. It now selects and pins the 51st archived attempt while another rerun is inserted. On the third reviewed head a profile change could reclassify a rejected direct merge. Recovery now matches the original PR, branch, head and merge result. A schema-76 fixture recovers the original branch from the PR-opening audit.
+- On `e0c0c93c` an external retarget followed by a profile change returned HTTP 200 for the wrong landing. The fixture exercises task delivery and the Git page, for PRs opened by Yulius and adopted from GitHub. The legitimate original landing remains available and the retargeted landing returns 404. A separate failed assertion showed that the delivery note named the newly configured base. It now reports the closed PR's actual base.
+- `scripts/dev mutants --base 14222b171` reported 32 listed, 6 caught, 1 missed, 0 timed out, 25 unviable, 0 not reached. Reintroducing the missed PR-number inversion made the positive delayed-GitHub-confirmation test lose the expected landed SHA.
+- `scripts/dev mutants --base e0c0c93c --tests 'test(/post_merge_evidence/)'` passed its unmodified baseline of 3,213 tests and reported 82 listed, 14 caught, 2 missed, 0 timed out, 66 unviable, 0 not reached. Both survivors weakened the Git page's PR-number check. Reintroducing each in isolation made the new wrong-PR fixture fail. Inverting the equality also returned 404 for the legitimate landing before the task page could recover it.
+- The delivery, merge-train and review suites passed all 196 tests at four-way concurrency. In a concurrent run one unchanged approval test hit its 120-second timeout. It passed in 24 seconds with four workers. The independent reviewer approved `9a4c15a0` after running six evidence integration tests and two landing and migration unit tests. The follow-up changed one product line and extended the tests.
+- Final scoped nextest passed 40 tests, including all seven task evidence integration tests and the migration and identity checks.
+- Clippy passed with all targets, all features and warnings denied for the six affected crates. `scripts/dev quick` passed the repository contracts and formatting check. Chromium E2E passed 1,167 tests. One model-dependent test was skipped. The Git and intake browser suites passed all 27 tests on the updated dev base. `scripts/dev security` reported Vidoc disabled.
 - The environment checks used synthetic run records and local Git. No live Quartio-v2 environment or hardware was tested. Quartio-v2's handoff is to designate the checks its task record may satisfy and retain its explicitly required source artifacts in the reviewed change.
-
-- After isolating SQLite's array decoding on the first reviewed head, the retarget, misleading-phase and missing-page assertions each failed at their intended boundary. On the second head the task agent returned page one when asked for archived staging verification. The corrected MCP path selected and pinned the 51st attempt using the task's credential.
-- Reconfiguring the integration branch after a retargeted merge reproduced false evidence on the third reviewed head. Recovery now matches the original PR, branch, head and merge result. The schema-76 fixture also changes the integration branch and reconstructs the original intent from the task's PR-opening audit entry.
-- Final scoped nextest passed 40 tests. All 163 delivery, merge-train and review integration tests passed after merging current dev. Clippy passed for the six changed crates with all targets, all features and warnings denied. The Git and intake browser suites passed all 27 tests on the updated dev base.
-- On head `e0c0c93c`, an external retarget followed by a delivery profile change returned HTTP 200 for the wrong landing. Both task delivery and the project Git page now match externally merged PRs against the base captured at opening or adoption. The regression also covers an external merge on the original base before the profile change.
-- The recovery-fix mutation campaign reported 32 listed, 6 caught, 1 missed, 0 timed out, 25 unviable, 0 not reached. The missed inversion compared the observed PR number with the task's PR. A positive delayed-confirmation regression subsequently exercises that comparison, including an intervening profile change.
