@@ -46,7 +46,7 @@ pub const STALL_QUIET_MS: i64 = 5 * 60 * 1000;
 /// The file in the data directory that keeps what each task was told across restarts.
 pub const PR_NOTICES_FILE: &str = "pr-notices.json";
 /// Runs of a sandbox read per pass, newest first.
-const RUNS_READ: u32 = 100;
+pub(crate) const RUNS_READ: u32 = 100;
 /// Failing test names said per job.
 const MAX_TESTS: usize = 5;
 
@@ -230,32 +230,48 @@ fn message(pr: u64, texts: &[&str]) -> String {
     format!("Yulius, about your pull request #{pr}:{body}")
 }
 
-/// The words of a red run's jobs: each failed or errored job with its exit code and up to
-/// [`MAX_TESTS`] failing test names (PRN-002).
+/// Terminal failures and tests observed before fail-fast stopped a sibling (SPEC-566).
 fn failed_jobs(jobs: &[CiJobRecord]) -> String {
     let said: Vec<String> = jobs
         .iter()
-        .filter(|job| matches!(job.state, RunState::Failed | RunState::Error))
-        .map(|job| {
-            let how = job.exit_code.map_or_else(
-                || job.reason.clone().unwrap_or_else(|| "failed".to_owned()),
-                |code| format!("exited {code}"),
-            );
-            let names = job
-                .failures
-                .as_deref()
-                .map(yulius_domain::ci::failures::failed_test_names)
-                .unwrap_or_default();
-            let tests = match names.len() {
-                0 => String::new(),
-                n if n <= MAX_TESTS => format!(" (failing tests: {})", names.join(", ")),
-                n => format!(
-                    " (failing tests: {} and {} more)",
-                    names[..MAX_TESTS].join(", "),
-                    n - MAX_TESTS
-                ),
+        .filter_map(|job| {
+            let kept = job.failures.as_deref().unwrap_or_default();
+            let (how, label, names) = match job.state {
+                RunState::Failed | RunState::Error => {
+                    let how = job.exit_code.map_or_else(
+                        || job.reason.clone().unwrap_or_else(|| "failed".to_owned()),
+                        |code| format!("exited {code}"),
+                    );
+                    (
+                        how,
+                        "failing tests",
+                        yulius_domain::ci::failures::failed_test_names(kept),
+                    )
+                }
+                RunState::Cancelled => {
+                    let names = crate::ci::sibling_failure_names(job.reason.as_deref(), kept);
+                    if names.is_empty() {
+                        return None;
+                    }
+                    ("cancelled".to_owned(), "partial failing tests", names)
+                }
+                _ => return None,
             };
-            format!("`{}` {how}{tests}", job.name)
+            let mut summary = format!("`{}` {how}", job.name);
+            if !names.is_empty() {
+                let shown = names.len().min(MAX_TESTS);
+                let list = names[..shown].join(", ");
+                summary.push_str(&format!(" ({label}: {list}"));
+                if names.len() > shown {
+                    summary.push_str(&format!(" and {} more", names.len() - shown));
+                }
+                summary.push(')');
+            }
+            let omitted = yulius_domain::ci::failures::omitted_tests(kept);
+            if omitted > 0 {
+                summary.push_str(&format!(" ({omitted} additional failure blocks omitted)"));
+            }
+            Some(summary)
         })
         .collect();
     if said.is_empty() {
@@ -265,26 +281,16 @@ fn failed_jobs(jobs: &[CiJobRecord]) -> String {
     }
 }
 
-/// The first failed job's name, for where to read the log.
-fn first_failed(jobs: &[CiJobRecord]) -> Option<&str> {
-    jobs.iter()
-        .find(|job| matches!(job.state, RunState::Failed | RunState::Error))
-        .map(|job| job.name.as_str())
-}
-
 /// PRN-002: a red run at the pull request's head.
 fn red_run_text(run: &CiRunRecord, jobs: &[CiJobRecord]) -> String {
-    let log = first_failed(jobs).map_or_else(
-        || format!("`ci_status` with run_id {}", run.id),
-        |job| format!("`ci_status` with run_id {} and job `{job}`", run.id),
-    );
     format!(
-        "Its Yulius CI run {} at {} failed: {}. Read the log with {log}, fix it test-first on \
-         this branch, commit and end your turn so Yulius pushes; a failed run drops an armed \
-         merge, so once the new head passed: {}.",
+        "Its Yulius CI run {} at {} failed: {}. Read `ci_status` with run_id {}. \
+         Set job to a listed name for its full details. Fix it test-first on this branch, commit and end your turn \
+         so Yulius pushes; a failed run drops an armed merge, so once the new head passed: {}.",
         run.id,
         short(&run.sha),
         failed_jobs(jobs),
+        run.id,
         yulius_domain::review::KEEP_APPROVAL
     )
 }
@@ -320,12 +326,14 @@ fn red_candidate_text(
 ) -> String {
     let listed: Vec<String> = members.iter().map(|n| format!("#{n}")).collect();
     format!(
-        "Merge candidate {} (run {}), which holds it, failed: {}. Yulius tests smaller candidates \
+        "Merge candidate {} (run {}), which holds it, failed: {}. Read `ci_status` with run_id {}. \
+         Set job to a listed name for its full details. Yulius tests smaller candidates \
          and tells the pull request that breaks it. Do not re-arm, merge `{integration}` or push \
          to this branch meanwhile.",
         listed.join(", "),
         run.id,
-        failed_jobs(jobs)
+        failed_jobs(jobs),
+        run.id
     )
 }
 
@@ -1621,17 +1629,16 @@ impl App {
         {
             return Some(conflicts);
         }
-        let conflicts = match self.deps.git.merge_base(&repo, &base, head).await.ok()? {
-            // No common history: nothing to merge three ways, and no conflict to report.
-            None => false,
-            Some(since) => self
-                .deps
-                .git
-                .adds_to(&repo, &base, &since, head)
-                .await
-                .ok()?
-                .is_none(),
-        };
+        // A missing commit, missing common history or failed lookup cannot establish
+        // mergeability. Let the caller fall back to GitHub and keep the cache empty.
+        let since = self.deps.git.merge_base(&repo, &base, head).await.ok()??;
+        let conflicts = self
+            .deps
+            .git
+            .adds_to(&repo, &base, &since, head)
+            .await
+            .ok()?
+            .is_none();
         if let Some(runtime) = runtime {
             *runtime
                 .pr_conflict
@@ -1857,8 +1864,8 @@ mod tests {
             text,
             "Its Yulius CI run r1 at 012345678 failed: `quality` exited 100 (failing tests: app \
              tests::t1, app tests::t2, app tests::t3, app tests::t4, app tests::t5 and 2 more); \
-             `websites` exited 1. Read the log with `ci_status` with run_id r1 and job \
-             `quality`, fix it test-first on this branch, commit and end your turn so Yulius \
+             `websites` exited 1. Read `ci_status` with run_id r1. Set job to a listed name \
+             for its full details. Fix it test-first on this branch, commit and end your turn so Yulius \
              pushes; a failed run drops an armed merge, so once the new head passed: if a review \
              approved this head or an earlier one of this pull request, call `delivery_merge` \
              with that approved head as `reviewed_head`: the approval carries across at most 20 \
@@ -1876,6 +1883,76 @@ mod tests {
                 && text.contains("`ci_rerun`"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn stopped_sibling_observations_are_partial_and_bounded() {
+        let mut kept: String = (1..=38)
+            .map(|n| format!("---- case-{n} stdout ----\nprivate assertion\n\n"))
+            .collect();
+        kept.push_str("---- case-1 stdout ----\n\n");
+        let mut sibling = job("shard-2", RunState::Cancelled, None, Some(&kept));
+        sibling.reason = Some("stopped early: job shard-1 failed".into());
+        let primary = job("shard-1", RunState::Failed, Some(1), None);
+        let jobs = [primary.clone(), sibling.clone()];
+        let red = run("r1", RunState::Failed);
+        for notice in [
+            red_run_text(&red, &jobs),
+            red_candidate_text(&red, &[5, 7], &jobs, "dev"),
+        ] {
+            assert!(notice.contains("`shard-2` cancelled (partial failing tests: case-1, case-2, case-3, case-4, case-5 and 33 more)"), "{notice}");
+            assert!(
+                !notice.contains("private assertion") && !notice.contains("case-6"),
+                "{notice}"
+            );
+            assert!(
+                notice.contains("ci_status") && notice.contains("run_id r1"),
+                "{notice}"
+            );
+        }
+        kept.push_str("[yulius] 7 more failing tests' output not kept\n");
+        sibling.failures = Some(kept);
+        let notice = red_run_text(&red, &[primary, sibling]);
+        assert!(
+            notice.contains("33 more") && notice.contains("7 additional failure blocks omitted"),
+            "{notice}"
+        );
+    }
+
+    #[test]
+    fn unrelated_or_empty_cancellations_add_nothing_to_the_red_notice() {
+        let primary = job("quality", RunState::Failed, Some(1), None);
+        let red = run("r1", RunState::Failed);
+        let ordinary = red_run_text(&red, std::slice::from_ref(&primary));
+        for (state, reason, kept) in [
+            (RunState::Cancelled, "superseded", "---- stale stdout ----"),
+            (
+                RunState::Cancelled,
+                "stopped early: job  failed",
+                "---- stale stdout ----",
+            ),
+            (
+                RunState::Cancelled,
+                "stopped early: the sandbox is over its disk quota",
+                "---- stale stdout ----",
+            ),
+            (RunState::Cancelled, "stopped early: job quality failed", ""),
+            (
+                RunState::Cancelled,
+                "stopped early: job quality failed",
+                "ordinary output",
+            ),
+            (
+                RunState::Passed,
+                "stopped early: job quality failed",
+                "---- stale stdout ----",
+            ),
+        ] {
+            let mut sibling = job("shard", state, None, Some(kept));
+            sibling.reason = Some(reason.into());
+            sibling.output = "---- only-in-tail stdout ----".into();
+            assert_eq!(red_run_text(&red, &[primary.clone(), sibling]), ordinary);
+        }
     }
 
     #[test]

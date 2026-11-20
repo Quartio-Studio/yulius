@@ -155,6 +155,9 @@ impl DisplayConfig {
         let mut args: Vec<OsString> = vec![
             // No browser UI: the panel draws tabs and the address bar from CDP.
             "--kiosk".into(),
+            // A pre-policy profile may already contain Docs Offline. Loading it would
+            // show a native administrator dialog when the host's blocklist arrives.
+            "--disable-extensions".into(),
             "--window-position=0,0".into(),
             format!("--window-size={},{}", device.0, device.1).into(),
             // Remote debugging makes `navigator.webdriver` true; captchas read it.

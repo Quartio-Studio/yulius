@@ -205,13 +205,25 @@ test('a parked task terminal shows its parked banner and Resume action, distinct
   await expect(browser.locator('.term-banner-info')).toHaveCount(0);
   await expect(browser.locator('.term')).toHaveAttribute('data-cursor-blink', 'true');
 
-  // Park again and wake via Reply with a prompt.
-  await touchTask(browser, 'sb_studio', 13, { status: 'parked', activity: 'waiting' });
+  // The next idle park is announced asynchronously. Exercise a park that arrives
+  // after the ordinary five-second button assertion budget (#1501).
+  await browser.evaluate(() => {
+    type Mock = { touchTask(sandbox: string, number: number, changes: Record<string, string>): void };
+    const db = (window as unknown as { __yuliusMock: Mock }).__yuliusMock;
+    setTimeout(() => db.touchTask('sb_studio', 13, { status: 'parked', activity: 'waiting' }), 6_500);
+  });
+  await expect(bar).toHaveText(/This idle session was parked \(your turn\)/, { timeout: 15_000 });
   await expect(bar.getByRole('button', { name: 'Reply' })).toBeVisible();
   await bar.getByRole('button', { name: 'Reply' }).click();
   await bar.getByRole('textbox', { name: 'Reply to the agent' }).fill('Check CI status');
   await bar.getByRole('button', { name: 'Send' }).click();
   await expect(browser.locator('.strip-status')).not.toHaveText(/Starting|· parked/);
+
+  await expect.poll(() => browser.evaluate(() => {
+    type Session = { lines: unknown[] };
+    const db = (window as unknown as { __yuliusMock: { sessions: Map<string, Session> } }).__yuliusMock;
+    return db.sessions.get('tsk_studio_13')?.lines.some(line => typeof line === 'string' && line.replace(/\x1b\[[\d;]*m/g, '') === '> Check CI status');
+  })).toBe(true);
 
   // Park again and type across BOTH `parked` and `starting` before `running`: all typed characters
   // stay buffered with zero terminal error notices and are delivered once the session runs.
@@ -242,31 +254,53 @@ test('a parked task terminal shows its parked banner and Resume action, distinct
   await expect(browser.locator('.term')).toHaveAttribute('data-cursor-blink', 'false');
 });
 
+type TerminalViewer = { push(message: string): void };
+type ParkedSession = {
+  cols: number;
+  rows: number;
+  task: { status: string };
+  parkedScreen: { cols: number; rows: number; text: string } | null;
+  viewers: Set<TerminalViewer>;
+  receive(viewer: TerminalViewer, data: string): void;
+  sendStates(): void;
+  sendSnapshot(viewer: TerminalViewer): void;
+  state(): string;
+  snapshot(): string;
+};
+type TerminalMock = { __yuliusMock: { sessions: Map<string, ParkedSession> } };
+
 for (const status of ['parked', 'queued', 'starting', 'waiting_capacity']) {
   test(`the owner sees every row of a parked screen while the task is ${status}`, async ({ app, browser }) => {
     await browser.setViewport({ width: 390, height: 844 });
     await app.open(mock('/s/studio/t/12', '&still=1'));
     await terminalShown(browser);
     await browser.evaluate((status) => {
-      type Session = { viewers: Set<{ push(message: string): void }>; task: { status: string }; broadcast(text: string): void };
-      const session = (window as unknown as { __yuliusMock: { sessions: Map<string, Session> } }).__yuliusMock.sessions.get('tsk_studio_12')!;
+      const session = (window as unknown as TerminalMock).__yuliusMock.sessions.get('tsk_studio_12')!;
       session.task.status = status;
-      // The owner still controls the terminal when the actual process ends.
-      for (const viewer of session.viewers) {
-        viewer.push(JSON.stringify({ type: 'state', status, parked_screen: true, attempt_seq: null, can_write: true, controller: true, rows: 90, cols: 220 }));
-      }
-      session.broadcast('\x1b[2J\x1b[HLast answer begins\x1b[89;1HLast answer ends\x1b[90;1HYulius parked this session. Write to resume.');
+      session.parkedScreen = {
+        cols: 220, rows: 90,
+        text: '\x1b[2J\x1b[HLast answer begins\x1b[89;1HLast answer ends\x1b[90;1HYulius parked this session. Write to resume.',
+      };
+      session.sendStates();
+      for (const viewer of session.viewers) session.sendSnapshot(viewer);
     }, status);
     const rows = browser.locator('.taskview .xterm-rows > div');
     await expect(rows).toHaveCount(90);
     await expect(rows.first()).toHaveText(/Last answer begins/);
+    // A phone's resize can arrive after the first rows of the saved screen are visible.
+    const afterResize = await browser.evaluate(() => {
+      const session = (window as unknown as TerminalMock).__yuliusMock.sessions.get('tsk_studio_12')!;
+      for (const viewer of session.viewers) session.receive(viewer, JSON.stringify({ type: 'resize', cols: 44, rows: 28 }));
+      return { state: JSON.parse(session.state()), snapshot: session.snapshot() };
+    });
     await expect(rows.nth(88)).toHaveText(/Last answer ends/);
+    expect(afterResize.snapshot).toContain('Last answer ends');
+    expect(afterResize.state).toMatchObject({ parked_screen: true, attempt_seq: null, rows: 90, cols: 220 });
     await expect(rows.last()).toHaveText(/Write to resume/);
     // Opening a parked page receives state and snapshot. Staying connected also receives exit.
     if (status === 'parked') {
       await browser.evaluate(() => {
-        type Session = { viewers: Set<{ push(message: string): void }> };
-        const session = (window as unknown as { __yuliusMock: { sessions: Map<string, Session> } }).__yuliusMock.sessions.get('tsk_studio_12')!;
+        const session = (window as unknown as TerminalMock).__yuliusMock.sessions.get('tsk_studio_12')!;
         for (const viewer of session.viewers) viewer.push(JSON.stringify({ type: 'exit', status: 'parked', code: 0 }));
       });
       await expect(rows).toHaveCount(90);
@@ -280,12 +314,15 @@ for (const status of ['parked', 'queued', 'starting', 'waiting_capacity']) {
     });
     expect(fits).toBe(true);
     if (status === 'waiting_capacity') {
-      // A held live process still uses its owner's viewport.
+      // Offer the same desktop grid on resume. A phone that still mirrors it would show 90 rows.
       await browser.evaluate(() => {
-        type Session = { viewers: Set<{ push(message: string): void }> };
-        const session = (window as unknown as { __yuliusMock: { sessions: Map<string, Session> } }).__yuliusMock.sessions.get('tsk_studio_12')!;
-        for (const viewer of session.viewers) viewer.push(JSON.stringify({ type: 'state', status: 'waiting_capacity', parked_screen: false, attempt_seq: 2, can_write: true, controller: true, rows: 90, cols: 220 }));
+        const session = (window as unknown as TerminalMock).__yuliusMock.sessions.get('tsk_studio_12')!;
+        session.parkedScreen = null;
+        session.cols = 220;
+        session.rows = 90;
+        session.sendStates();
       });
+      await expect(browser.locator('.taskview .term-host.term-mirror')).toHaveCount(0);
       await expect(rows).not.toHaveCount(90);
     }
   });

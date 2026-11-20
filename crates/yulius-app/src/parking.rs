@@ -18,8 +18,6 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use serde_json::json;
-use yulius_domain::ci::{CiRef, RunState};
-use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::ids::SandboxId;
 use yulius_domain::task::{Activity, TaskGroup, TaskStatus};
 
@@ -64,6 +62,8 @@ pub struct ParkFacts {
     pub activity: Option<Activity>,
     /// The list's group.
     pub group: TaskGroup,
+    /// Its plan, spec or goal still needs the session.
+    pub unfinished: bool,
     /// A turn of its session is known to run.
     pub turn: bool,
     /// Background shells or subagents it left, or dynamic workflows not ended: it wakes by
@@ -92,6 +92,7 @@ impl ParkFacts {
             && self.status == TaskStatus::Running
             && self.activity.is_some_and(Activity::is_idle)
             && matches!(self.group, TaskGroup::NeedsYou | TaskGroup::Done)
+            && !self.unfinished
             && !self.turn
             && !self.background
             && !self.yulius
@@ -213,24 +214,31 @@ impl App {
                     || !runtime.with_workflows(|workflows| workflows.runs().is_empty())
             }
         };
-        let group = self
-            .task_group(task, &requested.all)
-            .await
-            .unwrap_or(TaskGroup::Working);
+        let mut facts = self.task_attention_facts(task, &requested.all).await.ok();
+        if let Some(facts) = &mut facts {
+            // The supervisor verifies the current head before the launch lock.
+            // Local eligibility must not depend on a previous overview.
+            facts.pull = None;
+        }
+        let group = facts
+            .as_ref()
+            .map_or(TaskGroup::Working, |facts| facts.group());
         ParkFacts {
             park_after_ms,
             quiet_ms,
             status: task.status,
             activity: task.activity,
             group,
+            unfinished: facts.is_none_or(|facts| {
+                facts.plan_open || facts.spec_unfinished || facts.goal_unfinished
+            }),
             turn: runtime
                 .as_ref()
                 .is_some_and(|runtime| runtime.turn_in_progress()),
             background,
             yulius: self.agent_waits_on_yulius(&task.id)
                 || self.merge_is_armed(&task.id)
-                || self.pr_news_due(task).await
-                || self.open_pr_work_pending(task, requested).await,
+                || self.pr_news_due(task).await,
             held_prompt: self
                 .deps
                 .store
@@ -241,35 +249,6 @@ impl App {
             paused: self.is_paused(task).await,
             keyboard,
             onboarding: task.origin == TaskOrigin::Onboarding,
-        }
-    }
-
-    /// Whether `task` holds an unpublished clean committed fast-forward CI repair above its
-    /// failing open pull request head (SPEC-553 REP-002, PRK-103). Returns `false` when an actual
-    /// human `needs_you` decision is pending, and also returns `false` while CI is running so
-    /// idle sessions continue to park safely during CI and wake automatically on actionable
-    /// check results via `pr_watch`.
-    async fn open_pr_work_pending(&self, task: &TaskRecord, requested: &Requests) -> bool {
-        if requested.all.contains(task.id.as_str()) {
-            return false;
-        }
-        let Ok(Some(record)) = self.deps.store.delivery(&task.id).await else {
-            return false;
-        };
-        let (DeliveryStage::PrOpen, Some(pr)) = (record.stage, record.pr_number) else {
-            return false;
-        };
-        let Ok(runs) = self.deps.store.ci_runs(&task.sandbox_id, 50).await else {
-            return false;
-        };
-        let own = runs
-            .iter()
-            .find(|run| run.reference == CiRef::PullRequest(pr));
-        match own {
-            Some(run) if run.state == RunState::Failed => {
-                self.open_pr_repair_pending_locally(task, &run.sha).await
-            }
-            _ => false,
         }
     }
 }
@@ -546,6 +525,7 @@ mod tests {
             status: TaskStatus::Running,
             activity: Some(Activity::Waiting),
             group: TaskGroup::NeedsYou,
+            unfinished: false,
             turn: false,
             background: false,
             yulius: false,

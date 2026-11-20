@@ -357,7 +357,8 @@ watching, steering and unblocking.
   another, Fable too. A Claude Code task's independent code review runs as Yulius's reviewer agent, whose
   model Yulius picks per round: Fable 5.2 for a pull request's first two rounds, Opus 5.5 from
   the third, and Opus 5.5 when the task's subscription cannot run Fable then; each round is
-  recorded with its reviewer, its model and its verdict. Codex tasks request GPT-6.2 Astra for every review round, and Antigravity tasks request Gemini 4 Neon (High).
+  recorded with its reviewer, its model and its verdict. Continuing a reviewer after it reports
+  counts as a new round in the Review card (SPEC-565). Codex tasks request GPT-6.2 Astra for every review round, and Antigravity tasks request Gemini 4 Neon (High).
   Task intake splits mixed requests, holds scope changes and chains
   dependent tasks, also by a logical rule such as "#12 done and #13 done", which the composer
   builds from picked conditions (a task, its state, all or any). A task that waits for another
@@ -509,7 +510,7 @@ watching, steering and unblocking.
   merged on green, whoever made it.
 - **Pull request notices** (every sandbox, SPEC-444): Yulius types what happens to a task's open
   pull request into its session within a minute, with the next step: a red run (failing jobs and
-  tests, where to read the log), a conflict, a dropped or refused merge, the merge, why a green
+  tests, partial failures observed in stopped siblings, where to read the logs), a conflict, a dropped or refused merge, the merge, why a green
   head is not merging, and "Hands off" while a merge candidate holds it. A quiet session gets a
   check-in, a pull request without progress for an hour is told and shown as stalled on the task
   list, `yulius wait` never ends on a fixed limit while its run is under way, and merging by hand
@@ -604,6 +605,8 @@ watching, steering and unblocking.
 - **Browser panel**: the sandbox's real Chrome streamed as video so people can pass captchas
   and sign-ins for the agent. Their clicks and keys need the host's browser policy, which
   `yulius host setup` writes: without it the browser shows but takes none (ADR-0318).
+  New browser launches keep Chrome’s default extension prompts off the sandbox display,
+  including for existing profiles (SPEC-567).
 - **Automations**: tasks on a schedule. Three ship with Yulius and head the Automations page as
   its Defaults (as the default workflows do), each off until a person switches it on: "Keep the
   docs up to date", "Work through open issues" (the issues of the core team, of people with write

@@ -224,6 +224,18 @@ pub struct CiJobRecord {
     pub waited_ms: Option<i64>,
 }
 
+/// Test names retained by a cancelled sibling of a failed job (SPEC-566).
+/// The reason is written by the CI runner; other cancellation causes carry no observation.
+pub(crate) fn sibling_failure_names(reason: Option<&str>, kept: &str) -> Vec<String> {
+    match reason
+        .and_then(|why| why.strip_prefix("stopped early: job "))
+        .and_then(|why| why.strip_suffix(" failed"))
+    {
+        Some(name) if !name.is_empty() => yulius_domain::ci::failures::failed_test_names(kept),
+        _ => Vec::new(),
+    }
+}
+
 /// Fields set with a run transition.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CiRunUpdate {

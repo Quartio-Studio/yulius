@@ -10,6 +10,8 @@ use std::path::Path;
 /// Where the server pauses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Point {
+    /// A review starts reading its Git head. Keyed by worktree path.
+    ReviewHead,
     /// `file_read`: the path was resolved and checked, the file is not opened yet.
     FileRead,
     /// `file_write`: the parent folder was resolved and checked, nothing is written yet.

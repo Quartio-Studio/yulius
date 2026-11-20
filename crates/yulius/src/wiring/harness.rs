@@ -941,19 +941,18 @@ fn subagent_id(file: &Path) -> Option<String> {
 
 impl Watch {
     /// What a line of the subagent `id`'s transcript says of it (SPEC-493 REV-004): the model of
-    /// an answer when it is not the one last seen, or that a usage limit cut it off.
-    fn subagent_fact(&mut self, id: &str, observed: &Observed) -> Option<Observation> {
+    /// each answer with its time, or that a usage limit cut it off. Only the store knows
+    /// which round the answer belongs to.
+    fn subagent_fact(&mut self, id: &str, observed: &Observed, line: &str) -> Option<Observation> {
         match observed {
             Observed::AssistantMessage {
                 model: Some(model), ..
-            } if model != "<synthetic>" => {
-                let known = self.subagent_models.get(id) == Some(model);
-                (!known).then(|| {
-                    self.subagent_models.insert(id.to_owned(), model.clone());
-                    Observation::SubagentAnswered {
-                        agent_id: id.to_owned(),
-                        model: model.clone(),
-                    }
+            } => {
+                self.subagent_models.insert(id.to_owned(), model.clone());
+                Some(Observation::SubagentAnswered {
+                    at: claude::record_time(line),
+                    agent_id: id.to_owned(),
+                    model: model.clone(),
                 })
             }
             Observed::LimitReached {
@@ -1036,7 +1035,7 @@ impl TranscriptWatch for Watch {
                     for observed in claude::observe_line(&side.line) {
                         self.acc.observe_side(&observed);
                         if let Some(id) = &subagent {
-                            out.extend(self.subagent_fact(id, &observed));
+                            out.extend(self.subagent_fact(id, &observed, &side.line));
                         }
                         if let Some(agent) = &side.agent {
                             if matches!(observed, Observed::LimitReached { .. }) {
@@ -1451,7 +1450,7 @@ mod tests {
     }
 
     /// SPEC-493 REV-004: a subagent of the session's own thread names the model that answered
-    /// it (once, and again when it changes), and a usage limit that refuses it says it was cut
+    /// each time it answers, and a usage limit that refuses it says it was cut
     /// off. A workflow agent's lines say neither, and a refusal's own record names no model.
     #[test]
     fn a_subagents_model_and_its_cut_off_are_read_from_its_transcript()
@@ -1475,6 +1474,7 @@ mod tests {
             &agent,
             [
                 answer("m1", "claude-fable-5-2"),
+                answer("local-notice", "<synthetic>"),
                 answer("m2", "claude-fable-5-2"),
             ]
             .join("\n")
@@ -1486,13 +1486,12 @@ mod tests {
             .iter()
             .filter(|o| matches!(o, Observation::SubagentAnswered { .. }))
             .collect();
-        assert_eq!(
-            answered,
-            [&Observation::SubagentAnswered {
-                agent_id: "a73a9170080d69b92".into(),
-                model: "claude-fable-5-2".into()
-            }]
-        );
+        let same_model = Observation::SubagentAnswered {
+            agent_id: "a73a9170080d69b92".into(),
+            model: "claude-fable-5-2".into(),
+            at: yulius_domain::time::parse_rfc3339("2026-11-15T10:00:01.000Z"),
+        };
+        assert_eq!(answered, [&same_model, &same_model]);
         let mut file = std::fs::OpenOptions::new().append(true).open(&agent)?;
         writeln!(file, "{}", answer("m3", "claude-opus-5-5"))?;
         writeln!(file, "{}", refusal("2026-11-15T10:00:02.000Z"))?;
@@ -1500,7 +1499,8 @@ mod tests {
         let seen = watch.poll().map_err(|err| err.to_string())?;
         assert!(seen.contains(&Observation::SubagentAnswered {
             agent_id: "a73a9170080d69b92".into(),
-            model: "claude-opus-5-5".into()
+            model: "claude-opus-5-5".into(),
+            at: yulius_domain::time::parse_rfc3339("2026-11-15T10:00:01.000Z")
         }));
         assert!(
             seen.iter().any(

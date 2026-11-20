@@ -131,13 +131,23 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
         assert!(watch(&app, &bounds, &id).await?.is_none());
 
         // A red run at the head, with no wait running: told within one pass.
-        let failures = "FAIL [   0.2s] (3/9) app tests::bad\n  stderr ───\n    boom\n\n";
+        let failures = "FAIL [   0.2s] (3/9) phone::resume_signout\n  stderr ───\n    boom\n\n";
         let (red, job) = run(&sandbox, "r1", &head, RunState::Failed, Some(failures), 1);
+        let sibling = CiJobRecord {
+            id: "r1-onboarding".into(),
+            name: "onboarding".into(),
+            key: "onboarding".into(),
+            ordinal: 1,
+            state: RunState::Running,
+            exit_code: None,
+            failures: None,
+            ..job.clone()
+        };
         app.deps
             .store
-            .insert_ci_run(&red, std::slice::from_ref(&job))
+            .insert_ci_run(&red, &[job.clone(), sibling.clone()])
             .await?;
-        // A job's failing tests are recorded with its end, as a real run's are.
+        // The runner persists both sets of blocks when each job ends.
         let ended = yulius_app::ci::CiJobUpdate {
             exit_code: Some(100),
             failures: job.failures.clone(),
@@ -147,14 +157,33 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
             .store
             .transition_ci_job(&job.id, &[RunState::Failed], RunState::Failed, &ended)
             .await?;
+        let stopped = yulius_app::ci::CiJobUpdate {
+            reason: Some("stopped early: job quality failed".into()),
+            failures: Some("---- onboarding::checkbox stdout ----\nassertion detail\n\n".into()),
+            ..yulius_app::ci::CiJobUpdate::default()
+        };
+        app.deps
+            .store
+            .transition_ci_job(
+                &sibling.id,
+                &[RunState::Running],
+                RunState::Cancelled,
+                &stopped,
+            )
+            .await?;
         let typed = typed_within(&app, &bounds, &id)
             .await?
             .ok_or("the failure was not typed")?;
         assert!(
             typed.starts_with("Yulius, about your pull request #7: Its Yulius CI run r1 at ")
-                && typed.contains("failed: `quality` exited 100 (failing tests: app tests::bad)")
-                && typed.contains("`ci_status` with run_id r1 and job `quality`")
-                && typed.contains("fix it test-first"),
+                && typed.contains(
+                    "failed: `quality` exited 100 (failing tests: phone::resume_signout)"
+                )
+                && typed.contains(
+                    "`onboarding` cancelled (partial failing tests: onboarding::checkbox)"
+                )
+                && typed.contains("`ci_status` with run_id r1")
+                && typed.contains("Fix it test-first"),
             "{typed}"
         );
         echoed(
@@ -165,12 +194,39 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
         .await?;
         assert!(watch(&app, &bounds, &id).await?.is_none(), "told once");
 
+        // A different failed run stopped its sibling before it recorded any test failure.
+        let (ordinary, primary) = run(&sandbox, "ordinary", &head, RunState::Failed, None, 2);
+        let empty = CiJobRecord {
+            id: "ordinary-onboarding".into(),
+            run_id: ordinary.id.clone(),
+            state: RunState::Cancelled,
+            reason: stopped.reason.clone(),
+            ..sibling
+        };
+        app.deps
+            .store
+            .insert_ci_run(&ordinary, &[primary, empty])
+            .await?;
+        let notice = typed_within(&app, &bounds, &id)
+            .await?
+            .ok_or("missing ordinary failure")?;
+        assert!(
+            notice.contains("run ordinary") && notice.contains("`quality` exited 100"),
+            "{notice}"
+        );
+        assert!(
+            !notice.contains("onboarding") && !notice.contains("partial"),
+            "{notice}"
+        );
+        echoed(&app, &id, "Its Yulius CI run ordinary").await?;
+        assert!(watch(&app, &bounds, &id).await?.is_none());
+
         // `dev` moves in a way that conflicts, and the head's next run passed.
         std::fs::write(seed_dir.join("README.md"), "# dev's line\n")?;
         git(&seed_dir, &["commit", "-q", "-am", "dev"])?;
         git(&seed_dir, &["push", "-q", "origin", "HEAD:dev"])?;
         git(&repo, &["fetch", "-q", "origin"])?;
-        let (green, job) = run(&sandbox, "r2", &head, RunState::Passed, None, 2);
+        let (green, job) = run(&sandbox, "r2", &head, RunState::Passed, None, 3);
         app.deps.store.insert_ci_run(&green, &[job]).await?;
         // A permission prompt or question waits for a person: nothing is typed over it, though
         // the session takes input (it was just typed into).
