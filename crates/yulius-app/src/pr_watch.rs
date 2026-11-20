@@ -1411,6 +1411,33 @@ mod tests {
             "dev",
         );
         assert!(!status.contains("(pending)"), "{status}");
+        for (hold, stale) in [
+            (
+                Hold::Free,
+                "The own Yulius CI run of pull request #7 at 012345678 ended in error: rerun it with `ci_rerun`.",
+            ),
+            (
+                Hold::Held,
+                "pull request #7 is number 1 of 2 in merge train #7, #8: their combined result was tested (run t1); Yulius waits for pull request #7's own Yulius CI run before it merges or tests them further.",
+            ),
+        ] {
+            assert_eq!(
+                green_said("0123456789", true, hold, Some(stale), "dev"),
+                None
+            );
+            let status = status_text(
+                Some(&run("r1", RunState::Passed)),
+                true,
+                hold,
+                Some(stale),
+                "dev",
+            );
+            assert!(!status.contains(stale), "{status}");
+        }
+        let other = "pull request #7 is number 1 of 2 in merge train #7, #8: Yulius waits for pull request #8's own Yulius CI run before it merges or tests them further.";
+        let (_, held) =
+            green_said("0123456789", true, Hold::Held, Some(other), "dev").unwrap_or_default();
+        assert!(held.contains("waits for pull request #8"), "{held}");
         let fresh = Some("Pull request #7 passed its own run but is behind `dev`.");
         let (_, notice) =
             green_said("0123456789", true, Hold::Free, fresh, "dev").unwrap_or_default();

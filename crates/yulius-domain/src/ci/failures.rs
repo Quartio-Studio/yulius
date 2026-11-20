@@ -401,6 +401,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn rust_test_output_cannot_contribute_browser_failure_names() {
+        let browser = " FAIL  |chromium| tests/example.e2e.ts > example";
+        let success =
+            format!("successes:\n\n---- passing stdout ----\n\n{browser}\n\ntest result: ok.\n");
+        assert_eq!(scan(&[&success]), None);
+        let failed = format!(
+            "failures:\n\n---- failing stdout ----\nfirst line\n\n{browser}\n\nfailures:\n"
+        );
+        assert_eq!(
+            failed_test_names(&scan(&[&failed]).unwrap_or_default()),
+            ["failing"]
+        );
+        let mixed = scan(&[&failed, browser, "\n"]).unwrap_or_default();
+        assert_eq!(
+            failed_test_names(&mixed),
+            ["failing", "tests/example.e2e.ts › example"]
+        );
+    }
+
     /// cargo-nextest 0.9.146 with `--profile ci`, captured from a run with two failing tests.
     const NEXTEST: &str = "\
     Finished `test` profile [unoptimized + debuginfo] target(s) in 3.31s
