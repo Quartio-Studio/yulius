@@ -95,6 +95,8 @@ struct RealGit {
     remote_unreadable: std::sync::atomic::AtomicBool,
     /// Hold the second checkout probe while the predecessor changes state.
     checkout_probe: std::sync::Mutex<Option<Arc<CheckoutProbe>>>,
+    overview_log_entered: tokio::sync::Notify,
+    overview_log_hold: std::sync::Mutex<Option<Arc<tokio::sync::Notify>>>,
     /// While set, a refresh of a clone fails (SPEC-493 fix 6).
     fetch_fails: std::sync::atomic::AtomicBool,
     /// Moved right after every refresh of a clone, as an agent racing it would: `(ref, commit)`
@@ -417,6 +419,15 @@ impl GitPort for RealGit {
         Ok((ahead, behind))
     }
     async fn log(&self, repo: &Path, rev: &str, limit: u32) -> AppResult<Vec<CommitInfo>> {
+        let hold = self
+            .overview_log_hold
+            .lock()
+            .map_err(AppError::internal)?
+            .clone();
+        if let Some(hold) = hold {
+            self.overview_log_entered.notify_one();
+            hold.notified().await;
+        }
         let text = self
             .run(
                 repo,
@@ -842,6 +853,8 @@ async fn fixture_with(
         ahead_behind_error: std::sync::Mutex::default(),
         remote_unreadable: std::sync::atomic::AtomicBool::default(),
         checkout_probe: Default::default(),
+        overview_log_entered: Default::default(),
+        overview_log_hold: Default::default(),
         fetch_fails: std::sync::atomic::AtomicBool::default(),
         forged_after_fetch: std::sync::Mutex::default(),
     });
@@ -8294,6 +8307,46 @@ async fn pull_request_changes_are_announced_to_the_sandbox() -> TestResult {
     f.h.app.reconcile_deliveries().await;
     assert_eq!(f.delivery("t2").await?["stage"], "merged_integration");
     assert_eq!(announced.take(), 1, "reconciled with GitHub");
+    Ok(())
+}
+
+/// Cancelling HTTP during the final Git log must return even a non-front slot.
+#[tokio::test]
+async fn cancelling_an_overview_at_the_final_git_log_admits_a_replacement() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let (_wt, head) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
+    f.h.github.set_checks(&head, ChecksState::Success);
+    let overview = || f.req(Method::GET, "/api/sandboxes/s1/git", None, &f.bob);
+    let held = f.h.github.hold_checks();
+    let mut oldest = Box::pin(overview());
+    tokio::select! {
+        _ = &mut oldest => return Err("oldest request did not reach the held PR check".into()),
+        reached = tokio::time::timeout(Duration::from_secs(5), f.h.github.checks_entered.notified()) => reached?,
+    }
+    // The first request owns a reference to the held check. Later requests finish.
+    *f.h.github.checks_hold.lock().map_err(|_| "check hold")? = None;
+    for _ in 1..29 {
+        assert_eq!(overview().await?.status, StatusCode::OK);
+    }
+    let log_hold = Arc::new(tokio::sync::Notify::new());
+    *f.git.overview_log_hold.lock().map_err(|_| "log hold")? = Some(log_hold);
+    let mut last = Box::pin(overview());
+    tokio::select! {
+        _ = &mut last => return Err("last request did not reach its held Git log".into()),
+        reached = tokio::time::timeout(Duration::from_secs(5), f.git.overview_log_entered.notified()) => reached?,
+    }
+    assert_eq!(overview().await?.status, StatusCode::TOO_MANY_REQUESTS);
+    drop(last);
+    *f.git.overview_log_hold.lock().map_err(|_| "log hold")? = None;
+    let replacement = overview().await?;
+    assert_eq!(
+        replacement.status,
+        StatusCode::OK,
+        "the cancelled HTTP request kept its slot: {}",
+        replacement.body
+    );
+    f.h.github.release_checks(&held);
+    assert_eq!(oldest.await?.status, StatusCode::OK);
     Ok(())
 }
 

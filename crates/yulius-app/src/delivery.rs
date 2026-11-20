@@ -2381,8 +2381,6 @@ impl App {
             observed.insert(task.id.clone(), pull);
             tasks.push(view);
         }
-        // The "needs you" counts read what this overview said (sandboxes.rs, #147).
-        observation.record(overview_complete, observed);
 
         let mut recent_commits = Vec::new();
         if cloned {
@@ -2410,6 +2408,9 @@ impl App {
                 )),
             }
         }
+        // Only a completed overview publishes. Cancellation during the final Git
+        // log drops the guard and frees its slot for the next request.
+        observation.record(overview_complete, observed);
         Ok(GitOverview {
             integration_branch: profile.integration_branch.clone(),
             production_branch: profile.production_branch.clone(),
