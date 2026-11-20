@@ -3958,6 +3958,14 @@ line.
   read it after the merge. That is the commit's own, except for a pull request that did not
   change it: then it is the integration branch's. An invalid one fails the run at once with a
   failed job `yulius.toml` and the other jobs skipped.
+- **The full suite after the merge** ([decision 0410](decisions/0410-the-full-suite-runs-on-the-merged-revision-beside-a-merge-first-staging-target.md),
+  [SPEC-575](../.ai/specs/SPEC-575-make-task-local-testing-and-one-staging.md) MFS-002). While the
+  integration head has a merge-first staging target (a dev-stage `[cd.<name>]` with
+  `merge_first = true` that deploys), its `after_merge` jobs end skipped, with their reason, on
+  pull request heads, merge trains and playground tasks (`dom::after_merge_skip`, applied in
+  `ci_queue_placed` before `paths`). They run on the integration and production branches' runs,
+  which never reuse a tree whose run skipped them. Without such a target `App::ci_jobs_at` clears
+  the flag (`dom::after_merge_in_force`), so every job runs on every head.
 - **Episodes** in which a sandbox's CI has no gate because of its configuration are audited
   (`ci.config_blocked`, `ci.config_unblocked`) and counted as minutes by the merge-queue read.
 
@@ -3970,6 +3978,7 @@ flowchart TD
   C["a commit on its way: pull request, merge candidate, playground merge"] --> K{"its yulius.toml as read after the merge valid?"}
   K -->|no| F["run fails at once: job yulius.toml, the parser's message"]
   K -->|yes| R["run with the gate in force, its own changed jobs beside (never instead)"]
+  R -->|"merge-first target at the integration head"| Q["after_merge jobs skipped: they run on the merged revision"]
 ```
 
 ## CI job output

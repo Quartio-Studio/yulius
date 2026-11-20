@@ -47,6 +47,9 @@
 //!                                        # with the reason; the integration and production
 //!                                        # branches, a change to yulius.toml and an unknown
 //!                                        # change run it (SPEC-493 CJP)
+//! after_merge = true                     # part of the full suite: beside a merge-first
+//!                                        # staging target it runs on the merged revision, not
+//!                                        # on pull requests (SPEC-575 MFS-002, ADR-0410)
 //!
 //! [review]                             # what counts as product code in a follow-up after an
 //! not_product = ["crates/gen/"]          # approval (SPEC-493 APR-002): `product` globs count
@@ -85,6 +88,14 @@
 //! [cd.platform]                         # more environments (SPEC-257): any name with its stage,
 //! stage = "prod"                         # "dev" or "prod" (fixed for [cd.dev] and [cd.prod])
 //! deploy = "scripts/cd/deploy.sh platform"
+//!
+//! [cd.staging]                          # the shared staging target (SPEC-575 MFS-001): at most
+//! stage = "dev"                          # one dev-stage table; it changes only to a merged
+//! merge_first = true                     # revision whose full suite passed, and needs deploy,
+//! deploy = "scripts/cd/deploy.sh staging" # verify and rollback
+//! verify = "scripts/cd/verify.sh staging"
+//! rollback = "scripts/cd/rollback.sh staging"
+//! migrations = "none: stateless"
 //!
 //! [[delivery.environments]]
 //! name = "dev-vm"

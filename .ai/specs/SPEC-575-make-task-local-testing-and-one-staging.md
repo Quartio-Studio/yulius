@@ -133,9 +133,9 @@ What exists today (map of 2026-11-20, `dev` at f80f42cad):
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Parse `merge_first` on dev-stage CD tables and `after_merge` on CI jobs
-- [ ] Skip after-merge jobs on PRs, trains and playground tasks while a merge-first environment deploys
-- [ ] Branch runs never reuse a tree that skipped an after-merge job; ci_status says why a job was skipped
+- [x] Parse `merge_first` on dev-stage CD tables and `after_merge` on CI jobs
+- [x] Skip after-merge jobs on PRs, trains and playground tasks while a merge-first environment deploys
+- [x] Branch runs never reuse a tree that skipped an after-merge job; ci_status says why a job was skipped
 - [ ] Store staging requests (migration and store API)
 - [ ] Pure staging state machine: request, verdict, ordered pick, deploy outcome, restart
 - [ ] Full gate on the exact merged candidate as a candidate CI run
