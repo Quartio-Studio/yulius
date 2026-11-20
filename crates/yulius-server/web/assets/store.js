@@ -160,8 +160,15 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     const map = new Map();
     for (const task of Array.isArray(list) ? list : []) if (!task.archived) map.set(task.id, task);
     for (const [id, task] of read.changes) {
-      if (task && !task.archived) map.set(id, task);
-      else map.delete(id);
+      if (!task || task.archived) { map.delete(id); continue; }
+      const row = map.get(id);
+      // A slow request can take its snapshot after the event. Once the list has
+      // that lifecycle revision (or a newer one), keep its freshly read details.
+      const includesEvent = row && task.updated_at && (
+        Date.parse(row.updated_at) > Date.parse(task.updated_at) ||
+        (row.updated_at === task.updated_at && row.status === task.status && row.activity === task.activity)
+      );
+      if (!includesEvent) map.set(id, task);
     }
     listOrder.set(map, read.order);
     state.tasks.set(sandboxId, map);

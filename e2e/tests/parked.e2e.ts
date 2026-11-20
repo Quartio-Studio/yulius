@@ -455,3 +455,30 @@ test('a cold task page recovers when its other list request succeeds', async ({ 
   await expect(browser.locator('.taskview .strip-status')).toBeVisible();
   await expect(screen.getByText(/Couldn’t load the tasks of studio/i)).toHaveCount(0);
 });
+
+test('a held list that already includes a lifecycle event keeps its own newer row details', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const titles = await browser.evaluate(async () => {
+    const url = '/assets/store.js';
+    const { createStore } = await import(url);
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const prior = { id: 'p', sandbox_id: 's', status: 'parked', activity: 'done', title: 'Before resume', updated_at: '2026-11-20T04:52:00Z' };
+    const resumed = { ...prior, status: 'running', activity: 'working', title: 'Resume received', updated_at: '2026-11-20T10:30:20Z' };
+    let reads = 0;
+    const store = createStore({ get: async () => {
+      if (++reads === 1) return [prior];
+      await held;
+      return [{ ...resumed, title: 'Read after the resume' }];
+    } });
+    await store.loadTasks('s');
+    const pending = store.loadTasks('s');
+    store.upsertTask(resumed);
+    const interim = store.findTask('p').title;
+    release();
+    await pending;
+    store.stopEvents();
+    return [interim, store.findTask('p').title];
+  });
+  expect(titles).toEqual(['Resume received', 'Read after the resume']);
+});

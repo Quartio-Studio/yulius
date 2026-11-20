@@ -68,6 +68,8 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- Two onboarding browser tests failed on PR #1548 at `85f3cd6e7` and both passed on dev `5bdabd1a9`. A slow list request read a newer title from the server after it had already observed the task’s lifecycle event. Applying the entire event erased that title. A direct parked-resume regression failed the same way. The browser now retains list details when the returned row includes the same lifecycle revision or a newer one. All eight targeted cases passed, including both onboarding tests and the earlier list and route recovery regressions.
+
 - Independent review approved `d63673e7083daf2b4d8ff8dcb73358ae11edb6b2` for the full-list reload slice. All five focused Chromium regressions passed, including recovery of the open task page after the sidebar received the only successful list. The parked-page watch remains a separate delivery.
 
 - Focused review reproduced two cold-load failure effects. One successful list still left the shared error set, hiding onboarding state. In the direct task route, a failed navigation request left the error page visible even after the sidebar received the successful list. Chromium tests failed on both effects and passed after correction. They also exercise archived task updates, a superseded failed request and an isolated refresh error.

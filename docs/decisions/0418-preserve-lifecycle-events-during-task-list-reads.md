@@ -10,7 +10,7 @@ The browser can load a project’s task list while an owner resumes a parked tas
 
 ## Decision
 
-Keep the newest successful full list by request start order. Each read records the latest lifecycle update or removal for each affected task until the request settles. Apply those changes to the returned list before publishing it. A successful list remains usable when an overlapping request fails.
+Keep the newest successful full list by request start order. Each read records the latest lifecycle update or removal for each affected task until the request settles. Apply those changes to the returned list before publishing it. If the list already contains the event’s lifecycle revision or a newer timestamp, keep the details read in the snapshot. A successful list remains usable when an overlapping request fails.
 
 ## Alternatives
 
