@@ -4657,24 +4657,27 @@ impl App {
         task_id: &TaskId,
         rule: crate::parking::ParkRule,
     ) -> AppResult<bool> {
-        // The list's counters are a probe's last answer: before a session ends, its background
-        // work is looked at now, and a look that gives no answer counts as work running, as
-        // for a move (SPEC-483 SWT-001, SPEC-461 CCM-013). Looked at before the launch lock, so
-        // a slow look holds no start: a turn begun since is seen under the lock.
-        if self.background_or_wait_now(task_id).await != Some(false) {
-            return Ok(false);
-        }
         let Some(candidate) = self.deps.store.task(task_id).await? else {
             return Ok(false);
         };
-        let current_pull = self
-            .task_pull_signal(&candidate, crate::delivery::PullRead::Parking)
-            .await?;
+        let delivery = self.deps.store.delivery(task_id).await?;
+        // Neither a slow PR read nor the fresh process probe should hold up another launch.
+        // Probe last so background work started during the PR read keeps its session.
+        if !self
+            .pr_allows_parking(&candidate, delivery.as_ref())
+            .await?
+            || self.background_or_wait_now(task_id).await != Some(false)
+        {
+            return Ok(false);
+        }
         let _guard = self.supervisor.launch.lock().await;
+        if self.deps.store.delivery(task_id).await? != delivery {
+            return Ok(false);
+        }
         let Some(task) = self.deps.store.task(task_id).await? else {
             return Ok(false);
         };
-        let Some(quiet_ms) = self.parkable_now(&task, rule, current_pull).await else {
+        let Some(quiet_ms) = self.parkable_now(&task, rule).await else {
             return Ok(false);
         };
         // A prompt waiting in Claude Code's queue would be lost with the session (SPEC-471).

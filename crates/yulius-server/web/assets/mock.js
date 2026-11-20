@@ -537,7 +537,6 @@ function summary(task) {
     owner_asks_first: Boolean(task.ownerAsksFirst),
     // What the agent asked a person to do (`needs_you`, SPEC-134).
     needs_you: task.needs_you ? { ...task.needs_you } : null,
-    ...(task.status === 'parked' && typeof task.parked_needs_you === 'boolean' ? { parked_needs_you: task.parked_needs_you } : {}),
     // Why it reads needs_attention (SPEC-472): the flag's reason, only while it reads that flag.
     attention: task.status === 'running' && task.activity === 'needs_attention' && task.attention ? { ...task.attention } : null,
     steps: stepsSummary(task), archived: task.archived, account_label: task.account_label,

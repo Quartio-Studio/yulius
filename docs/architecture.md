@@ -2044,14 +2044,6 @@ Parking also requires that no step, spec, goal or failing PR check needs the ses
 An unreadable recorded PR keeps its session through both grace-period and digest parking.
 When the current PR head has a queued or running Yulius CI run, the PR watcher can resume
 the parked session on its result. Open agent work still requires the session.
-Home, the task list and the tool list give their parked PR lookups one shared 750 ms deadline.
-Local unfinished work settles the group immediately. A recorded open PR whose checks cannot be
-read before the deadline remains under Needs you until a subsequent read resolves it.
-The browser refreshes parked groups when it reads the watched PR overview. A rerun can
-change a parked task's group even when the PR head and delivery stage stay the same.
-The sidebar, terminal strip and Task Info receive the refreshed group together.
-A pending owner request or an unfinished goal recorded on the parked attempt holds its successor.
-A background chain can use the full GitHub request timeout to verify a slow green report.
 The supervisor saves the redacted screen with the elapsed idle time before requesting shutdown.
 The web terminal and `task_screen` use that snapshot once the task parks and while a resumed host attaches.
 [Decision 0396](decisions/0396-capture-the-parked-terminal-before-shutdown.md).

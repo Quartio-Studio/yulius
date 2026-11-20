@@ -591,14 +591,6 @@ fn pr_wire_state(pull: &GhPull) -> &'static str {
     }
 }
 
-/// A display or chain classifies every PR check. A parking decision can hand
-/// an already running Yulius CI check to the parked PR watcher (SPEC-553).
-#[derive(Clone, Copy)]
-pub(crate) enum PullRead {
-    Status(Option<tokio::time::Instant>),
-    Parking,
-}
-
 /// What the checks at a commit say ([`App::dlv_checks_at`]).
 pub(crate) struct HeadChecks {
     /// What a gate reads.
@@ -3991,13 +3983,30 @@ impl App {
         }
     }
 
-    /// Read the recorded pull's current head without requiring a previous Git overview.
-    pub(crate) async fn recorded_pull_signal(
+    /// Verify that the task's own current PR leaves no work in the session about to park.
+    /// The parked PR watcher delivers the result of an active Yulius CI run on this head.
+    pub(crate) async fn pr_allows_parking(
         &self,
         task: &TaskRecord,
-        number: u64,
-        read: PullRead,
-    ) -> AppResult<Option<PullSignal>> {
+        record: Option<&DeliveryRecord>,
+    ) -> AppResult<bool> {
+        use yulius_domain::ci::CiRef;
+        if record.is_some_and(|r| past_merge(&r.stage)) {
+            return Ok(true);
+        }
+        let Some(record) = record.filter(|r| r.stage == DeliveryStage::PrOpen) else {
+            let observed = self
+                .observed_pulls
+                .get(&task.sandbox_id, &task.id)
+                .flatten();
+            return Ok(matches!(
+                observed,
+                None | Some(PullSignal::Tested | PullSignal::Merged)
+            ));
+        };
+        let number = record
+            .pr_number
+            .ok_or_else(|| AppError::Internal("open delivery has no pull request number".into()))?;
         let sandbox = self.dlv_sandbox_of(task).await?;
         let token = self.dlv_installation_token(&sandbox).await?;
         let pull = self
@@ -4006,68 +4015,26 @@ impl App {
             .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, number)
             .await?;
         if !is_open(&pull) {
-            return Ok(pull.merged.then_some(PullSignal::Merged));
+            return Ok(pull.merged);
         }
         let head = self.dlv_checks_at(&sandbox, &token, &pull.head_sha).await?;
-        if head.word != "failure" && (head.word == "unknown" || !head.unreadable.is_empty()) {
-            return Err(AppError::Upstream(
-                "pull request checks could not be read".into(),
-            ));
+        if !head.unreadable.is_empty() {
+            return Ok(false);
         }
         let checks = tested_checks_word(&delivery_profile(&sandbox), head.word);
-        // While this PR's own exact-head CI run is active, the parked PR watch
-        // will deliver its result. Pending checks elsewhere still need the live run.
-        if matches!(read, PullRead::Parking)
-            && checks == "pending"
-            && self.config.ci.enabled
-            && !sandbox.is_playground()
-            && self
+        let settled = match checks {
+            "success" | "none" => true,
+            "pending" if self.config.ci.enabled => self
                 .deps
                 .store
                 .ci_runs(&sandbox.id, crate::pr_watch::RUNS_READ)
                 .await?
                 .iter()
-                .find(|run| run.reference == yulius_domain::ci::CiRef::PullRequest(number))
-                .is_some_and(|run| run.sha == pull.head_sha && run.state.is_active())
-            && !self.pull_conflicts(task, &sandbox, &pull).await
-        {
-            return Ok(None);
-        }
-        let conflicts = matches!(checks, "success" | "none")
-            && self.pull_conflicts(task, &sandbox, &pull).await;
-        Ok(PullSignal::from_wire("open", checks, conflicts))
-    }
-
-    /// Preserve an unreadable recorded head as an error: parking needs to know
-    /// that the session is free to give up its work.
-    pub(crate) async fn task_pull_signal(
-        &self,
-        task: &TaskRecord,
-        read: PullRead,
-    ) -> AppResult<Option<PullSignal>> {
-        if let Some(record) = self.deps.store.delivery(&task.id).await? {
-            if past_merge(&record.stage) {
-                return Ok(Some(PullSignal::Merged));
-            }
-            if record.stage == DeliveryStage::PrOpen {
-                let number = record.pr_number.ok_or_else(|| {
-                    AppError::Internal("open delivery has no pull request number".into())
-                })?;
-                let current = self.recorded_pull_signal(task, number, read);
-                return match read {
-                    PullRead::Status(Some(deadline)) => tokio::time::timeout_at(deadline, current)
-                        .await
-                        .map_err(|_| {
-                            AppError::Upstream("the parked PR lookup deadline expired".into())
-                        })?,
-                    PullRead::Status(None) | PullRead::Parking => current.await,
-                };
-            }
-        }
-        Ok(self
-            .observed_pulls
-            .get(&task.sandbox_id, &task.id)
-            .flatten())
+                .find(|run| run.reference == CiRef::PullRequest(number))
+                .is_some_and(|run| run.sha == pull.head_sha && run.state.is_active()),
+            _ => false,
+        };
+        Ok(settled && !self.pull_conflicts(task, &sandbox, &pull).await)
     }
 
     /// The part of [`App::task_is_done`] that needs no GitHub call: the turn ended, no background
@@ -4132,25 +4099,7 @@ impl App {
         if running && self.merge_is_armed(&task.id) {
             return false;
         }
-        if parked {
-            let requested = self.browser_requests(&task.sandbox_id).await;
-            let Ok(facts) = self.task_attention_facts(task, &requested, None).await else {
-                return false;
-            };
-            if facts.group() != yulius_domain::task::TaskGroup::Done {
-                return false;
-            }
-            // An achieved goal can release a successor without a PR. An idle answer
-            // releases it only with a tested or merged delivery recorded for this task.
-            if task.activity == Some(Activity::Done) {
-                return true;
-            }
-            let record = self.deps.store.delivery(&task.id).await.ok().flatten();
-            return matches!(facts.pull, Some(PullSignal::Tested | PullSignal::Merged))
-                && record
-                    .is_some_and(|r| past_merge(&r.stage) || r.stage == DeliveryStage::PrOpen);
-        }
-        if running && task.activity == Some(Activity::Done) {
+        if (running || parked) && task.activity == Some(Activity::Done) {
             return true;
         }
         // One reading of its delivery for the whole decision: a merge recorded between two
@@ -4160,7 +4109,7 @@ impl App {
         };
         // Yulius still has news of its pull request for its agent (an armed merge, a merge not
         // said yet): it goes on by itself, so it is not Done (SPEC-487 CHN-001, CHN-002).
-        if self.pr_news_due_of(task, record.as_ref(), false).await {
+        if !parked && self.pr_news_due_of(task, record.as_ref(), false).await {
             return false;
         }
         // A pull request makes a task Done only when no work it declared is left: its plan is

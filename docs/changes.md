@@ -7,7 +7,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-20
 
 - Tasks keep their sessions while work is unfinished or PR checks cannot be verified.
-  Previously parked tasks with open work appear under Needs you (SPEC-558, #1490).
+  Only an active Yulius CI run on the current PR head takes over pending checks (SPEC-558, #1490).
 
 - Parked sessions (including Codex) now show the parked terminal banner with a visible Resume
   action (and owner Reply bar) instead of an inert terminal with a blinking cursor, wake in the

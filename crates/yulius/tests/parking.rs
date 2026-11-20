@@ -1726,6 +1726,45 @@ fn parked_task_parks_safely_during_ci_and_auto_wakes_on_actionable_check_results
             0,
             "the active run is for an older PR head"
         );
+        // Displaying an achieved goal or a human request does not hand its
+        // unobserved current-head checks to the CI watcher.
+        app.deps
+            .store
+            .transition_task(
+                &id,
+                Some(TaskStatus::Running),
+                TaskStatus::Running,
+                Some(Activity::Done),
+                app.now(),
+            )
+            .await?;
+        past_the_grace(&app, &id).await?;
+        assert_eq!(
+            app.park_idle_sessions_now().await,
+            0,
+            "an achieved goal still owns the unwatched checks"
+        );
+        app.deps
+            .store
+            .transition_task(
+                &id,
+                Some(TaskStatus::Running),
+                TaskStatus::Running,
+                Some(Activity::Waiting),
+                app.now(),
+            )
+            .await?;
+        ask(&app, &id).await?;
+        past_the_grace(&app, &id).await?;
+        assert_eq!(
+            app.park_idle_sessions_now().await,
+            0,
+            "a pending human request does not settle unwatched checks"
+        );
+        app.deps
+            .store
+            .set_task_needs_you(&id, None, app.now())
+            .await?;
         set_pull_head(&github, 42, &running_ci.sha)?;
         parked(&app, &id).await?;
         let bounds = WatchBounds::default();

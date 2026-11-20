@@ -30,7 +30,8 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Deliver native Codex resume to dev
 - [x] Preserve the parked grid until the resumed host attaches
 - [x] Verify chain eligibility and refresh stale PR observations
-- [ ] Deliver parking eligibility and Done status to dev
+- [ ] Deliver live-session parking eligibility to dev
+- [ ] Give parked PRs fair status reads and gate dependent tasks
 - [ ] Deliver bounded Codex goal continuation to dev
 - [ ] Recover screens from tasks parked before the upgrade
 
@@ -87,9 +88,14 @@ SPEC-553 added automatic wake-up for a parked task's Yulius CI result. A queued 
 
 - The mutation run on `d877c113e` found 9 mutants, 6 caught and 3 missed. The chain regression now covers a recorded open delivery whose PR actually closed unmerged, and a running idle agent whose PR is red. Those cases exercise the three missed conditions. Clippy passed on the integrated app, server, domain and integration targets. The 30 focused Chromium tests on the integrated web assets passed.
 
+- The combined eligibility candidate passed 45 scoped Rust tests. Its third review found that an achieved goal with current pending checks could park because the display still grouped the task as Done. A real PTY regression reproduced one park instead of zero while CI watched an older head. The live guard now verifies the PR separately from the display group and checks local plan, spec and goal facts under the launch lock. The same regression includes a pending owner request. The review also identified serial list starvation. That regression and the owner status changes belong to the separate parked-display delivery.
+
+- Two further live parking regressions each reproduced one park where zero was expected. One replaced the durable PR while its old checks were in flight. The other closed the recorded PR without merging it. The supervisor checks the delivery identity again under its launch lock and requires confirmation of a merge for a closed PR. The positive cases restore the verified PR or record its merge.
+- The full Chromium suite on the combined eligibility candidate passed 1,171 tests with one optional skip.
+
 ## Delivery slices
 
-Deliver native Codex resume independently (PKR-002). The terminal delivery (PKR-001) includes the original pre-stop snapshot, phone geometry, and recovery through the resumed host's first snapshot. After three goal review rounds the remaining work is split by behavior. Deliver parking eligibility, honest Done and bounded list reads (PKR-004) first. Then deliver Codex goal continuation (PKR-003) with regressions for a wait starting during rotation and a missing rollout on a replacement launch. Recover pre-upgrade screens in the final delivery. The earlier combined-head evidence describes development verification across these slices.
+Deliver native Codex resume independently (PKR-002). The terminal delivery (PKR-001) includes the original pre-stop snapshot, phone geometry, and recovery through the resumed host's first snapshot. After three goal review rounds the remaining work is split by behavior. Deliver PKR-004 in two parts. First guard the live-session parking decision, including handoff to the exact-head CI watcher. Then give parked tasks fair status reads, refresh their owner pages and gate dependent tasks. The third combined eligibility review found that a prior task could consume the whole shared read deadline and that display precedence could park an achieved goal with unwatched checks. Then deliver Codex goal continuation (PKR-003) with regressions for a wait starting during rotation and a missing rollout on a replacement launch. Recover pre-upgrade screens in the final delivery. The earlier combined-head evidence describes development verification across these slices.
 
 The native-resume regression checks the rollout in the native launch and reads the first and second user prompts from its on-disk history. It also exercises absent IDs and an older lineage entry. No paid provider is involved.
 
