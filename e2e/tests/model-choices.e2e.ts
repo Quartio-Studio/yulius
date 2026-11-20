@@ -25,6 +25,7 @@ for (const choice of [
     await screen.getByRole('searchbox', 'Filter').fill(choice.query);
     await screen.getByRole('menuitemradio', new RegExp(choice.label)).click();
     await screen.getByRole('button', /^Effort:/).click();
+    await expect(screen.getByRole('menuitemradio', /^Default/)).toContainText('High');
     await screen.getByRole('menuitemradio', new RegExp('^' + choice.tier)).click();
     const prompt = screen.getByRole('textbox', 'Task prompt');
     await prompt.fill('Add a health check');
@@ -44,6 +45,7 @@ test('Settings preserves compatible effort and clears incompatible choices in th
   await model.click();
   await screen.getByRole('menuitemradio', /^GPT-6.2 Astra/).click();
   await effort.click();
+  await expect(screen.getByRole('menuitemradio', /^Default/)).toContainText('Extra high');
   await screen.getByRole('menuitemradio', /^Ultra/).click();
   await model.click();
   await screen.getByRole('menuitemradio', /^GPT-6.1 Terra/).click();
@@ -60,6 +62,7 @@ test('Settings preserves compatible effort and clears incompatible choices in th
   await screen.getByRole('menuitemradio', /^Random/).click();
   await expect(screen.getByRole('button', 'Effort: Default effort')).toBeVisible();
   await screen.getByRole('button', /^Effort:/).click();
+  await expect(screen.getByRole('menuitemradio', /^Default/)).toContainText('Depends on the drawn model');
   const randomEfforts = await browser.evaluate(() => Array.from(document.querySelectorAll('.menu .menu-label'), (el) => el.textContent));
   expect(randomEfforts).toEqual(['Default', 'Low', 'Medium', 'High', 'Extra high']);
   await screen.getByRole('menuitemradio', /^Default/).press('Escape');

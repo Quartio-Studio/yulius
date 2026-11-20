@@ -121,6 +121,50 @@ async fn shown(h: &Harness, alice: &Creds, id: &str) -> Result<(String, String),
     ))
 }
 
+/// SPEC-561: the HTTP request keeps the owner's choice, including an explicit default value.
+#[tokio::test]
+async fn codex_task_creation_preserves_effort_provenance() -> TestResult {
+    let (h, alice) = world().await?;
+    available(&h, "a-codex", Provider::OpenAi).await?;
+    for (model, effort, expected) in [
+        (None, None, "xhigh"),
+        (Some("gpt-6.2-astra"), None, "xhigh"),
+        (None, Some("high"), "high"),
+        (Some("gpt-6.2-astra"), Some("xhigh"), "xhigh"),
+        (Some("gpt-6.2-sol"), None, "high"),
+    ] {
+        let mut body = json!({"prompt":"Compare effort", "harness":"codex"});
+        if let Some(model) = model {
+            body["model"] = json!(model);
+        }
+        if let Some(effort) = effort {
+            body["effort"] = json!(effort);
+        }
+        let response = call(&h.router, Method::POST, CREATE, Some(body), &alice).await?;
+        assert_eq!(response.status, StatusCode::CREATED, "{:?}", response.body);
+        let id = response.body["id"].as_str().ok_or("task id")?;
+        let record = h
+            .store
+            .task(&yulius_domain::ids::TaskId::parse(id)?)
+            .await?
+            .ok_or("task")?;
+        assert_eq!(record.effort.as_deref(), effort);
+        let detail = call(
+            &h.router,
+            Method::GET,
+            &format!("/api/tasks/{id}"),
+            None,
+            &alice,
+        )
+        .await?;
+        assert_eq!(detail.status, StatusCode::OK);
+        assert_eq!(detail.body["effort"], expected);
+        assert_eq!(detail.body["effort_default"], effort.is_none());
+        assert_eq!(detail.body["model_default"], model.is_none());
+    }
+    Ok(())
+}
+
 /// RHM-001, RHM-003 (AC-1): with 5 Claude, 1 Codex and 1 Antigravity subscriptions available,
 /// tasks without an agent (or with `auto`) draw across all three harnesses as `random`; an
 /// explicit harness or model-implied harness stays `chosen`.
