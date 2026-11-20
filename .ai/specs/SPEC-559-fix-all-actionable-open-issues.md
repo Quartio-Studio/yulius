@@ -51,6 +51,7 @@ The inventory at dev 56f08db7f contained 20 issues. #1490 belongs to task #540. 
 - [x] Reproduce the parked terminal Reply timeout after Resume
 - [x] Verify Resume and Reply in Chromium against the reproduced failure
 - [x] Obtain independent approval for the parked terminal change if needed
+- [ ] Verify lowered CI capacity when both active jobs share a name
 - [ ] Verify the independent fixes and reconcile the remaining issues
 
 ## Acceptance criteria
@@ -105,3 +106,4 @@ The later reports #1498 and #1502 cover the same parking fixture repaired in PR 
 - With the second park held past the deadline in a temporary probe, the test failed at the parked-bar wait before clicking Reply. The fixture was restored after the probe.
 - The reviewer found that a suffix comparison also accepted a reply with an extra prefix. With ANSI styling removed, a comparison of the complete prompt line rejected the deliberately altered message. The product mock was restored after this probe.
 - Round two approved 91146b0ac. All nine Chromium parking scenarios passed with the whole-line comparison. Quick checks passed. The mutation command found no changed Rust code. Vidoc was disabled.
+- PR #1509 run 728bbdfe failed the lowered CI slot test with four starts and only two ends. Probe the two running jobs being the two runs of job b before the test releases job a.

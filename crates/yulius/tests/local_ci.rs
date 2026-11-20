@@ -5076,12 +5076,16 @@ fn two_logged_toml(data: &Path) -> String {
 /// SPEC-459 HSL-007: lowered in Settings while jobs run, the limit lets them finish and starts
 /// no waiting job beside them: with two of four jobs running and the limit lowered to one, no
 /// two jobs run at once after the first of them ended.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_lowered_job_limit_starts_no_job_beside_the_ones_it_lets_finish() -> TestResult {
     use yulius_domain::limits::Limit;
     let f = fixture_with(false, two_logged_toml).await?;
     f.h.app.load_limits([(Limit::CiJobs, 2)].into()).await;
     let admin = support::superadmin_bearer(&f.h).await?;
+    // Make both runs of b take the initial slots, a valid admission order.
+    let (dev_at, dev_go) =
+        support::hold_point(yulius_app::race::Point::CiJobAdmission, "branch/dev/a");
+    let (pr_at, pr_go) = support::hold_point(yulius_app::race::Point::CiJobAdmission, "pr/1/a");
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
     let in_state = |runs: &[(String, Vec<Value>)], state: &str| {
         runs.iter()
@@ -5093,6 +5097,10 @@ async fn a_lowered_job_limit_starts_no_job_beside_the_ones_it_lets_finish() -> T
         in_state(runs, "running") == 2 && in_state(runs, "queued") == 2
     })
     .await?;
+    support::point_reached(dev_at).await?;
+    support::point_reached(pr_at).await?;
+    dev_go.send(())?;
+    pr_go.send(())?;
     let lowered = call(
         &f.h.router,
         Method::PUT,
