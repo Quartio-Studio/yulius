@@ -4145,14 +4145,7 @@ impl App {
     /// `parked` with its activity and audited `task.parked`; one a stop or a capacity pause took
     /// meanwhile rests as that run's end leaves it.
     async fn settle_parked(&self, task_id: &TaskId, attempt_id: &AttemptId, now: Timestamp) {
-        let parked_screen = self
-            .deps
-            .store
-            .attempt(attempt_id)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|run| crate::parking::parked_snapshot(&run));
+        let attempt = self.deps.store.attempt(attempt_id).await.ok().flatten();
         let decided = self.existing_runtime(task_id).and_then(|runtime| {
             runtime
                 .parked_activity
@@ -4194,7 +4187,10 @@ impl App {
                 Ok(false) => {}
                 Ok(true) => {
                     if to == TaskStatus::Parked {
-                        if let Some((cols, rows, screen)) = parked_screen {
+                        if let Some(run) = &attempt
+                            && let Some((cols, rows, screen)) =
+                                crate::parking::publish_parked_screen(Path::new(&run.run_dir))
+                        {
                             let hub = &self.runtime(task_id).hub;
                             // Attached viewers must apply the parked grid before drawing it.
                             if hub.size() == (cols, rows) {

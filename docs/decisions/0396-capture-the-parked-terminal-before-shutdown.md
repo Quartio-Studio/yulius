@@ -10,7 +10,7 @@ A CLI can erase its terminal while handling shutdown. Codex leaves token usage a
 
 ## Decision
 
-Capture the redacted terminal in the attempt directory at the parking decision, with the observed idle duration and the instruction to write to resume. Publish that screen when the task parks. Use the regular final screen for other outcomes. Refuse a park when the snapshot cannot be saved.
+Capture the redacted terminal in the attempt directory at the parking decision, with the observed idle duration and the instruction to write to resume. Rename the pending snapshot to its stable filename after the task’s Parked transition commits. A queued resume then keeps the same visible screen, including when a concurrent switch or an escalated loss ended the attempt. A cold reader can recover a pending snapshot from that committed transition if the server restarted before the rename. Use the regular final screen for other outcomes. Refuse a park when the snapshot cannot be saved.
 
 ## Alternatives
 

@@ -243,6 +243,7 @@ impl App {
 }
 
 const PARKED_SCREEN: &str = "parked-screen";
+const PARKING_SCREEN: &str = "parked-screen.pending";
 
 /// Match the trailing Codex exit instructions, including when the top of the
 /// block has scrolled off a small legacy screen. Join wrapped physical rows
@@ -259,19 +260,25 @@ fn legacy_footer_start(screen: &vt100::Screen, lines: &[String]) -> Option<usize
     let mut start = logical
         .iter()
         .rposition(|(_, line)| !line.trim().is_empty())?;
-    if logical[start]
+    let clipped = lines
+        .iter()
+        .rev()
+        .take(2)
+        .any(|line| !line.trim().is_empty());
+    let has_selection = logical[start]
         .1
         .trim_start()
-        .starts_with("Or run codex resume and select ")
-    {
+        .starts_with("Or run codex resume and select ");
+    if has_selection {
         if start == 0 {
-            return Some(logical[start].0);
+            return clipped.then_some(logical[start].0);
         }
         start -= 1;
     }
     let id = logical[start].1.trim().strip_prefix("codex resume ")?;
     if start == 0 {
-        return yulius_domain::harness::valid_session_id(id).then_some(logical[start].0);
+        return ((has_selection || clipped) && yulius_domain::harness::valid_session_id(id))
+            .then_some(logical[start].0);
     }
     if logical[start - 1].1.trim() == "To continue this session, run:" {
         start -= 1;
@@ -334,11 +341,18 @@ pub(crate) fn save_parked_screen(
     let (cols, rows, screen) = with_park_notice(cols, rows, &bytes, Some(quiet_ms), false);
     let mut record = format!("{cols} {rows}\n").into_bytes();
     record.extend(screen);
-    crate::supervisor::write_private_file(&dir.join(PARKED_SCREEN), &record)
+    crate::supervisor::write_private_file(&dir.join(PARKING_SCREEN), &record)
 }
 
-pub(crate) fn parked_snapshot(run: &AttemptRecord) -> Option<(u16, u16, Vec<u8>)> {
-    crate::supervisor::read_saved_screen(&Path::new(&run.run_dir).join(PARKED_SCREEN))
+/// Commit the pre-stop capture only once the task has actually transitioned to Parked.
+pub(crate) fn publish_parked_screen(dir: &Path) -> Option<(u16, u16, Vec<u8>)> {
+    let candidate = dir.join(PARKING_SCREEN);
+    let committed = dir.join(PARKED_SCREEN);
+    if let Err(err) = std::fs::rename(&candidate, &committed) {
+        tracing::warn!(error = %err, "could not publish parked screen");
+        return crate::supervisor::read_saved_screen(&candidate);
+    }
+    crate::supervisor::read_saved_screen(&committed)
 }
 
 impl App {
@@ -350,15 +364,17 @@ impl App {
         task: &TaskRecord,
     ) -> Option<(u16, u16, Vec<u8>)> {
         let dir = Path::new(&run.run_dir);
-        if task.status != TaskStatus::Parked && run.exit_reason.as_deref() != Some("parked") {
+        if let Some(saved) = crate::supervisor::read_saved_screen(&dir.join(PARKED_SCREEN)) {
+            return Some(saved);
+        }
+        if task.status != TaskStatus::Parked
+            && !matches!(run.exit_reason.as_deref(), Some("parked" | "lost"))
+        {
             return crate::supervisor::read_final_screen(dir);
         }
-        if task.status == TaskStatus::Parked
-            && let Some(screen) = parked_snapshot(run)
-        {
-            return Some(screen);
-        }
-        let quiet_ms = self
+        // Older attempts and a restart between committing the state and renaming its
+        // snapshot: a switch or an escalated loss can also have settled as Parked.
+        let transition = self
             .deps
             .store
             .subject_spans(
@@ -370,27 +386,21 @@ impl App {
             .await
             .ok()
             .and_then(|spans| {
-                spans
-                    .iter()
-                    .rev()
-                    .find(|span| {
-                        span.kind == "state"
-                            && matches!(span.name.as_str(), "done" | "idle")
-                            && span.ended_at == run.ended_at
-                            && span.outcome.as_deref() == Some("parked")
-                    })
-                    .and_then(crate::stages::SpanRecord::duration_ms)
+                spans.into_iter().rev().find(|span| {
+                    span.kind == "state"
+                        && span.ended_at == run.ended_at
+                        && span.outcome.as_deref() == Some("parked")
+                })
             });
-        // A stop can overtake parking after the end intent was consumed. For a task
-        // that has since moved on, only the committed state transition proves it parked.
-        if task.status != TaskStatus::Parked {
-            if quiet_ms.is_none() {
-                return crate::supervisor::read_final_screen(dir);
-            }
-            if let Some(screen) = parked_snapshot(run) {
-                return Some(screen);
-            }
+        if task.status != TaskStatus::Parked && transition.is_none() {
+            return crate::supervisor::read_final_screen(dir);
         }
+        if let Some(saved) = crate::supervisor::read_saved_screen(&dir.join(PARKING_SCREEN)) {
+            return Some(saved);
+        }
+        let quiet_ms = transition
+            .filter(|span| matches!(span.name.as_str(), "done" | "idle"))
+            .and_then(|span| span.duration_ms());
         let (cols, rows, bytes) =
             crate::supervisor::read_final_screen(dir).unwrap_or((80, 24, Vec::new()));
         Some(with_park_notice(
@@ -549,6 +559,19 @@ mod tests {
             let hub = crate::hub::Hub::new(cols, rows);
             hub.reset(1, &bytes, cols, rows);
             assert!(hub.screen_text().contains(command), "{command}");
+        }
+    }
+
+    #[test]
+    fn a_single_line_resume_suggestion_with_room_above_the_footer_is_an_answer() {
+        for line in [
+            "Or run codex resume and select yesterday's task.",
+            "codex resume yesterday",
+        ] {
+            let (cols, rows, bytes) = with_park_notice(80, 24, line.as_bytes(), None, true);
+            let hub = crate::hub::Hub::new(cols, rows);
+            hub.reset(1, &bytes, cols, rows);
+            assert!(hub.screen_text().starts_with(line), "{line}");
         }
     }
 
