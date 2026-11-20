@@ -322,6 +322,8 @@ struct Old {
     active: bool,
     /// The server's unit is frozen.
     frozen: bool,
+    /// The server's unit is frozen in a state systemd can thaw, including start and reload jobs.
+    thawable_server: bool,
     /// The server's unit has stopped (`inactive` or `failed`): it is neither active nor on its
     /// way up or down (SPEC-467 LFT-002).
     stopped: bool,
@@ -362,6 +364,10 @@ const KILL_ALL: &str = "systemctl kill --kill-who=all --signal=SIGKILL";
 /// freeze: what systemd said, not more (SPEC-467 LFT-001).
 fn not_frozen_after_freeze(unit: &str, old: Option<Old>) -> String {
     match old {
+        Some(old) if old.thawable_server && !old.active => format!(
+            "{unit} is frozen during a start or reload, but the instance is not frozen as a whole. \
+             Nothing is copied frozen. Run the command again when the unit is active"
+        ),
         // Stopped since the plan: found before the frozen pass, not after it.
         Some(old) if !old.active => format!(
             "{unit} is not running any more: start it (`systemctl start {unit}`), so the move \
@@ -1543,6 +1549,7 @@ impl<'a> Move<'a> {
         (code == 0).then_some(Old {
             active: active == "active",
             frozen,
+            thawable_server: frozen && freeze::running_state(&active),
             stopped: matches!(active.as_str(), "inactive" | "failed"),
             sessions_frozen: sessions,
             any_frozen: frozen || sessions == Some(true),
@@ -1623,7 +1630,7 @@ impl<'a> Move<'a> {
                 {
                     units.push(sessions);
                 }
-                if old.active && old.frozen {
+                if old.thawable_server {
                     units.push(unit.clone());
                 }
                 units
@@ -1637,6 +1644,15 @@ impl<'a> Move<'a> {
         match (thawed, state) {
             (Err(why), _) => {
                 self.fail("old instance", why);
+            }
+            (Ok(()), Some(old)) if old.thawable_server && !old.active => {
+                self.changed(
+                    "old instance",
+                    format!(
+                        "thawed {}. The server had a start or reload in progress",
+                        units.join(" and ")
+                    ),
+                );
             }
             (Ok(()), Some(old)) if !old.active && already_reported_down => {}
             (Ok(()), Some(old)) if !old.active => {

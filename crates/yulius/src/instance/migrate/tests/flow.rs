@@ -1644,6 +1644,7 @@ fn the_cutover_says_why_the_instance_is_not_frozen_after_its_freeze() {
     let old = |active, stopped| Old {
         active,
         frozen: active,
+        thawable_server: active,
         stopped,
         sessions_frozen: None,
         any_frozen: active,
