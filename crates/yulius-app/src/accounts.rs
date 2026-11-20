@@ -931,7 +931,8 @@ impl App {
     /// weekly window is used up, and the default model for a limit of the whole subscription.
     /// The answer ends the limit or gives it its reset
     /// ([`AccountUsage::record_model_answer`]). At most one request per family that has a
-    /// window, one after another; nothing is asked when no limit is stored.
+    /// window, one after another. A family a waiting task left out is also asked about
+    /// if the reading did not carry it, even after a previous reading cleared its limit.
     ///
     /// Each question is asked with the sign-in stored at that moment, about the limit stored at
     /// that moment, and its answer is applied under the usage lock only while both are still
@@ -952,10 +953,16 @@ impl App {
     ) -> Result<bool, UsageFailure> {
         let default = crate::capacity::default_family();
         let stored = || async { self.deps.store.account(id).await.ok().flatten() };
-        let families = match stored().await {
+        let mut families = match stored().await {
             Some(record) => account_usage(&record).families_at_a_limit(self.now(), default),
             None => return Ok(false),
         };
+        let excluded = self.excluded_families(id).await;
+        for family in &excluded {
+            if !families.contains(family) {
+                families.push(*family);
+            }
+        }
         let mut read = false;
         for family in families {
             if reading.is_some_and(|reading| reading.model_window(family).is_some()) {
@@ -971,9 +978,10 @@ impl App {
                 .find(|model| ModelFamily::of(Some(model)) == family);
             let (Some(model), true) = (
                 model,
-                asked_about
-                    .families_at_a_limit(self.now(), default)
-                    .contains(&family),
+                excluded.contains(&family)
+                    || asked_about
+                        .families_at_a_limit(self.now(), default)
+                        .contains(&family),
             ) else {
                 continue;
             };
@@ -1004,6 +1012,9 @@ impl App {
                     })
                 })
                 .await;
+            if applied.is_some() && answer.refused.is_none() {
+                self.model_available(id, family);
+            }
             read |= applied.is_some() && answer.five_hour.is_some() && answer.seven_day.is_some();
         }
         Ok(read)

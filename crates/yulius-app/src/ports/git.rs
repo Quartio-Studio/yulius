@@ -381,9 +381,9 @@ pub trait GitPort: Send + Sync {
         let _ = (repo, ancestor, descendant);
         unsupported("comparing commits")
     }
-    /// Whether what `head` changed since `since` adds anything to `base`: Git's merge of the
-    /// two from `since` (in `worktree`, with the repository's merge drivers) is not `base`'s
-    /// tree; `None` when that merge conflicts (SPEC-425 FUP-002). `base` is read once.
+    /// Whether `head` adds to `base`. When `head` contains `base`, compare their trees directly.
+    /// Otherwise merge from `since` with the repository's merge drivers and compare the result
+    /// to the base tree. A conflict returns `None` (SPEC-425 FUP-002). Resolve `base` once.
     async fn adds_to(
         &self,
         worktree: &Path,
@@ -508,6 +508,12 @@ pub trait GitPort: Send + Sync {
     async fn set_origin_url(&self, repo: &Path, url: &str) -> AppResult<()> {
         let _ = (repo, url);
         unsupported("repointing origin")
+    }
+    /// The tree or conflict paths produced by merging `theirs` into `ours` with the checkout's
+    /// attributes. Does not change its checkout, index or refs.
+    async fn preview_merge(&self, repo: &Path, ours: &str, theirs: &str) -> AppResult<TrainStep> {
+        let _ = (repo, ours, theirs);
+        unsupported("checking a merge for conflicts")
     }
     /// Lands the request's head on its branch of `origin` as one commit: the tree Git's merge of
     /// `base` and `head` gives, with `base` as its only parent, pushed without forcing (SPEC-099:

@@ -38,6 +38,16 @@ struct Requests {
 /// Who parks a session, in the audit.
 pub const PARKED_BY: &str = "yulius";
 
+/// Whose rule a park follows: part 1's grace period, or the digest's threshold (SPEC-512
+/// DIG-003), which parks only a task whose agent waits for its turn and that asks nobody.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParkRule {
+    /// The unit's grace period (PRK-002).
+    Grace,
+    /// The digest's idle threshold, in milliseconds.
+    Digest(u64),
+}
+
 /// What decides whether a running task's session is parked now (SPEC-512 PRK-002).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParkFacts {
@@ -88,6 +98,13 @@ impl ParkFacts {
             && !self.keyboard
             && !self.onboarding
     }
+
+    /// Whether the digest parks the session (DIG-003): as [`ParkFacts::parkable`] with its own
+    /// threshold, and only while the agent waits for its turn (not Done) and asks nobody.
+    #[must_use]
+    pub fn digest_parkable(&self, asks: bool) -> bool {
+        self.parkable() && self.activity == Some(Activity::Waiting) && !asks
+    }
 }
 
 impl App {
@@ -117,10 +134,14 @@ impl App {
                 requests.insert(task.sandbox_id.clone(), read);
             }
             let requested = requests.get(&task.sandbox_id).cloned().unwrap_or_default();
-            if !self.park_facts(&task, &requested).await.parkable() {
+            if !self
+                .park_facts(&task, &requested, self.config.park_after_ms)
+                .await
+                .parkable()
+            {
                 continue;
             }
-            match self.park_task_now(&task.id).await {
+            match self.park_task_now(&task.id, ParkRule::Grace).await {
                 Ok(true) => parked += 1,
                 Ok(false) => {}
                 Err(err) => tracing::warn!(task = %task.id, error = %err, "a park failed"),
@@ -131,9 +152,25 @@ impl App {
 
     /// [`ParkFacts::parkable`] for `task` as stored now: what [`App::park_task_now`] asks again
     /// under the launch lock.
-    pub(crate) async fn parkable_now(&self, task: &TaskRecord) -> bool {
+    pub(crate) async fn parkable_now(&self, task: &TaskRecord, rule: ParkRule) -> bool {
         let requested = self.park_requests(&task.sandbox_id).await;
-        self.park_facts(task, &requested).await.parkable()
+        match rule {
+            ParkRule::Grace => self
+                .park_facts(task, &requested, self.config.park_after_ms)
+                .await
+                .parkable(),
+            ParkRule::Digest(after_ms) => {
+                let asks = self
+                    .deps
+                    .store
+                    .task_needs_you(&task.id)
+                    .await
+                    .map_or(true, |asked| asked.is_some());
+                self.park_facts(task, &requested, after_ms)
+                    .await
+                    .digest_parkable(asks)
+            }
+        }
     }
 
     async fn park_requests(&self, sandbox: &SandboxId) -> Requests {
@@ -143,9 +180,13 @@ impl App {
         }
     }
 
-    async fn park_facts(&self, task: &TaskRecord, requested: &Requests) -> ParkFacts {
+    async fn park_facts(
+        &self,
+        task: &TaskRecord,
+        requested: &Requests,
+        park_after_ms: u64,
+    ) -> ParkFacts {
         let now = self.now().0;
-        let park_after_ms = self.config.park_after_ms;
         let quiet_ms = match self.deps.store.task_times(&task.id).await {
             Ok(Some(times)) => now.saturating_sub(times.state_at.0),
             _ => 0,
@@ -153,7 +194,7 @@ impl App {
         let runtime = self.existing_runtime(&task.id);
         let keyboard = runtime.as_ref().is_some_and(|runtime| {
             let typed = runtime.typed_at_ms.load(Ordering::SeqCst);
-            let emptied = runtime.box_emptied_ms.load(Ordering::SeqCst);
+            let emptied = runtime.empty_time_for_typing();
             yulius_domain::intake::box_held(now, typed, emptied).is_some()
                 || (typed > 0
                     && i64::try_from(park_after_ms)
@@ -420,6 +461,48 @@ mod tests {
         ];
         for facts in kept {
             assert!(!facts.parkable(), "{facts:?}");
+        }
+    }
+
+    /// DIG-003: the digest parks a quiet task whose agent waits for its turn and asks nobody;
+    /// never a Done task, one that asks, one quiet for less than its threshold, nor one any
+    /// guard of PRK-002 keeps.
+    #[test]
+    fn the_digest_parks_only_what_waits_for_nobody() {
+        assert!(idle().digest_parkable(false));
+        assert!(
+            !idle().digest_parkable(true),
+            "a task that asks is never parked"
+        );
+        let done = ParkFacts {
+            activity: Some(Activity::Done),
+            group: TaskGroup::Done,
+            ..idle()
+        };
+        assert!(
+            done.parkable() && !done.digest_parkable(false),
+            "Done is never parked"
+        );
+        let young = ParkFacts {
+            quiet_ms: 59_999,
+            ..idle()
+        };
+        assert!(!young.digest_parkable(false));
+        for kept in [
+            ParkFacts {
+                background: true,
+                ..idle()
+            },
+            ParkFacts {
+                keyboard: true,
+                ..idle()
+            },
+            ParkFacts {
+                onboarding: true,
+                ..idle()
+            },
+        ] {
+            assert!(!kept.digest_parkable(false), "{kept:?}");
         }
     }
 }

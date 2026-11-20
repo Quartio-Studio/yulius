@@ -546,8 +546,8 @@ pub fn activity_on_goal_not_met(current: Option<Activity>) -> Option<Activity> {
     matches!(current, Some(Activity::Waiting | Activity::Done)).then_some(Activity::Working)
 }
 
-/// Whether a `UserPromptSubmit` prompt is one a person (or Yulius) typed, not a wake-up Claude
-/// Code generated itself (task notifications and other tagged prompts start with `<`), nor the
+/// Whether the submit text can be typed work, once a scheduled hand-over has been excluded.
+/// Tagged wake-ups start with `<`. This also excludes the
 /// compaction command, which asks for no new work (SPEC-085 STT-005).
 #[must_use]
 pub fn is_typed_prompt(prompt: Option<&str>) -> bool {
@@ -556,9 +556,8 @@ pub fn is_typed_prompt(prompt: Option<&str>) -> bool {
         .is_some_and(|p| !p.is_empty() && !p.starts_with('<') && !is_compact_command(p))
 }
 
-/// Whether a `UserPromptSubmit` prompt came through the session's prompt box, typed by a person
-/// or by Yulius (a command like `/compact` too), which a submit empties; Claude Code's own
-/// wake-ups (they start with `<`) do not pass through it (SPEC-468 CCF-010).
+/// Whether the submit text can come from the prompt box, including commands such as `/compact`.
+/// A scheduled hand-over is excluded separately because its hook contains plain text.
 #[must_use]
 pub fn from_prompt_box(prompt: Option<&str>) -> bool {
     prompt
@@ -721,9 +720,9 @@ impl App {
     async fn await_goal_verdict(self: &Arc<Self>, task_id: &TaskId, stop_ms: i64) {
         let runtime = self.runtime(task_id);
         let deadline = tokio::time::Instant::now() + GOAL_VERDICT_WAIT;
-        while runtime.verdict_stop_ms.pending() == stop_ms
-            && runtime.is_watching()
-            && tokio::time::Instant::now() < deadline
+        // A resumed process can send Stop before its watcher attaches. The run’s exit or loss
+        // cancels the slot directly.
+        while runtime.verdict_stop_ms.pending() == stop_ms && tokio::time::Instant::now() < deadline
         {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -803,6 +802,10 @@ impl App {
             pause.kind,
             crate::model::PauseKind::Turn | crate::model::PauseKind::Prompt
         ) && pause.account_id.is_some();
+        // An interrupt of the preceding turn alone cannot release a prompt held at Enter.
+        if pause.during_turn && activity == Activity::Waiting {
+            return;
+        }
         if (held || pause.kind == crate::model::PauseKind::Limit) && at > pause.started_at {
             self.hold_ended(task_id, "overtaken", activity).await;
         }
@@ -885,6 +888,8 @@ impl App {
         if notice_ms == 0 && runtime.turn_in_progress() {
             return;
         }
+        // A newly arrived question and a delayed work line settle in order.
+        let _attention = runtime.attention_lock.lock().await;
         let Ok(Some(task)) = self.deps.store.task(task_id).await else {
             return;
         };
@@ -1029,12 +1034,13 @@ impl App {
         if let Some(achieved) = facts.goal_achieved {
             runtime.goal_achieved.store(achieved, Ordering::SeqCst);
         }
-        runtime.goal_open.store(facts.goal_open, Ordering::SeqCst);
-        runtime
-            .goal_unfinished
-            .store(facts.goal_unfinished, Ordering::SeqCst);
-        // A goal recorded while Yulius was down was taken: a restarted launch-goal watch ends.
+        // A resumed run can have an inherited goal and no goal records of its own.
         if facts.goal_recorded {
+            runtime.goal_open.store(facts.goal_open, Ordering::SeqCst);
+            runtime
+                .goal_unfinished
+                .store(facts.goal_unfinished, Ordering::SeqCst);
+            // A goal recorded while Yulius was down was taken: a restarted launch-goal watch ends.
             runtime.goal_submitted.store(true, Ordering::SeqCst);
         }
         runtime

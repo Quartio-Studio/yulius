@@ -416,6 +416,7 @@ mod tests {
             link: None,
             at: 800,
             cause: None,
+            named: Default::default(),
         };
         store
             .set_task_needs_you(&task, Some(&request), Timestamp(800))
@@ -429,6 +430,7 @@ mod tests {
                 task_id: task.clone(),
                 kind: PauseKind::Limit,
                 account_id: None,
+                during_turn: false,
                 continuation: None,
                 started_at: Timestamp(960),
                 ended_at: None,

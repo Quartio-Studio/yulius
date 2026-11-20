@@ -1506,10 +1506,8 @@ impl App {
         Ok(())
     }
 
-    /// A merge candidate's run for `sha` (`reference`, of `gate`'s jobs) taken from a recent
-    /// passed run that tested the same tree, recorded as passed; `None` when there is none
-    /// (SPEC-497 MQW-001: a candidate formed again on the same base with the same members
-    /// reuses its earlier verdict instead of a new run).
+    /// Reuses a recent verdict for the candidate's tree. A failed candidate lends its original
+    /// run and job logs (SPEC-542). Otherwise use the existing passed-tree checks (SPEC-497).
     ///
     /// # Errors
     /// Store or Git failures.
@@ -1518,9 +1516,19 @@ impl App {
         sandbox: &SandboxRecord,
         reference: CiRef,
         sha: &str,
+        tree: &str,
         gate: &Gate,
     ) -> AppResult<Option<CiRunRecord>> {
         let runs = self.deps.store.ci_runs(&sandbox.id, PLAN_RUNS).await?;
+        let repo = self.sandbox_repo(&sandbox.id);
+        for run in runs
+            .iter()
+            .filter(|r| r.state == RunState::Failed && matches!(r.reference, CiRef::Train(_)))
+        {
+            if self.deps.git.tree_of(&repo, &run.sha).await?.as_deref() == Some(tree) {
+                return Ok(Some(run.clone()));
+            }
+        }
         let target = Target {
             reference,
             sha: sha.to_owned(),

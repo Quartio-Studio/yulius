@@ -19,7 +19,7 @@ use yulius_contracts::ptyhost::{
 use yulius_domain::stages::ResourceUse;
 use yulius_ptyhost::{
     DEFAULT_SPAWN_TIMEOUT, PtyClient, PtyReader, PtyWriter, RunDirState, SpawnedHost,
-    inspect_run_dir, spawn_host, terminate_recorded, token_sha256_hex,
+    inspect_run_dir, spawn_host, terminate_run_dir, token_sha256_hex,
 };
 use yulius_sandbox::{cgroup, freeze};
 
@@ -150,6 +150,20 @@ fn upstream(context: &str, err: impl std::fmt::Display) -> AppError {
 
 #[async_trait]
 impl SessionHost for PtySessionHost {
+    fn loopback_ports_idle(&self, range: std::ops::RangeInclusive<u16>) -> bool {
+        use std::net::{Ipv4Addr, Ipv6Addr, TcpListener};
+        range.into_iter().all(|port| {
+            TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_ok()
+                && match TcpListener::bind((Ipv6Addr::LOCALHOST, port)) {
+                    Ok(_) => true,
+                    Err(e) => matches!(
+                        e.kind(),
+                        std::io::ErrorKind::AddrNotAvailable | std::io::ErrorKind::Unsupported
+                    ),
+                }
+        })
+    }
+
     async fn spawn(
         &self,
         run_dir: &Path,
@@ -269,12 +283,7 @@ impl SessionHost for PtySessionHost {
         if let Ok(mut hosts) = self.hosts.lock() {
             hosts.remove(run_dir);
         }
-        match inspect_run_dir(run_dir) {
-            RunDirState::Recorded { status, .. } => {
-                terminate_recorded(&status).map_err(|e| upstream("cannot terminate the session", e))
-            }
-            _ => Ok(()),
-        }
+        terminate_run_dir(run_dir).map_err(|e| upstream("cannot terminate the session", e))
     }
 
     fn freeze(&self, run_dir: &Path) -> RunFreeze {
@@ -426,6 +435,45 @@ impl RunWriter for Writer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_loopback_listener_keeps_a_port_reserved() -> Result<(), Box<dyn std::error::Error>> {
+        let host = PtySessionHost::new(PathBuf::new());
+        for address in [
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+        ] {
+            let listener = match std::net::TcpListener::bind((address, 0)) {
+                Ok(listener) => listener,
+                Err(e)
+                    if address.is_ipv6()
+                        && matches!(
+                            e.kind(),
+                            std::io::ErrorKind::Unsupported | std::io::ErrorKind::AddrNotAvailable
+                        ) =>
+                {
+                    continue;
+                }
+                Err(e) => return Err(e.into()),
+            };
+            let port = listener.local_addr()?.port();
+            assert!(!host.loopback_ports_idle(port..=port));
+            drop(listener);
+            assert!(host.loopback_ports_idle(port..=port));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn terminating_a_run_with_unreadable_process_identity_fails()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let host = PtySessionHost::new(PathBuf::new());
+        host.terminate(dir.path())?; // No process was recorded.
+        std::fs::write(dir.path().join(wire::STATUS_FILE), b"invalid record")?;
+        assert!(host.terminate(dir.path()).is_err());
+        Ok(())
+    }
 
     /// SPEC-187 DKR-001: the sandbox's Docker socket reaches a joined run's `bwrap` argv.
     #[test]

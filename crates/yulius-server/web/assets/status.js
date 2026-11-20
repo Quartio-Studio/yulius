@@ -168,7 +168,12 @@ const SPEC_UNFINISHED = 'Every step is finished, but its spec does not say done:
 export function statusInfo(task) {
   // A parked task reads as the idle running task it was (SPEC-512 PRK-004): nothing of a session
   // goes on in it, so no background shell, `yulius wait` or pause counts.
-  if (task.status === 'parked') return { ...statusInfo(asIdleRun(task)), parked: true };
+  if (task.status === 'parked') {
+    // Without an idle activity (the Dashboard's Outcomes bucket counts statuses alone) it reads
+    // what it is: parked, waiting for a person to resume it.
+    if (task.activity !== 'waiting' && task.activity !== 'done') return { glyph: '◐', icon: 'st-paused', tone: 'queued', label: 'Parked', group: 'needs', parked: true };
+    return { ...statusInfo(asIdleRun(task)), parked: true };
+  }
   const status = task.status;
   const activity = task.activity;
   // Its live run is paused (SPEC-191): an update holds it, or a person paused it. Whatever the

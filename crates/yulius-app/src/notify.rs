@@ -66,11 +66,13 @@ fn control_subject(task: &TaskId, request: &crate::model::ControlRequest) -> Str
     format!("control:{task}:{}:{}", request.by, request.at.0)
 }
 
-/// One notification, redacted.
+/// One notification, redacted, and the task it is about (a reply to it reaches the task,
+/// SPEC-512 TGI-002).
 struct Notice {
     kind: NoticeKind,
     headline: String,
     text: String,
+    about: Option<crate::ports::notify::SentAbout>,
 }
 
 impl NotifierState {
@@ -88,6 +90,17 @@ impl NotifierState {
             once.clear();
         }
         !once.insert(subject)
+    }
+
+    /// Forgets what was told of `subject` when it was a failure (`failed:…`).
+    fn forget_failure(&self, subject: &str) {
+        if let Ok(mut told) = self.told.lock()
+            && told
+                .get(subject)
+                .is_some_and(|said| said.starts_with("failed:"))
+        {
+            told.remove(subject);
+        }
     }
 
     fn forget(&self, subject: &str) {
@@ -244,6 +257,10 @@ impl App {
             kind: NoticeKind::NeedsYou,
             headline: self.redact_for_sandbox(&task.sandbox_id, &headline).await,
             text: self.redact_for_sandbox(&task.sandbox_id, &text).await,
+            about: Some(crate::ports::notify::SentAbout {
+                task: task.id.clone(),
+                asked_at: None,
+            }),
         }))
     }
 
@@ -284,6 +301,10 @@ impl App {
                 kind: NoticeKind::NeedsYou,
                 headline: self.redact_for_sandbox(&task.sandbox_id, &headline).await,
                 text: self.redact_for_sandbox(&task.sandbox_id, &text).await,
+                about: Some(crate::ports::notify::SentAbout {
+                    task: task.id.clone(),
+                    asked_at: None,
+                }),
             },
         )))
     }
@@ -296,7 +317,13 @@ impl App {
         task: &TaskRecord,
         requested: &HashSet<String>,
     ) -> AppResult<Option<TaskReading>> {
-        if task.status == yulius_domain::task::TaskStatus::Switching {
+        // A switch is under the hood (TGC-025), and so is a session starting: a parked task's
+        // resume reads idle again as it did, which is no news (SPEC-512 PRK-004). What the task
+        // reads once it runs is compared with what was told before.
+        if matches!(
+            task.status,
+            yulius_domain::task::TaskStatus::Switching | yulius_domain::task::TaskStatus::Starting
+        ) {
             return Ok(None);
         }
         let group = self.task_group(task, requested).await?;
@@ -407,6 +434,11 @@ impl App {
         let Some(task) = store.task(&id).await? else {
             return Ok(None);
         };
+        // A start ends what was told of the run before when that was its end: the next end is
+        // news again. What a parked task asked is kept, so its resume is no news (SPEC-512).
+        if task.status == yulius_domain::task::TaskStatus::Starting {
+            services.notifier.forget_failure(&format!("task:{id}"));
+        }
         let requested = self.browser_requests(&task.sandbox_id).await;
         let Some(TaskReading {
             kind,
@@ -476,6 +508,10 @@ impl App {
             text: self
                 .redact_for_sandbox(&task.sandbox_id, &notice.text())
                 .await,
+            about: Some(crate::ports::notify::SentAbout {
+                task: task.id.clone(),
+                asked_at: asked.as_ref().map(|a| a.at),
+            }),
         }))
     }
 
@@ -507,6 +543,7 @@ impl App {
             kind: NoticeKind::Account,
             headline: redact(headline),
             text: redact(text),
+            about: None,
         })
     }
 
@@ -545,7 +582,7 @@ impl App {
                 throttle.offer(now, notice.headline.clone())
             });
             if send {
-                self.enqueue(link.chat.clone(), notice.text.clone());
+                self.enqueue_about(link.chat.clone(), notice.text.clone(), notice.about.clone());
             }
         }
         Ok(())

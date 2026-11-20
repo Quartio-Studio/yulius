@@ -12,6 +12,8 @@ or an imported `auth.json`. The detailed contracts are in
 [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md); crate layering rules are in
 [engineering/architecture.md](engineering/architecture.md).
 
+The supervisor terminates a disconnected run using the identities recorded by its host. On Linux it checks exit of the entire process before recording a forced loss. [Decision 0390](decisions/0390-linux-host-exit-is-observed-for-the-whole-process.md)
+
 ```mermaid
 flowchart LR
   UI["Web UI (xterm.js, Monaco)"] <--> RP["Reverse proxy (TLS)"] <--> API
@@ -46,7 +48,7 @@ flowchart LR
   AG -->|"MCP (yulius mcp stdio bridge) + hooks"| INT
   AG -->|"HTTP(S) via the egress proxy: secrets for bound hosts"| INT
   APP <--> GH["GitHub App + REST"]
-  APP -->|"long poll getUpdates, sendMessage"| TG["Telegram Bot API"]
+  APP -->|"long poll getUpdates, sendMessage, getFile"| TG["Telegram Bot API"]
   AG <--> AN["Anthropic"]
   AG <--> OA["OpenAI (Codex)"]
   APP <-->|"DevTools pipe (fds 3/4)"| CH["Chrome on Xvfb"]
@@ -63,7 +65,9 @@ The supervisor writes the home's `auth.json` (the account's sealed credential), 
 `hooks.json` through handles that follow no link, and reads the rollout from the sandbox's shared
 `codex/sessions`; its hooks reach Yulius as `yulius hook codex <event>`. After the run, a
 refreshed `auth.json` goes back into the vault, and the file leaves the sandbox once no run of the
-account is left there.
+account is left there. If a session document predates its rollout, transcript reads look up the
+file by session ID and the next index refresh saves its path on the same document.
+[SPEC-538](../.ai/specs/SPEC-538-repair-codex-session-documents-when-the.md)
 
 ```mermaid
 flowchart LR
@@ -546,7 +550,7 @@ egress proxy serves as that sandbox's browser (`EgressProxy::handle_browser`, wi
 `BrowserProxies`): it connects where the sandbox's processes could, plus the sandbox's own
 dev-server ports on the loopback and the welcome page, and never intercepts, injects or
 redacts; without its proxy a browser is not started
-([ADR-0321](decisions/0321-a-sandboxes-browser-goes-out-through-a-proxy-of-its-own.md)).
+([ADR-0321](decisions/0321-a-sandboxes-browser-goes-out-through-a-proxy-of-its-own.md)). Ranges of removed sandboxes can be reassigned once their work, holders and listeners have ended ([ADR-0393](decisions/0393-sandbox-port-ranges-are-reused-after-retirement.md)).
 The two Superagents drive it with the same tools: the
 sandbox Superagent its own sandbox's browser, the Global Superagent the browser of the project it
 names (`GLOBAL_ONLY_TOOLS`, `Action::Work` per call), both as a `SecretUser`, which says the
@@ -691,6 +695,9 @@ switch of a task left at its limit by a refused automatic switch also resumes pa
 ([SPEC-072](../.ai/specs/SPEC-072-fix-276-277-278-usage-limit-resume-respe.md),
 [decision 0058](decisions/0058-the-clis-own-continuation-ends-a-limit-pause.md)).
 
+A capacity pause records whether a Claude prompt was held during a preceding turn. The
+preceding Stop can settle while the prompt waits for capacity. [Decision 0394](decisions/0394-a-held-prompt-remembers-the-turn-running-at-its-enter.md)
+
 ### A limit met while a dynamic workflow runs
 
 Claude Code's Workflow tool ("ultracode") runs a script's agents inside the session's process.
@@ -789,6 +796,9 @@ which a new sign-in takes too; it is never held across a request to the provider
 recorded while a reading is under way is kept. The write that marks a subscription refused
 (`record_access_lost`) takes the lock as well: a usage write stores the status it read together
 with the usage, and one under way would otherwise store `ok` over "needs a new sign-in" (#1211).
+Under that lock it checks the current sealed credential against the digest recorded at launch.
+A stale refusal or a pre-upgrade run without a digest affects only the interrupted task
+([decision 0387](decisions/0387-bind-claude-refusals-to-the-launch-credential.md)).
 A subscription works while it reads `ok` or `limited` (`AccountStatus::healthy`), and that is
 the one rule: the pool places tasks only on one that works, the background rounds ask only such
 a one for its usage and its e-mail address, and a reading that arrives for any other stores its
@@ -912,8 +922,11 @@ hold until its reset even after a person bought credits. The Subscriptions page'
 one request of one output token for each limit stored and in effect, with the model that limit
 binds (`UsageProbe::model_answer`): a model of each family whose own weekly window is used up, and
 the default model for a limit of the whole subscription (`AccountUsage::families_at_a_limit`). A
-window the reading of that call itself carried is not asked about: the reading is Claude's word
-on it. The answer says whether a usage reading came of it (`usage_read`).
+window the reading of that call itself carried needs no probe. If a waiting task
+remembers two refusals of a model on this subscription, Refresh asks that model even after a
+reading cleared its stored limit. A successful answer clears this subscription and model from
+the waiting tasks' exclusions and wakes the capacity loop. The answer also says whether a usage
+reading came of it (`usage_read`).
 
 The response's status is the answer, as Claude Code reads its own responses. A response that ran
 ends the limit, whatever its headers say (one that ran on bought credits still carries
@@ -979,7 +992,7 @@ A task leaves its subscription for three reasons besides the pool's own rotation
 [decision 0288](decisions/0288-a-person-moves-a-task-between-subscriptions-and-removing-one-moves-its-tasks.md)):
 a person chooses another from the task (`POST /api/tasks/{tid}/switch`), a person removes the
 subscription (`DELETE /api/admin/accounts/{id}`), or Claude refuses it (`Observed::AccessLost`,
-which marks it `relogin`). All three go through `App::move_task` (`moves.rs`), which picks the
+which marks it `relogin` while the refused sign-in is current). All three go through `App::move_task` (`moves.rs`), which picks the
 switch that fits where the task stands (past a limit, the first message again, a held prompt, a
 cut turn told to go on) and lets the pool pick when no subscription is named; with nowhere to go
 the launch pauses the task. A removal deletes the row first, so `choose_account`, which reads only
@@ -990,7 +1003,8 @@ one-line notice and, with nothing usable left, the task's Needs you, which `end_
 flowchart LR
   P["Person: Run #N on…"] -->|"switch_task (Trigger::Manual, < 100 %)"| M["move_task"]
   D["Person: Remove"] -->|"delete row, close Done sessions"| M
-  R["Claude refuses (AccessLost)"] -->|"relogin, rotate"| M
+  R["Claude refuses (AccessLost)"] -->|"rotate the interrupted task"| M
+  R -->|"launch credential still current"| A["Mark subscription relogin"]
   M -->|"switch_from: end run, start_run_if"| C{"choose_account"}
   C -->|"a subscription"| RUN["Same session on it"]
   C -->|"none"| W["waiting_capacity"]
@@ -1354,7 +1368,7 @@ repository's own `.claude/agents/yulius-reviewer.md` would outrank it, and the r
 then shows the model that answered
 ([decision 0341](decisions/0341-yulius-picks-the-model-of-each-review-round.md)).
 
-The agent always asks for `yulius-reviewer`. The Agent tool's `PreToolUse` (matcher
+The task briefing selects the review instructions from the active attempt’s harness ([ADR-0376](decisions/0376-review-instructions-follow-the-active-harness.md)). Codex requests GPT-6.2 Astra at high effort and Antigravity requests Gemini 4 Neon (High) for each round. Claude Code asks for `yulius-reviewer`. The Agent tool's `PreToolUse` (matcher
 `Agent|Task`) reaches Yulius with the tool's whole input (`guard_client::agent_request`), and
 `App::review_gate` numbers the round among the rounds of the task's open pull request (a round
 counts once it ended with a report; a reviewer started again for a round without one keeps its
@@ -1510,7 +1524,9 @@ request as it is:
   candidate tested the exact merged result (SPEC-497 MQW-002); a member whose own run fails leaves,
   and the candidate is formed again from the others (MQC-002); an errored or cancelled own run
   leaves it to the candidate (MQW-001); a candidate formed again on the same base with the same
-  members takes its tree's passed run (`App::ci_reuse_for_candidate`); a failed candidate waits
+  members takes its tree's passed run. A rebuilt candidate whose tree recently failed in a
+  candidate run takes that failed run ID first, even on a different base with different members
+  (`App::ci_reuse_for_candidate`, SPEC-542). A failed candidate waits
   for its members' own runs before it is bisected;
 - a pull request that changes files under a glob of the integration branch's `[merge_queue]
   apart` (derived files) that an earlier member also changes is held out of the candidate and
@@ -1543,7 +1559,7 @@ flowchart TD
     P -- passed --> U{contains the integration branch?}
     P -- running, behind --> C
     U -- yes --> M[merged now]
-    U -- no --> C[merge candidate: base + armed pull requests, one run beside their own]
+    U -- no --> C[merge candidate on the current base, reusing a known verdict for its tree]
     C -- a member's own run fails --> C
     C -- passed --> L[each brought up to date, verdict recorded, merged in order]
     C -- failed, n >= 2 --> H[first half again]
@@ -1762,6 +1778,11 @@ watcher's tail opens it the same way at its name); the sandbox adapter reads the
 most 1 MiB of a regular file, and hands people's identity files the text; `record_number` lists
 a numbered directory from the sandbox directory down; the quota's disk usage is measured from
 folder handles; and the task review reads an untracked file from the worktree's folder.
+Session search restores the parser’s dotenv context by replaying the indexed prefix when it resumes
+from the byte and line offsets committed with its passages.
+[Decision 0382](decisions/0382-session-index-resumption-replays-redaction-context.md) describes the
+read budget and the one-time rebuild of historical passages.
+
 Where Git, not the server, would write (it resolves the path it is given and follows links), the
 work moves out of the sandbox instead: an import's snapshot is checked out, filled and committed
 in `<data>/import-worktrees/<sandbox>/import-<job>[-<n>]` (0700, the name taken with a create-new
@@ -2023,6 +2044,19 @@ live overlay. While the park is under way nothing is typed into the session. A m
 prompt. A queued task's summary carries `queue_reason` (the session limit or an update), and
 `GET /api/capacity` counts working, idle, parked and queued sessions for the Capacity card.
 
+The end-of-day digest (`yulius-app/src/digest.rs`, SPEC-512 part 3,
+[decision 0380](decisions/0380-an-end-of-day-digest-built-from-task-state.md)) runs from the same
+tick: `digest_tick` reads `instance.digest`, and once today's time (UTC) passed takes the run with
+a conditional write of `digest_ran_at`. `send_digests_now` first parks, with
+`ParkRule::Digest(threshold)`, running tasks whose agent waits for its turn and that ask nobody
+(the same `park_task_now`, every guard of `ParkFacts`) and waits until those sessions ended, then
+builds one `DigestView` per person who can see each task's project (`can_view`) from task state
+and the transcript's last assistant message (`read_tail`), redacted with `redact_for_sandbox`,
+listing as parked what parked after the last listing and up to this one's mark
+(`digest_listed_at`: its value taken before the build, written after it), keeps it in `digests` (last seven), publishes `digest.ready` to that person and enqueues
+the text on their linked Telegram chat when `notify_digest` is on. The run is spawned off the
+tick.
+
 ```mermaid
 stateDiagram-v2
   running --> parked: idle past the grace period, nothing goes on (session ended)
@@ -2263,7 +2297,12 @@ however long ago; the task's owner alone sends past their own with `with_draft`,
 sender is told, and for a message of Yulius's own, which waits in its watch, the task is flagged
 and its terminal says so once the person's last key is ten minutes old; the key that begins a
 possible draft leaves `person-typed` in the run folder, removed when a prompt is submitted from
-the box and read by `reconcile` for a reattached run), while Claude Code's
+the box and read by `reconcile` for a reattached run). Claude’s scheduled hand-over preserves that mark even when its submit hook
+carries plain text (SPEC-541, [ADR-0388](decisions/0388-claude-scheduled-submits-use-the-transcript-hand-over.md)).
+Before a paste, visible input in
+Claude Code’s conversation box also holds a message. This catches restores that generated no
+key. An automatic message flags the task immediately in this case
+([ADR-0384](decisions/0384-visible-prompt-text-holds-session-messages.md)). Messages also wait while Claude Code's
 folder-trust dialog shows
 (`trust_prompt_shown`), while Yulius types the first message or while anything else
 is typed (`TaskRuntime::typing_message`, held from a line to its Enter by a message,
@@ -2428,8 +2467,12 @@ the task owner's alone (SPEC-490), so nobody else's words reach a run holding th
 server. `TaskRuntime::personal_mcp_of` records whose servers a live run was started with (the run
 directory's `personal-mcp-of` gives that back to a server that restarted, which also restarts a
 run whose record names someone who is not the task's holder any more, SPEC-483 RST-001); a
-hand-over resumes such a run with the new
-owner's servers. `App::mcp_secret_values` adds the servers' literal secret values to
+hand-over resumes such a run with the new owner's servers. After a replayed refusal the
+hand-over places the interrupted turn on an available subscription and carries the reporting
+attempt's model-change notice into its replacement. A deferred limit move acts only on the
+attempt that reported it. The capacity loop defers the persisted pause while that hand-over runs
+([ADR-0389](decisions/0389-a-reattach-finishes-its-hand-over-before-a-limit-moves-the-run.md)).
+`App::mcp_secret_values` adds the servers' literal secret values to
 `App::matcher_for`, so redaction covers them with the agent secrets (MCP changes bump the vault
 generation).
 
@@ -2801,14 +2844,29 @@ flowchart LR
   X -->|"vault.agent.use, actor ci:run"| AUD["secrets audit"]
 ```
 
+## Handoffs between sandboxes
+
+A task's agent may hand work to another sandbox of the instance
+([SPEC-512](../.ai/specs/SPEC-512-marcin-s-five-issues-1412-1418-1413-1107.md) part 5,
+[decision 0395](decisions/0395-tasks-hand-work-to-another-sandbox-behind-an-instance-switch.md),
+`crates/yulius-app/src/handoffs.rs`). `instance.handoffs` holds the switch; a sandbox's
+`profile` holds its opt-out (`accept_handoffs`). `tools/list` adds `sandbox_handoff` to a task
+agent's tools only while the switch is not off, and `tool_sandbox_handoff` refuses (audited) or
+stores a `task_handoffs` row (migration 0076) with its chain and depth: in ask mode it waits
+there for `answer_handoff`, in automatic mode `create_handoff_task` makes the task at once
+through `create_task_as` (origin `handoff`) under the tools' hourly bound. The background tick's
+`tell_handoff_outcomes` types the target's outcome into the source's session (or resumes a
+parked one with it) once the target ended, is Done or merged.
+
 ## The personal Telegram channel
 
 Each person can get their notifications in their own Telegram chat
 ([SPEC-498](../.ai/specs/SPEC-498-accept-outside-pr-1130-personal-telegram.md),
 [decision 0351](decisions/0351-a-personal-telegram-channel-behind-a-notification-channel-port.md)).
 
-- **The port.** `NotificationChannel` (`crates/yulius-app/src/ports/notify.rs`: `check`, `send`,
-  `receive`) is all a chat service implements; `crates/yulius/src/wiring/telegram.rs` is Telegram's
+- **The port.** `NotificationChannel` (`crates/yulius-app/src/ports/notify.rs`: `check`, `send`
+  (the sent message's id), `receive` (text or caption, the replied-to message, files, album) and
+  `fetch_file` (bounded)) is all a chat service implements; `crates/yulius/src/wiring/telegram.rs` is Telegram's
   Bot API over `reqwest` (`YULIUS_TELEGRAM_API_URL`, no redirects, bounded answers, errors typed
   without the token-bearing URL). The store keeps the bot in the `instance` row (sealed like the Jev
   and Vidoc keys) and `telegram_links` / `telegram_link_codes` (migration 0063).
@@ -2830,6 +2888,21 @@ Each person can get their notifications in their own Telegram chat
   person who chose that kind it applies `App::envelope_reaches`, the same function that filters
   `WS /api/events`, then the person's `Throttle` (5 a minute, the rest folded into a summary). Text
   passes `App::redact_for_sandbox` (account text: the shape-based `redact`).
+- **Intake** (`crates/yulius-app/src/telegram_intake.rs`, SPEC-512 part 4,
+  [decision 0392](decisions/0392-a-linked-telegram-chat-answers-and-starts-tasks-when-its-person-turns-intake-on.md)).
+  A notice about a task is queued with what it is about (`enqueue_about`, `SentAbout`: the task
+  and, for a request, its `at`); once sent, `telegram_sent` (migration 0073) keeps it, the last
+  500 per chat, and the bot's own answers about a task too. With the person's `intake` on,
+  `on_inbound` hands a message to the chat's lane, a queue with one worker that runs
+  `App::telegram_intake` for each message in order (20 waiting at most, a whole poll answer; one
+  past that is logged and the chat told, once per quiet window; each re-reads the chat's link
+  first, so intake off or `/stop` ends what waits), so the poll goes on: a reply to a remembered message is
+  `App::task_message_as` from a `ProjectCaller` for the person (`Channel::Telegram`, every guard
+  of their own agent's, the request's `at` passed to `answer_needs_you`); a reply to any other
+  message starts nothing; `/status` lists what waits for them; any other message (an album merged
+  into one) takes one of the project's 20 hourly tool slots (`reserve_tool_task`) and starts a
+  task through `create_task_as` with origin `telegram`, its files fetched into the person's drafts
+  folder and named in the prompt. Off, the chat gets the help reply.
 
 ```mermaid
 sequenceDiagram
@@ -3337,7 +3410,15 @@ not: `POST /api/tasks/{tid}/needs-you/answer` (`App::answer_needs_you`) types on
 through `type_into_session` and ends the request (audited `task.needs_you.answered`); control
 does not move. The task is read again after the access check. It is refused while the agent asks
 in its terminal and, from anyone but the owner, while the owner's personal agent
-secrets or MCP servers reach the run. A playground's guest tidies and answers only their own
+secrets or MCP servers reach the run. A request can name whom it waits for besides the owner
+(`NeedsYouRecord.named`, `who` of `needs_you`,
+[SPEC-512](../.ai/specs/SPEC-512-marcin-s-five-issues-1412-1418-1413-1107.md) part 2,
+[decision 0379](decisions/0379-a-needs-you-names-who-may-answer-it.md)): each a person with write
+access, checked when it is raised. A named request is answered by its owner and whom it still
+names; `task_message` from a non-owner while such a request is open goes through
+`answer_needs_you`; an answer carries the request's `at_ms` (`asked_at_ms`), is refused once the
+request was replaced and ends only that request (`end_task_needs_you_at`, one statement), and the owner withdraws a name (`POST /api/tasks/{tid}/needs-you/withdraw`,
+`task.needs_you.withdrawn`). A playground's guest tidies and answers only their own
 tasks (`TaskRefusal::Guest`). Anyone else who may work in the project (not a guest) takes control at
 once from the task's page or its menu (`App::take_task_control`, `seize_control`,
 [SPEC-510](../.ai/specs/SPEC-510-change-request-control-for-tasks-to-take.md),
@@ -3381,7 +3462,10 @@ drawn for the size its writer's browser sets and is unreadable at another
 `watchview.js` prints the session with the Sessions view's renderer in the terminal's colours and
 reads on from where it stopped; `App::task_transcript` reads the file of the lineage entry adopted
 last (`transcripts::read_tail`, then `read_page` from `end`) and answers an unchanged size from a
-`stat`. Only the run's own `SessionStart` hook changes a task's session (`/clear`, `/resume`); a
+`stat`. The server's read cursor keeps the IDs of Claude background shells that read dotenv files,
+so each later `BashOutput` or `TaskOutput` for that shell gets dotenv redaction.
+[SPEC-536](../.ai/specs/SPEC-536-carry-claude-redaction-into-background-c.md).
+Only the run's own `SessionStart` hook changes a task's session (`/clear`, `/resume`); a
 `claude` the agent runs in its worktree writes a transcript beside the TUI's but is never adopted
 ([decision 0209](decisions/0209-only-the-tui-s-own-hooks-change-the-task-s-session.md)).
 While the reader has not scrolled up, a `ResizeObserver` keeps the view at the bottom through every
@@ -3411,6 +3495,8 @@ sequenceDiagram
 
 ## Ready-made automations
 
+Each automation has an immutable creator. HTTP and MCP compare the authenticated person with the creator before saving, re-enabling or starting a run. Task creation uses that same identity. [ADR-0381](decisions/0381-automation-creators-authorize-edits-and-starts.md)
+
 Ready-made automations are a read-only catalog like the default workflows
 ([SPEC-042](../.ai/specs/SPEC-042-create-2-default-automations-that-can-be.md),
 [decision 0034](decisions/0034-ready-made-automations-catalog.md)): `catalog/automations/*.md`,
@@ -3425,9 +3511,9 @@ flowchart LR
   CAT["catalog/automations/*.md"] -->|"build.rs embeds"| TPL["automations::templates"]
   UI["Automations page: Defaults"] -->|"GET automation-templates"| TPL
   UI -->|"POST …/enable"| EN["App::enable_automation_template"]
-  EN -->|"same name exists"| UPD["re-enable it"]
+  EN -->|"same name, paused, caller is creator"| UPD["re-enable it"]
   EN -->|"else"| INS["insert automation (enabled)"]
-  INS --> SCH["Scheduler: one task per slot"]
+  INS --> SCH["Scheduler: one task per slot as creator"]
   UPD --> SCH
 ```
 
@@ -3601,7 +3687,10 @@ that waits in `yulius wait` goes on by itself. Its task reads Working ("Waiting 
 merge"), even with a complete plan and a tested pull request; only an achieved goal makes it Done.
 
 While a goal is open, a clean Stop reads idle only after the goal verdict (or the turn record, or
-20 s). A proactive switch waits for any of this background work
+20 s). For a prompt-mode Claude resume, the supervisor reads the conversation’s last goal
+status before spawning the process. The new attempt still counts its turns and usage from its
+own start. [ADR-0386](decisions/0386-prompt-goals-follow-the-resumed-claude-conversation.md).
+A proactive switch waits for any of this background work
 ([ADR-0063](decisions/0063-background-work-and-goal-verdict-from-the-transcript.md)), also when
 the look at the session's processes gives no answer (`background_work_now` is `None`: not known
 counts as running for everyone who asks before a session ends, so a host whose look never
@@ -3662,6 +3751,11 @@ every agent mid-turn: a run that is watched again takes the time back from the f
 (`watch_answerable_flag`), so the task reads Working once the person answered and the agent goes
 on, after a restart as before one. The same holds for a question that took a secret request's
 flag over.
+
+A live `yulius wait` under Codex counts as a wait whether Codex execs it directly or launches
+it through a shell. The process probe excludes waits adopted by the sandbox init. A failed PR
+check has its own action in the task strip. The terminal reply banner is for a person's turn
+or an explicit request ([SPEC-552](../.ai/specs/SPEC-552-on-codex-agent-keeps-calling-me-even-if.md)).
 
 Needs you means a person has to act. An idle agent that stopped reads "Your turn" under Needs you only
 while its work is visibly unfinished: plan steps open, or a goal that Claude Code last recorded as set,
@@ -4231,8 +4325,8 @@ the new one only through `ssh` with a one-time key and a handful of constant rem
 (`remote.rs`): every value travels as JSON or as a stream on standard input, never in a command
 line. The new host's steps (`target.rs`) are Rust code over `host_setup::Host`, run there by the
 same build, which the flow copies first (`yulius instance migrate-target`). The old host's profile
-(`profile.rs`: the unit and its drop-ins, key files, apt sources and the manual package list,
-software outside apt, the update helper, the move helper, Caddy, ufw) is read live and fitted to
+(`profile.rs`: the server’s unit and its drop-ins, the sessions unit’s drop-ins, key files, apt sources,
+the manual package list, software outside apt, the update helper, the move helper, Caddy, ufw) is read live and fitted to
 the new host by pure rewrites (release codename, public URL, host name). The copy is the export's
 own stream, sent in passes into a staged copy (`warm.rs`; SPEC-465, ADR-0303): passes while the old instance
 runs, then one exact pass while it is frozen. The old host keeps a receipt for every path the new
@@ -4289,7 +4383,7 @@ old name is remembered (`moved` in `remote-credentials.json`) and the call is re
 A superadmin asks for the same move from Settings → Instance (SPEC-470, ADR-0305). The server is
 the unprivileged service user and is frozen during the copy, so root runs the command for it, as it
 installs updates: the server writes `<data>/migrate/request.json` (plan, move or abort, with the
-host, SSH port, public URL and data disks; `yulius-contracts::migrate`), the root-owned path unit
+host, SSH port, public URL, data disks and optional freeze limit in minutes; `yulius-contracts::migrate`), the root-owned path unit
 `yulius-migrate.path` starts `yulius migrate-helper` (`crates/yulius/src/migrate_helper.rs`), and
 the helper runs `yulius instance migrate --no-sign-in` as a child process with each value as one
 argument: such a run never signs in as root does (the command's operator sign-in is not tried, no
@@ -4355,18 +4449,18 @@ sequenceDiagram
     T->>M: marker: entries installed and synced
     M->>O: downtime: the estimated freeze (copy again while above --max-downtime)
   end
-  M->>D: systemctl freeze yulius.service
+  M->>D: systemctl freeze yulius.service, then yulius-sandboxes.service where present
   M->>T: the frozen pass: what changed, and every path the old host holds
   T->>T: install, remove what is not among those paths
   T->>M: inventory of the copy
   alt inventories differ or a step fails
-    M->>D: systemctl thaw (the old instance runs on)
+    M->>D: systemctl thaw yulius-sandboxes.service where present, then yulius.service (the old instance runs on)
   else equal
     M->>T: mark the copy, finish host setup, start
     T->>S: systemctl enable, start, wait for the build to answer
     alt not healthy
-      M->>T: stop and disable
-      M->>D: systemctl thaw
+      M->>T: disable and stop the server, kill and stop its sessions unit
+      M->>D: systemctl thaw yulius-sandboxes.service where present, then yulius.service
     else healthy
       M->>D: systemctl disable (stays frozen)
       S->>S: first start: queue the tasks that were live

@@ -3,7 +3,7 @@
 //! adapter; `ExtensionStores` bundles them into [`super::store::Store`].
 
 use async_trait::async_trait;
-use yulius_domain::ids::{SandboxId, TaskId};
+use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::time::Timestamp;
 
 use crate::automations::{AuditEntry, AutomationRecord, AutomationRunRecord, RunState};
@@ -696,6 +696,117 @@ pub trait CdStore: Send + Sync {
     ) -> AppResult<Vec<yulius_domain::rollback::ReleaseRecord>>;
 }
 
+/// One handoff as stored (SPEC-512 HOF-003..HOF-006).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HandoffRecord {
+    /// Its id.
+    pub id: String,
+    /// The task that asked.
+    pub source_task: TaskId,
+    /// Its sandbox.
+    pub source_sandbox: SandboxId,
+    /// The sandbox it hands to.
+    pub target_sandbox: SandboxId,
+    /// The source task's owner, who the new task belongs to.
+    pub owner: UserId,
+    /// The arguments, as JSON (`title`, `prompt`, options): exactly what is created.
+    pub args: String,
+    /// The sandboxes of its chain, the source's first.
+    pub chain: Vec<String>,
+    /// Its depth: 1 for a task no handoff made.
+    pub depth: u32,
+    /// `requested`, `creating` (claimed, its task being made), `created`, `declined` or
+    /// `refused`.
+    pub state: String,
+    /// Why it was refused or declined.
+    pub reason: Option<String>,
+    /// The task it made.
+    pub target_task: Option<TaskId>,
+    /// When it was asked.
+    pub created_at: Timestamp,
+}
+
+/// Tasks hand work to another sandbox (SPEC-512 part 5, migration 0076).
+#[async_trait]
+pub trait HandoffStore: Send + Sync {
+    /// The instance's setting as stored (JSON; `None`: never set).
+    async fn handoff_setting(&self) -> AppResult<Option<String>>;
+    /// Saves the setting.
+    ///
+    /// # Errors
+    /// `Conflict` while the instance is not set up.
+    async fn set_handoff_setting(&self, doc: &str) -> AppResult<()>;
+    /// Stores a new handoff.
+    async fn insert_handoff(&self, handoff: &HandoffRecord) -> AppResult<()>;
+    /// One handoff.
+    async fn handoff(&self, id: &str) -> AppResult<Option<HandoffRecord>>;
+    /// A task's own handoffs, newest first.
+    async fn handoffs_of_source(&self, task: &TaskId) -> AppResult<Vec<HandoffRecord>>;
+    /// The handoff that made `task`, if one did.
+    async fn handoff_of_target(&self, task: &TaskId) -> AppResult<Option<HandoffRecord>>;
+    /// Moves a handoff from `from` to `to` (with its reason and the task it made) only while it
+    /// is still `from`; `false` when it was not.
+    async fn decide_handoff(
+        &self,
+        id: &str,
+        from: &str,
+        to: &str,
+        reason: Option<&str>,
+        target_task: Option<&TaskId>,
+        at: Timestamp,
+    ) -> AppResult<bool>;
+    /// How many handoffs `owner` asked for since `since` that were not refused.
+    async fn handoffs_since(&self, owner: &UserId, since: Timestamp) -> AppResult<u32>;
+    /// The created handoffs whose outcome was not told yet.
+    async fn untold_handoffs(&self) -> AppResult<Vec<HandoffRecord>>;
+    /// Records the outcome as told; `false` when it already was.
+    async fn mark_handoff_told(&self, id: &str) -> AppResult<bool>;
+    /// At start: a handoff left `creating` by a server that stopped is `created` when its task
+    /// was recorded, else `refused` (asked again by its agent, never created twice); how many.
+    async fn settle_creating_handoffs(&self, at: Timestamp) -> AppResult<u64>;
+}
+
+/// One person's stored digest (SPEC-512 DIG-005).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredDigest {
+    /// Its id.
+    pub id: String,
+    /// When it was made.
+    pub created_at: Timestamp,
+    /// Its `DigestView` as JSON.
+    pub body: String,
+}
+
+/// The end-of-day digest (SPEC-512 part 3): the instance's setting, its last run and each
+/// person's digests.
+#[async_trait]
+pub trait DigestStore: Send + Sync {
+    /// The setting as stored (JSON; `None`: never set) and when the digest last ran.
+    async fn digest_setting(&self) -> AppResult<(Option<String>, Option<Timestamp>)>;
+    /// Saves the setting and `ran_at` as the last run, so a digest turned on is first sent at
+    /// its next time.
+    ///
+    /// # Errors
+    /// `Conflict` while the instance is not set up.
+    async fn set_digest_setting(&self, doc: &str, ran_at: Timestamp) -> AppResult<()>;
+    /// Takes the day's run: records `now` as the last run, and as when a run was last claimed,
+    /// only while the last run is still `seen`; `false` when another took it (DIG-002).
+    async fn take_digest_run(&self, seen: Option<Timestamp>, now: Timestamp) -> AppResult<bool>;
+    /// When a run was last claimed (DIG-002); a save of the setting leaves it.
+    async fn digest_sent_at(&self) -> AppResult<Option<Timestamp>>;
+    /// Where the last digest's listing ended (DIG-004): it listed what was parked before it.
+    async fn digest_listed_at(&self) -> AppResult<Option<Timestamp>>;
+    /// Records where a digest's listing ended.
+    ///
+    /// # Errors
+    /// `Conflict` while the instance is not set up.
+    async fn set_digest_listed_at(&self, at: Timestamp) -> AppResult<()>;
+    /// Keeps `digest` for `user`, and only their last seven.
+    async fn put_digest(&self, user: &UserId, digest: &StoredDigest) -> AppResult<()>;
+    /// The person's latest digest.
+    async fn latest_digest(&self, user: &UserId) -> AppResult<Option<StoredDigest>>;
+}
+
 /// What a task's agent asked a person to do (SPEC-134 CDT-004, column `tasks.needs_you`).
 #[async_trait]
 pub trait NeedsYouStore: Send + Sync {
@@ -717,6 +828,24 @@ pub trait NeedsYouStore: Send + Sync {
         &self,
         task: &TaskId,
         action: &str,
+        at: Timestamp,
+    ) -> AppResult<bool>;
+    /// Ends the request asked at `asked_at` (milliseconds) at `at`, in one step, only while it is
+    /// the open one: a request asked later stays (SPEC-512 ANS-004). `true` when it ended one.
+    async fn end_task_needs_you_at(
+        &self,
+        task: &TaskId,
+        asked_at: i64,
+        at: Timestamp,
+    ) -> AppResult<bool>;
+    /// Replaces the open request `read` with `next` at `at`, in one step, only while it is still
+    /// `read`: asked at the same time, the same action, naming the same people (SPEC-512
+    /// ANS-005). `true` when it replaced it.
+    async fn replace_task_needs_you(
+        &self,
+        task: &TaskId,
+        read: &crate::needs_you::NeedsYouRecord,
+        next: &crate::needs_you::NeedsYouRecord,
         at: Timestamp,
     ) -> AppResult<bool>;
     /// Tasks of a sandbox with an open request.
@@ -809,6 +938,8 @@ pub trait ExtensionStores:
     + CiStore
     + CdStore
     + NeedsYouStore
+    + DigestStore
+    + HandoffStore
     + crate::ports::session_docs::SessionDocStore
     + NoteStore
     + SpanStore
@@ -834,6 +965,8 @@ impl<T> ExtensionStores for T where
         + CiStore
         + CdStore
         + NeedsYouStore
+        + DigestStore
+        + HandoffStore
         + crate::ports::session_docs::SessionDocStore
         + NoteStore
         + SpanStore

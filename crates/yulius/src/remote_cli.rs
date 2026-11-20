@@ -13,7 +13,8 @@ use std::process::ExitCode;
 use serde_json::{Map, Value, json};
 use yulius_domain::vault::plain::{carries_credential, credential_name};
 use yulius_import::{
-    Relocated, RemoteClient, RemoteError, Secret, TokenStore, Url, discover_repo, parse_dotenv,
+    FollowedSignIn, Relocated, RemoteClient, RemoteError, Secret, TokenStore, Url, discover_repo,
+    parse_dotenv,
 };
 
 /// Options every remote command takes.
@@ -283,7 +284,7 @@ fn client(opts: &RemoteOpts) -> Result<(Url, RemoteClient), String> {
 /// token is sent nowhere to find out.
 fn failed(server: &Url, err: &RemoteError) -> String {
     let said = err.to_string();
-    if !matches!(err, RemoteError::Transport(_)) {
+    if !matches!(err, RemoteError::Connect(_)) {
         return said;
     }
     let from = store()
@@ -545,20 +546,18 @@ fn login(url: &str, token_stdin: bool) -> ExitCode {
         })?;
         // A sign-in that had followed this URL's move comes back when its own token was typed;
         // with another token it stays, and may be one for an instance that is gone.
-        let followed = store.moved_to(&server).map_err(|e| e.to_string())?;
-        store.save(&server, &token).map_err(|e| e.to_string())?;
-        let kept = followed.filter(|to| {
-            parse_url(to)
-                .ok()
-                .and_then(|to| store.load(&to).ok().flatten())
-                .is_some()
-        });
+        let followed = store
+            .save_with_move(&server, &token)
+            .map_err(|e| e.to_string())?;
         let meta = &info["_meta"];
-        let with = match kept {
-            Some(to) => format!(
+        let with = match followed {
+            Some(FollowedSignIn::Kept(to)) => format!(
                 ". The sign-in that followed its move to {to} is kept; if that instance is \
                  gone, forget it: `yulius remote logout --server {to}`"
             ),
+            Some(FollowedSignIn::Returned(to)) => {
+                format!(". The sign-in is back and {to} now leads here")
+            }
             None => String::new(),
         };
         Ok(format!(

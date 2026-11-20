@@ -11,7 +11,7 @@ import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, agentO
 import { heldPromptCard, splitCard, supertaskCard, checkRequest, intakeStatus } from './intake.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
-import { openTaskMenu, openSubscriptionMenu, continueTask, deliveryStrip, startNow, stopTask, resumeTask, requestControl, takeControl, answerNeedsYou, dropControlRequest, handOverTask, takeBackTask, openScheduleDialog, rescheduleTask } from './actions.js';
+import { openTaskMenu, openSubscriptionMenu, continueTask, deliveryStrip, startNow, stopTask, resumeTask, requestControl, takeControl, answerNeedsYou, withdrawNeedsYou, dropControlRequest, handOverTask, takeBackTask, openScheduleDialog, rescheduleTask } from './actions.js';
 import { attachTerminalDrop, attachPromptDrop, draftAttachments, taskAttachments, withAttachments, openAttachment } from './filedrop.js';
 import { createPromptInput, ATOM, FILE_MARK, FILE_MARK_END, PLACE_TYPE, placeFiles, withoutMarks } from './promptinput.js';
 import { mentionOf, parsePrompt } from './promptparts.js';
@@ -26,6 +26,7 @@ import { antigravityConnected, claudeConnected, codexConnected, connectClaudeSte
 import { aName, agentOfHarness } from './agents.js';
 import { isPhone } from './theme.js';
 import { draftFor, saveDraft, clearDraft, attachToDraft, onDraftChange } from './drafts.js';
+import { handoffsPanel } from './handoffs.js';
 
 const STEP_MARK = { done: '✓', in_progress: '▸', pending: '·', skipped: '–', blocked: '✕' };
 const STEP_LABEL = { done: 'Done', in_progress: 'In progress', pending: 'To do', blocked: 'Blocked', skipped: 'Skipped' };
@@ -369,11 +370,15 @@ export function mountTaskView(ctx, sandbox, task) {
   // its own cursor. Phones have the quick input for it. The field stays in the bar (hidden when not
   // replying), so the bar's updates never take it out from under someone typing (IME, readers).
   let replying = false;
+  // The request a reply to someone else's task answers, as it was when Reply opened (SPEC-512
+  // ANS-004): the agent may replace it while the field is open.
+  let replyAskedAtMs = null;
   const replyInput = h('input', { class: 'input', type: 'text', placeholder: 'Reply to the agent…', autocomplete: 'off', enterkeyhint: 'send', 'aria-label': 'Reply to the agent' });
   const replyButton = h('button', { type: 'button', class: 'btn btn-sm', onClick: () => {
     // Someone else's task has no terminal to type in: its Needs you is answered in the field
     // (SPEC-516).
     if (isPhone() && !owner()) { quickInput.focus(); return; }
+    replyAskedAtMs = current.needs_you && Number.isFinite(current.needs_you.at_ms) ? current.needs_you.at_ms : null;
     replying = true;
     renderAttention();
     replyInput.focus();
@@ -389,11 +394,20 @@ export function mountTaskView(ctx, sandbox, task) {
     const text = replyInput.value.trim();
     if (!text) { replyInput.focus(); return; }
     if (owner()) {
+      // The question shown is no longer the one the field was opened on (SPEC-512 ANS-004): the
+      // person is told and reads it; the field answers it from the next send on.
+      const shown = current.needs_you && Number.isFinite(current.needs_you.at_ms) ? current.needs_you.at_ms : null;
+      if (shown !== null && replyAskedAtMs !== null && shown !== replyAskedAtMs) {
+        replyAskedAtMs = shown;
+        toast('The question you answered was replaced by a new one: read it and answer again.', { kind: 'warn' });
+        replyInput.focus();
+        return;
+      }
       // Someone else's task (SPEC-516): the answer goes to the server, which types it labelled
       // into the session; control stays with the owner. Refused, the field keeps its text.
       answering = true;
       replyInput.readOnly = true;
-      const answered = await answerNeedsYou(ctx, current, text).finally(() => {
+      const answered = await answerNeedsYou(ctx, current, text, replyAskedAtMs).finally(() => {
         answering = false;
         replyInput.readOnly = false;
       });
@@ -426,6 +440,8 @@ export function mountTaskView(ctx, sandbox, task) {
     attentionStale = false;
     const pr = ctx.store.pullsOf(current.sandbox_id).get(current.id);
     const info = taskInfo(current, ctx.store.state.actionRequests, pr);
+    // Failed checks already have their PR action in the strip.
+    const waitingForReply = current.status === 'running' && current.activity === 'waiting' && info.group === 'needs' && !info.pr;
     let content = null;
     let asksPerson = false; // the bar shows a `needs_you` request
     let textAnswer = false; // the bar asks for an answer written in its reply field
@@ -503,11 +519,19 @@ export function mountTaskView(ctx, sandbox, task) {
       const asksInTerminal = current.activity === 'needs_attention';
       // Someone else's task: anyone who may work there but a guest answers it without taking
       // control (SPEC-516), while it runs and unless the agent asks in its terminal.
-      const answers = !owner() || (current.status === 'running' && allows(access, 'write') && !(ctx.guest && ctx.guest()) && !asksInTerminal);
+      // A request that names people is theirs and its owner's (SPEC-512 ANS-002).
+      const named = asked.named === true;
+      const who = Array.isArray(asked.who) ? asked.who : [];
+      const forMe = !named || who.includes(String(me() || '').toLowerCase());
+      // A parked task's question stays open: an answer resumes it (SPEC-512 ANS-002).
+      const answers = !owner() || (['running', 'parked'].includes(current.status) && allows(access, 'write') && !(ctx.guest && ctx.guest()) && !asksInTerminal && forMe);
       textAnswer = answers && !asksInTerminal;
       asksPerson = true;
       replyButton.title = owner() ? 'Answers the agent without taking control of the task' : '';
-      content = [icon('st-attention', { size: 16 }), needsYouText(asked),
+      // Whom it asks besides the owner, whom the owner withdraws (SPEC-512 ANS-005).
+      const asks = who.length ? h('div', { class: 'needs-you-who small' }, `Asks ${who.map((login) => `@${login}`).join(', ')}`,
+        owner() ? null : who.map((login) => h('button', { type: 'button', class: 'btn btn-sm btn-ghost', 'aria-label': `Withdraw @${login}`, title: `@${login} no longer answers this question`, onClick: () => withdrawNeedsYou(ctx, current, login) }, `Withdraw @${login}`))) : null;
+      content = [icon('st-attention', { size: 16 }), needsYouText(asked), asks,
         asked.link ? openLink(asked.link) : null,
         !answers ? null : asksInTerminal ? terminalReply : replying ? null : replyButton];
     } else if (info.request) {
@@ -534,7 +558,7 @@ export function mountTaskView(ctx, sandbox, task) {
             asks ? 'Its question is in the terminal below.' : 'Look at its terminal below.']),
           owner() ? null : terminalReply];
       }
-    } else if (current.status === 'running' && current.activity === 'waiting' && info.group === 'needs') {
+    } else if (waitingForReply) {
       content = [icon('st-input', { size: 16 }), h('span', { class: 'attention-text' }, owner()
         ? h('strong', null, `The agent is waiting for @${owner()}'s reply.`)
         : [h('strong', null, 'The agent is waiting for your reply. '), 'Type it in the terminal below.']),
@@ -545,7 +569,7 @@ export function mountTaskView(ctx, sandbox, task) {
     attention.hidden = !content && !control;
     // A request's buttons go under it when the bar is too narrow for both (SPEC-327 review).
     attention.classList.toggle('needs-you', asksPerson);
-    attention.classList.toggle('waiting', !control && !info.request && current.activity === 'waiting' && info.group === 'needs');
+    attention.classList.toggle('waiting', !control && !info.request && waitingForReply);
     attention.classList.toggle('stacked', Boolean(control && content));
     // A waiting task's start chip and buttons go below its words (SPEC-126).
     const waits = (current.status === 'chained' || current.status === 'prepared') && can.startNow;
@@ -810,7 +834,10 @@ export function mountTaskView(ctx, sandbox, task) {
   }
 
   // Watching, the control card sits above the transcript in the flow (SPEC-179 WAT-005).
-  const termArea = h('div', { class: ['taskview-term', watch && 'watching'] }, terminal.el, attention, held, queueSlot);
+  // Where it was handed off from, and its own handoffs (SPEC-512 HOF-004, HOF-005).
+  const handoffs = handoffsPanel(ctx, () => current, () => Boolean(current.owner && current.owner.login === me()));
+  destroyers.push(handoffs.destroy);
+  const termArea = h('div', { class: ['taskview-term', watch && 'watching'] }, terminal.el, attention, held, handoffs.el, queueSlot);
   // The terminal's corner notices start below the attention bar, however tall it is (SPEC-327).
   const attentionSize = new ResizeObserver(() => {
     termArea.style.setProperty('--attention-h', `${attention.offsetHeight}px`);

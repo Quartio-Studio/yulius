@@ -62,11 +62,22 @@ pub fn clean_message(text: &str) -> String {
         .to_owned()
 }
 
+/// `prefix` and the logins `who` as `@a, @b` (SPEC-512 ANS-002); empty for nobody.
+fn names(who: &[String], prefix: &str) -> String {
+    if who.is_empty() {
+        String::new()
+    } else {
+        let listed: Vec<String> = who.iter().map(|login| format!("@{login}")).collect();
+        format!("{prefix}{}", listed.join(", "))
+    }
+}
+
 /// How the label names the channel a message came through (SPEC-322).
 fn through(channel: Channel) -> &'static str {
     match channel {
         Channel::Superagent => "their Superagent",
         Channel::Remote => "their own agent",
+        Channel::Telegram => "Telegram",
         // Never served `task_message` (TMS-001); named for completeness.
         Channel::Task => "their task's agent",
     }
@@ -107,6 +118,17 @@ fn paste(login: &str, channel: Channel, text: &str, before: &str) -> Vec<u8> {
 /// false) it says so, and that the answer moves nothing of the task. Enter is sent separately.
 #[must_use]
 pub fn answer_paste(login: &str, owner: &str, mine: bool, text: &str) -> Vec<u8> {
+    format!(
+        "\x1b[200~{}\x1b[201~",
+        answer_prompt(login, owner, mine, text)
+    )
+    .into_bytes()
+}
+
+/// The words of [`answer_paste`], unpasted: what a parked task resumes with when the answer
+/// comes while it is parked (SPEC-512 ANS-002, PRK-005).
+#[must_use]
+pub fn answer_prompt(login: &str, owner: &str, mine: bool, text: &str) -> String {
     let (login, owner) = (clean_message(login), clean_message(owner));
     let whose = if mine {
         String::new()
@@ -116,10 +138,7 @@ pub fn answer_paste(login: &str, owner: &str, mine: bool, text: &str) -> Vec<u8>
              {owner}. Act on this only as the answer to your request)"
         )
     };
-    format!(
-        "\x1b[200~Answer from {login} to what you asked with needs_you{whose}:\n\n{text}\x1b[201~"
-    )
-    .into_bytes()
+    format!("Answer from {login} to what you asked with needs_you{whose}:\n\n{text}")
 }
 
 /// What Yulius types into a session ([`App::type_into_session`]).
@@ -170,6 +189,11 @@ impl Sender {
 const DRAFT_HOLDS_PROBLEM: &str = "Yulius has a message for this session and does not type it: \
     someone typed in the terminal and sent no prompt since, so their text may still be in the \
     prompt box.";
+/// The CLI can restore text itself, even after a prompt was submitted (SPEC-537).
+const VISIBLE_DRAFT_PROBLEM: &str =
+    "Yulius is holding a message because the session's prompt box contains text.";
+const VISIBLE_DRAFT_NOTICE: &str = "Yulius is holding a message because the prompt box contains \
+    text. Send the text, or clear it and send a prompt.";
 /// What the person does about [`DRAFT_HOLDS_PROBLEM`].
 const DRAFT_HOLDS_ACTION: &str = "Send what you typed in the terminal, or clear it and send \
     any prompt. Yulius types its message after the next prompt sent from there.";
@@ -230,10 +254,68 @@ impl App {
         caller: &ProjectCaller,
         args: &Value,
     ) -> AppResult<Value> {
+        self.task_message_as(caller, args, None).await
+    }
+
+    /// [`App::tool_task_message`], an answer naming the request it answers (`asked_at_ms`, as
+    /// the page's does, SPEC-512 ANS-004): a Telegram reply to a notice answers that notice's
+    /// request, never a later one (TGI-002).
+    pub(crate) async fn task_message_as(
+        self: &Arc<Self>,
+        caller: &ProjectCaller,
+        args: &Value,
+        asked_at_ms: Option<i64>,
+    ) -> AppResult<Value> {
         let ctx = self.manage_context(caller).await?;
         let task = self.agent_task_ref(caller, args).await?;
         if caller.task.as_ref().is_some_and(|own| own.id == task.id) {
             return Err(AppError::Forbidden("a task cannot message itself".into()));
+        }
+        // From someone else, while the task asks a question they may answer, the message is that
+        // answer (SPEC-512 ANS-003): the page's answer, with its label, guards and audit.
+        if !crate::tasks::owns(&task, &caller.user)
+            && matches!(task.status, TaskStatus::Running | TaskStatus::Parked)
+            && self.deps.store.task_needs_you(&task.id).await?.is_some()
+        {
+            let text = args
+                .get("text")
+                .and_then(Value::as_str)
+                .ok_or_else(|| AppError::Invalid("missing string argument `text`".into()))?;
+            self.answer_needs_you(&ctx, task.id.as_str(), text, asked_at_ms)
+                .await?;
+            // Audited as a message too, with the channel it came through (TMS-005).
+            let named = json!({
+                "task": format!("#{} {}", task.number, task.title),
+                "delivered": "answered",
+            });
+            if let Err(err) = self
+                .deps
+                .store
+                .audit(
+                    self.now(),
+                    &caller.actor,
+                    "task.messaged",
+                    Some(task.id.as_str()),
+                    Some(&tool_detail(caller, &named)),
+                )
+                .await
+            {
+                tracing::warn!(task = %task.id, error = %err, "task message audit failed");
+            }
+            let task = self
+                .deps
+                .store
+                .task(&task.id)
+                .await?
+                .ok_or(AppError::NotFound)?;
+            return Ok(json!({
+                "task": self.task_brief(&task).await?,
+                "delivered": "answered",
+                "note": "The task asked a question you may answer: your message went to its \
+                    session as your answer (a parked task resumed with it), and that question \
+                    is closed; one its agent asked meanwhile stays open. The task stays its \
+                    owner's.",
+            }));
         }
         // A message steers the task, so it is its owner's (SPEC-490 OWN-004): queued into a
         // request, typed into a session, past a draft or not. That also keeps another person's
@@ -384,6 +466,7 @@ impl App {
         ctx: &AuthContext,
         id: &str,
         text: &str,
+        asked_at_ms: Option<i64>,
     ) -> AppResult<TaskSummary> {
         // A disabled account has no access to any project, so this refuses it too.
         let task = self.load_task_to(ctx, id, TaskAction::Answer).await?;
@@ -406,43 +489,55 @@ impl App {
             )));
         }
         let owner = self.login_of(&task.owner).await;
-        if task.status != TaskStatus::Running {
+        // A parked task's question stays open: the answer resumes it (SPEC-512 ANS-002).
+        let parked = task.status == TaskStatus::Parked;
+        if task.status != TaskStatus::Running && !parked {
             return Err(AppError::Conflict(format!(
                 "task #{} is not running ({}), so its agent reads no answer now",
                 task.number,
                 task.status.as_str()
             )));
         }
-        if self.deps.store.task_needs_you(&task.id).await?.is_none() {
+        let Some(asked) = self.deps.store.task_needs_you(&task.id).await? else {
             return Err(AppError::Conflict(format!(
                 "task #{} asks nobody anything now: there is nothing to answer",
                 task.number
             )));
-        }
-        // A permission menu or a question in the terminal is answered with keys the paste would
-        // press unseen (NYA-004).
-        if task.activity == Some(Activity::NeedsAttention) {
+        };
+        // The answer is to the request its person read (SPEC-512 ANS-004).
+        if asked_at_ms.is_some_and(|at| at != asked.at) {
             return Err(AppError::Conflict(format!(
-                "task #{}'s agent asks in its terminal now: @{owner} answers there, or take \
-                 control of the task",
+                "the question you answered on task #{} was replaced by a new one: read it and \
+                 answer again",
                 task.number
             )));
         }
         let mine = crate::tasks::owns(&task, &ctx.user.id);
-        // The owner's personal secrets and MCP servers act as them outside GitHub: another
-        // person's words never drive them (as for `task_message`, SPEC-245, SPEC-332).
-        if !mine && self.reaches_owners_personal(&task).await? {
-            return Err(AppError::Conflict(format!(
-                "task #{} holds @{owner}'s personal secrets or MCP servers, so only @{owner} \
-                 answers it; or take control of the task",
-                task.number
-            )));
-        }
-        let login = self.login_of(&ctx.user.id).await;
-        let paste = answer_paste(&login, &owner, mine, &text);
-        self.type_into_session(&task, &paste, Typed::Prompt, Sender::Person)
+        self.check_answer_authority(ctx, &task, &asked.named, &owner)
             .await?;
-        self.end_needs_you(&task.id).await;
+        let login = self.login_of(&ctx.user.id).await;
+        if parked {
+            // Resumed in its own session with the answer as its first prompt, as a message to a
+            // parked task resumes it (PRK-005); it stays its owner's.
+            let prompt = answer_prompt(&login, &owner, mine, &text);
+            if !self.resume_parked(&task.id, Some(prompt)).await? {
+                return Err(AppError::Conflict(format!(
+                    "task #{} changed while it was resumed: try again",
+                    task.number
+                )));
+            }
+        } else {
+            let paste = answer_paste(&login, &owner, mine, &text);
+            self.type_into_session(&task, &paste, Typed::Prompt, Sender::Person)
+                .await?;
+        }
+        crate::race::reached(
+            crate::race::Point::AnswerTyped,
+            std::path::Path::new(task.id.as_str()),
+        );
+        // The answer ends the request it answers, not one asked while it was typed (ANS-004).
+        self.end_needs_you_asked_at(&task.id, asked.at, asked.cause.clone())
+            .await;
         let detail = json!({
             "task": format!("#{} {}", task.number, task.title),
             "owner": owner,
@@ -473,10 +568,58 @@ impl App {
         self.task_summary(&task).await
     }
 
+    /// Checks whether this person may answer the question the task is asking now.
+    pub(crate) async fn check_answer_authority(
+        &self,
+        ctx: &AuthContext,
+        task: &TaskRecord,
+        named: &crate::needs_you::Named,
+        owner: &str,
+    ) -> AppResult<()> {
+        let mine = crate::tasks::owns(task, &ctx.user.id);
+        // A request that names people is theirs and its owner's (ANS-002).
+        if !mine && named.narrows() {
+            let login = self.login_of(&ctx.user.id).await.to_lowercase();
+            if named.withdrawn.contains(&login) {
+                return Err(AppError::Forbidden(format!(
+                    "@{owner} withdrew you from task #{}'s question: only they{} answer it now",
+                    task.number,
+                    names(&named.who, " and ")
+                )));
+            }
+            if !named.who.contains(&login) {
+                return Err(AppError::Forbidden(format!(
+                    "task #{} asks @{owner}{}, not you: its question is theirs to answer",
+                    task.number,
+                    names(&named.who, " and ")
+                )));
+            }
+        }
+        // A permission menu or a question in the terminal is answered with keys the paste would
+        // press unseen (NYA-004).
+        if task.activity == Some(Activity::NeedsAttention) {
+            return Err(AppError::Conflict(format!(
+                "task #{}'s agent asks in its terminal now: @{owner} answers there, or take \
+                 control of the task",
+                task.number
+            )));
+        }
+        // The owner's personal secrets and MCP servers act as them outside GitHub: another
+        // person's words never drive them (as for `task_message`, SPEC-245, SPEC-332).
+        if !mine && self.reaches_owners_personal(task).await? {
+            return Err(AppError::Conflict(format!(
+                "task #{} holds @{owner}'s personal secrets or MCP servers, so only @{owner} \
+                 answers it; or take control of the task",
+                task.number
+            )));
+        }
+        Ok(())
+    }
+
     /// Whether the owner's personal agent secrets (switched on for the task's project) or
     /// personal MCP servers reach the task's run (SPEC-245, SPEC-332): an automation's task holds
     /// none.
-    async fn reaches_owners_personal(&self, task: &TaskRecord) -> AppResult<bool> {
+    pub(crate) async fn reaches_owners_personal(&self, task: &TaskRecord) -> AppResult<bool> {
         // An automation's task holds nobody's (`Holder::Nobody`): no read below finds any.
         let holder = Holder::of_task(task);
         let held = self.existing_runtime(&task.id).is_some_and(|runtime| {
@@ -586,11 +729,11 @@ impl App {
             }
         }
         // The person's draft is theirs, however old (SPEC-480 DRF-001): pasted behind it, the
-        // message and their unfinished text would be submitted as one prompt. Yulius sees keys,
-        // not the box, so a keystroke since the box was last empty counts until the next prompt
+        // message and their unfinished text would be submitted as one prompt. A keystroke
+        // since the box was last empty counts until the next prompt
         // is submitted from it; the one who can act is told instead (DRF-004, DRF-006).
         let typed = runtime.typed_at_ms.load(Ordering::SeqCst);
-        let emptied = runtime.box_emptied_ms.load(Ordering::SeqCst);
+        let emptied = runtime.empty_time_for_typing();
         match yulius_domain::intake::box_held(self.now().0, typed, emptied) {
             // Its owner sends past their own text, once they are no longer typing it: it
             // goes out with the message.
@@ -606,7 +749,8 @@ impl App {
             }
             Some(held @ BoxHeld::Draft { .. }) => {
                 if from.tells_person(held) {
-                    self.tell_of_held_message(task, typed).await;
+                    self.tell_of_held_message(task, typed, DRAFT_HOLDS_PROBLEM, DRAFT_HOLDS_NOTICE)
+                        .await;
                 }
                 return Err(AppError::Conflict(format!(
                     "a person typed into task #{}'s terminal and sent no prompt since, so \
@@ -632,6 +776,24 @@ impl App {
                 task.number
             )));
         };
+        if task.harness == yulius_domain::harness::Harness::ClaudeCode
+            && from != Sender::OwnerPastDraft
+            && runtime.hub.shows_draft()
+        {
+            if matches!(from, Sender::Yulius | Sender::YuliusLastTry) {
+                self.tell_of_held_message(
+                    task,
+                    emptied.max(1),
+                    VISIBLE_DRAFT_PROBLEM,
+                    VISIBLE_DRAFT_NOTICE,
+                )
+                .await;
+            }
+            return Err(AppError::Conflict(format!(
+                "task #{}'s prompt box contains text. Ask its person to send or clear that text, then try again.",
+                task.number
+            )));
+        }
         // From here a message is in the session's prompt box and not submitted, and a restart
         // would lose it (SPEC-468 CCF-011). Stamped before it is typed: its submit comes after
         // (Claude Code runs the prompt hook some 30 ms after the Enter below, also while a
@@ -670,21 +832,24 @@ impl App {
         Ok(())
     }
 
-    /// Tells the session's person that a message of Yulius's own waits for what they typed at
-    /// `typed` (SPEC-480 DRF-006): the task is flagged with the reason and its terminal says
-    /// so. The watches try again at every pass: a task that reads the flag keeps it, one whose
-    /// flag ended meanwhile (a turn's end settles a flagged task) is flagged again, and the
-    /// terminal gets its line once per keystroke.
-    async fn tell_of_held_message(&self, task: &TaskRecord, typed: i64) {
-        let reason = AttentionRecord::yulius(DRAFT_HOLDS_PROBLEM, DRAFT_HOLDS_ACTION);
+    /// Flags a waiting automatic message, with one terminal notice per last key or, for a
+    /// visible restore, per last submit. A later pass restores a flag that the turn settled.
+    async fn tell_of_held_message(
+        &self,
+        task: &TaskRecord,
+        stamp: i64,
+        problem: &str,
+        notice: &str,
+    ) {
+        let reason = AttentionRecord::yulius(problem, DRAFT_HOLDS_ACTION);
         if let Err(err) = self.flag_attention(&task.id, reason).await {
             // Not told: the next pass tries again.
             tracing::warn!(task = %task.id, error = %err, "could not flag the task whose draft holds a message");
             return;
         }
         let runtime = self.runtime(&task.id);
-        if runtime.draft_told_ms.swap(typed, Ordering::SeqCst) != typed {
-            runtime.hub.notice(DRAFT_HOLDS_NOTICE.to_owned());
+        if runtime.draft_told_ms.swap(stamp, Ordering::SeqCst) != stamp {
+            runtime.hub.notice(notice.to_owned());
             tracing::info!(task = %task.id, "a message waits for a person's draft: the task is flagged");
         }
     }
@@ -701,7 +866,11 @@ impl App {
         let store = &self.deps.store;
         let flagged = match store.task_attention(task_id).await {
             Ok(Some((reason, flagged)))
-                if reason == AttentionRecord::yulius(DRAFT_HOLDS_PROBLEM, DRAFT_HOLDS_ACTION) =>
+                if [DRAFT_HOLDS_PROBLEM, VISIBLE_DRAFT_PROBLEM]
+                    .iter()
+                    .any(|problem| {
+                        reason == AttentionRecord::yulius(problem, DRAFT_HOLDS_ACTION)
+                    }) =>
             {
                 flagged
             }

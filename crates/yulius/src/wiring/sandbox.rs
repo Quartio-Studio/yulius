@@ -523,6 +523,10 @@ impl SandboxIsolation for NamespaceIsolation {
         self.manager.holder_live(name).await
     }
 
+    async fn retired_ports_idle(&self, sandbox: &SandboxId) -> bool {
+        self.manager.retired_ports_idle(sandbox.as_str()).await
+    }
+
     async fn link(&self, sandbox: &SandboxId) -> Option<bool> {
         let port = self.link_port?;
         self.manager.probe_link(sandbox.as_str(), port).await

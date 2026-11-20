@@ -4009,7 +4009,7 @@ async fn the_cli_finds_its_way_back_after_a_move_that_was_undone() -> TestResult
     let browser = w.browser(&alice).await?;
     let token = text(&make_token(&w, &browser, "laptop", "operate").await?["token"]).to_owned();
     let (old, old_served) = Address::serve(w.h.router.clone()).await?;
-    let (_new, new_served) = Address::serve(w.h.router.clone()).await?;
+    let (new, new_served) = Address::serve(w.h.router.clone()).await?;
     let (old_url, new_url) = (
         format!("http://{}", old_served.addr),
         format!("http://{}", new_served.addr),
@@ -4033,6 +4033,15 @@ async fn the_cli_finds_its_way_back_after_a_move_that_was_undone() -> TestResult
         let (code, out, err) = yulius_cli(home, &["task", "list", "-p", "acme/shop"], "").await?;
         assert_eq!(code, Some(0), "{out}{err}");
     }
+
+    // The target still answers. An HTTP failure says nothing about a move back.
+    new.redirects(&old_url, None, None);
+    let (code, _, err) = yulius_cli(home, &["remote", "status"], "").await?;
+    assert_eq!(code, Some(2), "{err}");
+    assert!(
+        err.contains("HTTP 307") && !err.contains("followed a move here"),
+        "{err}"
+    );
 
     // The move is undone: the new instance is stopped, the old one answers itself again.
     drop(new_served);
@@ -4079,6 +4088,10 @@ async fn the_cli_finds_its_way_back_after_a_move_that_was_undone() -> TestResult
     assert_eq!(code, Some(0), "{out}{err}");
     assert!(out.contains("as alice (operate token)"), "{out}");
     assert!(!out.contains("is kept"), "nothing stayed behind: {out}");
+    assert!(
+        out.contains(&format!("sign-in is back and {new_url} now leads here")),
+        "{out}"
+    );
     assert!(old.hits() > hits, "a sign-in there is seen by the count");
     let file: Value = serde_json::from_slice(&std::fs::read(&stored)?)?;
     assert_eq!(file["servers"][&old_url]["token"], token.as_str());

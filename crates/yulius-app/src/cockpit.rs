@@ -792,7 +792,9 @@ impl App {
             {
                 strays_probed = Some(now.0);
                 tokio::select! {
-                    () = self.tend_cockpit_strays(&runtime, (watched_path.as_path(), polled_len)) => {}
+                    () = self.tend_cockpit_strays(&runtime, (watched_path.as_path(), polled_len)) => {
+                        crate::race::reached(crate::race::Point::CockpitStraysProbed, watched_path);
+                    }
                     _ = ended.wait_for(|ended| *ended) => return,
                 }
             }

@@ -12,18 +12,17 @@ use yulius_domain::briefing::{
     BriefingInput, DEFAULT_BUDGET_BYTES, Foundations, MAX_RECENT_CHANGES, ParallelTask,
     RecentChange, TaskBrief, build_briefing,
 };
-use yulius_domain::harness::Harness;
+use yulius_domain::harness::{Harness, SubmitOrigin};
 use yulius_domain::ids::TaskId;
 use yulius_domain::rotation::{self, Decision, Trigger};
 use yulius_domain::spec_format::{DecisionFiles, NamedFile, decision_titles, project_layout};
 use yulius_domain::spec_format::{DecisionsLocation, SpecPolicy, validate_spec_for};
 use yulius_domain::task::{Activity, TaskStatus};
 
-use crate::attention::Flagged;
-
 use crate::capacity::{CONTINUATION_MAX, HOLD_RETRY_SECS};
 use crate::context::App;
 use crate::coordination::AgentContext;
+use crate::delivery::{RepoReadError, read_spec};
 use crate::error::{AppError, AppResult};
 use crate::model::{PauseKind, TaskMode, TaskRecord};
 use crate::ports::store::TaskFieldUpdate;
@@ -173,6 +172,8 @@ impl App {
         let Ok(harness) = yulius_domain::harness::Harness::parse(harness) else {
             return Err(AppError::NotFound);
         };
+        // Capture the ordering boundary before the token lookup yields to a viewer key.
+        let input_seq = self.supervisor.input_seq.load(Ordering::SeqCst);
         // Never later than now: the client's clock is the host's (loopback only), and a time
         // from the future would order nothing. One not after the epoch is none (SPEC-346 LPH-001).
         let now = self.now().0;
@@ -207,7 +208,7 @@ impl App {
             None
         };
         if event != events::STOP {
-            return self.answer_hook(&ctx, event, input, sent).await;
+            return self.answer_hook(&ctx, event, input, sent, input_seq).await;
         }
         // The agent sent this Stop after every prompt of its turn (SPEC-346 LPH-002).
         {
@@ -225,7 +226,7 @@ impl App {
             attempt: ctx.attempt,
         };
         let _in_flight = crate::finish::StopInFlight::enter(&runtime);
-        let reply = self.answer_hook(&ctx, event, input, sent).await;
+        let reply = self.answer_hook(&ctx, event, input, sent, input_seq).await;
         // Only the live run's answers count: a late one of a run a switch ended is not this
         // session's (SPEC-290 GDW-001).
         let live = matches!(
@@ -253,6 +254,47 @@ impl App {
         reply
     }
 
+    async fn submit_origin(
+        &self,
+        ctx: &AgentContext,
+        input: &HookInput,
+        sent: i64,
+    ) -> SubmitOrigin {
+        let (Some(session), Some(id), Some(prompt)) =
+            (&input.session_id, &input.prompt_id, &input.prompt)
+        else {
+            return SubmitOrigin::Unmarked;
+        };
+        if ctx.attempt.harness != Harness::ClaudeCode
+            || !yulius_domain::harness::valid_session_id(session)
+            || ctx
+                .attempt
+                .provider_session_id
+                .as_ref()
+                .is_some_and(|current| current != session)
+        {
+            return SubmitOrigin::Unmarked;
+        }
+        // Use only the file derived from the authenticated task. The hook's path and cwd
+        // are provider input, not paths the server may open.
+        let anchor = self.sandbox_dir(&ctx.task.sandbox_id);
+        let path = self.native_transcript(&ctx.task, Harness::ClaudeCode, session);
+        let harness = Arc::clone(&self.deps.harness);
+        let (session, id, prompt) = (session.clone(), id.clone(), prompt.clone());
+        let run_to_submit = ctx.attempt.started_at..=yulius_domain::time::Timestamp(sent);
+        // Claude 2.1.322 buffered its queue writes for 67–108 ms. Let the already-made
+        // hand-over reach disk. Use the original submit time throughout, even if keys arrive.
+        let age = self.now().0.saturating_sub(sent).clamp(0, 200);
+        tokio::time::sleep(std::time::Duration::from_millis((200 - age).unsigned_abs())).await;
+        tokio::task::spawn_blocking(move || {
+            crate::transcripts::open(&anchor, &path).map_or(SubmitOrigin::Unmarked, |file| {
+                harness.submit_origin(file, &session, &id, &prompt, run_to_submit)
+            })
+        })
+        .await
+        .unwrap_or(SubmitOrigin::Unmarked)
+    }
+
     /// Answers the hook `event` of the run `ctx`, sent at `sent` ([`Self::hook_event`]).
     async fn answer_hook(
         self: &Arc<Self>,
@@ -260,9 +302,12 @@ impl App {
         event: &str,
         input: &HookInput,
         sent: i64,
+        input_seq: u64,
     ) -> AppResult<HookReply> {
         if event != events::USER_PROMPT_SUBMIT {
-            return self.answer_event(ctx, event, input, sent).await;
+            return self
+                .answer_event(ctx, event, input, sent, SubmitOrigin::Unmarked)
+                .await;
         }
         // A prompt submitted from the session's prompt box empties it: what was typed before
         // it is no draft any more (SPEC-468 CCF-010). Claude Code runs this hook at the Enter,
@@ -272,12 +317,24 @@ impl App {
         // seconds, stamped anew, until it goes on, and what a person types meanwhile is a
         // draft.
         let runtime = self.runtime(&ctx.task.id);
-        let from_box = crate::finish::from_prompt_box(input.prompt.as_deref());
+        let box_text = crate::finish::from_prompt_box(input.prompt.as_deref());
+        let origin = if box_text {
+            self.submit_origin(ctx, input, sent).await
+        } else {
+            SubmitOrigin::Unmarked
+        };
+        let from_box = box_text && origin == SubmitOrigin::Unmarked;
         let sent_again = runtime.prompt_held.load(Ordering::SeqCst);
-        if from_box && !sent_again {
-            runtime.submit_emptied_ms.store(sent, Ordering::SeqCst);
-        }
-        let reply = self.answer_event(ctx, event, input, sent).await;
+        let submitted = if from_box {
+            let mut mark = runtime.draft_mark.lock().await;
+            if !sent_again {
+                mark.submit = (sent, input_seq);
+            }
+            Some(mark.submit)
+        } else {
+            None
+        };
+        let reply = self.answer_event(ctx, event, input, sent, origin).await;
         // A prompt that is held stays held through an answer that fails: the hook client, once
         // it holds, asks again after a 5xx or a lost connection (it fails open at a first
         // request). At a 4xx it ends its hold and the prompt goes on; that is read as held
@@ -295,8 +352,10 @@ impl App {
             // What was submitted is back in the box: nothing was sent past a draft.
             runtime.sent_past_draft.store(false, Ordering::SeqCst);
         }
-        if from_box && !held && !blocked {
-            let emptied = runtime.submit_emptied_ms.load(Ordering::SeqCst);
+        if let Some((emptied, keys)) = submitted
+            && !held
+            && !blocked
+        {
             let run_dir = Path::new(&ctx.attempt.run_dir);
             // The owner's message typed behind their draft went on with it (SPEC-487
             // TCT-006): this prompt is known to follow the draft, whatever this server saw.
@@ -307,27 +366,34 @@ impl App {
             // a prompt follows a key this server saw (SPEC-480 DRF-009). Read from the file,
             // not from what recovery kept: this hook may be served before the run is
             // reattached.
-            let inherited = if past_draft || runtime.typed_seen.load(Ordering::SeqCst) {
+            let mut mark = runtime.draft_mark.lock().await;
+            let inherited = if past_draft || runtime.typed_seq.load(Ordering::SeqCst) != 0 {
                 0
             } else {
                 crate::supervisor::person_typed_marked(run_dir).min(self.now().0)
             };
             if inherited > 0 {
                 runtime.typed_at_ms.fetch_max(inherited, Ordering::SeqCst);
-                runtime.draft_marked.store(true, Ordering::SeqCst);
+                mark.written = true;
             } else {
-                runtime.box_emptied_ms.fetch_max(emptied, Ordering::SeqCst);
+                if emptied >= runtime.box_emptied_ms.fetch_max(emptied, Ordering::SeqCst) {
+                    runtime.emptied_seq.fetch_max(keys, Ordering::SeqCst);
+                }
                 // With the box empty no person's draft holds a typed message any more
                 // (DRF-007, DRF-009): its mark leaves the run's folder, whatever this server
                 // remembers of having written it, and a flag that said a message of Yulius's
                 // own waits for it ends, also after a prompt that starts no turn. A key typed
                 // after this submit is a draft of its own, and both stay.
                 if !self.persons_draft_holds(&ctx.task.id) {
-                    runtime.draft_marked.store(false, Ordering::SeqCst);
+                    crate::race::reached(crate::race::Point::DraftMarkCleanup, run_dir);
+                    mark.written = false;
                     crate::supervisor::clear_person_typed(run_dir);
+                    drop(mark);
                     self.settle_draft_flag(&ctx.task.id).await;
                 }
             }
+        }
+        if box_text && !held && !blocked {
             // It goes on to Claude Code now, which writes where it went (a turn of its own,
             // or its queue) only after this answer: until that record is read, a turn's end
             // cannot tell (SPEC-471 CCQ-004).
@@ -347,6 +413,7 @@ impl App {
         event: &str,
         input: &HookInput,
         sent: i64,
+        origin: SubmitOrigin,
     ) -> AppResult<HookReply> {
         // This run reports its turn boundaries through hooks: the Stop hook decides switches
         // and pauses, not the transcript.
@@ -389,7 +456,7 @@ impl App {
             events::SESSION_START => Ok(HookReply::Output(
                 self.hook_session_start(ctx, input).await?,
             )),
-            events::USER_PROMPT_SUBMIT => self.hook_prompt_submit(ctx, input, sent).await,
+            events::USER_PROMPT_SUBMIT => self.hook_prompt_submit(ctx, input, sent, origin).await,
             events::PRE_INVOCATION if ctx.attempt.harness == Harness::Antigravity => {
                 self.antigravity_work(&ctx.task.id, sent).await?;
                 Ok(HookReply::Output(HookOutput::default()))
@@ -410,26 +477,13 @@ impl App {
                 // task waiting or done, so chains and onboarding see it as finished
                 // (F 2026-10-11).
                 if notification_needs_a_person(input) {
-                    // Its question is in the terminal, in Claude Code's own words, and the flag
-                    // says whether the session's work answers it: a restart of Yulius forgets
-                    // the time kept below (SPEC-472).
-                    let flagged = self
-                        .flag_attention(
-                            &ctx.task.id,
-                            crate::attention::AttentionRecord::terminal(input.message.as_deref())
-                                .answered_by_work(notice_answered_by_work(input)),
-                        )
-                        .await?;
-                    // The agent's next work shows the person answered (STA-003), unless the
-                    // task was flagged already (by the gate, say) or a worker asks, which the
-                    // main session's work says nothing about. A secret request's flag that
-                    // this question took over is the question's, so work answers it too
-                    // (SPEC-472 ATN-011).
-                    if notice_answers_by_work(ctx.task.activity, flagged, input) {
-                        self.runtime(&ctx.task.id)
-                            .notice_attention_ms
-                            .store(self.now().0.max(1), Ordering::SeqCst);
-                    }
+                    // The flag records the question's words and what can answer it (SPEC-472).
+                    self.flag_attention(
+                        &ctx.task.id,
+                        crate::attention::AttentionRecord::terminal(input.message.as_deref())
+                            .answered_by_work(notice_answered_by_work(input)),
+                    )
+                    .await?;
                 }
                 Ok(HookReply::Output(HookOutput::default()))
             }
@@ -513,7 +567,7 @@ impl App {
         activity: Activity,
     ) -> AppResult<()> {
         if activity == Activity::NeedsAttention {
-            return self.flag_needs_attention(&task.id, None).await.map(|_| ());
+            return self.flag_needs_attention(&task.id, None).await;
         }
         if task.status != TaskStatus::Running || task.activity == Some(activity) {
             return Ok(());
@@ -539,51 +593,72 @@ impl App {
         Ok(())
     }
 
-    /// Flags a running task as needing a person, for anything but a secret request: a flag
-    /// that is no secret request's to end, even over one already set (SPEC-213 SRA-003). Under
-    /// the task's attention lock, from the task as it is now, so that a secret request's answer
-    /// ending its flag at the same moment cannot swallow this one. The flag and its `reason`
-    /// are one write (SPEC-472): a task already flagged keeps both, with one exception. A flag
-    /// that was a secret request's is this matter's from now on (the request's answer no
-    /// longer ends it), so it says this matter's reason, or none: the request's would send the
-    /// person to a Secrets page with nothing left to answer (ATN-011).
+    /// Flags a running task under its attention lock (SPEC-213, SPEC-472). The current
+    /// matter can take over a secret request's flag, and a new terminal question can take
+    /// over a flag answered by work. The replacement reason and its answer time survive
+    /// a server restart.
     pub(crate) async fn flag_needs_attention(
         &self,
         task_id: &TaskId,
         reason: Option<&crate::attention::AttentionRecord>,
-    ) -> AppResult<Flagged> {
+    ) -> AppResult<()> {
         let runtime = self.runtime(task_id);
+        #[cfg(feature = "test-support")]
+        if runtime.attention_lock.try_lock().is_err() {
+            crate::race::reached(
+                crate::race::Point::AttentionReplacementWaiting,
+                std::path::Path::new(task_id.as_str()),
+            );
+        }
         let _held = runtime.attention_lock.lock().await;
         let store = &self.deps.store;
         let now = self.now();
-        if store.flag_attention(task_id, None, reason, now).await? {
+        let notice = reason.filter(|r| r.kind == crate::attention::AttentionKind::Terminal);
+        if !store.flag_attention(task_id, None, reason, now).await? {
+            // A secret request gives up its flag to any new matter. An answerable question
+            // gives its flag to a later question, which can require a worker's own answer.
+            let secret_flag = self.secret_flag_at(&runtime, task_id).await?;
             runtime.secret_wait_at.store(0, Ordering::SeqCst);
-            self.publish_task(task_id).await;
-            return Ok(Flagged::Raised);
+            let flagged = if secret_flag != 0 {
+                yulius_domain::time::Timestamp(secret_flag)
+            } else if notice.is_some() {
+                match store.task_attention(task_id).await? {
+                    Some((previous, flagged)) if previous.work_answers => flagged,
+                    None => {
+                        // Goal pauses have an answerable flag with no stored terminal reason.
+                        let Some(times) = store.task_times(task_id).await? else {
+                            return Ok(());
+                        };
+                        if times.state_at.0 > runtime.notice_attention_ms.load(Ordering::SeqCst) {
+                            return Ok(());
+                        }
+                        times.state_at
+                    }
+                    _ => return Ok(()),
+                }
+            } else {
+                return Ok(());
+            };
+            let replacement = reason.map(|reason| {
+                let mut reason = reason.clone();
+                reason.answer_ends = false;
+                reason.noticed_ms = notice.map(|_| now.0);
+                reason
+            });
+            if !store
+                .replace_attention(task_id, flagged, replacement.as_ref(), now)
+                .await?
+            {
+                return Ok(());
+            }
         }
-        // Flagged already. Whose flag it is: this server's memory, or the flag's own reason
-        // when the server started after it was raised.
-        let secret_flag = self.secret_flag_at(&runtime, task_id).await?;
         runtime.secret_wait_at.store(0, Ordering::SeqCst);
-        if secret_flag == 0 {
-            return Ok(Flagged::Stands);
-        }
-        // The same flag, since the request raised it, with this matter's reason and none of
-        // the request's claim to it.
-        let taken_over = reason.map(|reason| {
-            let mut reason = reason.clone();
-            reason.answer_ends = false;
-            reason
-        });
-        let flagged = yulius_domain::time::Timestamp(secret_flag);
-        if !store
-            .replace_attention(task_id, flagged, taken_over.as_ref(), now)
-            .await?
-        {
-            return Ok(Flagged::Stands);
+        if let Some(notice) = notice {
+            let at = if notice.work_answers { now.0.max(1) } else { 0 };
+            runtime.notice_attention_ms.store(at, Ordering::SeqCst);
         }
         self.publish_task(task_id).await;
-        Ok(Flagged::TakenOver)
+        Ok(())
     }
 
     async fn hook_session_start(
@@ -781,13 +856,14 @@ impl App {
         ctx: &AgentContext,
         input: &HookInput,
         sent: i64,
+        origin: SubmitOrigin,
     ) -> AppResult<HookReply> {
+        let typed = origin == SubmitOrigin::Unmarked
+            && crate::finish::is_typed_prompt(input.prompt.as_deref());
         let store = &self.deps.store;
         // A person wrote to the task (they typed it, even a prompt held below): what its agent
         // asked a person is answered (SPEC-134 CDT-004). Prompts Yulius types do not count.
-        if crate::finish::is_typed_prompt(input.prompt.as_deref())
-            && self.typed_recently(&ctx.task.id).is_some()
-        {
+        if typed && self.typed_recently(&ctx.task.id).is_some() {
             self.end_needs_you(&ctx.task.id).await;
         }
         // A prompt held for capacity stays held while its pause lasts (also across a restart).
@@ -812,7 +888,9 @@ impl App {
         // Scope discipline (TSK-013): a held prompt never reaches the agent, so nothing below
         // (capacity, activity) happens for it. A prompt typed into a task held
         // at its turn end (paused for capacity) is checked like any other.
-        if let Some(held) = self.screen_prompt(ctx, input).await? {
+        if origin != SubmitOrigin::Scheduled
+            && let Some(held) = self.screen_prompt(ctx, input).await?
+        {
             return Ok(HookReply::Output(held));
         }
         // The start of a turn: with no subscription below the threshold, the prompt waits here
@@ -855,12 +933,14 @@ impl App {
         );
         // A typed prompt starts new work: an achieved goal no longer makes the task done
         // (TSK-014). Claude Code's own wake-ups (a background shell ended) keep it.
-        if crate::finish::is_typed_prompt(input.prompt.as_deref()) {
+        if typed {
             self.prompt_submitted(&ctx.task.id);
         }
         // `/compact` runs no turn and no Stop hook ends it: the task stays as it was (SPEC-085
         // STT-005).
-        if !crate::finish::prompt_starts_work(input.prompt.as_deref()) {
+        if origin != SubmitOrigin::Scheduled
+            && !crate::finish::prompt_starts_work(input.prompt.as_deref())
+        {
             return Ok(HookReply::Output(HookOutput::default()));
         }
         // As it is now: a Stop of the turn before may have settled it since it was read.
@@ -877,7 +957,7 @@ impl App {
         runtime.goal_retry_armed.store(false, Ordering::SeqCst);
         runtime.turn_began_ms.store(self.now().0, Ordering::SeqCst);
         // Claude Code's own wake-up goes on with the stretch; a typed prompt starts a new one.
-        let stretch = if crate::finish::is_typed_prompt(input.prompt.as_deref()) {
+        let stretch = if typed {
             None
         } else {
             self.continue_working_stretch(&ctx.task.id).await
@@ -895,7 +975,7 @@ impl App {
         // typed, its agent is told to resume it, not to start it again (SPEC-486 WFL-006).
         // Claude Code's own wake-ups say what ended; they get nothing added.
         let now = self.now();
-        if crate::finish::is_typed_prompt(input.prompt.as_deref())
+        if typed
             && let Some(runs) =
                 runtime.with_workflows(|workflows: &mut crate::dynamic_workflow::Unfinished| {
                     workflows.paused(now)
@@ -943,15 +1023,20 @@ impl App {
         let background = antigravity && !failed && input.fully_idle == Some(false);
         // A turn held for capacity stays held while its pause lasts (also across a restart).
         let refreshed;
+        let mut preceding_turn = false;
         if let Some(pause) = store.open_pause(&task.id).await? {
             if matches!(pause.kind, PauseKind::Turn | PauseKind::Limit) {
                 return Ok(self.hold_for(&task.id));
             }
-            // A turn ended while its prompt was held: the CLI gave that hold up and the turn ran.
-            self.hold_ended(&task.id, "superseded", Activity::Working)
-                .await;
-            refreshed = store.task(&task.id).await?.ok_or(AppError::NotFound)?;
-            task = &refreshed;
+            // Claude runs the submit hook at Enter, even while the preceding turn runs.
+            preceding_turn = pause.kind == PauseKind::Prompt && pause.during_turn;
+            if !preceding_turn {
+                // The prompt was held from idle: this Stop belongs to the turn that gave up its hold.
+                self.hold_ended(&task.id, "superseded", Activity::Working)
+                    .await;
+                refreshed = store.task(&task.id).await?.ok_or(AppError::NotFound)?;
+                task = &refreshed;
+            }
         }
         // The opening turn of a resumed goal session (its continuation prompt) ended, not held:
         // it stops as it is, without gates or rotation, so the goal is typed next (SPEC-025,
@@ -974,6 +1059,16 @@ impl App {
         let gate_continues = !reasons.is_empty() && task.gate_blocks < MAX_GATE_BLOCKS;
         // Would the agent work on after this boundary (a gate block, or its goal)?
         let continues = gate_continues || (task.follows_goal() && !failed);
+
+        if preceding_turn {
+            // Preserve the later prompt's pause. A gate or goal that requires further work
+            // waits at this Stop too. Only the submit client keeps the prompt hold alive.
+            return Ok(if continues {
+                hold()
+            } else {
+                HookReply::Output(HookOutput::default())
+            });
+        }
 
         // The turn boundary: stay, move to another subscription, or pause (ROT-003, ROT-010).
         self.runtime(&task.id)
@@ -1257,25 +1352,15 @@ impl App {
                 )));
             }
         };
-        let spec_path = &spec_path;
-        if repo_path(&worktree, spec_path).is_none() {
-            return Ok(Some(format!(
-                "The task spec path `{spec_path}` is not a repository path."
-            )));
-        }
-        let expected = task.id.clone();
-        let spec_path = spec_path.clone();
-        tokio::task::spawn_blocking(move || match read_repo_doc(&worktree, &spec_path) {
-            None => Some(format!(
-                "This task needs a spec (a feature or a fix, or a change beyond documentation) but `{spec_path}` does not exist. Create it in the Yulius format (frontmatter with `yulius-task: {expected}`, the required sections and a Plan checklist of similar-effort steps) before finishing."
+        Ok(match read_spec(&worktree, &spec_path).await {
+            Err(err) => Some(format!(
+                "This task needs a readable spec. {err}. Check `{spec_path}` and run spec_check before finishing."
             )),
-            Some(text) => {
-                let report = validate_spec_for(&text, &expected);
+            Ok(text) => {
+                let report = validate_spec_for(&text, &task.id);
                 (!report.is_valid()).then(|| report.agent_message(&spec_path))
             }
         })
-        .await
-        .map_err(AppError::internal)
     }
 }
 
@@ -1402,25 +1487,14 @@ impl App {
         }
         let place = match self.task_spec_path(task, &worktree).await {
             Ok(spec_path) => {
-                let (root, expected) = (worktree.clone(), task.id.clone());
-                let path = spec_path.clone();
-                // A spec that exists but cannot be judged (a link, not UTF-8, larger than the part
-                // read) passes; one gone since it was found is missing.
-                let planned = tokio::task::spawn_blocking(move || {
-                    match std::fs::symlink_metadata(root.join(&path)) {
-                        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return false,
-                        Ok(meta) if meta.len() >= MAX_DOC_BYTES => return true,
-                        _ => {}
-                    }
-                    read_repo_doc(&root, &path).is_none_or(|text| {
-                        validate_spec_for(&text, &expected)
-                            .plan
-                            .iter()
-                            .any(|item| item.depth == 0 && !item.text.trim().is_empty())
-                    })
-                })
-                .await
-                .map_err(AppError::internal)?;
+                let planned = match read_spec(&worktree, &spec_path).await {
+                    Ok(text) => validate_spec_for(&text, &task.id)
+                        .plan
+                        .iter()
+                        .any(|item| item.depth == 0 && !item.text.trim().is_empty()),
+                    Err(RepoReadError::Missing(_)) => false,
+                    Err(_) => true,
+                };
                 if planned {
                     return Ok(None);
                 }
@@ -1485,14 +1559,12 @@ impl App {
         } else {
             return Ok(false);
         };
-        let expected = task.id.clone();
-        let report = tokio::task::spawn_blocking(move || {
-            read_repo_doc(&root, &rel).map(|text| validate_spec_for(&text, &expected))
-        })
-        .await
-        .map_err(AppError::internal)?;
-        let Some(report) = report else {
-            return Ok(false);
+        let report = match read_spec(&root, &rel).await {
+            Ok(text) => validate_spec_for(&text, &task.id),
+            Err(err @ RepoReadError::TooLarge { .. }) => {
+                return Err(AppError::Invalid(err.to_string()));
+            }
+            Err(_) => return Ok(false),
         };
         // What the spec says of the task's work decides Done with the steps (SPEC-491 DON-004).
         self.note_spec_status(&task.id, report.status).await;
@@ -1880,15 +1952,6 @@ fn notice_answered_by_work(input: &HookInput) -> bool {
     )
 }
 
-/// Whether the time of a notice is kept, so that the session's next work answers its flag
-/// (STA-003): the notice is one that work answers, and its flag is the notice's own: raised by
-/// it on a task that read no flag (`before`), or taken over from a secret request. A notice on
-/// a task that another matter flagged answers nothing: that flag stands.
-fn notice_answers_by_work(before: Option<Activity>, flagged: Flagged, input: &HookInput) -> bool {
-    notice_answered_by_work(input)
-        && (before != Some(Activity::NeedsAttention) || flagged == Flagged::TakenOver)
-}
-
 /// Whether a `Notification` hook asks a person to act ([`NOTICES_ASKING_A_PERSON`]).
 /// Without `notification_type` (older Claude Code) the idle reminder is known by its text.
 fn notification_needs_a_person(input: &HookInput) -> bool {
@@ -1905,44 +1968,17 @@ fn notification_needs_a_person(input: &HookInput) -> bool {
 mod tests {
     use super::{
         RepoDocs, colour, doc_present, foundations, notice_answered_by_work,
-        notice_answers_by_work, notification_needs_a_person, read_repo_doc, repo_doc_exists,
-        repo_path, resolved_in_repo, resolved_through_links, workflow_count, worktree_relative,
+        notification_needs_a_person, read_repo_doc, repo_doc_exists, repo_path, resolved_in_repo,
+        resolved_through_links, workflow_count, worktree_relative,
     };
-    use crate::attention::Flagged;
     use std::path::Path;
     use yulius_contracts::hooks::HookInput;
-    use yulius_domain::task::Activity;
 
     fn notice(kind: Option<&str>, message: Option<&str>) -> HookInput {
         HookInput {
             notification_type: kind.map(str::to_owned),
             message: message.map(str::to_owned),
             ..HookInput::default()
-        }
-    }
-
-    /// SPEC-472 ATN-011 (STA-003): the time of a notice is kept, so that work answers its flag,
-    /// only for a notice that work answers and a flag that is the notice's own: raised by it,
-    /// or taken over from a secret request. On another matter's flag it answers nothing.
-    #[test]
-    fn a_notices_time_is_kept_only_for_a_flag_of_its_own() {
-        let asks = notice(Some("permission_prompt"), None);
-        let worker = notice(Some("worker_permission_prompt"), None);
-        let working = Some(Activity::Working);
-        let flagged = Some(Activity::NeedsAttention);
-        // Raised on a task that read no flag (also when a flag was raised meanwhile: the
-        // hook's own snapshot decides, as before).
-        assert!(notice_answers_by_work(working, Flagged::Raised, &asks));
-        assert!(notice_answers_by_work(None, Flagged::Raised, &asks));
-        assert!(notice_answers_by_work(working, Flagged::Stands, &asks));
-        // Taken over from a secret request.
-        assert!(notice_answers_by_work(flagged, Flagged::TakenOver, &asks));
-        // Another matter's flag stands (the gate's, say).
-        assert!(!notice_answers_by_work(flagged, Flagged::Stands, &asks));
-        // What work does not answer, it never answers.
-        for outcome in [Flagged::Raised, Flagged::TakenOver, Flagged::Stands] {
-            assert!(!notice_answers_by_work(working, outcome, &worker));
-            assert!(!notice_answers_by_work(flagged, outcome, &worker));
         }
     }
 

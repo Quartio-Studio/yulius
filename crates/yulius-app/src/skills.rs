@@ -1116,15 +1116,11 @@ mod tests {
         Ok(())
     }
 
-    /// SPEC-493 REV-008: every place that describes the independent review names the reviewer
-    /// the same way: the `yulius-reviewer` agent, whose model Yulius picks (Fable 5.2 for a pull
-    /// request's first two rounds, then Opus 5.5). The briefing, the definition of done and a
-    /// tool's description, which have a size budget, say its short form.
+    /// Shared prompts defer to the active harness's policy in the task briefing (SPEC-524).
     #[test]
-    fn every_place_names_the_reviewer_agent_and_who_picks_its_model() -> TestResult {
-        const RULE: &str = "start the independent code review with the agent tool and the \
-            `yulius-reviewer` agent: yulius picks the round's model (fable 5.2 for a pull \
-            request's first two rounds, then opus 5.5).";
+    fn shared_review_instructions_follow_the_task_briefing() -> TestResult {
+        const RULE: &str =
+            "follow the task briefing for the reviewer and model of the active harness.";
         let normal = |text: &str| {
             text.split_whitespace()
                 .collect::<Vec<_>>()
@@ -1147,33 +1143,20 @@ mod tests {
                 "{rel} does not state the rule"
             );
         }
-        // The workflows' instructions have a budget (1,444 bytes): the short form.
-        for rel in ["catalog/workflows/feature.md", "catalog/workflows/fix.md"] {
-            let text = normal(&fs::read_to_string(root.join(rel))?);
-            assert!(
-                text.contains("agent `yulius-reviewer`") && text.contains("yulius picks its model"),
-                "{rel} does not name the reviewer agent"
-            );
-        }
-        for (place, text) in [
-            (
-                "briefing.rs",
-                fs::read_to_string(root.join("crates/yulius-domain/src/briefing.rs"))?,
-            ),
-            (
-                "request.rs",
-                fs::read_to_string(root.join("crates/yulius-domain/src/request.rs"))?,
-            ),
-            (
-                "mcp.rs",
-                fs::read_to_string(root.join("crates/yulius-app/src/mcp.rs"))?,
-            ),
+        let review = normal(&fs::read_to_string(
+            root.join("catalog/skills/open-mercato/om-code-review/SKILL.md"),
+        )?);
+        assert!(review.contains("report that ci awaits delivery and give the code verdict"));
+        assert!(!review.contains("never approve without reading the head's yulius ci run"));
+        for rel in [
+            "catalog/workflows/feature.md",
+            "catalog/workflows/fix.md",
+            "crates/yulius-domain/src/request.rs",
+            "crates/yulius-app/src/mcp.rs",
         ] {
-            let text = normal(&text.replace("\\\n", " "));
-            assert!(
-                text.contains("agent `yulius-reviewer`") && text.contains("yulius picks its model"),
-                "{place} does not name the reviewer agent"
-            );
+            let text = normal(&fs::read_to_string(root.join(rel))?);
+            assert!(text.contains("reviewer from the task briefing"), "{rel}");
+            assert!(!text.contains("`yulius-reviewer`"), "{rel}");
         }
         Ok(())
     }
@@ -1313,7 +1296,7 @@ mod tests {
     #[test]
     fn every_place_says_resume_a_cut_off_reviewer() -> TestResult {
         const RULE: &str = "a usage limit can cut a reviewer off before its report: resume that \
-            same reviewer with sendmessage to its agent id, never start a new one for the same \
+            same reviewer by its agent id, never start a new one for the same \
             round. a reviewer runs at high effort, never max.";
         let normal = |text: &str| {
             text.split_whitespace()

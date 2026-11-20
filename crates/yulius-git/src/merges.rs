@@ -39,6 +39,42 @@ pub enum SquashLanding {
     Conflict(Vec<String>),
 }
 
+enum MergeTree {
+    Clean(String),
+    Conflict(Vec<String>),
+}
+
+/// A leading double quote identifies Git's byte-quoted representation. Quote paths
+/// that begin with one as well as non-UTF-8 paths, so a displayed name identifies one path.
+pub(crate) fn conflict_path(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    if let Ok(path) = std::str::from_utf8(bytes)
+        && !path.starts_with('"')
+    {
+        return path.to_owned();
+    }
+    let mut quoted = String::from("\"");
+    for &byte in bytes {
+        match byte {
+            b'"' => quoted.push_str(r#"\""#),
+            b'\\' => quoted.push_str(r"\\"),
+            7 => quoted.push_str(r"\a"),
+            8 => quoted.push_str(r"\b"),
+            b'\t' => quoted.push_str(r"\t"),
+            b'\n' => quoted.push_str(r"\n"),
+            11 => quoted.push_str(r"\v"),
+            12 => quoted.push_str(r"\f"),
+            b'\r' => quoted.push_str(r"\r"),
+            b' '..=b'~' => quoted.push(char::from(byte)),
+            _ => {
+                let _ = write!(quoted, "\\{byte:03o}");
+            }
+        }
+    }
+    quoted.push('"');
+    quoted
+}
+
 /// First line of Yulius's block in `info/attributes`.
 pub const ATTRIBUTES_BEGIN: &str = "# >>> yulius: merge attributes (SPEC-083); rewritten by Yulius";
 /// Last line of Yulius's block in `info/attributes`.
@@ -82,39 +118,10 @@ impl Git {
             self.rev_parse(worktree, base)?,
             self.rev_parse(worktree, head)?,
         );
-        let output = self.run(
-            Invocation::new(self, "merge-tree", Some(worktree))
-                .args([
-                    "merge-tree",
-                    "--write-tree",
-                    "--name-only",
-                    "--no-messages",
-                    "--end-of-options",
-                ])
-                .arg(&base)
-                .arg(&head),
-        )?;
-        let text = output.stdout_text();
-        let mut lines = text.lines();
-        let tree = lines.next().unwrap_or_default().to_owned();
-        match output.status.code() {
-            Some(0) if is_object_id(&tree) => {}
-            Some(1) => {
-                let mut files: Vec<String> = lines
-                    .filter(|line| !line.is_empty())
-                    .map(str::to_owned)
-                    .collect();
-                files.dedup();
-                return Ok(SquashLanding::Conflict(files));
-            }
-            Some(0) => {
-                return Err(GitError::Parse {
-                    command: "merge-tree",
-                    detail: format!("not a tree id: {tree:?}"),
-                });
-            }
-            _ => return Err(failure("merge-tree", &output)),
-        }
+        let tree = match self.merged_tree_at(worktree, None, &base, &head)? {
+            MergeTree::Clean(tree) => tree,
+            MergeTree::Conflict(files) => return Ok(SquashLanding::Conflict(files)),
+        };
         if self.tree_of(worktree, &base)?.as_deref() == Some(tree.as_str()) {
             return Ok(SquashLanding::Unchanged);
         }
@@ -217,34 +224,86 @@ impl Git {
             self.rev_parse(worktree, theirs)?,
         );
         let base = base.map(|rev| self.rev_parse(worktree, rev)).transpose()?;
+        Ok(
+            match self.merged_tree_at(worktree, base.as_deref(), &ours, &theirs)? {
+                MergeTree::Clean(tree) => Some(tree),
+                MergeTree::Conflict(_) => None,
+            },
+        )
+    }
+
+    /// The paths where Git's merge of `base` and `head` conflicts, or `None` for a clean
+    /// merge. The checkout, index and refs stay as they are.
+    ///
+    /// # Errors
+    /// Invalid or unknown revisions, or Git failures.
+    pub fn merge_conflicts(
+        &self,
+        worktree: &Path,
+        base: &str,
+        head: &str,
+    ) -> Result<Option<Vec<String>>, GitError> {
+        Ok(match self.preview_merge(worktree, base, head)? {
+            crate::TrainStep::Clean { .. } => None,
+            crate::TrainStep::Conflict(files) => Some(files),
+        })
+    }
+
+    /// The tree or conflict paths produced by merging `theirs` into `ours`, using the
+    /// attributes of `worktree` while leaving its checkout, index and refs untouched.
+    ///
+    /// # Errors
+    /// Invalid or unknown revisions, or Git failures.
+    pub fn preview_merge(
+        &self,
+        worktree: &Path,
+        ours: &str,
+        theirs: &str,
+    ) -> Result<crate::TrainStep, GitError> {
+        let ours = self.rev_parse(worktree, ours)?;
+        let theirs = self.rev_parse(worktree, theirs)?;
+        Ok(match self.merged_tree_at(worktree, None, &ours, &theirs)? {
+            MergeTree::Clean(tree) => crate::TrainStep::Clean { tree },
+            MergeTree::Conflict(files) => crate::TrainStep::Conflict(files),
+        })
+    }
+
+    /// Run the same merge for preflight and landing. Revision arguments are resolved object ids.
+    fn merged_tree_at(
+        &self,
+        worktree: &Path,
+        base: Option<&str>,
+        ours: &str,
+        theirs: &str,
+    ) -> Result<MergeTree, GitError> {
         let mut invocation = Invocation::new(self, "merge-tree", Some(worktree)).args([
             "merge-tree",
             "--write-tree",
+            "--name-only",
+            "-z",
             "--no-messages",
         ]);
-        if let Some(base) = &base {
+        if let Some(base) = base {
             invocation = invocation.arg(format!("--merge-base={base}"));
         }
-        let output = self.run(
-            invocation
-                .args(["--end-of-options"])
-                .arg(&ours)
-                .arg(&theirs),
-        )?;
+        let output = self.run(invocation.args(["--end-of-options", ours, theirs]))?;
+        let mut records = output.stdout.split(|&byte| byte == 0);
+        let first = records.next().unwrap_or_default();
         match output.status.code() {
-            Some(0) => {
-                let text = output.stdout_text();
-                let tree = text.lines().next().unwrap_or_default();
-                if is_object_id(tree) {
-                    Ok(Some(tree.to_owned()))
-                } else {
-                    Err(GitError::Parse {
-                        command: "merge-tree",
-                        detail: format!("not a tree id: {tree:?}"),
-                    })
-                }
-            }
-            Some(1) => Ok(None),
+            Some(0) => match std::str::from_utf8(first) {
+                Ok(tree) if is_object_id(tree) => Ok(MergeTree::Clean(tree.to_owned())),
+                _ => Err(GitError::Parse {
+                    command: "merge-tree",
+                    detail: format!("not a tree id: {:?}", String::from_utf8_lossy(first)),
+                }),
+            },
+            // --name-only already lists each conflicted path once, before rendering it.
+            Some(1) => Ok(MergeTree::Conflict(
+                records
+                    .filter(|path| !path.is_empty())
+                    .map(conflict_path)
+                    .collect(),
+            )),
             _ => Err(failure("merge-tree", &output)),
         }
     }

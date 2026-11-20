@@ -84,6 +84,12 @@ impl BlindLimits {
         *self = Self::default();
     }
 
+    /// A refresh actually ran this model on this subscription.
+    pub(crate) fn available(&mut self, account: &AccountId, family: ModelFamily) {
+        self.met
+            .retain(|(id, model)| id != account || *model != family);
+    }
+
     /// `account` refused the task's run of a model of `family` at a limit nothing says the end
     /// of.
     pub(crate) fn met(&mut self, account: &AccountId, family: ModelFamily) {
@@ -250,6 +256,7 @@ impl App {
             link: Some(crate::account_gate::CONNECT_PATH.into()),
             at: self.now().0,
             cause: None,
+            named: Default::default(),
         };
         match store
             .set_task_needs_you(task_id, Some(&request), self.now())
@@ -305,6 +312,7 @@ impl App {
                 link: Some(crate::account_gate::CONNECT_PATH.into()),
                 at: now.0,
                 cause: None,
+                named: Default::default(),
             };
             if let Err(err) = store
                 .set_task_needs_you(&task.id, Some(&request), now)

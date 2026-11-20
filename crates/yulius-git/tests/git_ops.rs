@@ -1304,12 +1304,53 @@ fn the_push_guard_follows_no_link_an_agent_planted() -> TestResult {
 
 #[cfg(unix)]
 fn write_hook(path: &Path, body: &str) -> TestResult {
-    use std::os::unix::fs::PermissionsExt;
+    use std::io::Write as _;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(path, body)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
+    // A concurrent fork can inherit our writer until it execs. Only install opens
+    // the executable inode for writing, so waiting for install closes its last writer.
+    let mut source = tempfile::NamedTempFile::new()?;
+    source.write_all(body.as_bytes())?;
+    let output = Command::new("install")
+        .args(["-m", "755"])
+        .arg(source.path())
+        .arg(path)
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "install {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// A child forked during a write can keep the writer after the parent closes it.
+/// Hand the child that descriptor explicitly so the overlap lasts through the first exec.
+#[cfg(target_os = "linux")]
+#[test]
+fn fake_git_runs_while_a_child_holds_an_inherited_writer() -> TestResult {
+    use std::process::Stdio;
+
+    let fx = Fixture::new()?;
+    let path = fx.path("fake git");
+    for index in 0..8 {
+        let writer = fs::File::create(&path)?;
+        let child = Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(writer)
+            .spawn()?;
+        let result = write_hook(&path, &format!("#!/bin/sh\nprintf '%s' {index}\n"))
+            .and_then(|()| Ok(Command::new(&path).output()?));
+        // Closing the input releases cat even if installation or exec failed.
+        assert!(child.wait_with_output()?.status.success());
+        let output = result?;
+        assert!(output.status.success());
+        assert_eq!(output.stdout, index.to_string().as_bytes());
+    }
     Ok(())
 }
 
@@ -2102,11 +2143,22 @@ fn a_squash_lands_one_commit_on_the_remote_branch_or_names_the_conflicts() -> Te
     fs::write(feature.join("x.txt"), "x\n")?;
     fx.git
         .commit_all(&feature, "feat: x, part one", &author())?;
-    fs::write(feature.join("y.txt"), "y\n")?;
+    let unusual = "y with a tab\t.txt";
+    fs::write(feature.join(unusual), "y\n")?;
     fx.git
         .commit_all(&feature, "feat: x, part two", &author())?;
     let head = fx.git.rev_parse(&feature, "HEAD")?;
     let base = fx.git.rev_parse(&repo, "origin/dev")?;
+
+    assert_eq!(
+        fx.git.merge_conflicts(&feature, "origin/dev", "HEAD")?,
+        None
+    );
+    assert_eq!(
+        fx.git.rev_parse(&remote, "dev")?,
+        base,
+        "preview pushed nothing"
+    );
 
     let landed = fx.git.squash_land(
         &repo,
@@ -2164,7 +2216,22 @@ fn a_squash_lands_one_commit_on_the_remote_branch_or_names_the_conflicts() -> Te
     fx.git
         .worktree_add(&repo, &other, "feat/y", "origin/main")?;
     fs::write(other.join("x.txt"), "a different x\n")?;
+    fs::write(other.join(unusual), "a different y\n")?;
     fx.git.commit_all(&other, "feat: y", &author())?;
+    assert_eq!(
+        fx.git.merge_conflicts(&other, "origin/dev", "HEAD")?,
+        Some(vec!["x.txt".into(), unusual.into()])
+    );
+    assert_eq!(
+        fx.raw(&other, &["status", "--porcelain"])?,
+        "",
+        "checkout and index stay clean"
+    );
+    assert_eq!(
+        fx.git.rev_parse(&remote, "dev")?,
+        commit,
+        "preview pushed nothing"
+    );
     let conflict = fx.git.squash_land(
         &repo,
         &SquashInput {
@@ -2176,8 +2243,131 @@ fn a_squash_lands_one_commit_on_the_remote_branch_or_names_the_conflicts() -> Te
             branch: "dev",
         },
     )?;
-    assert_eq!(conflict, SquashLanding::Conflict(vec!["x.txt".to_owned()]));
+    assert_eq!(
+        conflict,
+        SquashLanding::Conflict(vec!["x.txt".to_owned(), unusual.to_owned()])
+    );
     assert_eq!(fx.git.rev_parse(&remote, "dev")?, commit, "nothing pushed");
+    Ok(())
+}
+
+/// Exit zero from merge-tree requires a valid tree object id. An invalid answer remains
+/// a parse error even though both input revisions resolve through the real Git executable.
+#[cfg(unix)]
+#[test]
+fn a_successful_merge_tree_with_an_invalid_tree_id_is_a_parse_error() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_, repo) = fx.repo_with_remote()?;
+    let wrapper = fx.path("malformed-tree-git");
+    write_hook(
+        &wrapper,
+        r#"#!/bin/sh
+for arg do
+    if [ "$arg" = merge-tree ]; then
+        printf 'not-a-tree-id\000'
+        exit 0
+    fi
+done
+exec git "$@"
+"#,
+    )?;
+    let git = isolated(Git::new(&wrapper), &fx.home);
+    let result = git.merge_tree(&repo, "main", "HEAD");
+    assert!(
+        matches!(result, Err(GitError::Parse { command: "merge-tree", ref detail }) if detail.contains("not-a-tree-id")),
+        "{result:?}"
+    );
+    Ok(())
+}
+
+/// Preview, squash and the checked train distinguish raw bytes from literal quoting in real filenames.
+#[cfg(unix)]
+#[test]
+fn conflict_paths_preserve_distinct_non_utf8_names() -> TestResult {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let fx = Fixture::new()?;
+    let (_, repo) = fx.repo_with_remote()?;
+    let branch = fx.path("branch");
+    fx.git.worktree_add(&repo, &branch, "feat/names", "main")?;
+    let names: [&[u8]; 5] = [
+        br#""x\220""#,
+        b"plain\t",
+        b"x\"\\\x07\x08\t\n\x0b\x0c\r\x90",
+        b"x\x90",
+        b"x\x91",
+    ];
+    for (tree, content) in [(&repo, "base"), (&branch, "task")] {
+        for name in names {
+            fs::write(tree.join(OsStr::from_bytes(name)), content)?;
+        }
+        fx.git.commit_all(tree, content, &author())?;
+    }
+    let preview = fx
+        .git
+        .merge_conflicts(&branch, "main", "HEAD")?
+        .ok_or("expected conflicts")?;
+    assert_eq!(
+        preview,
+        [
+            r#""\"x\\220\"""#,
+            "plain\t",
+            r#""x\"\\\a\b\t\n\v\f\r\220""#,
+            r#""x\220""#,
+            r#""x\221""#
+        ],
+    );
+    let squash = fx.git.squash_land(
+        &repo,
+        &SquashInput {
+            base: "main",
+            head: "feat/names",
+            message: "conflict",
+            author: &author(),
+            remote: "origin",
+            branch: "main",
+        },
+    )?;
+    assert_eq!(squash, SquashLanding::Conflict(preview.clone()));
+    let owned = fx.path("ci");
+    fs::create_dir(&owned)?;
+    let train = fx.git.build_train(
+        &repo,
+        &owned.join("train"),
+        &owned,
+        &TrainInput {
+            base: "main",
+            heads: &[fx.git.rev_parse(&branch, "HEAD")?],
+            landing: TrainLanding::MergeCommit,
+            author: &author(),
+        },
+    )?;
+    assert_eq!(train.steps, [TrainStep::Conflict(preview)]);
+    Ok(())
+}
+
+#[test]
+fn show_file_reads_a_preview_tree_by_id_and_requires_refs_to_resolve_to_commits() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_, repo) = fx.repo_with_remote()?;
+    let tree = fx.raw(&repo, &["rev-parse", "main^{tree}"])?;
+    fx.raw(&repo, &["update-ref", "refs/tags/tree-alias", &tree])?;
+    let blob = fx.raw(&repo, &["rev-parse", "main:README.md"])?;
+
+    for rev in ["main", tree.as_str()] {
+        assert_eq!(
+            fx.git.show_file(&repo, rev, "README.md")?.as_deref(),
+            Some("hello\n")
+        );
+    }
+    for rev in ["tree-alias", blob.as_str()] {
+        let result = fx.git.show_file(&repo, rev, "README.md");
+        assert!(
+            matches!(&result, Err(GitError::RevisionNotFound(name)) if name == rev),
+            "expected commit resolution to reject {rev}, got {result:?}"
+        );
+    }
     Ok(())
 }
 
@@ -2546,7 +2736,6 @@ fn a_redirected_clone_git_directory_is_refused() -> TestResult {
 #[test]
 fn a_clone_configuration_swapped_for_a_link_during_the_scrub_is_never_written_through() -> TestResult
 {
-    use std::os::unix::fs::PermissionsExt as _;
     let fx = Fixture::new()?;
     let (_remote, repo) = fx.repo_with_remote()?;
     fx.raw(
@@ -2558,9 +2747,9 @@ fn a_clone_configuration_swapped_for_a_link_during_the_scrub_is_never_written_th
     fs::write(&outside, planted)?;
     let config = repo.join(".git/config");
     let swapper = fx.path("swapping-git");
-    fs::write(
+    write_hook(
         &swapper,
-        format!(
+        &format!(
             "#!/bin/sh\nif [ \"${{33}}\" = config ] && [ ! -e '{mark}' ]; then\n  : > '{mark}'\n  \
              mv '{config}' '{config}.aside' && ln -s '{outside}' '{config}'\nfi\nexec git \"$@\"\n",
             mark = fx.path("swapped").display(),
@@ -2568,7 +2757,6 @@ fn a_clone_configuration_swapped_for_a_link_during_the_scrub_is_never_written_th
             outside = outside.display(),
         ),
     )?;
-    fs::set_permissions(&swapper, fs::Permissions::from_mode(0o755))?;
     let git = isolated(Git::new(&swapper), &fx.home);
     git.scrub_transport_config(&repo)?;
     assert!(fx.path("swapped").exists(), "the wrapper swapped the file");
@@ -2591,9 +2779,7 @@ fn a_clone_configuration_swapped_for_a_link_during_the_scrub_is_never_written_th
 /// A `git` at `path` that runs `script` (sh, `${33}` is the subcommand after the sixteen fixed
 /// `-c` pairs) before the real Git.
 fn wrapped_git(fx: &Fixture, path: &Path, script: &str) -> Result<Git, Box<dyn Error>> {
-    use std::os::unix::fs::PermissionsExt as _;
-    fs::write(path, format!("#!/bin/sh\n{script}\nexec git \"$@\"\n"))?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
+    write_hook(path, &format!("#!/bin/sh\n{script}\nexec git \"$@\"\n"))?;
     Ok(isolated(Git::new(path), &fx.home))
 }
 
@@ -2804,16 +2990,14 @@ fn a_follow_up_is_read_from_the_commits_themselves() -> TestResult {
 #[cfg(unix)]
 #[test]
 fn reading_no_grafts_prints_no_hint() -> TestResult {
-    use std::os::unix::fs::PermissionsExt as _;
     let fx = Fixture::new()?;
     let (_remote, repo) = fx.repo_with_remote()?;
     let said = fx.path("stderr.log");
     let wrapper = fx.path("stderr-git");
-    fs::write(
+    write_hook(
         &wrapper,
-        format!("#!/bin/sh\nexec git \"$@\" 2>>'{}'\n", said.display()),
+        &format!("#!/bin/sh\nexec git \"$@\" 2>>'{}'\n", said.display()),
     )?;
-    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755))?;
     let git = isolated(Git::new(&wrapper), &fx.home);
     fs::write(repo.join("a.txt"), "changed\n")?;
     git.commit_all(&repo, "Change", &author())?;

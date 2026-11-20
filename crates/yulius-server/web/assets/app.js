@@ -36,6 +36,7 @@ import { mountMcpPage } from './pages/mcp.js';
 import { mountDashboardPage } from './pages/dashboard.js';
 import { mountUsersPage, mountAccountsPage, mountGithubPage } from './pages/admin.js';
 import { mountSettingsPage } from './pages/settings.js';
+import { mountDigestPage } from './digest.js';
 import { mountInstancePage } from './pages/instance.js';
 import { createUpdateBanner, createUpdateButton } from './updates.js';
 import { createDiskAlert } from './diskalert.js';
@@ -743,7 +744,7 @@ function createApp(root, transport) {
 
   /** Whether a guest may be at `route`: their playground's composer, tasks, sessions and Git. */
   function guestRoute(route, guest) {
-    if (route.slug !== guest.slug) return false;
+    if (route.slug !== guest.slug || route.panel === 'agent') return false;
     if (['composer', 'task', 'taskInfo', 'session', 'gitTask'].includes(route.name)) return true;
     return route.name === 'page' && GUEST_PAGES.has(route.page);
   }
@@ -763,6 +764,7 @@ function createApp(root, transport) {
     switch (route.name) {
       case 'archived': setCenter('archived', () => mountArchivedPage(ctx)); break;
       case 'settings': setCenter('settings', () => mountSettingsPage(ctx)); break;
+      case 'digest': setCenter('digest', () => mountDigestPage(ctx)); break;
       // Team secrets without a sandbox (the user menu); agent secrets need one.
       case 'secrets': setCenter('secrets', () => mountSecretsPage(ctx, null, route)); break;
       case 'design': setCenter('design', () => mountDesignPage(ctx)); break;

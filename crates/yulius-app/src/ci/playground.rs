@@ -11,7 +11,7 @@ use std::path::Path;
 
 use yulius_domain::ci::{CiRef, RunState};
 
-use super::{CiRunRecord, PLAN_RUNS, short};
+use super::{CiRunRecord, GateView, PLAN_RUNS, short};
 use crate::context::App;
 use crate::delivery::delivery_profile;
 use crate::error::{AppError, AppResult};
@@ -24,7 +24,7 @@ const SCRATCH: &str = "candidate";
 /// What the CI says of a playground task's head merged into the integration branch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TaskChecks {
-    /// Nothing to wait for: the playground has no CI (or CI is off here).
+    /// No current check holds the merge: CI is off, absent, or ready to start its first run.
     Clear,
     /// Its run passed at this commit, whose tree the squash lands.
     Passed(String),
@@ -36,7 +36,79 @@ pub(crate) enum TaskChecks {
     Conflict(Vec<String>),
 }
 
+impl TaskChecks {
+    fn of_run(run: &CiRunRecord) -> Self {
+        match run.state {
+            RunState::Passed => Self::Passed(run.sha.clone()),
+            RunState::Failed | RunState::Cancelled => Self::Failed(run.clone()),
+            _ => Self::Testing(run.clone()),
+        }
+    }
+}
+
 impl App {
+    /// CI configuration that makes the merge action build a candidate, knowing that the
+    /// task head and integration base have no run yet.
+    async fn playground_candidate_gate(
+        &self,
+        sandbox: &SandboxRecord,
+        head: &str,
+    ) -> Option<GateView> {
+        let view = self.ci_gate(sandbox).await;
+        if view.gate.is_some()
+            || !self
+                .ci_jobs_at(&self.sandbox_repo(&sandbox.id), head)
+                .await
+                .unwrap_or_default()
+                .is_empty()
+        {
+            Some(view)
+        } else {
+            None
+        }
+    }
+
+    /// Read-only verdict for the delivery view. An exact candidate already passed its merge
+    /// step. Without one, preview the merge in the checkout the action will use.
+    pub(crate) async fn playground_view_checks(
+        &self,
+        sandbox: &SandboxRecord,
+        task: &TaskRecord,
+        head: &str,
+        base: &str,
+        worktree: &Path,
+        diverged: bool,
+    ) -> AppResult<TaskChecks> {
+        let git = &self.deps.git;
+        let repo = self.sandbox_repo(&sandbox.id);
+        if self.config.ci.enabled && delivery_profile(sandbox).require_checks {
+            let runs = self.deps.store.ci_runs(&sandbox.id, PLAN_RUNS).await?;
+            if let Some(run) = self.task_run_of_head(task, &runs, head).await {
+                return Ok(TaskChecks::of_run(run));
+            }
+            if diverged && let Some(view) = self.playground_candidate_gate(sandbox, head).await {
+                // The CI train starts in a checkout of the task head and merges the base into it.
+                match git.preview_merge(worktree, head, base).await? {
+                    TrainStep::Conflict(files) => return Ok(TaskChecks::Conflict(files)),
+                    TrainStep::Clean { tree } => {
+                        // If only the task carried jobs, the merged tree can have lost them
+                        // to a change on the base. The action then falls back to the raw squash.
+                        if view.gate.is_some()
+                            || self.ci_gate_for_head(sandbox, &view, &tree).await.is_some()
+                        {
+                            return Ok(TaskChecks::Clear);
+                        }
+                    }
+                }
+            }
+        }
+        if diverged && let TrainStep::Conflict(files) = git.preview_merge(&repo, base, head).await?
+        {
+            return Ok(TaskChecks::Conflict(files));
+        }
+        Ok(TaskChecks::Clear)
+    }
+
     /// The checks of `task`'s `head` merged into its playground's integration branch as Yulius's
     /// clone has it now: the newest run of the task that tested exactly them, else a new merge
     /// built and queued (older active runs of the task cancelled as superseded). Callers hold the
@@ -73,18 +145,12 @@ impl App {
         // Newest first: a run again of the same commit is its verdict.
         for run in &runs {
             if self.tests_exactly(&repo, &run.sha, head, &base).await {
-                return Ok(match run.state {
-                    RunState::Passed => TaskChecks::Passed(run.sha.clone()),
-                    RunState::Failed | RunState::Cancelled => TaskChecks::Failed(run.clone()),
-                    _ => TaskChecks::Testing(run.clone()),
-                });
+                return Ok(TaskChecks::of_run(run));
             }
         }
-        let view = self.ci_gate(sandbox).await;
-        let at_head = self.ci_jobs_at(&repo, head).await.unwrap_or_default();
-        if view.gate.is_none() && at_head.is_empty() {
+        let Some(view) = self.playground_candidate_gate(sandbox, head).await else {
             return Ok(TaskChecks::Clear);
-        }
+        };
         let ci_dir = self.ci_dir(&sandbox.id);
         // Readied through handles: Git checks out in it by its path (SPEC-367).
         self.ci_checkout_ready(&sandbox.id, &[], SCRATCH)

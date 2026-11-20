@@ -188,6 +188,8 @@ pub struct FakeAgentOptions {
     /// Claude Code may before any prompt when it resumes an interrupted turn
     /// (`--resume-record`).
     pub resume_record: bool,
+    /// Simulate Claude skipping goal restoration because workspace trust or hook policy forbids it.
+    pub forget_goal: bool,
     /// The Codex CLI the harness says it provides (SPEC-503 CLI-002); its program is recorded in
     /// `fake-launch.txt`, the fake agent runs instead.
     pub provided_codex: Option<yulius_app::ports::harness::ProvidedCli>,
@@ -386,6 +388,12 @@ impl HarnessPort for FakeAgentHarness {
         if self.options.queue_prompts {
             argv.push("--queue-prompts".into());
         }
+        if resumed_session && !codex && !antigravity {
+            argv.push("--resume".into());
+            if self.options.forget_goal {
+                argv.push("--forget-goal".into());
+            }
+        }
         if self.options.resume_record {
             argv.push("--resume-record".into());
         }
@@ -573,6 +581,26 @@ impl HarnessPort for FakeAgentHarness {
     fn claude_transcript(&self, home: &Path, worktree: &Path, session: &str) -> PathBuf {
         self.inner.claude_transcript(home, worktree, session)
     }
+    fn last_claude_goal(
+        &self,
+        anchor: &Path,
+        path: &Path,
+    ) -> AppResult<Option<yulius_domain::task::GoalOutcome>> {
+        self.inner.last_claude_goal(anchor, path)
+    }
+
+    fn submit_origin(
+        &self,
+        file: std::fs::File,
+        session: &str,
+        id: &str,
+        prompt: &str,
+        run_to_submit: std::ops::RangeInclusive<yulius_domain::time::Timestamp>,
+    ) -> yulius_domain::harness::SubmitOrigin {
+        self.inner
+            .submit_origin(file, session, id, prompt, run_to_submit)
+    }
+
     fn step_back_transcript(&self, home: &Path, worktree: &Path, session: &str) -> AppResult<bool> {
         self.inner.step_back_transcript(home, worktree, session)
     }

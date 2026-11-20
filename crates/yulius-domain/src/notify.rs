@@ -43,6 +43,8 @@ pub struct NotifyChoices {
     pub failed: bool,
     /// Subscription problems (instance administrators only see these events).
     pub account: bool,
+    /// The end-of-day digest, when the instance sends one (SPEC-512 DIG-005).
+    pub digest: bool,
 }
 
 impl Default for NotifyChoices {
@@ -52,6 +54,7 @@ impl Default for NotifyChoices {
             done: false,
             failed: false,
             account: false,
+            digest: true,
         }
     }
 }
@@ -443,6 +446,54 @@ pub fn chat_command(text: &str) -> ChatCommand<'_> {
     }
 }
 
+/// What a linked chat's message asks with intake on (SPEC-512 TGI-003, TGI-004).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntakeCommand<'a> {
+    /// `/status`: the person's tasks that wait for them.
+    Status,
+    /// `/help`, or a command this chat does not know.
+    Help,
+    /// `/task <project> <text>`: a task in that project (`text` may be empty when files come
+    /// with it).
+    Task {
+        /// The project's repository name or slug.
+        project: &'a str,
+        /// The task's text.
+        text: &'a str,
+    },
+    /// `/task` without a project.
+    TaskWithoutProject,
+    /// Anything else: a task in the default project.
+    Text,
+}
+
+/// Reads a message's intake command (`/status@bot` too).
+#[must_use]
+pub fn intake_command(text: &str) -> IntakeCommand<'_> {
+    let text = text.trim();
+    if !text.starts_with('/') {
+        return IntakeCommand::Text;
+    }
+    let (head, rest) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
+    let name = head.split_once('@').map_or(head, |(name, _)| name);
+    match name {
+        "/status" => IntakeCommand::Status,
+        "/task" => {
+            let rest = rest.trim();
+            let (project, body) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+            if project.is_empty() {
+                IntakeCommand::TaskWithoutProject
+            } else {
+                IntakeCommand::Task {
+                    project,
+                    text: body.trim(),
+                }
+            }
+        }
+        _ => IntakeCommand::Help,
+    }
+}
+
 /// Whether `code` has a link code's shape (TGC-011).
 #[must_use]
 pub fn is_link_code(code: &str) -> bool {
@@ -774,5 +825,30 @@ mod tests {
         assert!(!is_link_code("abcDEF012345678"));
         assert!(!is_link_code("abcDEF012345678_"));
         assert!(!is_link_code("abcDEF0123456789x"));
+    }
+
+    /// SPEC-512 TGI-003, TGI-004: the intake's commands.
+    #[test]
+    fn intake_commands_are_read() {
+        assert_eq!(intake_command("Fix the login page"), IntakeCommand::Text);
+        assert_eq!(intake_command(" /status "), IntakeCommand::Status);
+        assert_eq!(intake_command("/status@yulius_bot"), IntakeCommand::Status);
+        assert_eq!(
+            intake_command("/task website  Make the header blue\nand bold"),
+            IntakeCommand::Task {
+                project: "website",
+                text: "Make the header blue\nand bold"
+            }
+        );
+        assert_eq!(
+            intake_command("/task website"),
+            IntakeCommand::Task {
+                project: "website",
+                text: ""
+            }
+        );
+        assert_eq!(intake_command("/task"), IntakeCommand::TaskWithoutProject);
+        assert_eq!(intake_command("/help"), IntakeCommand::Help);
+        assert_eq!(intake_command("/unknown x"), IntakeCommand::Help);
     }
 }

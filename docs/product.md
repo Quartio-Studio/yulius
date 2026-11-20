@@ -141,7 +141,7 @@ watching, steering and unblocking.
   passes into a staged copy, resumable after a broken link), freezes it only to send what changed
   since, proves the copy (entries, bytes and a fingerprint per folder, equal on both hosts),
   starts the new instance, redirects the old URL and removes its own key. The estimated freeze is
-  shown before it begins and `--max-downtime <minutes>` bounds it. People are asked only in the
+  shown before it begins and the optional longest freeze in Settings or `--max-downtime <minutes>` bounds it. People are asked only in the
   plan, before anything changes (the SSH sign-in, a DNS record, the GitHub App's callback). Any
   failure before the new instance runs thaws the old one; `--abort` goes back. Tasks that were
   live come back by themselves on the new host. A superadmin can also move from **Settings →
@@ -196,7 +196,10 @@ watching, steering and unblocking.
   sends it through the remote MCP, SPEC-322), unless someone typed there in the last minute, text
   they typed and did not send may still be in its prompt box (however old, SPEC-480: such a
   message is not typed behind a person's draft, and for a message of Yulius's own the task
-  says so after ten minutes), or the task still asks a person whether to trust its folder (SPEC-230). When a usage limit cuts its
+  says so after ten minutes), or the task still asks a person whether to trust its folder (SPEC-230).
+  A draft visible in Claude Code’s input also holds the message, including one restored from
+  a stash. The sender is told at once. An automatic message flags the session for its person
+  ([SPEC-537](../.ai/specs/SPEC-537-preserve-restored-drafts-when-typing-int.md)). When a usage limit cuts its
   turn, it moves to a subscription with capacity and goes on with the turn, as a task does; the
   panel follows it. It has the project's MCP servers, as a task does, and an agent secret one of
   them or a command prints shows there as `[secret:NAME]` (SPEC-147). It uses the agent vault as
@@ -348,10 +351,10 @@ watching, steering and unblocking.
   Yulius's default model is never used, and Settings, Instance shows the version, the channel
   and "Check now" (SPEC-421, SPEC-461). A task, Cockpit or Superagent that names no model or effort runs
   Opus 5.5 at high effort (SPEC-023, SPEC-462, SPEC-493); the composer and Settings choose
-  another, Fable too. A task's independent code review runs as Yulius's reviewer agent, whose
+  another, Fable too. A Claude Code task's independent code review runs as Yulius's reviewer agent, whose
   model Yulius picks per round: Fable 5.2 for a pull request's first two rounds, Opus 5.5 from
   the third, and Opus 5.5 when the task's subscription cannot run Fable then; each round is
-  recorded with its reviewer, its model and its verdict.
+  recorded with its reviewer, its model and its verdict. Codex tasks request GPT-6.2 Astra for every review round, and Antigravity tasks request Gemini 4 Neon (High).
   Task intake splits mixed requests, holds scope changes and chains
   dependent tasks, also by a logical rule such as "#12 done and #13 done", which the composer
   builds from picked conditions (a task, its state, all or any). A task that waits for another
@@ -360,6 +363,8 @@ watching, steering and unblocking.
   (it reads "Waiting for checks or merge" then, not Done). The tools show a waiting task's rule
   whole, and "after all current tasks" (`after_all_tasks`) waits for every task with work
   still coming (SPEC-487).
+  A person’s open Claude goal in a prompt-mode session follows it to another subscription.
+  The task stays Working while it waits for the resumed evaluator’s verdict (SPEC-540).
   A task whose turn ended and that waits for a person (Needs you, Done) is **parked** after
   half an hour with nothing going on (`YULIUS_PARK_AFTER_MINUTES`): its Claude Code process ends,
   so it holds neither a session slot nor memory, and it stays in the list where it was, marked
@@ -412,7 +417,11 @@ watching, steering and unblocking.
   terminal's colours, following its newest lines until they scroll up), see whose it is
   in the view and in the sidebar, answer what its agent asks under Needs you with Reply
   without taking control (SPEC-516: the agent gets the answer labelled with their name; not
-  while it asks in its terminal or holds the owner's personal secrets or MCP servers), and can
+  while it asks in its terminal or holds the owner's personal secrets or MCP servers). An agent
+  that needs two people names them (SPEC-512: `needs_you` with `who`, each with write access):
+  the request says "Asks @bob", only its owner and whom it names answer it, from the page or
+  through their own agent's `task_message`, and the owner withdraws a name there; an answer to a
+  question that was replaced or withdrawn meanwhile is refused saying so. And they can
   take control, from the task's page or its menu in a
   list, after a confirmation naming the owner (SPEC-510): the task then acts on GitHub as them,
   and the previous owner hears of it wherever they are and can take it back at any time. A
@@ -425,7 +434,8 @@ watching, steering and unblocking.
 - **Subscription pool**: Claude accounts are used as one self-managing pool, and Codex and
   Antigravity accounts each as one of their own (SPEC-503, SPEC-505); switches and pauses are invisible to agents. Each task shows the subscription it runs on, and a person can
   run it on another from the task ("Run #N on…"); removing a subscription moves its tasks, and a
-  subscription Claude refuses (cancelled, downgraded) is taken out of the pool and says why. A
+  subscription Claude refuses (cancelled, downgraded) is taken out of the pool and says why.
+  If a person has already signed it in again, the new sign-in stays available. A
   task that moved for either reason says so in its terminal, and one with nothing usable left is
   under Needs you. A subscription out of a model's usage credits (Fable runs on a weekly
   allowance of them) is at that model's limit: its tasks of that model move on or
@@ -487,7 +497,8 @@ watching, steering and unblocking.
   because the integration branch moved; armed and green, it merges at once when up to date, else
   Yulius tests it once on top of the current integration branch, together with the others
   waiting (a merge candidate, halved when red), and merges them in order as soon as that run
-  passed, without waiting for their own runs (SPEC-497). The Pipeline tab says why each recent
+  passed, without waiting for their own runs (SPEC-497). If a candidate rebuilds a tree that
+  recently failed in this queue, bisection uses the original run (SPEC-542). The Pipeline tab says why each recent
   candidate was dissolved. Every armed pull
   request says where it stands, and a merge at a head whose own Yulius CI run passed counts as
   merged on green, whoever made it.
@@ -597,7 +608,9 @@ watching, steering and unblocking.
   nightly at 03:00 CEST. An automation's tasks start like New task's: now, as a supertask, after
   another task or when a rule is true, or wait prepared until the person presses Start now ("When
   I decide"), picked with New task's start chip beside Run now and Save;
-  Run now starts its task the way the chip shows.
+  Run now starts its task the way the chip shows. Each task runs as the automation creator.
+  Only the creator can save changes, toggle the schedule or use Run now. Project writers can
+  delete the automation and create a replacement of their own. [ADR-0381](decisions/0381-automation-creators-authorize-edits-and-starts.md)
 - **Notes**: in the tools rail, a notepad per sandbox and one for the whole team, shared and saved
   while people type; a teammate's edit shows up live, and two edits at once end in a choice. A
   third, **Me**, is each person's own: nobody else sees it, and it is the same in every sandbox.
@@ -698,7 +711,32 @@ watching, steering and unblocking.
   one message however many tasks ask, a request for control of their task, or a teammate taking it
   or taking it back, reaches them under Needs you), with a link to the task, agent secrets
   removed, at most five messages a minute with the rest in one summary. The server asks Telegram
-  for messages, so no inbound port is needed. Replies and new tasks from Telegram are part 2.
+  for messages, so no inbound port is needed.
+- **Work from Telegram** (SPEC-512 part 4, ADR-0392, part 2 of #1107), off by default: a person
+  turns it on for their own chat in Settings → Notifications and picks the project new messages
+  start tasks in. A reply to a notification then answers its task as their message (the owner
+  rule holds: someone else's task takes only an answer it asks of them, and only to the question
+  the notice told of); a new message (not a reply), with photos, documents or voice notes up to
+  20 MB, starts a task as them, marked "From Telegram", at most 20 an hour in a project as for
+  agents' tools; `/task <project> <text>` picks another project and `/status` lists what waits
+  for them. A chat's messages are handled one at a time in the order sent; with more than 20
+  waiting, the chat is told the latest were not handled and to send them again. Turning intake
+  off or `/stop` also stops messages still waiting.
+- **Tasks hand work to another sandbox** (SPEC-512 part 5, ADR-0395, #1106), off by default:
+  an instance administrator chooses Ask or Automatic in Settings → Administration (with a chain's
+  depth and a daily bound per owner), and a sandbox's writers can close it to handoffs on its Git
+  page. A task's agent then hands the part of its work that belongs elsewhere to another sandbox
+  its owner can work in: in Ask mode the owner approves it on the task's page, in Automatic it
+  starts at once as the owner. The new task shows where it came from, the source task is told
+  when it is done or merged, and both sandboxes' audit logs say so.
+- **An end-of-day digest** (SPEC-512 part 3, ADR-0380, #1413), off by default: an instance
+  administrator turns it on in Settings → Administration with a time (UTC) and, if they want, an
+  idle threshold. Once a day each person with something to report gets what waits for them first,
+  what was parked since the last digest with the end of its last message, and how many tasks
+  still work, under the bell (it opens `/digest`, also for a digest made while no page was open)
+  and in their Telegram chat unless they turned it off there. With a threshold it first parks the
+  quiet tasks that wait for their person's turn and ask nothing; Done tasks and tasks that wait
+  for a decision are never parked by it.
 
 ## Principles
 

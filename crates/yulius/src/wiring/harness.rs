@@ -386,6 +386,34 @@ impl HarnessPort for HarnessAdapter {
         paths::claude_transcript_path(&sandbox_home.join(".claude"), worktree, session_id)
     }
 
+    fn last_claude_goal(
+        &self,
+        anchor: &Path,
+        path: &Path,
+    ) -> AppResult<Option<yulius_domain::task::GoalOutcome>> {
+        use yulius_app::transcripts;
+        let file = match transcripts::open(anchor, path) {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(io(err)),
+        };
+        claude::last_goal(file)
+            .map(|goal| goal.map(|(outcome, _)| outcome))
+            .map_err(io)
+    }
+
+    fn submit_origin(
+        &self,
+        file: std::fs::File,
+        session: &str,
+        id: &str,
+        prompt: &str,
+        run_to_submit: std::ops::RangeInclusive<yulius_domain::time::Timestamp>,
+    ) -> yulius_domain::harness::SubmitOrigin {
+        yulius_harness::scheduled::submit_origin(file, session, id, prompt, run_to_submit)
+            .unwrap_or(yulius_domain::harness::SubmitOrigin::Unmarked)
+    }
+
     fn step_back_transcript(
         &self,
         sandbox_home: &Path,
@@ -995,6 +1023,9 @@ impl TranscriptWatch for Watch {
         let mut out: Vec<Observation> = Vec::new();
         match self.subagents.poll_sides() {
             Ok(side) => {
+                // A sibling's answer supplies the workflow's default model even if its file
+                // sorts after a first-request refusal in this same bounded poll.
+                let mut refusals = Vec::new();
                 for side in side {
                     // A subagent of the thread: `agent-<id>.jsonl` in the subagents folder.
                     let subagent = side
@@ -1008,9 +1039,16 @@ impl TranscriptWatch for Watch {
                             out.extend(self.subagent_fact(id, &observed));
                         }
                         if let Some(agent) = &side.agent {
-                            self.limits.side(agent, observed);
+                            if matches!(observed, Observed::LimitReached { .. }) {
+                                refusals.push((agent.clone(), observed));
+                            } else {
+                                self.limits.side(agent, observed);
+                            }
                         }
                     }
+                }
+                for (agent, refusal) in refusals {
+                    self.limits.side(&agent, refusal);
                 }
             }
             Err(err) => tracing::debug!(error = %err, "a sub-agent transcript could not be read"),
@@ -1177,6 +1215,65 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn resumed_goal_uses_the_last_complete_main_thread_status()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::Write as _;
+        use yulius_domain::task::GoalOutcome;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("conversation.jsonl");
+        let adapter = HarnessAdapter::new("/bin/yulius".into(), "http://127.0.0.1:1");
+        let goal = || adapter.last_claude_goal(dir.path(), &path);
+        assert_eq!(goal()?, None);
+        let mut file = std::fs::File::create(&path)?;
+        for (fields, outcome) in [
+            (
+                serde_json::json!({"met":false,"sentinel":true}),
+                GoalOutcome::Set,
+            ),
+            (serde_json::json!({"met":false}), GoalOutcome::NotMet),
+            (
+                serde_json::json!({"met":false,"failed":true}),
+                GoalOutcome::Failed,
+            ),
+            (serde_json::json!({"met":true}), GoalOutcome::Met),
+            (
+                serde_json::json!({"met":true,"sentinel":true}),
+                GoalOutcome::Cleared,
+            ),
+        ] {
+            let mut attachment = fields;
+            attachment["type"] = "goal_status".into();
+            writeln!(
+                file,
+                "{}",
+                serde_json::json!({"type":"attachment","attachment":attachment})
+            )?;
+            writeln!(
+                file,
+                r#"{{"type":"attachment","isSidechain":true,"attachment":{{"type":"goal_status","met":false}}}}"#
+            )?;
+            writeln!(file, "malformed")?;
+            assert_eq!(goal()?, Some(outcome));
+        }
+        // The newline is outside the live watch's record-size limit.
+        let mut open =
+            br#"{"type":"attachment","attachment":{"type":"goal_status","met":false}}"#.to_vec();
+        open.resize(tail::DEFAULT_MAX_LINE_BYTES, b' ');
+        file.write_all(&open)?;
+        file.write_all(b" \n")?;
+        assert_eq!(goal()?, Some(GoalOutcome::Cleared));
+        file.write_all(&open)?;
+        file.write_all(b"\n")?;
+        assert_eq!(goal()?, Some(GoalOutcome::NotMet));
+        write!(
+            file,
+            r#"{{"type":"attachment","attachment":{{"type":"goal_status","met":true}}}}"#
+        )?;
+        assert_eq!(goal()?, Some(GoalOutcome::NotMet));
+        Ok(())
+    }
+
     /// SPEC-471 CCQ-001: a run that resumed a session reads the lines recorded from its own
     /// start on, so an `enqueue` the run before left behind (its process ended with the prompt
     /// still waiting) is not in this run's queue; a run that started the session reads all.
@@ -1310,6 +1407,46 @@ mod tests {
         );
         let session = r#"{"isSidechain":false,"type":"assistant","timestamp":"2026-11-15T10:13:28.400Z","message":{"id":"e2","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","content":[{"type":"text","text":"You've hit your 5-hour limit"}]},"apiError":"usage_limit_reached","apiErrorParams":{"rate_limit_info":{"status":"rejected","resetsAt":4102444800,"rateLimitType":"five_hour"}},"error":"rate_limit","isApiErrorMessage":true}"#;
         assert_eq!(scope_of(&[prompt, &fable, session])?, LimitScope::Account);
+        Ok(())
+    }
+
+    #[test]
+    fn workflow_agents_in_one_poll_agree_on_the_default_model_in_both_file_orders()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (answered, refused) in [("a", "b"), ("b", "a")] {
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("s1.jsonl");
+            std::fs::write(&path, "")?;
+            let run = yulius_harness::subagents::workflow_dir(&path).join("wf_1");
+            std::fs::create_dir_all(&run)?;
+            for agent in [answered, refused] {
+                std::fs::write(
+                    run.join(format!("agent-{agent}.meta.json")),
+                    r#"{"agentType":"workflow-subagent"}"#,
+                )?;
+            }
+            let answer = r#"{"type":"assistant","isSidechain":true,"message":{"id":"m1","role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"yes"}],"usage":{"input_tokens":1,"output_tokens":1}}}"#;
+            let refusal = r#"{"type":"assistant","isSidechain":true,"timestamp":"2026-11-15T10:13:28.400Z","message":{"id":"e2","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","content":[{"type":"text","text":"You're out of usage credits. /model to switch models."}]},"apiError":"model_requires_usage_credits","error":"rate_limit","isApiErrorMessage":true}"#;
+            std::fs::write(
+                run.join(format!("agent-{answered}.jsonl")),
+                format!("{answer}\n"),
+            )?;
+            std::fs::write(
+                run.join(format!("agent-{refused}.jsonl")),
+                format!("{refusal}\n"),
+            )?;
+            let seen = watch_of(&path)?.poll().map_err(|err| err.to_string())?;
+            assert!(
+                seen.iter().any(|one| matches!(
+                    one,
+                    Observation::WorkflowLimitReached {
+                        scope: LimitScope::Model(Some(ModelFamily::Opus)),
+                        ..
+                    }
+                )),
+                "{answered}: {seen:?}"
+            );
+        }
         Ok(())
     }
 

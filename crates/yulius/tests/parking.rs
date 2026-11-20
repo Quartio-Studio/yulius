@@ -118,6 +118,7 @@ async fn ask(app: &App, id: &TaskId) -> TestResult {
         link: None,
         at: 1,
         cause: None,
+        named: Default::default(),
     };
     app.deps
         .store
@@ -1097,6 +1098,388 @@ fn a_parked_unfinished_goal_stays_your_turn_across_a_restart() -> TestResult {
         assert!(
             shown.goal_unfinished,
             "the parked run's directory keeps the goal's state"
+        );
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-512 ANS-002 with PRK-005 (review round 3 of part 2): a question stays answerable while
+/// it is open, also once its task parked: the named person's answer resumes the task in its own
+/// session with the answer as its first prompt, ends the question, and the task stays its
+/// owner's.
+#[test]
+fn a_named_persons_answer_resumes_a_parked_task() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 8, 1).await?;
+        let (id, caller) = answered(&app, &data).await?;
+        let bob = yulius_app::model::UserRecord {
+            id: yulius_domain::ids::UserId::parse("u-bob")?,
+            github_login: Some("bob".into()),
+            github_id: None,
+            display_name: "Bob".into(),
+            avatar_url: None,
+            is_superadmin: false,
+            is_instance_admin: false,
+            password_hash: None,
+            created_at: yulius_domain::time::Timestamp(1),
+            disabled_at: None,
+        };
+        yulius_app::ports::store::UserStore::insert_user(app.deps.store.as_ref(), &bob).await?;
+        yulius_app::ports::store::PermissionStore::put_access(
+            app.deps.store.as_ref(),
+            &bob.id,
+            &caller.sandbox,
+            yulius_domain::permission::AccessLevel::Write,
+            app.now(),
+        )
+        .await?;
+        let asked = NeedsYouRecord {
+            action: "Decide M1".into(),
+            happened: None,
+            problem: None,
+            decision: true,
+            link: None,
+            at: 1,
+            cause: None,
+            named: yulius_app::needs_you::Named {
+                who: vec!["bob".into()],
+                withdrawn: Vec::new(),
+            },
+        };
+        app.deps
+            .store
+            .set_task_needs_you(&id, Some(&asked), app.now())
+            .await?;
+        parked(&app, &id).await?;
+        let ctx = AuthContext {
+            user: bob,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        app.answer_needs_you(&ctx, id.as_str(), "M1: yes", Some(1))
+            .await?;
+        wait_for("the resumed answer", Duration::from_secs(60), || async {
+            screen(&app, &id).contains("Answer from bob")
+        })
+        .await?;
+        assert!(screen(&app, &id).contains("M1: yes"));
+        assert!(!asks(&app, &id).await?, "the question is answered");
+        let runs = app.deps.store.attempts(&id).await?;
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[1].launch_kind, LaunchKind::Resume);
+        let task = TaskStore::task(app.deps.store.as_ref(), &id)
+            .await?
+            .ok_or("task")?;
+        assert_eq!(task.owner, caller.user);
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-512 ANS-003 with PRK-005 (review round 4 of part 2): the named person's own agent
+/// answers a parked task's question with `task_message`: the task resumes with the answer.
+#[test]
+fn a_named_persons_message_resumes_a_parked_task() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 8, 1).await?;
+        let (id, caller) = answered(&app, &data).await?;
+        let bob = yulius_app::model::UserRecord {
+            id: yulius_domain::ids::UserId::parse("u-bob")?,
+            github_login: Some("bob".into()),
+            github_id: None,
+            display_name: "Bob".into(),
+            avatar_url: None,
+            is_superadmin: false,
+            is_instance_admin: false,
+            password_hash: None,
+            created_at: yulius_domain::time::Timestamp(1),
+            disabled_at: None,
+        };
+        yulius_app::ports::store::UserStore::insert_user(app.deps.store.as_ref(), &bob).await?;
+        yulius_app::ports::store::PermissionStore::put_access(
+            app.deps.store.as_ref(),
+            &bob.id,
+            &caller.sandbox,
+            yulius_domain::permission::AccessLevel::Write,
+            app.now(),
+        )
+        .await?;
+        let asked = NeedsYouRecord {
+            action: "Decide M1".into(),
+            happened: None,
+            problem: None,
+            decision: true,
+            link: None,
+            at: 1,
+            cause: None,
+            named: yulius_app::needs_you::Named {
+                who: vec!["bob".into()],
+                withdrawn: Vec::new(),
+            },
+        };
+        app.deps
+            .store
+            .set_task_needs_you(&id, Some(&asked), app.now())
+            .await?;
+        parked(&app, &id).await?;
+        let _ = bob;
+        let bobs_agent = yulius_app::coordination::ProjectCaller {
+            sandbox: caller.sandbox.clone(),
+            user: yulius_domain::ids::UserId::parse("u-bob")?,
+            task: None,
+            channel: yulius_app::coordination::Channel::Remote,
+            actor: "remote:bob".into(),
+            detail: json!({"via": "remote"}),
+        };
+        let sent = app
+            .tool_task_message(
+                &bobs_agent,
+                &json!({"task_id": id.as_str(), "text": "M1: yes"}),
+            )
+            .await?;
+        assert_eq!(sent["delivered"], "answered", "{sent}");
+        wait_for("the resumed answer", Duration::from_secs(60), || async {
+            screen(&app, &id).contains("Answer from bob")
+        })
+        .await?;
+        assert!(screen(&app, &id).contains("M1: yes"));
+        assert!(!asks(&app, &id).await?, "the question is answered");
+        let runs = app.deps.store.attempts(&id).await?;
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[1].launch_kind, LaunchKind::Resume);
+        let task = TaskStore::task(app.deps.store.as_ref(), &id)
+            .await?
+            .ok_or("task")?;
+        assert_eq!(task.owner, caller.user);
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// An agent secret's value, built so no scanner takes it for a real credential.
+const DIGEST_SECRET: &str = concat!("sunflower", "-digest-", "7f3a9c2e");
+
+/// The digest the owner last got, as JSON.
+async fn latest_digest(
+    app: &App,
+    user: &yulius_domain::ids::UserId,
+) -> Result<serde_json::Value, Error> {
+    let stored = app
+        .deps
+        .store
+        .latest_digest(user)
+        .await?
+        .ok_or("no digest")?;
+    Ok(serde_json::from_str(&stored.body)?)
+}
+
+/// SPEC-512 DIG-003, DIG-004 (#1413), with part 1's parking off: the digest leaves a task that
+/// asks its person running and lists it first; once nothing is asked, it parks the quiet task,
+/// lists it with what its last message left, and a message resumes it in its own session.
+#[test]
+fn the_digest_parks_a_quiet_task_that_asks_nobody_and_lists_its_last_message() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 8, 0).await?;
+        // Its agent echoes an agent secret: the digest shows its name, never its value.
+        let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
+        // A set-up instance keeps where each digest's listing ended.
+        rusqlite::Connection::open(data.join("yulius.db"))?.execute_batch(
+            "INSERT OR IGNORE INTO instance (singleton, public_url) VALUES (1, 'https://yulius.test')",
+        )?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        app.create_agent_secret(
+            &ctx,
+            sandbox.as_str(),
+            &yulius_contracts::api::secrets::AgentSecretInput {
+                name: "DIGEST_KEY".into(),
+                value: DIGEST_SECRET.into(),
+                ..Default::default()
+            },
+        )
+        .await?;
+        let prompt = format!("Budget {DIGEST_SECRET}: answer with an echo");
+        let id = new_task(&app, &sandbox, &user, &prompt, TaskMode::Prompt).await?;
+        wait_for("the turn's end", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("ECHO: Budget")
+                && status_of(&app, &id).await.1 == Some(Activity::Waiting)
+        })
+        .await?;
+        let caller = superagent(&sandbox, &user, "admin");
+        ask(&app, &id).await?;
+        past_the_grace(&app, &id).await?;
+        let run = app.send_digests_now(Some(1)).await;
+        assert_eq!((run.sent, run.parked), (1, 0), "it asks");
+        let digest = latest_digest(&app, &caller.user).await?;
+        assert_eq!(
+            digest["waiting"][0]["detail"], "Choose the colour",
+            "{digest}"
+        );
+        assert_eq!(digest["parked"], json!([]), "{digest}");
+
+        app.deps
+            .store
+            .set_task_needs_you(&id, None, app.now())
+            .await?;
+        past_the_grace(&app, &id).await?;
+        let run = app.send_digests_now(Some(1)).await;
+        assert_eq!((run.sent, run.parked), (1, 1));
+        wait_for("the digest's park", Duration::from_secs(30), || async {
+            status_of(&app, &id).await.0 == Some(TaskStatus::Parked)
+        })
+        .await?;
+        let digest = latest_digest(&app, &caller.user).await?;
+        let left = digest["parked"][0]["detail"]
+            .as_str()
+            .ok_or("parked detail")?;
+        assert!(
+            // The list shows an answered task under Done: the digest says so.
+            left.starts_with("Finished. Last message: "),
+            "{left}"
+        );
+        assert!(left.contains("ECHO: Budget [secret:DIGEST_KEY]"), "{left}");
+        assert!(!left.contains(DIGEST_SECRET), "{left}");
+        assert_eq!(audited(&data, "task.parked", &id)?, ["yulius"]);
+        // The next digest does not list it as parked again (review round 1): nothing to report.
+        let run = app.send_digests_now(Some(1)).await;
+        assert_eq!(
+            (run.sent, run.parked),
+            (0, 0),
+            "{}",
+            latest_digest(&app, &caller.user).await?
+        );
+
+        let answer = app
+            .tool_task_message(
+                &caller,
+                &json!({"number": 1, "text": "Go on: answer with an echo"}),
+            )
+            .await?;
+        assert_eq!(answer["delivered"], "resumed");
+        wait_for("the resumed message", Duration::from_secs(60), || async {
+            screen(&app, &id).contains("Go on: answer with an echo")
+        })
+        .await?;
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-512 HOF-005, with real processes: once a handed-off task ended, its source task's live
+/// session is told the outcome by Yulius, once.
+#[test]
+fn a_handed_off_tasks_outcome_reaches_its_source() -> TestResult {
+    use yulius_app::ports::store_ext::HandoffRecord;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 8, 0).await?;
+        let (id, _) = answered(&app, &data).await?;
+        let source = TaskStore::task(app.deps.store.as_ref(), &id)
+            .await?
+            .ok_or("source")?;
+        let mut other = app
+            .deps
+            .store
+            .sandbox(&source.sandbox_id)
+            .await?
+            .ok_or("sandbox")?;
+        other.id = yulius_domain::ids::SandboxId::parse("sb-api")?;
+        other.slug = "api".into();
+        other.repo_name = "api".into();
+        other.port_base += 100;
+        app.deps.store.insert_sandbox(&other).await?;
+        let mut target = source.clone();
+        target.id = TaskId::parse("t-api")?;
+        target.sandbox_id = other.id.clone();
+        target.number = 1;
+        target.title = "Add the endpoint".into();
+        target.status = TaskStatus::Running;
+        target.activity = Some(Activity::Working);
+        TaskStore::insert_task(app.deps.store.as_ref(), &target).await?;
+        // Its pull request merged (review round 1: the link names owner and repository).
+        app.deps
+            .store
+            .transition_delivery(
+                &yulius_domain::delivery::DeliveryStage::None,
+                &yulius_app::delivery::DeliveryRecord {
+                    task_id: target.id.clone(),
+                    stage: yulius_domain::delivery::DeliveryStage::MergedIntegration,
+                    pr_number: Some(7),
+                    updated_at: app.now(),
+                },
+            )
+            .await?;
+        app.deps
+            .store
+            .insert_handoff(&HandoffRecord {
+                id: "ho_1".into(),
+                source_task: source.id.clone(),
+                source_sandbox: source.sandbox_id.clone(),
+                target_sandbox: other.id.clone(),
+                owner: source.owner.clone(),
+                args: r#"{"sandbox":"api","title":"Add the endpoint","prompt":"P"}"#.into(),
+                chain: vec![source.sandbox_id.as_str().to_owned()],
+                depth: 1,
+                state: "created".into(),
+                reason: None,
+                target_task: Some(target.id.clone()),
+                created_at: app.now(),
+            })
+            .await?;
+        // While the source shows its person a prompt, nothing is typed (review round 1).
+        TaskStore::transition_task(
+            app.deps.store.as_ref(),
+            &id,
+            None,
+            TaskStatus::Running,
+            Some(Activity::NeedsAttention),
+            app.now(),
+        )
+        .await?;
+        assert_eq!(app.tell_handoff_outcomes().await, 0);
+        assert!(!screen(&app, &id).contains("the task you handed off"));
+        assert_eq!(app.deps.store.untold_handoffs().await?.len(), 1);
+        TaskStore::transition_task(
+            app.deps.store.as_ref(),
+            &id,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Waiting),
+            app.now(),
+        )
+        .await?;
+        wait_for("the outcome told", Duration::from_secs(30), || async {
+            app.tell_handoff_outcomes().await;
+            let shown = screen(&app, &id);
+            shown.contains(&format!(
+                "the task you handed off, {}/api #1",
+                other.repo_owner
+            )) && shown.contains(&format!(
+                "is merged. Pull request: https://github.com/{}/api/pull/7",
+                other.repo_owner
+            ))
+        })
+        .await?;
+        assert!(
+            app.deps.store.untold_handoffs().await?.is_empty(),
+            "told once"
         );
         Ok::<_, Error>(())
     })?;

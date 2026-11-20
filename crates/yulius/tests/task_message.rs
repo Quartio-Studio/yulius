@@ -224,6 +224,7 @@ fn a_running_task_gets_the_message_typed_into_its_session() -> TestResult {
             link: None,
             at: 1,
             cause: None,
+            named: Default::default(),
         };
         app.deps
             .store
@@ -325,6 +326,7 @@ fn region_asked() -> NeedsYouRecord {
         link: None,
         at: 1,
         cause: None,
+        named: Default::default(),
     }
 }
 
@@ -371,7 +373,7 @@ fn a_run_holding_the_owners_personal_server_takes_only_the_owners_answer() -> Te
             .await?;
         let bob = teammate(&app, &sandbox).await?;
         let refused = app
-            .answer_needs_you(&bob, id.as_str(), "Frankfurt")
+            .answer_needs_you(&bob, id.as_str(), "Frankfurt", None)
             .await
             .err();
         assert!(
@@ -381,7 +383,7 @@ fn a_run_holding_the_owners_personal_server_takes_only_the_owners_answer() -> Te
         assert!(app.deps.store.task_needs_you(&id).await?.is_some());
 
         let after = app
-            .answer_needs_you(&owner, id.as_str(), "Frankfurt")
+            .answer_needs_you(&owner, id.as_str(), "Frankfurt", None)
             .await?;
         assert!(after.needs_you.is_none());
         wait_for("the answer", Duration::from_secs(30), || {
@@ -423,6 +425,7 @@ fn a_teammate_answers_a_needs_you_without_taking_control() -> TestResult {
             link: None,
             at: 1,
             cause: None,
+            named: Default::default(),
         };
         app.deps
             .store
@@ -431,7 +434,7 @@ fn a_teammate_answers_a_needs_you_without_taking_control() -> TestResult {
         let ctx = teammate(&app, &owner.sandbox).await?;
 
         let after = app
-            .answer_needs_you(&ctx, id.as_str(), "Frankfurt, please.\r\nNot Dublin.")
+            .answer_needs_you(&ctx, id.as_str(), "Frankfurt, please.\r\nNot Dublin.", None)
             .await?;
         assert_eq!(after.owner.login, "admin");
         assert!(after.needs_you.is_none());
@@ -486,6 +489,7 @@ fn a_remote_message_names_the_persons_own_agent() -> TestResult {
             link: None,
             at: 1,
             cause: None,
+            named: Default::default(),
         };
         app.deps
             .store
@@ -2095,4 +2099,330 @@ async fn what_cannot_take_a_message_is_refused() -> TestResult {
         .prompt;
     assert_eq!(request, "do things");
     Ok(())
+}
+
+/// SPEC-512 ANS-003 (#1418): bob, whom the request names, answers it through his own agent: the
+/// message reaches the agent as his labelled answer, the request ends, the task stays admin's.
+#[test]
+fn a_named_person_answers_through_their_own_agent() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, fake_agent()).await?;
+        let (id, owner) = running(&app, &data).await?;
+        teammate(&app, &owner.sandbox).await?;
+        let asked = NeedsYouRecord {
+            action: "Decide M1-M6".into(),
+            happened: None,
+            problem: None,
+            decision: true,
+            link: None,
+            at: 1,
+            cause: None,
+            named: yulius_app::needs_you::Named {
+                who: vec!["bob".into()],
+                withdrawn: Vec::new(),
+            },
+        };
+        app.deps
+            .store
+            .set_task_needs_you(&id, Some(&asked), app.now())
+            .await?;
+        let bobs_agent = ProjectCaller {
+            sandbox: owner.sandbox.clone(),
+            user: UserId::parse("u-bob")?,
+            task: None,
+            channel: Channel::Remote,
+            actor: "remote:bob".into(),
+            detail: json!({"via": "remote"}),
+        };
+        let answer = app
+            .tool_task_message(
+                &bobs_agent,
+                &json!({"task_id": id.as_str(), "text": "M1: yes, M2: no"}),
+            )
+            .await?;
+        assert_eq!(answer["delivered"], "answered", "{answer}");
+        wait_for("the answer", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("ECHO: Answer from bob") }
+        })
+        .await?;
+        assert!(screen(&app, &id).contains("M1: yes, M2: no"));
+        assert!(app.deps.store.task_needs_you(&id).await?.is_none());
+        let task = app.deps.store.task(&id).await?.ok_or("task")?;
+        assert_eq!(task.owner, owner.user);
+        let rows = answers_audited(&data, &id)?;
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].0, "bob", "{rows:?}");
+        stop(&app, &id).await
+    })
+}
+
+/// SPEC-512 ANS-004 (review of part 2): an answer ends the question it answered only: one the
+/// agent asked while the answer was being typed stays open.
+#[test]
+fn an_answer_leaves_a_question_asked_while_it_was_typed() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, fake_agent()).await?;
+        let (id, owner) = running(&app, &data).await?;
+        let ctx = teammate(&app, &owner.sandbox).await?;
+        app.deps
+            .store
+            .set_task_needs_you(&id, Some(&region_asked()), app.now())
+            .await?;
+        let later = NeedsYouRecord {
+            action: "Choose the release date".into(),
+            at: 2,
+            ..region_asked()
+        };
+        {
+            let (app, id, later) = (app.clone(), id.clone(), later.clone());
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                yulius_app::race::Point::AnswerTyped,
+                Path::new(id.clone().as_str()),
+                move || {
+                    let _ = tokio::task::block_in_place(|| {
+                        handle.block_on(app.deps.store.set_task_needs_you(
+                            &id,
+                            Some(&later),
+                            app.now(),
+                        ))
+                    });
+                },
+            );
+        }
+        app.answer_needs_you(&ctx, id.as_str(), "Frankfurt", None)
+            .await?;
+        assert_eq!(app.deps.store.task_needs_you(&id).await?, Some(later));
+        stop(&app, &id).await
+    })
+}
+
+/// SPEC-537 RSD-001, RSD-002. The fixture restores text on its own and will prepend it to
+/// the next submit. A refusal leaves it available to its author.
+async fn restored_draft(submit: &str, response: &str) -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let clock = Arc::new(ShiftedClock(AtomicI64::new(-3 * MINUTE)));
+    let agent = FakeAgentOptions {
+        tui: true,
+        ..fake_agent()
+    };
+    let fake = locate_fake_agent().ok_or("missing fake-agent")?;
+    let (app, _) = start_on(
+        &data,
+        &fake,
+        agent,
+        0,
+        Arc::new(ScriptedUsage::default()),
+        clock.clone(),
+        |_| {},
+    )
+    .await?;
+    let (id, caller) = running(&app, &data).await?;
+    let (ctx, attach) = terminal(&app, &caller, &id).await?;
+    app.terminal_input(&ctx, &attach, b"my draft\x13", false)
+        .await?;
+    app.terminal_input(&ctx, &attach, format!("{submit}\r").as_bytes(), false)
+        .await?;
+    wait_for(
+        "the CLI to restore its stash",
+        Duration::from_secs(30),
+        || async {
+            let shown = screen(&app, &id);
+            shown.contains(response) && shown.lines().any(|row| row.trim_end() == "❯ my draft")
+        },
+    )
+    .await?;
+    clock.0.store(0, Ordering::SeqCst);
+    let message = json!({"task_id": id.as_str(), "text": "Go on"});
+    let reply = app.tool_task_message(&caller, &message).await;
+    if reply.is_ok() {
+        wait_for("the mixed prompt", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("ECHO: my draftMessage from admin")
+        })
+        .await?;
+        return Err("the agent received the restored draft and the message as one prompt".into());
+    }
+    assert!(
+        matches!(reply, Err(AppError::Conflict(why)) if why.contains("prompt box") && why.contains("send") && !why.contains("my draft"))
+    );
+    assert!(audited(&data, &id)?.is_empty());
+    // The accepted prompt cleared the keystroke hold. The reconnect watch has no sender
+    // waiting for a reply, so its refusal must reach the session's person.
+    if submit == "other prompt" {
+        use yulius_app::mcp_watch::WatchBounds;
+        let bounds = WatchBounds {
+            silent_after_ms: 1_000,
+            ..WatchBounds::new(yulius_domain::time::Timestamp(0))
+        };
+        assert!(app.watch_mcp(&bounds).await.is_empty());
+        let attention = support::attention(&app, id.as_str()).await?;
+        assert!(
+            attention["problem"]
+                .as_str()
+                .is_some_and(|why| why.contains("prompt box") && !why.contains("my draft")),
+            "{attention}"
+        );
+    }
+    app.terminal_input(&ctx, &attach, b"\r", false).await?;
+    wait_for("the draft alone", Duration::from_secs(30), || async {
+        read_alone(&app, &id, "my draft")
+    })
+    .await?;
+    clock.0.store(2 * MINUTE, Ordering::SeqCst);
+    assert_eq!(
+        app.tool_task_message(&caller, &message).await?["delivered"],
+        "sent"
+    );
+    wait_for(
+        "the sender's message alone",
+        Duration::from_secs(30),
+        || async { read_alone(&app, &id, "Message from admin (through their Superagent):") },
+    )
+    .await?;
+    app.terminal_leave(&attach).await;
+    stop(&app, &id).await
+}
+
+#[test]
+fn restored_draft_after_a_persons_prompt() -> TestResult {
+    runtime()?.block_on(restored_draft("other prompt", "ECHO: other prompt"))
+}
+
+#[test]
+fn restored_draft_after_a_local_command() -> TestResult {
+    runtime()?.block_on(restored_draft("/color", "Color changed"))
+}
+
+/// SPEC-537 RSD-003. Deliver a new viewer key as the older prompt's hook cleans up.
+#[test]
+fn a_new_key_keeps_its_mark_during_draft_cleanup() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let (app, clock) = app_behind(&data, 2 * MINUTE).await?;
+        let (id, caller) = running(&app, &data).await?;
+        let (ctx, attach) = terminal(&app, &caller, &id).await?;
+        let attach = Arc::new(attach);
+        let run = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
+        let run_dir = Path::new(&run.run_dir);
+        let (sent, accepted) = tokio::sync::oneshot::channel();
+        {
+            let (app, ctx, attach) = (app.clone(), ctx.clone(), attach.clone());
+            yulius_app::race::on(
+                yulius_app::race::Point::DraftMarkCleanup,
+                run_dir,
+                move || {
+                    use futures::FutureExt as _;
+                    clock.0.fetch_add(1_000, Ordering::SeqCst);
+                    // Start the key in the check/remove gap. If cleanup holds its lock,
+                    // let the hook finish and the same pending key proceed afterwards.
+                    let mut key = Box::pin(async move {
+                        app.terminal_input(&ctx, &attach, b"new draft", false).await
+                    });
+                    if let Some(result) = key.as_mut().now_or_never() {
+                        let _ = sent.send(result);
+                    } else {
+                        tokio::spawn(async move {
+                            let _ = sent.send(key.await);
+                        });
+                    }
+                },
+            );
+        }
+        app.terminal_input(&ctx, &attach, b"older prompt\r", false)
+            .await?;
+        wait_for(
+            "the older submit to finish",
+            Duration::from_secs(30),
+            // The PTY echoes the new key on the same row as the agent’s reply.
+            || async { screen(&app, &id).contains("ECHO: older prompt") },
+        )
+        .await?;
+        tokio::time::timeout(Duration::from_secs(5), accepted).await???;
+        assert!(
+            run_dir.join("person-typed").is_file(),
+            "cleanup erased the newer key's recovery mark"
+        );
+        app.terminal_leave(&attach).await;
+        stop(&app, &id).await
+    })
+}
+
+/// The submit was received first, but the next key reaches the terminal before cleanup.
+#[test]
+fn a_key_after_submit_in_the_same_millisecond_keeps_its_draft() -> TestResult {
+    use yulius_app::ports::Clock;
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let at = yulius::wiring::clock::SystemClock.now().0 - 4 * MINUTE;
+        let clock = Arc::new(support::TestClock(AtomicI64::new(at)));
+        let fake = locate_fake_agent().ok_or("missing fake-agent")?;
+        let (app, _) = start_on(
+            &data,
+            &fake,
+            fake_agent(),
+            0,
+            Arc::new(ScriptedUsage::default()),
+            clock.clone(),
+            |_| {},
+        )
+        .await?;
+        let (id, caller) = running(&app, &data).await?;
+        let (ctx, attach) = terminal(&app, &caller, &id).await?;
+        let attach = Arc::new(attach);
+        let run = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
+        let mark = Path::new(&run.run_dir).join("person-typed");
+        let (sent, accepted) = tokio::sync::oneshot::channel();
+        {
+            let (app, ctx, attach) = (app.clone(), ctx.clone(), attach.clone());
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                yulius_app::race::Point::PromptTurnChecked,
+                Path::new(id.as_str()),
+                move || {
+                    let result = tokio::task::block_in_place(|| {
+                        handle.block_on(async {
+                            tokio::time::timeout(
+                                Duration::from_secs(5),
+                                app.terminal_input(&ctx, &attach, b"new text", false),
+                            )
+                            .await
+                        })
+                    });
+                    let _ = sent.send(result);
+                },
+            );
+        }
+        clock.0.fetch_add(1_000, Ordering::SeqCst);
+        app.terminal_input(&ctx, &attach, b"old text\r", false)
+            .await?;
+        tokio::time::timeout(Duration::from_secs(30), accepted).await????;
+        wait_for(
+            "the older prompt to go on",
+            Duration::from_secs(30),
+            || async { screen(&app, &id).contains("ECHO: old text") },
+        )
+        .await?;
+        assert!(
+            mark.is_file(),
+            "the older submit erased the same-ms key's mark"
+        );
+        clock.0.fetch_add(2 * MINUTE, Ordering::SeqCst);
+        let result = send(&app, &caller, &id).await;
+        assert!(matches!(result, Err(AppError::Conflict(why)) if why.contains("prompt box")));
+        app.terminal_input(&ctx, &attach, b"\r", false).await?;
+        wait_for(
+            "the new draft to be sent and unmarked",
+            Duration::from_secs(30),
+            || async { read_alone(&app, &id, "new text") && !mark.exists() },
+        )
+        .await?;
+        app.terminal_leave(&attach).await;
+        stop(&app, &id).await
+    })
 }

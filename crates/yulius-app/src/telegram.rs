@@ -13,7 +13,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use yulius_contracts::api::telegram::{
-    MyTelegramView, TelegramBotView, TelegramChoices, TelegramLinkCode,
+    MyTelegramView, TelegramBotView, TelegramChoices, TelegramIntake, TelegramLinkCode,
 };
 use yulius_domain::ids::UserId;
 use yulius_domain::notify::{ChatCommand, LINK_CODE_LEN, LINK_CODE_TTL_MS, NotifyChoices};
@@ -23,15 +23,17 @@ use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::Secret;
 use crate::ports::notify::{
-    ChannelConnector, ChannelError, ChannelIdentity, Inbound, NotificationChannel,
+    ChannelConnector, ChannelError, ChannelIdentity, ChatLink, Inbound, NotificationChannel,
 };
 
 /// The one reply of a chat that is not linked (TGC-014).
 pub const UNLINKED_REPLY: &str = "This bot sends Yulius notifications to linked accounts only. \
      To link yours, open Yulius, then Settings → Notifications → Link Telegram.";
-/// The reply of a linked chat to anything but a command (part 1 sends, it does not take work).
-pub const LINKED_HELP: &str = "This chat gets your Yulius notifications. Replies and new tasks \
-     are not supported yet. Send /stop to unlink this chat.";
+/// The reply of a linked chat to anything but a command while its intake is off (SPEC-512
+/// TGI-001).
+pub const LINKED_HELP: &str = "This chat gets your Yulius notifications. To answer tasks and \
+     start new ones from here, turn on Telegram intake in Yulius: Settings → Notifications. Send \
+     /stop to unlink this chat.";
 /// The reply to a code that is not valid (any more).
 pub const BAD_CODE_REPLY: &str =
     "That link code is not valid any more. Ask for a new one in Yulius: Settings → Notifications.";
@@ -41,6 +43,13 @@ pub const AUDIT_TARGET: &str = "telegram";
 const QUIET_MS: i64 = 10 * 60 * 1000;
 /// Chats remembered for that (TGC-014).
 const QUIET_CHATS: usize = 1024;
+/// A chat's intake messages waiting behind the one being handled, at most: a whole poll answer
+/// (SPEC-512 TGI-002).
+const INTAKE_WAITING: usize = 20;
+/// The answer to a chat whose messages did not all fit its lane (at most every `QUIET_MS`).
+pub const INTAKE_FULL_REPLY: &str = "Too many messages at once: Yulius is still working through \
+     your earlier ones, so some of the latest were not handled. Send them again once it has \
+     answered.";
 /// Messages waiting to be sent (TGC-024).
 const OUTBOX: usize = 256;
 /// Bound of one `getMe` or `sendMessage` (the client's own deadline is shorter).
@@ -85,10 +94,25 @@ struct PollState {
     last_error: Option<ChannelError>,
 }
 
-/// A message for a chat.
+/// A message for a chat, and the task it is about (a reply to it reaches that task, SPEC-512
+/// TGI-002).
 pub(crate) struct Outgoing {
     pub(crate) chat: String,
     pub(crate) text: String,
+    pub(crate) about: Option<crate::ports::notify::SentAbout>,
+}
+
+/// A linked chat's message for intake, and the link it came through.
+type Intake = (ChatLink, Inbound);
+
+/// What became of a message handed to its chat's lane.
+enum Lane {
+    /// It waits behind the chat's running worker.
+    Queued,
+    /// No worker ran: start one with this queue.
+    Start(mpsc::Receiver<Intake>),
+    /// The lane is full.
+    Full,
 }
 
 /// The channel services an instance runs with.
@@ -99,6 +123,9 @@ pub struct ChannelServices {
     poller: Mutex<Option<JoinHandle<()>>>,
     poll: Mutex<PollState>,
     quiet: Mutex<HashMap<String, i64>>,
+    /// One lane per chat with messages in hand: its worker handles them one at a time, in
+    /// order, [`INTAKE_WAITING`] waiting at most (TGI-002). The worker removes it when empty.
+    lanes: Mutex<HashMap<String, mpsc::Sender<Intake>>>,
     outbox: OnceLock<mpsc::Sender<Outgoing>>,
     /// Serializes set and remove, so the stored and the active bot agree.
     switching: tokio::sync::Mutex<()>,
@@ -118,6 +145,7 @@ impl ChannelServices {
             poller: Mutex::new(None),
             poll: Mutex::new(PollState::default()),
             quiet: Mutex::new(HashMap::new()),
+            lanes: Mutex::new(HashMap::new()),
             outbox: OnceLock::new(),
             switching: tokio::sync::Mutex::new(()),
             notifier: crate::notify::NotifierState::default(),
@@ -141,6 +169,39 @@ impl ChannelServices {
             poll.polling = polling;
             poll.last_error = last_error;
         }
+    }
+
+    fn lanes(&self) -> std::sync::MutexGuard<'_, HashMap<String, mpsc::Sender<Intake>>> {
+        self.lanes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Hands `item` to its chat's lane.
+    fn to_lane(&self, item: &Intake) -> Lane {
+        let mut lanes = self.lanes();
+        if let Some(lane) = lanes.get(&item.1.chat) {
+            match lane.try_send(item.clone()) {
+                Ok(()) => return Lane::Queued,
+                Err(mpsc::error::TrySendError::Full(_)) => return Lane::Full,
+                // Its worker is gone (it panicked): a new one takes over.
+                Err(mpsc::error::TrySendError::Closed(_)) => {}
+            }
+        }
+        let (tx, rx) = mpsc::channel(INTAKE_WAITING);
+        lanes.insert(item.1.chat.clone(), tx);
+        Lane::Start(rx)
+    }
+
+    /// The next message waiting in `chat`'s lane; with none, the lane is removed in the same
+    /// step, so a message handed over meanwhile starts a new worker instead of being lost.
+    fn next_in_lane(&self, chat: &str, rx: &mut mpsc::Receiver<Intake>) -> Option<Intake> {
+        let mut lanes = self.lanes();
+        let next = rx.try_recv().ok();
+        if next.is_none() {
+            lanes.remove(chat);
+        }
+        next
     }
 
     /// Whether `chat` gets the unlinked reply now (at most every [`QUIET_MS`]).
@@ -171,6 +232,7 @@ fn choices_view(choices: NotifyChoices) -> TelegramChoices {
         done: choices.done,
         failed: choices.failed,
         account: choices.account,
+        digest: choices.digest,
     }
 }
 
@@ -255,10 +317,21 @@ impl App {
 
     /// Queues `text` for `chat`; a full queue drops it (TGC-024).
     pub(crate) fn enqueue(&self, chat: String, text: String) {
+        self.enqueue_about(chat, text, None);
+    }
+
+    /// [`App::enqueue`] for a message about `task`: once sent, a reply to it reaches the task
+    /// (SPEC-512 TGI-002).
+    pub(crate) fn enqueue_about(
+        &self,
+        chat: String,
+        text: String,
+        about: Option<crate::ports::notify::SentAbout>,
+    ) {
         let Some(outbox) = self.channel.get().and_then(|s| s.outbox.get()) else {
             return;
         };
-        if outbox.try_send(Outgoing { chat, text }).is_err() {
+        if outbox.try_send(Outgoing { chat, text, about }).is_err() {
             tracing::warn!("a Telegram notification was dropped: the send queue is full");
         }
     }
@@ -274,8 +347,22 @@ impl App {
             )
             .await
             .unwrap_or(Err(ChannelError::Unavailable));
-            if let Err(err) = sent {
-                tracing::warn!(error = err.as_str(), "a Telegram message could not be sent");
+            match sent {
+                Ok(Some(id)) => {
+                    if let Some(about) = &message.about
+                        && let Err(err) = self
+                            .deps
+                            .store
+                            .record_sent(&message.chat, &id, about, self.now())
+                            .await
+                    {
+                        tracing::warn!(error = %err, "a sent Telegram message was not remembered");
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    tracing::warn!(error = err.as_str(), "a Telegram message could not be sent");
+                }
             }
         }
     }
@@ -296,7 +383,7 @@ impl App {
                     if received.cursor.is_some() {
                         cursor = received.cursor;
                     }
-                    for message in received.messages {
+                    for message in albums(received.messages) {
                         if let Err(err) = self.on_inbound(&message).await {
                             tracing::warn!(error = %err, "a Telegram message could not be handled");
                         }
@@ -318,7 +405,7 @@ impl App {
 
     /// One received message (TGC-012..014): `/start <code>` links, `/stop` unlinks, a linked chat
     /// gets help, any other chat the one fixed reply.
-    async fn on_inbound(&self, message: &Inbound) -> AppResult<()> {
+    async fn on_inbound(self: &Arc<Self>, message: &Inbound) -> AppResult<()> {
         let store = &self.deps.store;
         let now = self.now();
         let command = yulius_domain::notify::chat_command(&message.text);
@@ -358,6 +445,30 @@ impl App {
                     .await?;
                 "Unlinked: this chat gets no more Yulius notifications.".to_owned()
             }
+            // With intake on, the message is the person's work (SPEC-512 TGI-002..TGI-004), on
+            // its own task: fetching files must not hold the poll (and with it every chat's
+            // `/stop` and link codes), and the next poll confirms the update at once, so a
+            // restart does not hand the same message over twice (review round 1).
+            ChatCommand::Other if link.intake => {
+                let services = self.channel_services()?;
+                let item = (link, message.clone());
+                match services.to_lane(&item) {
+                    Lane::Queued => {}
+                    Lane::Start(rx) => {
+                        tokio::spawn(Arc::clone(self).intake_lane(item, rx));
+                    }
+                    Lane::Full => {
+                        tracing::warn!(
+                            waiting = INTAKE_WAITING,
+                            "a Telegram message was not handled: its chat's lane is full"
+                        );
+                        if services.quiet_reply_due(&message.chat, now.0) {
+                            self.enqueue(message.chat.clone(), INTAKE_FULL_REPLY.into());
+                        }
+                    }
+                }
+                return Ok(());
+            }
             // Anything else gets its answer at most every 10 minutes, so no chat fills the
             // shared send queue (review round 1).
             ChatCommand::Start(_) | ChatCommand::Other => {
@@ -369,6 +480,8 @@ impl App {
                 }
                 if matches!(command, ChatCommand::Start(Some(_))) {
                     BAD_CODE_REPLY.to_owned()
+                } else if link.intake {
+                    crate::telegram_intake::INTAKE_HELP.to_owned()
                 } else {
                     LINKED_HELP.to_owned()
                 }
@@ -376,6 +489,60 @@ impl App {
         };
         self.enqueue(message.chat.clone(), reply);
         Ok(())
+    }
+
+    /// A chat's lane worker: handles `first`, then each message waiting, in order (TGI-002).
+    async fn intake_lane(self: Arc<Self>, first: Intake, mut rx: mpsc::Receiver<Intake>) {
+        let mut item = first;
+        loop {
+            let (link, message) = &item;
+            match self.intake_in_turn(link, message).await {
+                Ok(Some(answer)) => {
+                    self.enqueue_about(message.chat.clone(), answer.text, answer.about);
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    tracing::warn!(error = %err, "a Telegram message could not be handled");
+                    self.enqueue(
+                        message.chat.clone(),
+                        "Yulius could not handle that message; try again.".into(),
+                    );
+                }
+            }
+            let Ok(services) = self.channel_services() else {
+                return;
+            };
+            match services.next_in_lane(&message.chat, &mut rx) {
+                Some(next) => item = next,
+                None => return,
+            }
+        }
+    }
+
+    /// A message whose turn in its lane came: handled only while the link it came through still
+    /// holds with intake on (TGI-001: turning intake off or `/stop` ends what waits too). Else it
+    /// gets the answer it would get now, at most every `QUIET_MS`: the help with intake off, the
+    /// unlinked reply without a link; a message of an earlier link of the chat gets nothing.
+    async fn intake_in_turn(
+        self: &Arc<Self>,
+        received: &ChatLink,
+        message: &Inbound,
+    ) -> AppResult<Option<crate::telegram_intake::IntakeAnswer>> {
+        let now = self.deps.store.chat_link_of(&message.chat).await?;
+        let reply = match now {
+            Some(link) if link.user == received.user && link.linked_at == received.linked_at => {
+                if link.intake {
+                    return self.telegram_intake(&link, message).await.map(Some);
+                }
+                LINKED_HELP
+            }
+            Some(_) => return Ok(None),
+            None => UNLINKED_REPLY,
+        };
+        let due = self
+            .channel_services()?
+            .quiet_reply_due(&message.chat, self.now().0);
+        Ok(due.then(|| reply.into()))
     }
 
     async fn link_chat(&self, user: &UserId, chat: &str) -> AppResult<()> {
@@ -617,6 +784,12 @@ impl App {
             bot_username: bot,
             linked: link.is_some(),
             linked_at: link.as_ref().map(|l| rfc3339(l.linked_at)),
+            intake: link
+                .as_ref()
+                .map_or_else(TelegramIntake::default, |l| TelegramIntake {
+                    enabled: l.intake,
+                    sandbox_id: l.intake_sandbox.clone(),
+                }),
             choices: choices_view(link.map_or_else(NotifyChoices::default, |l| l.choices)),
             account_choice: ctx.user.is_superadmin || ctx.user.is_instance_admin,
         })
@@ -687,6 +860,71 @@ impl App {
         self.my_telegram(ctx).await
     }
 
+    /// `PUT /api/me/telegram/intake` (SPEC-512 TGI-001): whether the person's chat answers and
+    /// starts tasks, and in which project; only from a browser session, as linking is, and only
+    /// a project they may work in. Audited `telegram.intake`.
+    ///
+    /// # Errors
+    /// `Forbidden` for an API token or a project they may not work in, `Invalid` when turned on
+    /// without a project, `Conflict` without a linked chat.
+    pub async fn set_telegram_intake(
+        &self,
+        ctx: &AuthContext,
+        intake: &TelegramIntake,
+    ) -> AppResult<MyTelegramView> {
+        if !ctx.is_browser() {
+            return Err(AppError::Forbidden(
+                "a Telegram chat's intake is set in Yulius in a browser, not with an API token"
+                    .into(),
+            ));
+        }
+        let sandbox = match intake
+            .sandbox_id
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+        {
+            Some(id) => {
+                let sid =
+                    yulius_domain::ids::SandboxId::parse(id).map_err(|_| AppError::NotFound)?;
+                self.require(&ctx.user, &sid, yulius_domain::permission::Action::Work)
+                    .await?;
+                Some(sid)
+            }
+            None => None,
+        };
+        if intake.enabled && sandbox.is_none() {
+            return Err(AppError::Invalid(
+                "choose the project a new message starts its task in".into(),
+            ));
+        }
+        let sandbox = sandbox.as_ref().map(yulius_domain::ids::SandboxId::as_str);
+        if !self
+            .deps
+            .store
+            .set_chat_intake(&ctx.user.id, intake.enabled, sandbox)
+            .await?
+        {
+            return Err(AppError::Conflict("link a Telegram chat first".into()));
+        }
+        let login = self.login_of(&ctx.user.id).await;
+        let detail = if intake.enabled {
+            format!("on {}", sandbox.unwrap_or_default())
+        } else {
+            "off".to_owned()
+        };
+        self.deps
+            .store
+            .audit(
+                self.now(),
+                &login,
+                "telegram.intake",
+                Some(ctx.user.id.as_str()),
+                Some(&detail),
+            )
+            .await?;
+        self.my_telegram(ctx).await
+    }
+
     /// `PUT /api/me/telegram/choices`: what reaches the person's chat (TGC-020). Subscription
     /// problems only for instance administrators.
     ///
@@ -703,6 +941,7 @@ impl App {
             done: choices.done,
             failed: choices.failed,
             account: choices.account && admin,
+            digest: choices.digest,
         };
         if !self
             .deps
@@ -716,6 +955,27 @@ impl App {
     }
 }
 
+/// One message per album (SPEC-512 TGI-003): consecutive messages of a chat with the same
+/// `group` are one, its text the first non-empty one and its files all of theirs.
+fn albums(messages: Vec<Inbound>) -> Vec<Inbound> {
+    let mut out: Vec<Inbound> = Vec::new();
+    for message in messages {
+        if let Some(last) = out.last_mut()
+            && message.group.is_some()
+            && last.group == message.group
+            && last.chat == message.chat
+        {
+            if last.text.trim().is_empty() {
+                last.text = message.text;
+            }
+            last.files.extend(message.files);
+            continue;
+        }
+        out.push(message);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -727,5 +987,39 @@ mod tests {
         letters.dedup();
         assert_eq!(letters.len(), 32);
         assert!(CODE_ALPHABET.iter().all(u8::is_ascii_alphanumeric));
+    }
+
+    fn inbound(chat: &str, text: &str, group: Option<&str>, file: Option<&str>) -> Inbound {
+        Inbound {
+            chat: chat.into(),
+            private: true,
+            text: text.into(),
+            reply_to: None,
+            files: file
+                .map(|id| crate::ports::notify::InboundFile {
+                    id: id.into(),
+                    name: format!("{id}.jpg"),
+                    size: None,
+                })
+                .into_iter()
+                .collect(),
+            group: group.map(str::to_owned),
+        }
+    }
+
+    /// SPEC-512 TGI-003: an album's messages are one task's: its caption and all its files.
+    #[test]
+    fn an_album_is_one_message() {
+        let merged = albums(vec![
+            inbound("1", "", Some("g"), Some("a")),
+            inbound("1", "Fix these", Some("g"), Some("b")),
+            inbound("2", "", Some("g"), Some("c")),
+            inbound("1", "next", None, None),
+        ]);
+        assert_eq!(merged.len(), 3);
+        assert_eq!(merged[0].text, "Fix these");
+        assert_eq!(merged[0].files.len(), 2);
+        assert_eq!(merged[1].chat, "2", "another chat's album is its own");
+        assert_eq!(merged[2].text, "next");
     }
 }

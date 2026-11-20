@@ -111,9 +111,23 @@ fn replace_intent(slot: &mut Option<EndIntent>, next: Option<EndIntent>, why: Sw
     }
 }
 
+#[derive(Clone, Copy)]
+enum ObservationSource {
+    Replay,
+    Live,
+}
+
 struct ActiveRun {
     attempt_id: AttemptId,
     writer: Box<dyn RunWriter>,
+}
+
+/// The durable draft mark and the prompt submission whose hook may be retried.
+#[derive(Default)]
+pub(crate) struct DraftMark {
+    pub(crate) written: bool,
+    /// The submit's wall time and the viewer input sequence at its first request.
+    pub(crate) submit: (i64, u64),
 }
 
 /// Runtime state of one task with a hub that outlives individual runs.
@@ -162,9 +176,9 @@ pub struct TaskRuntime {
     /// row, and the subscription the pool no longer starts it on by itself (SPEC-464 UCL-010).
     pub(crate) blind_limits: Mutex<crate::moves::BlindLimits>,
     /// The model family a limit refused after the session's person switched to it (`/model`),
-    /// written by every placement after a limit and taken by the next launch, which says it
-    /// with the model it runs when it is the launch past that limit (SPEC-493 MDL-002).
-    pub(crate) switched_limit: Mutex<Option<ModelFamily>>,
+    /// recorded with the reporting attempt before either a pool move or an ownership restart
+    /// can launch its replacement (SPEC-493 MDL-002).
+    switched_limit: Mutex<Option<(AttemptId, ModelFamily)>>,
     /// When the current turn started (ms, 0 = no turn in progress). Active agent time comes
     /// from the transcript (SPEC-087 MET-001), not from this.
     turn_started_ms: AtomicI64,
@@ -193,11 +207,12 @@ pub struct TaskRuntime {
     /// message of Yulius's own waits for (SPEC-480 DRF-006): one line per keystroke.
     pub(crate) draft_told_ms: AtomicI64,
     /// The run's folder holds the mark of a person's possible draft (`person-typed`, SPEC-480
-    /// DRF-009), so that a draft's keystrokes write it once.
-    pub(crate) draft_marked: AtomicBool,
-    /// This server saw a person type into the run. Until it did, a draft is known from its
-    /// mark alone, and a prompt that goes on is not known to follow it (DRF-009).
-    pub(crate) typed_seen: AtomicBool,
+    /// DRF-009). The guard orders a key's timestamp and file write with the submit hook's
+    /// check and file removal (SPEC-537).
+    pub(crate) draft_mark: tokio::sync::Mutex<DraftMark>,
+    /// Sequence of the last viewer input in this run. Before the first, only the durable
+    /// mark identifies a possible draft, and a prompt may predate it (DRF-009).
+    pub(crate) typed_seq: AtomicU64,
     /// The task's owner had a message typed behind their possible draft and Yulius is about to
     /// submit both (SPEC-487 TCT-006): the next prompt that goes on from the box carried that
     /// draft to the agent, also one this server knows from its mark alone. The mark is taken
@@ -207,11 +222,9 @@ pub struct TaskRuntime {
     /// Code did not take Yulius's Enter as a submit: the draft would then read as ended
     /// while its text is still in the box.
     pub(crate) sent_past_draft: AtomicBool,
-    /// When the prompt whose hook is being answered emptied the prompt box (ms): worked out at
-    /// its first request and taken into [`Self::box_emptied_ms`] when the prompt goes on, so a
-    /// prompt that is held and then blocked, which Claude Code puts back into the box, empties
-    /// nothing (SPEC-468 CCF-010).
-    pub(crate) submit_emptied_ms: AtomicI64,
+    /// The viewer input sequence when the submit that emptied the box arrived. Keys after that submit
+    /// win ties in the millisecond clock, including while a held prompt is answered.
+    pub(crate) emptied_seq: AtomicU64,
     /// The run's last prompt hook was answered with a hold: the next one is that prompt sent
     /// again by the hook client, not another submit. A hold the CLI gave up (its client holds
     /// for days) leaves this set until the run's next prompt is answered, which then counts as
@@ -219,6 +232,9 @@ pub struct TaskRuntime {
     /// that is submitted, never as holding none. A new run holds none
     /// ([`Self::run_starts`]).
     pub(crate) prompt_held: AtomicBool,
+    /// A reattach owns the old attempt's recovery until any required hand-over finishes.
+    /// A limit move from its transcript waits here before deciding which attempt to move.
+    pub(crate) reattach_move: Arc<tokio::sync::Mutex<()>>,
     /// Whose personal MCP servers the current run was started with (SPEC-332 MSC-009): a live
     /// run keeps its MCP configuration, so a hand-over restarts it, and only that person messages
     /// it meanwhile.
@@ -501,15 +517,30 @@ impl TaskRuntime {
             .max(self.message_typed_ms.load(Ordering::SeqCst))
     }
 
+    /// The empty time for a strict timestamp comparison. When the two wall times
+    /// coincide, use the order of the submit and key observed by this server.
+    pub(crate) fn empty_time_for_typing(&self) -> i64 {
+        let emptied = self.box_emptied_ms.load(Ordering::SeqCst);
+        if self.typed_at_ms.load(Ordering::SeqCst) == emptied
+            && self.typed_seq.load(Ordering::SeqCst) > self.emptied_seq.load(Ordering::SeqCst)
+        {
+            emptied.saturating_sub(1)
+        } else {
+            emptied
+        }
+    }
+
     /// A run starts at `now_ms`, in a new process: its prompt box is empty, and no prompt of
     /// it is held (one held in the run before went with that run's hook client; SPEC-468
     /// CCF-010). Nothing waits in its queue and no prompt of it went on: what the run before
     /// queued went with its process (SPEC-471 CCQ-001).
-    pub(crate) fn run_starts(&self, now_ms: i64) {
+    pub(crate) async fn run_starts(&self, now_ms: i64) {
+        let mut mark = self.draft_mark.lock().await;
         self.box_emptied_ms.store(now_ms, Ordering::SeqCst);
         // Its folder is new: no draft is marked there (SPEC-480 DRF-009).
-        self.draft_marked.store(false, Ordering::SeqCst);
-        self.typed_seen.store(false, Ordering::SeqCst);
+        *mark = DraftMark::default();
+        self.typed_seq.store(0, Ordering::SeqCst);
+        self.emptied_seq.store(0, Ordering::SeqCst);
         self.sent_past_draft.store(false, Ordering::SeqCst);
         self.prompt_held.store(false, Ordering::SeqCst);
         self.with_queue(|queue| *queue = yulius_domain::agent_cli::Queue::default());
@@ -594,12 +625,13 @@ impl TaskRuntime {
             message_typed_ms: AtomicI64::new(0),
             box_emptied_ms: AtomicI64::new(0),
             draft_told_ms: AtomicI64::new(0),
-            draft_marked: AtomicBool::new(false),
-            typed_seen: AtomicBool::new(false),
+            draft_mark: tokio::sync::Mutex::default(),
+            typed_seq: AtomicU64::new(0),
             sent_past_draft: AtomicBool::new(false),
-            submit_emptied_ms: AtomicI64::new(0),
+            emptied_seq: AtomicU64::new(0),
             prompt_held: AtomicBool::new(false),
             typed_by: Mutex::new(None),
+            reattach_move: Arc::default(),
             personal_mcp_of: Mutex::new(None),
             goal_achieved: AtomicBool::new(false),
             goal_submitted: AtomicBool::new(false),
@@ -712,7 +744,15 @@ impl TaskRuntime {
 
     /// A usage limit or a refused subscription, recorded `at`, cut the run's turn: the run is at
     /// its limit, and nothing is known yet of a goal pause written there (SPEC-464 UCL-007).
-    pub(crate) fn limit_cut_the_turn(&self, at: Option<Timestamp>) {
+    fn limit_cut_the_turn(
+        &self,
+        attempt: &AttemptId,
+        at: Option<Timestamp>,
+        ran: Option<ModelFamily>,
+    ) {
+        if let Ok(mut kept) = self.switched_limit.lock() {
+            *kept = ran.map(|family| (attempt.clone(), family));
+        }
         if let Ok(mut pause) = self.limit_goal_pause.lock() {
             *pause = crate::goal_retry::LimitGoalPause::None;
         }
@@ -803,6 +843,9 @@ const LIVE_WITH_A_RUN: [TaskStatus; 4] = [
 /// Supervisor-owned per-process state.
 #[derive(Default)]
 pub struct SupervisorState {
+    /// Viewer input order across runs. A hook reads it before looking up its run, so a key
+    /// arriving during that lookup wins a tie in the wall clock (SPEC-537).
+    pub(crate) input_seq: AtomicU64,
     runtimes: Mutex<HashMap<TaskId, Arc<TaskRuntime>>>,
     /// Shared, so an install on the blocking pool can own its guard (SPEC-507 SKR-005).
     launch: Arc<tokio::sync::Mutex<()>>,
@@ -963,6 +1006,9 @@ const REPLAY_WAIT: Duration = Duration::from_secs(30);
 /// servers it holds decides who may message it and whether a hand-over restarts it; a restarted
 /// server reads it back for a reattached run (SPEC-483 RST-001).
 const PERSONAL_MCP_FILE: &str = "personal-mcp-of";
+
+/// Digest of the sealed sign-in selected for a Claude run, kept for watcher reattachment.
+const CLAUDE_CREDENTIAL_DIGEST: &str = "claude-credential-sha256";
 
 /// Whose personal MCP servers the run in `run_dir` was started with; `None` for none, and for
 /// a mark that cannot be read (said in the log: the run then counts as holding nobody's).
@@ -1350,6 +1396,39 @@ impl App {
         map.entry(task.clone())
             .or_insert_with(|| Arc::new(TaskRuntime::new()))
             .clone()
+    }
+
+    /// The model families waiting tasks have excluded from this account. A window reading
+    /// can already have cleared the stored limit by the time a person asks for a refresh.
+    pub(crate) async fn excluded_families(&self, account: &AccountId) -> Vec<ModelFamily> {
+        let mut families = Vec::new();
+        let Ok(pauses) = self.deps.store.open_pauses().await else {
+            return families;
+        };
+        for pause in pauses {
+            if let Some(runtime) = self.existing_runtime(&pause.task_id)
+                && let Ok(limits) = runtime.blind_limits.lock()
+            {
+                for (id, family) in limits.left_out() {
+                    if id == account && !families.contains(family) {
+                        families.push(*family);
+                    }
+                }
+            }
+        }
+        families
+    }
+
+    /// A successful model probe allows this account/model pair in each task's next placement.
+    pub(crate) fn model_available(&self, account: &AccountId, family: ModelFamily) {
+        if let Ok(runtimes) = self.supervisor.runtimes.lock() {
+            for runtime in runtimes.values() {
+                if let Ok(mut limits) = runtime.blind_limits.lock() {
+                    limits.available(account, family);
+                }
+            }
+        }
+        self.capacity_changed();
     }
 
     /// Drops a deleted task's runtime state.
@@ -2163,6 +2242,13 @@ impl App {
             AttemptId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?;
         let run_dir = self.config.data_dir.join("runs").join(attempt_id.as_str());
         std::fs::create_dir_all(&run_dir).map_err(AppError::internal)?;
+        if harness == Harness::ClaudeCode
+            && let Some(sealed) = &account.credential
+        {
+            let digest = self.deps.crypto.sha256_hex(&sealed.0);
+            write_private_file(&run_dir.join(CLAUDE_CREDENTIAL_DIGEST), digest.as_bytes())
+                .map_err(AppError::internal)?;
+        }
         // An Antigravity run has a home of its own in its run directory (SPEC-505 AGY-003).
         let antigravity_home = match harness {
             Harness::Antigravity => Some(self.antigravity_home(&sandbox.id, &run_dir)?),
@@ -2369,7 +2455,12 @@ impl App {
             .lock()
             .ok()
             .and_then(|mut kept| kept.take());
-        let ran = kept.filter(|_| matches!(start, RunStart::AfterLimit));
+        let ran = kept
+            .filter(|(id, _)| {
+                matches!(start, RunStart::AfterLimit)
+                    && earlier.last().is_some_and(|run| &run.id == id)
+            })
+            .map(|(_, family)| family);
         if let Some(ran) = ran.filter(|ran| ModelFamily::of(Some(model)) != *ran) {
             self.runtime(&task.id)
                 .hub
@@ -2434,6 +2525,12 @@ impl App {
             }
         }
         let runtime = self.runtime(&task.id);
+        self.initialize_run_goal(
+            &task,
+            &attempt,
+            rest.is_some_and(|rest| rest.goal_unfinished),
+        )
+        .await;
         // Before the spawn, so the opening turn's Stop hook can never come first.
         runtime
             .opening_turn
@@ -2526,15 +2623,8 @@ impl App {
         // Typing from now on, once viewers can write to this run, is a person's draft in it
         // (SPEC-068): its prompt box starts empty (SPEC-468 CCF-010).
         let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
-        runtime.run_starts(self.now().0);
+        runtime.run_starts(self.now().0).await;
         self.attach_run(&task.id, &attempt, &host_token).await?;
-        // The new run learns its goal from its own lines, and an idle one writes none: what the
-        // old run read of the goal still says what the agent left.
-        if let Some(rest) = rest {
-            runtime
-                .goal_unfinished
-                .store(rest.goal_unfinished, Ordering::SeqCst);
-        }
         runtime.hub.state_changed();
         self.publish_task(&task.id).await;
         // Control passed during the launch, after this run took its owner's personal MCP servers
@@ -3278,8 +3368,13 @@ impl App {
         let sessions = self.codex_sessions(sandbox);
         match self.deps.harness.find_codex_rollout(&sessions, session_id) {
             Ok(Some(path)) => path,
-            Ok(None) | Err(_) => sessions.join(format!("missing-{session_id}.jsonl")),
+            Ok(None) | Err(_) => Self::missing_codex_rollout(&sessions, session_id),
         }
+    }
+
+    /// Path recorded while a Codex session has no discoverable rollout (SPEC-538).
+    pub(crate) fn missing_codex_rollout(sessions: &Path, session_id: &str) -> PathBuf {
+        sessions.join(format!("missing-{session_id}.jsonl"))
     }
 
     /// After a Codex run ended or was lost (SPEC-503 CDX-006): its home's `auth.json` replaces the
@@ -3833,6 +3928,10 @@ impl App {
                 child_alive,
                 ..
             } if host_alive || child_alive => {
+                crate::race::reached(
+                    crate::race::Point::LostRunTermination,
+                    Path::new(&attempt.run_dir),
+                );
                 self.terminate_then_mark_lost(task_id, &attempt, StopReason::Lost)
                     .await;
             }
@@ -3986,6 +4085,7 @@ impl App {
         }
         self.end_pause(task_id, "ended").await;
         if let Some(rt) = &runtime {
+            rt.verdict_stop_ms.clear();
             rt.watcher_alive.store(false, Ordering::SeqCst);
             *rt.run.lock().await = None;
             // What the store recorded, whoever won the transition.
@@ -4141,6 +4241,7 @@ impl App {
         });
         crate::race::reached(crate::race::Point::RunEndTaken, Path::new(task_id.as_str()));
         let session_end = runtime.session_end.lock().ok().and_then(|mut g| g.take());
+        runtime.verdict_stop_ms.clear();
         runtime.watcher_alive.store(false, Ordering::SeqCst);
         // Keep the last screen so viewers still see how the run ended after a server restart.
         let mut session_started = true;
@@ -4523,7 +4624,11 @@ impl App {
     ///
     /// # Errors
     /// Store failures.
-    pub(crate) async fn park_task_now(self: &Arc<Self>, task_id: &TaskId) -> AppResult<bool> {
+    pub(crate) async fn park_task_now(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        rule: crate::parking::ParkRule,
+    ) -> AppResult<bool> {
         // The list's counters are a probe's last answer: before a session ends, its background
         // work is looked at now, and a look that gives no answer counts as work running, as
         // for a move (SPEC-483 SWT-001, SPEC-461 CCM-013). Looked at before the launch lock, so
@@ -4535,7 +4640,7 @@ impl App {
         let Some(task) = self.deps.store.task(task_id).await? else {
             return Ok(false);
         };
-        if !self.parkable_now(&task).await {
+        if !self.parkable_now(&task, rule).await {
             return Ok(false);
         }
         // A prompt waiting in Claude Code's queue would be lost with the session (SPEC-471).
@@ -5014,7 +5119,22 @@ impl App {
         let account = match account {
             Some(kept) if keeps_subscription(reason) => {
                 let input = self.rotation_input(&task, None).await?;
-                rotation::keeps_account(&input, &kept).then_some(kept)
+                // A replayed access refusal can make the kept subscription unusable.
+                // Only relinquish it for a pool placement that can actually take the turn.
+                if reason == "handover" && matches!(start, RunStart::AfterLimit) {
+                    let asked = Trigger::Manual {
+                        account: kept.clone(),
+                    };
+                    match (
+                        rotation::decide(&input, asked).0,
+                        rotation::decide(&input, Trigger::Start).0,
+                    ) {
+                        (Decision::Stay, Decision::Switch { account }) => Some(account),
+                        _ => Some(kept),
+                    }
+                } else {
+                    rotation::keeps_account(&input, &kept).then_some(kept)
+                }
             }
             other => other,
         };
@@ -5028,6 +5148,10 @@ impl App {
                 return Err(err);
             }
         };
+        crate::race::reached(
+            crate::race::Point::SwitchPrepared,
+            Path::new(task_id.as_str()),
+        );
         if !store
             .transition_task(task_id, Some(task.status), next, None, self.now())
             .await?
@@ -5661,6 +5785,7 @@ impl App {
             // The run's transcript so far is history: its watcher catches up on it (TSK-014).
             // Until it did, what waits in Claude Code's queue is not known (SPEC-471 CCQ-001).
             let runtime = self.runtime(&attempt.task_id);
+            let recovery = runtime.reattach_move.clone().lock_owned().await;
             runtime.replay_transcript.store(true, Ordering::SeqCst);
             runtime.queue_unread.store(true, Ordering::SeqCst);
             // Before the run is attached, so no message is typed meanwhile (SPEC-230): when it
@@ -5682,10 +5807,16 @@ impl App {
             // box: its mark says since when (SPEC-480 DRF-009). A keystroke this server saw is
             // newer and stays.
             // Never later than now: a time ahead of the clock would never grow old.
-            let drafted = person_typed_marked(Path::new(&attempt.run_dir)).min(self.now().0);
-            if drafted > 0 {
-                runtime.typed_at_ms.fetch_max(drafted, Ordering::SeqCst);
-                runtime.draft_marked.store(true, Ordering::SeqCst);
+            {
+                let mut mark = runtime.draft_mark.lock().await;
+                let drafted = person_typed_marked(Path::new(&attempt.run_dir)).min(self.now().0);
+                if drafted > 0 {
+                    runtime.typed_at_ms.fetch_max(drafted, Ordering::SeqCst);
+                    mark.written = true;
+                }
+            }
+            if let Some(task) = store.task(&attempt.task_id).await? {
+                self.initialize_run_goal(&task, &attempt, false).await;
             }
             let reattached = match host_token {
                 Some(token) => self
@@ -5789,6 +5920,7 @@ impl App {
                     tokio::spawn(async move {
                         // How the run is resumed (past a usage limit, with the workflows it
                         // left) is read from its transcript: the restart waits for the replay.
+                        let _recovery = recovery;
                         let asked = tokio::time::Instant::now();
                         while app.runtime(&task_id).queue_unread.load(Ordering::SeqCst)
                             && asked.elapsed() < REPLAY_WAIT
@@ -5973,33 +6105,99 @@ impl App {
         }
     }
 
-    /// A subscription the provider refused for good: it needs a new sign-in, with the provider's
-    /// text as its error. The pool no longer places tasks on it, the usage round skips it, and
-    /// paused tasks are reconsidered for the subscriptions left. A usage write under way
-    /// finishes first, so that it never stores what it read before this.
-    pub(crate) async fn record_access_lost(&self, account: &AccountId, message: &str) {
+    /// Marks a refused sign-in while it is still current. The label is for the interrupted
+    /// task's move notice, including when a newer sign-in is already available.
+    async fn record_access_lost(
+        &self,
+        account: &AccountId,
+        run_dir: &Path,
+        message: &str,
+    ) -> Option<String> {
         crate::race::reached(
             crate::race::Point::AccessLostRecord,
             Path::new(account.as_str()),
         );
-        // Under the lock every write of the subscription's usage takes: such a write reads the
-        // status and stores it back with the usage, and would store `ok` over this (#1211).
+        let launched =
+            crate::leftovers::read_small_file(&run_dir.join(CLAUDE_CREDENTIAL_DIGEST), 64);
+        // Claude sign-in takes this lock too. Keep it from the credential check through the
+        // status write, which must also follow any usage write already under way (#1211).
         let _writing = self.capacity.usage_writes.lock().await;
-        if let Err(err) = self
-            .deps
-            .store
-            .set_account_state(
-                account,
-                AccountStatus::Relogin,
-                None,
-                Some(message),
-                self.now(),
-            )
-            .await
+        let record = match self.deps.store.account(account).await {
+            Ok(account) => account?,
+            Err(err) => {
+                tracing::error!(error = %err, "could not read a refused subscription");
+                return None;
+            }
+        };
+        if let (Some(launched), Some(current)) = (launched, &record.credential)
+            && launched == self.deps.crypto.sha256_hex(&current.0)
         {
-            tracing::error!(error = %err, "could not mark a refused subscription");
+            if let Err(err) = self
+                .deps
+                .store
+                .set_account_state(
+                    account,
+                    AccountStatus::Relogin,
+                    None,
+                    Some(message),
+                    self.now(),
+                )
+                .await
+            {
+                tracing::error!(error = %err, "could not mark a refused subscription");
+            }
+            self.capacity_changed();
         }
-        self.capacity_changed();
+        Some(record.label)
+    }
+
+    /// Install the conversation's goal before a resumed process can send its first Stop.
+    /// Earlier goal records describe the condition, never a verdict on the new turn.
+    async fn initialize_run_goal(
+        &self,
+        task: &TaskRecord,
+        attempt: &AttemptRecord,
+        unfinished: bool,
+    ) {
+        let mut goal = None;
+        if task.mode == TaskMode::Prompt
+            && attempt.harness == Harness::ClaudeCode
+            && attempt.launch_kind == LaunchKind::Resume
+            && let (Some(session), Some(worktree)) =
+                (&attempt.provider_session_id, &task.worktree_path)
+            && yulius_domain::harness::valid_session_id(session)
+        {
+            let harness = Arc::clone(&self.deps.harness);
+            let path = harness.claude_transcript(
+                &self.sandbox_home(&task.sandbox_id),
+                Path::new(worktree),
+                session,
+            );
+            let anchor = self.sandbox_dir(&task.sandbox_id);
+            match tokio::task::spawn_blocking(move || harness.last_claude_goal(&anchor, &path))
+                .await
+            {
+                Ok(Ok(outcome)) => goal = outcome,
+                Ok(Err(err)) => {
+                    tracing::warn!(task = %task.id, error = %err, "could not read the resumed goal")
+                }
+                Err(err) => {
+                    tracing::warn!(task = %task.id, error = %err, "resumed goal read did not finish")
+                }
+            }
+        }
+        let runtime = self.runtime(&task.id);
+        runtime.goal_open.store(
+            goal.is_some_and(crate::finish::goal_stays_open),
+            Ordering::SeqCst,
+        );
+        runtime.goal_unfinished.store(
+            goal.map_or(unfinished, crate::finish::goal_unfinished),
+            Ordering::SeqCst,
+        );
+        runtime.goal_achieved.store(false, Ordering::SeqCst);
+        runtime.goal_submitted.store(false, Ordering::SeqCst);
+        runtime.verdict_stop_ms.clear();
     }
 
     fn start_watcher(self: &Arc<Self>, task_id: &TaskId, attempt: &AttemptRecord) {
@@ -6015,9 +6213,6 @@ impl App {
             *u = UsageSnapshot::default();
         }
         runtime.turn_started_ms.store(0, Ordering::SeqCst);
-        // A new attempt (or the same one after a restart) learns the goal from its transcript.
-        runtime.goal_achieved.store(false, Ordering::SeqCst);
-        runtime.goal_submitted.store(false, Ordering::SeqCst);
         runtime.background_shells.store(-1, Ordering::SeqCst);
         runtime.background_waits.store(-1, Ordering::SeqCst);
         runtime.background_agents.store(0, Ordering::SeqCst);
@@ -6035,9 +6230,6 @@ impl App {
         if let Ok(mut launches) = runtime.launches.lock() {
             launches.clear();
         }
-        runtime.goal_open.store(false, Ordering::SeqCst);
-        runtime.goal_unfinished.store(false, Ordering::SeqCst);
-        runtime.verdict_stop_ms.clear();
         if let Ok(mut end) = runtime.session_end.lock() {
             *end = None;
         }
@@ -6078,6 +6270,12 @@ impl App {
         // So is a flag that the session's work answers (a notice's), raised before this server
         // started: its reason says so (SPEC-472 ATN-010).
         self.watch_answerable_flag(&task_id).await;
+        // The launched model stays the same for this attempt. For older run records, the
+        // task already read for this watch supplies the model. Polling needs no store read.
+        let family = crate::capacity::run_family(
+            attempt.model.as_deref(),
+            crate::capacity::task_model(&task),
+        );
         let mut session_id = attempt.provider_session_id.clone();
         let mut watch = None;
         let mut last_drift_check = Timestamp(0);
@@ -6221,7 +6419,6 @@ impl App {
             // A workflow agent's limit of another model than the session runs is not the
             // session's (SPEC-486 WFL-002): it goes into the subscription's reading when it is
             // read live, and never into what is known of the session.
-            let family = self.run_family_of(&attempt).await;
             let (other_models, observations): (Vec<_>, Vec<_>) = observations
                 .into_iter()
                 .partition(|observation| binds_another_model(observation, family));
@@ -6270,8 +6467,13 @@ impl App {
                     if let Observation::SubagentAnswered { .. }
                     | Observation::SubagentCutOff { .. } = observation
                     {
-                        self.on_observation(&task_id, &attempt, observation.clone())
-                            .await;
+                        self.on_observation(
+                            &task_id,
+                            &attempt,
+                            observation.clone(),
+                            ObservationSource::Replay,
+                        )
+                        .await;
                     }
                 }
                 // Turns, the goal and a usage limit are applied once, as the replay's final
@@ -6292,7 +6494,8 @@ impl App {
                     if let Some(limit) = replayed_limit.take()
                         && facts.limit_pending
                     {
-                        self.on_observation(&task_id, &attempt, limit).await;
+                        self.on_observation(&task_id, &attempt, limit, ObservationSource::Replay)
+                            .await;
                         // The goal pause Claude Code wrote at that limit is the limit's too.
                         if let Some(notice) = &facts.limit_goal_pause {
                             self.goal_retry_observed(&task_id, false, notice).await;
@@ -6318,7 +6521,8 @@ impl App {
                     .cloned()
                     .collect();
                 for observation in observations {
-                    self.on_observation(&task_id, &attempt, observation).await;
+                    self.on_observation(&task_id, &attempt, observation, ObservationSource::Live)
+                        .await;
                 }
                 for observation in &cut_offs {
                     self.subagent_limit(&task_id, &attempt, family, observation)
@@ -6344,6 +6548,7 @@ impl App {
         task_id: &TaskId,
         attempt: &AttemptRecord,
         observation: Observation,
+        source: ObservationSource,
     ) {
         let runtime = self.runtime(task_id);
         // The model answered: a later limit nothing says the end of is no repeat of an earlier
@@ -6378,7 +6583,7 @@ impl App {
                     window_minutes,
                     resets_at,
                 };
-                self.limit_met(task_id, attempt, limit, at).await;
+                self.limit_met(task_id, attempt, limit, at, source).await;
             }
             Observation::WorkflowLimitReached {
                 resets_at,
@@ -6396,30 +6601,28 @@ impl App {
                     window_minutes,
                     resets_at,
                 };
-                self.limit_met(task_id, attempt, limit, at).await;
+                self.limit_met(task_id, attempt, limit, at, source).await;
             }
             Observation::AccessLost { message, at } => {
-                // The subscription no longer works (cancelled, downgraded, revoked): it needs a
-                // new sign-in, so nothing is placed on it again and its usage is no longer read
-                // back to `ok`. The cut turn then moves on like a limit's, to the next working
-                // subscription, or the task waits for one.
+                // The refused turn moves on like a limit's, including after another sign-in.
                 tracing::warn!(task = %task_id, %message, "subscription access refused");
                 runtime.end_turn();
-                runtime.limit_cut_the_turn(at);
-                let mut refused = None;
-                if let Some(account) = &attempt.account_id {
-                    refused = match self.deps.store.account(account).await {
-                        Ok(Some(record)) => Some(record.label),
-                        _ => None,
-                    };
-                    self.record_access_lost(account, &message).await;
-                }
+                runtime.limit_cut_the_turn(&attempt.id, at, None);
+                let refused = match &attempt.account_id {
+                    Some(account) => {
+                        self.record_access_lost(account, Path::new(&attempt.run_dir), &message)
+                            .await
+                    }
+                    None => None,
+                };
                 let app = self.clone();
                 let tid = task_id.clone();
                 let account = attempt.account_id.clone();
                 let provider = attempt.harness.provider();
+                let attempt_id = attempt.id.clone();
                 tokio::spawn(async move {
-                    app.rotate(&tid, account, Trigger::LimitReached).await;
+                    app.rotate_limited_attempt(&tid, &attempt_id, account, false, None, source)
+                        .await;
                     // Said in one line, with a Needs you when nothing is left (SPEC-447 MOV-006).
                     if let Some(label) = refused {
                         let left = crate::moves::Left::Refused {
@@ -6648,7 +6851,8 @@ impl App {
             if let Some(reviewer) = reviewer {
                 self.reviewer_cut_off(task_id, reviewer, false).await;
             }
-            self.limit_met(task_id, attempt, limit, *at).await;
+            self.limit_met(task_id, attempt, limit, *at, ObservationSource::Live)
+                .await;
             return;
         }
         // Recorded before the move is decided: where the session is reads as unable to run the
@@ -6670,25 +6874,67 @@ impl App {
         attempt: &AttemptRecord,
         limit: ReportedLimit,
         at: Option<Timestamp>,
+        source: ObservationSource,
     ) {
         let runtime = self.runtime(task_id);
         runtime.end_turn();
-        runtime.limit_cut_the_turn(at);
         let blind = limit.without_an_end(self.now());
         // The limit of the model this run was launched with (SPEC-482 FBK-006), unless it names
         // another one: the model the session was switched to inside it (SPEC-493 MDL-002).
         let family = self.run_family_of(attempt).await;
         let ran = switched_model(&limit, family);
+        runtime.limit_cut_the_turn(&attempt.id, at, ran);
         if let Some(account) = &attempt.account_id {
+            // A hand-over may place the replacement itself. The reporting account and
+            // model still count if the pool later exhausts its retry without an answer.
+            if blind && let Ok(mut met) = runtime.blind_limits.lock() {
+                met.met(account, ran.unwrap_or(family));
+            }
             self.record_limit(account, limit, family).await;
         }
         let app = self.clone();
         let tid = task_id.clone();
         let account = attempt.account_id.clone();
+        let attempt_id = attempt.id.clone();
         tokio::spawn(async move {
-            app.rotate_past(&tid, account, Trigger::LimitReached, blind, ran)
+            crate::race::reached(crate::race::Point::LimitMoveReady, Path::new(tid.as_str()));
+            app.rotate_limited_attempt(&tid, &attempt_id, account, blind, ran, source)
                 .await;
+            crate::race::reached(
+                crate::race::Point::LimitMoveFinished,
+                Path::new(tid.as_str()),
+            );
         });
+    }
+
+    /// Reconciliation can replace a run holding the previous owner's servers after reading
+    /// this limit. Apply the pool decision only if the reporting attempt still owns the run.
+    async fn rotate_limited_attempt(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        attempt_id: &AttemptId,
+        account: Option<AccountId>,
+        blind: bool,
+        ran: Option<ModelFamily>,
+        source: ObservationSource,
+    ) {
+        let Some(runtime) = self.existing_runtime(task_id) else {
+            return;
+        };
+        let recovery = runtime.reattach_move.lock().await;
+        // All reports wait for a pending hand-over. Only a replayed move holds the lock
+        // through its decision. A new live pause can resume while its notices finish.
+        let _recovery = matches!(source, ObservationSource::Replay).then_some(recovery);
+        let current = runtime
+            .run
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|run| &run.attempt_id == attempt_id);
+        if current {
+            self.rotate_past(task_id, account, Trigger::LimitReached, blind, ran)
+                .await;
+        }
     }
 
     /// Applies the pool policy for a running task and acts on the decision (SPEC-001 §7.4):
@@ -6743,24 +6989,10 @@ impl App {
         if ran.is_some() {
             input.running = ran;
         }
-        // Remembered for the model this run was launched with: a task of a Fable model may be
-        // refused its fallback on the same subscription too (SPEC-482 FBK-007).
-        if blind
-            && limit
-            && let Some(account) = &current
-            && let Ok(mut met) = self.runtime(task_id).blind_limits.lock()
-        {
-            met.met(account, input.running.unwrap_or(input.family));
-        }
         let (decision, reason) = rotation::decide(&input, trigger);
         self.runtime(task_id)
             .proactive_switch
             .store(false, Ordering::SeqCst);
-        // Kept for the launch past this limit (now, or when a pause for it ends), which says it
-        // with the model it runs; every limit's decision writes it.
-        if let (true, Ok(mut kept)) = (limit, self.runtime(task_id).switched_limit.lock()) {
-            *kept = ran;
-        }
         match decision {
             Decision::Stay => {}
             Decision::Switch { account } => {
@@ -6802,6 +7034,10 @@ impl App {
                     // that says it does not go on by itself is answered, as at a move past
                     // the limit (SPEC-464 UCL-007).
                     if paused.is_ok() {
+                        crate::race::reached(
+                            crate::race::Point::LimitPauseStored,
+                            Path::new(task_id.as_str()),
+                        );
                         self.end_limit_requests(task_id, crate::goal_retry::TakenOn::Paused)
                             .await;
                     }
@@ -7474,13 +7710,13 @@ mod tests {
     /// SPEC-468 CCF-010: a run starts with an empty prompt box and holds no prompt: one held
     /// in the run before went with that run's hook client, so the new run's first prompt is a
     /// submit, not that prompt sent again.
-    #[test]
-    fn a_new_run_starts_with_an_empty_prompt_box_and_no_held_prompt() {
+    #[tokio::test]
+    async fn a_new_run_starts_with_an_empty_prompt_box_and_no_held_prompt() {
         use std::sync::atomic::Ordering;
         let runtime = super::TaskRuntime::new();
         runtime.typed_at_ms.store(5_000, Ordering::SeqCst);
         runtime.prompt_held.store(true, Ordering::SeqCst);
-        runtime.run_starts(7_000);
+        runtime.run_starts(7_000).await;
         assert_eq!(runtime.box_emptied_ms.load(Ordering::SeqCst), 7_000);
         assert!(!runtime.prompt_held.load(Ordering::SeqCst));
     }
@@ -7488,8 +7724,8 @@ mod tests {
     /// SPEC-471 CCQ-001: what the run before left in Claude Code's queue went with its process,
     /// and a resumed session does not get it back: a run starts with an empty queue and with
     /// no prompt that just went on.
-    #[test]
-    fn a_new_run_starts_with_an_empty_queue() {
+    #[tokio::test]
+    async fn a_new_run_starts_with_an_empty_queue() {
         use std::sync::atomic::Ordering;
         use yulius_domain::agent_cli::QueueChange;
         let runtime = super::TaskRuntime::new();
@@ -7498,7 +7734,7 @@ mod tests {
         runtime.with_queue(|queue| queue.record(QueueChange::Added, None));
         runtime.prompt_passed_ms.store(6_500, Ordering::SeqCst);
         assert!(runtime.queue().holds());
-        runtime.run_starts(7_000);
+        runtime.run_starts(7_000).await;
         assert_eq!(runtime.queue(), yulius_domain::agent_cli::Queue::default());
         assert_eq!(runtime.prompt_passed_ms.load(Ordering::SeqCst), 0);
         assert!(!runtime.queue_may_hold());
@@ -7506,7 +7742,7 @@ mod tests {
         // which counts as holding; the next launch starts a process whose queue is empty.
         runtime.queue_unread.store(true, Ordering::SeqCst);
         assert!(runtime.queue_may_hold(), "not known counts as holding");
-        runtime.run_starts(8_000);
+        runtime.run_starts(8_000).await;
         assert!(!runtime.queue_may_hold());
     }
 
@@ -7530,8 +7766,8 @@ mod tests {
     /// SPEC-479 SWQ-001, SWQ-002: what a move at a turn's end asks of the queue. An entry that
     /// waits counts until a turn's closing record found it waiting; a queue that is not known
     /// (a reattached run not read yet, a lock a thread died with) counts; a new run has none.
-    #[test]
-    fn a_move_asks_the_queue_for_what_a_turns_end_hands_on() {
+    #[tokio::test]
+    async fn a_move_asks_the_queue_for_what_a_turns_end_hands_on() {
         use std::sync::atomic::Ordering;
         use yulius_domain::agent_cli::{Queue, QueueChange};
         let runtime = std::sync::Arc::new(super::TaskRuntime::new());
@@ -7543,7 +7779,7 @@ mod tests {
         assert!(runtime.queue_may_hold(), "the restart's rule counts it");
         runtime.queue_unread.store(true, Ordering::SeqCst);
         assert!(runtime.queue_may_hand_on(), "not known counts");
-        runtime.run_starts(8_000);
+        runtime.run_starts(8_000).await;
         assert!(!runtime.queue_may_hand_on());
         assert_eq!(runtime.queue().left_over(), 0);
         let dying = std::sync::Arc::clone(&runtime);

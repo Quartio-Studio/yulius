@@ -1359,6 +1359,26 @@ impl HarnessPort for RecordingHarness {
     fn claude_transcript(&self, home: &Path, worktree: &Path, session: &str) -> PathBuf {
         self.inner.claude_transcript(home, worktree, session)
     }
+    fn last_claude_goal(
+        &self,
+        anchor: &Path,
+        path: &Path,
+    ) -> AppResult<Option<yulius_domain::task::GoalOutcome>> {
+        self.inner.last_claude_goal(anchor, path)
+    }
+
+    fn submit_origin(
+        &self,
+        file: std::fs::File,
+        session: &str,
+        id: &str,
+        prompt: &str,
+        run_to_submit: std::ops::RangeInclusive<yulius_domain::time::Timestamp>,
+    ) -> yulius_domain::harness::SubmitOrigin {
+        self.inner
+            .submit_origin(file, session, id, prompt, run_to_submit)
+    }
+
     fn step_back_transcript(&self, home: &Path, worktree: &Path, session: &str) -> AppResult<bool> {
         self.inner.step_back_transcript(home, worktree, session)
     }
@@ -5551,16 +5571,59 @@ fn idle_conversation(f: &Fixture) -> Result<PathBuf, Box<dyn std::error::Error>>
     Ok(transcript)
 }
 
+/// Opens the idle session and waits for the watcher to finish its first probe. Its
+/// answer may have been dropped even though the host eventually produced it (#1361).
+async fn open_with_stray_sighting(f: &Fixture, transcript: &Path) -> TestResult {
+    let (send, receive) = tokio::sync::oneshot::channel();
+    let app = Arc::clone(&f.h.app);
+    yulius_app::race::on(
+        yulius_app::race::Point::CockpitStraysProbed,
+        transcript,
+        move || {
+            let first = app
+                .sandbox_shells(&sid())
+                .iter()
+                .find_map(|shell| shell.stray_seen_at(500, 77));
+            let _ = send.send(first);
+        },
+    );
+    cockpit_id(f, &f.alice).await?;
+    let first = tokio::time::timeout(WAIT, receive).await??;
+    if first.is_none() {
+        f.h.app.end_all_shells().await;
+        return Err(
+            "the Cockpit dropped the first stray probe before recording its sighting".into(),
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_unanswered_strays_probe_names_the_missing_sighting() -> TestResult {
+    let f = fixture().await?;
+    let transcript = idle_conversation(&f)?;
+    f.gate.report_strays(vec![leaked_job(500, 77)]);
+    f.gate.silence_work_probe(true);
+    let result = open_with_stray_sighting(&f, &transcript).await;
+    assert_eq!(
+        result
+            .err()
+            .ok_or("an unanswered probe counted as a sighting")?
+            .to_string(),
+        "the Cockpit dropped the first stray probe before recording its sighting"
+    );
+    Ok(())
+}
+
 /// SPEC-355 SLR-004 (#970): an idle Superagent's strays are reported when first seen and reaped
 /// once seen for the bound, as an idle task's (SPEC-353 LAP-004). On 2026-10-30 the Superagent's
 /// sandbox session had lived for days with a project's leaked test jobs.
 #[tokio::test]
 async fn an_idle_superagents_strays_are_reaped_after_the_bound() -> TestResult {
     let f = fixture().await?;
-    idle_conversation(&f)?;
+    let transcript = idle_conversation(&f)?;
     f.gate.report_strays(vec![leaked_job(500, 77)]);
-    cockpit_id(&f, &f.alice).await?;
-    wait_for("the idle Superagent's first probe", || f.gate.probes() > 0).await?;
+    open_with_stray_sighting(&f, &transcript).await?;
     assert!(f.gate.reaped().is_empty(), "first seen: reported only");
     f.h.clock
         .0
@@ -5577,14 +5640,14 @@ async fn an_idle_superagents_strays_are_reaped_after_the_bound() -> TestResult {
 #[tokio::test]
 async fn an_idle_superagents_strays_are_seen_when_their_probe_was_asked() -> TestResult {
     let f = fixture().await?;
-    idle_conversation(&f)?;
+    let transcript = idle_conversation(&f)?;
     f.gate.report_strays(vec![leaked_job(500, 77)]);
     let clock = Arc::clone(&f.h.clock);
     let bound = f.h.app.config.stray_reap_after_ms;
     f.gate.during_probe(Box::new(move || {
         clock.0.fetch_add(bound, Ordering::SeqCst);
     }));
-    cockpit_id(&f, &f.alice).await?;
+    open_with_stray_sighting(&f, &transcript).await?;
     wait_for("the strays to be reaped", || !f.gate.reaped().is_empty()).await?;
     assert_eq!(
         f.gate.reaped_after(),
@@ -5602,8 +5665,7 @@ async fn a_superagent_turn_that_starts_during_the_probe_keeps_its_strays() -> Te
     let f = fixture().await?;
     let transcript = idle_conversation(&f)?;
     f.gate.report_strays(vec![leaked_job(500, 77)]);
-    cockpit_id(&f, &f.alice).await?;
-    wait_for("the first probe", || f.gate.probes() > 0).await?;
+    open_with_stray_sighting(&f, &transcript).await?;
     let prompted = transcript.clone();
     f.gate.during_probe(Box::new(move || {
         use std::io::Write as _;
@@ -6936,6 +6998,7 @@ async fn the_superagent_sees_why_tasks_need_its_person_and_answers_for_them() ->
         link: None,
         at: now.0,
         cause: None,
+        named: Default::default(),
     };
     store
         .set_task_needs_you(
@@ -7078,6 +7141,7 @@ async fn the_superagent_sees_why_tasks_need_its_person_and_answers_for_them() ->
         link: None,
         at: now.0,
         cause: None,
+        named: Default::default(),
     };
     store
         .set_task_needs_you(&carols.id, Some(&old_row), now)
@@ -8078,6 +8142,7 @@ async fn the_superagent_restarts_its_sandboxs_docker_or_hears_why_not() -> TestR
             link: None,
             at: f.h.app.now().0 - 1_000,
             cause: Some("docker".into()),
+            named: Default::default(),
         };
         f.h.store
             .set_task_needs_you(&task.id, Some(&asked), f.h.app.now())

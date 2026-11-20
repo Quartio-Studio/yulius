@@ -9,10 +9,12 @@ mod browser;
 mod cd;
 mod ci;
 mod delivery;
+mod digest;
 mod events;
 mod files;
 mod git;
 mod guests;
+mod handoffs;
 mod imports;
 mod internal;
 mod leftovers;
@@ -163,6 +165,10 @@ pub fn public() -> Router<AppState> {
             "/api/tasks/{tid}/needs-you/answer",
             post(tasks::answer_needs_you),
         )
+        .route(
+            "/api/tasks/{tid}/needs-you/withdraw",
+            post(tasks::withdraw_needs_you),
+        )
         .route("/api/tasks/{tid}/terminal", get(terminal::terminal))
         .route("/api/events", get(events::events))
         .route(
@@ -283,6 +289,23 @@ pub fn public() -> Router<AppState> {
             "/api/admin/limits/{key}",
             put(limits::set).delete(limits::remove),
         )
+        // The end-of-day digest (SPEC-512 DIG-001, DIG-005).
+        .route(
+            "/api/admin/digest",
+            get(digest::setting).put(digest::set_setting),
+        )
+        .route("/api/me/digest", get(digest::mine))
+        // Tasks hand work to another sandbox (SPEC-512 HOF-001..HOF-005).
+        .route(
+            "/api/admin/handoffs",
+            get(handoffs::setting).put(handoffs::set_setting),
+        )
+        .route(
+            "/api/sandboxes/{sid}/handoffs",
+            get(handoffs::sandbox).put(handoffs::set_sandbox),
+        )
+        .route("/api/tasks/{tid}/handoffs", get(handoffs::task))
+        .route("/api/tasks/{tid}/handoffs/{hid}", post(handoffs::answer))
         // The personal Telegram channel's bot (SPEC-498 TGC-001).
         .route(
             "/api/admin/telegram",
@@ -469,6 +492,8 @@ pub fn public() -> Router<AppState> {
         )
         .route("/api/me/telegram/link", post(telegram::link))
         .route("/api/me/telegram/choices", put(telegram::choices))
+        // The chat's intake (SPEC-512 TGI-001).
+        .route("/api/me/telegram/intake", put(telegram::intake))
         // The caller's own notepad, the same in every sandbox (SPEC-103).
         .route(
             "/api/me/notes",

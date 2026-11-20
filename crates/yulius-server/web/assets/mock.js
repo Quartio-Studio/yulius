@@ -226,8 +226,15 @@ function seed(params) {
     telegram: {
       bot: params.get('telegram') ? 'yulius_mock_bot' : null, setAt: params.get('telegram') ? '2026-11-07T08:00:00Z' : null, setBy: params.get('telegram') ? 'mkarp' : null,
       linkedAt: params.get('telegram') === 'linked' ? '2026-11-07T09:00:00Z' : null, code: null,
-      choices: { needs_you: true, done: false, failed: false, account: false },
+      choices: { needs_you: true, done: false, failed: false, account: false, digest: true },
     },
+    // The end-of-day digest (SPEC-512 part 3): the instance's setting and the person's latest
+    // digest (`digest=1` starts with one). `__yuliusMock.sendDigest()` makes a new one and sends
+    // `digest.ready`, as the server's daily run does.
+    digest: { setting: { enabled: false, at: '18:00', park_idle_hours: null }, latest: params.get('digest') ? mockDigest('dg_mock_1') : null },
+    // Handoffs between sandboxes (SPEC-512 part 5): `handoff=1` seeds a request on #12 and a
+    // provenance on #11.
+    handoffs: mockHandoffs(params.get('handoff'), params.get('handoff') === 'long'),
     vidoc: { key: null, setAt: null, setBy: null, config: params.get('vidoc') === 'config', offAt: params.get('vidoc_off') ? '2026-10-30T09:00:00Z' : null, offBy: params.get('vidoc_off') ? 'superadmin' : null, fail: params.get('vidoc_fail') === '1', repo: params.get('vidoc_repo'), patchFail: params.get('vidoc_patch_fail') === '1' },
     // fail=<path> answers 500 to GET requests of that exact path, to show how a view says a load
     // failed (in place, naming what failed, with Try again; #147). A test may set `failPath` later;
@@ -366,10 +373,10 @@ function seed(params) {
     { name: 'test-driven-development', description: 'Write the test first, watch it fail for the right reason, then the minimal code.', source: 'superpowers', path: 'skills/superpowers/test-driven-development/SKILL.md', enabled: false },
   ];
   db.automations = [
-    { id: 'aut_1', sandbox: 'sb_studio', name: 'Daily customer feedback', cron: '0 9 * * *', utc_offset_minutes: 120, prompt: 'Create a task implementing yesterday’s customer feedback from the Quartio MCP.', workflow_id: 'wf-feature', harness: 'claude', enabled: true, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, created_via: 'agent', next_run_at: isoIn(14 * HOUR), last_run: { scheduled_for: iso(10 * HOUR), state: 'task_created', task_id: 'tsk_studio_8' } },
-    { id: 'aut_2', sandbox: 'sb_studio', name: 'Weekly dependency audit', cron: '0 7 * * 1', utc_offset_minutes: 0, prompt: 'Audit dependencies for advisories and open a PR with safe upgrades.', workflow_id: null, harness: 'claude', enabled: false, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, created_via: 'ui', next_run_at: null, last_run: null },
+    { id: 'aut_1', sandbox: 'sb_studio', owner_id: db.me.user.id, owner_login: db.me.user.login, name: 'Daily customer feedback', cron: '0 9 * * *', utc_offset_minutes: 120, prompt: 'Create a task implementing yesterday’s customer feedback from the Quartio MCP.', workflow_id: 'wf-feature', harness: 'claude', enabled: true, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, created_via: 'agent', next_run_at: isoIn(14 * HOUR), last_run: { scheduled_for: iso(10 * HOUR), state: 'task_created', task_id: 'tsk_studio_8' } },
+    { id: 'aut_2', sandbox: 'sb_studio', owner_id: db.me.user.id, owner_login: db.me.user.login, name: 'Weekly dependency audit', cron: '0 7 * * 1', utc_offset_minutes: 0, prompt: 'Audit dependencies for advisories and open a PR with safe upgrades.', workflow_id: null, harness: 'claude', enabled: false, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, created_via: 'ui', next_run_at: null, last_run: null },
     // A shipped automation an agent created by name (SPEC-042 OPS-010): a default all the same (SPEC-197).
-    { id: 'aut_3', sandbox: 'sb_studio', name: 'Work through open issues', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Work through this repository’s open GitHub issues written by the core team or their agents.', workflow_id: null, harness: 'claude', enabled: true, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, created_via: 'agent', next_run_at: isoIn(14 * HOUR), last_run: null },
+    { id: 'aut_3', sandbox: 'sb_studio', owner_id: db.me.user.id, owner_login: db.me.user.login, name: 'Work through open issues', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Work through this repository’s open GitHub issues written by the core team or their agents.', workflow_id: null, harness: 'claude', enabled: true, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, created_via: 'agent', next_run_at: isoIn(14 * HOUR), last_run: null },
   ];
   db.mcp = [
     { id: 'mcp_quartio', sandbox: null, scope: 'instance', audience: 'team', name: 'quartio', transport: 'http', command: null, args: [], url: 'https://mcp.quartio.ai/mcp', env_keys: [], header_keys: ['Authorization'], enabled: true, origin: 'person' },
@@ -644,7 +651,13 @@ function delivery(db, task) {
   const next = [];
   const blocked = [];
   const pos = position(profile, state.stage, state.environment);
-  if (pos.kind === 'no_pr') {
+  if (sandbox.playground) {
+    if (state.stage === 'none') {
+      const reason = !task.branch ? 'the task has no branch yet' : problems.length ? problems[0] : stepsOpen ? `${stepsOpen} plan steps are still open` : null;
+      if (reason) blocked.push({ action: 'merge', reason });
+      else next.push('merge');
+    }
+  } else if (pos.kind === 'no_pr') {
     if (task.branch === null) blocked.push({ action: 'open_pr', reason: 'the task has no branch yet' });
     else if (problems.length) blocked.push({ action: 'open_pr', reason: `the task spec is not valid: ${problems[0]}` });
     else next.push('open_pr');
@@ -1207,7 +1220,9 @@ route('PATCH', `/api/sandboxes/${ID}`, ({ db, p, body }) => {
   need(sandbox, 'admin');
   // SPEC-338 VOF-001: the Vidoc switch is set on its own; a profile update keeps it.
   // The server writes both switches in one write: a refused protection switch changes neither.
-  if (body.protect_production !== undefined && body.protect_production !== null && db.protectPatchFail) fail(500, 'internal', 'the store is busy');
+  const setsProtection = body.protect_production !== undefined && body.protect_production !== null;
+  if (setsProtection && sandbox.playground) fail(422, 'invalid', 'a playground has no GitHub production branch: it has no protection switch to turn');
+  if (setsProtection && db.protectPatchFail) fail(500, 'internal', 'the store is busy');
   if (body.vidoc !== undefined && body.vidoc !== null) {
     if (sandbox.playground) fail(422, 'invalid', 'a playground runs no Vidoc scan: it has no switch to turn');
     if (db.vidoc.patchFail) fail(500, 'internal', 'the store is busy');
@@ -1217,8 +1232,7 @@ route('PATCH', `/api/sandboxes/${ID}`, ({ db, p, body }) => {
   // SPEC-423 PPR-002: the production protection switch, set on its own like the Vidoc one; a
   // refused profile changes nothing.
   if (body.profile) validateProfile(body.profile);
-  if (body.protect_production !== undefined && body.protect_production !== null) {
-    if (sandbox.playground) fail(422, 'invalid', 'a playground has no GitHub production branch: it has no protection switch to turn');
+  if (setsProtection) {
     sandbox.profile = { ...sandbox.profile, protect_production: Boolean(body.protect_production) };
   }
   if (body.profile) {
@@ -1356,7 +1370,7 @@ const GUEST_PAGES = ['attachments', 'browser', 'ci', 'files', 'git', 'intake', '
 /** The server's `guest_may_reach` (crates/yulius-server/src/auth.rs). */
 function guestMayReach(method, path) {
   path = path.replace(/\/$/, '');
-  if (['/api/me', '/api/me/notes', '/api/auth/logout', '/api/events', '/api/archived-tasks', '/api/previews/authorize'].includes(path)) return true;
+  if (['/api/me', '/api/me/notes', '/api/me/digest', '/api/auth/logout', '/api/events', '/api/archived-tasks', '/api/previews/authorize'].includes(path)) return true;
   if (path === '/api/sandboxes') return method === 'GET';
   if (/^\/api\/(tasks|sessions|shells)\/.+/.test(path)) return true;
   const match = /^\/api\/sandboxes\/([^/]+)(?:\/([^/]+))?/.exec(path);
@@ -1963,13 +1977,33 @@ route('POST', `/api/tasks/${ID}/needs-you/answer`, ({ db, p, body }) => {
   if (owner !== me && db.me.user.guest) fail(403, 'forbidden', `Task #${task.number} is @${owner}'s: a guest answers the requests of only their own tasks on this playground.`);
   const text = String(body.text || '').trim();
   if (!text) fail(422, 'invalid', 'the answer is empty');
-  if (task.status !== 'running') fail(409, 'conflict', `task #${task.number} is not running (${task.status}), so its agent reads no answer now`);
+  if (task.status !== 'running' && task.status !== 'parked') fail(409, 'conflict', `task #${task.number} is not running (${task.status}), so its agent reads no answer now`);
   if (!task.needs_you) fail(409, 'conflict', `task #${task.number} asks nobody anything now: there is nothing to answer`);
+  // SPEC-512 ANS-002, ANS-004, in the server's order: a replaced request, and one naming others,
+  // is not answered.
+  if (Number.isFinite(body.asked_at_ms) && body.asked_at_ms !== task.needs_you.at_ms) fail(409, 'conflict', `the question you answered on task #${task.number} was replaced by a new one: read it and answer again`);
+  const named = task.needs_you.named === true;
+  const who = task.needs_you.who || [];
+  if (owner !== me && named && (task.needs_you.withdrawn || []).includes(me)) fail(403, 'forbidden', `@${owner} withdrew you from task #${task.number}'s question`);
+  if (owner !== me && named && !who.includes(me)) fail(403, 'forbidden', `task #${task.number} asks @${owner}${who.length ? ` and ${who.map((l) => `@${l}`).join(', ')}` : ''}, not you: its question is theirs to answer`);
   if (task.activity === 'needs_attention') fail(409, 'conflict', `task #${task.number}'s agent asks in its terminal now: @${owner} answers there, or take control of the task`);
   if (owner !== me && task.holdsPersonal) fail(409, 'conflict', `task #${task.number} holds @${owner}'s personal secrets or MCP servers, so only @${owner} answers it; or take control of the task`);
-  (db.needsYouAnswers ||= []).push({ task: task.id, by: me, text });
+  (db.needsYouAnswers ||= []).push({ task: task.id, by: me, text, asked_at_ms: Number.isFinite(body.asked_at_ms) ? body.asked_at_ms : null });
   touch(db, task, { needs_you: null });
   return summary(task);
+});
+// The owner withdraws a person the request names (SPEC-512 ANS-005).
+route('POST', `/api/tasks/${ID}/needs-you/withdraw`, ({ db, p, body }) => {
+  const task = taskOf(db, p[0]);
+  const owner = ownerOf(task).login;
+  if (owner !== db.me.user.login) fail(403, 'forbidden', `Task #${task.number} is @${owner}'s and only they steer it`);
+  const asked = task.needs_you;
+  if (!asked) fail(409, 'conflict', `task #${task.number} asks nobody anything now: there is nobody to withdraw`);
+  const login = String(body.login || '').replace(/^@/, '').toLowerCase();
+  if (!(asked.who || []).includes(login)) fail(409, 'conflict', `task #${task.number}'s question does not name @${login}`);
+  const changed = { ...asked, who: asked.who.filter((l) => l !== login), withdrawn: [...(asked.withdrawn || []), login], named: true };
+  touch(db, task, { needs_you: changed });
+  return changed;
 });
 route('PUT', '/api/me/control', ({ db, body }) => {
   db.me.user.control_ask_first = Boolean(body.ask_first);
@@ -3058,6 +3092,7 @@ route('POST', '/api/superagent/attachments', ({ db, query, body }) => {
   // How many reached the server: the page sends images only (review round 1).
   db.globalUploads = (db.globalUploads || 0) + 1;
   if (![...db.shells.values()].some((s) => s.global)) fail(404, 'not_found', 'not found');
+  // Keep this list in sync with IMAGE_EXTENSIONS in uploads.rs and GLOBAL_IMAGE in filedrop.js.
   if (!/\.(png|jpe?g|gif|webp)$/i.test(mockAttachmentName(query.get('name')))) fail(422, 'invalid', 'the Global Superagent takes images only (PNG, JPEG, GIF or WebP): it has no file tools to open other files');
   return storeAttachment(db, null, 'superagent', query, body, '/srv/yulius/users/you/superagent/attachments');
 });
@@ -3107,6 +3142,9 @@ route('GET', `/api/sandboxes/${ID}/automation-templates`, ({ db, p }) => AUTOMAT
   const own = db.automations.find((a) => a.sandbox === p[0] && sameName(a.name, t.name));
   return { ...t, automation_id: own ? own.id : null };
 }));
+function requireAutomationCreator(db, automation) {
+  if (automation.owner_id !== db.me.user.id) fail(403, 'forbidden', 'only the automation creator can change or start it');
+}
 route('POST', `/api/sandboxes/${ID}/automation-templates/${ID}/enable`, ({ db, p }) => {
   need(sandboxOf(db, p[0]), 'write');
   const t = AUTOMATION_TEMPLATES.find((x) => x.id === p[1]);
@@ -3116,10 +3154,13 @@ route('POST', `/api/sandboxes/${ID}/automation-templates/${ID}/enable`, ({ db, p
   if (created) {
     db.nextId += 1;
     const { id: _id, description: _d, ...fields } = t;
-    a = { id: `aut_${db.nextId}`, sandbox: p[0], ...fields, harness: 'auto', created_via: 'ui', last_run: null };
+    a = { id: `aut_${db.nextId}`, sandbox: p[0], ...fields, owner_id: db.me.user.id, owner_login: db.me.user.login, harness: 'auto', created_via: 'ui', last_run: null };
     db.automations.push(a);
   }
-  Object.assign(a, { enabled: true, next_run_at: isoIn(5 * HOUR) });
+  if (!a.enabled) {
+    requireAutomationCreator(db, a);
+    Object.assign(a, { enabled: true, next_run_at: isoIn(5 * HOUR) });
+  }
   const { sandbox: _s, ...out } = a;
   return json(created ? 201 : 200, out);
 });
@@ -3149,7 +3190,7 @@ route('POST', `/api/sandboxes/${ID}/automations`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
   if (Math.abs(Number(body.utc_offset_minutes) || 0) > 1080) fail(422, 'invalid', 'utc_offset_minutes must be within ±1080');
   db.nextId += 1;
-  const a = { id: `aut_${db.nextId}`, sandbox: p[0], ...body, harness: !body.harness || body.harness === 'auto' ? 'auto' : body.harness, ...automationStart(db, p[0], body), created_via: 'ui', next_run_at: body.enabled ? isoIn(5 * HOUR) : null, last_run: null };
+  const a = { id: `aut_${db.nextId}`, sandbox: p[0], ...body, harness: !body.harness || body.harness === 'auto' ? 'auto' : body.harness, ...automationStart(db, p[0], body), owner_id: db.me.user.id, owner_login: db.me.user.login, created_via: 'ui', next_run_at: body.enabled ? isoIn(5 * HOUR) : null, last_run: null };
   db.automations.push(a);
   const { sandbox: _s, ...out } = a;
   return json(201, out);
@@ -3157,10 +3198,12 @@ route('POST', `/api/sandboxes/${ID}/automations`, ({ db, p, body }) => {
 route('PUT', `/api/automations/${ID}`, ({ db, p, body }) => {
   const a = db.automations.find((x) => x.id === p[0]);
   if (!a) fail(404, 'not_found', 'not found');
+  need(sandboxOf(db, a.sandbox), 'write');
+  requireAutomationCreator(db, a);
   // The stored choice sent back unchanged is kept unchecked, as the server does (SPEC-078).
   const same = Boolean(body.supertask) === Boolean(a.supertask) && (body.after_task_id || null) === (a.after_task_id || null) && (body.start_rule || null) === (a.start_rule || null) && Boolean(body.prepared) === Boolean(a.prepared);
   const start = same ? { supertask: Boolean(a.supertask), after_task_id: a.after_task_id || null, after_task_number: a.after_task_number ?? null, start_rule: a.start_rule || null, prepared: Boolean(a.prepared) } : automationStart(db, a.sandbox, body);
-  Object.assign(a, body, start, { harness: !body.harness ? (a.harness || 'auto') : body.harness, next_run_at: body.enabled ? isoIn(5 * HOUR) : null });
+  Object.assign(a, body, start, { owner_id: a.owner_id, owner_login: a.owner_login, harness: !body.harness ? (a.harness || 'auto') : body.harness, next_run_at: body.enabled ? isoIn(5 * HOUR) : null });
   const { sandbox: _s, ...out } = a;
   return out;
 });
@@ -3171,6 +3214,7 @@ route('POST', `/api/automations/${ID}/run`, ({ db, p, body }) => {
   const a = db.automations.find((x) => x.id === p[0]);
   if (!a) fail(404, 'not_found', 'not found');
   need(sandboxOf(db, a.sandbox), 'write');
+  requireAutomationCreator(db, a);
   const stored = { supertask: Boolean(a.supertask), after_task_id: a.after_task_id || null, start_rule: a.start_rule || null, prepared: Boolean(a.prepared) };
   const same = !body || (Boolean(body.supertask) === stored.supertask && (body.after_task_id || null) === stored.after_task_id && (body.start_rule || null) === stored.start_rule && Boolean(body.prepared) === stored.prepared);
   const start = same ? stored : automationStart(db, a.sandbox, body);
@@ -5177,7 +5221,7 @@ function migrationState(mode) {
     request: null,
     // `lost`: a move whose helper was killed while it prepared the new host.
     run: mode === 'lost' ? {
-      id: 'mock-0-move', action: 'move', target: 'root@new.yulius.example', ssh_port: 22, public_url: null, data_disks: [],
+      id: 'mock-0-move', action: 'move', target: 'root@new.yulius.example', ssh_port: 22, public_url: null, data_disks: [], max_downtime: null,
       state: 'lost', exit_code: null, error: null, started_at: iso(9 * MIN), updated_at: iso(4 * MIN), ended_at: null,
     } : null,
     moving: mode === 'cli' || mode === 'lost' ? {
@@ -5299,7 +5343,7 @@ function playMove(db, request, values, steps) {
     if (m.mode === 'refused') {
       // A checklist that is there stays: it is an earlier run's.
       if (m.moving) m.moving = { ...m.moving, earlier: true };
-      Object.assign(m.run, { target: null, ssh_port: null, public_url: null, data_disks: [], state: 'refused', ended_at: now, error: 'The request was refused: an update is running (yulius-update.service): ask again once it has finished.' });
+      Object.assign(m.run, { target: null, ssh_port: null, public_url: null, data_disks: [], max_downtime: null, state: 'refused', ended_at: now, error: 'The request was refused: an update is running (yulius-update.service): ask again once it has finished.' });
       return;
     }
     // What an earlier run recorded is not this run's: it is not shown until the command wrote
@@ -5397,6 +5441,11 @@ function moveSteps(db, values) {
   steps.push(() => {
     // The instance answers during the copy: the page reads it before anything freezes.
     if (!m.seen.Copy || m.holdAt === 'Copy') return 'again';
+    if (values.max_downtime != null && values.max_downtime < 9) {
+      moveSay(db, 'Copy', moveLine('downtime', 'failed', `Estimated freeze of 9 min exceeds the ${values.max_downtime} min limit after five passes.`));
+      moveEnd(db, 1, 'Copy');
+      return undefined;
+    }
     // The cutover freezes the instance: nothing answers until the new one runs.
     moveSay(db, 'Cutover', MOVE_CUTOVER[0]);
     m.frozen = true;
@@ -5459,16 +5508,19 @@ route('POST', MOVE_API, ({ db, body }) => {
   const m = db.migration;
   const action = body.action;
   if (!['plan', 'move', 'abort'].includes(action)) fail(422, 'invalid', 'no such action');
-  const values = action === 'abort' ? { target: null, ssh_port: null, public_url: null, data_disks: [] } : {
+  if (action === 'abort' && body.max_downtime != null) fail(422, 'invalid', 'an abort names no freeze limit');
+  const values = action === 'abort' ? { target: null, ssh_port: null, public_url: null, data_disks: [], max_downtime: null } : {
     target: String(body.target || '').trim(),
     ssh_port: body.ssh_port === undefined || body.ssh_port === null ? 22 : body.ssh_port,
     public_url: body.public_url ? String(body.public_url).trim().replace(/\/$/, '') : null,
+    max_downtime: body.max_downtime ?? null,
     data_disks: (body.data_disks || []).map((d) => String(d).trim()).filter(Boolean),
   };
   if (action !== 'abort') {
     if (!values.target) fail(422, 'invalid', 'the new host is missing');
     if (!/^[A-Za-z0-9._:[\]-]+(@[A-Za-z0-9._:[\]-]+)?$/.test(values.target) || values.target.startsWith('-')) fail(422, 'invalid', 'the new host must be `root@host` or `host`');
     if (values.target.includes('@') && !values.target.startsWith('root@')) fail(422, 'invalid', 'the new host is reached as root: `root@host`');
+    if (values.max_downtime != null && (!Number.isSafeInteger(values.max_downtime) || values.max_downtime < 1)) fail(422, 'invalid', 'the longest freeze must be at least one whole minute');
     if (!Number.isInteger(values.ssh_port) || values.ssh_port < 1 || values.ssh_port > 65535) fail(422, 'invalid', 'the SSH port must be 1 to 65535');
     if (values.public_url && !/^https:\/\/[A-Za-z0-9][A-Za-z0-9.-]*$/.test(values.public_url)) fail(422, 'invalid', 'the public URL must be `https://host`, with nothing after it');
     if (values.data_disks.length > 2) fail(422, 'invalid', 'data disks: one, or two for a mirror');
@@ -5482,7 +5534,7 @@ route('POST', MOVE_API, ({ db, body }) => {
   if (action === 'plan' && !can.plan) fail(409, 'conflict', 'a move is running: wait for its end, or abort it');
   if (action === 'move') {
     const same = m.run && m.run.target === values.target && m.run.ssh_port === values.ssh_port && m.run.public_url === values.public_url
-      && JSON.stringify(m.run.data_disks) === JSON.stringify(values.data_disks);
+      && (m.run.max_downtime ?? null) === values.max_downtime && JSON.stringify(m.run.data_disks) === JSON.stringify(values.data_disks);
     if (!can.move || !same) fail(409, 'conflict', 'show the plan for these values first: a move is the plan you saw');
   }
   if (action === 'abort' && !can.abort) fail(409, 'conflict', 'no move is recorded on this host: nothing to abort');
@@ -5566,8 +5618,15 @@ function telegramBotView(db) {
 function myTelegramView(db) {
   const t = db.telegram;
   const linked = Boolean(t.bot && t.linkedAt);
-  return { available: Boolean(t.bot), bot_username: t.bot, linked, linked_at: linked ? t.linkedAt : null, choices: linked ? { ...t.choices } : { needs_you: true, done: false, failed: false, account: false }, account_choice: isAdmin(db) };
+  return { available: Boolean(t.bot), bot_username: t.bot, linked, linked_at: linked ? t.linkedAt : null, choices: linked ? { ...t.choices } : { needs_you: true, done: false, failed: false, account: false, digest: true }, account_choice: isAdmin(db), intake: linked ? { ...(t.intake || { enabled: false, sandbox_id: null }) } : { enabled: false, sandbox_id: null } };
 }
+// The chat's intake (SPEC-512 TGI-001): refused without a link or, turned on, without a project.
+route('PUT', '/api/me/telegram/intake', ({ db, body }) => {
+  if (!db.telegram.linkedAt) fail(409, 'conflict', 'link a Telegram chat first');
+  if (body.enabled && !body.sandbox_id) fail(422, 'invalid', 'choose the project a new message starts its task in');
+  db.telegram.intake = { enabled: Boolean(body.enabled), sandbox_id: body.sandbox_id || null };
+  return myTelegramView(db);
+});
 const instanceAdminOnly = (db) => { if (!isAdmin(db)) fail(403, 'forbidden', 'instance administrators only'); };
 // A saved bot reads `starting` until the next read, as if Telegram's first poll answered then.
 // A test can keep a read's answer back (`telegram.holdRead = promise`): it is read when asked and
@@ -5607,9 +5666,79 @@ route('POST', '/api/me/telegram/link', ({ db }) => {
 route('DELETE', '/api/me/telegram', ({ db }) => { db.telegram.linkedAt = null; return myTelegramView(db); });
 route('PUT', '/api/me/telegram/choices', ({ db, body }) => {
   if (!db.telegram.linkedAt) fail(409, 'conflict', 'link a Telegram chat first');
-  db.telegram.choices = { needs_you: Boolean(body.needs_you), done: Boolean(body.done), failed: Boolean(body.failed), account: Boolean(body.account) && isAdmin(db) };
+  db.telegram.choices = { needs_you: Boolean(body.needs_you), done: Boolean(body.done), failed: Boolean(body.failed), account: Boolean(body.account) && isAdmin(db), digest: body.digest !== false };
   return myTelegramView(db);
 });
+
+// The end-of-day digest (SPEC-512 DIG-001, DIG-005), validated as the server does.
+function mockDigest(id) {
+  const item = (number, title, detail) => ({ project: 'quartio/studio', number, title, detail, link: `https://yulius.example/s/studio/t/${number}` });
+  return {
+    id,
+    created_at: new Date().toISOString(),
+    waiting: [item(12, 'Ruleset for main', 'Add a ruleset on main')],
+    parked: [item(7, 'Fix the export', 'Waits for your turn. Last message: Please promote dev to main.')],
+    working_count: 2,
+    working: [item(3, 'Billing page', null), item(4, 'Search index', null)],
+  };
+}
+route('GET', '/api/admin/digest', ({ db }) => { instanceAdminOnly(db); return db.digest.setting; });
+route('PUT', '/api/admin/digest', ({ db, body }) => {
+  instanceAdminOnly(db);
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(body.at || '').trim());
+  if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) fail(422, 'invalid', 'the time is HH:MM, in UTC');
+  const hours = body.park_idle_hours;
+  if (hours !== null && hours !== undefined && !(Number.isInteger(hours) && hours >= 1 && hours <= 720)) fail(422, 'invalid', 'the idle threshold is 1 to 720 hours, or none');
+  db.digest.setting = { enabled: Boolean(body.enabled), at: `${m[1].padStart(2, '0')}:${m[2]}`, park_idle_hours: hours ?? null };
+  return db.digest.setting;
+});
+// Tasks hand work to another sandbox (SPEC-512 HOF-001..HOF-005). `handoff=1` starts task #12
+// with one request of its agent waiting for its owner, and #11 handed off from studio #12.
+function handoffsOf(db) {
+  return db.handoffs;
+}
+function mockHandoffs(seeded, long) {
+  const handoffs = { setting: { mode: seeded ? 'ask' : 'off', max_depth: 3, per_day: 20 }, accept: {}, byTask: {} };
+  if (seeded) {
+    handoffs.byTask.tsk_studio_12 = { from: null, handoffs: [{ id: 'ho_1', target_sandbox_id: 'sb_web', target_sandbox: 'quartio/web', title: 'Add the items endpoint', prompt: long ? Array.from({ length: 60 }, (_, i) => `Step ${i + 1}: add part ${i + 1} of the items endpoint.`).join('\n') : 'Add GET /v1/items returning the catalog, with tests.', harness: null, model: null, effort: null, mode: 'goal', state: 'requested', reason: null, target_number: null, target_link: null, created_at: new Date().toISOString() }] };
+    handoffs.byTask.tsk_studio_11 = { from: { sandbox: 'quartio/web', number: 4, link: `${ORIGIN}/s/web/t/4` }, handoffs: [] };
+  }
+  return handoffs;
+}
+route('GET', '/api/admin/handoffs', ({ db }) => { instanceAdminOnly(db); return handoffsOf(db).setting; });
+route('PUT', '/api/admin/handoffs', ({ db, body }) => {
+  instanceAdminOnly(db);
+  if (!['off', 'ask', 'automatic'].includes(body.mode)) fail(422, 'invalid', 'the mode is off, ask or automatic');
+  if (!(Number.isInteger(body.max_depth) && body.max_depth >= 1 && body.max_depth <= 5)) fail(422, 'invalid', 'a chain goes 1 to 5 deep');
+  if (!(Number.isInteger(body.per_day) && body.per_day >= 1 && body.per_day <= 100)) fail(422, 'invalid', "an owner's handoffs a day are 1 to 100");
+  handoffsOf(db).setting = { mode: body.mode, max_depth: body.max_depth, per_day: body.per_day };
+  return handoffsOf(db).setting;
+});
+route('GET', `/api/sandboxes/${ID}/handoffs`, ({ db, p }) => ({ accept: handoffsOf(db).accept[p[0]] !== false }));
+route('PUT', `/api/sandboxes/${ID}/handoffs`, ({ db, p, body }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  handoffsOf(db).accept[p[0]] = Boolean(body.accept);
+  return { accept: Boolean(body.accept) };
+});
+route('GET', `/api/tasks/${ID}/handoffs`, ({ db, p }) => handoffsOf(db).byTask[p[0]] || { from: null, handoffs: [] });
+route('POST', `/api/tasks/${ID}/handoffs/${ID}`, ({ db, p, body }) => {
+  const task = taskOf(db, p[0]);
+  if (ownerOf(task).login !== db.me.user.login) fail(403, 'forbidden', "only the task's owner answers its handoffs");
+  const entry = handoffsOf(db).byTask[p[0]];
+  const handoff = entry && entry.handoffs.find((x) => x.id === p[1]);
+  if (!handoff) fail(404, 'not_found', 'not found');
+  if (handoff.state !== 'requested') fail(409, 'conflict', `this handoff is ${handoff.state} already`);
+  if (body.approve) {
+    Object.assign(handoff, { state: 'created', target_number: 31, target_link: `${ORIGIN}/s/web/t/31` });
+  } else {
+    Object.assign(handoff, { state: 'declined', reason: 'declined by its owner' });
+  }
+  db.handoffAnswers = (db.handoffAnswers || 0) + 1;
+  return entry;
+});
+
+// `reads` counts the page's reads of it, so a test knows the bell has read it.
+route('GET', '/api/me/digest', ({ db }) => { db.digest.reads = (db.digest.reads || 0) + 1; return db.digest.latest; });
 
 // The instance Vidoc key (SPEC-195 VDK-002): the Jev key's routes, for Vidoc.
 function vidocView(db) {
@@ -5957,7 +6086,13 @@ const PUBLIC = ['/api/setup/status', '/api/setup', '/api/auth/password', '/api/a
 // A guest link is its own credential (SPEC-410).
 const isPublic = (path) => PUBLIC.includes(path) || /^\/api\/guest-invites\//.test(path);
 
+// `unanswered`: the page's requests not answered yet, so a test reads what they did once they settled.
 async function handleFetch(db, url, init = {}) {
+  db.unanswered = (db.unanswered || 0) + 1;
+  try { return await handleFetchCounted(db, url, init); } finally { db.unanswered -= 1; }
+}
+
+async function handleFetchCounted(db, url, init) {
   // Counted as the page asks, before the simulated latency (SPEC-108 tests); `asked` counts every
   // GET by path (SPEC-197).
   if ((init.method || 'GET') === 'GET') {
@@ -7203,6 +7338,10 @@ function startAmbient(db) {
 export function createMockTransport(params) {
   const db = seed(params);
   window.__yuliusMock = db; // debugging aid in the browser console (mock mode only)
+  db.sendDigest = (id = `dg_mock_${Date.now()}`) => {
+    db.digest.latest = mockDigest(id);
+    emit(db, { type: 'digest.ready', digest: db.digest.latest });
+  };
   // The Editor's shared text (SPEC-411): a window this one opened shares its hub and files.
   let opener = null;
   try { opener = window.opener && window.opener.__yuliusMock && window.opener.__yuliusMock.live ? window.opener.__yuliusMock : null; } catch { opener = null; }

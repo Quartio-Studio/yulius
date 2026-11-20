@@ -26,7 +26,7 @@ Follow `delivery-pipeline`; nobody accepts the result for you; the whole gate is
   delivers and leaving the project working.
 - Build each slice with `test-driven-development`: a test that fails without the change, then the
   change. One step in progress at a time, done as soon as it is finished.
-- Review: agent `yulius-reviewer` (Yulius picks its model) runs `om-code-review` on the diff and
+- Review: the reviewer from the task briefing runs `om-code-review` on the diff and
   the spec; it marks findings own code or pre-existing; the PR answers each. Own code is fixed
   test-first whatever the round limit, never as a follow-up issue (that is request changes); only
   pre-existing bugs, flaky tests the change did not cause and nits left at the round limit become

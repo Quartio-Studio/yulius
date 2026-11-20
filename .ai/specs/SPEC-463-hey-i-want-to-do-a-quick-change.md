@@ -411,9 +411,9 @@ Confirmed against `dev` at dbec951d.
 - **A field refused as it was left is set aside.** It stays open so the person can come back to
   what they typed, and an update from elsewhere waits for it, as before this change. What the
   person does next is theirs to see: the read after a removal, an Add or a sign-in redraws the
-  list, and the field set aside goes with it. A read that landed while a field was in use keeps
-  waiting until no field is open, also when that field is then refused and set aside: that
-  sequence is rare, and the refusal the person has just been shown should not vanish at once.
+  list, and the field set aside goes with it. If the person's own read landed while a field was in use, setting
+  aside the last field in use releases that read. The redraw discards the unsaved refused field
+  and its inline error so the list reflects the completed action (#1195).
   Rejected: redrawing every card but the one with the open field (moving a card that holds the
   focused field tells the field `blur`, which is how half-typed text got saved).
 - **The window losing the focus is not leaving the field.** The browser tells the field `blur`

@@ -17,6 +17,7 @@ import { openDeliveryDialog, notesBanner, checksAccessNote, openRunViewer } from
 import { pageFrame } from './common.js';
 import { BRAND } from '../brand.js';
 import { productionProtectionCard, watchProductionProtection, PROTECTION_ID } from './gitprotection.js';
+import { sandboxHandoffsCard } from '../handoffs.js';
 
 const LIVE_LIMIT = 5;
 const ACTIVITY_LIMIT = 8;
@@ -131,6 +132,8 @@ export function mountGitPage(ctx, sandbox) {
   // overview cannot be read (SPEC-423 PPR-005).
   const protection = h('div', { class: 'dl' });
   frame.body.append(intro, body, protection);
+  // A playground's guest is fenced from the opt-out (SPEC-410 GST-004) and never sets it.
+  if (!(ctx.guest && ctx.guest())) frame.body.append(sandboxHandoffsCard(ctx, sandbox, allows(sandbox.access, 'write')));
   let model = null;
   let showAllActivity = false;
   let showAllNeeds = false;
@@ -191,7 +194,14 @@ export function mountGitPage(ctx, sandbox) {
 
   function drawProtection() {
     // A playground has no GitHub branch to protect.
-    keepFocus(protection, () => setChildren(protection, sb().playground ? null : productionProtectionCard(ctx, sb())));
+    const sandbox = sb();
+    const card = sandbox.playground ? null : productionProtectionCard(ctx, sandbox);
+    const current = protection.firstElementChild;
+    // Replacing an unchanged checkbox between Space keydown and keyup cancels native
+    // activation even if keepFocus focuses the replacement. checked is a live property.
+    if (current && current.isEqualNode(card)
+        && current.querySelector('input').checked === card.querySelector('input').checked) return;
+    keepFocus(protection, () => setChildren(protection, card));
   }
 
   // Messages link to the card with `?show=production-protection`: once the page above it has its

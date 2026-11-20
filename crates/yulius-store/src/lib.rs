@@ -15,7 +15,9 @@ mod ci;
 mod coordination;
 pub mod crypto;
 mod delivery;
+mod digest;
 mod guests;
+mod handoffs;
 mod imports;
 mod instance;
 mod intake;
@@ -53,6 +55,8 @@ const QUEUE_BOUND: usize = 1024;
 pub fn schema_version() -> u32 {
     u32::try_from(MIGRATIONS.len()).unwrap_or(u32::MAX)
 }
+
+const REUSABLE_SANDBOX_PORTS: &str = include_str!("migrations/0074_reusable_sandbox_ports.sql");
 
 /// Ordered migrations; index + 1 is the schema version stored in `PRAGMA user_version`.
 const MIGRATIONS: &[&str] = &[
@@ -192,6 +196,18 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0068_automation_agent_named.sql"),
     // Schema version 69 (SPEC-525).
     include_str!("migrations/0069_reindex_codex_antigravity_sessions.sql"),
+    // SPEC-534. The position is the schema version and 0072 is the reserved file number.
+    include_str!("migrations/0072_pause_legacy_automations.sql"),
+    // Schema version 71 (SPEC-512 DIG-001); 0070 is the reserved file number.
+    include_str!("migrations/0070_end_of_day_digest.sql"),
+    // Schema version 72 (SPEC-535); 0071 is the reserved file number.
+    include_str!("migrations/0071_reindex_session_passages.sql"),
+    REUSABLE_SANDBOX_PORTS,
+    include_str!("migrations/0075_prompt_held_during_turn.sql"),
+    // Schema version 75 (SPEC-512 TGI-001); 0073 is the reserved file number.
+    include_str!("migrations/0073_telegram_intake.sql"),
+    // Schema version 76 (SPEC-512 HOF-001); 0076 is the reserved file number.
+    include_str!("migrations/0076_task_handoffs.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -382,14 +398,28 @@ fn prepare(conn: &mut Connection) -> Result<(), OpenError> {
         .enumerate()
         .skip(usize::try_from(version).unwrap_or(0))
     {
+        // Replacing a parent table with foreign keys enabled would cascade deletion
+        // into its children. SQLite checks the resulting graph before the rebuild commits.
+        let rebuild = *sql == REUSABLE_SANDBOX_PORTS;
+        if rebuild {
+            conn.pragma_update(None, "foreign_keys", "OFF")?;
+        }
         let tx = conn.transaction()?;
         tx.execute_batch(sql)?;
+        if rebuild && tx.prepare("PRAGMA foreign_key_check")?.exists([])? {
+            return Err(OpenError::Corrupt(
+                "invalid references after rebuilding sandbox ports".into(),
+            ));
+        }
         tx.pragma_update(
             None,
             "user_version",
             i64::try_from(index + 1).unwrap_or(i64::MAX),
         )?;
         tx.commit()?;
+        if rebuild {
+            conn.pragma_update(None, "foreign_keys", "ON")?;
+        }
     }
     Ok(())
 }
@@ -467,6 +497,22 @@ mod tests {
                 69,
                 include_str!("migrations/0069_reindex_codex_antigravity_sessions.sql"),
             ),
+            (
+                70,
+                include_str!("migrations/0072_pause_legacy_automations.sql"),
+            ),
+            (71, include_str!("migrations/0070_end_of_day_digest.sql")),
+            (
+                72,
+                include_str!("migrations/0071_reindex_session_passages.sql"),
+            ),
+            (73, REUSABLE_SANDBOX_PORTS),
+            (
+                74,
+                include_str!("migrations/0075_prompt_held_during_turn.sql"),
+            ),
+            (75, include_str!("migrations/0073_telegram_intake.sql")),
+            (76, include_str!("migrations/0076_task_handoffs.sql")),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -475,7 +521,41 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 69, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 76, "a new migration is pinned here too");
+    }
+
+    #[test]
+    fn port_reuse_upgrade_keeps_existing_leases_and_sandbox_children()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut conn = Connection::open_in_memory()?;
+        for sql in &MIGRATIONS[..72] {
+            conn.execute_batch(sql)?;
+        }
+        conn.pragma_update(None, "user_version", 72)?;
+        conn.execute_batch(
+            "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at)
+             VALUES ('u', 'User', 0, 0, 1);
+             INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile,
+                 port_base, port_count, created_by, onboarding_state, created_at, removed_at)
+             VALUES ('s', 'shop', 'org', 'shop', 'dev', '{}', 20000, 20, 'u', 'ready', 1, 2);
+             INSERT INTO permission_cache VALUES ('u', 's', 'admin', 1);",
+        )?;
+        prepare(&mut conn)?;
+        let held: (u16, bool) = conn.query_row(
+            "SELECT port_base, ports_released FROM sandboxes WHERE id='s'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        assert_eq!(held, (20000, false));
+        let owner: String = conn.query_row(
+            "SELECT user_id FROM permission_cache WHERE sandbox_id='s'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(owner, "u");
+        let keys: bool = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
+        assert!(keys);
+        Ok(())
     }
 
     /// SPEC-514 PIN-003: a version-67 database's automations saved as `auto` (drawn for each
@@ -510,6 +590,50 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-534. Upgrading cannot replay a slot whose starter was never recorded.
+    #[tokio::test]
+    async fn legacy_automation_schedules_wait_for_creator_approval()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_app::automations::RunState;
+        use yulius_app::ports::store_ext::AutomationStore as _;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("legacy.db");
+        {
+            let conn = rusqlite::Connection::open(&path)?;
+            for sql in &MIGRATIONS[..69] {
+                conn.execute_batch(sql)?;
+            }
+            conn.pragma_update(None, "user_version", 69)?;
+            conn.execute_batch(
+                "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 0, 0, 1);
+                 INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
+                 INSERT INTO automations (id, sandbox_id, name, cron, utc_offset_minutes, prompt, harness, enabled, created_by, created_via, created_at)
+                 VALUES ('a', 's1', 'Summary', '* * * * *', 0, 'summary', 'claude', 1, 'u1', 'ui', 1);
+                 INSERT INTO automation_runs (automation_id, scheduled_for, state, created_at)
+                 VALUES ('a', 1, 'scheduled', 1), ('a', 2, 'scheduled', 2);
+                 INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, origin, automation_run, created_by, owner_id, created_at, updated_at)
+                 VALUES ('t', 's1', 1, 'Summary', 'summary', 'claude', 'queued', 'automation', 'a@1', 'u1', 'u1', 1, 1);",
+            )?;
+        }
+        let store = SqliteStore::open(&path)?;
+        let saved = store.automation("a").await?.ok_or("automation")?;
+        assert!(!saved.enabled);
+        assert_eq!(saved.prompt, "summary");
+        let runs = store.runs("a", 2).await?;
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].state, RunState::SkippedDisabled);
+        assert!(runs[0].task_id.is_none());
+        assert_eq!(runs[1].state, RunState::TaskCreated);
+        assert_eq!(
+            runs[1]
+                .task_id
+                .as_ref()
+                .map(yulius_domain::ids::TaskId::as_str),
+            Some("t")
+        );
+        Ok(())
+    }
+
     /// SPEC-525: Codex and Antigravity sessions were indexed with no passages (the reader knew
     /// only Claude Code's lines), so a version-68 database indexes them again from the start;
     /// a Claude Code session keeps its index.
@@ -535,46 +659,71 @@ mod tests {
                  INSERT INTO session_chunks (doc_id, line, role, text) VALUES ('d-claude', 1, 'user', 'kept passage'),
                    ('d-codex', 1, 'user', 'stalecodexpassage');",
             )?;
+            // Exercise version 69 in isolation before opening the database with the latest schema.
+            conn.execute_batch(MIGRATIONS[68])?;
+            conn.pragma_update(None, "user_version", 69)?;
+            let index = |id: &str| {
+                conn.query_row(
+                    "SELECT indexed_bytes, indexed_lines, index_full FROM session_docs WHERE id = ?1",
+                    [id],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, bool>(2)?)),
+                )
+            };
+            assert_eq!(index("d-codex")?, (0, 0, false));
+            assert_eq!(index("d-agy")?, (0, 0, false));
+            assert_eq!(index("d-claude")?, (500, 7, false));
+            let matches = |term: &str| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM session_fts WHERE session_fts MATCH ?1",
+                    [term],
+                    |row| row.get::<_, i64>(0),
+                )
+            };
+            let chunks = |id: &str| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM session_chunks WHERE doc_id = ?1",
+                    [id],
+                    |row| row.get::<_, i64>(0),
+                )
+            };
+            assert_eq!(chunks("d-claude")?, 1);
+            assert_eq!(chunks("d-codex")?, 0);
+            assert_eq!(matches("kept")?, 1);
+            assert_eq!(matches("stalecodexpassage")?, 0);
+            // Bring the fixture to dev's schema, including the automation and digest migrations.
+            conn.execute_batch(MIGRATIONS[69])?;
+            conn.execute_batch(MIGRATIONS[70])?;
+            conn.pragma_update(None, "user_version", 71)?;
+            // A full session must become eligible for lazy reindexing too.
+            conn.execute(
+                "UPDATE session_docs SET index_full = 1 WHERE id = 'd-claude'",
+                [],
+            )?;
         }
+        // SPEC-535: an upgrade clears even a passage already indexed by a version-71 server.
         let store = SqliteStore::open(&path)?;
-        let docs = store
-            .session_docs(&yulius_domain::ids::SandboxId::parse("s1")?)
-            .await?;
-        let index = |id: &str| {
-            docs.iter()
-                .find(|doc| doc.id == id)
-                .map(|doc| (doc.indexed_bytes, doc.indexed_lines, doc.index_full))
-        };
-        assert_eq!(index("d-codex"), Some((0, 0, false)));
-        assert_eq!(index("d-agy"), Some((0, 0, false)));
-        assert_eq!(index("d-claude"), Some((500, 7, false)));
-        let kept: i64 = store
-            .call(|c| {
-                c.query_row(
-                    "SELECT COUNT(*) FROM session_chunks WHERE doc_id = 'd-claude'",
-                    [],
-                    |r| r.get(0),
-                )
-                .map_err(db)
-            })
-            .await?;
-        assert_eq!(kept, 1);
-        let (stale, found): (i64, i64) = store
-            .call(|c| {
-                c.query_row(
-                    "SELECT (SELECT COUNT(*) FROM session_chunks WHERE doc_id = 'd-codex'), \
-                     (SELECT COUNT(*) FROM session_fts WHERE session_fts MATCH 'stalecodexpassage')",
-                    [],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .map_err(db)
-            })
-            .await?;
-        assert_eq!(
-            (stale, found),
-            (0, 0),
-            "a passage of theirs goes, from the search too"
+        let sandbox = yulius_domain::ids::SandboxId::parse("s1")?;
+        let docs = store.session_docs(&sandbox).await?;
+        assert_eq!(docs.len(), 3);
+        for doc in docs {
+            assert_eq!(
+                (doc.indexed_bytes, doc.indexed_lines, doc.index_full),
+                (0, 0, false)
+            );
+        }
+        assert!(
+            store
+                .search_session_chunks(&sandbox, "kept", 10)
+                .await?
+                .is_empty()
         );
+        let counts: (i64, i64) = store.call(|conn| {
+            conn.query_row(
+                "SELECT (SELECT COUNT(*) FROM session_chunks), (SELECT COUNT(*) FROM session_fts WHERE session_fts MATCH 'kept')",
+                [], |row| Ok((row.get(0)?, row.get(1)?)),
+            ).map_err(db)
+        }).await?;
+        assert_eq!(counts, (0, 0));
         Ok(())
     }
 

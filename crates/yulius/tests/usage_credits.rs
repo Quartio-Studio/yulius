@@ -1097,6 +1097,7 @@ fn a_request_open_at_a_limit_nothing_says_the_end_of_is_kept() -> TestResult {
             link: None,
             at: 1,
             cause: None,
+            named: Default::default(),
         };
         let RefusedTwice { app, id, .. } = refused_twice(&data, &fake, None, Some(&own)).await?;
         assert_eq!(
@@ -1267,6 +1268,13 @@ async fn first_turn(
     let id = task_of_model(app, &sandbox, &user, "Appended", model).await?;
     ready(app, &id).await?;
     app.send_input(&id, b"hello\r").await?;
+    Ok((id, user, first_turn_transcript(data).await?))
+}
+
+/// Wait for the fake agent's complete transcript record for its first answer.
+pub(crate) async fn first_turn_transcript(
+    data: &Path,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let mut transcript = None;
     wait_for("the first turn", Duration::from_secs(30), || {
         transcript = session_transcript(data, "msg_fake_1");
@@ -1274,7 +1282,88 @@ async fn first_turn(
         async move { written }
     })
     .await?;
-    Ok((id, user, transcript.ok_or("transcript")?))
+    Ok(transcript.ok_or("transcript")?)
+}
+
+/// An interruption of the running turn leaves its queued prompt held. A transcript prompt
+/// after that pause shows the CLI ran the held prompt and ends the hold.
+#[test]
+fn a_queued_prompts_own_record_overtakes_its_hold_after_an_interrupt() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), agent)?;
+        let (id, _user, transcript) = first_turn(&app, &data, Some("claude-opus-5-5")).await?;
+        let run = app.runtime(&id);
+        append_lines(&transcript, "running", &[Line::Prompt, Line::Work])?;
+        let round = run.transcript_rounds();
+        wait_for("the preceding turn", Duration::from_secs(30), || async {
+            run.transcript_rounds() >= round + 2
+        })
+        .await?;
+        app.pause_task(
+            &id,
+            PauseKind::Prompt,
+            Some(AccountId::parse("a-first")?),
+            Some("go on".into()),
+        )
+        .await?;
+        let pause = app
+            .deps
+            .store
+            .open_pause(&id)
+            .await?
+            .ok_or("no prompt hold")?;
+        assert!(pause.during_turn);
+        wait_for(
+            "a later transcript timestamp",
+            Duration::from_secs(2),
+            || async { app.now() > pause.started_at },
+        )
+        .await?;
+        append_lines(&transcript, "interrupt", &[Line::Interrupt])?;
+        let round = run.transcript_rounds();
+        wait_for(
+            "the preceding interruption",
+            Duration::from_secs(30),
+            || async { run.transcript_rounds() >= round + 2 },
+        )
+        .await?;
+        assert_eq!(
+            app.deps.store.open_pause(&id).await?.map(|p| p.id),
+            Some(pause.id)
+        );
+        append_lines(&transcript, "queued", &[Line::Prompt])?;
+        wait_for("the queued prompt's turn", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::Running)
+        })
+        .await?;
+        assert!(app.deps.store.open_pause(&id).await?.is_none());
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// A default task switched to Fable meets its credit limit, with Opus also full here.
+pub(crate) async fn append_switched_fable_limit(app: &App, data: &Path) -> TestResult {
+    let transcript = first_turn_transcript(data).await?;
+    opus_out(app, &["a-first"]).await?;
+    append_lines(
+        &transcript,
+        "switched",
+        &[
+            Line::Prompt,
+            Line::RequestOfFable,
+            Line::CreditsRefusal,
+            Line::TurnDuration,
+        ],
+    )
 }
 
 /// Claude Code paused the goal with no limit before it, which asks a person. Then a check-in
@@ -2242,6 +2331,15 @@ async fn store_usage(app: &App, account: &str, status: AccountStatus, usage: &Va
 /// every few minutes for days, and nobody is asked: the pool takes the task on at the reset.
 #[test]
 fn a_task_refused_again_waits_for_a_known_reset_off_that_subscription() -> TestResult {
+    repeated_refusal(false)
+}
+
+#[test]
+fn a_refresh_that_runs_the_refused_model_ends_the_tasks_exclusion() -> TestResult {
+    repeated_refusal(true)
+}
+
+fn repeated_refusal(refresh_first: bool) -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
     let rt = runtime()?;
@@ -2291,6 +2389,52 @@ fn a_task_refused_again_waits_for_a_known_reset_off_that_subscription() -> TestR
                 && has_status(&app, &id, TaskStatus::WaitingCapacity).await
         })
         .await?;
+
+        if refresh_first {
+            // The actual reading carries the full fallback window, so only Fable is probed.
+            probe.set(
+                "a-first",
+                AccountUsage {
+                    weekly_opus: Some(UsageWindow {
+                        used_percent: Some(100.0),
+                        window_minutes: Some(10_080),
+                        resets_at: Some(resets),
+                    }),
+                    ..usage(10.0, 4 * HOUR, 30.0, 100)
+                },
+            );
+            assert!(refresh(&app, &user, "a-first").await.is_err());
+            let _ = app.resume_round().await;
+            assert!(has_status(&app, &id, TaskStatus::WaitingCapacity).await);
+            probe.answer(
+                "a-first",
+                ModelAnswer {
+                    refused: Some(yulius_domain::usage::ReportedLimit {
+                        scope: yulius_domain::usage::LimitScope::Model(None),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            );
+            refresh(&app, &user, "a-first").await?;
+            // A later window reading shows room but cannot undo the model's refusal.
+            // Placement must still honor the excluded pair until the model itself runs.
+            reading(&app, "a-first").await?;
+            let _ = app.resume_round().await;
+            assert!(has_status(&app, &id, TaskStatus::WaitingCapacity).await);
+            probe.answer("a-first", ModelAnswer::default());
+            refresh(&app, &user, "a-first").await?;
+            let _ = app.resume_round().await;
+            assert_eq!(
+                run_accounts(&app, &id)
+                    .await
+                    .get(2)
+                    .and_then(Option::as_deref),
+                Some("a-first")
+            );
+            stop(&app, &id).await?;
+            return Ok(());
+        }
 
         // Its next reading shows room again, as each one will: the task stays off it.
         reading(&app, "a-first").await?;
@@ -2355,6 +2499,8 @@ fn session_transcript(data: &Path, marker: &str) -> Option<PathBuf> {
 enum Line {
     /// A prompt someone typed.
     Prompt,
+    /// The person interrupted the running turn.
+    Interrupt,
     /// The refusal of a model for its usage credits, as Claude Code 2.1.311 writes it (task
     /// #438's record of 2026-11-11): no window, no reset.
     CreditsRefusal,
@@ -2403,6 +2549,10 @@ fn append_lines(transcript: &Path, tag: &str, lines: &[Line]) -> TestResult {
             Line::Prompt => (
                 "user",
                 json!({"message": {"role": "user", "content": "go on"}}),
+            ),
+            Line::Interrupt => (
+                "user",
+                json!({"message": {"role": "user", "content": "[Request interrupted by user]"}}),
             ),
             Line::CreditsRefusal => (
                 "assistant",

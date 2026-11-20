@@ -298,9 +298,20 @@ steps are skipped). [Git delivery](git.md) defines promotion checks and post-mer
 - Build cache lock: another Cargo command may be installing/building; poll the live
   process rather than starting duplicate installers.
 - Missing linker on macOS: install Xcode Command Line Tools; on Ubuntu install
-  `build-essential`, `pkg-config` and `libssl-dev` if a tooling dependency needs them.
+  `gcc`, `g++`, `make`, `dpkg-dev` and `libc6-dev`. Use `apt-get install --no-install-recommends`
+  on Ubuntu 26.04 because `dpkg-dev` recommends `build-essential`, which selects uutils.
+  Install `pkg-config` and `libssl-dev` if a tooling dependency needs them.
 - Deliberately skipped work: record the exact failed command and its prerequisite.
 
 ## Mutation testing
 
 Mutation testing runs beside the review: when you ask for a pull request's first review, start the project's mutation command in the background and let the reviewer read meanwhile; when it ends, put its summary line in the spec's Evidence and fix each missed mutant test-first before the merge. After a later round's fix, run it on that fix's lines alone. A project without one undoes by hand the few lines its new tests are meant to hold and says what failed. The reviewer may undo a single line it doubts and runs no campaign of its own. Nobody writes a mutation script by hand. A test that cannot fail is still fixed in the same pull request (ADR-0141). Here the command is `scripts/dev mutants`.
+
+The unmutated baseline runs the same workspace tests and nextest filter as each mutant.
+A baseline failure stops the campaign. Read `target/mutants/mutants.out/log/baseline.log`
+for the failing command and test.
+
+Summaries recorded before the fix for #1364 can overstate the number caught. If a mutant log
+only shows the xtask missing-key test failing in the Git-free copy, the run provides no
+evidence that a test detected that mutation. Rerun the affected change with the corrected
+runner to establish coverage. [ADR-0347](../decisions/0347-mutation-testing-runs-once-per-pull-request.md)

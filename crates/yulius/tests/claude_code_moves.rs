@@ -521,6 +521,7 @@ mod moves {
 
     struct Server {
         app: Arc<App>,
+        port: u16,
         installed: Arc<Installed>,
         probe: Arc<ScriptedUsage>,
         sandbox: SandboxId,
@@ -582,7 +583,7 @@ mod moves {
             config.claude_code_queue_record_ms = 0;
             configure(config);
         };
-        let (app, _port) = start_with(data, &fake, options, 0, probe.clone(), configure).await?;
+        let (app, port) = start_with(data, &fake, options, 0, probe.clone(), configure).await?;
         let installed = Arc::new(Installed(Mutex::new(Some(v(gets)))));
         assert!(app.set_agent_cli(installed.clone() as Arc<_>, Channel::Latest));
         let (sandbox, user) = seed(&app, data, &["a-first"]).await?;
@@ -590,6 +591,7 @@ mod moves {
         ready(&app, &id).await?;
         Ok(Server {
             app,
+            port,
             installed,
             probe,
             sandbox,
@@ -1077,7 +1079,6 @@ mod moves {
         h: &crate::support::Harness,
         prompt: Option<&str>,
     ) -> Result<(axum::http::StatusCode, serde_json::Value), Box<dyn std::error::Error>> {
-        use tower::ServiceExt as _;
         let (event, body) = match prompt {
             Some(text) => (
                 "UserPromptSubmit",
@@ -1090,6 +1091,15 @@ mod moves {
                     "stop_hook_active": false}),
             ),
         };
+        send_clock_hook(h, event, &body).await
+    }
+
+    async fn send_clock_hook(
+        h: &crate::support::Harness,
+        event: &str,
+        body: &serde_json::Value,
+    ) -> Result<(axum::http::StatusCode, serde_json::Value), Box<dyn std::error::Error>> {
+        use tower::ServiceExt as _;
         let request = axum::http::Request::post(format!("/hooks/claude/{event}"))
             .header("authorization", format!("Bearer {CLOCK_TOKEN}"))
             .header("content-type", "application/json")
@@ -1367,6 +1377,73 @@ mod moves {
         until_decided(&flag).await?;
         assert!(probed.load(Ordering::SeqCst), "the session was looked at");
         assert!(h.app.claude_move_cooling(&task), "the restart was tried");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn scheduled_submit_preserves_a_draft_and_an_open_question() -> TestResult {
+        use axum::http::StatusCode;
+        use std::io::Write as _;
+        use yulius_domain::time::format_rfc3339;
+
+        let (h, task) = on_the_test_clock(false).await?;
+        let sandbox = h._dir.path().canonicalize()?.join("sandboxes/s1");
+        let cwd = sandbox.join("worktrees").join(task.as_str());
+        let session = "scheduled-fixture";
+        let path = h
+            .app
+            .deps
+            .harness
+            .claude_transcript(&sandbox.join("home"), &cwd, session);
+        std::fs::create_dir_all(path.parent().ok_or("transcript directory")?)?;
+        let mut file = std::fs::File::create(&path)?;
+        let text = "scheduled check of the build";
+        let asked = yulius_app::needs_you::NeedsYouRecord {
+            action: "Choose a release date".into(),
+            happened: None,
+            problem: None,
+            decision: true,
+            link: None,
+            at: h.app.now().0,
+            cause: None,
+            named: Default::default(),
+        };
+        h.app
+            .deps
+            .store
+            .set_task_needs_you(&task, Some(&asked), h.app.now())
+            .await?;
+        h.app.record_typing(&task, &UserId::parse("u-alice")?);
+        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+        let at = format_rfc3339(h.app.now());
+        for record in [
+            serde_json::json!({"type":"queue-operation","operation":"enqueue","content":text,"sessionId":session,"timestamp":at}),
+            serde_json::json!({"type":"queue-operation","operation":"dequeue","sessionId":session,"timestamp":at}),
+            serde_json::json!({"type":"system","subtype":"scheduled_task_fire","prompt":text,"uuid":"fire","sessionId":session,"timestamp":at}),
+        ] {
+            writeln!(file, "{record}")?;
+        }
+        let submit = |id: &str| {
+            serde_json::json!({"hook_event_name":"UserPromptSubmit",
+            "prompt":text, "prompt_id":id,"session_id":session,"transcript_path":path,"cwd":cwd,"permission_mode":"default"})
+        };
+        let (status, _) = send_clock_hook(&h, "UserPromptSubmit", &submit("scheduled")).await?;
+        assert_eq!(status, StatusCode::OK);
+        assert!(h.app.has_draft(&task), "scheduled work emptied the box");
+        assert!(
+            h.app.deps.store.task_needs_you(&task).await?.is_some(),
+            "the question still needs an answer"
+        );
+
+        let user = serde_json::json!({"type":"user","isMeta":true,"promptSource":"system",
+            "promptId":"scheduled","sessionId":session,"scheduledFireId":"fire",
+            "message":{"role":"user","content":text}});
+        writeln!(file, "{user}")?;
+        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+        let (status, _) = send_clock_hook(&h, "UserPromptSubmit", &submit("typed")).await?;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!h.app.has_draft(&task), "the person sent the same text");
+        assert!(h.app.deps.store.task_needs_you(&task).await?.is_none());
         Ok(())
     }
 
@@ -2059,6 +2136,77 @@ mod moves {
         Ok(())
     }
 
+    #[test]
+    fn scheduled_hand_over_preserves_the_draft_and_achieved_goal() -> TestResult {
+        use std::io::Write as _;
+        use yulius_domain::task::Activity;
+        let (_dir, data) = data_dir()?;
+        let may_end = data.join("turn-may-end");
+        let turn_starts = data.join("queued-turn-starts");
+        let rt = runtime()?;
+        rt.block_on(async {
+            let options = FakeAgentOptions {
+                queue_turn_file: Some(turn_starts.clone()),
+                ..queueing(&may_end)
+            };
+            let s = server(
+                &data,
+                &data.join("version"),
+                options,
+                TaskMode::Prompt,
+                "2.1.311",
+            )
+            .await?;
+            s.app.send_input(&s.id, b"one\r").await?;
+            says(&s, "TURN HELD").await?;
+            s.app
+                .send_input(&s.id, b"/scheduled check the build\r")
+                .await?;
+            says(&s, "QUEUED: check the build").await?;
+            std::fs::write(&may_end, "")?;
+            says(&s, "QUEUED TURN HELD").await?;
+            // Claude's goal evaluator writes its verdict after the first Stop.
+            let task = s.app.deps.store.task(&s.id).await?.ok_or("task")?;
+            let run = s.app.deps.store.live_attempt(&s.id).await?.ok_or("run")?;
+            let home = data.join("sandboxes").join(s.sandbox.as_str()).join("home");
+            let path = s.app.deps.harness.claude_transcript(
+                &home,
+                Path::new(task.worktree_path.as_deref().ok_or("worktree")?),
+                run.provider_session_id.as_deref().ok_or("session")?,
+            );
+            let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
+            writeln!(
+                file,
+                "{}",
+                serde_json::json!({"type":"attachment",
+                "attachment":{"type":"goal_status","condition":"build checked","met":true}})
+            )?;
+            wait_for("the achieved goal", Duration::from_secs(30), || async {
+                crate::first_message::activity(&s.app, &s.id).await == Some(Activity::Done)
+            })
+            .await?;
+            s.app.record_typing(&s.id, &s.user);
+            assert!(s.app.has_draft(&s.id));
+            std::fs::write(&turn_starts, "")?;
+            says(&s, "ECHO: check the build").await?;
+            assert!(
+                s.app.has_draft(&s.id),
+                "the scheduled hook emptied a person's draft"
+            );
+            wait_for(
+                "the achieved goal after the scheduled turn",
+                Duration::from_secs(30),
+                || async {
+                    crate::first_message::activity(&s.app, &s.id).await == Some(Activity::Done)
+                },
+            )
+            .await?;
+            stop(&s.app, &s.id).await
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
     /// SPEC-471 CCQ-004 (AC7): Claude Code writes a waiting prompt's record once its hook
     /// returned, and the record reaches the file a moment later; here the agent writes it
     /// only when the test says so, and the turn ends right after the prompt's hook. Nothing
@@ -2334,6 +2482,167 @@ mod moves {
         Ok(())
     }
 
+    #[derive(Clone, Copy)]
+    enum GoalMove {
+        Manual,
+        Restricted,
+        Pool,
+        Limit,
+    }
+
+    #[test]
+    fn a_manual_move_restores_the_prompt_goal_before_stop() -> TestResult {
+        prompt_goal_after_move(GoalMove::Manual)
+    }
+
+    #[test]
+    fn a_manual_move_with_restricted_hooks_releases_the_silent_evaluator() -> TestResult {
+        prompt_goal_after_move(GoalMove::Restricted)
+    }
+
+    #[test]
+    fn a_pool_move_restores_the_prompt_goal_before_stop() -> TestResult {
+        prompt_goal_after_move(GoalMove::Pool)
+    }
+
+    #[test]
+    fn a_limit_move_restores_the_prompt_goal_before_stop() -> TestResult {
+        prompt_goal_after_move(GoalMove::Limit)
+    }
+
+    fn prompt_goal_after_move(cause: GoalMove) -> TestResult {
+        let (_dir, data) = data_dir()?;
+        let rt = runtime()?;
+        let reattach = rt.block_on(async {
+            let boundary = data.join("may-end");
+            std::fs::write(&boundary, "")?;
+            let options = FakeAgentOptions {
+                forget_goal: matches!(cause, GoalMove::Restricted),
+                turn_hold_file: Some(boundary.clone()),
+                answers_first_message: true,
+                goal_verdict: Some("none"),
+                limit_after: matches!(cause, GoalMove::Limit).then_some(3),
+                ..hooked()
+            };
+            let s = server(
+                &data,
+                &data.join("version"),
+                options,
+                TaskMode::Prompt,
+                "2.1.311",
+            )
+            .await?;
+            settled(&s, Activity::Waiting).await?;
+            add_account(&s.app, "b-second").await?;
+            s.app
+                .send_input(&s.id, b"/goal keep the header blue\r")
+                .await?;
+            goal_read(&s).await?;
+            settled(&s, Activity::Waiting).await?;
+            match cause {
+                GoalMove::Manual | GoalMove::Restricted => {
+                    s.app
+                        .switch_task(
+                            &s.ctx().await?,
+                            s.id.as_str(),
+                            &yulius_contracts::api::tasks::ContinueTask {
+                                account_id: Some("b-second".into()),
+                            },
+                        )
+                        .await?;
+                }
+                GoalMove::Pool => {
+                    // Change the reading during the turn, so its Stop decides the rotation.
+                    std::fs::remove_file(&boundary)?;
+                    s.app.send_input(&s.id, b"rotate at Stop\r").await?;
+                    settled(&s, Activity::Working).await?;
+                    s.probe.set("a-first", usage(99.0, HOUR, 30.0, 100));
+                    refresh(&s.app, &s.user, "a-first").await?;
+                    std::fs::write(&boundary, "")?;
+                }
+                GoalMove::Limit => s.app.send_input(&s.id, b"reach limit\r").await?,
+            }
+            second_run_live(&s).await?;
+            wait_for("the new terminal", Duration::from_secs(30), || async {
+                let shown = screen(&s.app, &s.id);
+                shown.contains("FAKE-AGENT READY") && !shown.contains("GOAL SET")
+            })
+            .await?;
+            let run = s
+                .app
+                .deps
+                .store
+                .live_attempt(&s.id)
+                .await?
+                .ok_or("live run")?;
+            assert_eq!(
+                run.account_id.as_ref().map(|account| account.as_str()),
+                Some("b-second")
+            );
+            assert!(
+                s.app.goal_is_open(&s.id),
+                "resumed prompt goal before any verdict"
+            );
+
+            // /size reads terminal dimensions without starting a turn. Seeing its answer proves
+            // the preceding work turn's synchronous Stop returned with no new verdict or turn record.
+            s.app.send_input(&s.id, b"/work 1 resumed\r/size\r").await?;
+            wait_for(
+                "the resumed clean Stop to return",
+                Duration::from_secs(30),
+                || async {
+                    screen(&s.app, &s.id)
+                        .lines()
+                        .any(|line| line.trim_start().starts_with("SIZE "))
+                },
+            )
+            .await?;
+            assert_eq!(
+                state(&s.app, &s.id).await,
+                Some((TaskStatus::Running, Some(Activity::Working)))
+            );
+            assert_eq!(
+                screen(&s.app, &s.id).contains("GOAL RESTORED"),
+                !matches!(cause, GoalMove::Restricted)
+            );
+            if matches!(cause, GoalMove::Restricted) {
+                // The evaluator is silent. The normal verdict deadline releases the turn.
+                settled(&s, Activity::Waiting).await?;
+            }
+            if matches!(cause, GoalMove::Manual) {
+                return Ok::<_, Box<dyn std::error::Error>>(Some((s.port, s.id)));
+            }
+            stop(&s.app, &s.id).await?;
+            Ok(None)
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        if let Some((port, id)) = reattach {
+            let rt = runtime()?;
+            rt.block_on(async {
+                let fake = locate_fake_agent().ok_or("fake-agent")?;
+                let (app, _) = crate::first_message::start(
+                    &data,
+                    &fake,
+                    hooked(),
+                    port,
+                    Arc::new(ScriptedUsage::default()),
+                )
+                .await?;
+                app.reconcile().await?;
+                wait_for(
+                    "the resumed run’s transcript replay",
+                    Duration::from_secs(30),
+                    || async { app.runtime(&id).transcript_rounds() >= 2 },
+                )
+                .await?;
+                assert!(app.goal_is_open(&id), "replay with no new goal record");
+                stop(&app, &id).await
+            })?;
+            rt.shutdown_timeout(Duration::from_secs(5));
+        }
+        Ok(())
+    }
+
     /// A prompt-mode session on 2.1.311 while runs get 2.1.322, in which a person sets a goal
     /// of their own and whose goal evaluator gives no verdict; with `code` changed in its
     /// worktree and no spec, so the gate blocks its turn's end. With `may_end` the goal's turn
@@ -2400,12 +2709,8 @@ mod moves {
         (runs(s).await, goals, s.app.goal_is_open(&s.id))
     }
 
-    /// SPEC-468 CCF-001 (review round 3, minor 1): Yulius types nothing into a prompt-mode
-    /// session it restarts and reads a goal only from the new run's lines, so it could not
-    /// follow a goal its person set there across a restart; and the fake agent, unlike the
-    /// Claude Code binaries read (2.1.292, 2.1.311, 2.1.322), forgets a goal when it is
-    /// resumed. A turn that closes with that goal open and no verdict leaves the task its
-    /// person's turn: the session is not restarted idle, so the goal stays in force and known.
+    /// SPEC-468 CCF-001: a version upgrade waits while a person's goal is open. A turn that
+    /// closes with that goal open and no verdict leaves the task its person's turn.
     #[test]
     fn a_persons_own_goal_keeps_an_idle_prompt_session_where_it_is() -> TestResult {
         let (_dir, data) = data_dir()?;

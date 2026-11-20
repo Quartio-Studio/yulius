@@ -234,6 +234,11 @@ pub struct AttachedRun {
 /// The process-host adapter.
 #[async_trait]
 pub trait SessionHost: Send + Sync {
+    /// Whether every loopback port of a removed sandbox can be bound. Unknown stays reserved.
+    fn loopback_ports_idle(&self, _range: std::ops::RangeInclusive<u16>) -> bool {
+        false
+    }
+
     /// Writes planned files, spawns a detached host for the run and waits until it is serving.
     async fn spawn(
         &self,

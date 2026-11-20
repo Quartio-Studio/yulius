@@ -498,6 +498,7 @@ async fn a_held_capacity_resume_keeps_its_pause() -> TestResult {
             task_id: paused.id.clone(),
             kind: PauseKind::Limit,
             account_id: None,
+            during_turn: false,
             continuation: Some("go on with the migration".into()),
             started_at: h.app.now(),
             ended_at: None,

@@ -409,6 +409,22 @@ pub trait HarnessPort: Send + Sync {
     fn plan_cockpit(&self, launch: &CockpitLaunch) -> AppResult<LaunchPlan>;
     /// Path of a Claude session transcript.
     fn claude_transcript(&self, sandbox_home: &Path, worktree: &Path, session_id: &str) -> PathBuf;
+    /// Reads the last goal status from the conversation's own complete records.
+    ///
+    /// # Errors
+    /// I/O errors opening or reading the transcript below its sandbox anchor.
+    fn last_claude_goal(&self, anchor: &Path, path: &Path) -> AppResult<Option<GoalOutcome>>;
+
+    /// Whether the authenticated session's native transcript identifies a scheduled submit.
+    /// The file is opened inside its sandbox anchor. Reads a bounded tail on the blocking pool.
+    fn submit_origin(
+        &self,
+        file: std::fs::File,
+        session: &str,
+        id: &str,
+        prompt: &str,
+        run_to_submit: std::ops::RangeInclusive<Timestamp>,
+    ) -> yulius_domain::harness::SubmitOrigin;
     /// Steps a Claude session's transcript back over a usage limit (SPEC-034 LIM-001); `true`
     /// when it rewrote the file. Blocking file I/O bounded by the transcript's size: callers run
     /// it off the async runtime (SPEC-072 LRS-003).

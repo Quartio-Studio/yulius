@@ -537,6 +537,91 @@ async fn stop_gate_blocks_three_times_then_needs_attention() -> TestResult {
     Ok(())
 }
 
+/// A registered link is found by its path, but the Stop gate needs a regular file.
+#[tokio::test]
+async fn the_stop_gate_explains_a_linked_spec() -> TestResult {
+    let f = fixture().await?;
+    std::fs::create_dir_all(f.worktree.join("docs/specs"))?;
+    std::fs::write(f.worktree.join("docs/specs/real.md"), "# Draft\n")?;
+    std::os::unix::fs::symlink("real.md", f.worktree.join("docs/specs/checkout.md"))?;
+    std::fs::write(f.worktree.join("api.rs"), "fn main() {}\n")?;
+    let body = hook(&f, "Stop", json!({})).await?;
+    let reason = body["reason"]
+        .as_str()
+        .ok_or("a linked spec blocks the Stop")?;
+    assert!(
+        reason.contains("link") && reason.contains("regular file"),
+        "{reason}"
+    );
+    Ok(())
+}
+
+/// A Plan may cross the read bound, even in the middle of a UTF-8 character. No gate
+/// judges a prefix and a refresh preserves the previously recorded plan.
+#[tokio::test]
+async fn oversized_specs_are_reported_and_never_sync_partial_steps() -> TestResult {
+    let f = fixture().await?;
+    let dir = f.worktree.join("docs/specs");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("checkout.md");
+    let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
+    let header = "---\nyulius-task: t-main\nstatus: draft\n---\n# Checkout\n\n## Plan\n\n";
+    std::fs::write(&path, format!("{header}- [ ] Original plan\n"))?;
+    assert!(f.h.app.sync_steps_from_spec(&task).await?);
+    std::fs::write(f.worktree.join("api.rs"), "fn main() {}\n")?;
+    let mut prefix = format!("{header}- [ ] Incomplete replacement\n");
+    prefix.push_str(&" ".repeat(256 * 1024 - 1 - prefix.len()));
+    for tail in ["x\n- [ ] Past the cut\n", "é\n- [ ] Past the cut\n"] {
+        std::fs::write(&path, format!("{prefix}{tail}"))?;
+        let sync = f.h.app.sync_steps_from_spec(&task).await;
+        assert!(
+            sync.is_err_and(|e| e.to_string().contains("too large")),
+            "sync must report the read limit"
+        );
+        let steps = f.h.app.deps.store.steps(&f.task).await?;
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].title, "Original plan");
+        let body = hook(&f, "Stop", json!({})).await?;
+        let reason = body["reason"]
+            .as_str()
+            .ok_or("oversized spec blocks the Stop")?;
+        assert!(reason.contains("too large"), "{reason}");
+        assert_eq!(
+            pre_tool_use(&f, "Edit", json!({"file_path": file_of(&f, "api.rs")})).await?,
+            None
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_edit_gate_judges_an_exactly_full_spec_and_a_removed_spec() -> TestResult {
+    let f = fixture().await?;
+    std::fs::create_dir_all(f.worktree.join("docs/specs"))?;
+    let path = f.worktree.join("docs/specs/checkout.md");
+    let file = file_of(&f, "api.rs");
+    std::fs::write(&path, vec![b' '; 256 * 1024])?;
+    assert!(
+        pre_tool_use(&f, "Edit", json!({"file_path": file}))
+            .await?
+            .is_some(),
+        "the whole file fits and has no Plan"
+    );
+    std::fs::write(&path, "## Plan\n\n- [ ] This plan would admit the edit\n")?;
+    let removed = path.clone();
+    yulius_app::race::on(yulius_app::race::Point::RepoFileRead, &path, move || {
+        assert!(std::fs::remove_file(removed).is_ok());
+    });
+    assert!(
+        pre_tool_use(&f, "Edit", json!({"file_path": file}))
+            .await?
+            .is_some(),
+        "the registered spec vanished before the read"
+    );
+    assert!(!path.exists());
+    Ok(())
+}
+
 /// The gate gives up on the fixture's task: code changed without a spec, three blocks, then a
 /// Stop that passes and flags the task.
 async fn gate_gives_up(f: &Fixture) -> TestResult {
@@ -1340,9 +1425,13 @@ async fn the_spec_sync_waits_for_the_steps_lock_and_keeps_a_concurrent_update() 
 async fn a_renamed_spec_is_followed_by_its_frontmatter() -> TestResult {
     let f = fixture().await?;
     std::fs::write(f.worktree.join("api.rs"), "fn main() {}\n")?;
-    std::fs::create_dir_all(f.worktree.join("docs/specs"))?;
     std::fs::write(
-        f.worktree.join("docs/specs/renamed.md"),
+        f.worktree.join("yulius.toml"),
+        "[docs]\nspecs_dir = \"docs/plans\"\n",
+    )?;
+    std::fs::create_dir_all(f.worktree.join("docs/plans"))?;
+    std::fs::write(
+        f.worktree.join("docs/plans/renamed.md"),
         "---\nyulius-task: t-main\nstatus: in-progress\n---\n# Checkout API\n\n\
          ## Goal\n\nCustomers can pay.\n\n## Context\n\nNo checkout yet.\n\n\
          ## Requirements\n\n- Card payments.\n\n## Plan\n\n- [x] Write spec\n- [ ] Implement API\n\n\
@@ -1352,7 +1441,7 @@ async fn a_renamed_spec_is_followed_by_its_frontmatter() -> TestResult {
     let body = hook(&f, "Stop", json!({})).await?;
     assert!(body.is_null(), "the renamed spec is found: {body:?}");
     let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
-    assert_eq!(task.spec_path.as_deref(), Some("docs/specs/renamed.md"));
+    assert_eq!(task.spec_path.as_deref(), Some("docs/plans/renamed.md"));
     Ok(())
 }
 
@@ -2115,4 +2204,60 @@ async fn late_agy_stop(exhausted_gate: bool) -> TestResult {
     stop.await??;
     assert_eq!(agy_brief(&f).await?["activity"], "working");
     Ok(())
+}
+
+/// A viewer key may arrive after a submit reaches the server, while its token is being
+/// resolved to a task. The fixture clock keeps both events in the same millisecond.
+#[test]
+fn a_key_during_submit_context_lookup_keeps_its_mark() -> TestResult {
+    use futures::FutureExt;
+    use std::time::Duration;
+    use yulius_contracts::hooks::{HookInput, events};
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(1)
+        .build()?
+        .block_on(async {
+            let f = fixture().await?;
+            let app = &f.h.app;
+            let run = app.agent_context(TOKEN).await?.attempt.run_dir;
+            std::fs::create_dir_all(&run)?;
+            let mark = Path::new(&run).join("person-typed");
+            let user = UserId::parse("u1")?;
+            app.record_typing(&f.task, &user);
+
+            // Token lookup submits its SQLite job on the blocking pool. Hold the only
+            // worker until the hook has entered and the later viewer key is recorded.
+            let (ready, started) = tokio::sync::oneshot::channel();
+            let (release, wait) = std::sync::mpsc::channel();
+            let worker = tokio::task::spawn_blocking(move || {
+                let _ = ready.send(());
+                wait.recv_timeout(Duration::from_secs(5))
+            });
+            tokio::time::timeout(Duration::from_secs(5), started).await??;
+            let input = HookInput {
+                prompt: Some("old text".into()),
+                ..Default::default()
+            };
+            let mut submit = std::pin::pin!(app.hook_event(
+                TOKEN,
+                "claude",
+                events::USER_PROMPT_SUBMIT,
+                &input,
+                None
+            ));
+            assert!(submit.as_mut().now_or_never().is_none());
+            app.record_typing(&f.task, &user);
+            std::fs::write(&mark, app.now().0.to_string())?;
+            release.send(())?;
+            worker.await??;
+            submit.await?;
+            assert!(
+                mark.is_file(),
+                "the submit erased a key received during lookup"
+            );
+            assert!(app.has_draft(&f.task));
+            Ok(())
+        })
 }

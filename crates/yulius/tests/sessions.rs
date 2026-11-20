@@ -216,6 +216,159 @@ async fn imported_doc(
     Ok(path)
 }
 
+/// The second server has only the SQLite offsets and the same transcript on disk.
+#[tokio::test]
+async fn session_search_redacts_a_dotenv_result_appended_after_restart() -> TestResult {
+    use std::io::Write as _;
+    let dir = tempfile::tempdir()?;
+    let start = || -> Result<support::Harness, Error> {
+        let data = dir.path().to_path_buf();
+        support::harness_with(support::HarnessOptions {
+            store: Some(yulius_store::SqliteStore::open(&data.join("index.sqlite"))?),
+            configure: Some(Box::new(move |config| config.data_dir = data)),
+            ..Default::default()
+        })
+    };
+    let h = start()?;
+    support::seed_github_user(&h, "u1", "alice").await?;
+    let sandbox = support::seed_sandbox(&h, "s1", "studio", "u1").await?.id;
+    let call = line(&json!({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": "r1", "name": "Read", "input": {"file_path": ".env"}}
+    ]}}));
+    let path = imported_doc(
+        &h.store,
+        dir.path(),
+        &sandbox,
+        "indexed",
+        "Fixture",
+        &UserId::parse("u1")?,
+        &call,
+    )
+    .await?;
+    h.app.refresh_session_index(&sandbox).await?;
+    let before = h.store.session_doc("indexed").await?.ok_or("document")?;
+    assert_eq!(
+        (before.indexed_bytes, before.indexed_lines),
+        (u64::try_from(call.len())?, 1)
+    );
+    drop(h);
+
+    let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
+    writeln!(
+        file,
+        "{}",
+        json!({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "r1", "content": "REGION=violetfixture"}
+        ]}})
+    )?;
+    let h = start()?;
+    h.app.refresh_session_index(&sandbox).await?;
+    let hits = h
+        .store
+        .search_session_chunks(&sandbox, "REGION", 10)
+        .await?;
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].line, 1);
+    assert!(hits[0].snippet.contains("[REDACTED:"));
+    assert!(
+        h.store
+            .search_session_chunks(&sandbox, "violetfixture", 10)
+            .await?
+            .is_empty()
+    );
+    Ok(())
+}
+
+/// A replay that discovers a rewrite at the end of a large prefix uses the refresh budget.
+#[tokio::test]
+async fn stale_index_offsets_recover_within_the_refresh_budget() -> TestResult {
+    use std::io::{Seek as _, SeekFrom, Write as _};
+    use yulius_app::ports::session_docs::{IndexAdvance, SessionChunk};
+    use yulius_app::session_docs::INDEX_BYTES_PER_REFRESH;
+
+    let h = harness()?;
+    support::seed_github_user(&h, "u1", "alice").await?;
+    let sandbox = support::seed_sandbox(&h, "s1", "studio", "u1").await?.id;
+    let author = UserId::parse("u1")?;
+    let data = &h.app.config.data_dir;
+    let path = imported_doc(&h.store, data, &sandbox, "a", "Rewritten", &author, "").await?;
+    imported_doc(
+        &h.store,
+        data,
+        &sandbox,
+        "b",
+        "Next",
+        &author,
+        &imported_transcript("second"),
+    )
+    .await?;
+    let offset = INDEX_BYTES_PER_REFRESH;
+    h.store
+        .append_session_chunks(
+            "a",
+            &[SessionChunk {
+                line: 0,
+                role: "tool".into(),
+                text: "stale".into(),
+            }],
+            IndexAdvance {
+                expected_bytes: 0,
+                bytes: offset,
+                lines: 1,
+                full: false,
+                size: offset,
+                at: Timestamp(51),
+            },
+        )
+        .await?;
+    let mut file = std::fs::OpenOptions::new().write(true).open(path)?;
+    file.seek(SeekFrom::Start(offset))?;
+    writeln!(file)?;
+    write!(file, "{}", imported_transcript("recovered"))?;
+    h.app.refresh_session_index(&sandbox).await?;
+    assert_eq!(
+        h.store
+            .session_doc("a")
+            .await?
+            .ok_or("rewritten")?
+            .indexed_bytes,
+        0
+    );
+    assert!(
+        h.store
+            .search_session_chunks(&sandbox, "stale", 10)
+            .await?
+            .is_empty()
+    );
+    assert_eq!(
+        h.store.session_doc("b").await?.ok_or("next")?.indexed_bytes,
+        0,
+        "failed replay spent the budget"
+    );
+
+    h.app.refresh_session_index(&sandbox).await?; // The oversized first line uses this batch.
+    h.app.refresh_session_index(&sandbox).await?; // Replays that line and indexes the new records.
+    assert!(
+        !h.store
+            .search_session_chunks(&sandbox, "recovered", 10)
+            .await?
+            .is_empty()
+    );
+    assert_eq!(
+        h.store.session_doc("b").await?.ok_or("next")?.indexed_bytes,
+        0,
+        "successful replay spent the budget"
+    );
+    h.app.refresh_session_index(&sandbox).await?;
+    assert!(
+        !h.store
+            .search_session_chunks(&sandbox, "second", 10)
+            .await?
+            .is_empty()
+    );
+    Ok(())
+}
+
 async fn get(w: &World, creds: &Creds, path: &str) -> Result<support::Resp, Error> {
     call(&w.h.router, Method::GET, path, None, creds).await
 }
@@ -241,6 +394,131 @@ async fn import(w: &World, creds: &Creds, repo: &str) -> Result<Value, Error> {
     .await?;
     assert_eq!(resp.status, StatusCode::CREATED, "{:?}", resp.body);
     Ok(resp.body)
+}
+
+/// The session ID arrives before Codex writes its dated rollout. Each reader must discover
+/// the file even when the other reader has not been called since it appeared (#1454).
+async fn late_codex_rollout(search_first: bool) -> TestResult {
+    let w = World::new("org").await?;
+    let (user, creds) = w.user("alice", false).await?;
+    ready_repo(&w, "ready")?;
+    w.grant("alice", "ready", "admin");
+    let ready = import(&w, &creds, "Quartio-Studio/ready").await?;
+    let sid = SandboxId::parse(text(&ready["id"]))?;
+    let task = insert_task(
+        &w.h.store,
+        &sid,
+        "t-late",
+        "Late rollout",
+        &user.id,
+        TaskStatus::Closed,
+    )
+    .await?;
+    let session = "0199aaaa-0000-7000-8000-000000000001";
+    w.h.store
+        .upsert_provider_session(&ProviderSessionRecord {
+            id: "p-late".into(),
+            sandbox_id: sid.clone(),
+            task_id: task.id,
+            harness: Harness::Codex,
+            session_id: session.into(),
+            transcript_ref: None,
+            origin: "native".into(),
+            first_seen: Timestamp(10),
+            last_seen: Timestamp(20),
+        })
+        .await?;
+    let list_url = format!("/api/sandboxes/{sid}/sessions");
+    let list = get(&w, &creds, &list_url).await?;
+    assert_eq!(list.status, StatusCode::OK);
+    let id = list.body["sessions"][0]["id"]
+        .as_str()
+        .ok_or("document ID")?;
+    let page_url = format!("/api/sessions/{id}/transcript");
+    let empty = get(&w, &creds, &page_url).await?;
+    assert_eq!(empty.status, StatusCode::OK);
+    assert_eq!(empty.body["entries"], json!([]));
+
+    let sessions = w
+        .data_dir()
+        .join("sandboxes")
+        .join(sid.as_str())
+        .join("codex/sessions");
+    let pending = w.h.store.session_doc(id).await?.ok_or("pending document")?;
+    assert_eq!(
+        Path::new(&pending.transcript_path),
+        sessions.join(format!("missing-{session}.jsonl"))
+    );
+    // Session IDs are scoped by harness. A matching Codex rollout does not supersede
+    // either other harness's transcript or add its text to their search results.
+    let mut other_docs = Vec::new();
+    for harness in [Harness::ClaudeCode, Harness::Antigravity] {
+        let other = SessionDocRecord {
+            id: format!("doc-{}", harness.as_str()),
+            harness,
+            transcript_path: w
+                .scratch
+                .path()
+                .join(format!("{}.jsonl", harness.as_str()))
+                .to_string_lossy()
+                .into_owned(),
+            ..pending.clone()
+        };
+        w.h.store.insert_session_doc(&other).await?;
+        other_docs.push(other);
+    }
+    let path = sessions
+        .join("2026/11/19")
+        .join(format!("rollout-2026-11-19T12-00-00-{session}.jsonl"));
+    write(
+        &path,
+        &line(&json!({
+            "type": "response_item",
+            "payload": {"type": "message", "role": "assistant",
+                        "content": [{"type": "output_text", "text": "Found the narwhal."}]}
+        })),
+    )?;
+    let search_url = format!("{list_url}?q=narwhal");
+    let search = async {
+        let found = get(&w, &creds, &search_url).await?;
+        assert_eq!(found.status, StatusCode::OK);
+        assert_eq!(found.body["sessions"].as_array().map(Vec::len), Some(1));
+        assert_eq!(found.body["sessions"][0]["id"], id, "rollout indexed");
+        assert_eq!(found.body["sessions"][0]["hits"][0]["line"], 0);
+        TestResult::Ok(())
+    };
+    let page = async {
+        let transcript = get(&w, &creds, &page_url).await?;
+        assert_eq!(transcript.status, StatusCode::OK);
+        assert_eq!(
+            transcript.body["entries"][0]["blocks"][0]["text"],
+            "Found the narwhal."
+        );
+        TestResult::Ok(())
+    };
+    if search_first {
+        search.await?;
+        page.await?;
+    } else {
+        page.await?;
+        search.await?;
+    }
+    let doc = w.h.store.session_doc(id).await?.ok_or("document")?;
+    assert_eq!(Path::new(&doc.transcript_path), path);
+    for other in other_docs {
+        assert_eq!(w.h.store.session_doc(&other.id).await?, Some(other));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn sessions_page_follows_a_late_codex_rollout() -> TestResult {
+    late_codex_rollout(false).await
+}
+
+#[tokio::test]
+async fn sessions_search_follows_a_late_codex_rollout() -> TestResult {
+    late_codex_rollout(true).await
 }
 
 #[tokio::test]

@@ -159,8 +159,9 @@ pub trait SessionDocStore: Send + Sync {
     ) -> AppResult<Vec<ProviderSessionRecord>>;
     /// Deletes a document with its index; `false` when absent.
     async fn delete_session_doc(&self, id: &str) -> AppResult<bool>;
-    /// Points a document at another transcript file and clears its index.
-    async fn set_session_doc_path(&self, id: &str, path: &str) -> AppResult<()>;
+    /// Changes the path and clears the index atomically if the document still has the expected
+    /// path. Returns whether the path changed.
+    async fn set_session_doc_path(&self, id: &str, expected: &str, path: &str) -> AppResult<bool>;
     /// Records the task an imported session was continued in.
     async fn set_session_continued(&self, id: &str, task: &TaskId) -> AppResult<()>;
     /// Appends passages and advances the index position, only while it still equals
@@ -172,7 +173,15 @@ pub trait SessionDocStore: Send + Sync {
         advance: IndexAdvance,
     ) -> AppResult<bool>;
     /// Drops a document's passages and resets its index position (the transcript shrank).
-    async fn reset_session_index(&self, doc_id: &str) -> AppResult<()>;
+    async fn reset_session_index(&self, doc_id: &str) -> AppResult<()> {
+        self.reset_session_index_at(doc_id, None).await
+    }
+    /// Clears passages and offsets together. A supplied offset must still be current.
+    async fn reset_session_index_at(
+        &self,
+        doc_id: &str,
+        expected_bytes: Option<u64>,
+    ) -> AppResult<()>;
     /// Full-text matches in a sandbox's documents, best first, at most `limit`.
     async fn search_session_chunks(
         &self,

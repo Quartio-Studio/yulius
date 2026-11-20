@@ -73,6 +73,7 @@ export function linkable(url) {
 function valuesText(run) {
   const said = [run.target || 'the recorded move'];
   if (run.ssh_port && run.ssh_port !== 22) said.push(`SSH port ${run.ssh_port}`);
+  if (run.max_downtime) said.push(`longest freeze ${plural(run.max_downtime, 'minute')}`);
   if (run.public_url) said.push(`public URL ${run.public_url}`);
   if (run.data_disks && run.data_disks.length) said.push(`data ${plural(run.data_disks.length, 'disk')} ${run.data_disks.join(' and ')}`);
   return said.join(', ');
@@ -184,6 +185,7 @@ export function moveCard(ctx) {
   // The form's controls live as long as the card: what is typed survives every read.
   const target = h('input', { type: 'text', class: 'input mono', name: 'move-target', autocomplete: 'off', spellcheck: 'false', placeholder: 'root@new-host' });
   const port = h('input', { type: 'number', class: 'input', name: 'move-port', min: 1, max: 65535, value: '22', inputmode: 'numeric' });
+  const freeze = h('input', { type: 'number', class: 'input', name: 'move-freeze', min: 1, step: 1, inputmode: 'numeric' });
   const url = h('input', { type: 'text', class: 'input mono', name: 'move-url', autocomplete: 'off', spellcheck: 'false' });
   const disks = h('input', { type: 'text', class: 'input mono', name: 'move-disks', autocomplete: 'off', spellcheck: 'false', placeholder: '/dev/nvme0n1, /dev/nvme1n1' });
   const planButton = h('button', { type: 'submit', class: 'btn btn-primary' }, icon('search', { size: 14 }), 'Show the plan');
@@ -192,6 +194,7 @@ export function moveCard(ctx) {
     h('div', { class: 'move-fields' },
       labelled('New host', target, `As ssh takes it. ${BRAND.name} reaches it as root with a one-time key that it removes at the end.`),
       labelled('SSH port', port),
+      labelled('Longest freeze (minutes)', freeze, 'Optional. The move freezes the instance only when the measured estimate fits this limit.'),
       labelled('New public URL', url, urlHint),
       labelled('Data disks', disks, 'Optional: one blank disk of the new host for the data directory, or two for a mirror. The plan lists the blank disks when space is short.')),
     h('div', { class: 'row' }, planButton, h('span', { class: 'muted small' }, 'The plan changes nothing and freezes nothing.')));
@@ -222,6 +225,7 @@ export function moveCard(ctx) {
     return {
       target: target.value.trim(),
       ssh_port: Number(port.value) || 0,
+      max_downtime: freeze.value === '' ? null : Number(freeze.value),
       public_url: url.value.trim() || null,
       data_disks: disks.value.split(/[\s,]+/).filter(Boolean),
     };
@@ -229,7 +233,7 @@ export function moveCard(ctx) {
 
   /** The values of the helper's last run: a move is the plan that was shown. */
   function runValues(run) {
-    return { target: run.target, ssh_port: run.ssh_port, public_url: run.public_url, data_disks: run.data_disks || [] };
+    return { target: run.target, ssh_port: run.ssh_port, public_url: run.public_url, data_disks: run.data_disks || [], max_downtime: run.max_downtime ?? null };
   }
 
   function helperNote() {
@@ -315,6 +319,9 @@ export function moveCard(ctx) {
       return outcome('danger', 'The abort did not complete', run.exit_code === 2 ? 'Nothing was changed.' : 'The checklist says what is left; abort again once that is done.');
     }
     if (run.exit_code === 0) return outcome('ok', `Moved to ${hostOf(run.target)}`, null);
+    if (run.max_downtime && mine?.phase === 'Copy' && attention(mine.lines).failed.some((line) => line.name === 'downtime')) {
+      return outcome('danger', 'The freeze estimate exceeded the limit', 'Nothing was frozen. The staged copy stays on the new host. Continue later, or show a plan with a higher bound.');
+    }
     return outcome('danger', 'The move did not complete',
       run.exit_code === null
         ? `It was stopped. ${BRAND.name} answers here; continue the move with the same values, or abort it.`
@@ -406,13 +413,14 @@ export function moveCard(ctx) {
       if (from && !target.value) {
         target.value = from.target;
         port.value = String(from.ssh_port || 22);
+        freeze.value = from.max_downtime == null ? '' : String(from.max_downtime);
         url.value = from.public_url || '';
         disks.value = (from.data_disks || []).join(', ');
       }
     }
     urlHint.textContent = `Leave empty to keep ${view.public_url}, or its form for the new host’s address when it is made of this host’s address.`;
     const busy = inFlight(view);
-    for (const control of [target, port, url, disks]) control.disabled = busy || !view.can.plan;
+    for (const control of [target, port, url, disks, freeze]) control.disabled = busy || !view.can.plan;
     planButton.disabled = asking || !view.can.plan;
     const parts = [
       h('p', { class: 'muted small move-intro' }, `${BRAND.name} checks and sets up the new host, copies every repository, secret and setting, starts there and redirects this address. It asks for everything a person has to do in the plan, before anything freezes.`),
@@ -551,6 +559,7 @@ export function moveCard(ctx) {
     return ask({ action: 'plan', ...values }, (error) => {
       const message = error.message || '';
       if (error.status === 422 && /new host/.test(message)) complain(target, message);
+      else if (error.status === 422 && /longest freeze/.test(message)) complain(freeze, message);
       else if (error.status === 422 && /SSH port/.test(message)) complain(port, message);
       else if (error.status === 422 && /public URL/.test(message)) complain(url, message);
       else if (error.status === 422 && /disk/.test(message)) complain(disks, message);
@@ -574,6 +583,7 @@ export function moveCard(ctx) {
           h('li', null, `The new host is set up, and the data is copied there, while ${BRAND.name} keeps working here.`),
           h('li', null, `${BRAND.name} is frozen only for what changed since, the proof of the copy and the start there: every task and terminal pauses and nothing answers here.${said ? ` The plan said: ${said}.` : ''}`),
           h('li', null, 'Until the new instance is started a failure, or an abort, leaves everything running here.'),
+          values.max_downtime ? h('li', null, `Longest freeze: ${plural(values.max_downtime, 'minute')}.`) : null,
           yours ? h('li', null, `${plural(yours, 'step')} of the plan ${yours === 1 ? 'is' : 'are'} yours (marked “yours”): a DNS record, the GitHub App, what is not carried.`) : null)),
       confirmLabel: again ? 'Continue the move' : 'Run migration',
       danger: true,

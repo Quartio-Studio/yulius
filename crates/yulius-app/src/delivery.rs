@@ -976,6 +976,43 @@ fn safe_relative(path: &str) -> bool {
             .all(|c| matches!(c, Component::Normal(_)))
 }
 
+/// A missing spec holds a code edit, while a spec that exists and cannot be judged
+/// is left to the Stop gate (SPEC-426).
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum RepoReadError {
+    #[error("`{0}` does not exist in the task worktree")]
+    Missing(String),
+    #[error("`{path}` is too large (limit {max} bytes)")]
+    TooLarge { path: String, max: u64 },
+    #[error("{0}")]
+    Unreadable(String),
+}
+
+impl RepoReadError {
+    fn from_io(relative: &str, error: &std::io::Error) -> Self {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            Self::Missing(relative.into())
+        } else {
+            Self::Unreadable(format!("`{relative}` cannot be read"))
+        }
+    }
+
+    fn from_open(relative: &str, err: AppError) -> Self {
+        match err {
+            AppError::NotFound => Self::Missing(relative.into()),
+            AppError::Forbidden(message) if message == crate::files::OUTSIDE => {
+                Self::Unreadable(format!("`{relative}` points outside the task worktree"))
+            }
+            _ => Self::Unreadable(format!("`{relative}` cannot be read")),
+        }
+    }
+}
+
+/// Reads a whole spec through an in-worktree handle, refusing links and partial documents.
+pub(crate) async fn read_spec(root: &Path, relative: &str) -> Result<String, RepoReadError> {
+    read_checked_file(root, relative, MAX_SPEC_BYTES, true).await
+}
+
 /// Reads a repository file below `root`, refusing paths that escape it (also through
 /// symlinks, including one swapped in after the check: the file is read through a handle whose
 /// real path is inside `root`) and files larger than `max` bytes. Errors are user-facing and never
@@ -985,50 +1022,74 @@ pub(crate) async fn read_repo_file(
     relative: &str,
     max: u64,
 ) -> Result<String, String> {
+    read_checked_file(root, relative, max, false)
+        .await
+        .map_err(|err| err.to_string())
+}
+
+async fn read_checked_file(
+    root: &Path,
+    relative: &str,
+    max: u64,
+    spec: bool,
+) -> Result<String, RepoReadError> {
+    use RepoReadError::{TooLarge, Unreadable};
     if !safe_relative(relative) {
-        return Err(format!(
+        return Err(Unreadable(format!(
             "`{}` is not a safe repository-relative path",
             clip_chars(relative, 100)
-        ));
+        )));
     }
     let root = tokio::fs::canonicalize(root)
         .await
-        .map_err(|_| "the task worktree is missing".to_owned())?;
-    let path = tokio::fs::canonicalize(root.join(relative))
-        .await
-        .map_err(|_| format!("`{relative}` does not exist in the task worktree"))?;
-    if !path.starts_with(&root) {
-        return Err(format!("`{relative}` points outside the task worktree"));
+        .map_err(|_| Unreadable("the task worktree is missing".into()))?;
+    let path = root.join(relative);
+    if spec {
+        let metadata = tokio::fs::symlink_metadata(&path)
+            .await
+            .map_err(|err| RepoReadError::from_io(relative, &err))?;
+        if metadata.is_symlink() {
+            return Err(Unreadable(format!(
+                "`{relative}` is a symbolic link. Use a regular file for the task spec"
+            )));
+        }
     }
+    let resolved = tokio::fs::canonicalize(&path)
+        .await
+        .map_err(|err| RepoReadError::from_io(relative, &err))?;
+    if !resolved.starts_with(&root) {
+        return Err(Unreadable(format!(
+            "`{relative}` points outside the task worktree"
+        )));
+    }
+    // A spec is opened at its original leaf, so a link swapped in there cannot be followed.
+    let path = if spec { path } else { resolved };
     crate::race::reached(crate::race::Point::RepoFileRead, &path);
-    // The worktree is the agent's, which can swap a folder on the way, or the file, for a link at
-    // any moment: what is read is the handle, opened without following a link at its end and
-    // kept only while its real path is still inside the worktree (#745, ADR-0174).
-    let opened =
-        crate::files::open_inside(&root, &path, nix::fcntl::OFlag::O_RDONLY).map_err(|err| {
-            match err {
-                AppError::Forbidden(message) if message == crate::files::OUTSIDE => {
-                    format!("`{relative}` points outside the task worktree")
-                }
-                _ => format!("`{relative}` cannot be read"),
-            }
-        })?;
+    let opened = crate::files::open_inside(&root, &path, nix::fcntl::OFlag::O_RDONLY)
+        .map_err(|err| RepoReadError::from_open(relative, err))?;
     let file = tokio::fs::File::from_std(std::fs::File::from(opened));
     let meta = file
         .metadata()
         .await
-        .map_err(|_| format!("`{relative}` cannot be read"))?;
+        .map_err(|err| RepoReadError::from_io(relative, &err))?;
     if !meta.is_file() {
-        return Err(format!("`{relative}` is not a file"));
+        return Err(Unreadable(format!("`{relative}` is not a file")));
     }
-    if meta.len() > max {
-        return Err(format!("`{relative}` is larger than {max} bytes"));
-    }
+    // Check the bytes actually read before decoding, including a file that grew since metadata().
     let mut bytes = Vec::new();
-    tokio::io::AsyncReadExt::read_to_end(&mut tokio::io::AsyncReadExt::take(file, max), &mut bytes)
-        .await
-        .map_err(|_| format!("`{relative}` cannot be read"))?;
-    String::from_utf8(bytes).map_err(|_| format!("`{relative}` is not UTF-8 text"))
+    tokio::io::AsyncReadExt::read_to_end(
+        &mut tokio::io::AsyncReadExt::take(file, max.saturating_add(1)),
+        &mut bytes,
+    )
+    .await
+    .map_err(|err| RepoReadError::from_io(relative, &err))?;
+    if bytes.len() as u64 > max {
+        return Err(TooLarge {
+            path: relative.into(),
+            max,
+        });
+    }
+    String::from_utf8(bytes).map_err(|_| Unreadable(format!("`{relative}` is not UTF-8 text")))
 }
 
 /// Text of a level-2 section (outside code fences), trimmed.
@@ -1506,7 +1567,7 @@ impl App {
                 );
             }
         };
-        match read_repo_file(&worktree, &path, MAX_SPEC_BYTES).await {
+        match read_spec(&worktree, &path).await {
             Ok(text) => {
                 let report = spec_format::validate_spec_for(&text, &task.id);
                 self.note_spec_status(&task.id, report.status).await;
@@ -1645,7 +1706,7 @@ impl App {
         names.sort();
         for name in names {
             let relative = format!("{dir}/{name}");
-            let Ok(text) = read_repo_file(worktree, &relative, MAX_SPEC_BYTES).await else {
+            let Ok(text) = read_spec(worktree, &relative).await else {
                 continue;
             };
             if text.contains(task.id.as_str())
@@ -1818,7 +1879,9 @@ impl App {
         Ok(observed)
     }
 
-    fn dlv_delivery_of(
+    async fn dlv_delivery_of(
+        &self,
+        playground: Option<(&SandboxRecord, &TaskRecord)>,
         profile: &DeliveryProfile,
         observed: &Observed,
         mut notes: Vec<String>,
@@ -1826,17 +1889,39 @@ impl App {
     ) -> Delivery {
         let facts = observed.facts();
         let stage = &observed.record.stage;
-        let next_actions = dlv::next_actions(stage, profile, &facts)
-            .iter()
-            .map(NextAction::wire)
-            .collect();
-        let blocked = dlv::blocked_actions(stage, profile, &facts)
-            .into_iter()
-            .map(|(action, err)| BlockedAction {
-                action: action.wire(),
-                reason: err.to_string(),
-            })
-            .collect();
+        let (next_actions, blocked) = if let Some((sandbox, task)) = playground {
+            if past_merge(stage) {
+                (Vec::new(), Vec::new())
+            } else {
+                let hold = self
+                    .playground_view_hold(sandbox, task, observed, profile)
+                    .await
+                    .unwrap_or_else(|error| Some(error.public_message()));
+                match hold {
+                    Some(reason) => (
+                        Vec::new(),
+                        vec![BlockedAction {
+                            action: NextAction::Merge.wire(),
+                            reason,
+                        }],
+                    ),
+                    None => (vec![NextAction::Merge.wire()], Vec::new()),
+                }
+            }
+        } else {
+            let next_actions = dlv::next_actions(stage, profile, &facts)
+                .iter()
+                .map(NextAction::wire)
+                .collect();
+            let blocked = dlv::blocked_actions(stage, profile, &facts)
+                .into_iter()
+                .map(|(action, err)| BlockedAction {
+                    action: action.wire(),
+                    reason: err.to_string(),
+                })
+                .collect();
+            (next_actions, blocked)
+        };
         if observed.dirty && *stage == DeliveryStage::None {
             notes.push(format!("Git: {DIRTY_WORKTREE}."));
         }
@@ -1928,7 +2013,7 @@ impl App {
             .await?;
         // Where an armed merge stands, and what a merge counts as (SPEC-441 MQ-007, MQ-009).
         if let Some(note) = self.merge_queue_note(task) {
-            notes.push(note);
+            notes.push(note.text);
         }
         if let Some(pull) = observed.pr.as_ref().filter(|pull| pull.merged) {
             notes.push(crate::agent_wait::merged_text(
@@ -1944,7 +2029,15 @@ impl App {
         let access = self
             .dlv_checks_access(&sandbox, &observed.checks_unreadable, user)
             .await;
-        let mut view = Self::dlv_delivery_of(&profile, &observed, notes, access);
+        let mut view = self
+            .dlv_delivery_of(
+                sandbox.is_playground().then_some((&sandbox, task)),
+                &profile,
+                &observed,
+                notes,
+                access,
+            )
+            .await;
         view.review_rounds = self.review_round_views(&task.id).await;
         Ok(view)
     }
@@ -2456,6 +2549,11 @@ impl App {
         // carry it (VOF-001).
         stored.vidoc = (!on).then_some(false);
         stored.protect_production = (!protect).then_some(false);
+        // A sandbox's opt-out of handoffs is kept too (SPEC-512 HOF-002, review round 1).
+        let mut stored = serde_json::to_value(&stored).map_err(AppError::internal)?;
+        if !crate::handoffs::accepts_handoffs(&sandbox) {
+            stored[crate::handoffs::ACCEPT_KEY] = Value::Bool(false);
+        }
         let json = serde_json::to_string(&stored).map_err(AppError::internal)?;
         self.deps.store.set_profile(&sid, &json).await?;
         drop(writing);
@@ -5338,6 +5436,34 @@ mod tests {
     }
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn a_spec_open_reports_missing_unreadable_and_outside_paths() {
+        let missing = RepoReadError::from_open("spec.md", AppError::NotFound);
+        assert!(matches!(missing, RepoReadError::Missing(path) if path == "spec.md"));
+        let outside = AppError::Forbidden(crate::files::OUTSIDE.into());
+        let denied = crate::files::io_error(&std::io::ErrorKind::PermissionDenied.into());
+        assert_eq!(
+            RepoReadError::from_open("spec.md", outside).to_string(),
+            "`spec.md` points outside the task worktree"
+        );
+        assert_eq!(
+            RepoReadError::from_open("spec.md", denied).to_string(),
+            "`spec.md` cannot be read"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_spec_and_an_unreadable_path_have_distinct_errors() -> TestResult {
+        let repo = tempfile::tempdir()?;
+        let result = read_spec(repo.path(), "gone.md").await;
+        assert!(matches!(result, Err(RepoReadError::Missing(path)) if path == "gone.md"));
+
+        std::fs::write(repo.path().join("file"), "text")?;
+        let result = read_spec(repo.path(), "file/spec.md").await;
+        assert!(matches!(result, Err(RepoReadError::Unreadable(_))));
+        Ok(())
+    }
 
     /// SPEC-069 BPL-006: the titles Yulius generates for task pull requests pass the policy.
     #[test]

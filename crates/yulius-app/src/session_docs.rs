@@ -286,7 +286,11 @@ impl App {
     /// Where a task's session transcript lives: the harness's file under the sandbox home for
     /// the task worktree, or the stored copy of an imported lineage entry until the task has
     /// resumed it natively.
-    fn task_transcript_path(&self, task: &TaskRecord, entry: &ProviderSessionRecord) -> PathBuf {
+    pub(crate) fn task_transcript_path(
+        &self,
+        task: &TaskRecord,
+        entry: &ProviderSessionRecord,
+    ) -> PathBuf {
         let native = self.native_transcript(task, entry.harness, &entry.session_id);
         match &entry.transcript_ref {
             Some(stored) if !is_regular_file(&native) => PathBuf::from(stored),
@@ -294,7 +298,12 @@ impl App {
         }
     }
 
-    fn native_transcript(&self, task: &TaskRecord, harness: Harness, session_id: &str) -> PathBuf {
+    pub(crate) fn native_transcript(
+        &self,
+        task: &TaskRecord,
+        harness: Harness,
+        session_id: &str,
+    ) -> PathBuf {
         let worktree = task.worktree_path.as_ref().map_or_else(
             || {
                 self.sandbox_dir(&task.sandbox_id)
@@ -314,8 +323,6 @@ impl App {
         }
     }
 
-    /// A task session read from a stored copy moves to the native transcript once the task
-    /// resumed it (the copy stops growing; the native file has the continuation).
     /// A transcript rewritten in place (stepped back over a usage limit, SPEC-034) is indexed
     /// again from its start: the index reads transcripts as append-only.
     pub(crate) async fn reindex_session(&self, sandbox: &SandboxId, session_id: &str) {
@@ -334,34 +341,68 @@ impl App {
         }
     }
 
-    async fn follow_resumed_copies(&self, docs: &mut [SessionDocRecord]) -> AppResult<()> {
-        let stored_root = self.config.data_dir.join("transcripts");
-        for doc in docs.iter_mut() {
-            if doc.kind != SessionKind::Task
-                || !Path::new(&doc.transcript_path).starts_with(&stored_root)
-            {
-                continue;
+    /// A direct document read can precede an index refresh. Retry the bounded rollout lookup
+    /// only for a task document still pointing at its Codex placeholder.
+    async fn document_read_path(&self, doc: &SessionDocRecord) -> AppResult<PathBuf> {
+        let saved = PathBuf::from(&doc.transcript_path);
+        if let (SessionKind::Task, Harness::Codex) = (doc.kind, doc.harness) {
+            let sessions = self.codex_sessions(&doc.sandbox_id);
+            if saved == Self::missing_codex_rollout(&sessions, &doc.session_id) {
+                let harness = Arc::clone(&self.deps.harness);
+                let id = doc.session_id.clone();
+                return blocking(move || {
+                    Ok(harness
+                        .find_codex_rollout(&sessions, &id)
+                        .ok()
+                        .flatten()
+                        .unwrap_or(saved))
+                })
+                .await;
             }
-            let Some(task_id) = &doc.task_id else {
-                continue;
+        }
+        Ok(saved)
+    }
+
+    /// Persist the native path once a stored copy resumes or a pending Codex rollout appears.
+    async fn follow_native_transcripts(&self, docs: &mut [SessionDocRecord]) -> AppResult<()> {
+        let stored_root = self.config.data_dir.join("transcripts");
+        for doc in docs.iter_mut().filter(|doc| doc.kind == SessionKind::Task) {
+            let saved = Path::new(&doc.transcript_path);
+            let native = if saved.starts_with(&stored_root) {
+                let Some(task_id) = &doc.task_id else {
+                    continue;
+                };
+                let Some(task) = self.deps.store.task(task_id).await? else {
+                    continue;
+                };
+                self.native_transcript(&task, doc.harness, &doc.session_id)
+            } else {
+                let resolved = self.document_read_path(doc).await?;
+                if resolved == saved {
+                    continue;
+                }
+                resolved
             };
-            let Some(task) = self.deps.store.task(task_id).await? else {
-                continue;
-            };
-            let native = self.native_transcript(&task, doc.harness, &doc.session_id);
             if is_regular_file(&native) {
                 let path = native.to_string_lossy().into_owned();
-                self.deps.store.set_session_doc_path(&doc.id, &path).await?;
-                doc.transcript_path = path;
-                doc.indexed_bytes = 0;
-                doc.indexed_lines = 0;
+                let store = &self.deps.store;
+                if store
+                    .set_session_doc_path(&doc.id, &doc.transcript_path, &path)
+                    .await?
+                {
+                    doc.transcript_path = path;
+                    doc.indexed_bytes = 0;
+                    doc.indexed_lines = 0;
+                } else if let Some(current) = store.session_doc(&doc.id).await? {
+                    *doc = current;
+                }
             }
         }
         Ok(())
     }
 
-    /// Brings the sandbox's index up to date within [`INDEX_BYTES_PER_REFRESH`]: new task
-    /// sessions get documents; grown transcripts are indexed from where indexing stopped.
+    /// Indexes new task sessions and grown transcripts with a shared [`INDEX_BYTES_PER_REFRESH`]
+    /// budget. A started batch finishes its prefix replay and current line even if they exhaust it.
     ///
     /// # Errors
     /// Store failures (unreadable transcripts are skipped).
@@ -374,7 +415,7 @@ impl App {
             .into_iter()
             .filter(|doc| !doc.index_full)
             .collect();
-        self.follow_resumed_copies(&mut docs).await?;
+        self.follow_native_transcripts(&mut docs).await?;
         let paths: Vec<PathBuf> = docs
             .iter()
             .map(|doc| PathBuf::from(&doc.transcript_path))
@@ -398,7 +439,9 @@ impl App {
                 continue;
             }
             if size < doc.indexed_bytes {
-                store.reset_session_index(&doc.id).await?;
+                store
+                    .reset_session_index_at(&doc.id, Some(doc.indexed_bytes))
+                    .await?;
                 continue;
             }
             if budget == 0 {
@@ -429,22 +472,38 @@ impl App {
             let anchor = self.sandbox_dir(&doc.sandbox_id);
             let (from_byte, from_line) = (doc.indexed_bytes, doc.indexed_lines);
             let batch = match blocking(move || {
-                transcripts::open(&anchor, &path)
-                    .and_then(|file| {
-                        transcripts::read_for_index(file, from_byte, from_line, allowed, usize::MAX)
-                    })
-                    .map_err(AppError::internal)
+                let file = transcripts::open(&anchor, &path).map_err(AppError::internal)?;
+                Ok(transcripts::read_for_index(
+                    file,
+                    from_byte,
+                    from_line,
+                    allowed,
+                    usize::MAX,
+                ))
             })
             .await
             {
-                Ok(batch) => batch,
+                Ok(Ok(batch)) => batch,
+                Ok(Err(err)) => {
+                    // The reader may already have consumed the entire prefix and suffix allowance.
+                    budget = budget.saturating_sub(from_byte).saturating_sub(allowed);
+                    if err.kind() == std::io::ErrorKind::InvalidData {
+                        store
+                            .reset_session_index_at(&doc.id, Some(from_byte))
+                            .await?;
+                    }
+                    tracing::debug!(doc = %doc.id, error = %err, "transcript index read failed");
+                    continue;
+                }
                 Err(err) => {
                     tracing::debug!(doc = %doc.id, error = %err, "transcript not indexed");
                     continue;
                 }
             };
             let read = batch.end_byte.saturating_sub(from_byte);
-            budget = budget.saturating_sub(read.max(1));
+            budget = budget
+                .saturating_sub(read.max(1))
+                .saturating_sub(batch.replayed_bytes);
             if read == 0 && batch.chunks.is_empty() {
                 continue;
             }
@@ -726,7 +785,7 @@ impl App {
         let session = self
             .doc_view(&doc, &tasks, &mut HashMap::new(), Some((&ctx.user, level)))
             .await;
-        let path = PathBuf::from(&doc.transcript_path);
+        let path = self.document_read_path(&doc).await?;
         let anchor = self.sandbox_dir(&doc.sandbox_id);
         let page = blocking(move || {
             let read = transcripts::open(&anchor, &path)
@@ -1418,7 +1477,7 @@ impl App {
                 usize::try_from(n).unwrap_or(READ_CHARS_MAX)
             })
             .clamp(1_000, READ_CHARS_MAX);
-        let path = PathBuf::from(&doc.transcript_path);
+        let path = self.document_read_path(&doc).await?;
         let anchor = self.sandbox_dir(&doc.sandbox_id);
         let page = blocking(move || {
             transcripts::open(&anchor, &path)

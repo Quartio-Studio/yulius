@@ -808,6 +808,7 @@ test('the longest needs_you request keeps its to-do and buttons in view on a pho
 // its to-do hides what scrolls under it in a stacked bar too, and only a list that scrolls is a
 // tab stop.
 test('a scrolled needs_you list survives task updates and its to-do stays opaque', async ({ app, browser }) => {
+  await lateResizeObservers(browser);
   await browser.setViewport({ width: 360, height: 780 });
   await app.open(mock('/s/studio/t/12'));
   const long = {
@@ -828,12 +829,13 @@ test('a scrolled needs_you list survives task updates and its to-do stays opaque
   expect(colours.own).toBe(colours.bar);
 
   const list = '.attention-bar .needs-you-parts';
+  await expect(browser.locator(list)).toHaveAttribute('tabindex', '0', { timeout: LATE_OBSERVER_MS + 5_000 });
   expect(await browser.evaluate((sel) => {
     const el = document.querySelector(sel) as HTMLElement;
     el.focus();
     el.scrollTop = 40;
-    return [el.getAttribute('tabindex'), el.scrollTop];
-  }, list)).toEqual(['0', 40]);
+    return el.scrollTop;
+  }, list)).toBe(40);
   await browser.evaluate(() => (window as unknown as Touching).__yuliusMock.touchTask('sb_studio', 12, { title: 'Checkout API, renamed' }));
   await expect(browser.locator('.taskview')).toContainText('Checkout API, renamed');
   expect(await browser.evaluate((sel) => {
@@ -846,7 +848,8 @@ test('a scrolled needs_you list survives task updates and its to-do stays opaque
     needs_you: { action: 'Deploy production on the CD page', decision: false, at: new Date().toISOString() }, controlRequest: null,
   }));
   await expect(browser.locator('.attention-bar .needs-you-todo')).toHaveText(/Deploy production/);
-  expect(await browser.evaluate((sel) => document.querySelector(sel)!.hasAttribute('tabindex'), list)).toBe(false);
+  await expect.poll(() => browser.evaluate((sel) => document.querySelector(sel)!.hasAttribute('tabindex'), list),
+    { timeout: LATE_OBSERVER_MS + 5_000 }).toBe(false);
   expect(await axeViolations(browser)).toEqual([]);
 });
 
@@ -953,12 +956,12 @@ test('the CD page rolls back to an earlier release in one click', async ({ app, 
   // one action per release, the previous one's being the one-click default).
   await expect(dev.getByRole('button', 'Roll back to previous (v40) of dev')).toBeHidden();
   await expect(dev.getByRole('button', 'Roll back to this: dev v40')).toBeHidden();
-  // Any other kept release: "Roll back to this", here forward again (the rollback has ended).
-  const forward = dev.getByRole('button', 'Roll back to this: dev v42');
+  // v42 is newer than the release now deployed.
+  const forward = dev.getByRole('button', 'Roll forward to this: dev v42');
   await expect(forward).toBeEnabled();
   await forward.click();
-  await screen.getByRole('dialog', 'Roll back dev?').getByRole('button', 'Roll back to v42').click();
-  await expect(screen.getByText('Rolling dev back to v42.')).toBeVisible();
+  await screen.getByRole('dialog', 'Roll forward dev?').getByRole('button', 'Roll forward to v42').click();
+  await expect(screen.getByText('Rolling dev forward to v42.')).toBeVisible();
   expect(await browser.evaluate(() => (window as unknown as { __yuliusMock: { lastCdRollback?: { release?: string } } }).__yuliusMock.lastCdRollback?.release ?? null)).toBe('v42');
   await expect(row('Dev', 'v42')).toContainText('Deployed now');
 

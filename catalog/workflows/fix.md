@@ -28,7 +28,7 @@ Follow `delivery-pipeline`; a fix is one concern; the whole gate is Yulius CI's.
   could break.
 - Fix with `om-fix`: commit the regression test first, show it fails, then the smallest fix
   that makes it pass, no refactoring.
-- Review by agent `yulius-reviewer` (`om-code-review`, Yulius picks its model) marks
+- Review by the reviewer from the task briefing (`om-code-review`) marks
   findings own code or pre-existing; the PR answers each. Own code is fixed test-first whatever the round limit, never as a follow-up issue
   (that is request changes); only pre-existing bugs, flaky tests the change did not cause and nits
   left at the round limit become issues, saying why they are outside the change. Then

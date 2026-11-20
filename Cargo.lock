@@ -670,6 +670,7 @@ dependencies = [
  "serde_json",
  "signal-hook",
  "tempfile",
+ "yulius-harness",
 ]
 
 [[package]]
@@ -3223,6 +3224,9 @@ dependencies = [
 [[package]]
 name = "xtask"
 version = "0.1.0"
+dependencies = [
+ "tempfile",
+]
 
 [[package]]
 name = "yasna"
@@ -3425,6 +3429,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
  "nix 0.31.3",
+ "serde",
  "serde_json",
  "sha2",
  "tempfile",
@@ -3466,6 +3471,7 @@ version = "0.1.0"
 dependencies = [
  "nix 0.31.3",
  "portable-pty",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",
@@ -3504,6 +3510,7 @@ dependencies = [
  "futures",
  "hyper",
  "hyper-util",
+ "percent-encoding",
  "serde",
  "serde_json",
  "subtle",

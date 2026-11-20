@@ -87,7 +87,6 @@ export function mountGitTaskView(ctx, sandbox, task, route) {
   const integration = () => (changes && changes.base) || profile.integration_branch || 'integration';
 
   // ---- header
-  const info = taskInfo(task, ctx.store.state.actionRequests, ctx.store.pullsOf(task.sandbox_id).get(task.id));
   const taskPath = `${base}/t/${task.number}`;
   const meta = h('div', { class: 'gt-meta' });
   const head = h('header', { class: 'gt-head' },
@@ -99,6 +98,7 @@ export function mountGitTaskView(ctx, sandbox, task, route) {
 
   function renderMeta() {
     const p = pr();
+    const info = taskInfo(task, ctx.store.state.actionRequests, p);
     setChildren(meta,
       h('span', { class: 'gt-state' }, statusMark(info, 14), info.label),
       task.branch ? h('span', { class: 'gt-branch mono', title: `${task.branch} into ${integration()}` }, icon('branch', { size: 12 }), task.branch, h('span', { class: 'muted' }, ` → ${integration()}`)) : null,
@@ -353,7 +353,17 @@ export function mountGitTaskView(ctx, sandbox, task, route) {
 
   const unwatchPulls = ctx.store.watchPulls(sandbox.id);
   // The Git overview (pull requests, position, size) refreshes the header and the Branch tab.
-  const offs = [ctx.store.on('pulls', (sid) => { if (sid === sandbox.id) { renderMeta(); if (tab === 'branch') renderPanel(); } })];
+  const updateTask = (latest) => {
+    if (latest?.id !== task.id || latest === task) return;
+    task = latest;
+    renderMeta();
+  };
+  const offs = [
+    ctx.store.on('pulls', (sid) => { if (sid === sandbox.id) { renderMeta(); if (tab === 'branch') renderPanel(); } }),
+    ctx.store.on('task', updateTask),
+    ctx.store.on('tasks', (sid) => { if (sid === sandbox.id) updateTask(ctx.store.findTask(task.id)); }),
+    ctx.store.on('browser-action', (event) => { if (event.sandbox_id === sandbox.id) renderMeta(); }),
+  ];
   const el = h('div', { class: 'page gt-page' }, h('div', { class: 'page-inner gt-inner' }, head, tablist, panel));
   render();
   loadChanges();

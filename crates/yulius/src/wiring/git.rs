@@ -23,6 +23,13 @@ const CHANGED_PATHS_MAX: usize = 20_000;
 /// Most commits after a review a follow-up may have and keep its approval (SPEC-493 APR-001).
 const FOLLOW_UP_COMMITS_MAX: usize = 64;
 
+fn train_step(step: yulius_git::TrainStep) -> TrainStep {
+    match step {
+        yulius_git::TrainStep::Clean { tree } => TrainStep::Clean { tree },
+        yulius_git::TrainStep::Conflict(files) => TrainStep::Conflict(files),
+    }
+}
+
 /// Git adapter.
 #[derive(Clone)]
 pub struct GitAdapter {
@@ -300,6 +307,18 @@ impl GitPort for GitAdapter {
     async fn set_origin_url(&self, repo: &Path, url: &str) -> AppResult<()> {
         let (git, repo, url) = (self.git(), repo.to_path_buf(), url.to_owned());
         blocking(move || git.set_remote_url(&repo, "origin", &url)).await
+    }
+
+    async fn preview_merge(&self, repo: &Path, ours: &str, theirs: &str) -> AppResult<TrainStep> {
+        let (git, repo, ours, theirs) = (
+            self.git(),
+            repo.to_path_buf(),
+            ours.to_owned(),
+            theirs.to_owned(),
+        );
+        blocking(move || git.preview_merge(&repo, &ours, &theirs))
+            .await
+            .map(train_step)
     }
 
     async fn land_squash(
@@ -783,14 +802,7 @@ impl GitPort for GitAdapter {
         Ok(TrainBuild {
             base: built.base,
             base_tree: built.base_tree,
-            steps: built
-                .steps
-                .into_iter()
-                .map(|step| match step {
-                    yulius_git::TrainStep::Clean { tree } => TrainStep::Clean { tree },
-                    yulius_git::TrainStep::Conflict(files) => TrainStep::Conflict(files),
-                })
-                .collect(),
+            steps: built.steps.into_iter().map(train_step).collect(),
             head: built.head,
         })
     }
@@ -968,14 +980,20 @@ impl GitPort for GitAdapter {
             head.to_owned(),
         );
         blocking(move || {
-            // One commit for both reads: a fetch in between must not move `base`.
+            // Pin the integration commit across the ancestry check and tree reads.
             let base = git.rev_parse(&worktree, &base)?;
-            let Some(merged) = git.merge_tree_from(&worktree, Some(&since), &base, &head)? else {
+            let tree_of = |rev: &str| {
+                git.tree_of(&worktree, rev)?
+                    .ok_or_else(|| GitError::RevisionNotFound(rev.to_owned()))
+            };
+            let merged = if git.is_ancestor(&worktree, &base, &head)? {
+                tree_of(&head)?
+            } else if let Some(tree) = git.merge_tree_from(&worktree, Some(&since), &base, &head)? {
+                tree
+            } else {
                 return Ok(None);
             };
-            Ok(Some(
-                git.tree_of(&worktree, &base)?.as_deref() != Some(merged.as_str()),
-            ))
+            Ok(Some(merged != tree_of(&base)?))
         })
         .await
     }

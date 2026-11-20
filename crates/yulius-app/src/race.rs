@@ -49,15 +49,28 @@ pub enum Point {
     /// A switch (SPEC-250): the task is `Switching`; the switch's end intent for the old run is
     /// not set yet. The path is the task id.
     SwitchDecided,
+    /// A switch passed preflight and has yet to claim the task status. The path is the task id.
+    SwitchPrepared,
+    /// A queued limit move is about to check its reporting attempt. The path is the task id.
+    LimitMoveReady,
+    /// The pool stored the limit pause and is finishing its notices. The path is the task id.
+    LimitPauseStored,
+    /// The queued limit rotation returned.
+    LimitMoveFinished,
     /// `close_task_now` (SPEC-250): the task was read `Running`; the close's end intent is not set
     /// yet. The path is the task id.
     CloseDecided,
     /// A park (SPEC-512 PRK-003): its end intent is set under the launch lock; the session has
     /// not been asked to end yet. The path is the task id.
     ParkDecided,
+    /// A live disconnected run was inspected and is about to be terminated. Keyed by run directory.
+    LostRunTermination,
     /// `mark_lost`: the run's loss won its record; the run's end intent is not read yet. The
     /// path is the task id.
     LossRecorded,
+    /// `answer_needs_you` (SPEC-512 ANS-004): the answer was typed into the session; the request
+    /// it answers is not ended yet. The path is the task id.
+    AnswerTyped,
     /// A switch (SPEC-250): the old run ended and the status the switch goes on from was read; the
     /// launch has not taken the launch lock yet. The path is the task id.
     SwitchLaunching,
@@ -111,6 +124,8 @@ pub enum Point {
     /// `files_roots` (SPEC-340): the sandbox repository was found; its `.git/HEAD` is not opened
     /// yet. The path is the repository's.
     RootsHead,
+    /// A prompt is ending its draft, just before the old key's mark is removed.
+    DraftMarkCleanup,
     /// A Stop hook (SPEC-346): the task was read; the Stop has not taken the turn lock yet. The
     /// path is the task id.
     StopTurnLock,
@@ -163,6 +178,11 @@ pub enum Point {
     /// reading, a limit Claude reported): the stored usage was read under the lock such changes
     /// take; nothing is written yet. The path is the account id.
     UsageRead,
+    /// Reattachment read the answerable attention reason but has not installed its time.
+    /// The path is the task id.
+    AttentionRecoveryRead,
+    /// A replacement notice reached a busy attention lock. The path is the task id.
+    AttentionReplacementWaiting,
     /// A usage limit Claude reported (SPEC-464) is about to be recorded on its subscription: its
     /// stored usage is not read yet. The path is the account id.
     LimitRecord,
@@ -172,6 +192,9 @@ pub enum Point {
     /// A subscription Claude refused for good is about to be marked as needing a new sign-in
     /// (#1211): nothing is read or written yet. The path is the account id.
     AccessLostRecord,
+    /// An idle Cockpit finished looking for stray processes, including a probe with no usable
+    /// answer. The path is its transcript.
+    CockpitStraysProbed,
     /// A turn's end (SPEC-461) looked at the background work of a session on an older Claude
     /// Code, whatever it found; who typed and what pauses it are not read again yet. The path is
     /// the task id.

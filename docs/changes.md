@@ -4,8 +4,78 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-20
+
+- Tasks hand work to another sandbox, off by default (SPEC-512 part 5, task #494, delivered by
+  SPEC-557, #1106, ADR-0395): an instance administrator turns handoffs to Ask or Automatic; a
+  sandbox's writers may close it. A task's agent hands work to another sandbox with
+  `sandbox_handoff`: the owner approves it on the task's page (Ask) or it starts as the owner
+  (Automatic), within depth, cycle and daily bounds; the new task shows its source and the
+  source is told the outcome.
+
+- Work from Telegram, off by default (SPEC-512 part 4, task #494, delivered by SPEC-556, #1107, ADR-0392): a person
+  turns on their chat's intake in Settings → Notifications with a project. A reply to a
+  notification then answers its task as their message (the owner rule holds), any other message,
+  photos and files included, starts a task as them marked "From Telegram", and `/status` and
+  `/task <project> <text>` work.
+- Task notifications and queued prompts retain the state of the request they belong to. A successful model refresh releases waiting tasks, workflow limit classification respects all agent records in a poll, and provider usage reads have a byte limit (SPEC-555).
+- Settings accepts a freeze limit for host moves. Removed sandboxes release their port ranges after their processes and listeners retire. Playground delivery reports its local squash, and cross-project task requests check current permissions before displaying a card (SPEC-555).
+- Task search updates as results arrive. CI skips incomplete CPU samples, browser assertions follow layout and retry events, and the decision and browser test indexes reflect the repository (SPEC-555).
+
+- GitHub sign-in redirects malformed queries to the sign-in page. Pull request notices name failed browser tests and wait for the merge queue to catch up after a run passes. The scan and attachment restore tools describe their actual defaults (SPEC-554).
+- The release list labels roll-forward actions, playground guests see only their available tools, and the Git task review and subscription list reflect changes while open. The browser mock and touch tests cover the corresponding refusal paths (SPEC-554).
+- Instance moves report which units need thawing, explain insufficient space after an interrupted copy and detect an update already in progress. Import guidance uses the account's primary group, and the remote CLI explains sign-in recovery after a move (SPEC-554).
+- Spec gates and step synchronization handle the complete file at the size limit and explain unreadable specs. Completion tests cover onboarding and lost-run screen capture without depending on unrelated readiness signals (SPEC-554).
+
 ## 2026-11-19
 
+- Session search redacts dotenv results across index refreshes and server restarts. Upgrading clears old search passages and rebuilds them on demand (SPEC-535, #1453).
+- After a server restart, a run at its usage limit can resume on an available subscription with its new owner’s MCP servers. A delayed move for the old attempt leaves the replacement running (SPEC-547, #1286).
+- A prompt-mode task now remembers a person’s open Claude goal across manual subscription
+  moves, pool rotations and resumes past a usage limit. Its first clean Stop waits for the
+  evaluator before showing “Your turn” (SPEC-540, #1182).
+- An end-of-day digest, off by default (SPEC-512 part 3, task #494, #1413, ADR-0380): an
+  instance administrator turns it on in Settings with a time (UTC) and an optional idle
+  threshold. Once a day each person gets what waits for them, what was parked with the end of its
+  last message, and how many tasks still work, under the bell (`/digest`) and in their Telegram
+  chat; with a threshold it first parks quiet tasks that ask nobody (never Done or waiting ones).
+- Codex tasks stay under Working while waiting for Yulius. Failed PR checks no longer display a terminal reply prompt (SPEC-552, #1482).
+
+- Claude Code's scheduled wake-ups preserve unsent drafts, achieved goals and open requests for a person, including when the hook carries plain text (SPEC-541, #1225).
+- A Claude run refused after its subscription signs in again now moves or waits while the new
+  sign-in stays available (SPEC-539, #1365).
+- Stopping a disconnected run now terminates its detached host even when the agent has just
+  exited and the host is waiting to deliver the exit frame. On Linux, settlement also waits
+  for the last host thread to exit (SPEC-550, #1449).
+- Claude transcript pages and tails now hide dotenv values returned by `BashOutput` and
+  `TaskOutput`, including when a reader resumes after the background shell started (SPEC-536, #1457).
+- The local CI network-refusal test exercises the branch and pull request in sequence, giving each job time to report a full network pool on a one-CPU runner (SPEC-549, #1408).
+- A merge candidate that rebuilds a recently failed candidate tree uses the original run for bisection. Errored and cancelled runs leave the tree eligible for CI (SPEC-542, #1384).
+- Automation edits, schedule switches and Run now require the creator in the UI and tools. On upgrade, existing schedules pause once. Review the saved prompt and enable the schedule to resume it. [SPEC-534](../.ai/specs/SPEC-534-enforce-automation-ownership-across-edit.md)
+- Codex session documents created before the first turn now show and index the rollout when it appears (#1454, SPEC-538).
+- A task can deliver a follow-up that appends to a list after incorporating an append from
+  `dev`. Delivery compares the two trees when the task contains the integration commit.
+  An equal tree keeps the previous pull request marked as merged. [#1299](https://github.com/Quartio-Studio/yulius/issues/1299)
+- On the Git page, pressing Space on the production protection switch still saves the change when the overview redraws during the keypress (SPEC-546, #1157).
+- A message to a Claude Code session waits when its prompt box shows a restored draft. The
+  sender or session owner learns why. A new key keeps its recovery mark when an earlier
+  prompt finishes ([SPEC-537](../.ai/specs/SPEC-537-preserve-restored-drafts-when-typing-int.md), #1264).
+- Rapid update requests now leave the systemd update watcher active. The operations guide covers upgrading hand-installed units and recovering a failed watcher (SPEC-551, #1201).
+- The merge train regression now checks that the train itself rejects a member whose owner was disabled and records that arm for one-by-one handling (SPEC-544, #1154).
+- Git integration tests now install fake Git executables and hooks in a separate process so concurrent forks cannot keep the executable open for writing (#1332, SPEC-548).
+- Browser tests recover their initial mock page once when Chromium reports a network change during startup. The test output records the recovery (#1331, SPEC-545).
+- The new automation editor keeps the name you enter while workflows load, including names that match a recipe (#1416, SPEC-543).
+- Mutation testing now checks the same workspace tests on the baseline and each mutant.
+  Earlier runs could count an unrelated xtask failure as a catch (#1364, SPEC-533).
+
+- Task briefings now request a native reviewer for each harness. Codex uses GPT-6.2 Astra at high effort and Antigravity uses Gemini 4 Neon (High) in every round. Claude Code keeps its Fable and Opus round policy. Gemini task launches use the Neon default delivered in SPEC-519 (review instructions in SPEC-524).
+- A question names who answers it (SPEC-512 part 2, task #494, #1418): an agent's `needs_you`
+  can name the people besides the owner it waits for (`who`, each with write access to the
+  project, checked when it asks). The task's page says "Asks @bob"; only the owner and whom it
+  names answer it, on the page or through their own agent's `task_message`, without taking the
+  task, and the owner withdraws a name there; answering a parked task's question resumes it. An answer to a question replaced or withdrawn
+  meanwhile is refused, saying so (ADR-0379). Also: a parked task's Resume no longer repeats its
+  Telegram notice, and the Dashboard's Outcomes say Parked (#1412 follow-up).
 - Scrolling a full-screen task with mouse reporting off can no longer recall an earlier prompt
   or trigger “Needs your action” for an unsent draft. Scrolling up still offers the session
   history (SPEC-529, #1446).
