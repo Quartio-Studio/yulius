@@ -6,7 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
-- 2026-11-20 Browser task lists preserve resumes and removals across slow reloads and keep the newest successful snapshot when requests overlap.
+- 2026-11-20 Browser task lists keep the newest successful snapshot when requests overlap. A task page can recover from its initial load error as soon as the sidebar receives the list.
 - Browser tests can start after a burst of host network changes interrupts the initial mock page and its recovery reload. Recovery has one 30-second budget (SPEC-545).
 
 - MCP task reads explain which checks or local work keep a parked task under Needs you. Filtered pages use the plan they display and stop at the requested limit (SPEC-558).

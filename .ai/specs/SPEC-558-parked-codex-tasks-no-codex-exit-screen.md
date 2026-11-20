@@ -40,7 +40,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Filter and explain verified parked rows in MCP task reads
 - [x] Refresh parked page and sidebar status independently of the Git overview
 - [x] Preserve newer task events when parked task lists reload
-- [ ] Deliver the verified parked page and sidebar watch after safe list reloads
+- [ ] Reconcile parked lifecycle events and deliver the verified page and sidebar watch
 - [ ] Keep failed integration candidates with their original owner
 - [ ] Deliver bounded Codex goal continuation to dev
 - [ ] Recover screens from tasks parked before the upgrade
@@ -68,18 +68,8 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
-- Review of `69afcebb4` reproduced a held list hiding an Undo that restored a task after its archive. The regression failed for remote archive events and for both browser archive actions. A strictly newer active row now survives each path. An older snapshot still loses to the archive, and permanent deletion always removes the row. All eight combinations passed in Chromium.
-- The full local browser run that exposed the two onboarding failures recorded 1,187 passes, two failures and one skipped agent test. On the corrected head `69afcebb4`, all 72 tests in the parked, onboarding, PR and task-Done suites passed.
-
-- Two onboarding browser tests failed on PR #1548 at `85f3cd6e7` and both passed on dev `5bdabd1a9`. A slow list request read a newer title from the server after it had already observed the task’s lifecycle event. Applying the entire event erased that title. A direct parked-resume regression failed the same way. The browser now retains list details when the returned row includes the same lifecycle revision or a newer one. All eight targeted cases passed, including both onboarding tests and the earlier list and route recovery regressions.
-
-- Independent review approved `d63673e7083daf2b4d8ff8dcb73358ae11edb6b2` for the full-list reload slice. All five focused Chromium regressions passed, including recovery of the open task page after the sidebar received the only successful list. The parked-page watch remains a separate delivery.
-
-- Focused review reproduced two cold-load failure effects. One successful list still left the shared error set, hiding onboarding state. In the direct task route, a failed navigation request left the error page visible even after the sidebar received the successful list. Chromium tests failed on both effects and passed after correction. They also exercise archived task updates, a superseded failed request and an isolated refresh error.
-- With the split implementation, 55 scoped Chromium tests passed before the review extensions. The quick repository checks passed. The Rust mutation command reported no changed Rust code. Removing event preservation and request ordering in an isolated browser build made both corresponding regressions fail. Vidoc was disabled.
-
-- Independent review of the browser watch uncovered a list-reload race. Delivery was split into lifecycle-safe full list reads and the parked-page watch that consumes them. On dev `5bdabd1a9`, a held list restored a resumed task to Parked and reinserted a removed task. A separate overlapping success test let the older parked snapshot overwrite the newer running row. The prototype at `7a9b8793f` discarded the only successful cold load in both failure orders. Chromium regressions cover all three cases. The watch’s red/green fixtures and review corrections are preserved for its own delivery.
-
+- PR #1548 covers overlapping full task-list reads and direct task-page recovery. On dev `5bdabd1a9`, an older parked snapshot overwrote a newer running row. A prototype discarded the only successful cold load in both failure orders. A Chromium route regression reproduced the sidebar recovering while the open task page stayed on its load error. Tests cover all three cases and isolated refresh errors.
+- The broader implementation was split after review reproduced same-second archive and restore events, an archive response already reflecting a restore, and a delayed update after permanent deletion. A local full run of the broader prototype also identified two onboarding regressions caused by applying entire event payloads to newer list rows. This delivery orders full-list responses. The parked-page follow-up explicitly owns event ordering as well as independent status refresh. These prototypes and tests remain available to task #540.
 - PR #1542 delivered verified MCP filtering and wait explanations to dev at `5bdabd1a9`. The passing train ran the quality, Rust and browser jobs. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/5bdabd1a93590ac7b9d7552d2dffc1f8dbf27d2f)
 
 - The unchanged PR #1542 head `f9c6066cd` failed browser startup in CI runs `9fc67118-5115-4fdc-bac1-17a82b5ed009` and `77f4c481-947a-4168-ae52-2262b1399804`. The first run lost six tests and the second lost four different tests, including the parked-capacity check. All ten retained traces show Chromium losing startup scripts to `net::ERR_NETWORK_CHANGED` on the first open and its immediate recovery reload. Both Rust test shards passed on each run. A Chromium regression for two interrupted entry-script requests timed out at 30 seconds on that head. A preliminary two-recovery patch passed the focused cases, then exhausted three loads in under one second on real host changes. New regressions cover a three-interruption burst, persistent interruption and ordinary failure alongside a network change. The patched harness passed all 12 focused checks. The full browser suite with seven workers passed 1,186 tests with one optional model-backed test skipped.

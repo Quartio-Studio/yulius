@@ -181,7 +181,8 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # the parked task under Needs you until a later read verifies its state.
 # Task lists and Home share the 750 ms PR lookup budget across their parked rows.
 # An unreadable PR counts toward Needs you while later healthy PRs can show Done.
-# Resuming or removing a parked task during a browser list reload keeps its new state in the sidebar.
+# If two task list requests overlap, the sidebar keeps the newest successful snapshot.
+# A task page that initially showed a list error opens when the other request succeeds.
 # Use task_get for the current parked wait reason or tasks_list with scope needs_you
 # for the ordered page of tasks that currently need attention.
 #Environment=YULIUS_PARK_AFTER_MINUTES=30

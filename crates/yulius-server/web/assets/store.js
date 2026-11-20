@@ -130,47 +130,32 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   }
 
   // Cold navigation and resync can both load the list. Keep the newest successful
-  // snapshot, including lifecycle events received while that particular read ran.
+  // snapshot even when the other request fails.
   let nextListRead = 0;
   const listOrder = new WeakMap();
-  const loadingLists = new Set();
 
   async function loadTasks(sandboxId) {
     const atStart = state.tasks.get(sandboxId);
-    const read = { sandboxId, order: ++nextListRead, changes: new Map() };
-    loadingLists.add(read);
+    const order = ++nextListRead;
     let list;
     try {
       list = await api.get(`/api/sandboxes/${enc(sandboxId)}/tasks?archived=false`);
     } catch (error) {
       // An older failure cannot invalidate a list already supplied by a newer read.
       const current = state.tasks.get(sandboxId);
-      if (listOrder.get(current) > read.order) return current;
+      if (listOrder.get(current) > order) return current;
       if (current === atStart) {
         state.taskErrors.set(sandboxId, error);
         emit('tasks', sandboxId);
       }
       throw error;
-    } finally {
-      loadingLists.delete(read);
     }
     const current = state.tasks.get(sandboxId);
-    if (listOrder.get(current) > read.order) return current;
+    if (listOrder.get(current) > order) return current;
     state.taskErrors.delete(sandboxId);
     const map = new Map();
     for (const task of Array.isArray(list) ? list : []) if (!task.archived) map.set(task.id, task);
-    for (const [id, task] of read.changes) {
-      if (!task) { map.delete(id); continue; }
-      const row = map.get(id);
-      if (row && Date.parse(row.updated_at) > Date.parse(task.updated_at)) continue;
-      if (task.archived) { map.delete(id); continue; }
-      // A slow request can take its snapshot after the event. Once the list has
-      // that lifecycle revision (or a newer one), keep its freshly read details.
-      const includesEvent = row && task.updated_at && row.updated_at === task.updated_at &&
-        row.status === task.status && row.activity === task.activity;
-      if (!includesEvent) map.set(id, task);
-    }
-    listOrder.set(map, read.order);
+    listOrder.set(map, order);
     state.tasks.set(sandboxId, map);
     emit('tasks', sandboxId);
     return map;
@@ -178,9 +163,6 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
 
   function upsertTask(task) {
     if (!task || !task.id) return;
-    for (const read of loadingLists) {
-      if (read.sandboxId === task.sandbox_id) read.changes.set(task.id, task);
-    }
     // Only a full load creates a sandbox's list: a list built from live events alone would show
     // just the tasks that changed and look complete. Watchers of the task still hear about it.
     const map = state.tasks.get(task.sandbox_id);
@@ -195,8 +177,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   }
 
   /** Drop a task from its list; `byUser` marks a removal this browser asked for (its own toast says so). */
-  function removeTask(taskId, { byUser = false, archivedTask = null } = {}) {
-    for (const read of loadingLists) read.changes.set(taskId, archivedTask?.archived ? archivedTask : null);
+  function removeTask(taskId, { byUser = false } = {}) {
     for (const [sandboxId, map] of state.tasks) {
       if (map.delete(taskId)) emit('tasks', sandboxId);
     }

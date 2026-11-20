@@ -328,36 +328,6 @@ for (const status of ['parked', 'queued', 'starting', 'waiting_capacity']) {
   });
 }
 
-test('a full list read cannot reverse a newer resume or removal', async ({ app, browser }) => {
-  await app.open(mock('/s/studio'));
-  const result = await browser.evaluate(async () => {
-    const url = '/assets/store.js';
-    const { createStore } = await import(url);
-    const sid = 'late-list';
-    const row = { id: 'p', sandbox_id: sid, status: 'parked', parked_needs_you: false };
-    const removed = { ...row, id: 'removed' };
-    const archived = { ...row, id: 'archived' };
-    let release!: () => void;
-    const held = new Promise<void>(resolve => { release = resolve; });
-    let hold = false;
-    const store = createStore({ get: async () => { if (hold) await held; return [row, removed, archived]; } });
-    await store.loadTasks(sid);
-    hold = true;
-    const read = store.loadTasks(sid);
-    const events: string[] = [];
-    const off = store.on('task', (t: { id: string; status: string }) => { if (t.id === row.id) events.push(t.status); });
-    store.upsertTask({ ...row, status: 'running' });
-    store.removeTask(removed.id);
-    store.upsertTask({ ...archived, archived: true });
-    release();
-    await read;
-    off();
-    store.stopEvents();
-    return [events, store.findTask(row.id).status, Boolean(store.findTask(removed.id)), Boolean(store.findTask(archived.id))];
-  });
-  expect(result).toEqual([['running'], 'running', false, false]);
-});
-
 test('a failed overlapping cold read does not discard the successful task list', async ({ app, browser }) => {
   await app.open(mock('/s/studio'));
   const results = await browser.evaluate(async () => {
@@ -454,72 +424,4 @@ test('a cold task page recovers when its other list request succeeds', async ({ 
   await expect(browser.locator('.task-row').first()).toBeVisible();
   await expect(browser.locator('.taskview .strip-status')).toBeVisible();
   await expect(screen.getByText(/Couldn’t load the tasks of studio/i)).toHaveCount(0);
-});
-
-test('a held list that already includes a lifecycle event keeps its own newer row details', async ({ app, browser }) => {
-  await app.open(mock('/s/studio'));
-  const titles = await browser.evaluate(async () => {
-    const url = '/assets/store.js';
-    const { createStore } = await import(url);
-    let release!: () => void;
-    const held = new Promise<void>(resolve => { release = resolve; });
-    const prior = { id: 'p', sandbox_id: 's', status: 'parked', activity: 'done', title: 'Before resume', updated_at: '2026-11-20T04:52:00Z' };
-    const resumed = { ...prior, status: 'running', activity: 'working', title: 'Resume received', updated_at: '2026-11-20T10:30:20Z' };
-    let reads = 0;
-    const store = createStore({ get: async () => {
-      if (++reads === 1) return [prior];
-      await held;
-      return [{ ...resumed, title: 'Read after the resume' }];
-    } });
-    await store.loadTasks('s');
-    const pending = store.loadTasks('s');
-    store.upsertTask(resumed);
-    const interim = store.findTask('p').title;
-    release();
-    await pending;
-    store.stopEvents();
-    return [interim, store.findTask('p').title];
-  });
-  expect(titles).toEqual(['Resume received', 'Read after the resume']);
-});
-
-test('a newer restoration survives a held list after remote, local or bulk archive', async ({ app, browser }) => {
-  await app.open(mock('/s/studio'));
-  const results = await browser.evaluate(async () => {
-    const storeUrl = '/assets/store.js', actionsUrl = '/assets/actions.js';
-    const { createStore } = await import(storeUrl);
-    const { archiveTask, archiveAll } = await import(actionsUrl);
-    const results = [];
-    for (const source of ['remote', 'local', 'bulk', 'delete']) {
-      for (const restored of [false, true]) {
-        const row = { id: 'p', number: 7, sandbox_id: 's', status: 'parked', archived: false, updated_at: '2026-11-20T10:00:00Z' };
-        const archived = { ...row, archived: true, updated_at: '2026-11-20T10:00:01Z' };
-        let release!: () => void;
-        const held = new Promise<void>(resolve => { release = resolve; });
-        let calls = 0;
-        const api = { get: async () => {
-          if (++calls === 1) return [row];
-          await held;
-          return [{ ...row, updated_at: restored ? '2026-11-20T10:00:03Z' : row.updated_at }];
-        }, post: async () => archived };
-        const store = createStore(api);
-        const ctx = { store, api, route: () => null };
-        await store.loadTasks('s');
-        const read = store.loadTasks('s');
-        if (source === 'remote') store.upsertTask(archived);
-        if (source === 'local') await archiveTask(ctx, row);
-        if (source === 'bulk') await archiveAll(ctx, [row], 'task');
-        if (source === 'delete') store.removeTask(row.id, { byUser: true });
-        release();
-        await read;
-        results.push([source, restored, Boolean(store.findTask(row.id))]);
-        store.stopEvents();
-      }
-    }
-    return results;
-  });
-  expect(results).toEqual([
-    ['remote', false, false], ['remote', true, true], ['local', false, false], ['local', true, true],
-    ['bulk', false, false], ['bulk', true, true], ['delete', false, false], ['delete', true, false],
-  ]);
 });

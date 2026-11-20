@@ -441,7 +441,7 @@ If a reservation skips past all available slots, land an empty extension first w
 - [0416](0416-parked-mcp-rows-use-the-verified-plan-and-pr.md) uses the verified parked plan and PR for MCP filtering and explanations.
 <!-- ADR 0416 -->
 <!-- ADR 0417 -->
-- [0418](0418-preserve-lifecycle-events-during-task-list-reads.md) preserves later task lifecycle changes across overlapping browser list reads.
+- [0418](0418-keep-the-newest-successful-task-list.md) keeps the newest successful browser task list when full reads overlap.
 <!-- ADR 0418 -->
 <!-- ADR 0419 -->
 <!-- ADR 0420 -->
