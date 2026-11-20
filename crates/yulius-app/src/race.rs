@@ -63,6 +63,8 @@ pub enum Point {
     /// A park (SPEC-512 PRK-003): its end intent is set under the launch lock; the session has
     /// not been asked to end yet. The path is the task id.
     ParkDecided,
+    /// A cold terminal reader inspected the first snapshot filename. Keyed by run directory.
+    ParkScreenRead,
     /// A live disconnected run was inspected and is about to be terminated. Keyed by run directory.
     LostRunTermination,
     /// `mark_lost`: the run's loss won its record; the run's end intent is not read yet. The

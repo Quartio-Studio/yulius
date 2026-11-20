@@ -13,6 +13,7 @@
 //! - every park is audited `task.parked` by `yulius`, without the task's words.
 
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -21,7 +22,7 @@ use yulius_domain::ids::SandboxId;
 use yulius_domain::task::{Activity, TaskGroup, TaskStatus};
 
 use crate::context::App;
-use crate::model::{TaskOrigin, TaskRecord};
+use crate::model::{AttemptRecord, TaskOrigin, TaskRecord};
 
 /// The grace period an idle session keeps before it is parked unless the unit says otherwise
 /// (`YULIUS_PARK_AFTER_MINUTES`): 30 minutes.
@@ -152,25 +153,24 @@ impl App {
 
     /// [`ParkFacts::parkable`] for `task` as stored now: what [`App::park_task_now`] asks again
     /// under the launch lock.
-    pub(crate) async fn parkable_now(&self, task: &TaskRecord, rule: ParkRule) -> bool {
+    pub(crate) async fn parkable_now(&self, task: &TaskRecord, rule: ParkRule) -> Option<i64> {
         let requested = self.park_requests(&task.sandbox_id).await;
-        match rule {
-            ParkRule::Grace => self
-                .park_facts(task, &requested, self.config.park_after_ms)
-                .await
-                .parkable(),
-            ParkRule::Digest(after_ms) => {
-                let asks = self
-                    .deps
+        let threshold = match rule {
+            ParkRule::Grace => self.config.park_after_ms,
+            ParkRule::Digest(ms) => ms,
+        };
+        let facts = self.park_facts(task, &requested, threshold).await;
+        let park = match rule {
+            ParkRule::Grace => facts.parkable(),
+            ParkRule::Digest(_) => facts.digest_parkable(
+                self.deps
                     .store
                     .task_needs_you(&task.id)
                     .await
-                    .map_or(true, |asked| asked.is_some());
-                self.park_facts(task, &requested, after_ms)
-                    .await
-                    .digest_parkable(asks)
-            }
-        }
+                    .map_or(true, |asked| asked.is_some()),
+            ),
+        };
+        park.then_some(facts.quiet_ms)
     }
 
     async fn park_requests(&self, sandbox: &SandboxId) -> Requests {
@@ -239,6 +239,149 @@ impl App {
             keyboard,
             onboarding: task.origin == TaskOrigin::Onboarding,
         }
+    }
+}
+
+const PARKED_SCREEN: &str = "parked-screen";
+const PARKING_SCREEN: &str = "parked-screen.pending";
+
+/// Append one parking notice after the last occupied row of the captured screen.
+fn with_park_notice(cols: u16, rows: u16, bytes: &[u8], quiet_ms: i64) -> (u16, u16, Vec<u8>) {
+    let mut parser = vt100::Parser::new(rows.max(1), cols.max(1), 0);
+    parser.process(bytes);
+    let last = parser
+        .screen()
+        .rows(0, cols)
+        .enumerate()
+        .filter(|(_, line)| !line.trim_end().is_empty())
+        .map(|(row, _)| row)
+        .last();
+    let elapsed = yulius_domain::ci::format_duration(quiet_ms);
+    let notice = format!(
+        "Yulius parked this session after {elapsed} idle since its turn ended. Send a message or choose Resume to continue."
+    );
+    let next = last.map_or(1, |row| row + 2);
+    // A full TUI needs another row. Keep the first row as well as the last
+    // when the notice wraps on a narrow terminal.
+    let needed = next - 1 + notice.len().div_ceil(usize::from(cols.max(1)));
+    let height = rows.max(u16::try_from(needed).unwrap_or(u16::MAX));
+    parser.screen_mut().set_size(height, cols.max(1));
+    parser.process(format!("\x1b[{next};1H\x1b[0m{notice}").as_bytes());
+    (cols, height, parser.screen().contents_formatted())
+}
+
+pub(crate) fn save_parked_screen(
+    hub: &crate::hub::Hub,
+    dir: &Path,
+    quiet_ms: i64,
+) -> std::io::Result<()> {
+    let (bytes, (cols, rows)) = hub.formatted_screen();
+    let (cols, rows, screen) = with_park_notice(cols, rows, &bytes, quiet_ms);
+    let mut record = format!("{cols} {rows}\n").into_bytes();
+    record.extend(screen);
+    crate::supervisor::write_private_file(&dir.join(PARKING_SCREEN), &record)
+}
+
+/// Commit the pre-stop capture only once the task has actually transitioned to Parked.
+pub(crate) fn publish_parked_screen(dir: &Path) -> Option<(u16, u16, Vec<u8>)> {
+    let candidate = dir.join(PARKING_SCREEN);
+    let committed = dir.join(PARKED_SCREEN);
+    if let Err(err) = std::fs::rename(&candidate, &committed) {
+        tracing::warn!(error = %err, "could not publish parked screen");
+        return crate::supervisor::read_saved_screen(&candidate);
+    }
+    crate::supervisor::read_saved_screen(&committed)
+}
+
+pub(crate) struct EndedScreen {
+    pub(crate) grid: (u16, u16, Vec<u8>),
+    pub(crate) parked: bool,
+}
+
+impl App {
+    /// A recorded resume may still be spawning. Until its first host snapshot, only
+    /// a committed park from the preceding attempt may be displayed in its place.
+    pub(crate) async fn visible_ended_screen(
+        &self,
+        task: &TaskRecord,
+        attempts: &[AttemptRecord],
+    ) -> Option<EndedScreen> {
+        let (latest, prior) = attempts.split_last()?;
+        // Losing the selected account records an ended attempt before any host
+        // spawns. Its replacement still belongs to the original resume.
+        let removed_before_spawn = |run: &AttemptRecord| {
+            run.launch_kind == crate::model::LaunchKind::Resume
+                && run.exit_reason.as_deref() == Some("account_removed")
+        };
+        let retrying = matches!(
+            task.status,
+            TaskStatus::Starting | TaskStatus::WaitingCapacity | TaskStatus::Queued
+        ) && removed_before_spawn(latest);
+        if latest.state.is_terminal() && !retrying {
+            return self.ended_screen(latest, task).await;
+        }
+        if latest.launch_kind != crate::model::LaunchKind::Resume {
+            return None;
+        }
+        let previous = prior.iter().rev().find(|run| !removed_before_spawn(run))?;
+        self.ended_screen(previous, task)
+            .await
+            .filter(|screen| screen.parked)
+    }
+
+    /// Restore the capture for a committed park, or the ordinary final screen.
+    pub(crate) async fn ended_screen(
+        &self,
+        run: &AttemptRecord,
+        task: &TaskRecord,
+    ) -> Option<EndedScreen> {
+        let dir = Path::new(&run.run_dir);
+        let ordinary = || {
+            crate::supervisor::read_final_screen(dir).map(|grid| EndedScreen {
+                grid,
+                parked: false,
+            })
+        };
+        // Read the pending name first: a concurrent rename then leaves either these
+        // bytes or the committed name visible to this reader.
+        let pending = crate::supervisor::read_saved_screen(&dir.join(PARKING_SCREEN));
+        crate::race::reached(crate::race::Point::ParkScreenRead, dir);
+        if let Some(saved) = crate::supervisor::read_saved_screen(&dir.join(PARKED_SCREEN)) {
+            return Some(EndedScreen {
+                grid: saved,
+                parked: true,
+            });
+        }
+        let Some(pending) = pending else {
+            return ordinary();
+        };
+        // A restart between the state commit and the rename. A stop that won the
+        // transition keeps its ordinary screen, including after a queued resume.
+        if task.status == TaskStatus::Parked
+            || self
+                .deps
+                .store
+                .subject_spans(
+                    &task.sandbox_id,
+                    yulius_domain::stages::SubjectKind::Task,
+                    task.id.as_str(),
+                    32,
+                )
+                .await
+                .is_ok_and(|spans| {
+                    spans.iter().any(|span| {
+                        span.kind == "state"
+                            && span.ended_at == run.ended_at
+                            && span.outcome.as_deref() == Some("parked")
+                    })
+                })
+        {
+            return Some(EndedScreen {
+                grid: pending,
+                parked: true,
+            });
+        }
+        ordinary()
     }
 }
 
@@ -345,6 +488,22 @@ mod tests {
         assert_eq!(
             queue_reason(false, false, 2, 8).as_deref(),
             Some("Starting: a session is free")
+        );
+    }
+
+    #[test]
+    fn parking_preserves_every_occupied_row_and_adds_one_timed_notice() {
+        let (cols, rows, bytes) = with_park_notice(72, 2, b"first row\r\nlast row", 1_800_000);
+        let hub = crate::hub::Hub::new(cols, rows);
+        hub.reset(1, &bytes, cols, rows);
+        let shown = hub.screen_text();
+        assert!(shown.starts_with("first row\nlast row\n"), "{shown}");
+        assert_eq!(shown.matches("Yulius parked").count(), 1);
+        assert!(shown.contains("30 min 0 s idle since its turn ended"));
+        assert!(
+            shown
+                .trim_end()
+                .ends_with("Send a message or choose Resume to continue.")
         );
     }
 

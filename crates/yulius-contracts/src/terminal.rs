@@ -77,6 +77,9 @@ pub enum TerminalClientMsg {
 pub enum TerminalServerMsg {
     /// Session facts; sent on connect and on change.
     State {
+        /// True while the viewer shows an immutable parked capture.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        parked_screen: bool,
         /// Attempt sequence currently attached.
         attempt_seq: Option<u32>,
         /// Harness of the attempt.

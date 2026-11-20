@@ -63,6 +63,8 @@ pub struct TerminalState {
     pub harness: Option<String>,
     /// PTY size.
     pub size: (u16, u16),
+    /// The visible grid belongs to a completed park.
+    pub parked_screen: bool,
     /// Task status wire name.
     pub status: String,
 }
@@ -92,13 +94,21 @@ impl App {
             .require_for(ctx, &task.sandbox_id, Action::View)
             .await?;
         let runtime = self.runtime(&task.id);
-        if !runtime.hub.has_output()
-            && self.deps.store.live_attempt(&task.id).await?.is_none()
-            && let Some(last) = self.deps.store.attempts(&task.id).await?.pop()
-            && let Some((cols, rows, screen)) =
-                crate::supervisor::read_final_screen(std::path::Path::new(&last.run_dir))
+        if !runtime.hub.initialized()
+            && let Some(saved) = self
+                .visible_ended_screen(&task, &self.deps.store.attempts(&task.id).await?)
+                .await
         {
-            runtime.hub.reset(1, &screen, cols, rows);
+            let (cols, rows, screen) = saved.grid;
+            runtime.hub.restore(
+                1,
+                &screen,
+                cols,
+                rows,
+                crate::hub::ScreenUpdate::Cold {
+                    parked: saved.parked,
+                },
+            );
         }
         if runtime.hub.viewer_count() >= MAX_VIEWERS {
             return Err(AppError::Capacity("too many viewers on this task".into()));
@@ -162,6 +172,7 @@ impl App {
             .await?
             .ok_or(AppError::NotFound)?;
         let attempt = self.deps.store.live_attempt(task_id).await?;
+        let (size, parked_screen) = self.runtime(task_id).hub.grid_state();
         Ok(TerminalState {
             attempt_seq: attempt.as_ref().map(|a| a.seq),
             harness: Some(
@@ -170,7 +181,8 @@ impl App {
                     .as_str()
                     .to_owned(),
             ),
-            size: self.runtime(task_id).hub.size(),
+            size,
+            parked_screen,
             status: task.status.as_str().to_owned(),
         })
     }
