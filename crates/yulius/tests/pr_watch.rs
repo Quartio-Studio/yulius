@@ -20,7 +20,7 @@ use crate::pool_supervision::{build_tuned, new_task, runtime, screen, seed, stop
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-fn git(dir: &Path, args: &[&str]) -> Result<String, Box<dyn std::error::Error>> {
+pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, Box<dyn std::error::Error>> {
     let out = Command::new("git")
         .args(args)
         .current_dir(dir)
@@ -36,7 +36,7 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, Box<dyn std::error::Error>> 
 }
 
 /// A run of pull request 7 at `head` that ended in `state`, with one job.
-fn run(
+pub(crate) fn run(
     sandbox: &SandboxId,
     id: &str,
     head: &str,

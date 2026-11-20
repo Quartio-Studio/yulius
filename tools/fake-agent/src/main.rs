@@ -775,7 +775,8 @@ impl Tui {
             )
         ));
         screen.push_str(&format!("╰{}╯", "─".repeat(cols - 2)));
-        let body = rows - 3 - 4;
+        // Leave Claude Code's hint row between the transcript and the upper input rule.
+        let body = rows - 3 - 5;
         if let Ok(lines) = self.lines.lock() {
             let start = lines.len().saturating_sub(body);
             for (i, line) in lines.iter().skip(start).enumerate() {

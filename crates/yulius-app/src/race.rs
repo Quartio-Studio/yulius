@@ -143,6 +143,9 @@ pub enum Point {
     /// A Stop hook (SPEC-346): the task was read; the Stop has not taken the turn lock yet. The
     /// path is the task id.
     StopTurnLock,
+    /// The screen showed an empty box during an old-key hold. The typist is about to
+    /// recheck under the draft lock before pasting. The path is the task id.
+    BoxSeenEmpty,
     /// A prompt hook (SPEC-346) passed its turn-end check under the turn lock; it has not set
     /// Working yet. The path is the task id.
     PromptTurnChecked,
