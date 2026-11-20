@@ -3158,3 +3158,8 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .guest-invite-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .guest-invite { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius-lg); }
 .guest-invite > .grow { flex: 1; min-width: 0; }
+
+/* The end-of-day digest page (SPEC-512 DIG-005): one task per row, links big enough to tap. */
+.digest-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.digest-item a { display: inline-flex; align-items: center; min-height: 24px; }
+.digest-detail { overflow-wrap: anywhere; }

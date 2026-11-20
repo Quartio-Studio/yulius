@@ -262,7 +262,8 @@ The question of direction: the restart waits only while a person typed in the la
   whose text was corrected once the binaries were read: with a real Claude Code the goal
   stays in force there and only Yulius's reading is missing until the next verdict. It is not
   this change's code, and a move away from a subscription at its limit cannot simply wait as
-  this restart can.
+  this restart can. [SPEC-540](SPEC-540-restore-prompt-mode-goal-state-after-sub.md) restores
+  the reading on a subscription move.
 - **A draft is "typed since the last submitted prompt".** Yulius cannot read the prompt box,
   but it sees every keystroke of a viewer and every submitted prompt, so it can tell that
   something was typed and not sent. Keystrokes that are no draft (an answer to a permission

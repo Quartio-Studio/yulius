@@ -9,6 +9,7 @@ import { h, icon, iconButton, setChildren, popoverFocus, keepFocus, toast } from
 import { relShort, dateTime } from './format.js';
 import { taskInfo } from './status.js';
 import { readJson, writeJson } from './store.js';
+import { digestSummary } from './digest.js';
 
 const MAX_ITEMS = 100;
 const KINDS = new Set(['info', 'ok', 'warn', 'error']);
@@ -82,7 +83,7 @@ export function createNotificationCenter(ctx) {
    * Records a notification. A `key` keeps one entry per subject (a task, a browser tab): a new
    * one replaces it and is unread again; with `once`, an existing entry is left as it is.
    */
-  function add({ kind = 'info', title, detail = null, route = null, key = null, once = false }) {
+  function add({ kind = 'info', title, detail = null, route = null, key = null, once = false, at = null }) {
     if (key) {
       const index = items.findIndex((n) => n.key === key);
       if (index >= 0) {
@@ -91,7 +92,7 @@ export function createNotificationCenter(ctx) {
       }
     }
     seq += 1;
-    items.unshift({ id: `${Date.now().toString(36)}-${seq}`, kind, title, detail, route, key, at: new Date().toISOString(), read: false });
+    items.unshift({ id: `${Date.now().toString(36)}-${seq}`, kind, title, detail, route, key, at: at || new Date().toISOString(), read: false });
     if (items.length > MAX_ITEMS) items.length = MAX_ITEMS;
     save();
     render();
@@ -198,6 +199,22 @@ export function createNotificationCenter(ctx) {
     if (live) toast(title, { kind: 'warn', timeout: 10000, action: route ? { label: 'Open', run: () => ctx.navigate(route) } : undefined });
   }
   watch('task', (task) => heardRequest(task, true));
+
+  // The end-of-day digest (SPEC-512 DIG-005): one entry per digest that opens /digest, also for
+  // one made while no page was open (read when the page opens). The last digest heard is
+  // remembered apart from the list, so a cleared or dropped entry does not come back on the next
+  // load (review round 1); the entry carries the digest's own time. Only the read at page open
+  // asks that memory: a digest arriving live reaches every open tab, whichever heard it first
+  // (review round 2).
+  const digestSeenKey = `yulius.digest.seen.${user.id || user.login || 'anonymous'}`;
+  function heardDigest(digest, live) {
+    if (!digest || typeof digest.id !== 'string') return;
+    if (!live && readJson(digestSeenKey, null) === digest.id) return;
+    writeJson(digestSeenKey, digest.id);
+    add({ kind: 'info', title: 'Your end-of-day digest', detail: digestSummary(digest), route: '/digest', key: `digest:${digest.id}`, once: true, at: digest.created_at });
+  }
+  watch('digest', (digest) => heardDigest(digest, true));
+  if (ctx.api) ctx.api.get('/api/me/digest').then((digest) => heardDigest(digest, false), () => {});
   // A sandbox's tasks as first loaded: requests that waited before the page did. Later list
   // changes come with their own task event.
   const loaded = new Set();

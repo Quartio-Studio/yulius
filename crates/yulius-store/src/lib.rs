@@ -15,6 +15,7 @@ mod ci;
 mod coordination;
 pub mod crypto;
 mod delivery;
+mod digest;
 mod guests;
 mod imports;
 mod instance;
@@ -194,6 +195,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0069_reindex_codex_antigravity_sessions.sql"),
     // SPEC-534. The position is the schema version and 0072 is the reserved file number.
     include_str!("migrations/0072_pause_legacy_automations.sql"),
+    // Schema version 71 (SPEC-512 DIG-001); 0070 is the reserved file number.
+    include_str!("migrations/0070_end_of_day_digest.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -473,6 +476,7 @@ mod tests {
                 70,
                 include_str!("migrations/0072_pause_legacy_automations.sql"),
             ),
+            (71, include_str!("migrations/0070_end_of_day_digest.sql")),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -481,7 +485,7 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 70, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 71, "a new migration is pinned here too");
     }
 
     /// SPEC-514 PIN-003: a version-67 database's automations saved as `auto` (drawn for each

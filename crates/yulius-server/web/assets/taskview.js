@@ -439,6 +439,8 @@ export function mountTaskView(ctx, sandbox, task) {
     attentionStale = false;
     const pr = ctx.store.pullsOf(current.sandbox_id).get(current.id);
     const info = taskInfo(current, ctx.store.state.actionRequests, pr);
+    // Failed checks already have their PR action in the strip.
+    const waitingForReply = current.status === 'running' && current.activity === 'waiting' && info.group === 'needs' && !info.pr;
     let content = null;
     let asksPerson = false; // the bar shows a `needs_you` request
     let textAnswer = false; // the bar asks for an answer written in its reply field
@@ -555,7 +557,7 @@ export function mountTaskView(ctx, sandbox, task) {
             asks ? 'Its question is in the terminal below.' : 'Look at its terminal below.']),
           owner() ? null : terminalReply];
       }
-    } else if (current.status === 'running' && current.activity === 'waiting' && info.group === 'needs') {
+    } else if (waitingForReply) {
       content = [icon('st-input', { size: 16 }), h('span', { class: 'attention-text' }, owner()
         ? h('strong', null, `The agent is waiting for @${owner()}'s reply.`)
         : [h('strong', null, 'The agent is waiting for your reply. '), 'Type it in the terminal below.']),
@@ -566,7 +568,7 @@ export function mountTaskView(ctx, sandbox, task) {
     attention.hidden = !content && !control;
     // A request's buttons go under it when the bar is too narrow for both (SPEC-327 review).
     attention.classList.toggle('needs-you', asksPerson);
-    attention.classList.toggle('waiting', !control && !info.request && current.activity === 'waiting' && info.group === 'needs');
+    attention.classList.toggle('waiting', !control && !info.request && waitingForReply);
     attention.classList.toggle('stacked', Boolean(control && content));
     // A waiting task's start chip and buttons go below its words (SPEC-126).
     const waits = (current.status === 'chained' || current.status === 'prepared') && can.startNow;

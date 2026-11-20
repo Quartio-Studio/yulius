@@ -905,6 +905,7 @@ async fn subscription_problems_reach_administrators_and_disabled_people_get_noth
         done: true,
         failed: true,
         account: true,
+        digest: true,
     };
     assert!(w.h.store.set_chat_choices(&bob, &wants_all).await?);
     let secret = concat!("ghp_", "Zx9Telegram0Account1Fixture2Body3456");
@@ -1450,5 +1451,329 @@ async fn a_dropped_remove_is_still_audited() -> TestResult {
     }
     assert!(w.h.store.chat_bot().await?.is_none());
     assert!(!w.h.app.telegram_polling(), "the removed bot polls");
+    Ok(())
+}
+
+async fn set_digest(
+    w: &World,
+    body: Value,
+    who: &Creds,
+) -> Result<support::Resp, Box<dyn std::error::Error>> {
+    api(w, Method::PUT, "/api/admin/digest", Some(body), who).await
+}
+
+/// SPEC-512 DIG-001: the digest is off by default, set by an instance administrator only, its
+/// time `HH:MM` and its threshold 1 to 720 hours; a change is audited.
+#[tokio::test]
+async fn the_digest_is_off_by_default_and_set_by_an_instance_administrator() -> TestResult {
+    let w = world().await?;
+    let view = api(&w, Method::GET, "/api/admin/digest", None, &w.alice).await?;
+    assert_eq!(view.status, StatusCode::OK, "{}", view.body);
+    assert_eq!(
+        view.body,
+        json!({"enabled": false, "at": "18:00", "park_idle_hours": null})
+    );
+    let bob = api(&w, Method::GET, "/api/admin/digest", None, &w.bob).await?;
+    assert_eq!(bob.status, StatusCode::FORBIDDEN);
+    let refused = set_digest(&w, json!({"enabled": true, "at": "18:00"}), &w.bob).await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    for bad in [
+        json!({"enabled": true, "at": "25:00"}),
+        json!({"enabled": true, "at": "18:00", "park_idle_hours": 0}),
+        json!({"enabled": true, "at": "18:00", "park_idle_hours": 721}),
+    ] {
+        let r = set_digest(&w, bad.clone(), &w.alice).await?;
+        assert_eq!(
+            r.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{bad}: {}",
+            r.body
+        );
+    }
+    let r = set_digest(
+        &w,
+        json!({"enabled": true, "at": "7:05", "park_idle_hours": 24}),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(
+        r.body,
+        json!({"enabled": true, "at": "07:05", "park_idle_hours": 24})
+    );
+    let view = api(&w, Method::GET, "/api/admin/digest", None, &w.admin).await?;
+    assert_eq!(view.body["at"], "07:05");
+    assert_eq!(audits(&w, "digest", "instance.digest.set").await?.len(), 1);
+    // Nothing was sent: the first digest is the next 07:05.
+    let mine = api(&w, Method::GET, "/api/me/digest", None, &w.alice).await?;
+    assert_eq!(mine.body, Value::Null);
+    Ok(())
+}
+
+/// SPEC-512 DIG-004 to DIG-006: one digest per person with something to report: what waits for
+/// them first, what was parked since the last one, how many still work; its texts redacted as
+/// the sandbox's transcripts are; in the browser and the linked chat, unless the person turned
+/// digests off there. A person with nothing gets none.
+#[tokio::test]
+async fn a_digest_lists_what_waits_first_redacted_and_reaches_the_chat() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    let created = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "PAYMENT_KEY", "value": SECRET})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    link(&w, &w.alice, 100).await?;
+    link(&w, &w.bob, 200).await?;
+    link(&w, &w.carol, 300).await?;
+    let alice = user_id(&w, "alice").await?;
+    seed_task(&w.h, "t1", "s1", &alice, TaskStatus::Running, None).await?;
+    seed_task(&w.h, "t2", "s1", &alice, TaskStatus::Running, None).await?;
+    seed_task(&w.h, "t3", "s1", &alice, TaskStatus::Running, None).await?;
+    move_to(&w, "t2", TaskStatus::Running, Some(Activity::Working)).await?;
+    move_to(&w, "t3", TaskStatus::Parked, Some(Activity::Done)).await?;
+    let request = NeedsYouRecord {
+        action: format!("Rotate {SECRET} on the server"),
+        happened: None,
+        problem: None,
+        decision: false,
+        link: None,
+        at: 1,
+        cause: None,
+        named: Default::default(),
+    };
+    w.h.store
+        .set_task_needs_you(&TaskId::parse("t1")?, Some(&request), w.h.app.now())
+        .await?;
+    // A secret in a title is redacted too (review round 1).
+    w.h.store
+        .update_task(
+            &TaskId::parse("t2")?,
+            &yulius_app::ports::store::TaskFieldUpdate {
+                title: Some(format!("Pay with {SECRET}")),
+                ..Default::default()
+            },
+            w.h.app.now(),
+        )
+        .await?;
+    // Saving the setting before the first digest keeps its 24-hour look back (review round 1:
+    // a save shortened the window to the save).
+    let saved = set_digest(&w, json!({"enabled": true, "at": "18:00"}), &w.alice).await?;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.body);
+    let before = w.fake.sent_to(100).len();
+
+    assert_eq!(
+        w.h.app.send_digests_now(None).await.sent,
+        1,
+        "bob has nothing"
+    );
+    let mine = api(&w, Method::GET, "/api/me/digest", None, &w.alice).await?;
+    let digest = &mine.body;
+    assert_eq!(digest["waiting"][0]["number"], 1, "{digest}");
+    let asked = digest["waiting"][0]["detail"].as_str().ok_or("detail")?;
+    assert!(
+        asked.contains("Rotate") && !asked.contains(SECRET),
+        "{asked}"
+    );
+    assert_eq!(digest["parked"][0]["number"], 3, "{digest}");
+    assert_eq!(digest["parked"][0]["detail"], "Finished", "{digest}");
+    assert_eq!(digest["working_count"], 1, "{digest}");
+    assert_eq!(digest["working"][0]["number"], 2, "{digest}");
+    let title = digest["working"][0]["title"].as_str().ok_or("title")?;
+    assert!(
+        title.starts_with("Pay with") && !title.contains(SECRET),
+        "{title}"
+    );
+    assert_eq!(
+        digest["waiting"][0]["link"],
+        "https://yulius.test/s/app/t/1"
+    );
+    let bobs = api(&w, Method::GET, "/api/me/digest", None, &w.bob).await?;
+    assert_eq!(bobs.body, Value::Null);
+
+    let sent = w.fake.wait_sent(100, before + 1).await?;
+    let text = sent
+        .iter()
+        .rev()
+        .find(|t| t.starts_with("Your Yulius digest"))
+        .ok_or("no digest sent")?;
+    assert!(text.contains("Waiting for you (1):"), "{text}");
+    assert!(text.contains("Parked (1):"), "{text}");
+    assert!(text.contains("Still working: 1"), "{text}");
+    assert!(!text.contains(SECRET), "redacted: {text}");
+    assert_eq!(
+        w.fake.sent_to(200).len(),
+        1,
+        "bob got only his link's answer"
+    );
+
+    // Turned off in the chat: the browser still gets it, the chat does not.
+    let r = api(
+        &w,
+        Method::PUT,
+        "/api/me/telegram/choices",
+        Some(json!({"needs_you": true, "done": false, "failed": false, "account": false, "digest": false})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(r.body["choices"]["digest"], false, "{}", r.body);
+    let told = w.fake.sent_to(100).len();
+    assert_eq!(w.h.app.send_digests_now(None).await.sent, 1);
+    barrier(&w, "d1").await?;
+    assert_eq!(w.fake.sent_to(100).len(), told, "{:?}", w.fake.sent_to(100));
+    let again = api(&w, Method::GET, "/api/me/digest", None, &w.alice).await?;
+    assert_ne!(again.body["id"], digest["id"]);
+    // What the first digest listed as parked is not listed again (review round 1).
+    assert_eq!(again.body["parked"], json!([]), "{}", again.body);
+    Ok(())
+}
+
+/// SPEC-512 DIG-002: the digest runs once its time passed, once a day, and never while off.
+#[tokio::test]
+async fn the_digest_runs_once_a_day_after_its_time() -> TestResult {
+    let w = world().await?;
+    let alice = user_id(&w, "alice").await?;
+    seed_task(&w.h, "t1", "s1", &alice, TaskStatus::Running, None).await?;
+    move_to(&w, "t1", TaskStatus::Running, Some(Activity::Working)).await?;
+    // The harness's day, so the session stays signed in.
+    let day = w.h.app.now().0.div_euclid(24 * 60 * MINUTE_MS) * 24 * 60 * MINUTE_MS;
+    w.h.clock
+        .0
+        .store(day + 10 * 60 * MINUTE_MS, Ordering::SeqCst);
+    assert_eq!(w.h.app.digest_tick().await.sent, 0, "off by default");
+    let r = api(
+        &w,
+        Method::PUT,
+        "/api/admin/digest",
+        Some(json!({"enabled": true, "at": "18:00"})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(w.h.app.digest_tick().await.sent, 0, "before its time");
+    w.h.clock
+        .0
+        .store(day + 18 * 60 * MINUTE_MS + 1, Ordering::SeqCst);
+    assert_eq!(w.h.app.digest_tick().await.sent, 1);
+    assert_eq!(w.h.app.digest_tick().await.sent, 0, "once a day");
+    w.h.clock
+        .0
+        .store(day + 42 * 60 * MINUTE_MS + 1, Ordering::SeqCst);
+    assert_eq!(w.h.app.digest_tick().await.sent, 1, "the next day");
+    Ok(())
+}
+
+/// A request on `task` naming `who` (and `withdrawn`), changed in the store.
+async fn ask_named(w: &World, task: &str, who: &[&str], withdrawn: &[&str]) -> TestResult {
+    let request = NeedsYouRecord {
+        action: "Pick the release date".into(),
+        happened: None,
+        problem: None,
+        decision: true,
+        link: None,
+        at: 1,
+        cause: None,
+        named: yulius_app::needs_you::Named {
+            who: who.iter().map(|s| (*s).to_owned()).collect(),
+            withdrawn: withdrawn.iter().map(|s| (*s).to_owned()).collect(),
+        },
+    };
+    w.h.store
+        .set_task_needs_you(&TaskId::parse(task)?, Some(&request), w.h.app.now())
+        .await?;
+    Ok(())
+}
+
+async fn digest_of(w: &World, who: &Creds) -> Result<Value, Box<dyn std::error::Error>> {
+    Ok(api(w, Method::GET, "/api/me/digest", None, who).await?.body)
+}
+
+/// SPEC-512 DIG-004 (review round 1): a digest reaches only people who can see the project: not
+/// an owner who lost access, not a named person without access; a named person who can see it
+/// gets the request, a withdrawn one does not, and a disabled owner gets nothing while the named
+/// person still does.
+#[tokio::test]
+async fn a_digest_reaches_only_people_who_can_see_the_project() -> TestResult {
+    let w = world().await?;
+    let alice = user_id(&w, "alice").await?;
+    let bob = user_id(&w, "bob").await?;
+    // Bob owns a task of s1, which he cannot see; it names carol, who reads s2 only.
+    seed_task(&w.h, "t1", "s1", &bob, TaskStatus::Running, None).await?;
+    ask_named(&w, "t1", &["carol"], &[]).await?;
+    assert_eq!(w.h.app.send_digests_now(None).await.sent, 0);
+    assert_eq!(digest_of(&w, &w.bob).await?, Value::Null);
+    assert_eq!(digest_of(&w, &w.carol).await?, Value::Null);
+
+    // Alice's task of s2 names carol, who reads s2.
+    w.h.github.set_perm("alice", "acme/other", perms("write"));
+    w.h.store.delete_task(&TaskId::parse("t1")?).await?;
+    seed_task(&w.h, "t2", "s2", &alice, TaskStatus::Running, None).await?;
+    ask_named(&w, "t2", &["carol"], &[]).await?;
+    assert_eq!(w.h.app.send_digests_now(None).await.sent, 2);
+    let carols = digest_of(&w, &w.carol).await?;
+    assert_eq!(
+        carols["waiting"][0]["detail"], "Pick the release date",
+        "{carols}"
+    );
+
+    // Withdrawn, carol gets nothing more.
+    ask_named(&w, "t2", &[], &["carol"]).await?;
+    let before = digest_of(&w, &w.carol).await?;
+    assert_eq!(w.h.app.send_digests_now(None).await.sent, 1, "alice only");
+    assert_eq!(digest_of(&w, &w.carol).await?["id"], before["id"]);
+
+    // Alice disabled: carol, named again, still gets it; alice gets no new one.
+    use yulius_app::ports::store_ext::DigestStore as _;
+    ask_named(&w, "t2", &["carol"], &[]).await?;
+    let alice_id = yulius_domain::ids::UserId::parse(&alice)?;
+    let alices_last =
+        w.h.store
+            .latest_digest(&alice_id)
+            .await?
+            .ok_or("alice had one")?
+            .id;
+    w.h.store
+        .update_user_flags(&alice_id, Some(Some(w.h.app.now())), None)
+        .await?;
+    let carol_before = digest_of(&w, &w.carol).await?;
+    assert_eq!(w.h.app.send_digests_now(None).await.sent, 1, "carol only");
+    assert_ne!(digest_of(&w, &w.carol).await?["id"], carol_before["id"]);
+    assert_eq!(
+        w.h.store.latest_digest(&alice_id).await?.ok_or("alice")?.id,
+        alices_last
+    );
+    Ok(())
+}
+
+/// SPEC-512 DIG-002 (review round 3): the same-day rule reads the run's claim, not where its
+/// listing ended: a digest claimed at 23:59:30 whose listing ended after midnight does not cost
+/// the next day's.
+#[tokio::test]
+async fn a_digest_whose_listing_ends_after_midnight_keeps_the_next_days() -> TestResult {
+    use yulius_app::ports::store_ext::DigestStore as _;
+    let w = world().await?;
+    let alice = user_id(&w, "alice").await?;
+    seed_task(&w.h, "t1", "s1", &alice, TaskStatus::Running, None).await?;
+    move_to(&w, "t1", TaskStatus::Running, Some(Activity::Working)).await?;
+    let day_ms = 24 * 60 * MINUTE_MS;
+    let day = w.h.app.now().0.div_euclid(day_ms) * day_ms;
+    w.h.clock
+        .0
+        .store(day + 10 * 60 * MINUTE_MS, Ordering::SeqCst);
+    let r = set_digest(&w, json!({"enabled": true, "at": "23:59"}), &w.alice).await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let claimed = day + day_ms - 30_000;
+    w.h.clock.0.store(claimed, Ordering::SeqCst);
+    assert_eq!(w.h.app.digest_tick().await.sent, 1);
+    // Its listing ended at 00:00:05 the next day (a slow park).
+    w.h.store
+        .set_digest_listed_at(yulius_domain::time::Timestamp(day + day_ms + 5_000))
+        .await?;
+    w.h.clock.0.store(claimed + day_ms, Ordering::SeqCst);
+    assert_eq!(w.h.app.digest_tick().await.sent, 1, "the next day's digest");
     Ok(())
 }

@@ -386,6 +386,22 @@ impl HarnessPort for HarnessAdapter {
         paths::claude_transcript_path(&sandbox_home.join(".claude"), worktree, session_id)
     }
 
+    fn last_claude_goal(
+        &self,
+        anchor: &Path,
+        path: &Path,
+    ) -> AppResult<Option<yulius_domain::task::GoalOutcome>> {
+        use yulius_app::transcripts;
+        let file = match transcripts::open(anchor, path) {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(io(err)),
+        };
+        claude::last_goal(file)
+            .map(|goal| goal.map(|(outcome, _)| outcome))
+            .map_err(io)
+    }
+
     fn submit_origin(
         &self,
         file: std::fs::File,
@@ -1186,6 +1202,65 @@ mod tests {
             None,
             "written before the run began"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn resumed_goal_uses_the_last_complete_main_thread_status()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::Write as _;
+        use yulius_domain::task::GoalOutcome;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("conversation.jsonl");
+        let adapter = HarnessAdapter::new("/bin/yulius".into(), "http://127.0.0.1:1");
+        let goal = || adapter.last_claude_goal(dir.path(), &path);
+        assert_eq!(goal()?, None);
+        let mut file = std::fs::File::create(&path)?;
+        for (fields, outcome) in [
+            (
+                serde_json::json!({"met":false,"sentinel":true}),
+                GoalOutcome::Set,
+            ),
+            (serde_json::json!({"met":false}), GoalOutcome::NotMet),
+            (
+                serde_json::json!({"met":false,"failed":true}),
+                GoalOutcome::Failed,
+            ),
+            (serde_json::json!({"met":true}), GoalOutcome::Met),
+            (
+                serde_json::json!({"met":true,"sentinel":true}),
+                GoalOutcome::Cleared,
+            ),
+        ] {
+            let mut attachment = fields;
+            attachment["type"] = "goal_status".into();
+            writeln!(
+                file,
+                "{}",
+                serde_json::json!({"type":"attachment","attachment":attachment})
+            )?;
+            writeln!(
+                file,
+                r#"{{"type":"attachment","isSidechain":true,"attachment":{{"type":"goal_status","met":false}}}}"#
+            )?;
+            writeln!(file, "malformed")?;
+            assert_eq!(goal()?, Some(outcome));
+        }
+        // The newline is outside the live watch's record-size limit.
+        let mut open =
+            br#"{"type":"attachment","attachment":{"type":"goal_status","met":false}}"#.to_vec();
+        open.resize(tail::DEFAULT_MAX_LINE_BYTES, b' ');
+        file.write_all(&open)?;
+        file.write_all(b" \n")?;
+        assert_eq!(goal()?, Some(GoalOutcome::Cleared));
+        file.write_all(&open)?;
+        file.write_all(b"\n")?;
+        assert_eq!(goal()?, Some(GoalOutcome::NotMet));
+        write!(
+            file,
+            r#"{{"type":"attachment","attachment":{{"type":"goal_status","met":true}}}}"#
+        )?;
+        assert_eq!(goal()?, Some(GoalOutcome::NotMet));
         Ok(())
     }
 
