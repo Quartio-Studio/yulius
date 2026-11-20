@@ -70,8 +70,35 @@ pub(crate) enum ScreenUpdate {
 struct Screen {
     initialized: bool,
     parked: bool,
+    /// Resizing can crop a hint or a draft. A host snapshot can already contain that
+    /// crop. Only fresh PTY output can reestablish an empty-box proof.
+    needs_redraw: bool,
     parser: vt100::Parser,
     seq: u64,
+}
+
+impl Screen {
+    fn process_output(&mut self, bytes: &[u8]) {
+        if !self.needs_redraw {
+            self.parser.process(bytes);
+            return;
+        }
+        // Claude clears the alternate screen with ED 2 before repainting it. Parse through
+        // the J (also when the control straddles frames) and inspect the actual grid. A
+        // literal escape in an OSC payload cannot certify a crop. At most one grid scan
+        // per output frame while awaiting a redraw.
+        let clear = b"\x1b[2J";
+        let mut checked = false;
+        for part in bytes.split_inclusive(|byte| *byte == b'J') {
+            self.parser.process(part);
+            if !checked && (part.ends_with(clear) || clear.ends_with(part)) {
+                checked = true;
+                let grid = self.parser.screen();
+                self.needs_redraw = !(grid.alternate_screen()
+                    && grid.rows(0, grid.size().1).all(|row| row.trim().is_empty()));
+            }
+        }
+    }
 }
 
 /// Terminal fan-out for one task.
@@ -107,6 +134,7 @@ impl Hub {
             screen: Mutex::new(Screen {
                 initialized: false,
                 parked: false,
+                needs_redraw: false,
                 parser: vt100::Parser::new(rows.max(1), cols.max(1), 0),
                 seq: 0,
             }),
@@ -125,7 +153,7 @@ impl Hub {
             return;
         }
         screen.initialized = true;
-        screen.parser.process(bytes);
+        screen.process_output(bytes);
         screen.seq = seq;
         for chunk in bytes.chunks(MAX_FRAME_BYTES) {
             let _ = self.tx.send(HubFrame::Output {
@@ -162,6 +190,7 @@ impl Hub {
         let announce = parked || screen.parked;
         screen.initialized = true;
         screen.parked = parked;
+        screen.needs_redraw = true;
         screen.parser = vt100::Parser::new(rows.max(1), cols.max(1), 0);
         screen.parser.process(snapshot);
         screen.seq = seq;
@@ -182,6 +211,7 @@ impl Hub {
             if screen.parked || screen.parser.screen().size() == (rows, cols) {
                 return;
             }
+            screen.needs_redraw = true;
             screen.parser.screen_mut().set_size(rows, cols);
         }
         let _ = self.tx.send(HubFrame::State);
@@ -233,11 +263,11 @@ impl Hub {
         self.screen.lock().map(|s| s.seq > 0).unwrap_or(false)
     }
 
-    /// Positive evidence from the live host screen, including a reattached snapshot.
+    /// Positive evidence from live renderer output at the current terminal geometry.
     pub(crate) fn prompt_box_shown_empty(&self) -> bool {
         self.screen
             .lock()
-            .is_ok_and(|s| !s.parked && crate::prompt_box::shown_empty(s.parser.screen()))
+            .is_ok_and(|s| !s.needs_redraw && crate::prompt_box::shown_empty(s.parser.screen()))
     }
 
     /// Whether the live VT screen shows text in Claude Code's conversation input.
@@ -501,10 +531,51 @@ mod tests {
         assert_eq!(hub.controller(), 0);
     }
 
+    #[test]
+    fn a_resize_cannot_crop_a_stash_into_proof_of_emptiness() {
+        let hub = Hub::new(40, 12);
+        let frame = |cols: usize| {
+            let rule = "─".repeat(cols);
+            format!("\x1b[?1049h\x1b[H\x1b[2J\x1b[8;1H{rule}\x1b[9;1H❯ \x1b[10;1H{rule}\x1b[9;3H")
+        };
+        let mut stashed = frame(40);
+        stashed.push_str("\x1b[7;31H› stashed\x1b[9;3H");
+        hub.output(1, stashed.as_bytes());
+        assert!(!hub.prompt_box_shown_empty());
+        hub.resize(20, 12);
+        assert!(
+            !hub.prompt_box_shown_empty(),
+            "a local crop is not a redraw"
+        );
+        let recovered = Hub::new(20, 12);
+        recovered.reset(1, &hub.subscribe().snapshot, 20, 12);
+        assert!(
+            !recovered.prompt_box_shown_empty(),
+            "a host snapshot can carry the same crop"
+        );
+        recovered.output(2, b"\x1b]0;title\x1b[2J\x07");
+        assert!(
+            !recovered.prompt_box_shown_empty(),
+            "a title cannot certify a redraw"
+        );
+        hub.output(2, b"\x1b[11;1Hstatus\x1b[9;3H");
+        assert!(
+            !hub.prompt_box_shown_empty(),
+            "a status update leaves the crop unproven"
+        );
+        hub.output(
+            3,
+            format!("{}\x1b[7;10H› stashed\x1b[9;3H", frame(20)).as_bytes(),
+        );
+        assert!(!hub.prompt_box_shown_empty());
+        hub.output(4, frame(20).as_bytes());
+        assert!(hub.prompt_box_shown_empty(), "Claude redrew an empty box");
+    }
+
     /// SPEC-572 AC3: a hub rebuilt from a snapshot (a reattached run, as after a restart of the
     /// server) still reads the prompt box: empty, a dim suggestion, and a draft.
     #[test]
-    fn a_snapshot_keeps_the_prompt_box_readable() {
+    fn a_snapshot_requires_a_live_redraw_before_releasing_typing() {
         let rule = "─".repeat(20);
         let framed = |row: &str| {
             format!(
@@ -533,10 +604,18 @@ mod tests {
                 "a parked snapshot cannot release typing"
             );
             again.reset(2, &snapshot, 20, 6);
+            assert!(
+                !again.prompt_box_shown_empty(),
+                "a snapshot may contain a host-side crop"
+            );
+            let repaint = framed(row);
+            let (before_clear, after_clear) = repaint.split_once("2J").expect("ED 2");
+            again.output(3, before_clear.as_bytes());
+            again.output(4, format!("2J{after_clear}").as_bytes());
             assert_eq!(
                 again.prompt_box_shown_empty(),
                 empty,
-                "after a snapshot: {row:?}"
+                "after a renderer repaint: {row:?}"
             );
         }
     }

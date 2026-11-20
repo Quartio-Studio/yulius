@@ -970,6 +970,11 @@ fn attach(
                 bytes: snapshot_bytes(&state.parser),
             });
             let _ = queue.push(&snapshot);
+            // A saved alternate grid can contain clipped cells after a resize. Ask the
+            // full-screen child for a fresh paint, queued after the snapshot under this lock.
+            if !state.reaped && state.parser.screen().alternate_screen() {
+                let _ = signal_group(shared.child_pid, Signal::SIGWINCH);
+            }
         }
         if let Some(exit) = &state.exit {
             let _ = queue.push(&HostFrame::Exit(exit.clone()));

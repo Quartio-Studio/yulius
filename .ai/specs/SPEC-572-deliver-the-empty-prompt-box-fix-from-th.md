@@ -19,13 +19,13 @@ Issue #1260 reported a permanent hold and a misleading Needs your action flag af
 
 - EBX-001. After the recent-typing window, the shared typing path can release a possible draft only on the reviewed full-screen Claude conversation picture. A partial frame, a stash hint, an ambiguous view, a withheld screen or another harness provides no such proof.
 - EBX-002. A person's message reaches the agent as a separate prompt. An automatic message gets through on the next eligible watch pass. The empty box leaves no held-message mark, terminal notice or attention flag. Other attention reasons and requests for a person still block PR news.
-- EBX-003. The one-minute typing window, ten-minute draft flag, restored-draft veto, explicit owner consent and concurrent key ordering continue to apply. After reattachment, judge the recovered mark against the recovered screen.
+- EBX-003. The one-minute typing window, ten-minute draft flag, restored-draft veto, explicit owner consent and concurrent key ordering continue to apply. After resize or reattachment, require a live repaint. A recovered first-key mark needs one quiet minute before the screen can release it.
 
 ## Plan
 
 - [x] Reproduce the empty-box hold on current dev with the reviewed PTY fixture
 - [x] Recognize Claude Code’s empty box while preserving draft and attention guards
-- [ ] Verify watch recovery, restart marks and restored drafts
+- [x] Verify watch recovery, restart marks and restored drafts
 - [ ] Obtain independent approval for delivery to dev
 
 ## Acceptance criteria
@@ -40,7 +40,7 @@ Run the reviewed PTY scenarios on dev before changing delivery. Exercise the VT 
 
 ## Decisions
 
-Port the reviewed positive evidence of emptiness separately from the broader visible-draft veto. Use current dev's sequence-aware mark lock for the observed keystroke. An unfamiliar screen retains the keystroke policy defined in [ADR-0309](../../docs/decisions/0309-yulius-types-nothing-onto-a-persons-possible-draft.md).
+Port the reviewed positive evidence of emptiness separately from the broader visible-draft veto. Use current dev's sequence-aware mark lock for the observed keystroke. An alternate-screen client gets a window-change signal after its host snapshot so a live repaint can replace the recovered pixels. An unfamiliar screen retains the keystroke policy defined in [ADR-0309](../../docs/decisions/0309-yulius-types-nothing-onto-a-persons-possible-draft.md).
 
 ## Evidence
 
@@ -49,3 +49,5 @@ Six regression cases failed against dev a7ab520f9 before the typing changes. The
 The ported VT reader and PR #1266 agreed on all 639 locally available capture points from Claude Code 2.1.323. Both matched all 588 entries of the saved verdict list. The 51 additional captures provide a comparison with the reviewed implementation. This was offline replay, and the end-to-end session tests use the fake CLI.
 
 All 41 task-message integration tests passed on the initial port, including both restored stash paths, owner consent, same-millisecond mark cleanup, hookless and restarted sessions, MCP and PR news, a new key and a replacement stash hint during the empty-box lookup.
+
+Round one reviewed 23bc6f222 and found two own-code failures. Shrinking a 40-column screen to 20 columns cropped the stash hint and produced a false empty result. With a two-minute-old first key and Ctrl+U immediately before restart, the recovered sender received success inside the typing minute. Both regression tests failed on the reviewed product. The fix requires the live renderer to clear and repaint the alternate screen after a resize or snapshot, and dates the quiet minute from recovery for a mark whose latest keystroke time is unknown. The earlier first-key time still controls the standing draft warning.

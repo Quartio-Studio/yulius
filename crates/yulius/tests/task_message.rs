@@ -1632,8 +1632,8 @@ fn a_stash_hint_that_replaces_the_empty_box_proof_keeps_the_mark() -> TestResult
 
 /// SPEC-572 AC3: after a restart of the server the possible draft is
 /// known from its mark alone, and the screen is the process host's snapshot of what the
-/// session shows. A key that left nothing in the box before the restart holds no message
-/// after it: two minutes on, the message is typed, read alone, and the mark is gone.
+/// session showed. Clearing an old draft just before restart still holds the message
+/// for the typing minute. After a real repaint and the minute, it arrives alone.
 #[test]
 fn a_key_before_a_restart_that_left_nothing_holds_no_message() -> TestResult {
     let (_dir, data) = data_dir()?;
@@ -1641,15 +1641,26 @@ fn a_key_before_a_restart_that_left_nothing_holds_no_message() -> TestResult {
     let first = runtime()?;
     let (port, id, caller) = first.block_on(async {
         let probe = Arc::new(ScriptedUsage::default());
-        let (app, port) = start(&data, &fake, full_screen(), 0, probe).await?;
+        let clock = Arc::new(ShiftedClock(AtomicI64::new(-2 * MINUTE)));
+        let (app, port) =
+            start_on(&data, &fake, full_screen(), 0, probe, clock.clone(), |_| {}).await?;
         let (id, caller) = running(&app, &data).await?;
         wait_for("the first turn's end", Duration::from_secs(30), || async {
             activity(&app, &id).await.is_some_and(Activity::is_idle) && fixture_box_empty(&app, &id)
         })
         .await?;
         let (ctx, attach) = full_screen_terminal(&app, &caller, &id).await?;
-        app.terminal_input(&ctx, &attach, KEY_WITHOUT_TEXT, false)
-            .await?;
+        app.terminal_input(&ctx, &attach, b"draft", false).await?;
+        wait_for("the draft to be drawn", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("❯ draft")
+        })
+        .await?;
+        clock.0.store(0, Ordering::SeqCst);
+        app.terminal_input(&ctx, &attach, b"\x15", false).await?;
+        wait_for("the cleared box", Duration::from_secs(30), || async {
+            fixture_box_empty(&app, &id)
+        })
+        .await?;
         app.terminal_leave(&attach).await;
         assert!(draft_mark(&app, &id).await?.exists());
         Ok::<_, Error>((port, id, caller))
@@ -1670,11 +1681,22 @@ fn a_key_before_a_restart_that_left_nothing_holds_no_message() -> TestResult {
             |_| {},
         )
         .await?;
+        let mut watch = app.runtime(&id).hub.watch();
         app.reconcile().await?;
-        wait_for("the reattached screen", Duration::from_secs(30), || async {
-            fixture_box_empty(&app, &id)
+        // A host snapshot can contain a crop. The second key must be held even after
+        // the reattached CLI has actually repainted the empty input.
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                if matches!(
+                    watch.recv().await?,
+                    yulius_app::hub::HubFrame::Output { .. }
+                ) && fixture_box_empty(&app, &id)
+                {
+                    return Ok::<_, Error>(());
+                }
+            }
         })
-        .await?;
+        .await??;
         let mark = draft_mark(&app, &id).await?;
         // The restarted server knows the key from its mark: within the minute it holds.
         let young = send(&app, &caller, &id).await.err();

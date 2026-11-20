@@ -774,6 +774,21 @@ impl App {
         let released = attempt.filter(|_| {
             held.is_some_and(BoxHeld::ends_at_an_empty_box) && shows_empty(task.harness, &runtime)
         });
+        // The recovered file dates the first key in a draft. A later key (including
+        // the one that cleared it) could have arrived immediately before reattachment.
+        if released.is_some()
+            && mark
+                .as_ref()
+                .and_then(|mark| mark.recovered_at)
+                .is_some_and(|at| {
+                    self.now().0.saturating_sub(at) <= yulius_domain::intake::TYPED_WINDOW_MS
+                })
+        {
+            return Err(AppError::Conflict(format!(
+                "task #{}'s recovered prompt box may have received a key in the last minute: try again in a minute",
+                task.number
+            )));
+        }
         match held {
             Some(BoxHeld::Draft { .. }) if released.is_some() => {}
             // Its owner sends past their own text, once they are no longer typing it: it
@@ -981,8 +996,9 @@ mod tests {
     fn only_claude_sessions_use_the_empty_conversation_frame() {
         let rt = super::TaskRuntime::new();
         let rule = "─".repeat(20);
-        let frame = format!("\x1b[?1049h\x1b[2;1H{rule}\x1b[3;1H❯ \x1b[4;1H{rule}\x1b[3;3H");
-        rt.hub.reset(1, frame.as_bytes(), 20, 6);
+        let frame = format!("\x1b[?1049h\x1b[2J\x1b[2;1H{rule}\x1b[3;1H❯ \x1b[4;1H{rule}\x1b[3;3H");
+        rt.hub.resize(20, 6);
+        rt.hub.output(1, frame.as_bytes());
         assert!(super::shows_empty(super::Harness::ClaudeCode, &rt));
         assert!(!super::shows_empty(super::Harness::Codex, &rt));
         assert!(!super::shows_empty(super::Harness::Antigravity, &rt));

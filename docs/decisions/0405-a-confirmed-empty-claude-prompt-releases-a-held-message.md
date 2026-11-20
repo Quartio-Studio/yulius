@@ -20,4 +20,4 @@ Inferring emptiness from Escape, Backspace or Ctrl+U would depend on the current
 
 ## Consequences
 
-An empty box can release messages after restart or without a submit hook. A named box, stash hint, dialog, dim agents view, other harness or unfamiliar layout keeps the keystroke hold. A person can still release that hold by submitting their own prompt. The reader uses the existing bounded VT grid and returns only a boolean.
+A resize can crop a stash hint, including in the host snapshot seen after restart. The live renderer must clear and repaint the alternate screen before the new geometry can prove emptiness. The PTY host requests a repaint on alternate-screen attachment with SIGWINCH. A retained first-key mark gets a quiet minute from recovery because its last key could be more recent. A renderer or older host that supplies no repaint keeps the hold until another redraw or a submit. A named box, stash hint, dialog, dim agents view, other harness or unfamiliar layout keeps the keystroke hold. A person can still release that hold by submitting their own prompt. The reader uses the existing bounded VT grid and returns only a boolean.

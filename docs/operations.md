@@ -988,7 +988,8 @@ silent. It types none of them while a person's draft may sit in the session's pr
 - A restart of Yulius does not forget a draft: the key that begins one leaves `person-typed`
   (its time) in the run's folder (`<data>/runs/…`), removed when a prompt is sent from the
   box or the box is confirmed empty. A restarted server reads the mark when it reattaches
-  the run and can check the recovered screen at the next delivery.
+  the run. After a quiet minute, a live repaint of the recovered box can release the hold.
+  A window resize also requires a repaint because it can crop a draft or stash hint.
 
 ### Docker in sandboxes
 

@@ -166,6 +166,8 @@ struct ActiveRun {
 /// The durable draft mark and the prompt submission whose hook may be retried.
 #[derive(Default)]
 pub(crate) struct DraftMark {
+    /// Recovery observed the durable first-key time but cannot date the latest key.
+    pub(crate) recovered_at: Option<i64>,
     pub(crate) written: bool,
     /// The submit's wall time and the viewer input sequence at its first request.
     pub(crate) submit: (i64, u64),
@@ -5951,6 +5953,7 @@ impl App {
                 if drafted > 0 {
                     runtime.typed_at_ms.fetch_max(drafted, Ordering::SeqCst);
                     mark.written = true;
+                    mark.recovered_at = Some(self.now().0);
                 }
             }
             if let Some(task) = store.task(&attempt.task_id).await? {
