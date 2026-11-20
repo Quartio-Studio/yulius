@@ -219,6 +219,10 @@ pub trait SandboxStore: Send + Sync {
     async fn sandboxes(&self) -> AppResult<Vec<SandboxRecord>>;
     /// Removed sandboxes, oldest removal first (their leftovers, SPEC-215).
     async fn removed_sandboxes(&self) -> AppResult<Vec<SandboxRecord>>;
+    /// Removed sandboxes whose port ranges still have a reservation, lowest first.
+    async fn retiring_port_owners(&self) -> AppResult<Vec<SandboxRecord>>;
+    /// Releases a removed sandbox's reservation after its holders and listeners have ended.
+    async fn release_removed_ports(&self, id: &SandboxId) -> AppResult<()>;
     /// Next free port base (multiples of `count` from `start`).
     async fn next_port_base(&self, start: u16, count: u16) -> AppResult<u16>;
     /// Replaces the profile JSON.

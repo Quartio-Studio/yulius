@@ -71,7 +71,8 @@ impl<B: Body<Data = Bytes> + Unpin> Body for SentOn<B> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrowserEgress {
     /// The sandbox, whose share of the proxy's connections the browser's count toward.
-    pub sandbox: String,
+    /// Its identity also holds the sandbox's port reservation for the lifetime of the connection.
+    pub sandbox: Arc<str>,
     /// The sandbox's dev-server ports: the only ports of the loopback the browser reaches (the
     /// host relays them into the sandbox).
     pub ports: RangeInclusive<u16>,
@@ -206,6 +207,8 @@ impl EgressProxy {
                 Err(refused) => return text(503, &refused),
             };
             let on_upgrade = hyper::upgrade::on(&mut request);
+            // A tunnel may connect after the listener and its HTTP connection have closed.
+            let port_lease = Arc::clone(&browser.sandbox);
             tokio::spawn(async move {
                 let serving = async move {
                     match on_upgrade.await {
@@ -218,6 +221,7 @@ impl EgressProxy {
                     () = serving => {}
                     _ = ended => {}
                 }
+                drop(port_lease);
             });
             return empty(StatusCode::OK);
         }
@@ -350,6 +354,7 @@ pub async fn serve_browser(
     proxy: Arc<EgressProxy>,
     browser: Arc<BrowserEgress>,
 ) {
+    let mut connections = tokio::task::JoinSet::new();
     loop {
         let Ok((stream, _)) = listener.accept().await else {
             // Out of file descriptors, most likely: not a loop that spins meanwhile.
@@ -357,7 +362,8 @@ pub async fn serve_browser(
             continue;
         };
         let (proxy, browser) = (Arc::clone(&proxy), Arc::clone(&browser));
-        tokio::spawn(async move {
+        while connections.try_join_next().is_some() {}
+        connections.spawn(async move {
             let service = hyper::service::service_fn(move |request: Request<Incoming>| {
                 let (proxy, browser) = (Arc::clone(&proxy), Arc::clone(&browser));
                 async move { Ok::<_, Infallible>(proxy.handle_browser(&browser, request).await) }

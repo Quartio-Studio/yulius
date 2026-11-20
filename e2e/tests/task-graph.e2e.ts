@@ -180,9 +180,35 @@ test('In the Graph, j / k move between tasks and the search shows its matches in
   await expect(screen.getByRole('radio', 'List')).toBeChecked();
 });
 
+test('an open task search keeps its query, selection and focus when its tasks arrive', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks?view=graph', `${GRAPH}&hold=/api/sandboxes/sb_studio/tasks`));
+  await expect(browser.locator('#main .skeleton[role="status"]')).toBeVisible();
+  await screen.getByRole('button', 'Search tasks').click();
+  const query = screen.getByRole('combobox', /Search tasks in studio/);
+  await query.fill('Cart');
+  const selected = browser.locator('.spot-item[aria-selected="true"]');
+  await expect(selected).toContainText('Show every task matching');
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
+  await expect(browser.locator('.spot-item:not(.spot-more)')).toHaveCount(1);
+  await expect(selected).toContainText('Show every task matching');
+  await expect(query).toBeFocused();
+  await expect(query).toHaveValue('Cart');
+
+  // Pick the task, then put another matching task before it in the live results.
+  await browser.keyboard.press('ArrowUp');
+  await expect(selected).toContainText('Cart totals');
+  await browser.evaluate(() => (window as unknown as WithMock).__yuliusMock.touchTask('sb_studio', 12, {
+    title: 'Cart checkout', updated_at: new Date().toISOString(),
+  }));
+  const matches = browser.locator('.spot-item:not(.spot-more)');
+  await expect(matches).toHaveCount(2);
+  await expect(matches.first()).toContainText('Cart checkout');
+  await expect(selected).toContainText('Cart totals');
+  await expect(query).toBeFocused();
+});
+
 test('the task search shows its results, also in Safari (SPEC-500 DLG-003)', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/tasks?view=graph', GRAPH));
-  // The search reads the tasks as they are when typed in: wait for them first.
   await expect(browser.locator('.tg-node[data-number="15"]')).toBeVisible();
   await screen.getByRole('button', 'Search tasks').click();
   await screen.getByRole('combobox', /Search tasks in studio/).fill('a');

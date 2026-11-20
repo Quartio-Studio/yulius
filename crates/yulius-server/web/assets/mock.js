@@ -651,7 +651,13 @@ function delivery(db, task) {
   const next = [];
   const blocked = [];
   const pos = position(profile, state.stage, state.environment);
-  if (pos.kind === 'no_pr') {
+  if (sandbox.playground) {
+    if (state.stage === 'none') {
+      const reason = !task.branch ? 'the task has no branch yet' : problems.length ? problems[0] : stepsOpen ? `${stepsOpen} plan steps are still open` : null;
+      if (reason) blocked.push({ action: 'merge', reason });
+      else next.push('merge');
+    }
+  } else if (pos.kind === 'no_pr') {
     if (task.branch === null) blocked.push({ action: 'open_pr', reason: 'the task has no branch yet' });
     else if (problems.length) blocked.push({ action: 'open_pr', reason: `the task spec is not valid: ${problems[0]}` });
     else next.push('open_pr');
@@ -5215,7 +5221,7 @@ function migrationState(mode) {
     request: null,
     // `lost`: a move whose helper was killed while it prepared the new host.
     run: mode === 'lost' ? {
-      id: 'mock-0-move', action: 'move', target: 'root@new.yulius.example', ssh_port: 22, public_url: null, data_disks: [],
+      id: 'mock-0-move', action: 'move', target: 'root@new.yulius.example', ssh_port: 22, public_url: null, data_disks: [], max_downtime: null,
       state: 'lost', exit_code: null, error: null, started_at: iso(9 * MIN), updated_at: iso(4 * MIN), ended_at: null,
     } : null,
     moving: mode === 'cli' || mode === 'lost' ? {
@@ -5337,7 +5343,7 @@ function playMove(db, request, values, steps) {
     if (m.mode === 'refused') {
       // A checklist that is there stays: it is an earlier run's.
       if (m.moving) m.moving = { ...m.moving, earlier: true };
-      Object.assign(m.run, { target: null, ssh_port: null, public_url: null, data_disks: [], state: 'refused', ended_at: now, error: 'The request was refused: an update is running (yulius-update.service): ask again once it has finished.' });
+      Object.assign(m.run, { target: null, ssh_port: null, public_url: null, data_disks: [], max_downtime: null, state: 'refused', ended_at: now, error: 'The request was refused: an update is running (yulius-update.service): ask again once it has finished.' });
       return;
     }
     // What an earlier run recorded is not this run's: it is not shown until the command wrote
@@ -5435,6 +5441,11 @@ function moveSteps(db, values) {
   steps.push(() => {
     // The instance answers during the copy: the page reads it before anything freezes.
     if (!m.seen.Copy || m.holdAt === 'Copy') return 'again';
+    if (values.max_downtime != null && values.max_downtime < 9) {
+      moveSay(db, 'Copy', moveLine('downtime', 'failed', `Estimated freeze of 9 min exceeds the ${values.max_downtime} min limit after five passes.`));
+      moveEnd(db, 1, 'Copy');
+      return undefined;
+    }
     // The cutover freezes the instance: nothing answers until the new one runs.
     moveSay(db, 'Cutover', MOVE_CUTOVER[0]);
     m.frozen = true;
@@ -5497,16 +5508,19 @@ route('POST', MOVE_API, ({ db, body }) => {
   const m = db.migration;
   const action = body.action;
   if (!['plan', 'move', 'abort'].includes(action)) fail(422, 'invalid', 'no such action');
-  const values = action === 'abort' ? { target: null, ssh_port: null, public_url: null, data_disks: [] } : {
+  if (action === 'abort' && body.max_downtime != null) fail(422, 'invalid', 'an abort names no freeze limit');
+  const values = action === 'abort' ? { target: null, ssh_port: null, public_url: null, data_disks: [], max_downtime: null } : {
     target: String(body.target || '').trim(),
     ssh_port: body.ssh_port === undefined || body.ssh_port === null ? 22 : body.ssh_port,
     public_url: body.public_url ? String(body.public_url).trim().replace(/\/$/, '') : null,
+    max_downtime: body.max_downtime ?? null,
     data_disks: (body.data_disks || []).map((d) => String(d).trim()).filter(Boolean),
   };
   if (action !== 'abort') {
     if (!values.target) fail(422, 'invalid', 'the new host is missing');
     if (!/^[A-Za-z0-9._:[\]-]+(@[A-Za-z0-9._:[\]-]+)?$/.test(values.target) || values.target.startsWith('-')) fail(422, 'invalid', 'the new host must be `root@host` or `host`');
     if (values.target.includes('@') && !values.target.startsWith('root@')) fail(422, 'invalid', 'the new host is reached as root: `root@host`');
+    if (values.max_downtime != null && (!Number.isSafeInteger(values.max_downtime) || values.max_downtime < 1)) fail(422, 'invalid', 'the longest freeze must be at least one whole minute');
     if (!Number.isInteger(values.ssh_port) || values.ssh_port < 1 || values.ssh_port > 65535) fail(422, 'invalid', 'the SSH port must be 1 to 65535');
     if (values.public_url && !/^https:\/\/[A-Za-z0-9][A-Za-z0-9.-]*$/.test(values.public_url)) fail(422, 'invalid', 'the public URL must be `https://host`, with nothing after it');
     if (values.data_disks.length > 2) fail(422, 'invalid', 'data disks: one, or two for a mirror');
@@ -5520,7 +5534,7 @@ route('POST', MOVE_API, ({ db, body }) => {
   if (action === 'plan' && !can.plan) fail(409, 'conflict', 'a move is running: wait for its end, or abort it');
   if (action === 'move') {
     const same = m.run && m.run.target === values.target && m.run.ssh_port === values.ssh_port && m.run.public_url === values.public_url
-      && JSON.stringify(m.run.data_disks) === JSON.stringify(values.data_disks);
+      && (m.run.max_downtime ?? null) === values.max_downtime && JSON.stringify(m.run.data_disks) === JSON.stringify(values.data_disks);
     if (!can.move || !same) fail(409, 'conflict', 'show the plan for these values first: a move is the plan you saw');
   }
   if (action === 'abort' && !can.abort) fail(409, 'conflict', 'no move is recorded on this host: nothing to abort');

@@ -19,7 +19,7 @@ use crate::ci::playground::TaskChecks;
 use crate::ci::short;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
-use crate::model::{TaskRecord, UserRecord};
+use crate::model::{SandboxRecord, TaskRecord, UserRecord};
 use crate::ports::git::{SquashLanding, SquashRequest};
 
 /// Most branch commits read for the squash's title.
@@ -49,6 +49,30 @@ fn conflict_refusal(branch: &str, integration: &str, files: &[String]) -> AppErr
     ))
 }
 
+fn nothing_to_deliver(branch: &str, integration: &str) -> AppError {
+    AppError::Conflict(format!(
+        "nothing to deliver: `{branch}` has no change that `{integration}` lacks"
+    ))
+}
+
+/// Local prerequisites shared by the delivery view and the squash.
+fn merge_hold(observed: &super::Observed) -> Option<String> {
+    if !observed.spec.valid {
+        Some(format!(
+            "the spec is not valid ({}); fix it and commit",
+            observed.spec.problems.join(" ")
+        ))
+    } else if observed.steps.is_empty() && observed.spec.required {
+        Some("the task has no plan: record its steps with `steps_set`".to_owned())
+    } else if let Some(open) = playground_plan_hold(&observed.steps) {
+        Some(open)
+    } else if observed.dirty {
+        Some("the worktree has uncommitted changes: commit them".to_owned())
+    } else {
+        None
+    }
+}
+
 /// Why a playground task's plan holds its squash, if it does: a playground squashes a task once,
 /// with its whole plan. It has no later delivery of the same task (a merged task's work is not
 /// delivered again here, unlike a pull request's follow-up, SPEC-425), so the finished part of a
@@ -65,6 +89,73 @@ fn playground_plan_hold(steps: &[crate::model::StepRecord]) -> Option<String> {
 }
 
 impl App {
+    /// The reason a person cannot squash this task now. Reading it never enqueues CI.
+    pub(super) async fn playground_view_hold(
+        &self,
+        sandbox: &SandboxRecord,
+        task: &TaskRecord,
+        observed: &super::Observed,
+        profile: &yulius_domain::delivery::DeliveryProfile,
+    ) -> AppResult<Option<String>> {
+        let (Some(branch), Some(worktree)) =
+            (task.branch.as_deref(), task.worktree_path.as_deref())
+        else {
+            return Ok(Some("this task has no branch to deliver yet".to_owned()));
+        };
+        if let Some(reason) = merge_hold(observed) {
+            return Ok(Some(reason));
+        }
+        let head = observed
+            .worktree_head
+            .as_deref()
+            .ok_or_else(|| AppError::Conflict("the task branch has no commit".to_owned()))?;
+        let integration = &profile.integration_branch;
+        let (base, diverged) = self
+            .playground_delivery_base(sandbox, worktree, branch, integration, head)
+            .await?;
+        let checks = self
+            .playground_view_checks(sandbox, task, head, &base, Path::new(worktree), diverged)
+            .await?;
+        Ok(match checks {
+            TaskChecks::Clear | TaskChecks::Passed(_) => None,
+            TaskChecks::Conflict(files) => {
+                Some(conflict_refusal(branch, integration, &files).public_message())
+            }
+            TaskChecks::Failed(run) | TaskChecks::Testing(run) => {
+                let verdict = match run.state {
+                    RunState::Error => run.reason.as_deref().unwrap_or("could not run the checks"),
+                    RunState::Failed | RunState::Cancelled => "merge on green only",
+                    _ => "waiting for checks to pass",
+                };
+                Some(format!(
+                    "Yulius CI {} for {} merged into `{integration}` (run {}): {verdict}",
+                    run.state.as_str(),
+                    short(head),
+                    run.id
+                ))
+            }
+        })
+    }
+
+    /// Checks whether the task brings a net change since it forked from the integration branch.
+    async fn playground_delivery_base(
+        &self,
+        sandbox: &SandboxRecord,
+        worktree: &str,
+        branch: &str,
+        integration: &str,
+        head: &str,
+    ) -> AppResult<(String, bool)> {
+        self.dlv_refresh_clone(sandbox).await?;
+        let base = format!("origin/{integration}");
+        let git = &self.deps.git;
+        let (ahead, behind) = git.ahead_behind(Path::new(worktree), &base, head).await?;
+        if ahead == 0 || git.diff_stat(Path::new(worktree), &base, head).await?.files == 0 {
+            return Err(nothing_to_deliver(branch, integration));
+        }
+        Ok((base, behind > 0))
+    }
+
     /// [`App::playground_merge`] for a person, who never arms a merge: while Yulius CI tests it,
     /// it is a `Conflict` saying so, unless the profile requires no checks (SPEC-163 PCI-004, as
     /// on GitHub). A merge the task's agent armed is then over.
@@ -128,19 +219,8 @@ impl App {
         let observed = self.dlv_observe(&sandbox, task, &profile, None).await?;
         let refusal = if past_merge(&observed.record.stage) {
             Some(format!("this task is already merged into `{integration}`"))
-        } else if !observed.spec.valid {
-            Some(format!(
-                "the spec is not valid ({}); fix it and commit",
-                observed.spec.problems.join(" ")
-            ))
-        } else if observed.steps.is_empty() && observed.spec.required {
-            Some("the task has no plan: record its steps with `steps_set`".to_owned())
-        } else if let Some(open) = playground_plan_hold(&observed.steps) {
-            Some(open)
-        } else if observed.dirty {
-            Some("the worktree has uncommitted changes: commit them".to_owned())
         } else {
-            None
+            merge_hold(&observed)
         };
         if let Some(reason) = refusal {
             return Err(AppError::Conflict(format!("not merged: {reason}")));
@@ -158,19 +238,10 @@ impl App {
                  the new head and merge again"
             )));
         }
-        // The integration branch as it is now in the playground's `origin`.
-        self.dlv_refresh_clone(&sandbox).await?;
-        let base = format!("origin/{integration}");
+        let (base, _) = self
+            .playground_delivery_base(&sandbox, worktree, branch, integration, &head)
+            .await?;
         let git = &self.deps.git;
-        let nothing = || {
-            AppError::Conflict(format!(
-                "nothing to deliver: `{branch}` has no change that `{integration}` lacks"
-            ))
-        };
-        let (ahead, _) = git.ahead_behind(Path::new(worktree), &base, "HEAD").await?;
-        if ahead == 0 {
-            return Err(nothing());
-        }
         // Merge on green (SPEC-163 PCI-003): the head merged into the integration branch as it
         // is now, tested by Yulius CI when the playground has CI. What lands is the tree it
         // tested: Git's own squash of the head can order a `merge=union` file the other way.
@@ -266,19 +337,9 @@ impl App {
             })?;
         let commit = match landed {
             SquashLanding::Landed(commit) => commit,
-            // The branch changes something, and the integration branch already has it all (a
-            // squash that landed before its stage was recorded): it is merged. A branch whose
-            // commits cancel out delivers nothing.
-            SquashLanding::Unchanged => {
-                let since = git
-                    .merge_base(&repo, &base, &head)
-                    .await?
-                    .ok_or_else(nothing)?;
-                if git.diff_stat(&repo, &since, &head).await?.files == 0 {
-                    return Err(nothing());
-                }
-                format!("{base} (already there)")
-            }
+            // The task has a net change, checked above. An unchanged squash means it already
+            // landed before its stage was recorded, so recover that stage.
+            SquashLanding::Unchanged => format!("{base} (already there)"),
             SquashLanding::Conflict(files) => {
                 return Err(conflict_refusal(branch, integration, &files));
             }

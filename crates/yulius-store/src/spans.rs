@@ -430,6 +430,7 @@ mod tests {
                 task_id: task.clone(),
                 kind: PauseKind::Limit,
                 account_id: None,
+                during_turn: false,
                 continuation: None,
                 started_at: Timestamp(960),
                 ended_at: None,

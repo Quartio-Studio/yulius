@@ -1031,6 +1031,7 @@ mod tests {
             ssh_port: Some(2222),
             public_url: Some("https://new.example".into()),
             data_disks: vec!["/dev/vdc".into(), "/dev/vdd".into()],
+            max_downtime: None,
             requested_at: 0,
         };
         let parsed = |request: &MoveRequest| {
@@ -1038,6 +1039,9 @@ mod tests {
             Cli::try_parse_from(argv).map(|cli| cli.command)
         };
         for (action, says_yes) in [(MoveAction::Plan, false), (MoveAction::Move, true)] {
+            let mut json = serde_json::to_value(request(action))?;
+            json["max_downtime"] = 8.into();
+            let bounded: MoveRequest = serde_json::from_value(json)?;
             let Command::Instance {
                 action:
                     InstanceAction::Migrate {
@@ -1056,7 +1060,7 @@ mod tests {
                         update_service,
                         state_dir,
                     },
-            } = parsed(&request(action))?
+            } = parsed(&bounded)?
             else {
                 return Err("not `instance migrate`".into());
             };
@@ -1065,9 +1069,7 @@ mod tests {
             assert_eq!(public_url.as_deref(), Some("https://new.example"));
             assert_eq!(data_disk, ["/dev/vdc", "/dev/vdd"]);
             assert_eq!(yes, says_yes, "{action:?}");
-            // A request has no field for a bound on the freeze: the command decides by itself
-            // when to freeze (SPEC-465), as it does without `--max-downtime`.
-            assert_eq!(max_downtime, None);
+            assert_eq!(max_downtime, Some(8), "{action:?}");
             // Root's helper is nobody's sign-in: only the move's own key reaches the new host.
             assert!(no_sign_in, "{action:?}");
             // And says which request it answers, for the checklist it writes.

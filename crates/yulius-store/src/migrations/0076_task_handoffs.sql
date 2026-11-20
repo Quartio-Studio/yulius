@@ -1,4 +1,4 @@
--- Yulius migration 0076, schema version 74 (SPEC-512 HOF-001..HOF-006, ADR-0395): tasks hand
+-- Yulius migration 0076, schema version 76 (SPEC-512 HOF-001..HOF-006, ADR-0395): tasks hand
 -- work to another sandbox. The instance's setting as one JSON document (mode off, ask or
 -- automatic, the depth and daily bounds; NULL: off) and every handoff: who asked from where, the
 -- arguments shown to the owner, its chain (for depth and cycles), its state and the task it made,

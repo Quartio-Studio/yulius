@@ -28,6 +28,13 @@ disable`); CI sets it.
 
 | File | Flow |
 | --- | --- |
+| `attention.e2e.ts` | Task flags explain what needs attention, where to respond and who can use the terminal. |
+| `content-security-policy.e2e.ts` | The page receives its policy. The harness detects blocked scripts, images and evaluation, and exercises permitted form submission and recording playback. |
+| `digest.e2e.ts` | Administrator digest settings, notification delivery across tabs, offline arrival, dismissal and navigation to the digest. |
+| `initial-load.e2e.ts` | Initial document and script network interruptions recover once. Ordinary failures, a second interruption and later navigation surface their errors. |
+| `instance-limits.e2e.ts` | Instance administrators inspect host limits, validate overrides, recover failed reads and saves, and reconcile settings after a host move. |
+| `production-protection.e2e.ts` | Git page protection settings follow administrator access, server refusals, redraws and navigation. Playgrounds refuse the switch. |
+| `shared-needs-you.e2e.ts` | Tasks reporting the same sandbox problem share a request card and one notification across projects. |
 | `model-choices.e2e.ts` | Provider-grouped model selection, model-specific effort tiers, explicit Codex and Gemini task creation, and preference compatibility across Settings and the composer (SPEC-521) |
 | `harness-comparison.e2e.ts` | Dashboard → Harnesses compares elapsed run times and token coverage across date ranges, handles empty and capped cohorts, and retries a failed read on a phone. |
 | `model-fallback.e2e.ts` | The fallback model (SPEC-482): a default task’s details name Opus 5.5, and those of a task set to Fable 5.2 say that its session runs on Opus 5.5 because Fable 5.2 was used up when it started, read again when the session starts again (no WCAG violations); with Fable used up on every subscription the Capacity panel says that tasks set to it run on Opus 5.5, and "Available now" counts for the default model (no WCAG violations); the Status line says the same, also at the pool’s 98 % before a card reads "Limit reached", and "tasks continue when a window resets" once Opus is used up too; in the page, the model the pool places a task with and which subscription "Run #N on…" lets it move to |

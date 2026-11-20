@@ -292,6 +292,11 @@ pub trait SandboxIsolation: Send + Sync {
         false
     }
 
+    /// Whether a removed sandbox can no longer start a holder or use its old ports.
+    async fn retired_ports_idle(&self, id: &SandboxId) -> bool {
+        !self.holder_live(id.as_str()).await
+    }
+
     /// Removes `path`, a tree of the data directory whose files may belong to a sandbox's mapped
     /// ids (`sysroots/<sid>`, `runtime/sandboxes/<sid>`, `system/base-<n>`), as root of a mapped
     /// namespace where the service user cannot (SPEC-215). Without isolation nothing is mapped:

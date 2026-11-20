@@ -868,7 +868,7 @@ instance — out of scope).
 | AC-PRJ-2 | Task worktrees contain only the sandbox repository; there is no UI/API to add another repository to a sandbox; `reference_repo` only hands a task a bundle of another repository of the same owner, outside every worktree (SPEC-267). | int |
 | AC-PRJ-6 | (Linux, isolated sandbox) In a user's shell `sudo apt-get update && sudo apt-get install -y cowsay` succeeds (also `sudo NAME=value command`) and `whoami` is still the user's login; a second shell, an agent's session (`apt-get install -y sl` and `useradd --system` there too) and a shell after the holder was stopped all see the packages; another sandbox and the host do not. | int (opt-in on Linux, `tests/isolation.rs`) |
 | AC-PRJ-3 | Creating from each template creates the GitHub repo (fake), pushes the scaffold with the docs format that passes the validator, configures protection, and opens the tab. | int, ui |
-| AC-PRJ-4 | Removing a sandbox stops sessions and keeps the GitHub repository untouched; importing the same repository again gives the sandbox its old slug (`shop`, not `shop-2`) while the old ports stay reserved. | int |
+| AC-PRJ-4 | Removing a sandbox stops sessions and keeps the GitHub repository untouched; importing the same repository again gives the sandbox its old slug (`shop`, not `shop-2`) while the old ports stay reserved until its work and listeners have ended (SPEC-555). | int |
 | AC-PRJ-5 | Two sandboxes receive non-overlapping port ranges; the briefing and environment expose them. | int |
 | AC-UI-1 | Default view: sidebar + full-width terminal; browser/editor collapsed to icons; no top usage bar; Settings only behind the user menu. | ui |
 | AC-UI-2 | Sandbox tab row ≤ 36 px lists accessible sandboxes and switches between them. | ui |

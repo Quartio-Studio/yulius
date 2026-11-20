@@ -297,6 +297,7 @@ impl Facts {
                 ssh_port: run.values.ssh_port,
                 public_url: run.values.public_url.clone(),
                 data_disks: run.values.data_disks.clone(),
+                max_downtime: run.values.max_downtime,
                 state: state.as_str().to_owned(),
                 exit_code: run.exit_code,
                 error: run.error.clone(),
@@ -377,6 +378,7 @@ fn asked(req: &AskMigration) -> Values {
             ssh_port: req.ssh_port,
             public_url: req.public_url.clone(),
             data_disks: req.data_disks.clone(),
+            max_downtime: req.max_downtime,
         };
     }
     let typed = |text: &String| Some(text.trim().to_owned()).filter(|text| !text.is_empty());
@@ -391,6 +393,7 @@ fn asked(req: &AskMigration) -> Values {
             }
         }),
         data_disks: req.data_disks.iter().filter_map(typed).collect(),
+        max_downtime: req.max_downtime,
     }
 }
 
@@ -463,6 +466,7 @@ impl App {
             ssh_port: values.ssh_port,
             public_url: values.public_url.clone(),
             data_disks: values.data_disks.clone(),
+            max_downtime: values.max_downtime,
             requested_at: now.0,
         };
         rules::check_request(&request).map_err(AppError::Invalid)?;
@@ -534,6 +538,9 @@ impl App {
         }
         if let Some(url) = &values.public_url {
             detail.push_str(&format!("; public URL {url}"));
+        }
+        if let Some(minutes) = values.max_downtime {
+            detail.push_str(&format!("; longest freeze {minutes} min"));
         }
         if !values.data_disks.is_empty() {
             detail.push_str(&format!("; data disks {}", values.data_disks.join(", ")));

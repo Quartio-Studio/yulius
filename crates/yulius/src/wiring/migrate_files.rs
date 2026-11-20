@@ -205,6 +205,7 @@ mod tests {
             ssh_port: Some(22),
             public_url: None,
             data_disks: vec!["/dev/vdc".into()],
+            max_downtime: None,
             requested_at: 5,
         }
     }

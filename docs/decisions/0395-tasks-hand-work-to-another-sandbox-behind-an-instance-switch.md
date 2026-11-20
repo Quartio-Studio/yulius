@@ -50,4 +50,4 @@ allows it. The Superagent's tools and their approval stay as ADR-0227 and ADR-03
 
 - With the switch on, a task starts the API change its website change needs and is told when it
   is done; an injected instruction meets the opt-out, the bounds, `ask` and the audit.
-- A schema change (migration 0076, schema version 74): `instance.handoffs` and `task_handoffs`.
+- A schema change (migration 0076, schema version 76): `instance.handoffs` and `task_handoffs`.

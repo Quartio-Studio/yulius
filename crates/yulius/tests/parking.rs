@@ -1414,7 +1414,6 @@ fn a_handed_off_tasks_outcome_reaches_its_source() -> TestResult {
         target.activity = Some(Activity::Working);
         TaskStore::insert_task(app.deps.store.as_ref(), &target).await?;
         // Its pull request merged (review round 1: the link names owner and repository).
-        use yulius_app::ports::store_ext::DeliveryStore as _;
         app.deps
             .store
             .transition_delivery(

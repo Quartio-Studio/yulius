@@ -430,7 +430,7 @@ button.task-group-head:hover { color: var(--text); }
    so the focus ring is drawn inside the row, not around it. */
 .task-row, .tl-row { content-visibility: auto; }
 .task-row { contain-intrinsic-size: auto 36px; }
-.tl-row { contain-intrinsic-size: auto 72px; }
+.tl-row { contain-intrinsic-size: auto 52px; }
 .task-link, .skeleton-task-row { display: flex; align-items: center; gap: 12px; height: 36px; padding: 0 12px; color: var(--text-2); text-decoration: none; }
 .task-link:hover { text-decoration: none; }
 .task-link:focus-visible { border-radius: var(--radius); box-shadow: var(--focus-inset); }
@@ -1883,6 +1883,7 @@ summary { cursor: pointer; }
   /* Loading rows (pages/tasks.js) take the same two lines: their cells follow the columns' order. */
   .skeleton-tl-row > :is(:nth-child(3), :nth-child(4), :nth-child(5), :nth-child(6), :nth-child(7)) { display: none; }
   .tl-row, .skeleton-tl-row { grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: "link time actions" "status status status"; gap: 0 12px; padding-right: 8px; }
+  .tl-row { contain-intrinsic-size: auto 72px; }
   .tl-link, .skeleton-tl-link { grid-area: link; height: auto; padding: 12px 0 2px 16px; }
   .tl-status, .skeleton-tl-row > :nth-child(2) { grid-area: status; padding: 0 0 12px calc(16px + 24px + 12px); }
   .tl-time, .skeleton-tl-row > :nth-child(8) { grid-area: time; }
