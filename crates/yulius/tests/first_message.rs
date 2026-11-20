@@ -103,10 +103,24 @@ pub(crate) async fn start_hosted(
     data: &Path,
     fake: &Path,
     agent: FakeAgentOptions,
-    (port, probe, clock): (u16, Arc<ScriptedUsage>, Arc<dyn yulius_app::ports::Clock>),
+    settings: (u16, Arc<ScriptedUsage>, Arc<dyn yulius_app::ports::Clock>),
     host: Option<Arc<dyn yulius_app::ports::session::SessionHost>>,
     configure: impl FnOnce(&mut AppConfig),
 ) -> Result<(Arc<App>, u16), BoxError> {
+    let (app, port, _) =
+        start_hosted_with_github(data, fake, agent, settings, host, configure).await?;
+    Ok((app, port))
+}
+
+/// The same hosted fixture with access to the upstream pull and its current head.
+pub(crate) async fn start_hosted_with_github(
+    data: &Path,
+    fake: &Path,
+    agent: FakeAgentOptions,
+    (port, probe, clock): (u16, Arc<ScriptedUsage>, Arc<dyn yulius_app::ports::Clock>),
+    host: Option<Arc<dyn yulius_app::ports::session::SessionHost>>,
+    configure: impl FnOnce(&mut AppConfig),
+) -> Result<(Arc<App>, u16, Arc<support::FakeGitHub>), BoxError> {
     let socket = tokio::net::TcpSocket::new_v4()?;
     socket.set_reuseaddr(true)?;
     socket.bind(SocketAddr::from(([127, 0, 0, 1], port)))?;
@@ -117,11 +131,12 @@ pub(crate) async fn start_hosted(
     let mut config = AppConfig::new(data.to_path_buf(), "https://yulius.test", &url, exe.clone());
     config.contained = false;
     configure(&mut config);
+    let github = Arc::new(support::FakeGitHub::default());
     let deps = Deps {
         store: Arc::new(SqliteStore::open(&data.join("yulius.db"))?),
         clock,
         crypto: Arc::new(MasterKeyCrypto::from_key(&[7u8; 32])?),
-        github: Arc::new(support::FakeGitHub::default()),
+        github: github.clone(),
         session_host: host.unwrap_or_else(|| Arc::new(PtySessionHost::new(exe.clone()))),
         harness: Arc::new(FakeAgentHarness {
             inner: HarnessAdapter::new(exe.clone(), url),
@@ -138,7 +153,7 @@ pub(crate) async fn start_hosted(
     let internal = yulius_server::internal_router(app.clone())
         .into_make_service_with_connect_info::<SocketAddr>();
     tokio::spawn(async move { axum::serve(listener, internal).await });
-    Ok((app, port))
+    Ok((app, port, github))
 }
 
 pub(crate) fn hooked() -> FakeAgentOptions {

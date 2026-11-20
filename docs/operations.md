@@ -170,6 +170,8 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # A message to a parked Codex task resumes its recorded rollout with the message as its next prompt.
 # While it waits for a subscription the message is retained and its last parked screen stays visible.
 # An open plan step, unfinished spec or unfinished goal keeps the agent live, including while it asks its owner.
+# A failing ordinary PR run, unreadable check or unpublished repair keeps its author live.
+# The PR watcher delivers actionable failures once and waits for a pending human decision.
 #Environment=YULIUS_PARK_AFTER_MINUTES=30
 # A server older than parking cannot read the status `parked`: before rolling back past it,
 # resume or archive the tasks marked "parked" in the task lists, with this set to 0 so no task
