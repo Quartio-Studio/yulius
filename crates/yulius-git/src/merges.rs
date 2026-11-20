@@ -241,11 +241,28 @@ impl Git {
         base: &str,
         head: &str,
     ) -> Result<Option<Vec<String>>, GitError> {
-        let base = self.rev_parse(worktree, base)?;
-        let head = self.rev_parse(worktree, head)?;
-        Ok(match self.merged_tree_at(worktree, None, &base, &head)? {
-            MergeTree::Clean(_) => None,
-            MergeTree::Conflict(files) => Some(files),
+        Ok(match self.preview_merge(worktree, base, head)? {
+            crate::TrainStep::Clean { .. } => None,
+            crate::TrainStep::Conflict(files) => Some(files),
+        })
+    }
+
+    /// The tree or conflict paths produced by merging `theirs` into `ours`, using the
+    /// attributes of `worktree` while leaving its checkout, index and refs untouched.
+    ///
+    /// # Errors
+    /// Invalid or unknown revisions, or Git failures.
+    pub fn preview_merge(
+        &self,
+        worktree: &Path,
+        ours: &str,
+        theirs: &str,
+    ) -> Result<crate::TrainStep, GitError> {
+        let ours = self.rev_parse(worktree, ours)?;
+        let theirs = self.rev_parse(worktree, theirs)?;
+        Ok(match self.merged_tree_at(worktree, None, &ours, &theirs)? {
+            MergeTree::Clean(tree) => crate::TrainStep::Clean { tree },
+            MergeTree::Conflict(files) => crate::TrainStep::Conflict(files),
         })
     }
 

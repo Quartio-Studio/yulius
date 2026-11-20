@@ -109,9 +109,32 @@ impl App {
             .worktree_head
             .as_deref()
             .ok_or_else(|| AppError::Conflict("the task branch has no commit".to_owned()))?;
-        self.playground_delivery_base(sandbox, worktree, branch, &profile.integration_branch, head)
+        let integration = &profile.integration_branch;
+        let (base, diverged) = self
+            .playground_delivery_base(sandbox, worktree, branch, integration, head)
             .await?;
-        self.playground_ci_hold(sandbox, task, head).await
+        let checks = self
+            .playground_view_checks(sandbox, task, head, &base, Path::new(worktree), diverged)
+            .await?;
+        Ok(match checks {
+            TaskChecks::Clear | TaskChecks::Passed(_) => None,
+            TaskChecks::Conflict(files) => {
+                Some(conflict_refusal(branch, integration, &files).public_message())
+            }
+            TaskChecks::Failed(run) | TaskChecks::Testing(run) => {
+                let verdict = match run.state {
+                    RunState::Error => run.reason.as_deref().unwrap_or("could not run the checks"),
+                    RunState::Failed | RunState::Cancelled => "merge on green only",
+                    _ => "waiting for checks to pass",
+                };
+                Some(format!(
+                    "Yulius CI {} for {} merged into `{integration}` (run {}): {verdict}",
+                    run.state.as_str(),
+                    short(head),
+                    run.id
+                ))
+            }
+        })
     }
 
     /// Checks whether the task brings a net change since it forked from the integration branch.
@@ -122,7 +145,7 @@ impl App {
         branch: &str,
         integration: &str,
         head: &str,
-    ) -> AppResult<String> {
+    ) -> AppResult<(String, bool)> {
         self.dlv_refresh_clone(sandbox).await?;
         let base = format!("origin/{integration}");
         let git = &self.deps.git;
@@ -130,14 +153,7 @@ impl App {
         if ahead == 0 || git.diff_stat(Path::new(worktree), &base, head).await?.files == 0 {
             return Err(nothing_to_deliver(branch, integration));
         }
-        if behind > 0
-            && let Some(files) = git
-                .merge_conflicts(Path::new(worktree), &base, head)
-                .await?
-        {
-            return Err(conflict_refusal(branch, integration, &files));
-        }
-        Ok(base)
+        Ok((base, behind > 0))
     }
 
     /// [`App::playground_merge`] for a person, who never arms a merge: while Yulius CI tests it,
@@ -222,7 +238,7 @@ impl App {
                  the new head and merge again"
             )));
         }
-        let base = self
+        let (base, _) = self
             .playground_delivery_base(&sandbox, worktree, branch, integration, &head)
             .await?;
         let git = &self.deps.git;

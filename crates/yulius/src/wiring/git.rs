@@ -23,6 +23,13 @@ const CHANGED_PATHS_MAX: usize = 20_000;
 /// Most commits after a review a follow-up may have and keep its approval (SPEC-493 APR-001).
 const FOLLOW_UP_COMMITS_MAX: usize = 64;
 
+fn train_step(step: yulius_git::TrainStep) -> TrainStep {
+    match step {
+        yulius_git::TrainStep::Clean { tree } => TrainStep::Clean { tree },
+        yulius_git::TrainStep::Conflict(files) => TrainStep::Conflict(files),
+    }
+}
+
 /// Git adapter.
 #[derive(Clone)]
 pub struct GitAdapter {
@@ -302,19 +309,16 @@ impl GitPort for GitAdapter {
         blocking(move || git.set_remote_url(&repo, "origin", &url)).await
     }
 
-    async fn merge_conflicts(
-        &self,
-        repo: &Path,
-        base: &str,
-        head: &str,
-    ) -> AppResult<Option<Vec<String>>> {
-        let (git, repo, base, head) = (
+    async fn preview_merge(&self, repo: &Path, ours: &str, theirs: &str) -> AppResult<TrainStep> {
+        let (git, repo, ours, theirs) = (
             self.git(),
             repo.to_path_buf(),
-            base.to_owned(),
-            head.to_owned(),
+            ours.to_owned(),
+            theirs.to_owned(),
         );
-        blocking(move || git.merge_conflicts(&repo, &base, &head)).await
+        blocking(move || git.preview_merge(&repo, &ours, &theirs))
+            .await
+            .map(train_step)
     }
 
     async fn land_squash(
@@ -798,14 +802,7 @@ impl GitPort for GitAdapter {
         Ok(TrainBuild {
             base: built.base,
             base_tree: built.base_tree,
-            steps: built
-                .steps
-                .into_iter()
-                .map(|step| match step {
-                    yulius_git::TrainStep::Clean { tree } => TrainStep::Clean { tree },
-                    yulius_git::TrainStep::Conflict(files) => TrainStep::Conflict(files),
-                })
-                .collect(),
+            steps: built.steps.into_iter().map(train_step).collect(),
             head: built.head,
         })
     }
