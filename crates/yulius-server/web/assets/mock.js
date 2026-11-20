@@ -740,7 +740,7 @@ function detail(db, task) {
     started: hasStarted(task),
     // What the task asks for, and the Claude Code its latest session runs (SPEC-461 CCM-012).
     model: task.model || 'claude-opus-5-5',
-    model_default: Boolean(task.model_default) || !task.model || task.effort === 'default',
+    model_default: task.model_default ?? (!task.model || task.effort === 'default'),
     // The model its run was launched with while no subscription could run its own (SPEC-482).
     ...(task.fallback_model ? { fallback_model: task.fallback_model } : {}),
     ...(task.effort && task.effort !== 'default' ? { effort: task.effort } : { effort: 'high' }),
@@ -1505,8 +1505,9 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   if (body.harness && !['auto', 'claude', 'codex', 'antigravity'].includes(body.harness)) fail(422, 'invalid', 'harness must be claude, codex or antigravity');
   // No agent (or `auto`): the one the model implies, else drawn uniformly across harnesses with
   // non-exhausted subscriptions (SPEC-520 RHM-001..003).
-  const drawn = (!body.harness || body.harness === 'auto') && !body.model;
-  const harness = drawn ? drawHarness(db) : chosenHarness(body.harness, body.model);
+  const model = body.model?.trim();
+  const drawn = (!body.harness || body.harness === 'auto') && !model;
+  const harness = drawn ? drawHarness(db) : chosenHarness(body.harness, model);
   if (body.mode && !['goal', 'prompt', 'auto'].includes(body.mode)) fail(422, 'invalid', 'mode must be goal, prompt or auto');
   const visible = db.workflows.filter((w) => w.scope === 'instance' || w.sandbox === sandbox.id);
   if (body.workflow_id && body.workflow_id !== 'auto' && !visible.some((w) => w.id === body.workflow_id)) fail(422, 'invalid', `unknown workflow \`${body.workflow_id}\``);
@@ -1551,9 +1552,7 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
     origin: 'ui', created_by: { login: db.me.user.login, id: db.me.user.id }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     archived: false, account_label: null,
     stepsList: wf ? wf.steps.map((title2, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title: title2, status: 'pending', note: '', updated_by: 'workflow', updated_at: new Date().toISOString() })) : [],
-    model: body.model || (harness === 'codex' ? 'gpt-6.2-astra' : harness === 'antigravity' ? 'gemini-4-neon' : 'claude-opus-4'), effort: body.effort || (harness === 'codex' ? 'high' : harness === 'antigravity' ? 'high' : 'default'), prompt: body.prompt,
-    // A task without a model asks for its agent's default, as on the server (`model_default`).
-    model_default: !body.model,
+    ...taskModelSettings(harness, model, body.effort), prompt: body.prompt,
     delivery: null, mode: choice ? choice.mode : body.mode || 'goal', auto: choice ? choice.auto : null,
     supertask: body.supertask === true,
   };
@@ -1872,6 +1871,13 @@ function chosenHarness(named, model) {
   if (harness === 'antigravity' && model && owner !== harness) fail(422, 'invalid', 'an Antigravity task takes a Gemini model (such as gemini-4-neon)');
   if (owner && owner !== harness) fail(422, 'invalid', `Choose ${agentOfHarness(owner).cli} for this model. This task uses ${agentOfHarness(harness).cli}.`);
   return harness;
+}
+function taskModelSettings(harness, model, effort) {
+  return {
+    model: model || (harness === 'codex' ? 'gpt-6.2-astra' : harness === 'antigravity' ? 'gemini-4-neon' : 'claude-opus-4'),
+    model_default: !model,
+    effort: effort || (harness === 'codex' ? 'high' : harness === 'antigravity' ? 'high' : 'default'),
+  };
 }
 // An automation without a named agent (`auto`) draws one for each run (SPEC-520 RHM-005).
 const automationHarness = (db, a) => (!a.harness || a.harness === 'auto' ? { harness: drawHarness(db), harness_choice: 'random' } : { harness: a.harness, harness_choice: 'chosen' });
@@ -3918,14 +3924,15 @@ route('POST', `/api/sandboxes/${ID}/superagent/requests/${ID}`, async ({ db, p, 
   const id = `tsk_${target.id.slice(3)}_${number}`;
   const opts = request.view.options || {};
   const prepared = opts.prepared === true;
-  const drawn = (!opts.harness || opts.harness === 'auto') && !opts.model;
-  const harness = drawn ? drawHarness(db) : chosenHarness(opts.harness, opts.model);
+  const model = opts.model?.trim();
+  const drawn = (!opts.harness || opts.harness === 'auto') && !model;
+  const harness = drawn ? drawHarness(db) : chosenHarness(opts.harness, model);
   const task = {
     id, sandbox_id: target.id, number, title, harness, harness_choice: drawn ? 'random' : 'chosen',
     status: prepared ? 'prepared' : 'queued', activity: null,
     branch: `feat/${number}-${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40)}`,
     origin: 'agent', created_by: { login: db.me.user.login, id: db.me.user.id }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-    archived: false, account_label: null, stepsList: [], model: opts.model || 'claude-opus-4', effort: 'default', prompt: request.view.prompt,
+    archived: false, account_label: null, stepsList: [], ...taskModelSettings(harness, model, opts.effort), prompt: request.view.prompt,
     delivery: null, mode: request.view.options.mode || 'goal', auto: null, supertask: false,
   };
   db.tasks.push(task);

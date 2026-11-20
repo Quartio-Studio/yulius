@@ -209,7 +209,7 @@ async fn the_api_chooses_codex_for_gpt_and_preserves_unqualified_aliases() -> Te
     for (selection, expected) in [
         (json!({"model": "gpt-6.2-astra"}), "codex"),
         (
-            json!({"harness": "auto", "model": "GPT-synthetic"}),
+            json!({"harness": "auto", "model": " GPT-synthetic "}),
             "codex",
         ),
         (json!({"model": "opus"}), "claude"),
@@ -218,11 +218,25 @@ async fn the_api_chooses_codex_for_gpt_and_preserves_unqualified_aliases() -> Te
         let mut body = selection.clone();
         body["prompt"] = json!("Check model routing");
         body["prepared"] = json!(true);
+        let response = call(&h.router, Method::POST, CREATE, Some(body), &alice).await?;
+        assert_eq!(response.status, StatusCode::CREATED, "{:?}", response.body);
+        let id = response.body["id"].as_str().ok_or("id")?;
+        let detail = call(
+            &h.router,
+            Method::GET,
+            &format!("/api/tasks/{id}"),
+            None,
+            &alice,
+        )
+        .await?;
+        assert_eq!(detail.status, StatusCode::OK);
+        assert_eq!(detail.body["harness"], expected, "{selection}");
+        assert_eq!(detail.body["harness_choice"], "chosen");
         assert_eq!(
-            created(&h, &alice, body).await?,
-            pair(expected, "chosen"),
-            "{selection}"
+            detail.body["model"],
+            selection["model"].as_str().ok_or("model")?.trim()
         );
+        assert_eq!(detail.body["model_default"], false);
     }
     Ok(())
 }

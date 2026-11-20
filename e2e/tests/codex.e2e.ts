@@ -15,6 +15,7 @@ type Mocked = {
     tasks: { prompt: string; harness: string; model: string; effort: string; number: number }[];
     accounts: { label: string; provider: string; status: string }[];
     automations: { name: string; harness: string }[];
+    askSuperagent(source: string, request: unknown): string;
     request(method: string, path: string, body: unknown): Promise<number>;
     release(): void;
   };
@@ -24,14 +25,28 @@ test('the mock routes a GPT model to Codex and refuses a conflicting harness', a
   await app.open(mock('/s/studio/tasks', '&ambient=0'));
   const result = await browser.evaluate(async () => {
     const db = (window as unknown as Mocked).__yuliusMock;
-    const body = { prompt: 'GPT routing', model: 'gpt-6.2-astra', prepared: true };
+    const body = { prompt: 'GPT routing', model: ' gpt-6.2-astra ', prepared: true };
     const path = '/api/sandboxes/sb_studio/tasks';
     const created = await db.request('POST', path, body);
     const task = db.tasks.find((t) => t.prompt === body.prompt);
     const refused = await db.request('POST', path, { ...body, harness: 'claude' });
-    return { created, harness: task?.harness, refused };
+    return { created, harness: task?.harness, model: task?.model, refused };
   });
-  expect(result).toEqual({ created: 201, harness: 'codex', refused: 422 });
+  expect(result).toEqual({ created: 201, harness: 'codex', model: 'gpt-6.2-astra', refused: 422 });
+});
+
+test('an approved GPT request shows the explicit model in task details', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/tasks', '&ambient=0'));
+  const { status, number } = await browser.evaluate(async () => {
+    const db = (window as unknown as Mocked).__yuliusMock;
+    const prompt = 'Model-only follow-up';
+    const id = db.askSuperagent('sb_studio', { sandbox: 'product', prompt, options: { model: 'gpt-6.2-sol', prepared: true } });
+    const status = await db.request('POST', `/api/sandboxes/sb_studio/superagent/requests/${id}`, { approve: true });
+    return { status, number: db.tasks.find((t) => t.prompt === prompt)?.number };
+  });
+  expect(status).toBe(200);
+  await browser.evaluate((n) => { location.hash = `/s/product/tasks/${n}`; }, number);
+  await expect(browser.locator('.ti-kv dt:text-is("Model") + dd')).toHaveText('GPT-6.2 Sol · High effort');
 });
 
 test('a Codex subscription is added with an OpenAI API key, without a sign-in', async ({ app, browser, screen }) => {

@@ -545,7 +545,7 @@ impl App {
                         .as_ref()
                         .map(|w| w.steps.clone())
                         .unwrap_or_default(),
-                    model: req.model.clone().filter(|m| !m.trim().is_empty()),
+                    model: model.map(str::to_owned),
                     effort: req.effort.clone().filter(|e| !e.trim().is_empty()),
                     origin,
                     automation_run: None,

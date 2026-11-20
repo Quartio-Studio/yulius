@@ -7,6 +7,8 @@ status: in-progress
 
 ## Goal
 
+Fixes #1427.
+
 A person or agent can copy a GPT model ID into a task and get a Codex task. A conflicting model choice should be actionable before the task runs.
 
 ## Context
@@ -46,3 +48,4 @@ Infer Codex from the GPT prefix, extending the existing Gemini rule. Keep unreco
 - Against dev `56f08db7`, the four Rust regressions in commit `85d941a20` failed. API POST and MCP task_create returned Claude for GPT. Explicit Claude/GPT creation returned 201. The Superagent task_model edit stored GPT and low effort on a Claude task. The browser mock likewise returned Claude and accepted the conflict.
 - With the fix, the nextest selection covering harness_draw, the Superagent model edit, the Codex model edit, and task_delete passed all 18 tests. This includes the Random draw, caller inheritance, explicit auto, aliases and readback after a refused edit.
 - The Codex Chromium file passed all 14 tests, including the new mock regression. These tests exercise task creation and stored settings with isolated fixtures.
+- Review of `dda794454` requested two fixes in this change. The HTTP GET regression read back `" GPT-synthetic "` with its spaces. Task creation now stores the trimmed model used for routing. The browser approval regression displayed `GPT-6.2 Sol (default) · High effort` for an explicit model. Both mock creation paths now use the same model settings. The Codex and Superagent approval browser files passed all 34 tests after the fixes.
