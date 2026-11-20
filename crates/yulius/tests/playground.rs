@@ -2747,6 +2747,7 @@ async fn reusing_a_purged_playgrounds_ports_leaves_both_holder_trees_absent() ->
     let (h, owner) = world().await?;
     let old = from_template(&h, &owner, "purged").await?.body;
     let sid = old["id"].as_str().ok_or("id")?;
+    assert_eq!(old["port_base"], 20000);
     let data = &h.app.config.data_dir;
     let holders = data.join("runtime/sandboxes");
     let trees = [holders.join(sid), holders.join(format!("{sid}.prod"))];
