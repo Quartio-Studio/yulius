@@ -117,6 +117,8 @@ A human request can take precedence over unfinished work in the task list. Both 
 - PR #1524 delivered the parked predecessor check into dev at `4b3497496`. The exact PR head `87515a163` passed Yulius CI run `171d5cc9-b354-4d52-afeb-019d742abca3`, including quality, both test shards and E2E. Security was skipped.
 - The independent reviews of the server list prototype isolated a prerequisite for an installation that cannot verify an owner-observed PR. A failed or truncated Git overview could erase a known red PR, including when it completed after another overview established the current state. The observation cache has its own delivery. Fair list deadlines and verified per-task summaries follow it.
 
+- On dev head `4b3497496` the held partial overview overwrote a newer complete response. MCP omitted the parked task with failing external PR #1462. On `719deb087` a newer partial closure of #1 suppressed the earlier complete failure of #2 when it published first. Both are covered in the ordered overview fixtures. A separate fork assertion checks the task row, and the list boundary fixture distinguishes 31 open PRs from a complete result of exactly 30.
+
 ## Delivery slices
 
 PRs #1492 and #1493 delivered native Codex resume and the pre-stop screen for new parks. PR #1505 kept sessions with local unfinished work live. PR #1510 verified current ordinary PR checks and unpublished work before parking. Step 11 verifies parked predecessors for successors waiting for Done. Remaining deliveries cover fair parked task-list reads, page refresh, persisted integration failures, bounded Codex goals and pre-upgrade screens.

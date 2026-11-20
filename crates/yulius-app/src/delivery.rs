@@ -2160,7 +2160,7 @@ impl App {
         let sandbox = self
             .dlv_require_sandbox(ctx, sandbox_id, Action::View)
             .await?;
-        let observation = self.observed_pulls.begin(&sandbox.id).await?;
+        let observation = self.observed_pulls.begin(&sandbox.id)?;
         let profile = delivery_profile(&sandbox);
         let (owner, name) = (&sandbox.repo_owner, &sandbox.repo_name);
         let repo = self.sandbox_repo(&sandbox.id);

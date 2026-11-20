@@ -10,7 +10,7 @@ Home and MCP use the Git overview to identify tasks whose pull request checks fa
 
 ## Decision
 
-Number each overview at the start of its read. Publish its per-task observations together under the cache lock. A complete read can establish absence. A failed or truncated list retains known open PRs unless it supplies an open PR or confirms closure of the same PR. Apply completed responses in request-start order. A response that finishes early is visible immediately. Once earlier requests finish or are cancelled, fold completed responses into the committed cache and release their slots. Each sandbox has a bounded publication window of 30 overview requests. Home and MCP read the cache without acquiring a slot. The newest task listing determines which tasks remain in the cache.
+Number each overview at the start of its read. Publish its per-task observations together under the cache lock. A complete read can establish absence. A failed or truncated list retains known open PRs unless it supplies an open PR or confirms closure of the same PR. Apply completed responses in request-start order. A response that finishes early is visible immediately. Once earlier requests finish or are cancelled, fold completed responses into the committed cache and release their slots. Each sandbox has 30 publication slots. A cancelled request frees its slot immediately. Once the slots fill, an additional Git overview receives HTTP 429 and the next refresh can try again. Home and MCP read the cache without acquiring a slot. The newest task listing determines which tasks remain in the cache.
 
 ## Alternatives
 

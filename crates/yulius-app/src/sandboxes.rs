@@ -3,7 +3,6 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use yulius_contracts::api::sandboxes::{Profile, RepoRef, Sandbox, SandboxCounts};
 use yulius_domain::ids::{SandboxId, TaskId};
@@ -55,18 +54,9 @@ impl Overview {
 }
 
 #[derive(Debug)]
-enum ReadState {
-    Pending,
-    Published(Overview),
-    Cancelled,
-}
-
-#[derive(Debug)]
 struct Slot {
-    // The permit covers the observation until all earlier reads have settled.
-    _permit: OwnedSemaphorePermit,
     id: u64,
-    state: ReadState,
+    published: Option<Overview>,
 }
 
 #[derive(Debug, Default)]
@@ -77,24 +67,21 @@ struct ReadOrder {
 }
 
 impl ReadOrder {
-    fn finish(&mut self, id: u64, result: ReadState) {
-        let Some(slot) = self.slots.iter_mut().find(|slot| slot.id == id) else {
+    fn finish(&mut self, id: u64, result: Option<Overview>) {
+        let Some(index) = self.slots.iter().position(|slot| slot.id == id) else {
             return;
         };
-        if !matches!(slot.state, ReadState::Pending) {
-            return;
+        if result.is_some() {
+            self.slots[index].published = result;
+        } else {
+            self.slots.remove(index);
         }
-        slot.state = result;
         while self
             .slots
             .front()
-            .is_some_and(|slot| !matches!(slot.state, ReadState::Pending))
+            .is_some_and(|slot| slot.published.is_some())
         {
-            if let Some(Slot {
-                state: ReadState::Published(read),
-                ..
-            }) = self.slots.pop_front()
-            {
+            if let Some(read) = self.slots.pop_front().and_then(|slot| slot.published) {
                 let prior = self.committed.get_or_insert_with(HashMap::new);
                 *prior = read
                     .rows
@@ -111,7 +98,7 @@ impl ReadOrder {
     fn current(&self, task: &TaskId) -> Option<Option<ObservedPull>> {
         let mut known = self.committed.as_ref().map(|rows| rows.get(task).copied());
         for slot in &self.slots {
-            if let ReadState::Published(read) = &slot.state {
+            if let Some(read) = &slot.published {
                 known = Some(read.reading(task, known.flatten()));
             }
         }
@@ -119,81 +106,69 @@ impl ReadOrder {
     }
 }
 
-#[derive(Debug)]
-struct SandboxPulls {
-    capacity: Arc<Semaphore>,
-    order: Mutex<ReadOrder>,
-}
-
 /// A bounded per-sandbox publication window. Home/MCP can read a finished
 /// response immediately, including when an earlier request is still in flight.
 #[derive(Debug, Default)]
-pub(crate) struct ObservedPulls(Mutex<HashMap<SandboxId, Arc<SandboxPulls>>>);
+pub(crate) struct ObservedPulls(Mutex<HashMap<SandboxId, Arc<Mutex<ReadOrder>>>>);
 
 pub(crate) struct OverviewRead {
-    cache: Arc<SandboxPulls>,
-    id: u64,
+    cache: Arc<Mutex<ReadOrder>>,
+    id: Option<u64>,
 }
 
 impl OverviewRead {
-    pub(crate) fn record(self, complete: bool, rows: PullRows) {
-        if let Ok(mut order) = self.cache.order.lock() {
-            order.finish(self.id, ReadState::Published(Overview { complete, rows }));
+    pub(crate) fn record(mut self, complete: bool, rows: PullRows) {
+        if let Some(id) = self.id.take()
+            && let Ok(mut order) = self.cache.lock()
+        {
+            order.finish(id, Some(Overview { complete, rows }));
         }
     }
 }
 
 impl Drop for OverviewRead {
     fn drop(&mut self) {
-        if let Ok(mut order) = self.cache.order.lock() {
-            order.finish(self.id, ReadState::Cancelled);
+        if let Some(id) = self.id.take()
+            && let Ok(mut order) = self.cache.lock()
+        {
+            order.finish(id, None);
         }
     }
 }
 
 impl ObservedPulls {
-    pub(crate) async fn begin(&self, sandbox: &SandboxId) -> AppResult<OverviewRead> {
+    pub(crate) fn begin(&self, sandbox: &SandboxId) -> AppResult<OverviewRead> {
         let cache = self
             .0
             .lock()
             .map_err(crate::error::AppError::internal)?
             .entry(sandbox.clone())
-            .or_insert_with(|| {
-                Arc::new(SandboxPulls {
-                    capacity: Arc::new(Semaphore::new(OVERVIEW_WINDOW)),
-                    order: Mutex::default(),
-                })
-            })
+            .or_default()
             .clone();
-        // Only overlapping Git overview requests acquire a slot. Cancelling
-        // this wait or dropping an admitted request releases its place.
-        let permit = cache
-            .capacity
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(crate::error::AppError::internal)?;
         let id = {
-            let mut order = cache
-                .order
-                .lock()
-                .map_err(crate::error::AppError::internal)?;
+            let mut order = cache.lock().map_err(crate::error::AppError::internal)?;
+            if order.slots.len() >= OVERVIEW_WINDOW {
+                return Err(crate::error::AppError::Capacity(
+                    "too many overlapping Git overview reads in this sandbox".into(),
+                ));
+            }
             let id = order.next;
             order.next = order.next.wrapping_add(1);
             order.slots.push_back(Slot {
-                _permit: permit,
                 id,
-                state: ReadState::Pending,
+                published: None,
             });
             id
         };
-        Ok(OverviewRead { cache, id })
+        Ok(OverviewRead {
+            cache,
+            id: Some(id),
+        })
     }
 
     fn get(&self, sandbox: &SandboxId, task: &TaskId) -> Option<Option<PullSignal>> {
         let cache = self.0.lock().ok()?.get(sandbox)?.clone();
         cache
-            .order
             .lock()
             .ok()?
             .current(task)
@@ -449,8 +424,8 @@ pub(crate) fn plan_open(steps: &[crate::model::StepRecord]) -> bool {
 mod overview_tests {
     use super::*;
 
-    #[tokio::test]
-    async fn overlapping_overviews_update_each_tasks_last_authoritative_pr_read() -> AppResult<()> {
+    #[test]
+    fn overlapping_overviews_update_each_tasks_last_authoritative_pr_read() -> AppResult<()> {
         let cache = ObservedPulls::default();
         let sandbox = SandboxId::parse("sandbox").map_err(crate::error::AppError::internal)?;
         let task = TaskId::parse("task").map_err(crate::error::AppError::internal)?;
@@ -478,8 +453,8 @@ mod overview_tests {
             (true, landed, Some(PullSignal::Merged)),
         ] {
             for reverse in [false, true] {
-                let earlier = cache.begin(&sandbox).await?;
-                let newer = cache.begin(&sandbox).await?;
+                let earlier = cache.begin(&sandbox)?;
+                let newer = cache.begin(&sandbox)?;
                 if reverse {
                     newer.record(complete, rows(later));
                     earlier.record(true, rows(red));
@@ -488,46 +463,54 @@ mod overview_tests {
                     newer.record(complete, rows(later));
                 }
                 assert_eq!(cache.get(&sandbox, &task), Some(expected));
-                cache.begin(&sandbox).await?.record(true, HashMap::new());
+                cache.begin(&sandbox)?.record(true, HashMap::new());
             }
         }
 
-        let older = cache.begin(&sandbox).await?;
-        cache.begin(&sandbox).await?.record(true, HashMap::new());
+        let older = cache.begin(&sandbox)?;
+        cache.begin(&sandbox)?.record(true, HashMap::new());
         older.record(false, rows(red));
         assert_eq!(cache.get(&sandbox, &task), Some(None));
         Ok(())
     }
 
-    #[tokio::test]
-    async fn cancelling_an_older_overview_releases_its_publication_window() -> AppResult<()> {
+    #[test]
+    fn cancelling_an_older_overview_releases_its_publication_window() -> AppResult<()> {
         let cache = ObservedPulls::default();
         let sandbox = SandboxId::parse("one").map_err(crate::error::AppError::internal)?;
         let other = SandboxId::parse("two").map_err(crate::error::AppError::internal)?;
         let task = TaskId::parse("task").map_err(crate::error::AppError::internal)?;
-        let old = cache.begin(&sandbox).await?;
+        let old = cache.begin(&sandbox)?;
         let red = Some(ObservedPull {
             number: 2,
             signal: Some(PullSignal::Failing),
         });
         for _ in 1..OVERVIEW_WINDOW {
             cache
-                .begin(&sandbox)
-                .await?
+                .begin(&sandbox)?
                 .record(false, HashMap::from([(task.clone(), red)]));
         }
-        let waiting = cache.begin(&sandbox);
-        tokio::pin!(waiting);
-        tokio::select! {
-            biased;
-            _ = &mut waiting => panic!("overviews bypassed the publication window"),
-            () = std::future::ready(()) => {}
-        }
+        assert!(matches!(
+            cache.begin(&sandbox),
+            Err(crate::error::AppError::Capacity(_))
+        ));
         assert_eq!(cache.get(&sandbox, &task), Some(Some(PullSignal::Failing)));
-        cache.begin(&other).await?.record(true, HashMap::new());
+        cache.begin(&other)?.record(true, HashMap::new());
         drop(old);
-        waiting.await?.record(true, HashMap::new());
+        cache.begin(&sandbox)?.record(true, HashMap::new());
         assert_eq!(cache.get(&sandbox, &task), Some(None));
+        Ok(())
+    }
+    #[test]
+    fn cancelling_later_overviews_returns_capacity_while_the_first_read_is_pending() -> AppResult<()>
+    {
+        let cache = ObservedPulls::default();
+        let sandbox = SandboxId::parse("one").map_err(crate::error::AppError::internal)?;
+        let _old = cache.begin(&sandbox)?;
+        for _ in 1..OVERVIEW_WINDOW {
+            drop(cache.begin(&sandbox)?);
+        }
+        drop(cache.begin(&sandbox)?);
         Ok(())
     }
 }
