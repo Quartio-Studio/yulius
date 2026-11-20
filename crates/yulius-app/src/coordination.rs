@@ -136,7 +136,19 @@ impl App {
         facts: AttentionFacts,
         person: bool,
     ) -> AppResult<Value> {
-        let mut brief = self.task_brief_plain(task).await?;
+        let steps = self.deps.store.steps(&task.id).await?;
+        self.task_brief_with_steps(task, facts, person, &steps)
+            .await
+    }
+
+    async fn task_brief_with_steps(
+        &self,
+        task: &TaskRecord,
+        facts: AttentionFacts,
+        person: bool,
+        steps: &[StepRecord],
+    ) -> AppResult<Value> {
+        let mut brief = self.task_brief_plain(task, steps).await?;
         // Where the task list shows it, and why it waits for a person or is held (SPEC-487
         // QST-001): what its page says, so nobody has to paste it.
         let group = facts.group();
@@ -152,9 +164,8 @@ impl App {
         Ok(brief)
     }
 
-    async fn task_brief_plain(&self, task: &TaskRecord) -> AppResult<Value> {
-        let steps = self.deps.store.steps(&task.id).await?;
-        let p = self.step_progress(&task.id, &steps).await?;
+    async fn task_brief_plain(&self, task: &TaskRecord, steps: &[StepRecord]) -> AppResult<Value> {
+        let p = self.step_progress(&task.id, steps).await?;
         let chain = self.deps.store.chain(&task.id).await?;
         let waits = task.status == yulius_domain::task::TaskStatus::Chained;
         Ok(json!({
@@ -258,12 +269,12 @@ impl App {
     /// `NotFound` outside the agent's sandbox.
     pub async fn tool_task_get(&self, caller: &ProjectCaller, args: &Value) -> AppResult<Value> {
         let task = self.agent_task_ref(caller, args).await?;
-        let steps = self.deps.store.steps(&task.id).await?;
         let facts = self
             .display_attention(&task, &tokio::sync::OnceCell::new(), self.status_deadline())
             .await?;
+        let steps = self.deps.store.steps(&task.id).await?;
         let mut brief = self
-            .task_brief_shown(&task, facts, caller.task.is_none())
+            .task_brief_with_steps(&task, facts, caller.task.is_none(), &steps)
             .await?;
         brief["prompt"] = json!(task.prompt.chars().take(4000).collect::<String>());
         brief["steps_list"] = json!(steps.iter().map(|s| json!({"id": s.id.as_str(), "title": s.title, "status": s.status, "note": s.note})).collect::<Vec<_>>());

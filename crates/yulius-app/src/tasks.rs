@@ -180,7 +180,8 @@ impl App {
     /// # Errors
     /// Store failures.
     pub async fn task_summary(&self, task: &TaskRecord) -> AppResult<TaskSummary> {
-        self.task_summary_among(task, None).await
+        let steps = self.deps.store.steps(&task.id).await?;
+        self.task_summary_among(task, None, &steps).await
     }
 
     /// [`Self::task_summary`] of a task listed with the rest of its project's unarchived tasks
@@ -192,9 +193,9 @@ impl App {
         &self,
         task: &TaskRecord,
         project: Option<&[TaskRecord]>,
+        steps: &[StepRecord],
     ) -> AppResult<TaskSummary> {
         let store = &self.deps.store;
-        let steps = store.steps(&task.id).await?;
         // A removed subscription is no task's (SPEC-447): neither its name nor its id is shown.
         let (account_id, account_label) = match store.live_attempt(&task.id).await? {
             Some(attempt) => match attempt.account_id {
@@ -266,7 +267,7 @@ impl App {
             updated_at: rfc3339(task.updated_at),
             state_since: times.map(|t| rfc3339(t.state_at)),
             working_since: times.and_then(|t| t.working_since).map(rfc3339),
-            steps: self.step_progress(&task.id, &steps).await?,
+            steps: self.step_progress(&task.id, steps).await?,
             archived: task.archived_at.is_some(),
             account_label,
             account_id,
@@ -681,28 +682,35 @@ impl App {
             |task, until| {
                 let requests = &requests;
                 async move {
-                    let mut summary = self.task_summary_among(task, project).await?;
-                    self.set_parked_status(task, requests, until, &mut summary)
-                        .await;
-                    Ok(summary)
+                    let (row, _) = self.display_summary(task, project, requests, until).await?;
+                    Ok(row)
                 }
             },
         )
         .await
     }
 
-    async fn set_parked_status(
+    /// Read the plan after parked PR verification, using those same steps for
+    /// progress and the detail's step list when work reopens during the lookup.
+    async fn display_summary(
         &self,
         task: &TaskRecord,
+        project: Option<&[TaskRecord]>,
         requests: &tokio::sync::OnceCell<std::collections::HashSet<String>>,
         deadline: tokio::time::Instant,
-        summary: &mut TaskSummary,
-    ) {
-        if task.status == TaskStatus::Parked {
-            let (facts, pr) = self.parked_status(task, requests, deadline).await;
+    ) -> AppResult<(TaskSummary, Vec<StepRecord>)> {
+        let status = if task.status == TaskStatus::Parked {
+            Some(self.parked_status(task, requests, deadline).await)
+        } else {
+            None
+        };
+        let steps = self.deps.store.steps(&task.id).await?;
+        let mut summary = self.task_summary_among(task, project, &steps).await?;
+        if let Some((facts, pr)) = status {
             summary.parked_needs_you = Some(facts.needs_you());
             summary.parked_pr = pr;
         }
+        Ok((summary, steps))
     }
 
     /// Archived tasks across all visible sandboxes.
@@ -726,7 +734,14 @@ impl App {
     pub async fn task_detail(&self, ctx: &AuthContext, id: &str) -> AppResult<TaskDetail> {
         let task = self.load_task(ctx, id, Action::View).await?;
         let store = &self.deps.store;
-        let mut summary = self.task_summary(&task).await?;
+        let (mut summary, steps) = self
+            .display_summary(
+                &task,
+                None,
+                &tokio::sync::OnceCell::new(),
+                self.status_deadline(),
+            )
+            .await?;
         // Subscription emails are for administrators (UI-022, SPEC-244 SUB-005).
         let admin = ctx.user.is_superadmin || ctx.user.is_instance_admin;
         if admin
@@ -835,15 +850,7 @@ impl App {
                 at: rfc3339(f.at),
             });
         }
-        let steps = store.steps(&task.id).await?;
         let started = !attempts.is_empty() || !store.provider_sessions(&task.id).await?.is_empty();
-        self.set_parked_status(
-            &task,
-            &tokio::sync::OnceCell::new(),
-            self.status_deadline(),
-            &mut summary,
-        )
-        .await;
         Ok(TaskDetail {
             summary,
             spec_path: task.spec_path.clone(),

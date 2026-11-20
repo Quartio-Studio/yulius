@@ -64,6 +64,8 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- Review of `e3e8efd3b` found that a reopened step could be missing from the same response that said why the task needed attention. The MCP regression returned no “Verify the repair” step and the HTTP list returned zero total steps. On the corrected branch, HTTP list, HTTP detail and MCP detail read the plan after parked verification. Each detail uses the same steps for its progress and full list. All 97 scoped tests passed. `scripts/dev quick` passed.
+
 - Review of `713178a04` found two wait-reason races. A title edit during a failed check and a plan step opened during a healthy check both produced a PR verification error. The archived MCP filter also spent a one-row page on a newer active task. All three regressions failed on that head. With the corrections, the current checkout eligibility comparison retains same-head failures across title edits, the final local read supplies the open step’s reason, and archived pages read archived rows. All 96 scoped tests passed, including opening a step during a failing check. Repository contracts and formatting passed. Vidoc was disabled.
 
 - PR #1533 delivered the individual parked HTTP status verifier to dev at `0b213b7d7`. Its head passed CI run `968c3c81-1e1c-4c37-bba4-e4c7f6f37662`. The merge train passed run `5830d64b-97ac-46ba-9822-acfa1b66df6c`. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/0b213b7d7ce73ec8a0f33a522171d70190ce8337)

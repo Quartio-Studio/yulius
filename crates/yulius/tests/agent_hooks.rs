@@ -3752,10 +3752,6 @@ async fn a_parked_task_ignores_its_owner_observation_once_the_same_pr_is_merged(
     let detail = serde_json::to_value(f.h.app.task_detail(&owner, f.task.as_str()).await?)?;
     assert_eq!(detail["parked_needs_you"], true);
     assert_eq!(detail["parked_pr"], json!({"number":1461, "open":false}));
-    let ctx = f.h.app.agent_context(TOKEN).await?;
-    f.h.app
-        .tool_steps_set(&ctx, &json!({"steps":["Document the follow-up"]}))
-        .await?;
     let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let brief =
         f.h.app
@@ -4252,6 +4248,8 @@ async fn work_reopened_during_a_parked_check_supplies_the_wait_reason() -> TestR
             task["wait_reason"],
             "The agent stopped with unfinished steps in its plan."
         );
+        assert_eq!(task["steps"]["total"], 1);
+        assert_eq!(task["steps_list"][0]["title"], "Verify the repair");
     }
     Ok(())
 }
@@ -4273,5 +4271,53 @@ async fn archived_task_list_spends_its_limit_on_archived_rows() -> TestResult {
             .tool_tasks_list(&caller, &json!({"scope":"archived","limit":1}))
             .await?;
     assert_eq!(result["tasks"][0]["task_id"], archived.id.as_str());
+    Ok(())
+}
+
+#[tokio::test]
+async fn parked_http_reads_show_the_plan_reopened_during_verification() -> TestResult {
+    for detail in [false, true] {
+        let (f, owner) = owner_observed_external_pr().await?;
+        install_app(&f).await?;
+        let ctx = f.h.app.agent_context(TOKEN).await?;
+        f.h.github
+            .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
+        let held = f.h.github.hold_checks();
+        let read = async {
+            if detail {
+                let view = f.h.app.task_detail(&owner, f.task.as_str()).await?;
+                return Ok::<_, Box<dyn std::error::Error>>(serde_json::to_value(view)?);
+            }
+            let rows =
+                f.h.app
+                    .list_tasks(&owner, f.sandbox.as_str(), false)
+                    .await?;
+            Ok(serde_json::to_value(
+                rows.iter()
+                    .find(|t| t.id == f.task.as_str())
+                    .ok_or("parked task")?,
+            )?)
+        };
+        let reopen = async {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                f.h.github.checks_entered.notified(),
+            )
+            .await?;
+            f.h.app
+                .tool_steps_set(&ctx, &json!({"steps":["Verify the repair"]}))
+                .await?;
+            f.h.github.release_checks(&held);
+            Ok::<_, Box<dyn std::error::Error>>(())
+        };
+        let (row, updated) = tokio::join!(read, reopen);
+        updated?;
+        let row = row?;
+        assert_eq!(row["parked_needs_you"], true);
+        assert_eq!(row["steps"]["total"], 1, "detail={detail}");
+        if detail {
+            assert_eq!(row["steps_list"][0]["title"], "Verify the repair");
+        }
+    }
     Ok(())
 }
