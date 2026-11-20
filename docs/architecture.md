@@ -1574,6 +1574,9 @@ reads them per day with the minutes from arming to merge and the last ten dissol
 reason (`merge_queue::queue_numbers`; the Pipeline tab's Merge queue card)
 ([decision 0357](decisions/0357-a-merge-candidate-is-decided-by-its-own-run.md)).
 
+The armed merge verdict uses the SHA returned by the protected merge and the head GitHub accepted.
+It names the base when the closed PR confirms it. A train also names the candidate commit whose run passed.
+
 Each kept decision leaves a sentence in the armed slot (`ArmedSlot::note`), which `yulius wait`
 (`merge_train`), `delivery_status` and the task page show. `delivery_merge` for an armed head
 keeps it and its place. A merge found made, by anyone, is judged by its head's own run: a passed

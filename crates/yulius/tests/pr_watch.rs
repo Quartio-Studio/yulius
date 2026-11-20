@@ -290,7 +290,7 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
         echoed(&app, &id, "It has made no progress").await?;
         assert!(watch(&app, &stalling, &id).await?.is_none(), "told once");
 
-        // Merged (by anyone): said once, then the watch is over.
+        // The stored delivery says it merged. Without a closed PR read, only that fact is known.
         let merged = DeliveryRecord {
             stage: DeliveryStage::MergedIntegration,
             updated_at: app.now(),
@@ -323,7 +323,7 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
             .ok_or("the merge was not typed")?;
         assert!(
             typed.starts_with(
-                "Yulius, about your pull request #7: Pull request #7 is merged into `dev`"
+                "Yulius, about your pull request #7: Pull request #7 is merged. Yulius could not read its merged head"
             ),
             "{typed}"
         );

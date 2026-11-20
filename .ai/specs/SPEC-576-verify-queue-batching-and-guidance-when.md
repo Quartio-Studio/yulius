@@ -20,13 +20,14 @@ The requester reports that quartio-v2 task #331, PR #1481, named checked head `b
 - **MQG-001** Four green, behind, armed and eligible PRs arriving during an active candidate form one candidate on the next formation pass in arm order.
 - **MQG-002** Wait and delivery status tell an agent that the queue owns base updates while its armed PR waits behind the integration branch.
 - **MQG-003** Merge guidance identifies the actual landing and the checked PR head separately. A singleton names no peers. A multi-member train names its peers in train order. If GitHub supplies no landing SHA for an observed merge, the note identifies only the known head and branch.
+- **MQG-004** A protected merge reports its returned commit even if a read of the closed PR cannot confirm the base. A stale or mismatched PR observation supplies no landing identity.
 
 ## Plan
 
 - [x] Verify queue behavior and the November 9 evidence
-- [ ] Cover the next four heads and reproduce the singleton verdict
-- [ ] Report the landed commit and verify agent guidance
-- [ ] Obtain independent approval and verify delivery to dev
+- [x] Cover the next four heads and reproduce the singleton verdict
+- [x] Report the landed commit and verify agent guidance
+- [ ] Obtain independent approval for delivery to dev
 
 ## Acceptance criteria
 
@@ -34,6 +35,7 @@ The requester reports that quartio-v2 task #331, PR #1481, named checked head `b
 - **AC-2 (MQG-002)** The candidate member, waiting eligible PR and busy PR get clear queue ownership guidance. The waiting PR sees the same note in wait and status.
 - **AC-3 (MQG-003)** With an equal-tree squash on a different SHA, the last train verdict and delivery status identify the landing on dev. The verdict labels the checked head and lists peers only for a multi-member train. Ordinary armed and externally observed merges also use the right identities and retain their existing CI and next-step guidance.
 - **AC-4** Keep #1133 open until the November 9 admission and dispatch records support conclusions about both observations.
+- **AC-5 (MQG-004)** Refuse the closed-PR read after a successful protected merge. The verdict still contains the returned commit, without attributing it to an unconfirmed base.
 
 ## Test plan
 
@@ -42,3 +44,10 @@ Use the existing strict GitHub fixture backed by a bare Git origin. Exercise cur
 ## Decisions
 
 Use the existing protected merge operation, candidate CI verdict and dependency order under [ADR-0285](../../docs/decisions/0285-armed-pull-requests-merge-through-a-queue-that-never-restarts-a-run.md) and [ADR-0357](../../docs/decisions/0357-a-merge-candidate-is-decided-by-its-own-run.md). This is a reporting fix and an acceptance test. Reproducing current batching cannot establish the cause of historical scheduling decisions.
+
+## Evidence
+
+- The regression commit `60d2c85b9` ran against unchanged product code. One running candidate held its place while four heads passed. The next candidate was `train/4+2+5+3`, exactly their arm order. The existing bisection and moving-base pre-check controls also passed.
+- Five queue guidance assertions failed on that code. A non-ancestor squash with an identical tree produced the source SHA followed by `in a merge train with :`. Ordinary armed and externally observed merges likewise named the source as the landing. Member and fallback wait notes omitted the instruction about who updates the base. [Reporting defect #1529](https://github.com/Quartio-Studio/yulius/issues/1529)
+- With the closed-PR read unavailable, relying on the refreshed delivery view omitted the SHA returned by the successful merge. The regression in `a_green_current_pull_request_merges_on_the_next_pass` failed on that implementation.
+- After the fix, `cargo nextest run --no-fail-fast -p yulius -p yulius-app -E 'test(/^(merge_train|agent_wait|pr_watch)::/) | test(/^delivery::post_merge_evidence/)'` passed all 91 selected tests. The singleton compared the bare origin's dev SHA, checked head, trees and ancestry against the last verdict and status note. Multi-member verdicts named the correct intermediate landings, peers and candidate. The tests also covered incomplete and stale PR reads, protected merge refusals, red candidates and continuation of partially delivered plans.

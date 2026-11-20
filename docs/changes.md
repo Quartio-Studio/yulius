@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
+- Armed PRs get explicit guidance that Yulius handles base updates. Merge verdicts distinguish the landed commit from the checked PR head and name train peers only when present. [SPEC-576](../.ai/specs/SPEC-576-verify-queue-batching-and-guidance-when.md)
+
 - New agent secrets reserve interpreter settings. Managers can rename affected older secrets on the Secrets page. Host-bound GitHub token overrides remain available. [SPEC-574](../.ai/specs/SPEC-574-protect-interpreter-settings-while-prese.md)
 
 - Home and MCP retain a parked task’s known failing PR when another Git overview returns incomplete data. A newer confirmed closure clears it (SPEC-558).

@@ -20,6 +20,9 @@ use crate::delivery::MergeFailure;
 use crate::error::AppResult;
 use crate::model::TaskRecord;
 
+pub(crate) const QUEUE_BASE_GUIDANCE: &str =
+    "Yulius handles base updates. Do not merge the integration branch yourself.";
+
 /// A merge queue decision as it applies to this member. A successful head supersedes a
 /// decision that was waiting for its own run, including a request to retry an errored run.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -956,16 +959,16 @@ impl App {
                 &task.id,
                 format!(
                     "Pull request #{} passed its own run but is behind `{integration}`: Yulius \
-                     brings it up to date once your turn ends with everything committed.",
+                     brings it up to date once your turn ends with everything committed. \
+                     {QUEUE_BASE_GUIDANCE}",
                     pr.number
                 ),
             );
             return Verdict::Keep(armed);
         }
         let number = pr.number;
-        let base = pr.base.clone();
         match self.merge_task_pr_for_task(&auth, &id).await {
-            Ok(_) => {
+            Ok(merged) => {
                 let (actor, action, how) = armed.merge_audit(task.number);
                 let detail = format!(
                     "merged at head {} {how}; armed while the checks ran",
@@ -986,11 +989,7 @@ impl App {
                     tracing::warn!(task = %task.id, error = %err, "audit of an armed merge failed");
                 }
                 let next = self.after_merge_of(task, PROFILE_ASKS).await;
-                Verdict::Decided(format!(
-                    "Yulius merged pull request #{number} into `{base}` at {}: its checks \
-                     passed. {next}",
-                    short(&armed.head)
-                ))
+                Verdict::Decided(format!("{}. Its checks passed. {next}", merged.receipt))
             }
             // GitHub could not take the pull request's new title for now: armed until the next
             // pass (SPEC-069 BPL-008).
@@ -1230,18 +1229,17 @@ impl App {
         if !idle || dirty {
             return format!(
                 "{lead} Yulius tests it on top of the current integration branch as soon as your \
-                 turn ends with everything committed, and merges that branch in for you then. \
-                 Do not merge it yourself for this."
+                 turn ends with everything committed. {QUEUE_BASE_GUIDANCE}"
             );
         }
         match self.train_running_note(task) {
             Some(other) => format!(
                 "{lead} it goes into the next merge candidate, after the one Yulius tests now \
-                 ({other})."
+                 ({other}). {QUEUE_BASE_GUIDANCE}"
             ),
             None => format!(
                 "{lead} it goes into a merge candidate on Yulius's next pass, which tests it on \
-                 top of the current integration branch."
+                 top of the current integration branch. {QUEUE_BASE_GUIDANCE}"
             ),
         }
     }
@@ -1264,34 +1262,34 @@ impl App {
         number: u64,
         next: bool,
     ) -> String {
-        let integration = crate::delivery::delivery_profile(sandbox).integration_branch;
         // A merge of one part of the plan is not the task's end (SPEC-484 PLN-003).
         let ahead = match self.deps.store.steps(&task.id).await {
             Ok(steps) if next => crate::delivery::steps_ahead_note(&steps),
             _ => String::new(),
         };
-        let head = match self.task_github_token(task, sandbox).await {
+        let pull = match self.task_github_token(task, sandbox).await {
             Ok(token) => self
                 .deps
                 .github
                 .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, number)
                 .await
                 .ok()
-                .map(|pull| pull.head_sha),
+                .filter(|pull| pull.merged && pull.number == number),
             Err(_) => None,
         };
-        let Some(head) = head else {
+        let Some(pull) = pull else {
             return format!(
-                "Pull request #{number} is merged into `{integration}`. Yulius could not read its \
+                "Pull request #{number} is merged. Yulius could not read its \
                  merged head from GitHub, so whether its own Yulius CI run passed there is not \
                  known yet: `delivery_status` says it once GitHub answers."
             );
         };
         merged_text(
             number,
-            &integration,
-            &head,
-            self.ci_gate_result(sandbox, &head).await,
+            &pull.base,
+            &pull.head_sha,
+            pull.merge_commit_sha.as_deref(),
+            self.ci_gate_result(sandbox, &pull.head_sha).await,
             next,
             &ahead,
         )
@@ -1461,7 +1459,15 @@ impl App {
     }
 }
 
-/// What a merge of pull request `number` into `integration` at `head` counts as, from Yulius
+/// The base confirmed by the closed PR, the landed SHA when known, and the head whose
+/// checks decided the merge. The merge response can supply a SHA before the base is confirmed.
+pub(crate) fn merge_commits(base: Option<&str>, landed: Option<&str>, head: &str) -> String {
+    let branch = base.map_or_else(String::new, |base| format!(" into `{base}`"));
+    let landing = landed.map_or_else(String::new, |sha| format!(" at {}", short(sha)));
+    format!("{branch}{landing} from PR head {}", short(head))
+}
+
+/// What a merge of pull request `number` into `integration` counts as, from Yulius
 /// CI's result there (SPEC-441 MQ-009): merged on green when its own run passed, whoever merged
 /// it. With `next`, what the agent does now follows: the end of the task, or, with steps of its
 /// plan still ahead (`ahead`, [`crate::delivery::steps_ahead_note`]), the work that goes on
@@ -1470,15 +1476,14 @@ pub(crate) fn merged_text(
     number: u64,
     integration: &str,
     head: &str,
+    landed: Option<&str>,
     gate: yulius_domain::ci::GateResult,
     next: bool,
     ahead: &str,
 ) -> String {
     use yulius_domain::ci::{GateResult, RunState};
-    let at = format!(
-        "Pull request #{number} is merged into `{integration}` at {}",
-        short(head)
-    );
+    let commits = merge_commits(Some(integration), landed, head);
+    let at = format!("Pull request #{number} is merged{commits}");
     let ahead = ahead.trim();
     let finish = after_merge(
         ahead,
@@ -1710,15 +1715,16 @@ mod tests {
     fn a_merge_counts_by_its_heads_run() {
         use yulius_domain::ci::{GateResult, RunState};
         let green = merged_text(
-            7,
+            1481,
             "dev",
-            "abcdef0123",
+            "b37144fd2",
+            Some("55c569f5d"),
             GateResult::Run(Some(RunState::Passed)),
             true,
             "",
         );
         assert!(
-            green.starts_with("Pull request #7 is merged into `dev` at abcdef012, whose own Yulius CI run passed: it counts as merged on green Yulius CI, whoever merged it."),
+            green.starts_with("Pull request #1481 is merged into `dev` at 55c569f5d from PR head b37144fd2, whose own Yulius CI run passed: it counts as merged on green Yulius CI, whoever merged it."),
             "{green}"
         );
         assert!(green.contains("end with your summary"), "{green}");
@@ -1726,16 +1732,25 @@ mod tests {
             7,
             "dev",
             "abcdef0123",
+            None,
             GateResult::Run(Some(RunState::Failed)),
             false,
             "",
         );
         assert_eq!(
             red,
-            "Pull request #7 is merged into `dev` at abcdef012, but Yulius CI did not pass at \
+            "Pull request #7 is merged into `dev` from PR head abcdef012, but Yulius CI did not pass at \
              that head (failed): it does not count as merged on green."
         );
-        let none = merged_text(7, "dev", "abcdef0123", GateResult::Run(None), false, "");
+        let none = merged_text(
+            7,
+            "dev",
+            "abcdef0123",
+            None,
+            GateResult::Run(None),
+            false,
+            "",
+        );
         assert!(none.contains("(no run)"), "{none}");
     }
 
@@ -1751,7 +1766,7 @@ mod tests {
             GateResult::NotConfigured,
             GateResult::Run(Some(RunState::Running)),
         ] {
-            let text = merged_text(7, "dev", "abcdef0123", gate, true, ahead);
+            let text = merged_text(7, "dev", "abcdef0123", None, gate, true, ahead);
             assert!(
                 text.contains("2 step(s) of your plan are still ahead (next: \"Slice 2\")"),
                 "{text}"
@@ -1765,6 +1780,7 @@ mod tests {
             7,
             "dev",
             "abcdef0123",
+            None,
             GateResult::Run(Some(RunState::Passed)),
             false,
             ahead,

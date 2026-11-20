@@ -442,7 +442,7 @@ impl App {
             }
         }
         let view = match self.merge_task_pr_for_task(&auth, &task_id).await {
-            Ok(view) => view,
+            Ok(merged) => merged.view,
             Err(MergeFailure::Refused(err)) => return Err(err),
             // GitHub could not take the pull request's new title for now (SPEC-069 BPL-008):
             // armed, so Yulius merges this head on its next pass.
