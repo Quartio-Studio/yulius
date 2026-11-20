@@ -66,11 +66,13 @@ fn control_subject(task: &TaskId, request: &crate::model::ControlRequest) -> Str
     format!("control:{task}:{}:{}", request.by, request.at.0)
 }
 
-/// One notification, redacted.
+/// One notification, redacted, and the task it is about (a reply to it reaches the task,
+/// SPEC-512 TGI-002).
 struct Notice {
     kind: NoticeKind,
     headline: String,
     text: String,
+    task: Option<TaskId>,
 }
 
 impl NotifierState {
@@ -255,6 +257,7 @@ impl App {
             kind: NoticeKind::NeedsYou,
             headline: self.redact_for_sandbox(&task.sandbox_id, &headline).await,
             text: self.redact_for_sandbox(&task.sandbox_id, &text).await,
+            task: Some(task.id.clone()),
         }))
     }
 
@@ -295,6 +298,7 @@ impl App {
                 kind: NoticeKind::NeedsYou,
                 headline: self.redact_for_sandbox(&task.sandbox_id, &headline).await,
                 text: self.redact_for_sandbox(&task.sandbox_id, &text).await,
+                task: Some(task.id.clone()),
             },
         )))
     }
@@ -498,6 +502,7 @@ impl App {
             text: self
                 .redact_for_sandbox(&task.sandbox_id, &notice.text())
                 .await,
+            task: Some(task.id.clone()),
         }))
     }
 
@@ -529,6 +534,7 @@ impl App {
             kind: NoticeKind::Account,
             headline: redact(headline),
             text: redact(text),
+            task: None,
         })
     }
 
@@ -567,7 +573,7 @@ impl App {
                 throttle.offer(now, notice.headline.clone())
             });
             if send {
-                self.enqueue(link.chat.clone(), notice.text.clone());
+                self.enqueue_about(link.chat.clone(), notice.text.clone(), notice.task.clone());
             }
         }
         Ok(())

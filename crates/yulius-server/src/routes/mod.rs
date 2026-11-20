@@ -480,6 +480,8 @@ pub fn public() -> Router<AppState> {
         )
         .route("/api/me/telegram/link", post(telegram::link))
         .route("/api/me/telegram/choices", put(telegram::choices))
+        // The chat's intake (SPEC-512 TGI-001).
+        .route("/api/me/telegram/intake", put(telegram::intake))
         // The caller's own notepad, the same in every sandbox (SPEC-103).
         .route(
             "/api/me/notes",

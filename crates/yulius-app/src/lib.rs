@@ -118,6 +118,7 @@ pub mod task_questions;
 pub mod task_setup;
 pub mod tasks;
 pub mod telegram;
+pub mod telegram_intake;
 pub mod terminal;
 pub mod transcripts;
 pub mod updates;
