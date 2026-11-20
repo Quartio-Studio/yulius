@@ -2417,6 +2417,9 @@ fn repeated_refusal(refresh_first: bool) -> TestResult {
                 },
             );
             refresh(&app, &user, "a-first").await?;
+            // A later window reading shows room but cannot undo the model's refusal.
+            // Placement must still honor the excluded pair until the model itself runs.
+            reading(&app, "a-first").await?;
             let _ = app.resume_round().await;
             assert!(has_status(&app, &id, TaskStatus::WaitingCapacity).await);
             probe.answer("a-first", ModelAnswer::default());
