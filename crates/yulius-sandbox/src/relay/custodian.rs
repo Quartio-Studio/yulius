@@ -213,9 +213,13 @@ async fn hold(control: &mut UnixStream, directory: &Path) -> io::Result<()> {
     let (mut successor, _) = listener.accept().await?;
     drop(listener);
     drop(guard);
-    drop(lock);
     service_peer(&successor, owner)?;
-    send(&mut successor, pairs).await
+    // Keep the helper's one place through a stalled transfer. Bound its kernel send queue
+    // as well as the batch it holds in memory.
+    net::sockopt::set_socket_send_buffer_size(&successor, MAX_STATE)?;
+    let delivered = send(&mut successor, pairs).await;
+    drop(lock);
+    delivered
 }
 
 async fn hold_until(

@@ -48,7 +48,7 @@ new request after the old sockets reach EOF. The issue requires the original con
 - [x] Obtain independent approval for the relay lifecycle slice
 - [x] Preserve buffered bytes and half-closes when an established copy pauses
 - [x] Obtain independent approval for the resumable copy slice
-- [ ] Hold connected socket pairs and bounded copy state for one successor
+- [x] Hold connected socket pairs and bounded copy state for one successor
 - [ ] Obtain independent approval for the socket custodian slice
 - [ ] Hand established opaque connections and matching relay sockets to the restarted server
 - [ ] Verify same-socket continuity, admission limits and intercepted traffic through restart
@@ -146,3 +146,13 @@ without adoption support or a remote peer that times out can end a tunnel.
 - The isolated PR-watch timeout on #1536 was absent on the base (1.26 s), its reviewed head
   (1.80 s), and four concurrent head runs sharing one CPU (2.57–2.66 s). Both revisions
   observed the draft, held the news, saw the cleared box, delivered the news, then observed idle.
+- Review of `61ea0c680` found the helper released its directory lock before sending the
+  batch. A real stalled consumer left a first helper blocked while a second deposit obtained
+  an acknowledgement. The integration regression failed at the lock assertion. The helper
+  now holds the lock through delivery and bounds its kernel send queue. The test observes
+  both peer closures and the lock becoming available after dropping the stalled consumer.
+- The reviewer also requested an actual depositor exit. The revised process fixture waits
+  for its depositing subprocess to exit, queues bytes in both directions, and adopts from a
+  surviving process. Coupling the helper's lifetime to the depositor experimentally produced
+  a connection reset and failed the assertion. With the production lifetime, the original
+  peers carry the queued and fresh bytes and the second adoption finds no socket.

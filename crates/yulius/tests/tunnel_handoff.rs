@@ -1,7 +1,9 @@
 //! SPEC-577. Exercise the production helper as a separate process.
 use std::io;
+use std::os::fd::{AsFd as _, OwnedFd};
 use std::os::unix::fs::PermissionsExt as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -10,6 +12,9 @@ use yulius_sandbox::relay::custodian::{Pair, adopt, deposit};
 
 #[tokio::test]
 async fn a_successor_adopts_the_original_unix_and_tcp_peers_once() -> io::Result<()> {
+    if let Some(directory) = std::env::var_os("YULIUS_FIXTURE_HANDOFF_DIRECTORY") {
+        return deposit_in_the_old_process(PathBuf::from(directory)).await;
+    }
     tokio::time::timeout(Duration::from_secs(10), async {
         let dir = tempfile::tempdir()?;
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
@@ -19,20 +24,27 @@ async fn a_successor_adopts_the_original_unix_and_tcp_peers_once() -> io::Result
         )?);
         let (mut client, left) = UnixStream::pair()?;
         let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
-        let (right, (mut remote, _)) = tokio::try_join!(
-            TcpStream::connect(listener.local_addr()?),
-            listener.accept()
-        )?;
-        let saved = Pair {
-            sockets: [left.into_std()?.into(), right.into_std()?.into()],
-            state: b"pending".to_vec(),
-        };
-        deposit(
-            Path::new(env!("CARGO_BIN_EXE_yulius")),
-            dir.path(),
-            vec![saved],
-        )
-        .await?;
+        // Move the Unix endpoint to a distinct depositing process. It connects to the
+        // synthetic destination and exits after the helper acknowledges the complete batch.
+        let mut old = tokio::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "tunnel_handoff::a_successor_adopts_the_original_unix_and_tcp_peers_once",
+            ])
+            .env("YULIUS_FIXTURE_HANDOFF_DIRECTORY", dir.path())
+            .env(
+                "YULIUS_FIXTURE_HANDOFF_PEER",
+                listener.local_addr()?.to_string(),
+            )
+            .stdin(Stdio::from(OwnedFd::from(left.into_std()?)))
+            .stdout(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()?;
+        let (mut remote, _) = listener.accept().await?;
+        assert!(
+            old.wait().await?.success(),
+            "the original depositing process exited"
+        );
         client.write_all(b"left").await?;
         remote.write_all(b"peer").await?;
         let batch = adopt(dir.path()).await?;
@@ -92,4 +104,67 @@ async fn an_overlapping_deposit_leaves_the_live_batch_for_its_successor() -> io:
         Ok(())
     })
     .await?
+}
+
+#[tokio::test]
+async fn a_stalled_successor_holds_the_only_helper_place_until_its_transfer_ends() -> io::Result<()>
+{
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let dir = tempfile::tempdir()?;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
+        let (mut client, left) = UnixStream::pair()?;
+        let (mut peer, right) = UnixStream::pair()?;
+        let mut batch = Vec::new();
+        // More private state than the Unix stream's send buffer. The first header confirms
+        // the listener has accepted; leaving the rest unread stalls the helper in send.
+        for _ in 0..16 {
+            batch.push(Pair {
+                sockets: [
+                    left.as_fd().try_clone_to_owned()?,
+                    right.as_fd().try_clone_to_owned()?,
+                ],
+                state: vec![b'x'; 32 * 1024],
+            });
+        }
+        drop((left, right));
+        deposit(Path::new(env!("CARGO_BIN_EXE_yulius")), dir.path(), batch).await?;
+        let mut successor = UnixStream::connect(dir.path().join("tunnels.sock")).await?;
+        assert_eq!(successor.read_u8().await?, b'P');
+        let lock = std::fs::File::open(dir.path())?;
+        assert!(
+            matches!(lock.try_lock(), Err(std::fs::TryLockError::WouldBlock)),
+            "another helper could publish during transfer"
+        );
+        drop(successor);
+        assert_eq!(client.read(&mut [0]).await?, 0);
+        assert_eq!(peer.read(&mut [0]).await?, 0);
+        loop {
+            match lock.try_lock() {
+                Ok(()) => break,
+                Err(std::fs::TryLockError::WouldBlock) => tokio::task::yield_now().await,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(())
+    })
+    .await?
+}
+
+// Called in the re-executed test with only a fixture-owned endpoint on stdin.
+async fn deposit_in_the_old_process(directory: PathBuf) -> io::Result<()> {
+    let addr = std::env::var("YULIUS_FIXTURE_HANDOFF_PEER").map_err(io::Error::other)?;
+    let right = TcpStream::connect(addr).await?;
+    let saved = Pair {
+        sockets: [
+            std::io::stdin().as_fd().try_clone_to_owned()?,
+            right.into_std()?.into(),
+        ],
+        state: b"pending".to_vec(),
+    };
+    deposit(
+        Path::new(env!("CARGO_BIN_EXE_yulius")),
+        &directory,
+        vec![saved],
+    )
+    .await
 }
