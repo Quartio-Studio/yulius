@@ -1542,40 +1542,53 @@ mod tests {
         Ok(())
     }
 
-    /// SPEC-137 review H1: the backfill reads a step's events by an index, so a large history
-    /// migrates in seconds, not minutes (40k events took 21 s without one).
-    #[tokio::test]
-    async fn a_large_step_history_backfills_quickly() -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("v27-big.db");
-        {
-            let mut conn = rusqlite::Connection::open(&path)?;
-            for sql in &MIGRATIONS[..27] {
-                conn.execute_batch(sql)?;
-            }
-            conn.pragma_update(None, "user_version", 27)?;
-            conn.execute_batch(
-                "INSERT INTO users (id, display_name, created_at) VALUES ('u1', 'U', 1);
-                 INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
-                 INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, origin, created_by, created_at, updated_at) VALUES ('t1', 's1', 1, 'T', 'p', 'claude', 'closed', 'ui', 'u1', 1, 1);",
-            )?;
-            let tx = conn.transaction()?;
-            for i in 0..25_000_i64 {
-                let step = format!("st{}", i / 2);
-                let to = if i % 2 == 0 { "in_progress" } else { "done" };
-                tx.execute(
-                    "INSERT INTO step_events (step_id, task_id, at, actor, to_status) VALUES (?1, 't1', ?2, 'a', ?3)",
-                    rusqlite::params![step, i, to],
-                )?;
-            }
-            tx.commit()?;
+    /// SPEC-137: each step looks up its next event by index. Count the work done by SQLite
+    /// itself so a busy CI host cannot turn a bounded lookup into a test failure.
+    #[test]
+    fn a_large_step_history_backfills_with_bounded_work() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use rusqlite::fallible_iterator::FallibleIterator as _;
+
+        let events = 4_000_i64;
+        let mut conn = rusqlite::Connection::open_in_memory()?;
+        for sql in &MIGRATIONS[..27] {
+            conn.execute_batch(sql)?;
         }
-        let started = std::time::Instant::now();
-        let _store = SqliteStore::open(&path)?;
-        let took = started.elapsed();
+        conn.execute_batch(
+            "INSERT INTO users (id, display_name, created_at) VALUES ('u1', 'U', 1);
+             INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
+             INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, origin, created_by, created_at, updated_at) VALUES ('t1', 's1', 1, 'T', 'p', 'claude', 'closed', 'ui', 'u1', 1, 1);",
+        )?;
+        let tx = conn.transaction()?;
+        for i in 0..events {
+            let step = format!("st{}", i / 2);
+            let to = if i % 2 == 0 { "in_progress" } else { "done" };
+            tx.execute(
+                "INSERT INTO step_events (step_id, task_id, at, actor, to_status) VALUES (?1, 't1', ?2, 'a', ?3)",
+                rusqlite::params![step, i, to],
+            )?;
+        }
+        tx.commit()?;
+
+        let tx = conn.transaction()?;
+        let mut migration = rusqlite::Batch::new(&tx, MIGRATIONS[27]);
+        let mut instructions = 0_i64;
+        while let Some(mut statement) = migration.next()? {
+            statement.execute([])?;
+            instructions += i64::from(statement.get_status(rusqlite::StatementStatus::VmStep));
+        }
+        tx.commit()?;
+        let completed: i64 = conn.query_row(
+            "SELECT count(*) FROM spans WHERE subject_kind = 'task' AND subject_id = 't1'
+             AND kind = 'step' AND source = 'backfilled' AND ended_at = started_at + 1
+             AND outcome = 'done'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(completed, events / 2);
         assert!(
-            took < std::time::Duration::from_secs(10),
-            "the migration took {took:?}"
+            instructions < events * 512,
+            "backfilling {events} events used {instructions} SQLite instructions"
         );
         Ok(())
     }

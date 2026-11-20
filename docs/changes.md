@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
+- The store migration regression counts SQLite instructions and verifies completed step spans,
+  so host contention cannot fail the backfill test (SPEC-559, #1484).
+
 - Messaging a parked Codex task resumes the recorded rollout, including after a server restart
   interrupted session bookkeeping (SPEC-558, #1490).
 
