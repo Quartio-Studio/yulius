@@ -355,7 +355,7 @@ impl SqliteStore {
 ///
 /// # Errors
 /// Fails when the file cannot be written or `version` is past the latest.
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub fn create_at_version(path: &Path, version: usize) -> Result<(), OpenError> {
     let mut conn = Connection::open(path)?;
     let tx = conn.transaction()?;

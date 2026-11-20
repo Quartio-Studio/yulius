@@ -10,7 +10,7 @@ Task delivery keeps the current PR number. CI and CD have individual run IDs, jo
 
 ## Decision
 
-Record the task, branch, PR, PR head and landed SHA with the delivery transition. Join CI by sandbox, exact reference and commit. Join deployment attempts by sandbox and exact landed SHA. Keep each attempt's identity and the stored explanation of a reused gate. Copy only the compact projection when retention deletes a linked run. Provide a task-authorized permalink for the landing with bounded pages and a filter by attempt ID. A successful CD wrapper confirms its configured commands. For an unsuccessful run, project output and diagnostic spans cannot establish which commands passed.
+Record the task, branch, PR, PR head and landed SHA with the delivery transition. If GitHub cannot confirm the merge immediately, persist the expected branch, head and merge SHA. Later confirmation must match all three. At upgrade, recover the expected branch from the task's original PR-opening audit entry. An absent or ambiguous entry leaves a legacy landing unknown. Join CI by sandbox, exact reference and commit. Join deployment attempts by sandbox and exact landed SHA. Keep each attempt's identity and the stored explanation of a reused gate. Copy only the compact projection when retention deletes a linked run. Provide a task-authorized permalink for the landing with bounded pages and a filter by attempt ID. A successful CD wrapper confirms its configured commands. For an unsuccessful run, project output and diagnostic spans cannot establish which commands passed.
 
 ## Alternatives
 

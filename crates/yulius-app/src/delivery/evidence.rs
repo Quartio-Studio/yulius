@@ -16,6 +16,9 @@ pub struct Landing {
     pub head: String,
     /// Result of the merge.
     pub sha: String,
+    /// Whether the result was confirmed on this branch. An expected identity can only
+    /// enable recovery from a later matching closed PR.
+    pub confirmed: bool,
 }
 
 impl Landing {
@@ -26,11 +29,19 @@ impl Landing {
             branch: branch.to_owned(),
             head: head.to_owned(),
             sha: sha.to_owned(),
+            confirmed: true,
         })
     }
 
     pub(crate) fn of_pull(pull: &GhPull, integration: &str) -> Option<Self> {
-        if !pull.merged || pull.from_fork || pull.base != integration {
+        if pull.base != integration {
+            return None;
+        }
+        Self::closed_pull(pull)
+    }
+
+    pub(crate) fn closed_pull(pull: &GhPull) -> Option<Self> {
+        if !pull.merged || pull.from_fork {
             return None;
         }
         Self::new(
@@ -104,6 +115,7 @@ mod tests {
             Some(Landing {
                 branch: "dev".into(),
                 head: seen.clone(),
+                confirmed: true,
                 sha: landed.clone()
             })
         );

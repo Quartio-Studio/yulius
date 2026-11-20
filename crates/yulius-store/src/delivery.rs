@@ -142,7 +142,15 @@ impl DeliveryStore for SqliteStore {
             // at round 1 (SPEC-493 REV-002). Here, so every way a merge is recorded does it.
             if next.stage == DeliveryStage::MergedIntegration {
                 if let Some(landing) = &landing {
-                    record_landing(&tx, next.task_id.as_str(), next.pr_number.map(to_i64), landing)?;
+                    if landing.confirmed {
+                        record_landing(&tx, next.task_id.as_str(), next.pr_number.map(to_i64), landing)?;
+                    } else if let Some(pr) = next.pr_number {
+                        tx.execute(
+                            "INSERT INTO task_merge_recovery(task_id, pr_number, branch, head_sha, merged_sha)
+                             VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT DO NOTHING",
+                            params![next.task_id.as_str(), to_i64(pr), landing.branch, landing.head, landing.sha],
+                        ).map_err(db)?;
+                    }
                 }
                 tx.execute(
                     "UPDATE review_rounds SET pr_number = ?1, merged_at = ?2 \
@@ -181,7 +189,13 @@ impl DeliveryStore for SqliteStore {
             };
             let existing = lookup(c)?;
             if existing.is_none()
-                && let Some(landed) = known
+                && let Some(landed) = known.filter(|l| l.confirmed)
+                && c.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM task_merge_recovery
+                     WHERE task_id = ?1 AND pr_number = ?2 AND branch = ?3
+                       AND (head_sha IS NULL OR head_sha = ?4) AND (merged_sha IS NULL OR merged_sha = ?5))",
+                    params![task, pr, landed.branch, landed.head, landed.sha], |row| row.get::<_, bool>(0),
+                ).map_err(db)?
             {
                 record_landing(c, &task, pr, &landed)?;
                 return lookup(c);
@@ -501,8 +515,23 @@ mod tests {
     #[tokio::test]
     async fn legacy_evidence_binds_only_its_observed_merge_and_survives_a_follow_up() -> TestResult
     {
-        let store = SqliteStore::open_in_memory()?;
-        let task = seed(&store).await?;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("v76.db");
+        crate::create_at_version(&path, 76)?;
+        {
+            let c = rusqlite::Connection::open(&path)?;
+            c.execute_batch(r#"
+                INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at)
+                VALUES ('s1','s','o','r','main','{"integration_branch":"changed-after-merge"}',20000,10,'u1','not_needed',1);
+                INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, origin, created_by, owner_id, created_at, updated_at)
+                VALUES ('t1','s1',1,'Guide','Guide','claude','closed','ui','u1','u1',1,5);
+                UPDATE tasks SET branch = 'docs/guide' WHERE id = 't1';
+                INSERT INTO audit_log(at, actor, action, target, detail) VALUES
+                   (1,'yulius','delivery.pr.open','s#1','pull request #7 docs/guide -> dev at aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+                INSERT INTO delivery (task_id, stage, pr_number, updated_at) VALUES ('t1','merged_integration',7,5);"#)?;
+        }
+        let store = SqliteStore::open(&path)?;
+        let task = TaskId::parse("t1")?;
         let old = DeliveryRecord {
             task_id: task.clone(),
             stage: DeliveryStage::MergedIntegration,
@@ -510,14 +539,20 @@ mod tests {
             updated_at: Timestamp(5),
         };
         let landing = Landing {
+            confirmed: true,
             branch: "dev".into(),
             head: "a".repeat(40),
             sha: "b".repeat(40),
         };
-        assert!(
+        let reconfigured = Landing {
+            branch: "changed-after-merge".into(),
+            ..landing.clone()
+        };
+        assert_eq!(
             store
-                .transition_delivery(&DeliveryStage::None, &old)
-                .await?
+                .landed_sha(&task, Some(7), Some(&reconfigured))
+                .await?,
+            None
         );
         assert_eq!(store.landed_sha(&task, Some(7), None).await?, None);
         assert_eq!(
@@ -553,6 +588,47 @@ mod tests {
                 .ok_or("old landing")?
                 .pr_number,
             Some(7)
+        );
+        // A transient inability to confirm the next merge can recover only its original
+        // branch, accepted head and merge SHA, even if the configured branch later changes.
+        let pending = Landing {
+            confirmed: false,
+            sha: "c".repeat(40),
+            ..landing.clone()
+        };
+        let next = DeliveryRecord {
+            pr_number: Some(8),
+            ..old
+        };
+        assert!(
+            store
+                .transition_with_landing(&DeliveryStage::PrOpen, &next, Some(&pending))
+                .await?
+        );
+        assert_eq!(store.landed_sha(&task, Some(8), None).await?, None);
+        let confirmed = Landing {
+            confirmed: true,
+            ..pending
+        };
+        for other in [
+            Landing {
+                branch: "new-base".into(),
+                ..confirmed.clone()
+            },
+            Landing {
+                head: "d".repeat(40),
+                ..confirmed.clone()
+            },
+            Landing {
+                sha: "e".repeat(40),
+                ..confirmed.clone()
+            },
+        ] {
+            assert_eq!(store.landed_sha(&task, Some(8), Some(&other)).await?, None);
+        }
+        assert_eq!(
+            store.landed_sha(&task, Some(8), Some(&confirmed)).await?,
+            Some(confirmed.sha.clone())
         );
         Ok(())
     }

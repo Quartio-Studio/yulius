@@ -14,6 +14,38 @@ CREATE INDEX task_merges_pr ON task_merges(task_id, pr_number);
 CREATE INDEX cd_runs_commit ON cd_runs(sandbox_id, sha);
 CREATE INDEX environment_runs_commit ON environment_runs(sandbox_id, commit_sha);
 
+-- Only previously merged PRs and merges awaiting confirmation may be recovered on read.
+-- At upgrade, use the integration branch in the task's original PR-opening audit event.
+-- A new merge waiting on GitHub additionally has the accepted head and returned commit.
+CREATE TABLE task_merge_recovery (
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, pr_number INTEGER NOT NULL,
+    branch TEXT NOT NULL, head_sha TEXT, merged_sha TEXT,
+    PRIMARY KEY (task_id, pr_number)
+);
+-- delivery.pr.open records "pull request #N HEAD_BRANCH -> BASE at SHA". An absent,
+-- ambiguous or unrecognised historical event supplies no expected integration branch.
+WITH openings AS (
+    SELECT d.task_id, d.pr_number, a.detail,
+           'pull request #' || d.pr_number || ' ' || t.branch || ' -> ' AS prefix
+    FROM delivery d JOIN tasks t ON t.id = d.task_id JOIN sandboxes s ON s.id = t.sandbox_id
+    JOIN audit_log a ON a.action = 'delivery.pr.open' AND a.target = s.slug || '#' || t.number
+    WHERE d.pr_number IS NOT NULL AND d.stage NOT IN ('none', 'pr_open')
+), targets AS (
+    SELECT task_id, pr_number, substr(detail, length(prefix) + 1) AS tail FROM openings
+    WHERE substr(detail, 1, length(prefix)) = prefix
+), identities AS (
+    SELECT task_id, pr_number, substr(tail, 1, instr(tail, ' at ') - 1) AS branch,
+           substr(tail, instr(tail, ' at ') + 4) AS opening_sha FROM targets
+    WHERE instr(tail, ' at ') > 1
+)
+INSERT INTO task_merge_recovery(task_id, pr_number, branch)
+SELECT task_id, pr_number, min(branch) FROM identities
+WHERE length(opening_sha) IN (40, 64) AND opening_sha NOT GLOB '*[^0-9a-fA-F]*'
+GROUP BY task_id, pr_number HAVING min(branch) = max(branch);
+CREATE TRIGGER forget_resolved_task_merge AFTER INSERT ON task_merges BEGIN
+    DELETE FROM task_merge_recovery WHERE task_id = NEW.task_id AND pr_number = NEW.pr_number;
+END;
+
 -- Share the projection between live reads and retention. The run's note explains tree or
 -- train reuse. Keep job verdicts in gate order, including checks that did not run.
 CREATE VIEW task_merge_ci_refs AS

@@ -9062,6 +9062,29 @@ async fn post_merge_evidence_refuses_a_pr_retargeted_at_merge() -> TestResult {
         .status,
         StatusCode::NOT_FOUND
     );
+    let mut profile = DeliveryProfile::standard();
+    profile.integration_branch = "another-base".into();
+    f.h.store
+        .set_profile(
+            &SandboxId::parse("s1")?,
+            &serde_json::to_string(&profile_to_contract(&profile))?,
+        )
+        .await?;
+    assert!(
+        f.delivery("t1").await?["evidence"].is_null(),
+        "changing the integration branch cannot reinterpret a rejected landing"
+    );
+    assert_eq!(
+        f.req(
+            Method::GET,
+            &format!("/api/tasks/t1/delivery/evidence/{other}"),
+            None,
+            &f.rita
+        )
+        .await?
+        .status,
+        StatusCode::NOT_FOUND
+    );
     Ok(())
 }
 

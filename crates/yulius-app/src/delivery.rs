@@ -2071,7 +2071,7 @@ impl App {
                 .pr
                 .as_ref()
                 .filter(|p| Some(p.number) == observed.record.pr_number)
-                .and_then(|p| evidence::Landing::of_pull(p, &profile.integration_branch));
+                .and_then(evidence::Landing::closed_pull);
             if let Some(sha) = self
                 .deps
                 .store
@@ -4533,6 +4533,12 @@ impl App {
                     &merge_sha,
                 )
             });
+        let landing = landing.or_else(|| {
+            let mut expected =
+                evidence::Landing::new(&profile.integration_branch, &pull.head_sha, &merge_sha)?;
+            expected.confirmed = false;
+            Some(expected)
+        });
         let next = DeliveryRecord {
             task_id: task.id.clone(),
             stage: DeliveryStage::MergedIntegration,
