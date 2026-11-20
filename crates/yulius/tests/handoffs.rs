@@ -862,12 +862,12 @@ async fn a_secret_across_a_refusals_cut_leaves_no_part_of_it() -> TestResult {
     .await?;
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
     // Each field is kept to 100 (sandbox), 200 (title) and 2,000 (prompt) characters: the
-    // secret starts just before each bound.
+    // secret starts at least ten characters before each bound, so a cut would keep `shop-token`.
     let refused = hand(
         &w,
         "t1",
         json!({
-            "sandbox": format!("{}{value}", "z".repeat(95)),
+            "sandbox": format!("{}{value}", "z".repeat(90)),
             "title": format!("{}{value}", "y".repeat(190)),
             "prompt": format!("{}{value}", "x".repeat(1_990)),
         }),

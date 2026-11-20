@@ -46,7 +46,7 @@ head on its own branch, as task #538 did for part 4 (SPEC-556, PR #1487).
 - [x] Branch carries task #494's part 5 head
 - [x] Touched tests, clippy and repository checks pass
 - [x] Evidence recorded and the head handed to an independent review
-- [ ] Round 1's findings answered and the head handed to review round 2
+- [x] Round 1's findings answered and the head handed to review round 2
 
 ## Acceptance criteria
 
@@ -111,7 +111,7 @@ migration 0076 or the docs, and found bd46d12e1 and SPEC-557 correct.
 
 | Finding | Change | Test |
 |---|---|---|
-| Major (a8c6d4a80): the redact-before-cut fix had no test that fails without it | a test | `handoffs::a_secret_across_a_refusals_cut_leaves_no_part_of_it` (a secret starting 5, 10 and 10 characters before the sandbox, title and prompt bounds: no `shop-token` in the page or the audit; fails with cut-then-redact: mutation, the prompt and title kept `…shop-token`) |
+| Major (a8c6d4a80): the redact-before-cut fix had no test that fails without it | a test | `handoffs::a_secret_across_a_refusals_cut_leaves_no_part_of_it` (a secret starting 10 characters before the sandbox, title and prompt bounds (round 2): no `shop-token` in the page or the audit; fails with cut-then-redact: mutation, the prompt and title kept `…shop-token`) |
 | Minor (pre-existing test, the only guard of bd46d12e1): `guestRefusals` was read before the mock answered (50 to 200 ms latency) | the mock counts `unanswered` requests; the test waits for 0 before reading | with the Git page's guest guard removed, `playground-guests.e2e.ts --grep "nothing else"` failed 5 runs of 5 (the reviewer saw 1 of 3 before) |
 | Minor: a refusal's audit row on the target named no source (`task:N`, `refused: <reason>`) | `refused: <source sandbox> #N to <target>: <reason>`, as `audit_handoff` names the others | `handoffs::a_refusal_names_its_source_and_what_was_asked` (failed before) |
 | Nit: a refusal with no target found listed the task's own repository as its target | the view shows the sandbox asked for | the same test (`target_sandbox` "nowhere"; was `acme/app`) |
@@ -123,3 +123,10 @@ After the fixes: `cargo test -p yulius --test main -- handoffs:: parking::a_hand
 11 passed; `npx e2e run` of `playground-guests`, `git`, `handoffs`, `telegram`, `playground`,
 `initial-load`, `loading`, `mock-ready`, `editor` and `consistency` 96 passed; clippy
 `-D warnings` and `fmt --check` clean; `check_repository.py` passed.
+
+### Review round 2 (head abac589c8): APPROVED
+
+Left one minor, answered in the test only: the sandbox field's secret started 5 characters before
+its bound, so a cut there kept only `shop-`; it now starts 10 before. With cut-then-redact on the
+sandbox field alone, the test fails (`target_sandbox` kept `…shop-token`); `handoffs::` 10 passed
+after.
