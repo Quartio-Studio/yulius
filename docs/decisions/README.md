@@ -8,6 +8,13 @@ too (ADR-0066), and uses it in its title; a substantial one also gets an analysi
 relevant spec. The repository check refuses two records with one number (#317), a title whose
 number differs from the file name, an unlisted record, and entries out of number order.
 
+For ADR 0401 onward, insert the complete entry immediately **before** its numbered HTML
+comment and keep the comment in place. This gives parallel entries distinct insertion points.
+Before committing the entry, run `python3 scripts/decision_slots.py`. It checks the insertion
+points shared by HEAD and origin/dev and appends a block of empty slots when needed.
+If a reservation skips past all available slots, land an empty extension first with
+`python3 scripts/decision_slots.py NNNN`, then merge dev into the author branch.
+
 - [0001](0001-single-rust-binary.md): One Rust binary with an embedded static web UI
 - [0002](0002-detached-ptyhost-per-run.md): A detached ptyhost process owns every agent run
 - [0003](0003-sandbox-isolation.md): Per-sandbox containment and namespace holder
@@ -404,4 +411,69 @@ number differs from the file name, an unlisted record, and entries out of number
 - [0399](0399-task-evidence-belongs-to-the-landed-commit.md) Task verification evidence binds the landed commit to its actual CI and environment attempts (SPEC-562).
 - [0400](0400-continuing-a-reviewer-after-its-report-opens-the-next-round.md) records a new round when an author continues a reviewer after its report.
 - [0401](0401-red-ci-notices-include-partial-sibling-failures.md) Red CI notices and run details include partial failures observed in siblings stopped by fail-fast.
+<!-- ADR 0401 -->
 - [0402](0402-sandbox-browsers-skip-chromes-default-apps.md) records how sandbox launches handle default apps and existing extensions on virtual displays.
+<!-- ADR 0402 -->
+- [0403](0403-reserve-edit-locations-in-the-decision-index.md) gives each upcoming decision its own Git insertion point.
+<!-- ADR 0403 -->
+<!-- ADR 0404 -->
+<!-- ADR 0405 -->
+<!-- ADR 0406 -->
+<!-- ADR 0407 -->
+<!-- ADR 0408 -->
+<!-- ADR 0409 -->
+<!-- ADR 0410 -->
+<!-- ADR 0411 -->
+<!-- ADR 0412 -->
+<!-- ADR 0413 -->
+<!-- ADR 0414 -->
+<!-- ADR 0415 -->
+<!-- ADR 0416 -->
+<!-- ADR 0417 -->
+<!-- ADR 0418 -->
+<!-- ADR 0419 -->
+<!-- ADR 0420 -->
+<!-- ADR 0421 -->
+<!-- ADR 0422 -->
+<!-- ADR 0423 -->
+<!-- ADR 0424 -->
+<!-- ADR 0425 -->
+<!-- ADR 0426 -->
+<!-- ADR 0427 -->
+<!-- ADR 0428 -->
+<!-- ADR 0429 -->
+<!-- ADR 0430 -->
+<!-- ADR 0431 -->
+<!-- ADR 0432 -->
+<!-- ADR 0433 -->
+<!-- ADR 0434 -->
+<!-- ADR 0435 -->
+<!-- ADR 0436 -->
+<!-- ADR 0437 -->
+<!-- ADR 0438 -->
+<!-- ADR 0439 -->
+<!-- ADR 0440 -->
+<!-- ADR 0441 -->
+<!-- ADR 0442 -->
+<!-- ADR 0443 -->
+<!-- ADR 0444 -->
+<!-- ADR 0445 -->
+<!-- ADR 0446 -->
+<!-- ADR 0447 -->
+<!-- ADR 0448 -->
+<!-- ADR 0449 -->
+<!-- ADR 0450 -->
+<!-- ADR 0451 -->
+<!-- ADR 0452 -->
+<!-- ADR 0453 -->
+<!-- ADR 0454 -->
+<!-- ADR 0455 -->
+<!-- ADR 0456 -->
+<!-- ADR 0457 -->
+<!-- ADR 0458 -->
+<!-- ADR 0459 -->
+<!-- ADR 0460 -->
+<!-- ADR 0461 -->
+<!-- ADR 0462 -->
+<!-- ADR 0463 -->
+<!-- ADR 0464 -->

@@ -7,6 +7,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-20
 
 - Parked tasks and their dependent tasks use verified PR status. A failed integration candidate appears on its owner's task even when ordinary CI passed, and the existing PR notice identifies the failing run (SPEC-558).
+- Parallel ADR additions keep their numeric order in author updates and protected merge trains (SPEC-568, #1515).
+
 - Sandbox browsers skip Chrome’s default apps. Older profiles can take the extension blocklist
   on a virtual display without showing a Docs Offline administrator dialog (SPEC-567, #1411).
 
