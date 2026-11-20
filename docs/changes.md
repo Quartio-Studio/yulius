@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
+- The merge queue attributes a failed candidate to a member whose own run failed during
+  the split decision (SPEC-559, #1398).
+
 - Intake browser tests wait up to the shared first-load budget for the sandbox task list.
   Proposal interactions keep their usual timeouts (SPEC-559, #1441).
 

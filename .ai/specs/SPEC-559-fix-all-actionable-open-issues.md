@@ -44,7 +44,7 @@ The inventory at dev 56f08db7f contained 20 issues. #1490 belongs to task #540. 
 - [x] Reproduce the intake rail timeout with a held task list
 - [x] Verify the intake scenarios against the first-load budget
 - [x] Obtain independent approval for the intake regression
-- [ ] Reproduce the red-candidate split when its member fails
+- [x] Reproduce the red-candidate split when its member fails
 - [ ] Preserve the known member failure in merge-train decisions
 - [ ] Obtain independent approval for the merge-train fix
 - [ ] Verify the independent fixes and reconcile the remaining issues
@@ -84,3 +84,4 @@ Task #541 owns #1398. Task #546 was archived before it started. Its independent 
 - #1441 reproduced in Chromium with the task-list response held for 6.5 seconds. The five-second visibility check failed on the seeded Checkout API link before the proposal. With the shared first-load budget, all 18 scenarios in the intake file passed. In a separate probe with the response held indefinitely, the browser trace recorded a 30.0-second visibility check followed by failure on that same link. The probe was removed.
 - Independent review approved the intake fix at 015dd8f7c. The reviewer reran the delayed proposal and checked all eleven first-load assertions and the permanently held trace. The repository quick checks passed. The mutation command found no changed Rust code in this slice. Vidoc was disabled.
 - PR #1495 merged and GitHub closed #1441. The merge candidate passed quality, both Rust shards and e2e in run c4b1e6af. Yulius recorded success for head ed9bcb044 and the resulting dev commit ba2c36264 (run 38d7b047). Vidoc was disabled.
+- The controlled failure of member 2 between the two checks reproduced the historical audit from PR #1397 on unchanged decision logic. The candidate was bisected even though the member’s own run had failed.
