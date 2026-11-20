@@ -377,29 +377,28 @@ impl App {
             if facts.parked_has_local_work_or_request() {
                 return Ok(());
             }
-            let Some(prs) = self
+            let prs = self
                 .verify_task_prs(
                     task,
                     record.as_ref(),
                     PrVerification::Display,
                     &mut observed,
                 )
-                .await?
-            else {
-                facts.pull = Some(observed.signal.unwrap_or(PullSignal::Errored));
-                return Ok(());
-            };
-            if !self
+                .await?;
+            let (current, local) = self
                 .parked_evidence_current(
                     task,
                     record.as_ref(),
-                    &prs,
+                    prs.as_ref(),
                     PrVerification::Display,
                     &mut observed,
                 )
-                .await?
-            {
-                facts.pull = Some(observed.signal.unwrap_or(PullSignal::Errored));
+                .await?;
+            facts = local;
+            if !current {
+                if !facts.parked_has_local_work_or_request() {
+                    facts.pull = Some(observed.signal.unwrap_or(PullSignal::Errored));
+                }
                 return Ok(());
             }
             facts.pull = observed.pr.map(|pr| {

@@ -57,7 +57,7 @@ use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::permission::Action;
 use yulius_domain::spec_format::{self, MAX_CONFIG_BYTES, MAX_PATH_BYTES, SpecReport};
 use yulius_domain::steps::{DeliveryAsk, StepStatus};
-use yulius_domain::task::PullSignal;
+use yulius_domain::task::{AttentionFacts, PullSignal};
 use yulius_domain::time::Timestamp;
 
 use crate::auth::{AuthContext, rfc3339};
@@ -772,6 +772,18 @@ fn pull_facts(pull: &GhPull) -> PullFacts<'_> {
         base: &pull.base,
         from_fork: pull.from_fork,
     }
+}
+
+/// The eligibility fields from two observations of the same open pull.
+fn same_open_pull(before: &GhPull, after: &GhPull) -> bool {
+    is_open(after)
+        && before.number == after.number
+        && before.head_sha == after.head_sha
+        && before.head == after.head
+        && before.from_fork == after.from_fork
+        && before.base == after.base
+        && before.mergeable == after.mergeable
+        && before.behind == after.behind
 }
 
 fn is_open(pull: &GhPull) -> bool {
@@ -4315,15 +4327,8 @@ impl App {
         // A title edit carries no eligibility evidence. Changes in membership,
         // head, base or mergeability do. Prefer a directly confirmed blocker
         // that still has the same facts over a newly listed, unchecked PR.
-        let unchanged = |candidate: &GhPull| {
-            branch.iter().any(|prior| {
-                prior.number == candidate.number
-                    && prior.head_sha == candidate.head_sha
-                    && prior.base == candidate.base
-                    && prior.behind == candidate.behind
-                    && prior.mergeable == candidate.mergeable
-            })
-        };
+        let unchanged =
+            |candidate: &GhPull| branch.iter().any(|prior| same_open_pull(prior, candidate));
         let changed = current.iter().rev().find(|candidate| !unchanged(candidate));
         if changed.is_some() || current.len() != branch.len() {
             // A recorded PR can be published on a different branch. In that
@@ -4442,7 +4447,7 @@ impl App {
             if purpose == PrVerification::Display {
                 let current = read().await?;
                 observed.note_closed(&current);
-                if current == pull {
+                if same_open_pull(&pull, &current) {
                     observed.signal = self
                         .parking_ci_signal(task, number, &pull.head_sha, None)
                         .await?
@@ -4500,7 +4505,7 @@ impl App {
             }
             let current = read().await?;
             observed.note_closed(&current);
-            if current == pull {
+            if same_open_pull(&pull, &current) {
                 let own = self
                     .parking_ci_signal(task, number, &pull.head_sha, None)
                     .await?;
@@ -4539,11 +4544,7 @@ impl App {
         // Checks and local conflict detection can take long enough for another push.
         let current = read().await?;
         observed.note_closed(&current);
-        let same_open_head = is_open(&current)
-            && !current.behind
-            && current.head_sha == pull.head_sha
-            && current.base == pull.base
-            && current.mergeable == pull.mergeable;
+        let same_open_head = same_open_pull(&pull, &current);
         if same_open_head && mergeable != Some(true) {
             let own = self
                 .parking_ci_signal(task, number, &current.head_sha, None)
@@ -4555,17 +4556,21 @@ impl App {
     }
 
     /// Local work and decisions must still be settled after GitHub replies.
-    async fn parked_chain_clear(&self, task: &TaskRecord) -> AppResult<bool> {
+    async fn parked_local_facts(&self, task: &TaskRecord) -> AppResult<AttentionFacts> {
         let store = &self.deps.store;
-        Ok(!self
+        let mut facts = AttentionFacts::new(task.status, task.activity);
+        facts.browser_request = self
             .browser_tab_requests(&task.sandbox_id)
             .await
             .contains(task.id.as_str())
-            && !crate::sandboxes::plan_open(&store.steps(&task.id).await?)
-            && !self.read_spec_unfinished(&task.id).await?
-            && !self.goal_unfinished_of(task).await
-            && store.pending_hold(&task.id).await?.is_none()
-            && store.task_needs_you(&task.id).await?.is_none())
+            || store.task_needs_you(&task.id).await?.is_some();
+        facts.held_prompt = store.pending_hold(&task.id).await?.is_some();
+        facts.plan_open = crate::sandboxes::plan_open(&store.steps(&task.id).await?);
+        if !facts.parked_has_local_work_or_request() {
+            facts.spec_unfinished = self.read_spec_unfinished(&task.id).await?;
+            facts.goal_unfinished = self.goal_unfinished_of(task).await;
+        }
+        Ok(facts)
     }
 
     async fn parked_predecessor_done(&self, task: &TaskRecord) -> AppResult<bool> {
@@ -4575,7 +4580,10 @@ impl App {
             .as_ref()
             .is_some_and(|r| r.stage == DeliveryStage::PrOpen || past_merge(&r.stage));
         if (task.activity != Some(yulius_domain::task::Activity::Done) && !delivered)
-            || !self.parked_chain_clear(task).await?
+            || self
+                .parked_local_facts(task)
+                .await?
+                .parked_has_local_work_or_request()
         {
             return Ok(false);
         }
@@ -4585,14 +4593,16 @@ impl App {
         else {
             return Ok(false);
         };
-        self.parked_evidence_current(
-            task,
-            record.as_ref(),
-            &prs,
-            PrVerification::Settled,
-            &mut ParkedPullRead::default(),
-        )
-        .await
+        Ok(self
+            .parked_evidence_current(
+                task,
+                record.as_ref(),
+                Some(&prs),
+                PrVerification::Settled,
+                &mut ParkedPullRead::default(),
+            )
+            .await?
+            .0)
     }
 
     /// Reconfirm the checkout and owner decisions before the final durable CI
@@ -4601,32 +4611,39 @@ impl App {
         &self,
         task: &TaskRecord,
         record: Option<&DeliveryRecord>,
-        prs: &ParkingPrs,
+        prs: Option<&ParkingPrs>,
         purpose: PrVerification,
         observed: &mut ParkedPullRead,
-    ) -> AppResult<bool> {
+    ) -> AppResult<(bool, AttentionFacts)> {
         let store = &self.deps.store;
-        if (!prs.pulls.is_empty()
-            && self.verification_checkout(task, purpose).await? != prs.checkout)
-            || !self.parked_chain_clear(task).await?
-        {
-            return Ok(false);
-        }
+        let checkout_current = if let Some(prs) = prs {
+            prs.pulls.is_empty() || self.verification_checkout(task, purpose).await? == prs.checkout
+        } else {
+            false
+        };
+        // Preserve a decision or a step opened while the PR was being read.
+        let local = self.parked_local_facts(task).await?;
+        let Some(prs) =
+            prs.filter(|_| checkout_current && !local.parked_has_local_work_or_request())
+        else {
+            return Ok((false, local));
+        };
         if let Some((number, signal)) = self.parking_ci_blocker(task, prs).await? {
             observed.signal = Some(signal);
             observed.pr = Some(yulius_contracts::api::tasks::ParkedPr { number, open: true });
-            return Ok(false);
+            return Ok((false, local));
         }
         if store.delivery(&task.id).await?.as_ref() != record {
-            return Ok(false);
+            return Ok((false, local));
         }
         // Browser startup and checkout verification can outlast an owner resume.
-        Ok(store.task(&task.id).await?.is_some_and(|current| {
+        let current = store.task(&task.id).await?.is_some_and(|current| {
             current.status == task.status
                 && current.activity == task.activity
                 && current.branch == task.branch
                 && current.worktree_path == task.worktree_path
-        }))
+        });
+        Ok((current, local))
     }
 
     /// The part of [`App::task_is_done`] that needs no GitHub call: the turn ended, no background

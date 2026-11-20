@@ -189,8 +189,12 @@ impl App {
             .and_then(Value::as_u64)
             .unwrap_or(30)
             .min(200);
-        let mut tasks = self.deps.store.tasks(&caller.sandbox, false).await?;
-        if scope == "all" || scope == "archived" {
+        let mut tasks = self
+            .deps
+            .store
+            .tasks(&caller.sandbox, scope == "archived")
+            .await?;
+        if scope == "all" {
             tasks.extend(self.deps.store.tasks(&caller.sandbox, true).await?);
         }
         if let Some(own) = &caller.task {

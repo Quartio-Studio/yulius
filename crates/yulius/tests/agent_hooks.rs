@@ -4189,3 +4189,89 @@ async fn a_parked_task_explains_incomplete_ordinary_checks_on_its_head() -> Test
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn a_title_edit_during_a_parked_check_preserves_the_same_heads_failure() -> TestResult {
+    let (f, owner) = owner_observed_external_pr().await?;
+    install_app(&f).await?;
+    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let args = json!({"task_id":f.task.as_str()});
+    let held = f.h.github.hold_checks();
+    let reading = f.h.app.tool_task_get(&caller, &args);
+    let edit = async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            f.h.github.checks_entered.notified(),
+        )
+        .await?;
+        f.h.github.pulls.lock().map_err(|_| "pulls")?[0].title =
+            "Updated description of the same change".into();
+        f.h.github.release_checks(&held);
+        Ok::<_, Box<dyn std::error::Error>>(())
+    };
+    let (result, edited) = tokio::join!(reading, edit);
+    edited?;
+    assert_eq!(
+        result?["wait_reason"],
+        "The agent stopped and its pull request checks are failing."
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn work_reopened_during_a_parked_check_supplies_the_wait_reason() -> TestResult {
+    for state in [
+        yulius_app::ports::github::ChecksState::Success,
+        yulius_app::ports::github::ChecksState::Failure,
+    ] {
+        let (f, owner) = owner_observed_external_pr().await?;
+        install_app(&f).await?;
+        let ctx = f.h.app.agent_context(TOKEN).await?;
+        f.h.github.set_checks("abc123", state);
+        let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+        let args = json!({"task_id":f.task.as_str()});
+        let held = f.h.github.hold_checks();
+        let reading = f.h.app.tool_task_get(&caller, &args);
+        let reopen = async {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                f.h.github.checks_entered.notified(),
+            )
+            .await?;
+            f.h.app
+                .tool_steps_set(&ctx, &json!({"steps":["Verify the repair"]}))
+                .await?;
+            f.h.github.release_checks(&held);
+            Ok::<_, Box<dyn std::error::Error>>(())
+        };
+        let (result, reopened) = tokio::join!(reading, reopen);
+        reopened?;
+        let task = result?;
+        assert_eq!(task["shows"], "needs_you");
+        assert_eq!(
+            task["wait_reason"],
+            "The agent stopped with unfinished steps in its plan."
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn archived_task_list_spends_its_limit_on_archived_rows() -> TestResult {
+    use yulius_app::ports::store::TaskStore as _;
+    let f = fixture().await?;
+    let mut archived = f.h.store.task(&f.task).await?.ok_or("task")?;
+    let caller = crate::task_message::superagent(&f.sandbox, &archived.created_by, "admin");
+    archived.id = TaskId::parse("archived-task")?;
+    archived.number = 33;
+    archived.status = TaskStatus::Closed;
+    archived.updated_at = Timestamp(1);
+    archived.archived_at = Some(Timestamp(1));
+    f.h.store.insert_task(&archived).await?;
+    let result =
+        f.h.app
+            .tool_tasks_list(&caller, &json!({"scope":"archived","limit":1}))
+            .await?;
+    assert_eq!(result["tasks"][0]["task_id"], archived.id.as_str());
+    Ok(())
+}
