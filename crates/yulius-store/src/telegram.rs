@@ -4,15 +4,18 @@ use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params};
 use yulius_app::error::AppResult;
 use yulius_app::model::Sealed;
-use yulius_app::ports::notify::{ChannelIdentity, ChatLink, ChatLinkStore, StoredBot};
+use yulius_app::ports::notify::{ChannelIdentity, ChatLink, ChatLinkStore, SentAbout, StoredBot};
 use yulius_domain::ids::UserId;
 use yulius_domain::notify::NotifyChoices;
 use yulius_domain::time::Timestamp;
 
 use crate::{SqliteStore, bad_column, db};
 
+/// The bot's messages remembered per chat (SPEC-512 TGI-002).
+const SENT_KEPT: i64 = 500;
+
 const LINK_COLUMNS: &str = "user_id, chat_id, linked_at, notify_needs_you, notify_done, \
-                            notify_failed, notify_account, notify_digest";
+                            notify_failed, notify_account, notify_digest, intake, intake_sandbox";
 
 fn link_row(row: &Row<'_>) -> rusqlite::Result<ChatLink> {
     let id: String = row.get(0)?;
@@ -27,6 +30,8 @@ fn link_row(row: &Row<'_>) -> rusqlite::Result<ChatLink> {
             account: row.get(6)?,
             digest: row.get(7)?,
         },
+        intake: row.get(8)?,
+        intake_sandbox: row.get(9)?,
     })
 }
 
@@ -151,6 +156,13 @@ impl ChatLinkStore for SqliteStore {
         let chat = chat.to_owned();
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
+            // The person's earlier chat, if another, forgets its messages too (SPEC-512 TGI-002).
+            tx.execute(
+                "DELETE FROM telegram_sent WHERE chat_id IN \
+                 (SELECT chat_id FROM telegram_links WHERE user_id = ?1 AND chat_id <> ?2)",
+                params![user, chat],
+            )
+            .map_err(db)?;
             let earlier: Option<String> = tx
                 .query_row(
                     "DELETE FROM telegram_links WHERE chat_id = ?1 AND user_id <> ?2 RETURNING user_id",
@@ -172,10 +184,20 @@ impl ChatLinkStore for SqliteStore {
                  notify_account = CASE WHEN telegram_links.chat_id = excluded.chat_id \
                  THEN telegram_links.notify_account ELSE 0 END, \
                  notify_digest = CASE WHEN telegram_links.chat_id = excluded.chat_id \
-                 THEN telegram_links.notify_digest ELSE 1 END",
+                 THEN telegram_links.notify_digest ELSE 1 END, \
+                 intake = CASE WHEN telegram_links.chat_id = excluded.chat_id \
+                 THEN telegram_links.intake ELSE 0 END, \
+                 intake_sandbox = CASE WHEN telegram_links.chat_id = excluded.chat_id \
+                 THEN telegram_links.intake_sandbox ELSE NULL END",
                 params![user, chat, at.0],
             )
             .map_err(db)?;
+            // A chat that changed hands forgets which task each of its messages was about: a
+            // reply in it is no longer the earlier person's (SPEC-512 TGI-002).
+            if earlier.is_some() {
+                tx.execute("DELETE FROM telegram_sent WHERE chat_id = ?1", [&chat])
+                    .map_err(db)?;
+            }
             tx.commit().map_err(db)?;
             earlier
                 .map(|id| UserId::parse(&id).map_err(|_| db(bad_column("user id", &id))))
@@ -187,13 +209,21 @@ impl ChatLinkStore for SqliteStore {
     async fn unlink_user(&self, user: &UserId) -> AppResult<Option<String>> {
         let user = user.as_str().to_owned();
         self.call(move |c| {
-            c.query_row(
-                "DELETE FROM telegram_links WHERE user_id = ?1 RETURNING chat_id",
-                [user],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(db)
+            let tx = c.transaction().map_err(db)?;
+            let chat: Option<String> = tx
+                .query_row(
+                    "DELETE FROM telegram_links WHERE user_id = ?1 RETURNING chat_id",
+                    [user],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(db)?;
+            if let Some(chat) = &chat {
+                tx.execute("DELETE FROM telegram_sent WHERE chat_id = ?1", [chat])
+                    .map_err(db)?;
+            }
+            tx.commit().map_err(db)?;
+            Ok(chat)
         })
         .await
     }
@@ -267,12 +297,83 @@ impl ChatLinkStore for SqliteStore {
         .await
     }
 
+    async fn set_chat_intake(
+        &self,
+        user: &UserId,
+        enabled: bool,
+        sandbox: Option<&str>,
+    ) -> AppResult<bool> {
+        let user = user.as_str().to_owned();
+        let sandbox = sandbox.map(str::to_owned);
+        self.call(move |c| {
+            let changed = c
+                .execute(
+                    "UPDATE telegram_links SET intake = ?2, intake_sandbox = ?3 WHERE user_id = ?1",
+                    params![user, enabled, sandbox],
+                )
+                .map_err(db)?;
+            Ok(changed == 1)
+        })
+        .await
+    }
+
+    async fn record_sent(
+        &self,
+        chat: &str,
+        message: &str,
+        about: &SentAbout,
+        at: Timestamp,
+    ) -> AppResult<()> {
+        let (chat, message) = (chat.to_owned(), message.to_owned());
+        let (task, asked_at) = (about.task.as_str().to_owned(), about.asked_at);
+        self.call(move |c| {
+            let tx = c.transaction().map_err(db)?;
+            tx.execute(
+                "INSERT OR REPLACE INTO telegram_sent \
+                 (chat_id, message_id, task_id, asked_at, sent_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![chat, message, task, asked_at, at.0],
+            )
+            .map_err(db)?;
+            tx.execute(
+                "DELETE FROM telegram_sent WHERE chat_id = ?1 AND rowid NOT IN \
+                 (SELECT rowid FROM telegram_sent WHERE chat_id = ?1 \
+                  ORDER BY sent_at DESC, rowid DESC LIMIT ?2)",
+                params![chat, SENT_KEPT],
+            )
+            .map_err(db)?;
+            tx.commit().map_err(db)
+        })
+        .await
+    }
+
+    async fn sent_about(&self, chat: &str, message: &str) -> AppResult<Option<SentAbout>> {
+        let (chat, message) = (chat.to_owned(), message.to_owned());
+        self.call(move |c| {
+            let row: Option<(String, Option<i64>)> = c
+                .query_row(
+                    "SELECT task_id, asked_at FROM telegram_sent \
+                     WHERE chat_id = ?1 AND message_id = ?2",
+                    params![chat, message],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()
+                .map_err(db)?;
+            Ok(row.and_then(|(id, asked_at)| {
+                yulius_domain::ids::TaskId::parse(&id)
+                    .ok()
+                    .map(|task| SentAbout { task, asked_at })
+            }))
+        })
+        .await
+    }
+
     async fn clear_chat_links(&self) -> AppResult<u64> {
         self.call(|c| {
             let tx = c.transaction().map_err(db)?;
             tx.execute("DELETE FROM telegram_link_codes", [])
                 .map_err(db)?;
             let links = tx.execute("DELETE FROM telegram_links", []).map_err(db)?;
+            tx.execute("DELETE FROM telegram_sent", []).map_err(db)?;
             tx.commit().map_err(db)?;
             Ok(u64::try_from(links).unwrap_or(u64::MAX))
         })
@@ -393,6 +494,69 @@ mod tests {
         assert_eq!(store.chat_links().await?.len(), 2);
         assert_eq!(store.clear_chat_links().await?, 2);
         assert!(store.chat_links().await?.is_empty());
+        Ok(())
+    }
+
+    /// SPEC-512 TGI-001, TGI-002: intake is off by default and set per person; the bot's messages
+    /// about tasks are remembered per chat, the last 500, and forgotten when the chat changes
+    /// hands or is unlinked; a new chat starts with intake off.
+    #[tokio::test]
+    async fn intake_and_the_bots_messages_follow_the_chat() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let store = SqliteStore::open_in_memory()?;
+        let anna = person(&store, "anna").await?;
+        let bob = person(&store, "bob").await?;
+        let task = yulius_domain::ids::TaskId::parse("t1")?;
+        let about = |n: i64| SentAbout {
+            task: task.clone(),
+            asked_at: Some(n),
+        };
+        assert!(
+            !store.set_chat_intake(&anna, true, Some("s1")).await?,
+            "no link yet"
+        );
+        store.link_chat(&anna, "100", Timestamp(1)).await?;
+        let link = store.chat_link(&anna).await?.ok_or("link")?;
+        assert!(
+            !link.intake && link.intake_sandbox.is_none(),
+            "off by default"
+        );
+        assert!(store.set_chat_intake(&anna, true, Some("s1")).await?);
+        let link = store.chat_link(&anna).await?.ok_or("link")?;
+        assert!(link.intake);
+        assert_eq!(link.intake_sandbox.as_deref(), Some("s1"));
+        for n in 0..502_i64 {
+            store
+                .record_sent("100", &n.to_string(), &about(n), Timestamp(n))
+                .await?;
+        }
+        assert_eq!(store.sent_about("100", "501").await?, Some(about(501)));
+        assert_eq!(
+            store.sent_about("100", "1").await?,
+            None,
+            "only the last 500"
+        );
+        assert_eq!(store.sent_about("200", "501").await?, None, "per chat");
+        // The same chat linked again keeps intake; a new chat starts with it off.
+        store.link_chat(&anna, "100", Timestamp(2)).await?;
+        assert!(store.chat_link(&anna).await?.ok_or("link")?.intake);
+        // Anna moves to chat 150: chat 100's messages are forgotten.
+        store.link_chat(&anna, "150", Timestamp(2)).await?;
+        assert_eq!(store.sent_about("100", "501").await?, None, "her old chat");
+        store.link_chat(&anna, "100", Timestamp(2)).await?;
+        store
+            .record_sent("100", "501", &about(501), Timestamp(2))
+            .await?;
+        // Bob takes chat 100: its messages are no longer about anna's tasks.
+        store.link_chat(&bob, "100", Timestamp(3)).await?;
+        assert_eq!(store.sent_about("100", "501").await?, None);
+        let bobs = store.chat_link(&bob).await?.ok_or("link")?;
+        assert!(!bobs.intake && bobs.intake_sandbox.is_none());
+        store
+            .record_sent("100", "9", &about(9), Timestamp(4))
+            .await?;
+        store.unlink_user(&bob).await?;
+        assert_eq!(store.sent_about("100", "9").await?, None, "unlinked");
         Ok(())
     }
 }

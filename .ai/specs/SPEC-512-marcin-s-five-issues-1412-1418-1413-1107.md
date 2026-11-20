@@ -200,10 +200,44 @@ browser); the Telegram notifier (ADR-0351) sends each linked person's chosen kin
 - **DIG-006 Redaction.** Every text taken from a task (title, request, last message) passes the
   same redaction as that sandbox's transcripts before it is stored or sent.
 
-### Parts 4 and 5
+### Part 4: the personal Telegram channel's intake (#1107)
 
-Written when each part starts (see Context): TGI (#1107), HOF (#1106), each from its issue's
-acceptance criteria.
+Today (read on `dev` at 9427240e9): part 1 of #1107 is merged (pull request #1362, ADR-0351,
+SPEC-498): an instance administrator sets the bot (sealed, checked with `getMe`, removable), a
+person links their chat with a single-use 10-minute code from a browser session and unlinks in
+Settings or with `/stop` (audited), notifications reach the chat redacted under a rate bound, and
+the server long-polls with backoff. A linked chat's other messages get one help reply ("Replies
+and new tasks are not supported yet"). What #1107's acceptance still asks is the intake (its
+recommended option 1, part 4): replies and new tasks, off by default, on per person.
+
+- **TGI-001 The switch.** Each person's linked chat has `intake` (off by default) and a default
+  project, set in Settings → Notifications from a browser session only (as linking is) with
+  `PUT /api/me/telegram/intake` `{"enabled","sandbox_id"}`; the project must be one they may work
+  in; turning it on without one is refused. Audited `telegram.intake` (on or off, the project).
+  Unlinking ends it. Off, a linked chat's messages create and send nothing; the help reply says
+  how to turn it on.
+- **TGI-002 A reply reaches its task.** The bot remembers which of its messages were about which
+  task (the last 500 per chat). With intake on, a reply to one is the person's `task_message` to
+  that task, under the owner rule and its guards as from their own agent (ADR-0331, ADR-0379: a
+  person a request names may answer it; a task holding the owner's personal reach accepts only
+  its owner; a parked task resumes). The bot answers "Sent to #n" or the refusal's reason.
+- **TGI-003 A new message is a task.** With intake on, any other message (text, a caption, a
+  photo, a document, a voice note, an audio or video file; an album is one message) becomes a
+  task in the default project as that person, with the task bound, the onboarding gate and access
+  checks of `task_create`. Its files, each at most 20 MB (Telegram's bot download bound) and at
+  most 10, become the task's attachments in the person's drafts folder, named in its prompt. The
+  task is labelled "from Telegram" (origin `telegram`) and audited. The bot answers with its
+  number and link.
+- **TGI-004 Commands.** `/status` lists the person's tasks that wait for them (as the digest's
+  first section: an open request, a question in the terminal, a request naming them), at most 20,
+  with links; `/task <project> <text>` starts the task in another project they may work in
+  (named by its repository name or slug); `/help` says what the chat does.
+- **TGI-005 Redaction.** The bot's answers that carry a task's text (`/status`, a refusal naming a
+  task) pass the same redaction as transcripts.
+
+### Part 5
+
+Written when it starts (see Context): HOF (#1106), from its issue's acceptance criteria.
 
 ## Plan
 
@@ -225,11 +259,11 @@ acceptance criteria.
 - [x] The digest parks idle tasks past the threshold and goes to the browser and Telegram
 - [x] ADR and docs for the digest
 - [x] Review of the #1413 pull request answered test-first
-- [ ] Telegram intake switch and default project per person, off by default
-- [ ] A reply to a Telegram notification reaches its task under the owner rule
-- [ ] A new Telegram message or file becomes a task with attachments
-- [ ] Telegram commands /status and /task; ADR and docs for intake
-- [ ] Pull request #1130 answered and closed as superseded
+- [x] Telegram intake switch and default project per person, off by default
+- [x] A reply to a Telegram notification reaches its task under the owner rule
+- [x] A new Telegram message or file becomes a task with attachments
+- [x] Telegram commands /status and /task; ADR and docs for intake
+- [x] Pull request #1130 answered and closed as superseded
 - [ ] Review of the #1107 pull request answered test-first
 - [ ] Handoff setting off, ask or automatic and a per-project opt-out
 - [ ] The sandbox_handoff tool with its checks and bounds
@@ -270,6 +304,19 @@ acceptance criteria.
 - [x] Idle tasks past the threshold are parked, listed with links and what their last message
   left, and resume when someone writes to them (DIG-003, DIG-004).
 - [x] A digest with nothing to report is not sent (DIG-004).
+
+### #1107 (part 2: intake)
+
+- [x] Off by default per person; turned on in Settings with a default project, from a browser
+  session only, audited (TGI-001).
+- [x] With intake on, a reply to a notification reaches that task as a `task_message`, under the
+  owner rule; a refusal says why (TGI-002).
+- [x] A new message, or one with a photo or document, becomes a task with attachments in the
+  default project; `/task` targets another project (TGI-003, TGI-004).
+- [x] With intake off, neither happens (TGI-001).
+- [x] What the second person still cannot do through a reply: start, stop, merge, terminal input
+  (TGI-002).
+- [x] Docs: `product.md`, `api.md`, `changes.md` and an ADR (TGI-001..005).
 
 ## Test plan
 
@@ -354,7 +401,56 @@ acceptance criteria.
   browser switch (the instance setting is the switch, as the issue's acceptance says), and
   Telegram digests can be turned off among the chat's choices.
 
+- **A Telegram reply goes through `task_message`, labelled `Telegram`.** The person typed it,
+  not their agent; the label says so (`Channel::Telegram`), and every guard is the one their own
+  agent meets. A reply to a notice of a request carries that request's `at`, so it never answers
+  a later one (ANS-004).
+- **Intake runs off the poll.** Files take up to two minutes each; the poll goes on, so other
+  chats' `/stop` and link codes are not held, and the next poll confirms the update at once.
+- **Known limits.** An album split by Telegram across two answers of `getUpdates` (more than 20
+  updates waiting) becomes two tasks. Files are fetched before `create_task_as` decides, so a
+  task it refuses (the onboarding gate) leaves its files in the person's drafts folder, removed
+  with the other drafts after a week.
+
 ## Evidence
+
+### Part 4 (#1107, intake)
+
+| Acceptance criterion | Test |
+|---|---|
+| Off by default per person; on in Settings with a project they may work in, audited | `telegram::telegram_intake_is_off_by_default_and_set_with_a_project` (defaults, 422 without a project, refused for a project without access, audit `on s1`); store `intake_and_the_bots_messages_follow_the_chat`; e2e `telegram.e2e.ts` "a person turns their chat's intake on with a project" |
+| With intake off, nothing happens | `telegram::telegram_intake_is_off_by_default_and_set_with_a_project` (a message starts no task; the help says how to turn it on) |
+| A reply reaches its task as a `task_message` under the owner rule | `telegram::a_reply_reaches_its_task_under_the_owner_rule`: the owner's reply is handled as her `task_message` (here "task #1 has no live session": no agent runs in that harness; delivery to a live or parked session is `task_message`'s, tested in `task_message` and `parking`); a teammate's reply after the request ended is refused by the owner rule, nothing audited; the bot's messages are matched per chat (store test) |
+| A new message, or one with a photo or document, becomes a task with attachments; `/task` targets another project | `telegram::with_intake_a_message_starts_a_task_and_a_photo_is_its_attachment` (origin `telegram`, owner the person, the photo's bytes at the path named in the prompt, `/task app …`, unknown project refused); adapter `replies_captions_files_and_albums_are_read`, `a_file_is_fetched_within_its_bound`; `telegram::tests::an_album_is_one_message` |
+| What the second person still cannot do through a reply | a reply is only ever a `task_message`; the owner rule refuses a teammate's (test above); there is no Telegram path to start, stop, merge or type into a terminal |
+| `/status`, redaction | `telegram::a_reply_reaches_its_task_under_the_owner_rule` (`/status` lists the waiting task; the refusal carries no agent secret); `notify::tests::intake_commands_are_read` |
+| Docs and ADR | ADR-0392, `docs/product.md`, `docs/api.md`, `docs/architecture.md`, `docs/changes.md` |
+
+PR #1130 was commented on and closed as superseded by #1362 (part 1), naming this part 2.
+
+Review round 1 (head c6e1a673e, CHANGES REQUESTED), answered test-first:
+
+| Finding | Change | Test |
+|---|---|---|
+| Format gate failed | `cargo fmt --all` | `quality` |
+| The tools' hourly bound was not applied | `reserve_tool_task`/`release_tool_task`, shared with `tool_task_create`, taken before any file is fetched | `telegram::telegram_tasks_keep_the_hourly_bound_and_the_file_bounds` (the 21st is refused, nothing created; fails without the bound: mutation) |
+| The redaction check could not fail | the request's action carries the secret; `/status` asserts `[secret:PAYMENT_KEY]` and no value | `telegram::a_reply_reaches_its_task_under_the_owner_rule` (fails without the redaction: mutation) |
+| No reply was delivered in a test | a reply to a queued task's message joins its request, audited as from Telegram | `telegram::a_reply_is_delivered_and_a_reply_never_starts_a_task` |
+| The browser-only rule was untested | an operate token is refused, nothing stored or audited | `telegram::telegram_intake_is_off_by_default_and_set_with_a_project` (fails without the check: mutation) |
+| A reply to an unremembered message started a task | the bot's answers are remembered as about their task; a reply to a message about no task starts nothing | `telegram::a_reply_is_delivered_and_a_reply_never_starts_a_task` |
+| The label said "their own agent" | `Channel::Telegram`, labelled `Telegram` | by reading (`through`) |
+| An album across two answers is two tasks | recorded as a known limit | Decisions |
+| Intake held the poll; a restart could hand a message over twice | intake runs on its own task; the next poll confirms the update | by reading (`on_inbound`) |
+| A teammate's reply could answer a later request | the notice keeps its request's `at`; a reply passes it (`task_message_as`), as the page does (ANS-004) | store `intake_and_the_bots_messages_follow_the_chat` (kept and read back); the answer path's refusal is part 2's |
+| Origin lists lacked `telegram` | added in `api.md`, `TaskSummary`, `TaskAnalytics` | by reading |
+| Nits | `/task` refuses a short name two projects share; `/status` reads every live state; plain `file_path` only; intake can always be turned off; a person's old chat forgets its messages on a move; drafts of a refused task are a known limit | adapter `only_a_plain_file_path_is_fetched`, store test (move), the bounds test (`/task` without access, 11 files, 30 MB) |
+
+Review round 2 (head a7cc9d7ed): APPROVED. Its minors closed after the approval: each chat's
+intake runs in order in its own lane, five waiting at most (15 product lines); a reply to an old
+notice after its request was replaced is refused (`telegram::a_reply_reaches_its_task_under_the_owner_rule`,
+fails when the reply drops the request's time: mutation); architecture, product and API describe
+the round-1 design. Nits left: the bot's own answers carry no request time; the bound's refusal
+says "tools"; the label, `Named::Several` and the `task.created` detail have no test.
 
 ### Part 3 (#1413)
 

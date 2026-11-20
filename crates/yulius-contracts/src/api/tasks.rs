@@ -53,7 +53,7 @@ pub struct TaskSummary {
     pub activity: Option<String>,
     /// Task branch.
     pub branch: Option<String>,
-    /// `ui`, `automation`, `import`, `onboarding` or `agent`.
+    /// `ui`, `automation`, `import`, `onboarding`, `agent` or `telegram`.
     pub origin: String,
     /// Creator: who asked for the task.
     pub created_by: UserRef,

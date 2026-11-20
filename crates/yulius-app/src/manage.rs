@@ -124,6 +124,30 @@ fn after_all_tasks_arg(args: &Value) -> AppResult<bool> {
 }
 
 impl App {
+    /// Takes one of the project's [`MAX_TOOL_TASKS_PER_HOUR`] slots for a task a tool or a
+    /// Telegram message creates (SPEC-512 TGI-003); the time to give back with
+    /// [`App::release_tool_task`] when the creation fails.
+    ///
+    /// # Errors
+    /// `Capacity` when the hour's slots are taken, with the minutes until the next.
+    pub(crate) fn reserve_tool_task(&self, sandbox: &SandboxId) -> AppResult<i64> {
+        let now = self.now().0;
+        self.tool_tasks.reserve(sandbox, now).map_err(|minutes| {
+            AppError::Capacity(format!(
+                "tools may create at most {MAX_TOOL_TASKS_PER_HOUR} tasks an hour in a project; \
+                 the next one is possible in {minutes} min"
+            ))
+        })?;
+        Ok(now)
+    }
+
+    /// Gives back a slot [`App::reserve_tool_task`] took at `at`.
+    pub(crate) fn release_tool_task(&self, sandbox: &SandboxId, at: i64) {
+        self.tool_tasks.release(sandbox, at);
+    }
+}
+
+impl App {
     /// The start rule `after_all_tasks` means now (SPEC-487 CHN-005): every task of `sandbox`
     /// that still has work coming is done. Left out: a task that ended or is stopping; one the
     /// task list shows under Done (done, or "Answered": an idle session with nothing open,
@@ -379,15 +403,7 @@ impl App {
             prepared: flag_arg(args, "prepared")?,
             start_at: opt_str(args, "start_at")?,
         };
-        let now = self.now().0;
-        self.tool_tasks
-            .reserve(&caller.sandbox, now)
-            .map_err(|minutes| {
-                AppError::Capacity(format!(
-                    "tools may create at most {MAX_TOOL_TASKS_PER_HOUR} tasks an hour in a project; \
-                     the next one is possible in {minutes} min"
-                ))
-            })?;
+        let now = self.reserve_tool_task(&caller.sandbox)?;
         // A task an automation's task creates is an automation's too: it holds nobody's
         // personal secrets (SPEC-245 RES-002), though its owner is the automation's creator.
         let origin = if caller
@@ -405,7 +421,7 @@ impl App {
         {
             Ok(task) => task,
             Err(err) => {
-                self.tool_tasks.release(&caller.sandbox, now);
+                self.release_tool_task(&caller.sandbox, now);
                 return Err(err);
             }
         };

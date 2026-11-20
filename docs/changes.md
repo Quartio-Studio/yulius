@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
+- Work from Telegram, off by default (SPEC-512 part 4, task #494, delivered by SPEC-556, #1107, ADR-0392): a person
+  turns on their chat's intake in Settings → Notifications with a project. A reply to a
+  notification then answers its task as their message (the owner rule holds), any other message,
+  photos and files included, starts a task as them marked "From Telegram", and `/status` and
+  `/task <project> <text>` work.
 - Task notifications and queued prompts retain the state of the request they belong to. A successful model refresh releases waiting tasks, workflow limit classification respects all agent records in a poll, and provider usage reads have a byte limit (SPEC-555).
 - Settings accepts a freeze limit for host moves. Removed sandboxes release their port ranges after their processes and listeners retire. Playground delivery reports its local squash, and cross-project task requests check current permissions before displaying a card (SPEC-555).
 - Task search updates as results arrive. CI skips incomplete CPU samples, browser assertions follow layout and retry events, and the decision and browser test indexes reflect the repository (SPEC-555).

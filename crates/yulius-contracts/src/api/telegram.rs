@@ -66,6 +66,19 @@ pub struct MyTelegramView {
     pub choices: TelegramChoices,
     /// Whether subscription problems can be chosen (instance administrators).
     pub account_choice: bool,
+    /// Whether the chat answers and starts tasks, and where (SPEC-512 TGI-001).
+    pub intake: TelegramIntake,
+}
+
+/// `PUT /api/me/telegram/intake` and its state in `MyTelegramView` (SPEC-512 TGI-001): off by
+/// default.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct TelegramIntake {
+    /// Whether a reply answers its task and a new message starts one.
+    pub enabled: bool,
+    /// The project a new message starts its task in (its id).
+    #[serde(default)]
+    pub sandbox_id: Option<String>,
 }
 
 /// `POST /api/me/telegram/link` (browser sessions only): a single-use code.

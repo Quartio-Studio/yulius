@@ -30,7 +30,7 @@ pub struct TaskCounts {
     pub by_status: BTreeMap<String, u32>,
     /// Count per current task harness.
     pub by_harness: BTreeMap<String, u32>,
-    /// Count per origin (`ui`, `automation`, `import`, `onboarding`, `agent`).
+    /// Count per origin (`ui`, `automation`, `import`, `onboarding`, `agent`, `telegram`).
     pub by_origin: BTreeMap<String, u32>,
 }
 

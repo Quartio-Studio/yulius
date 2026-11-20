@@ -252,6 +252,8 @@ pub enum TaskOrigin {
     Onboarding,
     /// Created by another agent through MCP.
     Agent,
+    /// Created by a person's message to their Telegram chat (SPEC-512 TGI-003).
+    Telegram,
 }
 
 impl TaskOrigin {
@@ -264,6 +266,7 @@ impl TaskOrigin {
             Self::Import => "import",
             Self::Onboarding => "onboarding",
             Self::Agent => "agent",
+            Self::Telegram => "telegram",
         }
     }
 
@@ -275,6 +278,7 @@ impl TaskOrigin {
             "import" => Self::Import,
             "onboarding" => Self::Onboarding,
             "agent" => Self::Agent,
+            "telegram" => Self::Telegram,
             _ => Self::Ui,
         }
     }

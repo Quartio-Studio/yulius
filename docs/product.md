@@ -711,7 +711,17 @@ watching, steering and unblocking.
   one message however many tasks ask, a request for control of their task, or a teammate taking it
   or taking it back, reaches them under Needs you), with a link to the task, agent secrets
   removed, at most five messages a minute with the rest in one summary. The server asks Telegram
-  for messages, so no inbound port is needed. Replies and new tasks from Telegram are part 2.
+  for messages, so no inbound port is needed.
+- **Work from Telegram** (SPEC-512 part 4, ADR-0392, part 2 of #1107), off by default: a person
+  turns it on for their own chat in Settings → Notifications and picks the project new messages
+  start tasks in. A reply to a notification then answers its task as their message (the owner
+  rule holds: someone else's task takes only an answer it asks of them, and only to the question
+  the notice told of); a new message (not a reply), with photos, documents or voice notes up to
+  20 MB, starts a task as them, marked "From Telegram", at most 20 an hour in a project as for
+  agents' tools; `/task <project> <text>` picks another project and `/status` lists what waits
+  for them. A chat's messages are handled one at a time in the order sent; with more than 20
+  waiting, the chat is told the latest were not handled and to send them again. Turning intake
+  off or `/stop` also stops messages still waiting.
 - **An end-of-day digest** (SPEC-512 part 3, ADR-0380, #1413), off by default: an instance
   administrator turns it on in Settings → Administration with a time (UTC) and, if they want, an
   idle threshold. Once a day each person with something to report gets what waits for them first,

@@ -58,6 +58,8 @@ pub enum Channel {
     Superagent,
     /// A person's own agent through the remote MCP (`operate` token; SPEC-247).
     Remote,
+    /// A person's own linked Telegram chat (SPEC-512 TGI-002).
+    Telegram,
 }
 
 /// Who calls a project-management tool (tasks, automations, workflows, sessions): a task's

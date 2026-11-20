@@ -4,7 +4,8 @@ use axum::Json;
 use axum::extract::State;
 use yulius_app::model::Secret;
 use yulius_contracts::api::telegram::{
-    MyTelegramView, SetTelegramBot, TelegramBotView, TelegramChoices, TelegramLinkCode,
+    MyTelegramView, SetTelegramBot, TelegramBotView, TelegramChoices, TelegramIntake,
+    TelegramLinkCode,
 };
 
 use crate::AppState;
@@ -61,4 +62,13 @@ pub async fn choices(
     Json(req): Json<TelegramChoices>,
 ) -> ApiResult<Json<MyTelegramView>> {
     Ok(Json(app.set_telegram_choices(&ctx, &req).await?))
+}
+
+/// `PUT /api/me/telegram/intake` (SPEC-512 TGI-001).
+pub async fn intake(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Json(req): Json<TelegramIntake>,
+) -> ApiResult<Json<MyTelegramView>> {
+    Ok(Json(app.set_telegram_intake(&ctx, &req).await?))
 }
