@@ -751,7 +751,8 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
 - **Merge** uses the profile's merge method and passes the head that was checked as the
   expected head; a PR head that differs from the task worktree's head is refused as stale.
   With `auto_promote` (Studio), the integration branch is promoted right after a merge done
-  through Yulius once no integration environment is pending; the outcome is added to `notes`
+  through Yulius once no integration environment is pending (with a merge-first staging target:
+  once the staging queue verified the head, SPEC-575); the outcome is added to `notes`
   and audited. With `require_checks`, an automatic fast-forward does not wait for the
   integration head's own checks (they may not have reported yet), and is stopped by failing
   or unreadable ones ("Automatic promotion did not happen: …"). No other path merges,

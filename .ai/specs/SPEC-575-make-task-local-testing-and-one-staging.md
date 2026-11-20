@@ -182,8 +182,8 @@ What exists today (map of 2026-11-20, `dev` at f80f42cad):
     and ends `verified`.
   - Each task has exactly one successful staging deployment: `verified`, or `included` in a
     verified one.
-- A production promotion with a merge-first environment pushes the last verified staging
-  revision, not a newer integration head.
+- A production promotion with a merge-first environment promotes only the revision staging
+  verified: while the integration head is a newer revision, it is refused.
 - Upgrade task: a ready sandbox at an older bootstrap revision gets one upgrade task. A restart
   creates no second one.
 
@@ -270,10 +270,24 @@ revision ids from the store and the fake origin.
   - The workflow, skill and template are shipped in the catalog (`workflows::catalog` tests).
   - The adopting pull request still runs its full suite
     (`local_ci::adopting_merge_first_runs_the_full_suite_on_its_own_pull_request`).
+- **Upgrade restarts and eligibility** (`bootstrap_upgrade::`, review round 1 of slice 4 and a
+  person's rollout finding):
+  - a claim left without its task is finished at the next start;
+  - a task created but not linked is adopted once;
+  - a deleted upgrade task is not made again;
+  - playgrounds, removed sandboxes and inactive creators get none;
+  - a sandbox created after the release (the real import path,
+    `sessions::a_sandbox_created_after_the_release_gets_no_upgrade_task`) or onboarded after it
+    gets none.
+- **The promotion gate fails closed** (`a_promotion_whose_verified_head_cannot_be_read_is_refused`):
+  a merge-first project with no staging request yet and a broken clone is refused, with `main`
+  unchanged. Automatic promotion never takes an unverified head
+  (`automatic_promotion_never_takes_an_unverified_head`).
 - **Existing sandbox:**
   - The upgrade task (`bootstrap_upgrade::an_onboarded_sandbox_gets_one_upgrade_task_per_revision`):
-    one Infra bootstrap task per onboarded sandbox and revision, none for a sandbox still
-    onboarding, none on a second start, and the claim is given back without a Claude account.
+    one Infra bootstrap task per onboarded sandbox and revision, with an automation's origin;
+    none for a sandbox still onboarding, even once it is onboarded; none on a second start. A
+    creation refused for want of a Claude account is made at the next start.
   - Adoption (`a_project_that_adopts_merge_first_deploys_its_next_delivery_through_the_queue`):
     staging deployed by hand before the switch, then the earlier delivery is `included`, and the
     next one is verified through the queue.
@@ -304,7 +318,9 @@ Each of these was reverted, its test failed, and the code was restored:
 - the cancel mapping;
 - the owner's write-access check;
 - the deploy-gate half of `staging_must_wait`;
-- the mirror-unreadable refusal for known merge-first projects.
+- the promotion gate failing closed when the verified head cannot be read;
+- the automatic promotion's gate;
+- the adoption of a task created but not linked.
 
 ### Commands
 

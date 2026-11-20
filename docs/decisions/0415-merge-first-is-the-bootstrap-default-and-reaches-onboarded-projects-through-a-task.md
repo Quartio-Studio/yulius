@@ -54,10 +54,21 @@ Those projects differ:
   - Its prompt asks it to keep every project-specific command, job, target, secret and vault
     grant, and to switch only a real shared target. It reconciles conflicting guidance in the
     same pull request and reports switched, no target, or blocked.
-  - The revision is claimed first (`bootstrap_upgrades`, migration 0079), so a restart creates
-    no second task.
-  - A claim whose task cannot be created (no connected Claude account, the owner lost access) is
-    given back, to be tried at the next start.
+  - Each sandbox's record (`bootstrap_upgrades`, migration 0079) is in one of three states.
+    - **`laid`:** the sandbox is at the revision with nothing to upgrade. A sandbox is recorded
+      `laid` when it is created (`projects.rs`), and when a start finds it not onboarded yet. Its
+      onboarding lays the current default.
+    - **`claimed`:** its task is being made.
+    - **`linked`:** its task was made. Deleting the task leaves the record `linked`, so it is
+      never made again.
+  - The revision is claimed before the task is made, and the claim stays until the task is
+    linked by a compare-and-set.
+  - Every start finishes a claim still `claimed`:
+    - It adopts the upgrade task made since the claim: a stop between making and linking it, or
+      a store error after its record. The task is recognised by its origin, title and prompt.
+    - Otherwise it makes the task: a stop before making it, or a creation refused for want of a
+      Claude account.
+  - A restart therefore makes no second task and never skips a project.
 - **Deliveries in progress.** Nothing pins them: a staging request whose revision staging
   already serves is answered `included` (ADR-0411), so the rollout never deploys one twice.
 

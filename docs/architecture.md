@@ -3184,8 +3184,9 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
     ids.
   - Every promotion waits until staging serves the integration head, verified, read through the
     CD mirror: `cd_prepare` for a production deploy, `staging_promotion_head` for the Delivery
-    page and the automatic one. The queue's verified deploy runs the automatic promotion that
-    waited.
+    page and the automatic one.
+    - A head that cannot be read is refused.
+    - The queue's verified deploy runs the automatic promotion that waited.
   - A failed deploy that announced a rollback barrier is not restored.
 - **Idempotence.** Each move is a compare-and-set from the state it was read in. One live
   request per requester and revision, and one success per task and environment. The background
@@ -3222,8 +3223,9 @@ stateDiagram-v2
 - **The upgrade.** At a server start (`App::create_bootstrap_upgrades`, `bootstrap_upgrade.rs`),
   each onboarded sandbox below `BOOTSTRAP_REVISION` gets one Infra bootstrap task.
   - It is owned by the sandbox's creator, with an automation's origin.
-  - The revision is claimed in `bootstrap_upgrades` (migration 0079) first, and given back when
-    the task cannot be created.
+  - Its record in `bootstrap_upgrades` (migration 0079) is `laid` at creation or before
+    onboarding, `claimed` while the task is being made, and `linked` once it is made.
+  - Every start finishes a claim left unfinished: it adopts a task made since, else makes it.
 
 ### Rollback
 

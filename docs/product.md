@@ -583,7 +583,9 @@ watching, steering and unblocking.
     - Production is promoted only from the revision staging verified.
   - Each task tests locally first with the project's `[local]` deployment inside its own sandbox.
   - New projects with such a target are bootstrapped this way, and onboarded ones get one task
-    that adopts it. Every environment that deploys also defines its rollback
+    that adopts it.
+
+  Every environment that deploys also defines its rollback
   (SPEC-415): a command that redeploys a release Yulius kept from an earlier deploy, never
   building, and a line saying how data changes stay compatible. The CD page lists each part's
   three newest releases (older ones fold), each with one action: "Roll back to previous" on the
