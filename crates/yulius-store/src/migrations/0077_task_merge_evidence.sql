@@ -14,7 +14,7 @@ CREATE INDEX task_merges_pr ON task_merges(task_id, pr_number);
 CREATE INDEX cd_runs_commit ON cd_runs(sandbox_id, sha);
 CREATE INDEX environment_runs_commit ON environment_runs(sandbox_id, commit_sha);
 
--- Only previously merged PRs and merges awaiting confirmation may be recovered on read.
+-- Preserve the integration branch when Yulius opens or adopts a task PR.
 -- At upgrade, use the integration branch in the task's original PR-opening audit event.
 -- A new merge waiting on GitHub additionally has the accepted head and returned commit.
 CREATE TABLE task_merge_recovery (
@@ -29,7 +29,7 @@ WITH openings AS (
            'pull request #' || d.pr_number || ' ' || t.branch || ' -> ' AS prefix
     FROM delivery d JOIN tasks t ON t.id = d.task_id JOIN sandboxes s ON s.id = t.sandbox_id
     JOIN audit_log a ON a.action = 'delivery.pr.open' AND a.target = s.slug || '#' || t.number
-    WHERE d.pr_number IS NOT NULL AND d.stage NOT IN ('none', 'pr_open')
+    WHERE d.pr_number IS NOT NULL AND d.stage != 'none'
 ), targets AS (
     SELECT task_id, pr_number, substr(detail, length(prefix) + 1) AS tail FROM openings
     WHERE substr(detail, 1, length(prefix)) = prefix

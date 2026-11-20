@@ -1157,10 +1157,10 @@ impl MergedHead {
     /// What a merged pull request merged: its head, and the parent its merge commit landed on
     /// when GitHub names that commit (a merge found after it was made, SPEC-493 fix 1d).
     #[must_use]
-    pub fn of_pull(pull: &crate::ports::github::GhPull, integration: &str) -> Self {
+    pub fn of_pull(pull: &crate::ports::github::GhPull) -> Self {
         Self {
             head: pull.head_sha.clone(),
-            landing: crate::delivery::evidence::Landing::of_pull(pull, integration),
+            landing: crate::delivery::evidence::Landing::closed_pull(pull),
             base: pull.merge_commit_sha.as_ref().map(|sha| format!("{sha}^1")),
         }
     }

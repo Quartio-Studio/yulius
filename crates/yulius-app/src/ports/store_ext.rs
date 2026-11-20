@@ -149,13 +149,15 @@ pub trait DeliveryStore: Send + Sync {
         expected: &yulius_domain::delivery::DeliveryStage,
         next: &crate::delivery::DeliveryRecord,
     ) -> crate::error::AppResult<bool> {
-        self.transition_with_landing(expected, next, None).await
+        self.transition_with_landing(expected, next, None, None)
+            .await
     }
-    /// Same compare-and-set, recording the immutable merge identity in the transaction.
+    /// Same compare-and-set, recording the original PR base at opening or the merge identity at landing.
     async fn transition_with_landing(
         &self,
         expected: &yulius_domain::delivery::DeliveryStage,
         next: &crate::delivery::DeliveryRecord,
+        opening_base: Option<&str>,
         landing: Option<&crate::delivery::evidence::Landing>,
     ) -> crate::error::AppResult<bool>;
     /// SHA for this task's recorded PR. A confirmed GitHub landing can recover a legacy row.

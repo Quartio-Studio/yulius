@@ -1468,7 +1468,8 @@ impl App {
         expected: &DeliveryStage,
         next: &DeliveryRecord,
     ) -> AppResult<bool> {
-        self.dlv_transition_at(sandbox, expected, next, None).await
+        self.dlv_transition_at(sandbox, expected, next, None, None)
+            .await
     }
 
     /// [`Self::dlv_transition`] of a merge whose merged head is known: the merge record says
@@ -1478,12 +1479,18 @@ impl App {
         sandbox: &SandboxId,
         expected: &DeliveryStage,
         next: &DeliveryRecord,
+        opening_base: Option<&str>,
         merged: Option<&crate::review::MergedHead>,
     ) -> AppResult<bool> {
         let written = self
             .deps
             .store
-            .transition_with_landing(expected, next, merged.and_then(|m| m.landing.as_ref()))
+            .transition_with_landing(
+                expected,
+                next,
+                opening_base,
+                merged.and_then(|m| m.landing.as_ref()),
+            )
             .await?;
         if written && next.stage != *expected {
             self.publish_pulls(sandbox);
@@ -1861,15 +1868,18 @@ impl App {
             // Merged elsewhere: its merge commit's first parent is the integration branch
             // before it, as for a merge of Yulius's own; without it, only an approval of the
             // merged head itself counts.
-            let merged_head =
-                observed.pr.as_ref().filter(|pull| pull.merged).map(|pull| {
-                    crate::review::MergedHead::of_pull(pull, &profile.integration_branch)
-                });
+            let merged_head = observed
+                .pr
+                .as_ref()
+                .filter(|pull| pull.merged)
+                .map(crate::review::MergedHead::of_pull);
             if self
                 .dlv_transition_at(
                     &task.sandbox_id,
                     &observed.record.stage,
                     &reconciled,
+                    // If this transition adopts an open PR, capture its intended base now.
+                    Some(&profile.integration_branch),
                     merged_head.as_ref(),
                 )
                 .await?
@@ -2312,14 +2322,14 @@ impl App {
                         updated_at: self.now(),
                         ..record.clone()
                     };
-                    let merged_head = pull.merged.then(|| {
-                        crate::review::MergedHead::of_pull(&pull, &profile.integration_branch)
-                    });
+                    let merged_head = (pull.merged && pull.number == number)
+                        .then(|| crate::review::MergedHead::of_pull(&pull));
                     let _ = self
                         .dlv_transition_at(
                             &sandbox.id,
                             &record.stage,
                             &reconciled,
+                            None,
                             merged_head.as_ref(),
                         )
                         .await;
@@ -2790,7 +2800,13 @@ impl App {
             updated_at: self.now(),
         };
         if !self
-            .dlv_transition(&task.sandbox_id, &observed.record.stage, &next)
+            .dlv_transition_at(
+                &task.sandbox_id,
+                &observed.record.stage,
+                &next,
+                Some(&profile.integration_branch),
+                None,
+            )
             .await?
         {
             return Err(AppError::Conflict(
@@ -4536,7 +4552,7 @@ impl App {
         let landing = landing.or_else(|| {
             let mut expected =
                 evidence::Landing::new(&profile.integration_branch, &pull.head_sha, &merge_sha)?;
-            expected.confirmed = false;
+            expected.source = evidence::LandingSource::AwaitingConfirmation;
             Some(expected)
         });
         let next = DeliveryRecord {
@@ -4549,6 +4565,7 @@ impl App {
             &task.sandbox_id,
             &observed.record.stage,
             &next,
+            None,
             Some(&crate::review::MergedHead {
                 head: pull.head_sha.clone(),
                 base: Some(format!("{merge_sha}^1")),

@@ -363,6 +363,7 @@ impl App {
                 &task.sandbox_id,
                 &observed.record.stage,
                 &next,
+                None,
                 Some(&merged),
             )
             .await?

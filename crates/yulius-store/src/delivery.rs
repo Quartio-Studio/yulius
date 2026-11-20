@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params};
-use yulius_app::delivery::evidence::{EvidenceRun, Landing, MergeEvidence};
+use yulius_app::delivery::evidence::{EvidenceRun, Landing, LandingSource, MergeEvidence};
 use yulius_app::delivery::{
     DeliveryRecord, EnvironmentRunKind, EnvironmentRunRecord, EnvironmentRunState,
 };
@@ -61,8 +61,11 @@ fn record_landing(
         "INSERT INTO task_merges(task_id, sandbox_id, pr_number, branch, head_sha, merged_sha)
          SELECT t.id, t.sandbox_id, d.pr_number, ?3, ?4, ?5 FROM tasks t JOIN delivery d ON d.task_id = t.id
          WHERE t.id = ?1 AND d.pr_number IS ?2 AND d.stage NOT IN ('none', 'pr_open')
+           AND (NOT ?6 OR EXISTS (SELECT 1 FROM task_merge_recovery e WHERE e.task_id = t.id
+                AND e.pr_number = d.pr_number AND e.branch = ?3
+                AND (e.head_sha IS NULL OR e.head_sha = ?4) AND (e.merged_sha IS NULL OR e.merged_sha = ?5)))
          ON CONFLICT(task_id, merged_sha) DO NOTHING",
-        params![task, pr, landed.branch, landed.head, landed.sha],
+        params![task, pr, landed.branch, landed.head, landed.sha, landed.source == LandingSource::ClosedPull],
     ).map_err(db)?;
     Ok(())
 }
@@ -106,8 +109,10 @@ impl DeliveryStore for SqliteStore {
         &self,
         expected: &DeliveryStage,
         next: &DeliveryRecord,
+        opening_base: Option<&str>,
         landing: Option<&Landing>,
     ) -> AppResult<bool> {
+        let opening_base = opening_base.map(str::to_owned);
         let landing = landing.cloned();
         let expected = expected.encode();
         let next = next.clone();
@@ -138,16 +143,24 @@ impl DeliveryStore for SqliteStore {
                 ],
             )
             .map_err(db)?;
+            if next.stage == DeliveryStage::PrOpen && let (Some(base), Some(pr)) = (opening_base, next.pr_number) {
+                tx.execute(
+                    "INSERT INTO task_merge_recovery(task_id, pr_number, branch) VALUES (?1, ?2, ?3) ON CONFLICT DO NOTHING",
+                    params![next.task_id.as_str(), to_i64(pr), base],
+                ).map_err(db)?;
+            }
             // A merged pull request takes its review rounds along: the task's next one starts
             // at round 1 (SPEC-493 REV-002). Here, so every way a merge is recorded does it.
             if next.stage == DeliveryStage::MergedIntegration {
                 if let Some(landing) = &landing {
-                    if landing.confirmed {
+                    if landing.source != LandingSource::AwaitingConfirmation {
                         record_landing(&tx, next.task_id.as_str(), next.pr_number.map(to_i64), landing)?;
                     } else if let Some(pr) = next.pr_number {
                         tx.execute(
                             "INSERT INTO task_merge_recovery(task_id, pr_number, branch, head_sha, merged_sha)
-                             VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT DO NOTHING",
+                             VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(task_id, pr_number) DO UPDATE SET
+                                branch = excluded.branch, head_sha = excluded.head_sha, merged_sha = excluded.merged_sha
+                             WHERE task_merge_recovery.head_sha IS NULL",
                             params![next.task_id.as_str(), to_i64(pr), landing.branch, landing.head, landing.sha],
                         ).map_err(db)?;
                     }
@@ -189,13 +202,7 @@ impl DeliveryStore for SqliteStore {
             };
             let existing = lookup(c)?;
             if existing.is_none()
-                && let Some(landed) = known.filter(|l| l.confirmed)
-                && c.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM task_merge_recovery
-                     WHERE task_id = ?1 AND pr_number = ?2 AND branch = ?3
-                       AND (head_sha IS NULL OR head_sha = ?4) AND (merged_sha IS NULL OR merged_sha = ?5))",
-                    params![task, pr, landed.branch, landed.head, landed.sha], |row| row.get::<_, bool>(0),
-                ).map_err(db)?
+                && let Some(landed) = known.filter(|l| l.source == LandingSource::ClosedPull)
             {
                 record_landing(c, &task, pr, &landed)?;
                 return lookup(c);
@@ -539,7 +546,7 @@ mod tests {
             updated_at: Timestamp(5),
         };
         let landing = Landing {
-            confirmed: true,
+            source: LandingSource::ClosedPull,
             branch: "dev".into(),
             head: "a".repeat(40),
             sha: "b".repeat(40),
@@ -572,7 +579,7 @@ mod tests {
         assert!(store.transition_delivery(&old.stage, &new).await?);
         assert!(
             !store
-                .transition_with_landing(&new.stage, &old, Some(&landing))
+                .transition_with_landing(&new.stage, &old, None, Some(&landing))
                 .await?,
             "an old PR's delayed merge cannot bind the new open PR"
         );
@@ -592,7 +599,7 @@ mod tests {
         // A transient inability to confirm the next merge can recover only its original
         // branch, accepted head and merge SHA, even if the configured branch later changes.
         let pending = Landing {
-            confirmed: false,
+            source: LandingSource::AwaitingConfirmation,
             sha: "c".repeat(40),
             ..landing.clone()
         };
@@ -602,12 +609,12 @@ mod tests {
         };
         assert!(
             store
-                .transition_with_landing(&DeliveryStage::PrOpen, &next, Some(&pending))
+                .transition_with_landing(&DeliveryStage::PrOpen, &next, None, Some(&pending))
                 .await?
         );
         assert_eq!(store.landed_sha(&task, Some(8), None).await?, None);
         let confirmed = Landing {
-            confirmed: true,
+            source: LandingSource::ClosedPull,
             ..pending
         };
         for other in [

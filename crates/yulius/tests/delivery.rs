@@ -9243,3 +9243,98 @@ async fn post_merge_evidence_recovers_the_expected_landing_after_github_returns(
     assert_eq!(view["evidence"]["branch"], "dev");
     Ok(())
 }
+
+/// A project's integration branch can change between an external merge and Yulius's first
+/// observation of the closed PR. Both task delivery and the Git page can reconcile it.
+#[tokio::test]
+async fn post_merge_evidence_reconciles_an_external_merge_against_its_original_base() -> TestResult
+{
+    for landed_on_dev in [false, true] {
+        for read_git_page in [false, true] {
+            let f = fixture(&DeliveryProfile::standard()).await?;
+            let wt = f
+                .add_task("t1", "Update the guide", "docs/1-guide", "dev")
+                .await?;
+            commit_file(&wt, "guide.md", "guide", "docs: update guide")?;
+            let head = git(&wt, &["rev-parse", "HEAD"])?;
+            git(&f.origin, &["branch", "another-base", "dev"])?;
+            if read_git_page {
+                git(&wt, &["push", "--quiet", "origin", "HEAD:docs/1-guide"])?;
+                yulius_app::ports::github::GitHubPort::create_pull(
+                    f.h.github.as_ref(),
+                    &Secret("token-carol".into()),
+                    "Quartio-Studio",
+                    "shop",
+                    &yulius_app::ports::github::NewPull {
+                        title: "docs: update guide".into(),
+                        head: "docs/1-guide".into(),
+                        base: "dev".into(),
+                        body: String::new(),
+                    },
+                )
+                .await?;
+                assert_eq!(
+                    f.delivery("t1").await?["stage"],
+                    "pr_open",
+                    "adopt the open PR"
+                );
+            } else {
+                let agent = live_agent(&f, "t1", "tok-external-base").await?;
+                arm_merge(&f, &agent, &head).await?;
+            }
+            if !landed_on_dev {
+                *f.h.github
+                    .retarget_on_merge
+                    .lock()
+                    .map_err(|_| "retarget lock")? = Some("another-base".into());
+            }
+            f.h.github.set_checks(&head, ChecksState::Success);
+            let sha = yulius_app::ports::github::GitHubPort::merge_pull(
+                f.h.github.as_ref(),
+                &Secret("token-carol".into()),
+                "Quartio-Studio",
+                "shop",
+                1,
+                "squash",
+                &head,
+            )
+            .await?;
+            let mut profile = DeliveryProfile::standard();
+            profile.integration_branch = "another-base".into();
+            f.h.store
+                .set_profile(
+                    &SandboxId::parse("s1")?,
+                    &serde_json::to_string(&profile_to_contract(&profile))?,
+                )
+                .await?;
+            if read_git_page {
+                let page = f
+                    .req(Method::GET, "/api/sandboxes/s1/git", None, &f.bob)
+                    .await?;
+                assert_eq!(page.status, StatusCode::OK);
+            }
+            let view = f.delivery("t1").await?;
+            let proof = f
+                .req(
+                    Method::GET,
+                    &format!("/api/tasks/t1/delivery/evidence/{sha}"),
+                    None,
+                    &f.rita,
+                )
+                .await?;
+            if landed_on_dev {
+                assert_eq!(proof.status, StatusCode::OK);
+                assert_eq!(view["evidence"]["branch"], "dev");
+                assert_eq!(proof.body["merged_sha"], sha);
+            } else {
+                assert_eq!(
+                    proof.status,
+                    StatusCode::NOT_FOUND,
+                    "retargeted external merge"
+                );
+                assert!(view["evidence"].is_null());
+            }
+        }
+    }
+    Ok(())
+}

@@ -7,6 +7,17 @@ use crate::error::{AppError, AppResult};
 use crate::ports::github::GhPull;
 use yulius_domain::permission::Action;
 
+/// The observation backing a possible landing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LandingSource {
+    /// A successful local merge or a confirmed GitHub merge response.
+    MergeCommand,
+    /// A closed GitHub PR observed later. Its base must match the original task PR intent.
+    ClosedPull,
+    /// The submitted branch and head and the SHA returned by an unconfirmed merge command.
+    AwaitingConfirmation,
+}
+
 /// The accepted PR head and the commit actually landed on its base.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Landing {
@@ -16,9 +27,8 @@ pub struct Landing {
     pub head: String,
     /// Result of the merge.
     pub sha: String,
-    /// Whether the result was confirmed on this branch. An expected identity can only
-    /// enable recovery from a later matching closed PR.
-    pub confirmed: bool,
+    /// How this identity was established.
+    pub source: LandingSource,
 }
 
 impl Landing {
@@ -29,26 +39,21 @@ impl Landing {
             branch: branch.to_owned(),
             head: head.to_owned(),
             sha: sha.to_owned(),
-            confirmed: true,
+            source: LandingSource::MergeCommand,
         })
-    }
-
-    pub(crate) fn of_pull(pull: &GhPull, integration: &str) -> Option<Self> {
-        if pull.base != integration {
-            return None;
-        }
-        Self::closed_pull(pull)
     }
 
     pub(crate) fn closed_pull(pull: &GhPull) -> Option<Self> {
         if !pull.merged || pull.from_fork {
             return None;
         }
-        Self::new(
+        let mut landed = Self::new(
             &pull.base,
             &pull.head_sha,
             pull.merge_commit_sha.as_deref()?,
-        )
+        )?;
+        landed.source = LandingSource::ClosedPull;
+        Some(landed)
     }
 
     /// The merge API guards a head and returns a SHA. A fresh view of the closed PR
@@ -60,8 +65,13 @@ impl Landing {
         head: &str,
         sha: &str,
     ) -> Option<Self> {
-        let landed = Self::of_pull(pull, integration)?;
-        (pull.number == number && landed.head == head && landed.sha == sha).then_some(landed)
+        let mut landed = Self::closed_pull(pull)?;
+        landed.source = LandingSource::MergeCommand;
+        (pull.number == number
+            && landed.branch == integration
+            && landed.head == head
+            && landed.sha == sha)
+            .then_some(landed)
     }
 }
 
@@ -115,7 +125,7 @@ mod tests {
             Some(Landing {
                 branch: "dev".into(),
                 head: seen.clone(),
-                confirmed: true,
+                source: LandingSource::MergeCommand,
                 sha: landed.clone()
             })
         );
