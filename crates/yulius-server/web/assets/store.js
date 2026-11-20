@@ -310,7 +310,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     if (!tasks) return;
     const watched = [...tasks.values()].filter((task) =>
       (task.status === 'parked' && typeof task.parked_needs_you === 'boolean') ||
-      (task.status === 'running' && task.failed_candidate_pr));
+      (task.status === 'running' && task.integration_candidate));
     if (!watched.length) return;
     let refreshed;
     try {
@@ -324,8 +324,8 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       const row = refreshed?.get(prior.id);
       if (refreshed && (!row || row.status !== prior.status)) continue;
       if (prior.status === 'running') {
-        if (row && row.failed_candidate_pr !== prior.failed_candidate_pr) {
-          const updated = { ...prior, failed_candidate_pr: row.failed_candidate_pr };
+        if (row && (row.integration_candidate?.failed !== prior.integration_candidate?.failed || row.integration_candidate?.unverified !== prior.integration_candidate?.unverified)) {
+          const updated = { ...prior, integration_candidate: row.integration_candidate };
           tasks.set(prior.id, updated);
           emit('task', updated);
           changed = true;

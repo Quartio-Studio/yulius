@@ -2230,11 +2230,6 @@ impl App {
         if !cloned {
             notes.push("Git: the sandbox repository is not cloned yet.".into());
         }
-        let recent_ci = self
-            .deps
-            .store
-            .ci_runs(&sandbox.id, crate::pr_watch::RUNS_READ)
-            .await?;
         let mut tasks = Vec::new();
         let mut observed = std::collections::HashMap::new();
         let mut git_failed = false;
@@ -2262,12 +2257,15 @@ impl App {
                 && let Some(pull) = open_pulls
                     .iter()
                     .find(|p| p.number == pr.number && p.base == profile.integration_branch)
-                && self
-                    .failed_integration_run(&sandbox, pr.number, &pull.head_sha, &recent_ci)
-                    .await
-                    .is_some()
             {
-                pr.checks = "failure".into();
+                match self
+                    .pull_has_failed_candidate(&sandbox, pull, &pr.checks)
+                    .await
+                {
+                    Ok(true) => pr.checks = "failure".into(),
+                    Err(_) => pr.checks = "error".into(),
+                    Ok(false) => {}
+                }
             }
             // GitHub's list says nothing about mergeability: Yulius's own clone does (DON-001).
             if let Some(pull) = open_pulls.iter().find(|p| !p.from_fork && p.head == branch)
@@ -4235,11 +4233,11 @@ impl App {
         let runs = self
             .deps
             .store
-            .ci_runs(&sandbox.id, crate::pr_watch::RUNS_READ)
+            .ci_runs_for_pr(&sandbox.id, pull.number)
             .await?;
         Ok(self
             .failed_integration_run(sandbox, pull.number, &pull.head_sha, &runs)
-            .await
+            .await?
             .is_some())
     }
 
@@ -4274,10 +4272,13 @@ impl App {
         {
             return Ok(Some(PullSignal::Failing));
         }
-        let conflict = if pull.base == delivery_profile(&sandbox).integration_branch {
-            self.pull_conflicts(task, &sandbox, &pull).await
+        let mergeable = if pull.base == delivery_profile(&sandbox).integration_branch {
+            self.local_conflict(task, &sandbox, &pull.head_sha)
+                .await
+                .map(|conflict| !conflict)
+                .or(pull.mergeable)
         } else {
-            pull.mergeable != Some(true)
+            pull.mergeable
         };
         let current = self
             .deps
@@ -4290,7 +4291,14 @@ impl App {
         if current != pull || current.behind {
             return Ok(Some(PullSignal::Errored));
         }
-        Ok(PullSignal::from_wire("open", word, conflict))
+        if mergeable.is_none() && matches!(word, "success" | "none") {
+            return Ok(Some(PullSignal::Errored));
+        }
+        Ok(PullSignal::from_wire(
+            "open",
+            word,
+            mergeable == Some(false),
+        ))
     }
 
     pub(crate) async fn task_pull_signal(
@@ -4409,10 +4417,15 @@ impl App {
                     .is_some_and(|r| past_merge(&r.stage) || r.stage == DeliveryStage::PrOpen);
         }
         if running && task.activity == Some(Activity::Done) {
+            let requested = self.browser_requests(&task.sandbox_id).await;
             return self
-                .task_failed_candidate(task, crate::sandboxes::parked_pr_deadline())
+                .task_attention_facts(
+                    task,
+                    &requested,
+                    Some(crate::sandboxes::parked_pr_deadline()),
+                )
                 .await
-                .is_none();
+                .is_ok_and(|facts| facts.group() == yulius_domain::task::TaskGroup::Done);
         }
         // One reading of its delivery for the whole decision: a merge recorded between two
         // readings would be "no news due" by the first and "merged" by the second.

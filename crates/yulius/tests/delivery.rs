@@ -4653,6 +4653,7 @@ async fn a_historical_parked_goal_keeps_its_owner_and_chain_state_after_restart(
     let f = fixture(&DeliveryProfile::standard()).await?;
     let (_wt, head) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
     f.h.github.set_checks(&head, ChecksState::Success);
+    edit_pull(&f, 1, |pull| pull.mergeable = Some(true));
     let before = TaskId::parse("t1")?;
     let child = TaskId::parse("t2")?;
     let dir = f.root.path().join("old-park");
@@ -4797,7 +4798,8 @@ async fn a_parked_predecessor_waits_for_the_complete_check_report() -> TestResul
     let hold = f.h.github.hold_checks();
     let app = f.h.app.clone();
     let parked = f.h.store.task(&before).await?.ok_or("parked predecessor")?;
-    let advancing = tokio::spawn(async move { app.advance_chains(&before).await });
+    let predecessor = before.clone();
+    let advancing = tokio::spawn(async move { app.advance_chains(&predecessor).await });
     tokio::time::timeout(Duration::from_secs(5), f.h.github.checks_entered.notified()).await?;
     // GitHub answers after the owner's bounded list read. The chain can still
     // use the complete green report from its already pending background read.
@@ -4817,6 +4819,24 @@ async fn a_parked_predecessor_waits_for_the_complete_check_report() -> TestResul
         "the verified green head was replaced during its checks read"
     );
     edit_pull(&f, 1, |pull| pull.head_sha.clone_from(&head));
+    // Neither Git nor GitHub can yet confirm an external PR head is mergeable.
+    edit_pull(&f, 1, |pull| {
+        pull.mergeable = None;
+        pull.head_sha = "external-green".into();
+    });
+    *f.h.github.stale_reads.lock().map_err(|_| "pull fixture")? = 2;
+    f.h.github
+        .set_checks("external-green", ChecksState::Success);
+    f.h.app.advance_chains(&before).await;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained,
+        "green checks with unknown mergeability released the successor"
+    );
+    edit_pull(&f, 1, |pull| {
+        pull.mergeable = Some(true);
+        pull.head_sha.clone_from(&head);
+    });
     f.h.app.advance_chains(&TaskId::parse("t1")?).await;
     assert_ne!(
         f.h.store.task(&child).await?.ok_or("successor")?.status,

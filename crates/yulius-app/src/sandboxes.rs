@@ -220,12 +220,15 @@ impl App {
                     .await
                     .unwrap_or(Some(PullSignal::Errored))
             } else if live
-                && self
-                    .task_failed_candidate(task, deadline.unwrap_or_else(parked_pr_deadline))
-                    .await
-                    .is_some()
+                && let Some(candidate) = self
+                    .task_candidate(task, deadline.unwrap_or_else(parked_pr_deadline))
+                    .await?
             {
-                Some(PullSignal::Failing)
+                use yulius_contracts::api::tasks::IntegrationCandidate;
+                Some(match candidate {
+                    IntegrationCandidate::Failed(_) => PullSignal::Failing,
+                    IntegrationCandidate::Unverified(_) => PullSignal::Errored,
+                })
             } else {
                 match self.observed_pulls.get(&task.sandbox_id, &task.id) {
                     Some(observed) => observed,

@@ -312,8 +312,8 @@ impl App {
             // that run.
             goal_unfinished: idle_run && self.goal_unfinished_of(task).await,
             spec_unfinished: idle_run && self.spec_unfinished(&task.id).await,
-            failed_candidate_pr: if task.status == TaskStatus::Running && idle_run {
-                self.task_failed_candidate(task, deadline).await
+            integration_candidate: if task.status == TaskStatus::Running && idle_run {
+                self.task_candidate(task, deadline).await?
             } else {
                 None
             },

@@ -402,10 +402,15 @@ export function taskInfo(task, actionRequests, pr) {
     const waits = shown.group === 'working' ? { icon: 'st-attention', tone: 'attention', group: 'needs' } : {};
     return { ...shown, ...waits, label: `${shown.label} · parked`, parked: true };
   }
-  if (task.failed_candidate_pr && (!pr || pr.number === task.failed_candidate_pr)) {
-    pr = { ...pr, number: task.failed_candidate_pr, state: 'open', checks: 'failure' };
+  const candidate = task.integration_candidate;
+  const number = candidate?.failed ?? candidate?.unverified;
+  if (number && (!pr || pr.number === number)) {
+    pr = { ...pr, number, state: 'open', checks: candidate.failed ? 'failure' : 'error' };
   }
   let info = taskInfoOf(task, actionRequests, pr);
+  if (info.pr && candidate?.unverified === info.pr.number && info.group === 'working') {
+    info = { ...info, label: `Verifying integration candidate · PR #${number}` };
+  }
   // Another live task claims paths this one claims (SPEC-493 SCO-002): said beside the rest, a
   // stalled pull request's mark too; the detail names them when nothing else is said.
   const overlaps = (task.overlaps || []).filter((o) => o && o.task_number);

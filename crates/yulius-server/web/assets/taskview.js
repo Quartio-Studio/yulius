@@ -953,7 +953,7 @@ export function mountTaskView(ctx, sandbox, task) {
     // The session's state as the sidebar says it (pull request, browser request, usage limit).
     const row = ctx.store.state.tasks.get(current.sandbox_id)?.get(current.id);
     const summary = row?.status === current.status && row.updated_at === current.updated_at
-      ? { ...current, parked_needs_you: row.parked_needs_you, failed_candidate_pr: row.failed_candidate_pr } : current;
+      ? { ...current, parked_needs_you: row.parked_needs_you, integration_candidate: row.integration_candidate } : current;
     const info = taskInfo(summary, ctx.store.state.actionRequests, ctx.store.pullsOf(current.sandbox_id).get(current.id));
     const total = steps.total || 0;
     const done = steps.done || 0;

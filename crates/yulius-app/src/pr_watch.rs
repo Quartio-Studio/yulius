@@ -29,10 +29,11 @@ use crate::agent_wait::QueueNote;
 use crate::ci::{CiJobRecord, CiRunRecord};
 use crate::context::App;
 use crate::delivery::{delivery_profile, past_merge};
-use crate::error::AppError;
+use crate::error::{AppError, AppResult};
 use crate::merge_train::Hold;
 use crate::model::{SandboxRecord, TaskRecord};
 use crate::task_message::{Sender, Typed};
+use yulius_contracts::api::tasks::IntegrationCandidate;
 
 /// How often the watch runs: an event reaches the task within it.
 pub const WATCH_EVERY: Duration = Duration::from_secs(20);
@@ -137,8 +138,7 @@ pub struct Told {
     /// While stalled: the sentence the task list shows (PRN-009).
     #[serde(default)]
     pub stalled: Option<String>,
-    /// The pull request's head as its newest run last showed it: its run is read by commit once
-    /// it is out of the runs read per pass (review minor 2).
+    /// The pull request's head as its newest run last showed it.
     #[serde(default)]
     pub head: String,
 }
@@ -935,123 +935,182 @@ impl App {
         pr: u64,
         head: &str,
         runs: &'a [CiRunRecord],
-    ) -> Option<&'a CiRunRecord> {
-        let ordinary = runs
-            .iter()
-            .find(|r| r.reference == CiRef::PullRequest(pr))?;
-        if ordinary.sha != head || ordinary.state != RunState::Passed {
-            return None;
-        }
-        let latest = runs
-            .iter()
-            .find(|r| matches!(&r.reference, CiRef::Train(m) if m.contains(&pr)))?;
-        if latest.state != RunState::Failed
-            || !matches!(&latest.reference, CiRef::Train(m) if m.as_slice() == [pr])
-            || latest.queued_at < ordinary.queued_at
-            || latest.ended_at < ordinary.ended_at
+    ) -> AppResult<Option<&'a CiRunRecord>> {
+        // The store returns at most two rows, newest insertion first. Moving a
+        // train to the front of the queue never changes which run supersedes it.
+        let [latest, ordinary] = runs else {
+            return Ok(None);
+        };
+        if ordinary.reference != CiRef::PullRequest(pr)
+            || ordinary.sha != head
+            || ordinary.state != RunState::Passed
+            || latest.state != RunState::Failed
+            || !matches!(&latest.reference, CiRef::Train(members) if members.as_slice() == [pr])
         {
-            return None;
+            return Ok(None);
         }
         let repo = self.sandbox_repo(&sandbox.id);
         let base = format!("origin/{}", delivery_profile(sandbox).integration_branch);
-        let tree = self.deps.git.tree_of(&repo, &latest.sha).await.ok()??;
-        match self.deps.git.preview_merge(&repo, head, &base).await.ok()? {
-            crate::ports::git::TrainStep::Clean { tree: current } if current == tree => {
-                Some(latest)
-            }
-            _ => None,
-        }
+        let tree = self
+            .deps
+            .git
+            .tree_of(&repo, &latest.sha)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        Ok(
+            match self.deps.git.preview_merge(&repo, head, &base).await? {
+                crate::ports::git::TrainStep::Clean { tree: current } if current == tree => {
+                    Some(latest)
+                }
+                _ => None,
+            },
+        )
     }
 
-    /// Confirm the recorded PR still has the candidate's ordinary head. This is only
-    /// a read; displaying an incident never types into an agent or resumes a session.
+    /// Confirm the recorded PR still has the candidate's ordinary head. Status reads never type into an agent.
     async fn current_failed_run<'a>(
         &self,
         sandbox: &SandboxRecord,
         pr: u64,
         head: &str,
         runs: &'a [CiRunRecord],
-    ) -> Option<&'a CiRunRecord> {
-        let run = self.failed_integration_run(sandbox, pr, head, runs).await?;
-        let token = self.dlv_installation_token(sandbox).await.ok()?;
+    ) -> AppResult<Option<&'a CiRunRecord>> {
+        let Some(run) = self.failed_integration_run(sandbox, pr, head, runs).await? else {
+            return Ok(None);
+        };
+        Ok(self
+            .current_pull_at(sandbox, pr, head)
+            .await?
+            .then_some(run))
+    }
+
+    async fn current_pull_at(
+        &self,
+        sandbox: &SandboxRecord,
+        pr: u64,
+        head: &str,
+    ) -> AppResult<bool> {
+        let token = self.dlv_installation_token(sandbox).await?;
         let pull = self
             .deps
             .github
             .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, pr)
-            .await
-            .ok()?;
-        (pull.state == "open"
+            .await?;
+        Ok(pull.state == "open"
             && !pull.from_fork
             && pull.head_sha == head
             && pull.base == delivery_profile(sandbox).integration_branch)
-            .then_some(run)
     }
 
-    pub(crate) async fn task_failed_candidate(
+    pub(crate) async fn task_candidate(
         &self,
         task: &TaskRecord,
         deadline: tokio::time::Instant,
-    ) -> Option<u64> {
-        let record = self.deps.store.delivery(&task.id).await.ok()??;
-        if record.stage != DeliveryStage::PrOpen {
-            return None;
-        }
-        let pr = record.pr_number?;
-        let runs = self
+    ) -> AppResult<Option<IntegrationCandidate>> {
+        let Some(record) = self.deps.store.delivery(&task.id).await? else {
+            return Ok(None);
+        };
+        let Some(pr) = record
+            .pr_number
+            .filter(|_| record.stage == DeliveryStage::PrOpen)
+        else {
+            return Ok(None);
+        };
+        let runs = self.deps.store.ci_runs_for_pr(&task.sandbox_id, pr).await?;
+        let Some(own) = runs.iter().find(|r| r.reference == CiRef::PullRequest(pr)) else {
+            return Ok(None);
+        };
+        let sandbox = self
             .deps
             .store
-            .ci_runs(&task.sandbox_id, RUNS_READ)
+            .sandbox(&task.sandbox_id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        Ok(
+            match tokio::time::timeout_at(
+                deadline,
+                self.current_failed_run(&sandbox, pr, &own.sha, &runs),
+            )
             .await
-            .ok()?;
-        let own = runs
-            .iter()
-            .find(|r| r.reference == CiRef::PullRequest(pr))?;
-        let sandbox = self.deps.store.sandbox(&task.sandbox_id).await.ok()??;
-        tokio::time::timeout_at(
-            deadline,
-            self.current_failed_run(&sandbox, pr, &own.sha, &runs),
+            {
+                Ok(Ok(Some(_))) => Some(IntegrationCandidate::Failed(pr)),
+                Ok(Ok(None)) => None,
+                _ => Some(IntegrationCandidate::Unverified(pr)),
+            },
         )
-        .await
-        .ok()??;
-        Some(pr)
     }
 
-    /// Replace the ordinary unarmed-head message in place. Its existing key
-    /// prevents a restart or another board refresh from prompting the owner twice.
-    async fn unarmed_failure_text(
+    /// The ordinary green notice and an attributable failed integration run
+    /// have independent identities. Rearming may change the green class but
+    /// cannot make the watcher repeat a diagnosed failure on the same run.
+    async fn green_event(
         &self,
         sandbox: &SandboxRecord,
         pr: u64,
         head: &str,
         runs: &[CiRunRecord],
-    ) -> Option<String> {
-        let run = self.current_failed_run(sandbox, pr, head, runs).await?;
-        let jobs = self.deps.store.ci_jobs(&run.id, true).await.ok()?;
-        let excerpt = jobs
-            .iter()
-            .filter_map(|j| j.failures.as_deref())
-            .find_map(|block| {
-                block.lines().rev().map(str::trim).find(|line| {
-                    !line.is_empty() && !line.starts_with("FAIL") && !line.contains("───")
-                })
+        said: (&str, String),
+        told: &Told,
+    ) -> Option<Event> {
+        let (class, text) = said;
+        if class == "unarmed"
+            && let Some(run) = self
+                .failed_integration_run(sandbox, pr, head, runs)
+                .await
+                .ok()?
+        {
+            if told.keys.get("integration") == Some(&run.id)
+                || !self.current_pull_at(sandbox, pr, head).await.ok()?
+            {
+                return None;
+            }
+            let jobs = self.deps.store.ci_jobs(&run.id, true).await.ok()?;
+            let excerpt = jobs
+                .iter()
+                .filter(|j| j.state == RunState::Failed)
+                .filter_map(|j| j.failures.as_deref())
+                .find_map(|block| {
+                    block.lines().rev().map(str::trim).find(|line| {
+                        !line.is_empty() && !line.starts_with("FAIL") && !line.contains("───")
+                    })
+                });
+            let detail: String = excerpt
+                .unwrap_or_default()
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(320)
+                .collect();
+            return Some(Event {
+                kind: "integration",
+                key: run.id.clone(),
+                text: format!(
+                    "Ordinary CI passed at {}, but its integration candidate failed (run {}). {}. {} Read the failure with `ci_status` and repair the failing check before rearming.",
+                    short(head),
+                    run.id,
+                    failed_jobs(&jobs),
+                    detail
+                ),
             });
-        let detail: String = excerpt
-            .unwrap_or_default()
-            .chars()
-            .filter(|c| !c.is_control())
-            .take(320)
-            .collect();
-        Some(format!(
-            "Ordinary CI passed at {}, but its integration candidate failed (run {}): {}. {} Read the failure with `ci_status` and repair the failing check before rearming.",
-            short(head),
-            run.id,
-            failed_jobs(&jobs),
-            detail
-        ))
+        }
+        Some(Event {
+            kind: "green",
+            key: format!("{head}:{class}"),
+            text,
+        })
+    }
+
+    async fn person_must_act_on_pr(&self, task: &TaskRecord, needs_you: bool) -> bool {
+        needs_you
+            || task.activity == Some(yulius_domain::task::Activity::NeedsAttention)
+            || !matches!(self.deps.store.pending_hold(&task.id).await, Ok(None))
+            || self
+                .browser_tab_requests(&task.sandbox_id)
+                .await
+                .contains(task.id.as_str())
     }
 
     /// What the watch knows of `task`'s pull request, or `None` when it has no open one (nor
-    /// one the watch saw open that just merged). `runs` caches each sandbox's runs for the pass.
+    /// one the watch saw open that just merged). `runs` caches each PR's runs for the pass.
     async fn pr_facts(
         &self,
         task: &TaskRecord,
@@ -1074,8 +1133,7 @@ impl App {
         // A person must act first (a prompt on screen, `needs_you`): nothing is typed, the merge
         // notice included (review M1, round 2).
         let needs_you = !matches!(self.deps.store.task_needs_you(&task.id).await, Ok(None));
-        let person_must_act =
-            needs_you || task.activity == Some(yulius_domain::task::Activity::NeedsAttention);
+        let person_must_act = self.person_must_act_on_pr(task, needs_you).await;
         if past_merge(&record.stage) {
             // Merged: said once, to a task the watch saw with it open (PRN-005, PRN-007).
             if !merge_untold(told, pr) {
@@ -1099,33 +1157,18 @@ impl App {
             return None;
         }
         let integration = delivery_profile(&sandbox).integration_branch;
-        if !runs.contains_key(sandbox.id.as_str()) {
-            let read = self
-                .deps
-                .store
-                .ci_runs(&sandbox.id, RUNS_READ)
-                .await
-                .unwrap_or_default();
-            runs.insert(sandbox.id.as_str().to_owned(), read);
+        let key = format!("{}/{pr}", sandbox.id);
+        if !runs.contains_key(&key) {
+            runs.insert(
+                key.clone(),
+                self.deps.store.ci_runs_for_pr(&sandbox.id, pr).await.ok()?,
+            );
         }
-        let sandbox_runs = runs.get(sandbox.id.as_str()).map_or(&[][..], Vec::as_slice);
+        let sandbox_runs = runs.get(&key)?.as_slice();
         let mut own = sandbox_runs
             .iter()
             .find(|run| run.reference == CiRef::PullRequest(pr))
             .cloned();
-        if own.is_none() && !told.head.is_empty() {
-            own = self
-                .deps
-                .store
-                .ci_runs_for_sha(&sandbox.id, &told.head)
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .find(|run| run.reference == CiRef::PullRequest(pr));
-        }
-        // SPEC-553 REP-004: recover an idle task whose clean committed CI repair on a failing
-        // open PR missed turn-end publication (for example across a server restart). Reads only
-        // local HEAD unless it differs from the failing PR run's SHA.
         if !armed
             && !person_must_act
             && let Some(failed_sha) = own
@@ -1134,14 +1177,9 @@ impl App {
                 .map(|run| run.sha.clone())
             && self.maybe_publish_repair_for_watch(task, &failed_sha).await
         {
-            let read = self
-                .deps
-                .store
-                .ci_runs(&sandbox.id, RUNS_READ)
-                .await
-                .unwrap_or_default();
-            runs.insert(sandbox.id.as_str().to_owned(), read);
-            let refreshed = runs.get(sandbox.id.as_str()).map_or(&[][..], Vec::as_slice);
+            let read = self.deps.store.ci_runs_for_pr(&sandbox.id, pr).await.ok()?;
+            runs.insert(key.clone(), read);
+            let refreshed = runs.get(&key)?.as_slice();
             own = refreshed
                 .iter()
                 .find(|run| run.reference == CiRef::PullRequest(pr))
@@ -1153,7 +1191,7 @@ impl App {
         {
             own = None;
         }
-        let sandbox_runs = runs.get(sandbox.id.as_str()).map_or(&[][..], Vec::as_slice);
+        let sandbox_runs = runs.get(&key)?.as_slice();
         let own = own.as_ref();
         // A candidate older than the pull request's own newest run is about an earlier head.
         let candidate = sandbox_runs
@@ -1254,21 +1292,13 @@ impl App {
         let queue_note = self.merge_queue_note(task);
         if let (true, Some(head)) = (green, &head) {
             let said = green_said(head, armed, hold, queue_note.as_ref(), &integration);
-            if let Some((class, mut text)) = said {
-                if class == "unarmed"
-                    && !person_must_act
-                    && !told_key("green", &format!("{head}:{class}"))
-                    && let Some(failure) = self
-                        .unarmed_failure_text(&sandbox, pr, head, sandbox_runs)
-                        .await
-                {
-                    text = failure;
-                }
-                events.push(Event {
-                    kind: "green",
-                    key: format!("{head}:{class}"),
-                    text,
-                });
+            if !person_must_act
+                && let Some(said) = said
+                && let Some(event) = self
+                    .green_event(&sandbox, pr, head, sandbox_runs, said, told)
+                    .await
+            {
+                events.push(event);
             }
         }
         let ci_busy = own.is_some_and(|run| run.state.is_active())
@@ -1363,14 +1393,8 @@ impl App {
         }
         // Preserve actual human-decision and consent boundaries: never auto-wake while a person
         // must act (`needs_you`, held prompt, browser request, terminal attention).
-        let person_must_act = task.activity == Some(yulius_domain::task::Activity::NeedsAttention)
-            || !matches!(self.deps.store.task_needs_you(&task.id).await, Ok(None))
-            || !matches!(self.deps.store.pending_hold(&task.id).await, Ok(None))
-            || self
-                .browser_tab_requests(&task.sandbox_id)
-                .await
-                .contains(task.id.as_str());
-        if person_must_act {
+        let needs_you = !matches!(self.deps.store.task_needs_you(&task.id).await, Ok(None));
+        if self.person_must_act_on_pr(task, needs_you).await {
             return None;
         }
         let now_ms = self.now().0;
@@ -1409,30 +1433,18 @@ impl App {
             return None;
         }
         let integration = delivery_profile(&sandbox).integration_branch;
-        if !runs.contains_key(sandbox.id.as_str()) {
-            let read = self
-                .deps
-                .store
-                .ci_runs(&sandbox.id, RUNS_READ)
-                .await
-                .unwrap_or_default();
-            runs.insert(sandbox.id.as_str().to_owned(), read);
+        let key = format!("{}/{pr}", sandbox.id);
+        if !runs.contains_key(&key) {
+            runs.insert(
+                key.clone(),
+                self.deps.store.ci_runs_for_pr(&sandbox.id, pr).await.ok()?,
+            );
         }
-        let sandbox_runs = runs.get(sandbox.id.as_str()).map_or(&[][..], Vec::as_slice);
+        let sandbox_runs = runs.get(&key)?.as_slice();
         let mut own = sandbox_runs
             .iter()
             .find(|run| run.reference == CiRef::PullRequest(pr))
             .cloned();
-        if own.is_none() && !told.head.is_empty() {
-            own = self
-                .deps
-                .store
-                .ci_runs_for_sha(&sandbox.id, &told.head)
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .find(|run| run.reference == CiRef::PullRequest(pr));
-        }
         if let Some(failed_sha) = own
             .as_ref()
             .filter(|run| run.state == RunState::Failed)
@@ -1441,14 +1453,9 @@ impl App {
                 .maybe_publish_repair_for_parked(task, &failed_sha)
                 .await
         {
-            let read = self
-                .deps
-                .store
-                .ci_runs(&sandbox.id, RUNS_READ)
-                .await
-                .unwrap_or_default();
-            runs.insert(sandbox.id.as_str().to_owned(), read);
-            let refreshed = runs.get(sandbox.id.as_str()).map_or(&[][..], Vec::as_slice);
+            let read = self.deps.store.ci_runs_for_pr(&sandbox.id, pr).await.ok()?;
+            runs.insert(key.clone(), read);
+            let refreshed = runs.get(&key)?.as_slice();
             own = refreshed
                 .iter()
                 .find(|run| run.reference == CiRef::PullRequest(pr))
@@ -1516,25 +1523,12 @@ impl App {
         let green =
             own.is_some_and(|run| matches!(run.state, RunState::Passed | RunState::Skipped));
         if let (true, Some(head)) = (green, &head)
-            && let Some((class, mut text)) = green_said(head, false, Hold::Free, None, &integration)
+            && let Some(said) = green_said(head, false, Hold::Free, None, &integration)
+            && let Some(event) = self
+                .green_event(&sandbox, pr, head, runs.get(&key)?.as_slice(), said, told)
+                .await
         {
-            if !told_key("green", &format!("{head}:{class}"))
-                && let Some(failure) = self
-                    .unarmed_failure_text(
-                        &sandbox,
-                        pr,
-                        head,
-                        runs.get(sandbox.id.as_str()).map_or(&[][..], Vec::as_slice),
-                    )
-                    .await
-            {
-                text = failure;
-            }
-            events.push(Event {
-                kind: "green",
-                key: format!("{head}:{class}"),
-                text,
-            });
+            events.push(event);
         }
         let progress = format!(
             "{}||{}|",

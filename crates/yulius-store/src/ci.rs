@@ -265,6 +265,25 @@ impl CiStore for SqliteStore {
         .await
     }
 
+    async fn ci_runs_for_pr(&self, sandbox: &SandboxId, pr: u64) -> AppResult<Vec<CiRunRecord>> {
+        let sandbox = sandbox.as_str().to_owned();
+        let ordinary = yulius_domain::ci::CiRef::PullRequest(pr).key();
+        let member = format!("+{pr}+");
+        self.call(move |c| {
+            select_runs(
+                c,
+                "rowid IN (
+               SELECT MAX(rowid) FROM ci_runs WHERE sandbox_id = ?1 AND reference = ?2
+               UNION ALL
+               SELECT MAX(rowid) FROM ci_runs WHERE sandbox_id = ?1 AND reference GLOB 'train/*'
+                 AND instr('+' || substr(reference, 7) || '+', ?3) > 0
+             ) ORDER BY rowid DESC",
+                &[&sandbox, &ordinary, &member],
+            )
+        })
+        .await
+    }
+
     async fn ci_runs_for_sha(&self, sandbox: &SandboxId, sha: &str) -> AppResult<Vec<CiRunRecord>> {
         let (sandbox, sha) = (sandbox.as_str().to_owned(), sha.to_owned());
         self.call(move |c| {

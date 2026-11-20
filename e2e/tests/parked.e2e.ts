@@ -405,7 +405,7 @@ test('the waiting owner sees a failed integration candidate until the verified r
     const task = { id, sandbox_id: sid, activity: 'waiting', status: 'running', steps: { total: 4, done: 4 } };
     const store = createStore({ get: async (path: string) => {
       if (path.endsWith('/git')) return { tasks: [{ task_id: id, pr: { state: 'open', number: 1481, checks: failed ? 'failure' : 'success' } }] };
-      if (path.includes('/tasks?')) return [{ ...task, failed_candidate_pr: failed ? 1481 : undefined }];
+      if (path.includes('/tasks?')) return [{ ...task, integration_candidate: failed ? { failed: 1481 } : undefined }];
       return [];
     } });
     const group = () => taskInfo(store.state.tasks.get(sid).get(id), null, store.pullsOf(sid).get(id)).group;

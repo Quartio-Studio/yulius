@@ -526,8 +526,8 @@ async fn create_chained_successor(
     before: &yulius_app::model::TaskRecord,
 ) -> Result<yulius_app::model::TaskRecord, Error> {
     let mut waiting = before.clone();
-    waiting.id = TaskId::parse("t-next")?;
-    waiting.number = 99;
+    waiting.id = TaskId::parse(&format!("next-{}", before.id))?;
+    waiting.number = before.number + 100;
     waiting.title = "Next".into();
     waiting.status = TaskStatus::Chained;
     waiting.activity = None;
@@ -2935,6 +2935,25 @@ fn a_cold_parked_summary_reads_historical_spec_and_goal_evidence() -> TestResult
 /// #331: a failing integration candidate ends immediately before daemon restart.
 #[test]
 fn cold_done_and_the_watcher_honor_an_unarmed_red_integration_candidate() -> TestResult {
+    cold_candidate_case(20, 0, false)
+}
+
+#[test]
+fn a_backdated_queue_position_does_not_hide_the_newer_failed_candidate() -> TestResult {
+    cold_candidate_case(9, 0, false)
+}
+
+#[test]
+fn unrelated_ci_runs_do_not_hide_a_current_candidate() -> TestResult {
+    cold_candidate_case(20, 101, false)
+}
+
+#[test]
+fn a_failed_candidate_reaches_its_owner_after_an_ordinary_green_notice() -> TestResult {
+    cold_candidate_case(20, 0, true)
+}
+
+fn cold_candidate_case(queue_place: i64, later_runs: i64, prior_notice: bool) -> TestResult {
     use yulius_app::delivery::DeliveryRecord;
     use yulius_app::ports::github::ChecksState;
     use yulius_app::pr_watch::WatchBounds;
@@ -3006,6 +3025,8 @@ fn cold_done_and_the_watcher_honor_an_unarmed_red_integration_candidate() -> Tes
             None,
             10,
         );
+        green.started_at = Some(yulius_domain::time::Timestamp(11));
+        green.ended_at = Some(yulius_domain::time::Timestamp(12));
         green.reference = CiRef::PullRequest(1481);
         app.deps.store.insert_ci_run(&green, &[job]).await?;
         let failures = concat!(
@@ -3032,6 +3053,14 @@ fn cold_done_and_the_watcher_honor_an_unarmed_red_integration_candidate() -> Tes
             Some(failures),
             20,
         );
+        if prior_notice {
+            let notice = app.watch_prs(&WatchBounds::default()).await;
+            assert_eq!(notice.len(), 1);
+            assert!(notice[0].1.contains("no merge is armed"), "{notice:?}");
+        }
+        candidate.queued_at = yulius_domain::time::Timestamp(queue_place);
+        candidate.started_at = Some(yulius_domain::time::Timestamp(21));
+        candidate.ended_at = Some(yulius_domain::time::Timestamp(22));
         candidate.reference = CiRef::Train(vec![1481]);
         job.name = "shard 2".into();
         app.deps.store.insert_ci_run(&candidate, &[job]).await?;
@@ -3048,6 +3077,17 @@ fn cold_done_and_the_watcher_honor_an_unarmed_red_integration_candidate() -> Tes
                 },
             )
             .await?;
+        for n in 0..later_runs {
+            let (run, job) = crate::pr_watch::run(
+                &caller.sandbox,
+                &format!("other-{n}"),
+                "another-head",
+                RunState::Passed,
+                None,
+                30 + n,
+            );
+            app.deps.store.insert_ci_run(&run, &[job]).await?;
+        }
         let original = app
             .deps
             .store
@@ -3081,14 +3121,44 @@ fn cold_done_and_the_watcher_honor_an_unarmed_red_integration_candidate() -> Tes
         };
         let current = cold.deps.store.task(&id).await?.ok_or("task")?;
         assert_eq!(
-            cold.task_summary(&current).await?.failed_candidate_pr,
-            Some(1481)
+            cold.task_summary(&current).await?.integration_candidate,
+            Some(yulius_contracts::api::tasks::IntegrationCandidate::Failed(
+                1481
+            ))
         );
         cold.git_overview(&owner, caller.sandbox.as_str()).await?;
         let counts = cold
             .sandbox_view(&sandbox, AccessLevel::Write)
             .await?
             .counts;
+        let mut achieved = current.clone();
+        achieved.activity = Some(Activity::Done);
+        cold.deps
+            .store
+            .set_activity(&id, achieved.activity, cold.now())
+            .await?;
+        let live_successor = create_chained_successor(&cold, &achieved).await?;
+        let missing = remote
+            .pulls
+            .lock()
+            .map_err(|_| "fake PR")?
+            .pop()
+            .ok_or("PR")?;
+        assert_eq!(
+            cold.task_summary(&achieved).await?.integration_candidate,
+            Some(yulius_contracts::api::tasks::IntegrationCandidate::Unverified(1481))
+        );
+        cold.advance_chains(&id).await;
+        assert_eq!(
+            status_of(&cold, &live_successor.id).await.0,
+            Some(TaskStatus::Chained),
+            "unreadable candidate metadata released an achieved predecessor"
+        );
+        remote.pulls.lock().map_err(|_| "fake PR")?.push(missing);
+        cold.deps
+            .store
+            .set_activity(&id, current.activity, cold.now())
+            .await?;
         let bounds = WatchBounds::default();
         ask(&cold, &id).await?;
         assert!(cold.watch_prs(&bounds).await.is_empty());
@@ -3096,6 +3166,41 @@ fn cold_done_and_the_watcher_honor_an_unarmed_red_integration_candidate() -> Tes
             .store
             .set_task_needs_you(&id, None, cold.now())
             .await?;
+        if prior_notice {
+            use yulius_app::intake::{HoldRecord, hold_state};
+            cold.deps
+                .store
+                .insert_hold(&HoldRecord {
+                    id: "held-direction".into(),
+                    task_id: id.clone(),
+                    class: yulius_domain::intake::PromptClass::NewScope,
+                    prompt: "Choose a new direction".into(),
+                    prompt_sha256: "0".repeat(64),
+                    percent: 99,
+                    typed_by: Some(caller.user.clone()),
+                    state: hold_state::PENDING.into(),
+                    created_at: cold.now(),
+                    resolved_by: None,
+                    resolved_at: None,
+                    new_task_id: None,
+                })
+                .await?;
+            assert!(
+                cold.watch_prs(&bounds).await.is_empty(),
+                "a held prompt needs a human decision"
+            );
+            cold.deps
+                .store
+                .resolve_hold(
+                    "held-direction",
+                    hold_state::PENDING,
+                    hold_state::SENT,
+                    "owner",
+                    cold.now(),
+                    None,
+                )
+                .await?;
+        }
         let notices = cold.watch_prs(&bounds).await;
         assert!(
             counts.needs_attention + counts.running > 0
@@ -3108,6 +3213,37 @@ fn cold_done_and_the_watcher_honor_an_unarmed_red_integration_candidate() -> Tes
             counts.running,
             counts.needs_attention
         );
+        if prior_notice {
+            use yulius_app::pr_watch::{Event, PR_NOTICES_FILE, PrFacts, Told, decide};
+            let entries: std::collections::BTreeMap<String, Told> = serde_json::from_slice(
+                &std::fs::read(cold.config.data_dir.join(PR_NOTICES_FILE))?,
+            )?;
+            let told = entries.get(id.as_str()).ok_or("saved owner notice")?;
+            assert_eq!(
+                told.keys.get("integration").map(String::as_str),
+                Some("candidate-red")
+            );
+            let armed = PrFacts {
+                pr: 1481,
+                events: vec![Event {
+                    kind: "green",
+                    key: format!("{head}:armed"),
+                    text: "Merge armed".into(),
+                }],
+                ..Default::default()
+            };
+            let (message, after_rearm) = decide(&armed, told, &bounds);
+            assert!(message.is_some());
+            let again = PrFacts {
+                events: vec![Event {
+                    kind: "integration",
+                    key: "candidate-red".into(),
+                    text: notices[0].1.clone(),
+                }],
+                ..armed
+            };
+            assert!(decide(&again, &after_rearm, &bounds).0.is_none());
+        }
         assert!(cold.watch_prs(&bounds).await.is_empty());
         assert_eq!(cold.deps.store.attempts(&id).await?.len(), 1);
         // Project the persisted historical parked state through both the task
@@ -3144,7 +3280,17 @@ fn cold_done_and_the_watcher_honor_an_unarmed_red_integration_candidate() -> Tes
         );
         // A different published head must not inherit this earlier candidate.
         set_pull_head(&remote, 1481, "superseding-head")?;
-        assert_eq!(cold.task_summary(&current).await?.failed_candidate_pr, None);
+        assert_eq!(
+            cold.task_summary(&current).await?.integration_candidate,
+            None
+        );
+        assert!(
+            cold.watch_prs(&bounds)
+                .await
+                .iter()
+                .all(|(who, _)| who != &id),
+            "the earlier head must not send the original owner another notice"
+        );
         cold.stop_task_now(&id).await?;
         Ok::<_, Error>(())
     })?;
