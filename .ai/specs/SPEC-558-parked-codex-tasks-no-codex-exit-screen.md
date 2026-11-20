@@ -79,6 +79,10 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 - Independent review approved the local parking guard at `dad583243`. All 44 scoped Rust tests passed, including grace and digest parking, concurrent updates and recovery after the stored spec becomes readable. Repository contracts and formatting passed.
 
+- PR #1505 delivered local plan, spec and goal guards at dev commit `21810b880`, whose tree matched the passing merge train.
+- The reverse-order fixture initially passed against the existing PR verification candidate. Its ordinary failed CI run was durable before parking while GitHub still showed success. The human decision held the watch, then clearing it produced one actionable notice in the existing attempt. The second-clone fixture on that candidate reproduced one incorrect park. The task checkout did not have the upstream commit needed for the ancestry comparison.
+- A live instance check of the digest and PR watcher with this change requires an instance running the new Yulius binary. The repository fixtures exercise the supervisor and watcher with local Git and synthetic agents. The owner retains control of quartio-v2 #325.
+
 ## Delivery slices
 
 PRs #1492 and #1493 delivered native Codex resume and the pre-stop screen for new parks. The next delivery keeps sessions with local unfinished work live. Subsequent deliveries verify current PR checks and unpublished work, classify historical parked tasks and gate their successors, continue bounded Codex goals, and recover pre-upgrade screens. The earlier combined-head evidence records prototype verification across these deliveries.

@@ -2818,3 +2818,70 @@ async fn parking_needs_positive_mergeability_when_the_integration_pr_head_is_mis
     assert_eq!(f.h.app.park_idle_sessions_now().await, 1);
     Ok(())
 }
+
+#[tokio::test]
+async fn parking_keeps_an_external_green_pr_that_must_update_its_base() -> TestResult {
+    let (f, _) = untracked_parking_fixture().await?;
+    f.h.github
+        .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
+    f.h.github.pulls.lock().map_err(|_| "pull fixture")?[0].behind = true;
+    assert_eq!(f.h.app.park_idle_sessions_now().await, 0);
+    f.h.github.pulls.lock().map_err(|_| "pull fixture")?[0].behind = false;
+    assert_eq!(f.h.app.park_idle_sessions_now().await, 1);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn parking_keeps_an_external_pr_when_its_checked_head_starts_an_unwatched_rerun() -> TestResult
+{
+    use yulius_app::ci::{CiRunRecord, CiRunUpdate};
+    use yulius_domain::ci::{CiRef, GateSource, RunState};
+    let (f, _) = untracked_parking_fixture().await?;
+    f.h.github
+        .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
+    let run = CiRunRecord {
+        id: "external-rerun".into(),
+        sandbox_id: f.sandbox.clone(),
+        reference: CiRef::PullRequest(1461),
+        sha: "abc123".into(),
+        source: GateSource::ProjectConfig,
+        state: RunState::Queued,
+        reason: None,
+        requested_by: "yulius".into(),
+        status_for: None,
+        status_note: None,
+        status_attempts: 0,
+        queued_at: Timestamp(20),
+        started_at: None,
+        ended_at: None,
+    };
+    let app = f.h.app.clone();
+    let handle = tokio::runtime::Handle::current();
+    yulius_app::race::on(
+        yulius_app::race::Point::ParkPrepared,
+        Path::new(f.task.as_str()),
+        move || {
+            assert!(
+                tokio::task::block_in_place(
+                    || handle.block_on(app.deps.store.insert_ci_run(&run, &[]))
+                )
+                .is_ok()
+            );
+        },
+    );
+    assert_eq!(f.h.app.park_idle_sessions_now().await, 0);
+    assert!(
+        f.h.app
+            .deps
+            .store
+            .transition_ci_run(
+                "external-rerun",
+                &[RunState::Queued],
+                RunState::Passed,
+                &CiRunUpdate::default()
+            )
+            .await?
+    );
+    assert_eq!(f.h.app.park_idle_sessions_now().await, 1);
+    Ok(())
+}

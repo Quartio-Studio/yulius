@@ -99,6 +99,7 @@ const DIRTY_WORKTREE: &str = "the task worktree has uncommitted changes; commit 
 #[derive(Default)]
 pub(crate) struct ParkingPrs {
     checkout: Option<String>,
+    watched: Option<u64>,
     pulls: Vec<(u64, String)>,
 }
 
@@ -3831,15 +3832,34 @@ impl App {
                 .store
                 .ci_runs_for_sha(&task.sandbox_id, head)
                 .await?;
-            if let Some(own) = runs
+            let Some(own) = runs
                 .iter()
                 .find(|run| run.reference == yulius_domain::ci::CiRef::PullRequest(*number))
-                && matches!(
-                    own.state,
-                    RunState::Failed | RunState::Error | RunState::Cancelled
-                )
-            {
+            else {
+                continue;
+            };
+            if matches!(
+                own.state,
+                RunState::Failed | RunState::Error | RunState::Cancelled
+            ) {
                 return Ok(false);
+            }
+            if own.state.is_active() {
+                if facts.watched != Some(*number) || !self.config.ci.enabled {
+                    return Ok(false);
+                }
+                let recent = self
+                    .deps
+                    .store
+                    .ci_runs(&task.sandbox_id, crate::pr_watch::RUNS_READ)
+                    .await?;
+                if recent
+                    .iter()
+                    .find(|r| r.reference == own.reference)
+                    .is_none_or(|r| r.id != own.id || !r.state.is_active())
+                {
+                    return Ok(false);
+                }
             }
         }
         Ok(true)
@@ -4063,7 +4083,11 @@ impl App {
             }
             pulls.push((number, pull.head_sha));
         }
-        Ok((branch_pulls().await? == branch).then_some(ParkingPrs { checkout, pulls }))
+        Ok((branch_pulls().await? == branch).then_some(ParkingPrs {
+            checkout,
+            pulls,
+            watched: tracked,
+        }))
     }
 
     /// Check one PR and reconfirm its head and mergeability after the slower checks.
@@ -4084,6 +4108,9 @@ impl App {
         let pull = read().await?;
         if !is_open(&pull) {
             return Ok(pull.merged.then_some(pull));
+        }
+        if pull.behind {
+            return Ok(None);
         }
         let head = self.dlv_checks_at(sandbox, token, &pull.head_sha).await?;
         if !head.unreadable.is_empty() {
@@ -4121,6 +4148,7 @@ impl App {
         // Checks and local conflict detection can take long enough for another push.
         let current = read().await?;
         let same_open_head = is_open(&current)
+            && !current.behind
             && current.head_sha == pull.head_sha
             && current.base == pull.base
             && current.mergeable == pull.mergeable;

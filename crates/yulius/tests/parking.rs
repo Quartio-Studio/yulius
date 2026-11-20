@@ -1891,14 +1891,34 @@ fn a_ci_failure_before_digest_parking_reaches_the_idle_author_once() -> TestResu
             ..pending.clone()
         };
         app.deps.store.insert_ci_run(&obsolete, &[]).await?;
-        let failed = CiRunRecord {
-            id: "red-before-digest".into(),
-            state: RunState::Failed,
-            queued_at: Timestamp(20),
-            ended_at: Some(Timestamp(22)),
-            ..pending
-        };
-        app.deps.store.insert_ci_run(&failed, &[]).await?;
+        app.tool_task_message(
+            &caller,
+            &json!({"number": 1, "text":"CI pending: answer with an echo"}),
+        )
+        .await?;
+        wait_for(
+            "the author to finish its turn while CI is pending",
+            Duration::from_secs(30),
+            || async {
+                screen(&app, &id).contains("ECHO: CI pending: answer with an echo")
+                    && status_of(&app, &id).await.1 == Some(Activity::Waiting)
+            },
+        )
+        .await?;
+        assert!(
+            app.deps
+                .store
+                .transition_ci_run(
+                    &pending.id,
+                    &[RunState::Running],
+                    RunState::Failed,
+                    &yulius_app::ci::CiRunUpdate {
+                        ended_at: Some(Timestamp(22)),
+                        ..Default::default()
+                    }
+                )
+                .await?
+        );
         // The remote result still looks green from the previous check.
         github.set_checks(&sha, ChecksState::Success);
         ask(&app, &id).await?;
@@ -1915,7 +1935,7 @@ fn a_ci_failure_before_digest_parking_reaches_the_idle_author_once() -> TestResu
         assert_eq!(
             notices
                 .iter()
-                .filter(|(task, text)| task == &id && text.contains("red-before-digest"))
+                .filter(|(task, text)| task == &id && text.contains("before-digest"))
                 .count(),
             1,
             "{notices:?}"
