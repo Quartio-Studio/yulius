@@ -6,8 +6,17 @@
 //! request, review, `delivery_merge`), owned by the sandbox's creator. It brings the project's
 //! own `yulius.toml` and guidance to the new default, keeping what is the project's own, and
 //! reports what it found. The revision is claimed before the task is created (`bootstrap_upgrades`
-//! table), so a restart creates no second task; a claim whose task could not be created is given
-//! back, to be tried at the next start.
+//! table), so a restart creates no second task.
+//!
+//! - **Not onboarded yet.** A sandbox that is not onboarded yet (and one created after the
+//!   release: `projects.rs` records it at creation) is recorded as `laid`. Its onboarding lays
+//!   the current default, so it is never upgraded.
+//! - **A claim left unfinished.** Every start finishes a claim still `claimed`. It adopts the
+//!   upgrade task made since the claim: a stop between making and linking it, or a store error
+//!   after its record. Otherwise it makes the task: a stop before making it, or a refused
+//!   creation (no Claude account).
+//! - **Exactly once.** The link is a compare-and-set to `linked`. A linked task a person deletes
+//!   is not made again.
 
 use std::sync::Arc;
 
@@ -51,6 +60,26 @@ already serves is answered as included, so nothing deploys twice.
 merge), no shared target (why), and any blocker (a missing credential or machine: needs_you).";
 
 impl App {
+    /// The upgrade task created in `sandbox` since `claimed_at`, if one is: the automation-origin
+    /// task with the upgrade's title and prompt (the oldest).
+    async fn bootstrap_task_since(
+        &self,
+        sandbox: &SandboxRecord,
+        claimed_at: yulius_domain::time::Timestamp,
+    ) -> Option<yulius_domain::ids::TaskId> {
+        // Live and archived tasks alike (an archived one was made all the same).
+        let mut tasks = self.deps.store.tasks(&sandbox.id, false).await.ok()?;
+        tasks.extend(self.deps.store.tasks(&sandbox.id, true).await.ok()?);
+        tasks.retain(|t| {
+            t.origin == TaskOrigin::Automation
+                && t.title == UPGRADE_TITLE
+                && t.prompt == UPGRADE_PROMPT
+                && t.created_at >= claimed_at
+        });
+        tasks.sort_by_key(|t| t.created_at);
+        tasks.into_iter().next().map(|t| t.id)
+    }
+
     /// Creates the upgrade task of every onboarded sandbox still below [`BOOTSTRAP_REVISION`]
     /// (server start); how many it created. Playgrounds, removed sandboxes and ones not
     /// onboarded yet (their onboarding lays the current default) are left alone.
@@ -73,27 +102,68 @@ impl App {
 
     /// One sandbox's upgrade task, when it is due; whether it was created.
     async fn bootstrap_upgrade(self: &Arc<Self>, sandbox: &SandboxRecord) -> bool {
-        let onboarded = matches!(sandbox.onboarding_state.as_str(), "ready" | "not_needed");
-        if sandbox.removed_at.is_some() || sandbox.is_playground() || !onboarded {
+        if sandbox.removed_at.is_some() || sandbox.is_playground() {
             return false;
         }
         let store = &self.deps.store;
-        let Ok(Some(owner)) = store.user(&sandbox.created_by).await else {
-            return false;
-        };
-        if owner.disabled_at.is_some() {
+        // A sandbox not onboarded yet gets the current default from its onboarding (review
+        // round 1 of slice 4: it is recorded as laid, so it is never upgraded later).
+        let onboarded = matches!(sandbox.onboarding_state.as_str(), "ready" | "not_needed");
+        if !onboarded {
+            if let Err(err) = store
+                .lay_bootstrap_revision(&sandbox.id, BOOTSTRAP_REVISION, self.now())
+                .await
+            {
+                tracing::warn!(error = %err, sandbox = %sandbox.slug, "bootstrap revision not recorded");
+            }
             return false;
         }
-        match store
+        let owner = match store.user(&sandbox.created_by).await {
+            Ok(Some(owner)) if owner.disabled_at.is_none() => owner,
+            Ok(_) => {
+                tracing::warn!(sandbox = %sandbox.slug, "bootstrap upgrade skipped: the sandbox's creator is no longer active");
+                return false;
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, sandbox = %sandbox.slug, "bootstrap upgrade: the creator could not be read");
+                return false;
+            }
+        };
+        // Claim the revision. A claim a stopped server left (still `claimed`: its task never
+        // linked) is finished now (rollout blocker found on PR #1541).
+        if let Err(err) = store
             .claim_bootstrap_upgrade(&sandbox.id, BOOTSTRAP_REVISION, self.now())
             .await
         {
-            Ok(true) => {}
-            Ok(false) => return false,
+            tracing::warn!(error = %err, sandbox = %sandbox.slug, "bootstrap upgrade could not be claimed");
+            return false;
+        }
+        let claim = match store.bootstrap_upgrade(&sandbox.id).await {
+            Ok(Some(claim)) if claim.revision == BOOTSTRAP_REVISION && claim.state == "claimed" => {
+                claim
+            }
+            Ok(_) => return false,
             Err(err) => {
-                tracing::warn!(error = %err, sandbox = %sandbox.slug, "bootstrap upgrade could not be claimed");
+                tracing::warn!(error = %err, sandbox = %sandbox.slug, "bootstrap upgrade could not be read");
                 return false;
             }
+        };
+        // A task made for the claim before a stop (or before a store error that followed its
+        // record), not linked yet, is adopted: never made twice.
+        if let Some(made) = self.bootstrap_task_since(sandbox, claim.claimed_at).await {
+            match store
+                .link_bootstrap_task(&sandbox.id, BOOTSTRAP_REVISION, &made)
+                .await
+            {
+                Ok(true) => {
+                    tracing::info!(sandbox = %sandbox.slug, task = %made.as_str(), "bootstrap upgrade task adopted")
+                }
+                Ok(false) => {}
+                Err(err) => {
+                    tracing::warn!(error = %err, sandbox = %sandbox.slug, "bootstrap upgrade task not adopted")
+                }
+            }
+            return false;
         }
         let request = CreateTask {
             prompt: UPGRADE_PROMPT.to_owned(),
@@ -114,11 +184,12 @@ impl App {
             .await
         {
             Ok(task) => {
+                // A stop before this link is finished at the next start: the task is adopted.
                 if let Err(err) = store
-                    .set_bootstrap_task(&sandbox.id, BOOTSTRAP_REVISION, &task.id)
+                    .link_bootstrap_task(&sandbox.id, BOOTSTRAP_REVISION, &task.id)
                     .await
                 {
-                    tracing::warn!(error = %err, sandbox = %sandbox.slug, "bootstrap upgrade task not recorded");
+                    tracing::warn!(error = %err, sandbox = %sandbox.slug, "bootstrap upgrade task not linked");
                 }
                 self.dlv_audit(
                     "yulius",
@@ -130,10 +201,9 @@ impl App {
                 true
             }
             Err(err) => {
-                tracing::warn!(error = %err, sandbox = %sandbox.slug, "bootstrap upgrade task could not be created");
-                let _ = store
-                    .release_bootstrap_upgrade(&sandbox.id, BOOTSTRAP_REVISION)
-                    .await;
+                // The claim stays: the next start adopts a task this call recorded before its
+                // error, or makes it.
+                tracing::warn!(error = %err, sandbox = %sandbox.slug, "bootstrap upgrade task could not be created; tried again at the next start");
                 false
             }
         }

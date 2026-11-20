@@ -325,8 +325,14 @@ impl App {
         let now_pending: Vec<&StagingRequestRecord> = pending.iter().collect();
         // A verified revision may be what an automatic promotion waited for (MFS-009).
         for request in self.staging_settle_deploy(&now_pending).await? {
-            if let Some(owner) = self.staging_person(&request).await? {
-                self.staging_auto_promote(sandbox, &owner).await;
+            match self.staging_person(&request).await {
+                Ok(Some(owner)) => self.staging_auto_promote(sandbox, &owner).await,
+                Ok(None) => {
+                    tracing::warn!(sandbox = %sandbox.slug, request = %request.id, "no active owner with write access runs the promotion waiting for staging")
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, sandbox = %sandbox.slug, request = %request.id, "the promotion waiting for staging could not run")
+                }
             }
         }
         let mut pending = store.pending_staging_requests(&sandbox.id, env).await?;
@@ -809,23 +815,20 @@ impl App {
         &self,
         sandbox: &SandboxRecord,
     ) -> AppResult<Option<String>> {
-        // A playground has no GitHub and no CD (SPEC-099): nothing to read.
-        if sandbox.is_playground() {
+        // A playground has no GitHub and no CD (SPEC-099), and a host whose Git keeps no CD
+        // mirror runs no CD: no staging to wait for.
+        if sandbox.is_playground() || !self.deps.git.has_cd_mirror() {
             return Ok(None);
         }
-        // The verified tables decide. When they cannot be read, a project known to be
-        // merge-first (it has staging requests) is refused; any other promotes as before, so an
-        // agent breaking its clone can only cause a refusal, never a bypass.
-        let (head, target) = match self.staging_target(sandbox).await {
-            Ok(read) => read,
-            Err(err) if self.deps.store.has_staging_requests(&sandbox.id).await? => {
-                return Err(AppError::Conflict(format!(
-                    "nothing was promoted: this project's staging is merge-first, and its verified integration head cannot be read now ({}); promote again in a minute",
-                    err.public_message()
-                )));
-            }
-            Err(_) => return Ok(None),
-        };
+        // The verified tables decide, and a promotion whose tables cannot be read is refused,
+        // whatever the project: an agent breaking its clone can only cause a refusal, never a
+        // bypass (review round 1 of slice 4).
+        let (head, target) = self.staging_target(sandbox).await.map_err(|err| {
+            AppError::Conflict(format!(
+                "nothing was promoted: the verified integration head and its CD tables cannot be read now ({}); promote again in a minute",
+                err.public_message()
+            ))
+        })?;
         let Some(target) = target else {
             return Ok(None);
         };

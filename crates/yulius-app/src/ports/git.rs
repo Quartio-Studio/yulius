@@ -335,6 +335,11 @@ pub trait GitPort: Send + Sync {
         let _ = (repo, path, sha, owned_root);
         unsupported("CI checkouts")
     }
+    /// Whether this adapter keeps CD mirrors ([`GitPort::cd_mirror_fetch`]): without them no CD
+    /// runs, so no merge-first staging exists to gate a promotion on (SPEC-575 MFS-009).
+    fn has_cd_mirror(&self) -> bool {
+        false
+    }
     /// Fills the CD mirror (a bare repository only Yulius writes) with `refs/remotes/origin/<branch>`
     /// of the sandbox clone `from`, checking every object, and requires it to be `sha`
     /// (SPEC-134). Replacement refs are never fetched or honoured.

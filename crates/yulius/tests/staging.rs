@@ -1261,6 +1261,7 @@ async fn promote_page(f: &Fixture) -> BoxResult<support::Resp> {
 #[tokio::test]
 async fn every_promotion_waits_for_the_revision_staging_verified() -> TestResult {
     let f = fixture(&promoting_toml()).await?;
+    fast_forward_profile(&f, false).await?;
     agent(&f, "t1").await?;
     agent(&f, "t2").await?;
     let r1 = land(&f, "t1", "one.txt").await?;
@@ -1268,9 +1269,8 @@ async fn every_promotion_waits_for_the_revision_staging_verified() -> TestResult
     ask(&f, "t1").await?;
     settle(&f).await?;
     let r2 = land(&f, "t2", "two.txt").await?;
-    // What an agent can do in its own clone before the mirror took r2: rewrite the table's
-    // object without merge_first. The mirror refuses the changed object, and a project known to
-    // be merge-first is then refused, never promoted.
+    // What an agent can do in its own clone: rewrite the table's object without merge_first.
+    // The mirror keeps the object it already holds, so the promotion is refused as unverified.
     let clone = f.h.app.config.data_dir.join("sandboxes/s1/repo");
     crate::cd::git(&clone, &["fetch", "-q", "origin"])?;
     let blob = crate::cd::git(&clone, &["rev-parse", &format!("{r2}:yulius.toml")])?;
@@ -1306,8 +1306,8 @@ async fn every_promotion_waits_for_the_revision_staging_verified() -> TestResult
         "the tampered clone promoted nothing"
     );
     write_object(&text, "original.toml")?;
-    // The verified head cannot be read (the CD mirror is broken): a project known to be
-    // merge-first is refused, naming why, rather than promoted unchecked.
+    // The verified head cannot be read (the CD mirror is broken): refused, naming why, rather
+    // than promoted unchecked.
     let mirror = f.h.app.config.data_dir.join("cd/s1/source.git");
     let aside = f.marks.join("mirror-aside");
     std::fs::rename(&mirror, &aside)?;
@@ -1354,12 +1354,7 @@ async fn every_promotion_waits_for_the_revision_staging_verified() -> TestResult
     assert_eq!(serving(&f)?, r2);
     let promoted = promote_page(&f).await?;
     assert!(promoted.status.is_success(), "{}", promoted.body);
-    // The standard profile promotes with a merge commit: its promotion pull request of r2.
-    assert!(
-        promoted.body["result"] == "pr_opened" || git_contains(&f, "main", &r2)?,
-        "{}",
-        promoted.body
-    );
+    assert_eq!(f.head("main")?, r2, "exactly the verified revision");
     Ok(())
 }
 
@@ -1369,17 +1364,7 @@ async fn every_promotion_waits_for_the_revision_staging_verified() -> TestResult
 #[tokio::test]
 async fn automatic_promotion_follows_the_verified_staging_deploy() -> TestResult {
     let f = fixture(&promoting_toml()).await?;
-    f.h.store
-        .set_profile(
-            &SandboxId::parse("s1")?,
-            &json!({
-                "preset": "custom", "integration_branch": "dev", "production_branch": "main",
-                "merge": "squash", "promote": "fast_forward", "auto_promote": true,
-                "require_checks": false, "environments": []
-            })
-            .to_string(),
-        )
-        .await?;
+    fast_forward_profile(&f, true).await?;
     agent(&f, "t1").await?;
     let r1 = land(&f, "t1", "one.txt").await?;
     f.h.store
@@ -1397,5 +1382,108 @@ async fn automatic_promotion_follows_the_verified_staging_deploy() -> TestResult
         git_contains(&f, "main", &r1)?,
         "promoted once staging verified it"
     );
+    Ok(())
+}
+
+/// The sandbox's delivery profile: promotion by fast-forward (so `main` shows what was
+/// promoted), automatic or not.
+async fn fast_forward_profile(f: &Fixture, auto_promote: bool) -> TestResult {
+    f.h.store
+        .set_profile(
+            &SandboxId::parse("s1")?,
+            &json!({
+                "preset": "custom", "integration_branch": "dev", "production_branch": "main",
+                "merge": "squash", "promote": "fast_forward", "auto_promote": auto_promote,
+                "require_checks": false, "environments": []
+            })
+            .to_string(),
+        )
+        .await?;
+    Ok(())
+}
+
+/// SPEC-575 MFS-009 (review round 1 of slice 4, probe R7-A): a merge-first project that has no
+/// staging request yet (right after it adopted merge-first) is refused a promotion when its
+/// verified head cannot be read. An agent breaking its clone never promotes an unverified head.
+#[tokio::test]
+async fn a_promotion_whose_verified_head_cannot_be_read_is_refused() -> TestResult {
+    let f = fixture(&promoting_toml()).await?;
+    fast_forward_profile(&f, false).await?;
+    agent(&f, "t1").await?;
+    let r1 = land(&f, "t1", "one.txt").await?;
+    let refused = promote_page(&f).await?;
+    assert_eq!(
+        refused.status,
+        axum::http::StatusCode::CONFLICT,
+        "{}",
+        refused.body
+    );
+    assert!(
+        refused
+            .body
+            .to_string()
+            .contains("staging verified nothing yet"),
+        "{}",
+        refused.body
+    );
+    // What an agent can do in its own clone: break its Git configuration.
+    let config =
+        f.h.app
+            .config
+            .data_dir
+            .join("sandboxes/s1/repo/.git/config");
+    let original = std::fs::read_to_string(&config)?;
+    std::fs::write(&config, format!("{original}\n[broken\n"))?;
+    let broken = promote_page(&f).await?;
+    assert_eq!(
+        broken.status,
+        axum::http::StatusCode::CONFLICT,
+        "{}",
+        broken.body
+    );
+    assert!(
+        broken.body.to_string().contains("cannot be read now"),
+        "{}",
+        broken.body
+    );
+    assert!(
+        !git_contains(&f, "main", &r1)?,
+        "nothing unverified was promoted"
+    );
+    std::fs::write(&config, original)?;
+    Ok(())
+}
+
+/// SPEC-575 MFS-009 (review round 1 of slice 4): with automatic promotion, staging verifying an
+/// older revision while the integration head moved on promotes nothing; the verified deploy of
+/// the head promotes exactly it.
+#[tokio::test]
+async fn automatic_promotion_never_takes_an_unverified_head() -> TestResult {
+    let f = fixture(&promoting_toml()).await?;
+    fast_forward_profile(&f, true).await?;
+    agent(&f, "t1").await?;
+    agent(&f, "t2").await?;
+    let r1 = land(&f, "t1", "one.txt").await?;
+    gate(&f, &r1, RunState::Passed).await?;
+    f.h.store
+        .execute_for_tests(
+            "INSERT INTO delivery (task_id, stage, pr_number, updated_at) \
+             VALUES ('t1', 'merged_integration', NULL, 1), ('t2', 'merged_integration', NULL, 1)",
+        )
+        .await?;
+    ask(&f, "t1").await?;
+    // t2 lands before the queue deploys r1: the head is r2, which nothing verified.
+    let r2 = land(&f, "t2", "two.txt").await?;
+    settle(&f).await?;
+    assert_eq!(serving(&f)?, r1);
+    assert!(
+        !git_contains(&f, "main", &r1)? && !git_contains(&f, "main", &r2)?,
+        "staging verified r1, the head is r2: nothing is promoted"
+    );
+    gate(&f, &r2, RunState::Passed).await?;
+    ask(&f, "t2").await?;
+    settle(&f).await?;
+    assert_eq!(serving(&f)?, r2);
+    assert_eq!(f.head("main")?, r2, "the verified head is promoted");
     Ok(())
 }

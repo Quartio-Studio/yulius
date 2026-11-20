@@ -95,8 +95,12 @@ impl App {
             // (SPEC-494 DFJ-007).
             app.start_docker_watch();
             // Onboarded sandboxes take the current Infra bootstrap revision (SPEC-575 MFS-012).
+            // On its own task: GitHub access checks must not hold the queue (review round 1).
             if app.config.bootstrap_upgrades {
-                app.create_bootstrap_upgrades().await;
+                let upgrades = Arc::clone(&app);
+                tokio::spawn(async move {
+                    upgrades.create_bootstrap_upgrades().await;
+                });
             }
             // A handoff a stopped server left mid-creation is settled (SPEC-512 HOF-004).
             if let Err(err) = app.deps.store.settle_creating_handoffs(app.now()).await {

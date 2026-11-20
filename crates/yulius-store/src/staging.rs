@@ -3,7 +3,9 @@
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params};
 use yulius_app::error::AppResult;
-use yulius_app::ports::store_ext::{StagingChange, StagingRequestRecord, StagingStore};
+use yulius_app::ports::store_ext::{
+    BootstrapUpgrade, StagingChange, StagingRequestRecord, StagingStore,
+};
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::staging::StagingState;
 use yulius_domain::time::Timestamp;
@@ -271,10 +273,10 @@ impl StagingStore for SqliteStore {
         self.call(move |c| {
             let rows = c
                 .execute(
-                    "INSERT INTO bootstrap_upgrades (sandbox_id, revision, task_id, updated_at) \
-                     VALUES (?1, ?2, NULL, ?3) \
+                    "INSERT INTO bootstrap_upgrades (sandbox_id, revision, state, task_id, updated_at) \
+                     VALUES (?1, ?2, 'claimed', NULL, ?3) \
                      ON CONFLICT(sandbox_id) DO UPDATE SET revision = excluded.revision, \
-                         task_id = NULL, updated_at = excluded.updated_at \
+                         state = 'claimed', task_id = NULL, updated_at = excluded.updated_at \
                      WHERE bootstrap_upgrades.revision < excluded.revision",
                     params![sandbox, revision, at.0],
                 )
@@ -284,46 +286,68 @@ impl StagingStore for SqliteStore {
         .await
     }
 
-    async fn set_bootstrap_task(
+    async fn lay_bootstrap_revision(
+        &self,
+        sandbox: &SandboxId,
+        revision: u32,
+        at: Timestamp,
+    ) -> AppResult<()> {
+        let sandbox = sandbox.as_str().to_owned();
+        self.call(move |c| {
+            c.execute(
+                "INSERT INTO bootstrap_upgrades (sandbox_id, revision, state, task_id, updated_at) \
+                 VALUES (?1, ?2, 'laid', NULL, ?3) \
+                 ON CONFLICT(sandbox_id) DO UPDATE SET revision = excluded.revision, \
+                     state = 'laid', task_id = NULL, updated_at = excluded.updated_at \
+                 WHERE bootstrap_upgrades.revision < excluded.revision",
+                params![sandbox, revision, at.0],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn link_bootstrap_task(
         &self,
         sandbox: &SandboxId,
         revision: u32,
         task: &TaskId,
-    ) -> AppResult<()> {
+    ) -> AppResult<bool> {
         let (sandbox, task) = (sandbox.as_str().to_owned(), task.as_str().to_owned());
         self.call(move |c| {
-            c.execute(
-                "UPDATE bootstrap_upgrades SET task_id = ?3 WHERE sandbox_id = ?1 AND revision = ?2",
-                params![sandbox, revision, task],
-            )
-            .map_err(db)?;
-            Ok(())
+            let rows = c
+                .execute(
+                    "UPDATE bootstrap_upgrades SET state = 'linked', task_id = ?3 \
+                     WHERE sandbox_id = ?1 AND revision = ?2 AND state = 'claimed'",
+                    params![sandbox, revision, task],
+                )
+                .map_err(db)?;
+            Ok(rows == 1)
         })
         .await
     }
 
-    async fn release_bootstrap_upgrade(&self, sandbox: &SandboxId, revision: u32) -> AppResult<()> {
-        let sandbox = sandbox.as_str().to_owned();
-        self.call(move |c| {
-            c.execute(
-                "DELETE FROM bootstrap_upgrades \
-                 WHERE sandbox_id = ?1 AND revision = ?2 AND task_id IS NULL",
-                params![sandbox, revision],
-            )
-            .map_err(db)?;
-            Ok(())
-        })
-        .await
-    }
-
-    async fn has_staging_requests(&self, sandbox: &SandboxId) -> AppResult<bool> {
+    async fn bootstrap_upgrade(&self, sandbox: &SandboxId) -> AppResult<Option<BootstrapUpgrade>> {
         let sandbox = sandbox.as_str().to_owned();
         self.call(move |c| {
             c.query_row(
-                "SELECT EXISTS (SELECT 1 FROM staging_requests WHERE sandbox_id = ?1)",
+                "SELECT revision, state, task_id, updated_at FROM bootstrap_upgrades \
+                 WHERE sandbox_id = ?1",
                 [sandbox],
-                |row| row.get(0),
+                |row| {
+                    let task: Option<String> = row.get(2)?;
+                    Ok(BootstrapUpgrade {
+                        revision: row.get(0)?,
+                        state: row.get(1)?,
+                        task_id: task
+                            .map(|id| TaskId::parse(&id).map_err(|_| bad_column("task id", &id)))
+                            .transpose()?,
+                        claimed_at: Timestamp(row.get(3)?),
+                    })
+                },
             )
+            .optional()
             .map_err(db)
         })
         .await

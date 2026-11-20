@@ -963,8 +963,12 @@ fn ports(input: &BriefingInput<'_>) -> String {
         .as_ref()
         .map_or_else(String::new, |local| {
             format!(
-                " Local deployment: {}{} deploys and tests the project in this sandbox only, \
+                " Local deployment{}: {}{} deploys and tests the project in this sandbox only, \
              with test data of its own; staging and production credentials are never here.",
+                local
+                    .about
+                    .as_ref()
+                    .map_or_else(String::new, |about| format!(" ({})", inline(about, 120))),
                 code(&local.deploy, 200),
                 local
                     .verify
@@ -2322,7 +2326,7 @@ mod tests {
         input.foundations.local = Some(crate::cd::LocalDeploy {
             deploy: "scripts/cd/deploy.sh local".into(),
             verify: Some("scripts/cd/verify.sh local".into()),
-            about: None,
+            about: Some("the app in compose".into()),
         });
         let text = build_briefing(&input, DEFAULT_BUDGET_BYTES);
         assert!(!text.contains("Merges deploy nothing"), "{text}");
@@ -2335,7 +2339,7 @@ mod tests {
         let ports = text.split("## Dev servers").nth(1).ok_or("ports")?;
         assert!(
             ports.contains(
-                "Local deployment: `scripts/cd/deploy.sh local` then `scripts/cd/verify.sh local` deploys and tests the project in this sandbox only"
+                "Local deployment (the app in compose): `scripts/cd/deploy.sh local` then `scripts/cd/verify.sh local` deploys and tests the project in this sandbox only"
             ),
             "{ports}"
         );

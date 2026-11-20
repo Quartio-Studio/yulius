@@ -5586,21 +5586,35 @@ impl App {
         }
         // With a merge-first target, only the revision staging verified is promoted (SPEC-575
         // MFS-009); the staging queue tries again once staging verified the head.
-        let promoted = match self.staging_promotion_head(sandbox).await {
-            Ok(head) => {
-                self.dlv_promote_exactly(
-                    sandbox,
-                    profile,
-                    Initiator::Policy,
-                    actor,
-                    token,
-                    fetched,
-                    head.as_deref(),
+        // Waiting for staging is the expected state of a merge-first project's merge, not a
+        // failed promotion (review round 1 of slice 4).
+        let head = match self.staging_promotion_head(sandbox).await {
+            Ok(head) => head,
+            Err(err) => {
+                self.dlv_audit(
+                    &Self::dlv_policy_actor(Initiator::Policy, actor),
+                    "delivery.promote.waiting",
+                    &sandbox.slug,
+                    &err.public_message(),
                 )
-                .await
+                .await;
+                return Some(format!(
+                    "Automatic promotion waits for staging: {}",
+                    err.public_message()
+                ));
             }
-            Err(err) => Err(err),
         };
+        let promoted = self
+            .dlv_promote_exactly(
+                sandbox,
+                profile,
+                Initiator::Policy,
+                actor,
+                token,
+                fetched,
+                head.as_deref(),
+            )
+            .await;
         match promoted {
             Ok(result) => Some(format!(
                 "Automatic promotion ({}): {} {}",
@@ -5685,8 +5699,20 @@ impl App {
         if !profile.auto_promote {
             return;
         }
-        let Ok(token) = self.user_github_token(owner).await else {
-            return;
+        let token = match self.user_github_token(owner).await {
+            Ok(token) => token,
+            Err(err) => {
+                // Said, never dropped silently (review round 1 of slice 4).
+                tracing::warn!(error = %err, sandbox = %sandbox.slug, "the promotion waiting for staging could not run: no GitHub token of the task's owner");
+                self.dlv_audit(
+                    &Self::dlv_actor_login(owner),
+                    "delivery.promote.failed",
+                    &sandbox.slug,
+                    &format!("after a verified staging deploy: {}", err.public_message()),
+                )
+                .await;
+                return;
+            }
         };
         if let Some(note) = self
             .dlv_auto_promote_if_enabled(sandbox, &profile, owner, &token, false)
