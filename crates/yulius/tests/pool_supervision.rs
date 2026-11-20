@@ -180,7 +180,7 @@ pub(crate) fn build_served(
 }
 
 /// [`build_served`] whose configuration `tune` changes.
-fn build_served_tuned(
+pub(crate) fn build_served_tuned(
     data: &Path,
     fake: &Path,
     usage: Arc<ScriptedUsage>,
@@ -2498,6 +2498,7 @@ fn a_manual_switch_at_a_limit_resumes_past_the_limit() -> TestResult {
             id.as_str(),
             &yulius_contracts::api::tasks::ContinueTask {
                 account_id: Some("b-second".into()),
+                ..Default::default()
             },
         )
         .await?;
@@ -2681,6 +2682,7 @@ fn a_manual_switch_after_a_refused_limit_switch_resumes_past_the_limit() -> Test
             id.as_str(),
             &yulius_contracts::api::tasks::ContinueTask {
                 account_id: Some("b-second".into()),
+                ..Default::default()
             },
         )
         .await?;
@@ -2854,7 +2856,10 @@ fn a_limit_pause_without_a_process_resumes_past_the_limit() -> TestResult {
         app.switch_task(
             &ctx,
             id.as_str(),
-            &yulius_contracts::api::tasks::ContinueTask { account_id: None },
+            &yulius_contracts::api::tasks::ContinueTask {
+                account_id: None,
+                prompt: None,
+            },
         )
         .await?;
         let pause = app.deps.store.open_pause(&id).await?.ok_or("pause")?;
@@ -2991,7 +2996,10 @@ fn a_resume_past_a_limit_that_waits_in_the_queue_is_still_one() -> TestResult {
         app.switch_task(
             &ctx,
             id.as_str(),
-            &yulius_contracts::api::tasks::ContinueTask { account_id: None },
+            &yulius_contracts::api::tasks::ContinueTask {
+                account_id: None,
+                prompt: None,
+            },
         )
         .await?;
         assert!(app.deps.store.live_attempt(&id).await?.is_none());
@@ -3082,6 +3090,7 @@ fn a_continue_on_a_chosen_subscription_keeps_it_through_the_queue() -> TestResul
             id.as_str(),
             &yulius_contracts::api::tasks::ContinueTask {
                 account_id: Some("b-second".into()),
+                ..Default::default()
             },
         )
         .await?;
@@ -3155,6 +3164,7 @@ fn a_chosen_subscription_that_filled_up_while_waiting_is_given_up() -> TestResul
             id.as_str(),
             &yulius_contracts::api::tasks::ContinueTask {
                 account_id: Some("b-second".into()),
+                ..Default::default()
             },
         )
         .await?;
@@ -3245,7 +3255,10 @@ fn a_resume_that_finds_the_queue_full_keeps_its_pause() -> TestResult {
         app.switch_task(
             &ctx,
             id.as_str(),
-            &yulius_contracts::api::tasks::ContinueTask { account_id: None },
+            &yulius_contracts::api::tasks::ContinueTask {
+                account_id: None,
+                prompt: None,
+            },
         )
         .await?;
         assert!(app.deps.store.live_attempt(&id).await?.is_none());

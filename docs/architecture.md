@@ -1477,7 +1477,14 @@ train holds the task) it refuses with the reason
 [decision 0269](decisions/0269-work-after-a-tasks-merge-is-delivered-as-a-new-pull-request.md)).
 A head it cannot deliver yet (open step, no plan for a task that needs a spec, invalid spec,
 uncommitted work) is refused with the reason, and a push GitHub refuses answers with the remedy
-(merge the pushed head, never force): only a note that same call wrote replaces its error. A head
+(merge the pushed head, never force): only a note that same call wrote replaces its error. For an
+existing task-owned open pull request whose previous head failed checks and whose merge is not
+armed, a clean committed fast-forward repair on the feature branch publishes at turn end, on
+`yulius wait`, or during PR watch and triggers exact-head CI even while a verification step
+remains open, unless a human `needs_you` decision or `Blocked` step is pending; failed
+publications surface in `delivery_status`, `yulius wait`, and `pr_watch`
+([SPEC-553](../.ai/specs/SPEC-553-publish-committed-ci-repairs-to-open-tas.md),
+[decision 0391](decisions/0391-publish-committed-ci-repairs-to-open-task-prs.md)). A head
 is pushed when GitHub's branch is at it, whatever `git push` said: every push of a task's head
 (end of turn, `delivery_merge`, Deliver…, armed-merge upkeep, merge trains) goes through one helper
 that asks the remote (`git ls-remote`) when Git reports a failure, and the wait drops a failed-push
@@ -2048,11 +2055,23 @@ session as a close does (graceful shutdown, then the escalation). The run's end,
 its loss, makes the task `parked` with its activity (`settle_parked`) and audits `task.parked`.
 `parked` is neither live nor resting: no slot (`sessions_in_use` counts live runs only), its
 worktree, claims, `needs_you` and delivery stay, and the list groups it as an idle run with no
-live overlay. While the park is under way nothing is typed into the session. A message
-(`task_message`) or the web's Resume (`/continue`) resumes it through `start_run` with
-`RunStart::Resume`, in the same provider session; at the limit the resume waits `queued` with its
-prompt. A queued task's summary carries `queue_reason` (the session limit or an update), and
-`GET /api/capacity` counts working, idle, parked and queued sessions for the Capacity card.
+live overlay. Idle sessions continue to park safely while CI runs on an open pull request (only an
+unpublished clean fast-forward CI repair awaiting publication defers parking). While the park is
+under way nothing is typed into the session. The web terminal treats `parked` as a non-live ended
+status so it shows the calm parked banner (distinct from a crash or operator stop) and a visible
+`Resume` button (plus `Reply` in the waiting bar for the owner), disables cursor blink, and wakes
+the exact saved provider session and worktree through `start_run` with `RunStart::Resume` on
+`task_message`, `Resume`, `Reply` (`POST /api/tasks/{tid}/continue` with optional `prompt`), or
+ordinary owner terminal input; bare interrupts/scroll, non-owners, and operator-stopped/crashed
+tasks never auto-wake. `pr_watch` also wakes parked tasks once per actionable PR/CI event (failed
+or errored CI, green unarmed CI, conflict, failed repair publication, or merge with open work),
+never while CI is still running or a human decision (`needs_you`, `NeedsAttention`, held prompt,
+browser request) is open
+([SPEC-553](../.ai/specs/SPEC-553-publish-committed-ci-repairs-to-open-tas.md),
+[decision 0391](decisions/0391-publish-committed-ci-repairs-to-open-task-prs.md)); at the limit the
+resume waits `queued` with its prompt. A queued task's summary carries `queue_reason` (the session
+limit or an update), and `GET /api/capacity` counts working, idle, parked and queued sessions for
+the Capacity card.
 
 The end-of-day digest (`yulius-app/src/digest.rs`, SPEC-512 part 3,
 [decision 0380](decisions/0380-an-end-of-day-digest-built-from-task-state.md)) runs from the same
@@ -2070,7 +2089,7 @@ tick.
 ```mermaid
 stateDiagram-v2
   running --> parked: idle past the grace period, nothing goes on (session ended)
-  parked --> starting: task_message or Resume (same session)
+  parked --> starting: task_message, Resume/Reply, owner terminal input, or actionable PR/CI wake (same session)
   parked --> queued: resume at the session limit
   parked --> closed: archive or close
   parked --> stopped_cancelled: Stop
