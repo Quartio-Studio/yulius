@@ -51,7 +51,7 @@ Use the fake Codex executable, its rollout, real PTY shutdown and the applicatio
 
 Capture a separate screen at the park decision because exiting can clear the entire alternate screen. Changing shutdown signals would couple presentation to the harness and could interfere with reaping. A separate snapshot lets an unsuccessful park keep its real terminal. Reuse native Codex resume and the Stop hook's persisted three-block budget. Older runs can only recover content still present in their saved screen. A parked owner terminal fits the saved grid to the viewport so the first row, last row and notice survive a smaller window. If the PR is the only remaining work and the Stop lookup cannot finish, the continuation asks the agent to verify its checks. Parking reads the current head before acquiring the launch lock and supplies that signal to the final eligibility check.
 
-Grace-period and digest parking read the same plan, specification and goal facts as the task list. A human request can take precedence in the list, so parking checks unfinished work independently of the displayed group and rechecks it under the launch lock.
+A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
 ## Evidence
 
@@ -72,6 +72,8 @@ Grace-period and digest parking read the same plan, specification and goal facts
 - [PR #1493](https://github.com/Quartio-Studio/yulius/pull/1493) delivered PKR-001 for new parks into `dev` on green CI at `215463547`. The final head passed 76 scoped Rust tests, including both cold readers across a discarded launch; Clippy on the affected targets passed.
 
 - On dev at `3cc2b1969`, the one-open-step, in-progress-spec and failed-native-goal regressions each observed one park where zero was expected. Positive controls let the idle session park after the step or spec finishes. The step fixture exercises both the grace timer and the digest.
+
+- The first local guard at `311e7e09b` passed 41 parking tests. Review found that a step could be committed after the final eligibility read and that a failed spec-status read could let digest parking proceed. Three deterministic regressions reproduced one incorrect park each on that head. They cover a step added before the park intent, an in-progress step writer, and a recorded spec made unreadable in SQLite. The spec fixture restores the status, verifies that it was in progress, and parks successfully after completion.
 
 ## Delivery slices
 

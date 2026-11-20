@@ -1216,6 +1216,49 @@ fn an_unfinished_spec_keeps_its_session() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn an_unreadable_recorded_spec_keeps_the_session_through_digest_parking() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 8, 1).await?;
+        let (id, _) = answered(&app, &data).await?;
+        app.deps
+            .store
+            .set_spec_status(&id, Some("in-progress"))
+            .await?;
+        let store = yulius_store::SqliteStore::open(&data.join("yulius.db"))?;
+        store
+            .execute_for_tests(
+                "ALTER TABLE tasks RENAME COLUMN spec_status TO unavailable_spec_status",
+            )
+            .await?;
+        assert!(app.deps.store.spec_status(&id).await.is_err());
+        past_the_grace(&app, &id).await?;
+        assert_eq!(app.send_digests_now(Some(1)).await.parked, 0);
+        assert_eq!(app.park_idle_sessions_now().await, 0);
+        store
+            .execute_for_tests(
+                "ALTER TABLE tasks RENAME COLUMN unavailable_spec_status TO spec_status",
+            )
+            .await?;
+        assert_eq!(
+            app.deps.store.spec_status(&id).await?.as_deref(),
+            Some("in-progress")
+        );
+        app.deps
+            .store
+            .set_spec_status(&id, Some("unknown-status"))
+            .await?;
+        assert_eq!(app.park_idle_sessions_now().await, 0);
+        app.deps.store.set_spec_status(&id, Some("done")).await?;
+        parked(&app, &id).await?;
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// A failed native goal has unfinished work even without a plan or pull request.
 #[test]
 fn an_unfinished_goal_keeps_its_session() -> TestResult {

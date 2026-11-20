@@ -2262,8 +2262,7 @@ fn a_key_during_submit_context_lookup_keeps_its_mark() -> TestResult {
         })
 }
 
-#[tokio::test]
-async fn one_open_step_keeps_an_idle_session_through_digest_and_grace_parking() -> TestResult {
+async fn idle_parking_fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
     let f = fixture().await?;
     let ctx = f.h.app.agent_context(TOKEN).await?;
     std::fs::create_dir_all(&ctx.attempt.run_dir)?;
@@ -2280,6 +2279,13 @@ async fn one_open_step_keeps_an_idle_session_through_digest_and_grace_parking() 
         )
         .await?;
     f.h.clock.0.fetch_add(3_600_000, Ordering::SeqCst);
+    Ok(f)
+}
+
+#[tokio::test]
+async fn one_open_step_keeps_an_idle_session_through_digest_and_grace_parking() -> TestResult {
+    let f = idle_parking_fixture().await?;
+    let ctx = f.h.app.agent_context(TOKEN).await?;
     f.h.app
         .tool_steps_set(
             &ctx,
@@ -2291,6 +2297,48 @@ async fn one_open_step_keeps_an_idle_session_through_digest_and_grace_parking() 
     f.h.app
         .tool_step_update(&ctx, &json!({"ordinal":1,"status":"done"}))
         .await?;
+    assert_eq!(f.h.app.park_idle_sessions_now().await, 1);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_step_opened_before_the_park_intent_keeps_the_session() -> TestResult {
+    let f = idle_parking_fixture().await?;
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    let app = f.h.app.clone();
+    let handle = tokio::runtime::Handle::current();
+    yulius_app::race::on(
+        yulius_app::race::Point::ParkPrepared,
+        Path::new(f.task.as_str()),
+        move || {
+            let added = tokio::task::block_in_place(|| {
+                handle.block_on(app.tool_steps_set(
+            &ctx, &json!({"steps":[{"title":"Verify the new compatibility case","status":"pending"}]}),
+        ))
+            });
+            assert!(added.is_ok(), "{added:?}");
+        },
+    );
+    let parks = f.h.app.park_idle_sessions_now().await;
+    let steps = f.h.app.deps.store.steps(&f.task).await?;
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].status, "pending");
+    assert_eq!(parks, 0, "the newly committed step still needs its session");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_step_writer_in_progress_defers_parking_until_its_update_finishes() -> TestResult {
+    let f = idle_parking_fixture().await?;
+    let runtime = f.h.app.runtime(&f.task);
+    let writer = runtime.steps_lock.lock().await;
+    let parks = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        f.h.app.park_idle_sessions_now(),
+    )
+    .await?;
+    assert_eq!(parks, 0, "the task is updating its declared work");
+    drop(writer);
     assert_eq!(f.h.app.park_idle_sessions_now().await, 1);
     Ok(())
 }

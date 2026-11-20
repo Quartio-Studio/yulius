@@ -64,8 +64,6 @@ pub struct ParkFacts {
     pub activity: Option<Activity>,
     /// The list's group.
     pub group: TaskGroup,
-    /// An open step, unfinished spec or unfinished goal still needs the session.
-    pub unfinished: bool,
     /// A turn of its session is known to run.
     pub turn: bool,
     /// Background shells or subagents it left, or dynamic workflows not ended: it wakes by
@@ -94,7 +92,6 @@ impl ParkFacts {
             && self.status == TaskStatus::Running
             && self.activity.is_some_and(Activity::is_idle)
             && matches!(self.group, TaskGroup::NeedsYou | TaskGroup::Done)
-            && !self.unfinished
             && !self.turn
             && !self.background
             && !self.yulius
@@ -216,22 +213,16 @@ impl App {
                     || !runtime.with_workflows(|workflows| workflows.runs().is_empty())
             }
         };
-        let (group, unfinished) = self
-            .task_attention_facts(task, &requested.all)
+        let group = self
+            .task_group(task, &requested.all)
             .await
-            .map_or((TaskGroup::Working, true), |facts| {
-                (
-                    facts.group(),
-                    facts.plan_open || facts.spec_unfinished || facts.goal_unfinished,
-                )
-            });
+            .unwrap_or(TaskGroup::Working);
         ParkFacts {
             park_after_ms,
             quiet_ms,
             status: task.status,
             activity: task.activity,
             group,
-            unfinished,
             turn: runtime
                 .as_ref()
                 .is_some_and(|runtime| runtime.turn_in_progress()),
@@ -555,7 +546,6 @@ mod tests {
             status: TaskStatus::Running,
             activity: Some(Activity::Waiting),
             group: TaskGroup::NeedsYou,
-            unfinished: false,
             turn: false,
             background: false,
             yulius: false,
@@ -603,10 +593,6 @@ mod tests {
     #[test]
     fn what_goes_on_or_waits_on_a_keyboard_keeps_the_session() {
         let kept = [
-            ParkFacts {
-                unfinished: true,
-                ..idle()
-            },
             ParkFacts {
                 activity: Some(Activity::Working),
                 ..idle()
