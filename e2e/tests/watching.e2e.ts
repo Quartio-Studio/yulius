@@ -22,6 +22,31 @@ async function watchStudio12(app: { open: (url: string) => Promise<unknown> }, b
   await expect(browser.locator('.taskview .watch .ss-tui')).toBeVisible();
 }
 
+// #1455: the same normalized answer also matches an imported Claude session in search.
+for (const [harness, name] of [['claude', 'Claude'], ['codex', 'Codex'], ['antigravity', 'Antigravity']]) {
+  test(`watch and Sessions identify ${name} as the assistant`, async ({ app, browser, screen }) => {
+    await app.open(mock('/s/studio/tasks', '&ambient=0'));
+    await touchTask(browser, 'sb_studio', 12, { harness, owner: { login: 'anna-q' } });
+    await browser.evaluate(() => { location.hash = '#/s/studio/t/12'; });
+    const prefix = '.ss-assistant > .sr-only';
+    const watch = browser.locator(`.watch ${prefix}`).first();
+    await expect(watch).toHaveCount(1);
+    const watched = await watch.textContent();
+
+    await browser.evaluate(() => { location.hash = '#/s/studio/sessions'; });
+    await screen.getByRole('searchbox', 'Search sessions').fill('idempotency key');
+    const taskRow = '.ss-row-link[data-route*="/ses_task_12?line="]';
+    const taskHit = browser.locator(taskRow);
+    await expect(taskHit).toBeVisible();
+    const search = await browser.evaluate((row) => document.querySelector(`${row} .ss-hit-role`)?.textContent ?? null, taskRow);
+    await expect(browser.locator('.ss-row-link[data-route*="/ses_imp_checkout?line="] .ss-hit-role')).toHaveText(/^Claude$/i);
+    await taskHit.click();
+    const saved = browser.locator(`.ss-page ${prefix}`).first();
+    await expect(saved).toHaveCount(1);
+    expect({ watched, search, saved: await saved.textContent() }).toEqual({ watched: name, search: name, saved: name });
+  });
+}
+
 test("someone else's task shows its live transcript instead of the terminal, and the terminal comes back with control", async ({ app, browser, screen }) => {
   await watchStudio12(app, browser);
   await expect(screen.getByText('Add Stripe checkout to the cart page. Use the test keys from .env.')).toBeVisible();
