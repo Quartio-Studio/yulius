@@ -816,7 +816,7 @@ mod tests {
         if gh_present {
             write_file(
                 &real_dir.join("gh"),
-                b"#!/bin/sh\necho \"token=${GH_TOKEN:-none} args=$*\"\n",
+                b"#!/bin/sh\necho \"token=${GH_TOKEN:-${GITHUB_TOKEN:-none}} args=$*\"\n",
                 0o755,
             )?;
         }
@@ -916,7 +916,13 @@ mod tests {
         let (_, out, _) = run_shim(&exe.to_string_lossy(), true, &[("GH_TOKEN", "mine")])?;
         assert_eq!(out, "token=mine args=auth status");
         let (_, out, _) = run_shim(&exe.to_string_lossy(), true, &[("GITHUB_TOKEN", "theirs")])?;
-        assert_eq!(out, "token=none args=auth status");
+        assert_eq!(out, "token=theirs args=auth status");
+        let (_, out, _) = run_shim(
+            &exe.to_string_lossy(),
+            true,
+            &[("GH_TOKEN", "mine"), ("GITHUB_TOKEN", "theirs")],
+        )?;
+        assert_eq!(out, "token=mine args=auth status");
         Ok(())
     }
 

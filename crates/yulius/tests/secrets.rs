@@ -3875,3 +3875,144 @@ async fn repeated_fingerprint_requests_answer_the_same_set() -> TestResult {
     assert_ne!(after.needles[0].digest, first.needles[0].digest);
     Ok(())
 }
+
+#[tokio::test]
+async fn interpreter_assignments_are_refused_and_github_tokens_stay_host_bound() -> TestResult {
+    let w = world().await?;
+    for name in [
+        "PYTHONPATH",
+        "PERL5LIB",
+        "RUBYOPT",
+        "JAVA_TOOL_OPTIONS",
+        "JDK_JAVA_OPTIONS",
+        "NODE_OPTIONS",
+        "_JAVA_OPTIONS",
+    ] {
+        let body = json!({"name": name, "value": STRIPE});
+        let refused = add_agent_secret(&w, &w.writer, "s1", body).await?;
+        assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY, "{name}");
+        if name != "_JAVA_OPTIONS" {
+            let suggestion = format!("APP_{name}");
+            assert!(
+                refused.body["error"]["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains(&suggestion)),
+                "{name}"
+            );
+            let ok = add_agent_secret(
+                &w,
+                &w.writer,
+                "s1",
+                json!({"name": suggestion, "value": STRIPE}),
+            )
+            .await?;
+            assert_eq!(ok.status, StatusCode::CREATED, "{suggestion}");
+        }
+    }
+    let app: Arc<dyn EgressPolicy> = w.h.app.clone();
+    let client = app.egress_client(TOKEN_S1).await.ok_or("task client")?;
+    for (name, value) in [("GH_TOKEN", STRIPE), ("GITHUB_TOKEN", MAIL_PASSWORD)] {
+        let created = add_agent_secret(
+            &w,
+            &w.writer,
+            "s1",
+            json!({"name": name, "hosts": ["api.github.com"], "value": value}),
+        )
+        .await?;
+        assert_eq!(created.status, StatusCode::CREATED, "{name}");
+        let marker = format!("yulius-secret-{name}");
+        assert_eq!(created.body["placeholder"], marker);
+        for (host, expected) in [("api.github.com", value), ("other.test", marker.as_str())] {
+            let result = app
+                .egress_apply(&client, request(host, "/", &[("authorization", &marker)]))
+                .await;
+            assert_eq!(
+                header(&result, "authorization"),
+                Some(expected),
+                "{name} on {host}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn stored_interpreter_names_remain_usable_until_the_manager_renames_them() -> TestResult {
+    use yulius_app::ports::vault::VaultStore as _;
+    let w = world().await?;
+    let created = add_agent_secret(
+        &w,
+        &w.writer,
+        "s1",
+        json!({"name": "OLD_KEY", "hosts": ["api.example.test"], "value": STRIPE}),
+    )
+    .await?;
+    let id = created.body["id"].as_str().ok_or("created secret")?;
+    let saved = w.h.store.vault_get(id).await?.ok_or("stored secret")?;
+    let mut old = saved.clone();
+    old.name = "PYTHONPATH".into();
+    assert!(w.h.store.vault_update(&old, &saved).await?);
+    for (creds, warned) in [(&w.writer, true), (&w.reader, false)] {
+        let list = get_as(&w, "/api/sandboxes/s1/agent-secrets", creds).await?;
+        assert_eq!(list.status, StatusCode::OK);
+        let view = &list.body[0];
+        assert_eq!(view["name"], "PYTHONPATH");
+        assert_eq!(view["placeholder"], "yulius-secret-PYTHONPATH");
+        assert_eq!(view["interpreter_name"], warned);
+        assert_hidden(&list.body, &[STRIPE]);
+    }
+    let path = format!("/api/agent-secrets/{id}");
+    let rotated = call(
+        &w.h.router,
+        Method::PATCH,
+        &path,
+        Some(json!({"name":" PYTHONPATH ", "value": MAIL_PASSWORD})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(rotated.status, StatusCode::OK);
+    assert_eq!(rotated.body["interpreter_name"], true);
+    let app: Arc<dyn EgressPolicy> = w.h.app.clone();
+    let client = app.egress_client(TOKEN_S1).await.ok_or("task client")?;
+    let routed = app
+        .egress_apply(
+            &client,
+            request(
+                "api.example.test",
+                "/",
+                &[("authorization", "yulius-secret-PYTHONPATH")],
+            ),
+        )
+        .await;
+    assert_eq!(header(&routed, "authorization"), Some(MAIL_PASSWORD));
+    let refused = call(
+        &w.h.router,
+        Method::PATCH,
+        &path,
+        Some(json!({"name":"RUBYOPT"})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let renamed = call(
+        &w.h.router,
+        Method::PATCH,
+        &path,
+        Some(json!({"name":"APP_PYTHONPATH"})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(renamed.status, StatusCode::OK);
+    assert_eq!(renamed.body["interpreter_name"], false);
+    assert_eq!(renamed.body["placeholder"], "yulius-secret-APP_PYTHONPATH");
+    let restore = call(
+        &w.h.router,
+        Method::PATCH,
+        &path,
+        Some(json!({"name":"PYTHONPATH"})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(restore.status, StatusCode::UNPROCESSABLE_ENTITY);
+    Ok(())
+}

@@ -653,6 +653,7 @@ watching, steering and unblocking.
 - **Secrets vault**: secrets are a title, a value and notes. Team secrets are for people; agent
   secrets are used by agents, who never see them. Reading a value needs your own two-factor code
   (set up once, mandatory); an administrator resets it for someone who lost their authenticator.
+  On the Secrets page, managers see which older names set interpreter options and can rename them. Host-bound GitHub tokens remain supported. [ADR-0408](decisions/0408-interpreter-settings-are-reserved-for-new-agent-secret-names.md)
   The people who manage an agent secret can read it too. Sending a value somewhere new reads
   it: for an agent secret allowed use by use, a new host, `.env` copies, production deploys and
   letting agents set it up ask for the same code, and an API token cannot do them (ADR-0317). What cannot be checked

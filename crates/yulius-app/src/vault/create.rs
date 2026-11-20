@@ -227,6 +227,7 @@ impl App {
         let args: CreateArgs = serde_json::from_value(args.clone())
             .map_err(|e| AppError::Invalid(format!("invalid arguments: {e}")))?;
         let name = agent_made_name(&args.name)?;
+        name.check_assignment().map_err(invalid)?;
         let description = description(args.description.as_deref())?;
         let (root, parts) = source(&args.file)?;
         let (file_name, folders) = parts
@@ -299,7 +300,7 @@ impl App {
                 sandbox: &sandbox.id,
                 scope: crate::ports::vault::AgentScope::Project(sandbox.id.clone()),
                 meta: Meta {
-                    name: name.as_str().to_owned(),
+                    name,
                     hosts: Vec::new(),
                     injection: Injection::None,
                 },

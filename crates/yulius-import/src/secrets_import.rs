@@ -888,7 +888,7 @@ fn team_value(entry: &DotenvEntry) -> Class {
 }
 
 fn agent_value(entry: &DotenvEntry) -> Class {
-    if let Err(e) = SecretName::parse(&entry.name) {
+    if let Err(e) = SecretName::parse(&entry.name).and_then(|name| name.check_assignment()) {
         return Class::Invalid(e.to_string());
     }
     let raw = entry.value.expose();

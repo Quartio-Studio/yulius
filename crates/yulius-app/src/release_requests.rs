@@ -127,7 +127,17 @@ impl App {
                     .into(),
             ));
         }
-        crate::vault::create::agent_made_name(name)?;
+        let proposed = crate::vault::create::agent_made_name(name)?;
+        // A request may rotate a previously accepted name in this person's requested scope.
+        // If that row disappears before the answer, creation checks the name again.
+        if let Err(error) = proposed.check_assignment()
+            && self
+                .secret_replaced(&as_person(user), own.id.as_str(), args)
+                .await
+                .is_none()
+        {
+            return Err(AppError::Invalid(error.to_string()));
+        }
         if asked
             .description
             .as_ref()
