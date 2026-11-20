@@ -456,6 +456,19 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn logout_forgets_every_name_leading_to_the_sign_in() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let store = TokenStore::new(dir.path().join("remote-credentials.json"));
+        let old = Url::parse("https://old.example")?;
+        let new = Url::parse("https://new.example")?;
+        store.save(&old, &Secret::new("yul_token"))?;
+        store.relocate(&old, &new)?;
+        assert!(store.remove(&new)?);
+        assert_eq!(store.moved_to(&old)?, None);
+        Ok(())
+    }
+
     /// SPEC-466 MVC-030, MVC-032: the sign-in of an instance that moved is kept under its new
     /// URL, and its old name leads there.
     #[test]

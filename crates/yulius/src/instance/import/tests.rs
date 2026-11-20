@@ -346,6 +346,20 @@ fn the_new_hosts_own_sandbox_base_may_be_there() -> TestResult {
 }
 
 #[test]
+fn a_root_owned_target_names_the_service_users_primary_group() -> TestResult {
+    if crate::instance::is_root() {
+        let target = tempfile::tempdir()?;
+        let why = super::existing_target(target.path(), "nobody")
+            .expect_err("the directory belongs to root");
+        assert!(
+            why.contains(r#"chown -- 'nobody':"$(id -g -- 'nobody')" "#),
+            "{why}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn a_target_of_another_user_is_refused() -> TestResult {
     if !crate::instance::is_root() {
         eprintln!("skipped: needs root to give the directory away");
