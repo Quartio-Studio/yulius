@@ -17,6 +17,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   - Production promotes only the revision staging verified
     ([ADR-0411](decisions/0411-staging-changes-through-a-queue-of-tested-merged-revisions.md),
     [SPEC-575](../.ai/specs/SPEC-575-make-task-local-testing-and-one-staging.md)).
+- Task lists and Home check parked PRs in bounded batches. A stalled check leaves its task under Needs you and gives later tasks time to verify their own checks (SPEC-558).
+- Added the Linux tunnel handoff helper. It retains connected sockets and private copy state for one successor for up to two minutes. [ADR-0413](decisions/0413-a-bounded-helper-holds-connected-tunnel-sockets-between-servers.md)
+
 - Opaque proxy and host-side relay copies retain partial writes and half-closes when paused on the same sockets. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
 
 - Stopping a sandbox's outbound relay now closes the connections it owns and clears its occupied places. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)

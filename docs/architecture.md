@@ -2114,6 +2114,8 @@ green. Remote verification has a 750 ms deadline. Up to eight native Git operati
 run for these reads per application. Each keeps its permit until Git returns.
 [ADR-0409](decisions/0409-report-the-pr-that-blocks-a-parked-task.md)
 
+Task lists share one 750 ms PR verification budget. Each batch of up to eight parked rows receives a share of the remaining time. Home verifies parked rows across all visible projects before it counts live rows. A slow local Git read for a running task cannot spend the parked rows’ lookup time. The HTTP response uses the plan read by the verifier for both progress and detailed steps. [ADR-0412](decisions/0412-share-parked-pr-read-time-across-task-lists.md)
+
 The end-of-day digest (`yulius-app/src/digest.rs`, SPEC-512 part 3,
 [decision 0380](decisions/0380-an-end-of-day-digest-built-from-task-state.md)) runs from the same
 tick: `digest_tick` reads `instance.digest`, and once today's time (UTC) passed takes the run with
@@ -3789,6 +3791,10 @@ The host-side relay and the opaque CONNECT proxy each keep up to 8 KiB per direc
 their copy state. Pausing preserves the first unwritten byte in each direction. After EOF
 the copy resumes any pending write-half shutdown before marking that half closed.
 [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
+The Linux `sandbox-host hold-tunnels` helper holds a bounded batch of connected descriptors
+and private copy state for one successor. Its two-minute deadline includes the time spent
+receiving and returning the batch. The server integration is tracked in SPEC-577.
+[ADR-0413](decisions/0413-a-bounded-helper-holds-connected-tunnel-sockets-between-servers.md)
 The proxy also counts each connection's run (agent run, CI job, Superagent shell). When nothing was
 idle for 5 minutes, a full sandbox share takes the oldest connection of its busiest other run, and
 the full proxy that of the busiest sandbox, if it holds at least 2 more than the asker, so one busy

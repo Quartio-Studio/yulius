@@ -129,6 +129,8 @@ mod task_transcript;
 mod telegram;
 mod terminal_ws;
 mod trusted_proxy;
+#[cfg(target_os = "linux")]
+mod tunnel_handoff;
 mod ui_contract;
 mod update_supervision;
 mod uploads;
