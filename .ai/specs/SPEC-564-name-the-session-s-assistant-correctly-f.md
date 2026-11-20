@@ -37,3 +37,9 @@ Exercise the three harnesses through the Chromium watch, search and saved-transc
 ## Decisions
 
 Use the existing harness name lookup and its Claude fallback for older metadata. Watch uses the task's lifetime harness and Sessions uses the returned document's harness. The correction needs no new API or storage field.
+
+## Evidence
+
+- The new Chromium cases failed on dev `a561121e7` for Codex and Antigravity. Both reported Claude in the watch view, in search and on the saved transcript. Claude passed as the control.
+- `npx e2e run tests/watching.e2e.ts --grep 'watch and Sessions identify'` passed all three harness cases, including replacing a live tool call when its result arrives and searching alongside an imported Claude session.
+- A separate Playwright `ariaSnapshot()` of the first assistant entry contained the expected name in Chromium for each of the three harnesses in each view (six checks). The inputs were synthetic. Native screen-reader audio was not exercised.

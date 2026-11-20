@@ -32,6 +32,11 @@ for (const [harness, name] of [['claude', 'Claude'], ['codex', 'Codex'], ['antig
     const watch = browser.locator(`.watch ${prefix}`).first();
     await expect(watch).toHaveCount(1);
     const watched = await watch.textContent();
+    // A later result replaces its original assistant entry in the live transcript.
+    await append(browser, [{ role: 'user', blocks: [{ type: 'tool_result', tool_use_id: 't2', text: 'Checkout edit completed', is_error: false, truncated: false }] }]);
+    const call = '.watch .ss-assistant[data-line="3"]';
+    await expect(browser.locator(call)).toContainText('Checkout edit completed');
+    const reprinted = await browser.locator(`${call} > .sr-only`).textContent();
 
     await browser.evaluate(() => { location.hash = '#/s/studio/sessions'; });
     await screen.getByRole('searchbox', 'Search sessions').fill('idempotency key');
@@ -43,7 +48,7 @@ for (const [harness, name] of [['claude', 'Claude'], ['codex', 'Codex'], ['antig
     await taskHit.click();
     const saved = browser.locator(`.ss-page ${prefix}`).first();
     await expect(saved).toHaveCount(1);
-    expect({ watched, search, saved: await saved.textContent() }).toEqual({ watched: name, search: name, saved: name });
+    expect({ watched, reprinted, search, saved: await saved.textContent() }).toEqual({ watched: name, reprinted: name, search: name, saved: name });
   });
 }
 
