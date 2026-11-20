@@ -1021,14 +1021,32 @@ impl App {
                 self.task_pull_signal(task),
             )
             .await;
-            let signal = match pull {
-                Ok(Ok(signal)) => signal,
-                _ => self
-                    .observed_pulls
-                    .get(&task.sandbox_id, &task.id)
-                    .flatten(),
+            let failing = match pull {
+                Ok(Ok(signal)) => signal == Some(PullSignal::Failing),
+                _ => {
+                    let cached = self
+                        .observed_pulls
+                        .get(&task.sandbox_id, &task.id)
+                        .flatten();
+                    // A known open delivery remains the agent's to verify even
+                    // when this hook cannot read its head before the deadline.
+                    if cached != Some(PullSignal::Failing)
+                        && reasons.is_empty()
+                        && self
+                            .deps
+                            .store
+                            .delivery(&task.id)
+                            .await?
+                            .is_some_and(|record| {
+                                record.stage == yulius_domain::delivery::DeliveryStage::PrOpen
+                            })
+                    {
+                        reasons.push("Continue the goal: verify the current pull request checks and repair any failures.".into());
+                    }
+                    cached == Some(PullSignal::Failing)
+                }
             };
-            if signal == Some(PullSignal::Failing) {
+            if failing {
                 reasons.push(
                     "Continue the goal by repairing the failing checks on your pull request."
                         .into(),

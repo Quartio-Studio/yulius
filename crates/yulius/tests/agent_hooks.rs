@@ -2262,28 +2262,10 @@ fn a_key_during_submit_context_lookup_keeps_its_mark() -> TestResult {
         })
 }
 
-/// Quartio-v2 #325 stopped after five of seven steps with its pull request red.
-#[tokio::test]
-async fn codex_goal_stop_continues_open_work_and_flags_only_at_the_bound() -> TestResult {
-    use yulius_app::ports::github::{ChecksState, GhPull};
+async fn install_compatibility_pull(f: &Fixture) -> TestResult {
+    use yulius_app::ports::github::GhPull;
     use yulius_domain::delivery::DeliveryStage;
-    let f = fixture_of(
-        None,
-        |t| t.mode = yulius_app::model::TaskMode::Goal,
-        Agent::Codex,
-    )
-    .await?;
-    let ctx = f.h.app.agent_context(TOKEN).await?;
-    let steps: Vec<_> = (1..=7)
-        .map(|n| {
-            json!({"title":format!("Step {n}"),
-        "status": if n <= 5 {"done"} else if n == 6 {"in_progress"} else {"pending"}})
-        })
-        .collect();
-    f.h.app
-        .tool_steps_set(&ctx, &json!({"steps":steps}))
-        .await?;
-    install_app(&f).await?;
+    install_app(f).await?;
     f.h.github
         .pulls
         .lock()
@@ -2315,6 +2297,30 @@ async fn codex_goal_stop_continues_open_work_and_flags_only_at_the_bound() -> Te
             },
         )
         .await?;
+    Ok(())
+}
+
+/// Quartio-v2 #325 stopped after five of seven steps with its pull request red.
+#[tokio::test]
+async fn codex_goal_stop_continues_open_work_and_flags_only_at_the_bound() -> TestResult {
+    use yulius_app::ports::github::ChecksState;
+    let f = fixture_of(
+        None,
+        |t| t.mode = yulius_app::model::TaskMode::Goal,
+        Agent::Codex,
+    )
+    .await?;
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    let steps: Vec<_> = (1..=7)
+        .map(|n| {
+            json!({"title":format!("Step {n}"),
+        "status": if n <= 5 {"done"} else if n == 6 {"in_progress"} else {"pending"}})
+        })
+        .collect();
+    f.h.app
+        .tool_steps_set(&ctx, &json!({"steps":steps}))
+        .await?;
+    install_compatibility_pull(&f).await?;
     for round in 0..=yulius_app::hooks::MAX_GATE_BLOCKS {
         f.h.github.set_checks(
             "abc123",
@@ -2438,5 +2444,80 @@ async fn a_codex_goal_needing_a_person_keeps_the_question_at_stop() -> TestResul
             .gate_blocks,
         0
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_codex_goal_verifies_its_only_remaining_pr_when_the_lookup_is_slow() -> TestResult {
+    let f = fixture_of(
+        None,
+        |t| t.mode = yulius_app::model::TaskMode::Goal,
+        Agent::Codex,
+    )
+    .await?;
+    install_compatibility_pull(&f).await?;
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    f.h.app
+        .tool_steps_set(
+            &ctx,
+            &json!({"steps":[{"title":"Finish compatibility","status":"done"}]}),
+        )
+        .await?;
+    f.h.github
+        .set_checks("abc123", yulius_app::ports::github::ChecksState::Failure);
+    let hold = f.h.github.hold_checks();
+    let reply = tokio::time::timeout(
+        yulius_harness::hook_client::HOOK_TIMEOUT,
+        call(
+            &f.h.internal,
+            Method::POST,
+            "/hooks/codex/Stop",
+            Some(json!({"hook_event_name":"Stop"})),
+            &agent(),
+        ),
+    )
+    .await??;
+    f.h.github.release_checks(&hold);
+    assert_eq!(reply.body["decision"], "block", "{}", reply.body);
+    assert!(
+        reply.body["reason"]
+            .as_str()
+            .is_some_and(|s| s.contains("verify") && s.contains("checks")),
+        "{}",
+        reply.body
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_idle_task_with_a_pending_pr_keeps_its_run_on_a_cold_cache() -> TestResult {
+    use yulius_domain::task::TaskStatus;
+    let f = fixture().await?;
+    install_compatibility_pull(&f).await?;
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    f.h.app
+        .tool_steps_set(
+            &ctx,
+            &json!({"steps":[{"title":"Finish compatibility","status":"done"}]}),
+        )
+        .await?;
+    f.h.github
+        .set_checks("abc123", yulius_app::ports::github::ChecksState::Pending);
+    std::fs::create_dir_all(&ctx.attempt.run_dir)?;
+    f.h.app.runtime(&f.task);
+    f.h.app
+        .deps
+        .store
+        .transition_task(
+            &f.task,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Waiting),
+            f.h.app.now(),
+        )
+        .await?;
+    f.h.clock.0.fetch_add(3_600_000, Ordering::SeqCst);
+    assert_eq!(f.h.app.park_idle_sessions_now().await, 0);
+    assert_eq!(f.h.app.send_digests_now(Some(1)).await.parked, 0);
     Ok(())
 }

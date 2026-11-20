@@ -19,7 +19,7 @@ use std::sync::atomic::Ordering;
 
 use serde_json::json;
 use yulius_domain::ids::SandboxId;
-use yulius_domain::task::{Activity, TaskGroup, TaskStatus};
+use yulius_domain::task::{Activity, PullSignal, TaskGroup, TaskStatus};
 
 use crate::context::App;
 use crate::model::{AttemptRecord, TaskOrigin, TaskRecord};
@@ -139,7 +139,7 @@ impl App {
             }
             let requested = requests.get(&task.sandbox_id).cloned().unwrap_or_default();
             if !self
-                .park_facts(&task, &requested, self.config.park_after_ms)
+                .park_facts(&task, &requested, self.config.park_after_ms, None)
                 .await
                 .parkable()
             {
@@ -156,13 +156,20 @@ impl App {
 
     /// [`ParkFacts::parkable`] for `task` as stored now: what [`App::park_task_now`] asks again
     /// under the launch lock.
-    pub(crate) async fn parkable_now(&self, task: &TaskRecord, rule: ParkRule) -> Option<i64> {
+    pub(crate) async fn parkable_now(
+        &self,
+        task: &TaskRecord,
+        rule: ParkRule,
+        current_pull: Option<PullSignal>,
+    ) -> Option<i64> {
         let requested = self.park_requests(&task.sandbox_id).await;
         let threshold = match rule {
             ParkRule::Grace => self.config.park_after_ms,
             ParkRule::Digest(ms) => ms,
         };
-        let facts = self.park_facts(task, &requested, threshold).await;
+        let facts = self
+            .park_facts(task, &requested, threshold, current_pull)
+            .await;
         let park = match rule {
             ParkRule::Grace => facts.parkable(),
             ParkRule::Digest(_) => facts.digest_parkable(
@@ -188,6 +195,7 @@ impl App {
         task: &TaskRecord,
         requested: &Requests,
         park_after_ms: u64,
+        current_pull: Option<PullSignal>,
     ) -> ParkFacts {
         let now = self.now().0;
         let quiet_ms = match self.deps.store.task_times(&task.id).await {
@@ -214,7 +222,10 @@ impl App {
                     || !runtime.with_workflows(|workflows| workflows.runs().is_empty())
             }
         };
-        let facts = self.task_attention_facts(task, &requested.all).await.ok();
+        let mut facts = self.task_attention_facts(task, &requested.all).await.ok();
+        if let (Some(facts), Some(pull)) = (&mut facts, current_pull) {
+            facts.pull = Some(pull);
+        }
         let group = facts
             .as_ref()
             .map_or(TaskGroup::Working, |facts| facts.group());
@@ -248,6 +259,43 @@ impl App {
 
 const PARKED_SCREEN: &str = "parked-screen";
 
+/// Match the trailing Codex exit instructions, including when the top of the
+/// block has scrolled off a small legacy screen. Join wrapped physical rows
+/// for recognition and keep their original row numbers for erasing.
+fn legacy_footer_start(screen: &vt100::Screen, lines: &[String]) -> Option<usize> {
+    let mut logical: Vec<(usize, String)> = Vec::new();
+    for (row, line) in lines.iter().enumerate() {
+        if row > 0 && screen.row_wrapped(u16::try_from(row - 1).ok()?) {
+            logical.last_mut()?.1.push_str(line);
+        } else {
+            logical.push((row, line.clone()));
+        }
+    }
+    let mut start = logical
+        .iter()
+        .rposition(|(_, line)| !line.trim().is_empty())?;
+    let last = logical[start].1.trim_start();
+    if last.starts_with("Or run codex resume and select") {
+        if start > 0
+            && logical[start - 1]
+                .1
+                .trim_start()
+                .starts_with("codex resume ")
+        {
+            start -= 1;
+        }
+    } else if !last.starts_with("codex resume ") {
+        return None;
+    }
+    if start > 0 && logical[start - 1].1.trim() == "To continue this session, run:" {
+        start -= 1;
+        if start > 0 && logical[start - 1].1.starts_with("Token usage:") {
+            start -= 1;
+        }
+    }
+    Some(logical[start].0)
+}
+
 /// Formats a parking notice below the last occupied terminal row. Old snapshots
 /// may still contain the Codex shutdown block, beginning at a physical row.
 fn with_park_notice(
@@ -261,25 +309,24 @@ fn with_park_notice(
     parser.process(bytes);
     let lines: Vec<_> = parser.screen().rows(0, cols).collect();
     let footer = legacy_codex
-        .then(|| {
-            let start = lines
-                .iter()
-                .rposition(|line| line.starts_with("Token usage:"))?;
-            let tail = lines[start..].concat();
-            (tail.contains("To continue this session, run:") && tail.contains("codex resume "))
-                .then_some(start)
-        })
+        .then(|| legacy_footer_start(parser.screen(), &lines))
         .flatten();
     if let Some(row) = footer {
         parser.process(format!("\x1b[{};1H\x1b[J", row + 1).as_bytes());
     }
     let kept = &lines[..footer.unwrap_or(lines.len())];
     let last = kept.iter().rposition(|line| !line.trim_end().is_empty());
-    let duration = quiet_ms
-        .map(|ms| format!("{} ", yulius_domain::ci::format_duration(ms)))
-        .unwrap_or_default();
+    let reason = quiet_ms.map_or_else(
+        || "because it stayed idle after its turn ended".to_owned(),
+        |ms| {
+            format!(
+                "after {} idle since its turn ended",
+                yulius_domain::ci::format_duration(ms)
+            )
+        },
+    );
     let notice = format!(
-        "Yulius parked this session after {duration}idle since its turn ended. Send a message or choose Resume to continue."
+        "Yulius parked this session {reason}. Send a message or choose Resume to continue."
     );
     let next = last.map_or(1, |row| row + 2);
     // A full TUI needs another row. Keep the first row as well as the last
@@ -478,6 +525,18 @@ mod tests {
                 .trim_end()
                 .ends_with("Send a message or choose Resume to continue.")
         );
+    }
+
+    #[test]
+    fn legacy_codex_exit_instructions_scrolled_past_token_usage_are_removed() {
+        let (cols, rows, bytes) = with_park_notice(80, 3,
+            b"To continue this session, run:\r\n  codex resume synthetic-rollout\r\nOr run codex resume and select Resolve compatibility",
+            None, true);
+        let hub = crate::hub::Hub::new(cols, rows);
+        hub.reset(1, &bytes, cols, rows);
+        let shown = hub.screen_text();
+        assert!(shown.starts_with("Yulius parked"), "{shown}");
+        assert!(!shown.contains("codex resume"), "{shown}");
     }
 
     fn idle() -> ParkFacts {

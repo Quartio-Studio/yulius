@@ -4661,16 +4661,12 @@ impl App {
         let Some(candidate) = self.deps.store.task(task_id).await? else {
             return Ok(false);
         };
-        if self.task_pull_signal(&candidate).await?
-            == Some(yulius_domain::task::PullSignal::Failing)
-        {
-            return Ok(false);
-        }
+        let current_pull = self.task_pull_signal(&candidate).await?;
         let _guard = self.supervisor.launch.lock().await;
         let Some(task) = self.deps.store.task(task_id).await? else {
             return Ok(false);
         };
-        let Some(quiet_ms) = self.parkable_now(&task, rule).await else {
+        let Some(quiet_ms) = self.parkable_now(&task, rule, current_pull).await else {
             return Ok(false);
         };
         // A prompt waiting in Claude Code's queue would be lost with the session (SPEC-471).
