@@ -82,6 +82,9 @@ pub enum RemoteError {
     /// `429`: too many requests with this token.
     #[error("{0}")]
     RateLimited(String),
+    /// The client could not establish a connection to this instance.
+    #[error("{0}")]
+    Connect(String),
     /// Transport failures and other statuses.
     #[error("{0}")]
     Transport(String),
@@ -155,7 +158,14 @@ impl RemoteClient {
             .header("accept", "application/json, text/event-stream")
             .json(&body)
             .send()
-            .map_err(|e| RemoteError::Transport(format!("{}: {e}", self.endpoint)))?;
+            .map_err(|e| {
+                let detail = format!("{}: {e}", self.endpoint);
+                if e.is_connect() {
+                    RemoteError::Connect(detail)
+                } else {
+                    RemoteError::Transport(detail)
+                }
+            })?;
         let status = response.status();
         let header = |name: &str| response.headers().get(name).and_then(|v| v.to_str().ok());
         if let Some(to) = moved_base(

@@ -403,6 +403,36 @@ async fn github_login(
     github_callback(h, &format!("code={code}&state={state}")).await
 }
 
+#[tokio::test]
+async fn malformed_github_sign_in_queries_return_to_sign_in() -> TestResult {
+    let h = harness()?;
+    setup_superadmin(&h).await?;
+    for path in [
+        "/api/auth/github/start?next=%FF",
+        "/api/auth/github/start?next=/a&next=/b",
+        "/api/auth/github/callback?code=%FF",
+        "/api/auth/github/callback?state=a&state=b",
+    ] {
+        let response = call(&h.router, Method::GET, path, None, &Creds::default()).await?;
+        assert_eq!(response.status, StatusCode::SEE_OTHER, "{path}");
+        assert_eq!(
+            response.location.as_deref(),
+            Some("/signin?error=failed"),
+            "{path}"
+        );
+        if path.contains("/callback?") {
+            assert!(
+                response
+                    .set_cookie
+                    .iter()
+                    .any(|cookie| cookie.contains("Max-Age=0")),
+                "{path}"
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Before the GitHub App is connected, GitHub sign-in lands on the sign-in page with a reason,
 /// never on a JSON error, and the public setup status says so (SPEC-422, #1069).
 #[tokio::test]

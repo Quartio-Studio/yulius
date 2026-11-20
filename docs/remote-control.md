@@ -63,12 +63,13 @@ header must name an `https` address alone (plain `http` only between two servers
 computer) and lead to the same path there; your token is never sent anywhere else a response
 points, and a move onto a URL where you saved another sign-in is not followed. Once the old host
 is gone nothing redirects any more: run `yulius remote login <new URL>` on a computer that had
-not followed yet. If the move is undone after your CLI followed it, the new URL stops answering
-and the error names the URL the sign-in came from. Sign in there again with `yulius remote
-login <old URL>`: it asks for a token, and the saved one is never sent there by itself (the old
-name may be someone else's by then). With the token you used before, the sign-in is back as it
-was. With a new one (tokens are shown once; make one on Settings) the sign-in that followed the
-move stays beside it, and `yulius remote logout --server <new URL>` forgets it. Claude Code's own
+not followed yet. If the CLI cannot connect to a URL it followed, the error names the URL the
+sign-in came from. If the target answers with an HTTP error, the CLI reports that error alone.
+After an undone move, sign in at the old address with `yulius remote login <old URL>`. It asks
+for the token because the old name may now belong to someone else. With the same token, the CLI
+confirms that the sign-in is back and the new URL leads to it. With a newly issued token, the
+sign-in that followed the move stays at the new URL. `yulius remote logout --server <new URL>`
+forgets that sign-in and every alias leading to it. Claude Code's own
 connection does not follow a move: `claude mcp remove yulius`, then add it again with the new
 URL as above. `yulius login`, `yulius onboard` and `yulius secrets import` take the new URL with
 `--server`.

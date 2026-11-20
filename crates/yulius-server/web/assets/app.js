@@ -744,7 +744,7 @@ function createApp(root, transport) {
 
   /** Whether a guest may be at `route`: their playground's composer, tasks, sessions and Git. */
   function guestRoute(route, guest) {
-    if (route.slug !== guest.slug) return false;
+    if (route.slug !== guest.slug || route.panel === 'agent') return false;
     if (['composer', 'task', 'taskInfo', 'session', 'gitTask'].includes(route.name)) return true;
     return route.name === 'page' && GUEST_PAGES.has(route.page);
   }

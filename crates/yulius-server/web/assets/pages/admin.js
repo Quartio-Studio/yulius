@@ -509,6 +509,7 @@ export function mountAccountsPage(ctx, route) {
   // `data-refresh="waiting"`) and is read once no field is open; the reload keeps focus on the
   // same control.
   let pendingReload = false;
+  let pendingOwnRead = false;
   let gone = false;
   /** A field is open: in use, or set aside (refused as it was left, `data-set-aside`). */
   const open = () => Boolean(host.querySelector('.account-rename-input'));
@@ -520,22 +521,24 @@ export function mountAccountsPage(ctx, route) {
   };
   const settled = () => {
     pendingReload = false;
+    pendingOwnRead = false;
     delete host.dataset.refresh;
   };
   /** Reads the list again now, or notes that it must be read once no field is open. */
   const refresh = () => {
     if (gone) return;
-    if (open()) { defer(); return; }
-    settled();
-    reload({ quiet: true });
+    if (pendingOwnRead ? inUse() : open()) { defer(); return; }
+    pendingReload = false;
+    delete host.dataset.refresh;
+    readList({ quiet: !pendingOwnRead });
   };
   const flush = () => { if (pendingReload) refresh(); };
   // An update from elsewhere waits for every open field, so a refused value can be come back
   // to. What the person asked for themselves (the read after a removal, an Add, a sign-in)
   // waits only for a field in use: one set aside goes with the redraw, and the list shows what
   // they did.
-  const held = ({ quiet }) => {
-    const wait = quiet ? open() : inUse();
+  const held = () => {
+    const wait = pendingOwnRead ? inUse() : open();
     if (wait) defer();
     else settled();
     return wait;
@@ -543,6 +546,7 @@ export function mountAccountsPage(ctx, route) {
   // A field closes without any focus leaving the list when it is left as it was or saved by
   // leaving it, so the field itself says that it is gone.
   host.addEventListener('yulius:edit-closed', flush);
+  host.addEventListener('yulius:edit-set-aside', () => { if (pendingOwnRead) flush(); });
 
   // Every reading the page asks for goes through one queue (SPEC-473 RFR-015): three
   // subscriptions at a time and one request per subscription at a time, so a second ask joins
@@ -674,7 +678,7 @@ export function mountAccountsPage(ctx, route) {
   let rendered = false;
   // Refresh all follows what the list shows: painted once each read of the list is on the page.
   paintRefreshAll();
-  const reload = loader(host, 'the subscriptions', () => ctx.api.get('/api/admin/accounts').finally(() => setTimeout(paintRefreshAll, 0)), (list) => {
+  const readList = loader(host, 'the subscriptions', () => ctx.api.get('/api/admin/accounts').finally(() => setTimeout(paintRefreshAll, 0)), (list) => {
     if (rendered) loadCapacity();
     else firstCapacity.then((shown) => { if (!shown) loadCapacity(); });
     rendered = true;
@@ -754,6 +758,13 @@ export function mountAccountsPage(ctx, route) {
           } }, 'Remove')));
     }));
   }, { shape: 'cards', hold: held });
+
+  // Remember the person's action at dispatch: a later account update can supersede this read
+  // before its answer reaches held(). Before the first render there is no field to preserve.
+  const reload = () => {
+    pendingOwnRead = rendered;
+    return readList();
+  };
 
   // The agent first, then its way in (SPEC-502 TKP-008, SPEC-503 CDX-015). Claude: its own
   // sign-in in a terminal here (the default), or a token made with `claude setup-token` on any

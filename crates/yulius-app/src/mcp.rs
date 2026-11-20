@@ -495,7 +495,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "attachments_trash".into(),
-            description: "The attachments of this project's deleted tasks (files pasted or dropped onto them), kept 7 days after the deletion: lists each deleted task's files and until when they can be restored. With restore (the deleted task's id or number) it moves that task's files into the attachments of the task into names (your own task by default; a task of the person you work for, never another person's) and answers their new paths. Restoring is audited.".into(),
+            description: "The attachments of this project's deleted tasks (files pasted or dropped onto them), kept 7 days after the deletion: lists each deleted task's files and until when they can be restored. With restore (the deleted task's id or number) it moves that task's files to the task named by `into` and answers with their new paths. For a task agent, `into` defaults to its own task. Other callers must supply `into`. The destination must belong to the person you work for. Restoring is audited.".into(),
             input_schema: schema(json!({
                 "restore": {"type": ["string", "integer"], "description": "The deleted task's id or number whose files to restore"},
                 "into": {"type": "integer", "description": "Number of the task to restore them into (default: your own task)"}

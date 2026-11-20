@@ -11,7 +11,7 @@ failOnPageErrors();
 // shell must not make fails the test as a page error.
 
 type Invite = { id: string; code: string; revoked?: boolean; guests: { name: string }[] };
-type Mocked = Window & { __yuliusMock: { guestInvites: Invite[]; guestRefusals?: string[] } };
+type Mocked = Window & { __yuliusMock: { guestInvites: Invite[]; guestRefusals?: string[]; sent?: Record<string, number> } };
 
 const CODE = 'c0ffee'.repeat(10) + 'c0de';
 
@@ -170,4 +170,20 @@ test("a guest is not offered to answer the maker's task's Needs you", async ({ a
   });
   await expect(browser.locator('.attention-bar')).toContainText('Needs you');
   await expect(screen.getByRole('button', 'Reply')).toHaveCount(0);
+});
+
+test('a guest can open the tools rail and visit both Superagent links without starting a session', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/lab', '&guest=1'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await expect(screen.getByRole('navigation', 'Tools').getByRole('button', 'Browser')).toBeVisible();
+  await expect(screen.getByRole('navigation', 'Tools').getByRole('button', 'Superagent')).toBeHidden();
+  for (const path of ['/s/lab/superagent', '/superagent']) {
+    await browser.evaluate((to) => { location.hash = '#' + to; }, path);
+    await expect.poll(() => browser.evaluate(() => location.hash)).toBe('#/s/lab');
+    await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+    expect(await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.guestRefusals ?? [])).toEqual([]);
+    const sent = await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.sent ?? {});
+    expect(sent['POST /api/superagent'] ?? 0).toBe(0);
+    expect(sent['POST /api/sandboxes/sb_lab/cockpit'] ?? 0).toBe(0);
+  }
 });
