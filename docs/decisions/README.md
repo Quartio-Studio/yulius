@@ -419,6 +419,7 @@ If a reservation skips past all available slots, land an empty extension first w
 - [0404](0404-restart-one-sandbox-browser-through-its-viewer-grant.md) lets a sandbox writer restart its browser and reopen permitted tabs after the address guard is installed.
 <!-- ADR 0404 -->
 <!-- ADR 0405 -->
+- [0406](0406-a-planned-install-gives-ci-on-its-last-job-a-short-grace-period.md) A planned install gives CI on its last job a short grace period.
 <!-- ADR 0406 -->
 <!-- ADR 0407 -->
 <!-- ADR 0408 -->

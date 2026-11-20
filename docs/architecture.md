@@ -4291,6 +4291,12 @@ leaves a run `running` with no executor (SPEC-347, ADR-0233); an environment-run
 same (SPEC-348, ADR-0235). The wait (and the instance page's view of it) ends an environment run past
 its lost-run limit as `error` (`dlv_expire_lost_run`, as a read does) instead of waiting for it.
 
+During a planned install the old CI executor can finish a gate that has an executed pass, no queued jobs
+and at most one running job. The first 30 seconds of the task drain are available for this. CI keeps
+dispatching normally. The helper receives the install request once the qualifying runs finish, the
+window expires, or the operator proceeds, subject to the existing deploy guard.
+[ADR-0406](decisions/0406-a-planned-install-gives-ci-on-its-last-job-a-short-grace-period.md)
+
 A cancel removes the request file, and a new update replaces it: the helper checks every 500 ms
 while cargo builds and, once its request is withdrawn, kills cargo's process group (cargo and its
 compilers), so a cancelled build frees the host within about a second (SPEC-439, ADR-0283).
@@ -4307,7 +4313,8 @@ sequenceDiagram
   S->>H: freeze(run) for every live task
   H->>K: mkdir run-<attempt>, cgroup.freeze=1, move agent tree
   K-->>H: cgroup.events frozen 1
-  S->>R: install request (two passes all frozen)
+  S->>S: observe finishing CI gates during the first 30 s of the task drain
+  S->>R: install request (tasks ready or operator proceeds, no deploy running)
   R->>S: stop, back up, install, start, health check
   S->>H: thaw(run) one by one after releasing each task
   H->>K: cgroup.freeze=0
