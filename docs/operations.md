@@ -165,7 +165,10 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # Minutes a finished task (its turn ended, it waits for a person) keeps its idle session before it
 # is parked: the process ends, the task resumes in the same session when someone writes to it
 # (default 30; 0 never; SPEC-512).
+# The terminal and task_screen retain the last screen plus the time idle after the turn.
+# Send the task a message or choose Resume on its page to reopen the recorded provider session.
 # A message to a parked Codex task resumes its recorded rollout with the message as its next prompt.
+# While it waits for a subscription the message is retained and its last parked screen stays visible.
 #Environment=YULIUS_PARK_AFTER_MINUTES=30
 # A server older than parking cannot read the status `parked`: before rolling back past it,
 # resume or archive the tasks marked "parked" in the task lists, with this set to 0 so no task

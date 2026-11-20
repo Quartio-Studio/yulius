@@ -69,6 +69,7 @@ async fn send_state(app: &AppState, socket: &mut WebSocket, attach: &TerminalAtt
     send_json(
         socket,
         &TerminalServerMsg::State {
+            parked_screen: state.parked_screen,
             attempt_seq: state.attempt_seq,
             harness: state.harness,
             cols: state.size.0,

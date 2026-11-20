@@ -1130,7 +1130,11 @@ pub(crate) fn save_screen(hub: &crate::hub::Hub, run_dir: &Path) {
 
 /// Reads a saved final screen: (cols, rows, redraw bytes).
 pub(crate) fn read_final_screen(run_dir: &Path) -> Option<(u16, u16, Vec<u8>)> {
-    let bytes = std::fs::read(run_dir.join(FINAL_SCREEN_FILE)).ok()?;
+    read_saved_screen(&run_dir.join(FINAL_SCREEN_FILE))
+}
+
+pub(crate) fn read_saved_screen(path: &Path) -> Option<(u16, u16, Vec<u8>)> {
+    let bytes = std::fs::read(path).ok()?;
     let newline = bytes.iter().position(|b| *b == b'\n')?;
     let header = std::str::from_utf8(&bytes[..newline]).ok()?;
     let (cols, rows) = header.split_once(' ')?;
@@ -4084,7 +4088,7 @@ impl App {
         if parking {
             // The idle session being parked was lost on its way out: the task lost nothing a
             // park would have kept, so it is parked all the same (SPEC-512 PRK-003).
-            self.settle_parked(task_id, now).await;
+            self.settle_parked(task_id, attempt_id, now).await;
         } else {
             // A finished task lost nothing with its idle session: it is Closed (SPEC-229
             // RBT-001).
@@ -4150,7 +4154,8 @@ impl App {
     /// The task whose parked run ended (SPEC-512 PRK-003): a running or switching one is
     /// `parked` with its activity and audited `task.parked`; one a stop or a capacity pause took
     /// meanwhile rests as that run's end leaves it.
-    async fn settle_parked(&self, task_id: &TaskId, now: Timestamp) {
+    async fn settle_parked(&self, task_id: &TaskId, attempt_id: &AttemptId, now: Timestamp) {
+        let attempt = self.deps.store.attempt(attempt_id).await.ok().flatten();
         let decided = self.existing_runtime(task_id).and_then(|runtime| {
             runtime
                 .parked_activity
@@ -4192,6 +4197,19 @@ impl App {
                 Ok(false) => {}
                 Ok(true) => {
                     if to == TaskStatus::Parked {
+                        if let Some(run) = &attempt
+                            && let Some((cols, rows, screen)) =
+                                crate::parking::publish_parked_screen(Path::new(&run.run_dir))
+                        {
+                            let hub = &self.runtime(task_id).hub;
+                            hub.restore(
+                                hub.output_seq().max(1),
+                                &screen,
+                                cols,
+                                rows,
+                                crate::hub::ScreenUpdate::Park,
+                            );
+                        }
                         crate::parking::audit_parked(self, &task).await;
                     }
                     return;
@@ -4373,7 +4391,7 @@ impl App {
                 })
                 .await;
             }
-            Some(EndIntent::Park) => self.settle_parked(task_id, now).await,
+            Some(EndIntent::Park) => self.settle_parked(task_id, attempt_id, now).await,
             Some(EndIntent::Cancel) => {
                 // A stop's run ended: its task is stopped, also while still live when the run ended
                 // before the stop's status change was made (SPEC-250 STW-003).
@@ -4650,9 +4668,9 @@ impl App {
         let Some(task) = self.deps.store.task(task_id).await? else {
             return Ok(false);
         };
-        if !self.parkable_now(&task, rule).await {
+        let Some(quiet_ms) = self.parkable_now(&task, rule).await else {
             return Ok(false);
-        }
+        };
         // A prompt waiting in Claude Code's queue would be lost with the session (SPEC-471).
         if self
             .existing_runtime(task_id)
@@ -4672,6 +4690,8 @@ impl App {
             if intent.is_some() {
                 return Ok(false);
             }
+            crate::parking::save_parked_screen(&runtime.hub, Path::new(&run.run_dir), quiet_ms)
+                .map_err(AppError::internal)?;
             *intent = Some(EndIntent::Park);
             // Under the intent's lock: the run's end that takes the intent finds it.
             if let Ok(mut kept) = runtime.parked_activity.lock() {
