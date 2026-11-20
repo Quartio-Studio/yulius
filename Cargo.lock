@@ -3395,6 +3395,7 @@ dependencies = [
  "tracing-subscriber",
  "yulius-app",
  "yulius-domain",
+ "yulius-sandbox",
 ]
 
 [[package]]
