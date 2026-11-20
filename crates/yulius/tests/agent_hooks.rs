@@ -3206,33 +3206,51 @@ async fn owner_observed_external_pr()
 
 #[tokio::test]
 async fn a_parked_detail_keeps_the_failed_pr_when_another_pr_opens_during_checks() -> TestResult {
-    let (f, owner) = owner_observed_external_pr().await?;
-    install_app(&f).await?;
-    let held = f.h.github.hold_checks();
-    let app = f.h.app.clone();
-    let id = f.task.clone();
-    let reading = tokio::spawn(async move { app.task_detail(&owner, id.as_str()).await });
-    tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        f.h.github.checks_entered.notified(),
-    )
-    .await?;
-    f.h.github
-        .pulls
-        .lock()
-        .map_err(|_| "pulls")?
-        .push(yulius_app::ports::github::GhPull {
-            number: 1462,
-            base: "release-2".into(),
-            head_sha: "healthy".into(),
-            ..compatibility_pull()
-        });
-    f.h.github
-        .set_checks("healthy", yulius_app::ports::github::ChecksState::Success);
-    f.h.github.release_checks(&held);
-    let detail = serde_json::to_value(reading.await??)?;
-    assert_eq!(detail["parked_needs_you"], true);
-    assert_eq!(detail["parked_pr"], json!({"number":1461,"open":true}));
+    for durable in [false, true] {
+        let (f, owner) = owner_observed_external_pr().await?;
+        install_app(&f).await?;
+        let held = f.h.github.hold_checks();
+        let mut config = f.h.app.config.clone();
+        config.ci.enabled = false;
+        let app = yulius_app::context::App::new(config, f.h.app.deps.clone());
+        if durable {
+            f.h.github
+                .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
+            super::delivery::insert_ci_attempt(
+                &f.h.store,
+                "durable-survivor",
+                "abc123",
+                yulius_domain::ci::CiRef::PullRequest(1461),
+                yulius_domain::ci::RunState::Failed,
+                10,
+                &[],
+            )
+            .await?;
+        }
+        let id = f.task.clone();
+        let reading = tokio::spawn(async move { app.task_detail(&owner, id.as_str()).await });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            f.h.github.checks_entered.notified(),
+        )
+        .await?;
+        f.h.github
+            .pulls
+            .lock()
+            .map_err(|_| "pulls")?
+            .push(yulius_app::ports::github::GhPull {
+                number: 1462,
+                base: "release-2".into(),
+                head_sha: "healthy".into(),
+                ..compatibility_pull()
+            });
+        f.h.github
+            .set_checks("healthy", yulius_app::ports::github::ChecksState::Success);
+        f.h.github.release_checks(&held);
+        let detail = serde_json::to_value(reading.await??)?;
+        assert_eq!(detail["parked_needs_you"], true);
+        assert_eq!(detail["parked_pr"], json!({"number":1461,"open":true}));
+    }
     Ok(())
 }
 

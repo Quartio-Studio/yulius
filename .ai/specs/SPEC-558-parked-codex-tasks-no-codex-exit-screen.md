@@ -140,6 +140,7 @@ A human request can take precedence over unfinished work in the task list. Both 
 - The combined HTTP/MCP prototype passed 95 scoped tests on `cd76a2d05`. Final review isolated three MCP explanation cases. Tests reproduced both a confirmed failure alongside an unreadable source and an unreachable checks endpoint obscuring a durable failure. A third fixture reproduced a retired PR’s cached failure masking an open plan step. Those reason fixtures and their corrective patch are kept for the fair-list/MCP delivery. The HTTP contract reports the verified group and relevant PR number. It reconfirms the PR and branch after an unreadable checks response.
 
 - The HTTP-only head `88ba7556b` passed 94 scoped tests. Three additional fixtures reproduced an unrelated open PR replacing the actual failing blocker, a stale listing reopening a directly confirmed merge in the response, and the initial browser lookup exceeding the status budget. The fix keeps surviving blockers and direct closures, and starts the deadline before store and browser reads.
+- On `1a0c27b04` the same race named healthy PR #1462 when GitHub was green and ordinary CI had recorded a failure on PR #1461. The regression runs both sources of failure with instance CI disabled. When branch membership changes, the verifier reads the durable results for heads it directly confirmed and still sees in the refreshed branch listing.
 
 ## Delivery slices
 

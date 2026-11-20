@@ -4286,13 +4286,14 @@ impl App {
         if !verified && purpose != PrVerification::Display {
             return Ok(None);
         }
+        let mut facts = ParkingPrs {
+            checkout,
+            pulls,
+            watched,
+        };
         let current = branch_pulls().await?;
         if purpose != PrVerification::Display {
-            return Ok((current == branch).then_some(ParkingPrs {
-                checkout,
-                pulls,
-                watched,
-            }));
+            return Ok((current == branch).then_some(facts));
         }
         // A title edit carries no eligibility evidence. Changes in membership,
         // head, base or mergeability do. Prefer a directly confirmed blocker
@@ -4316,6 +4317,18 @@ impl App {
                             .any(|candidate| candidate.number == pr.number && unchanged(candidate))
                 });
             if !blocker_survived {
+                // A newly listed PR has no check result yet. A durable ordinary
+                // failure on a still-current, directly verified head takes priority.
+                facts.pulls.retain(|(number, sha)| {
+                    current
+                        .iter()
+                        .any(|pr| pr.number == *number && pr.head_sha == *sha && unchanged(pr))
+                });
+                if let Some(number) = self.parking_ci_blocker(task, &facts).await? {
+                    observed.pr =
+                        Some(yulius_contracts::api::tasks::ParkedPr { number, open: true });
+                    return Ok(None);
+                }
                 let known_open = changed
                     .filter(|pr| !closed.contains(&pr.number))
                     .or_else(|| current.iter().rev().find(|pr| !closed.contains(&pr.number)));
@@ -4339,17 +4352,13 @@ impl App {
         }
         // A branch list can lag a direct get_pull confirmation of a merge.
         // Among successful reads only a PR confirmed open can replace it.
-        if verified && let Some((number, _)) = pulls.last() {
+        if verified && let Some((number, _)) = facts.pulls.last() {
             observed.pr = Some(yulius_contracts::api::tasks::ParkedPr {
                 number: *number,
                 open: true,
             });
         }
-        Ok(verified.then_some(ParkingPrs {
-            checkout,
-            pulls,
-            watched,
-        }))
+        Ok(verified.then_some(facts))
     }
 
     /// Read the commit only when the registered checkout still owns the task branch.
@@ -4409,9 +4418,7 @@ impl App {
             if purpose == PrVerification::Display {
                 let current = read().await?;
                 observed.note_closed(&current);
-                if current != pull {
-                    return Ok(current.merged.then_some(current));
-                }
+                return Ok(current.merged.then_some(current));
             }
             return Ok(None);
         }
@@ -4463,11 +4470,7 @@ impl App {
             }
             let current = read().await?;
             observed.note_closed(&current);
-            if !is_open(&current) || current.head_sha != pull.head_sha || current.base != pull.base
-            {
-                return Ok(current.merged.then_some(current));
-            }
-            return Ok(None);
+            return Ok(current.merged.then_some(current));
         }
         // The local merge-driver check uses the configured integration branch. For a
         // PR targeting another branch, GitHub computes mergeability against its real base.
