@@ -612,12 +612,29 @@ impl AttentionFacts {
         }
     }
 
+    /// Local work or an owner decision already determines this parked task's group.
+    #[must_use]
+    pub fn parked_has_local_work_or_request(&self) -> bool {
+        self.plan_open
+            || self.spec_unfinished
+            || self.goal_unfinished
+            || self.held_prompt
+            || self.browser_request
+    }
+
     /// The group of a parked task (SPEC-512 PRK-004): the group of the idle run it was, with no
     /// live overlay (shells, `yulius wait`, an armed merge, a pause), and never Working: nothing
     /// of it goes on by itself, so what would keep a running agent busy (its checks running, a
     /// conflict its pull request watch tells it of, a CI run to run again, a first turn) waits
     /// for a person, who resumes it.
     fn parked_group(&self) -> TaskGroup {
+        if self.parked_has_local_work_or_request()
+            || self
+                .pull
+                .is_some_and(|pull| !matches!(pull, PullSignal::Tested | PullSignal::Merged))
+        {
+            return TaskGroup::NeedsYou;
+        }
         // The idle run it was, with nothing of a session going on (review round 2 of SPEC-512
         // part 1: the web's `asIdleRun` reads it the same way).
         let run = Self {
@@ -921,6 +938,33 @@ mod tests {
     #[test]
     fn a_parked_task_stays_in_its_group() {
         let parked = |activity| AttentionFacts::new(TaskStatus::Parked, Some(activity));
+        let answered = parked(Activity::Done);
+        assert!(!answered.parked_has_local_work_or_request());
+        for blocked in [
+            AttentionFacts {
+                plan_open: true,
+                ..answered
+            },
+            AttentionFacts {
+                spec_unfinished: true,
+                ..answered
+            },
+            AttentionFacts {
+                goal_unfinished: true,
+                ..answered
+            },
+            AttentionFacts {
+                held_prompt: true,
+                ..answered
+            },
+            AttentionFacts {
+                browser_request: true,
+                ..answered
+            },
+        ] {
+            assert!(blocked.parked_has_local_work_or_request());
+            assert_eq!(blocked.group(), TaskGroup::NeedsYou);
+        }
         assert_eq!(parked(Activity::Done).group(), TaskGroup::Done);
         assert_eq!(parked(Activity::Waiting).group(), TaskGroup::Done);
         let mut work_left = parked(Activity::Waiting);
@@ -970,10 +1014,10 @@ mod tests {
             waiting.pull = Some(pull);
             assert_eq!(waiting.group(), TaskGroup::NeedsYou, "{pull:?}");
         }
-        // An achieved goal is Done whatever its checks still do, as for a running task.
+        // An achieved parked goal still owns its unsettled PR.
         let mut achieved = parked(Activity::Done);
         achieved.pull = Some(PullSignal::InReview);
-        assert_eq!(achieved.group(), TaskGroup::Done);
+        assert_eq!(achieved.group(), TaskGroup::NeedsYou);
         // Review round 2 (N1): it reads as the idle run it was, whatever the facts, and only
         // what would keep that run Working is a person's: the web's rule (`asIdleRun`) is the
         // same.
@@ -1000,7 +1044,13 @@ mod tests {
                         ..facts
                     }
                     .group();
-                    let want = if run == TaskGroup::Working {
+                    let want = if run == TaskGroup::Working
+                        || plan_open
+                        || spec_unfinished
+                        || goal_unfinished
+                        || pull
+                            .is_some_and(|p| !matches!(p, PullSignal::Tested | PullSignal::Merged))
+                    {
                         TaskGroup::NeedsYou
                     } else {
                         run

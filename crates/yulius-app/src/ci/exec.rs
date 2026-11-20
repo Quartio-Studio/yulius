@@ -2140,6 +2140,7 @@ mod tests {
             timeout_minutes: None,
             exclusive: false,
             paths: Vec::new(),
+            after_merge: false,
         };
         let gate = |source| Gate {
             jobs: vec![job("scan", &["VIDOC_API_KEY"]), job("lint", &[])],

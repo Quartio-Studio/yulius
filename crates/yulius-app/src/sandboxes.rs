@@ -13,6 +13,16 @@ use crate::auth::AuthContext;
 use crate::context::App;
 use crate::error::AppResult;
 use crate::model::{SandboxRecord, TaskRecord};
+use tokio::time::Instant;
+use yulius_contracts::api::tasks::ParkedPr;
+
+/// Maximum active native Git workers used by parked status reads.
+pub(crate) const PARKED_READS: usize = 8;
+
+/// Time allowed for remote verification of one parked task.
+pub(crate) fn parked_pr_deadline(budget_ms: u64) -> Instant {
+    Instant::now() + std::time::Duration::from_millis(budget_ms)
+}
 
 /// PR facts the Git overview supplied for a single task. A closed, unmerged PR
 /// has a number and no attention signal.
@@ -23,7 +33,7 @@ pub(crate) struct ObservedPull {
 }
 
 impl ObservedPull {
-    fn open(self) -> bool {
+    pub(crate) fn open(self) -> bool {
         self.signal
             .is_some_and(|signal| signal != PullSignal::Merged)
     }
@@ -166,12 +176,17 @@ impl ObservedPulls {
         })
     }
 
-    fn get(&self, sandbox: &SandboxId, task: &TaskId) -> Option<Option<PullSignal>> {
+    pub(crate) fn known_pull(
+        &self,
+        sandbox: &SandboxId,
+        task: &TaskId,
+    ) -> Option<Option<ObservedPull>> {
         let cache = self.0.lock().ok()?.get(sandbox)?.clone();
-        cache
-            .lock()
-            .ok()?
-            .current(task)
+        cache.lock().ok()?.current(task)
+    }
+
+    fn get(&self, sandbox: &SandboxId, task: &TaskId) -> Option<Option<PullSignal>> {
+        self.known_pull(sandbox, task)
             .map(|pr| pr.and_then(|pr| pr.signal))
     }
 }
@@ -255,6 +270,64 @@ impl App {
         requested: &HashSet<String>,
     ) -> AppResult<TaskGroup> {
         Ok(self.task_attention_facts(task, requested).await?.group())
+    }
+
+    /// Check the recorded and branch PRs before reporting Done, even before
+    /// anyone opens the sandbox Git overview. A missed deadline leaves work open.
+    pub(crate) async fn parked_status(
+        &self,
+        task: &TaskRecord,
+        deadline: Instant,
+    ) -> (bool, Option<ParkedPr>) {
+        use crate::delivery::PrVerification;
+        // Seed from memory before waiting on any store or browser lock. Once
+        // the record is read, a timed-out lookup can still name its delivery.
+        let mut observed = self.known_parked_pull(task, None);
+        let check = async {
+            let record = self.deps.store.delivery(&task.id).await?;
+            observed = self.known_parked_pull(task, record.as_ref());
+            let requested = self.browser_requests(&task.sandbox_id).await;
+            let mut facts = self.task_attention_facts(task, &requested).await?;
+            if facts.parked_has_local_work_or_request() {
+                return Ok(true);
+            }
+            let Some(prs) = self
+                .verify_task_prs(
+                    task,
+                    record.as_ref(),
+                    PrVerification::Display,
+                    &mut observed,
+                )
+                .await?
+            else {
+                return Ok(true);
+            };
+            if !self
+                .parked_evidence_current(
+                    task,
+                    record.as_ref(),
+                    &prs,
+                    PrVerification::Display,
+                    &mut observed,
+                )
+                .await?
+            {
+                return Ok(true);
+            }
+            facts.pull = observed.pr.map(|pr| {
+                if pr.open {
+                    PullSignal::Tested
+                } else {
+                    PullSignal::Merged
+                }
+            });
+            Ok::<_, crate::error::AppError>(facts.needs_you())
+        };
+        let needs_you = !matches!(
+            tokio::time::timeout_at(deadline, check).await,
+            Ok(Ok(false))
+        );
+        (needs_you, observed.pr)
     }
 
     /// The facts that place the task in its sidebar group and explain a derived wait.

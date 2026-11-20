@@ -47,6 +47,9 @@
 //!                                        # with the reason; the integration and production
 //!                                        # branches, a change to yulius.toml and an unknown
 //!                                        # change run it (SPEC-493 CJP)
+//! after_merge = true                     # part of the full suite: beside a merge-first
+//!                                        # staging target it runs on the merged revision, not
+//!                                        # on pull requests (SPEC-575 MFS-002, ADR-0410)
 //!
 //! [review]                             # what counts as product code in a follow-up after an
 //! not_product = ["crates/gen/"]          # approval (SPEC-493 APR-002): `product` globs count
@@ -85,6 +88,14 @@
 //! [cd.platform]                         # more environments (SPEC-257): any name with its stage,
 //! stage = "prod"                         # "dev" or "prod" (fixed for [cd.dev] and [cd.prod])
 //! deploy = "scripts/cd/deploy.sh platform"
+//!
+//! [cd.staging]                          # the shared staging target (SPEC-575 MFS-001): at most
+//! stage = "dev"                          # one dev-stage table, with deploy, verify and
+//! merge_first = true                     # rollback; its after_merge jobs leave pull requests
+//! deploy = "scripts/cd/deploy.sh staging" # (ADR-0410)
+//! verify = "scripts/cd/verify.sh staging"
+//! rollback = "scripts/cd/rollback.sh staging"
+//! migrations = "none: stateless"
 //!
 //! [[delivery.environments]]
 //! name = "dev-vm"
@@ -251,6 +262,21 @@ pub enum ConfigProblem {
         "[{0}]: 'drill = \"{1}\"' names no dev-stage table of yulius.toml; name a [cd.<name>] whose stage is \"dev\""
     )]
     UnknownDrill(String, String),
+    /// A merge-first environment without its deploy, verify or rollback (SPEC-575 MFS-001).
+    #[error(
+        "[{0}] has 'merge_first = true': it needs 'deploy', 'verify' and 'rollback', since staging changes only to a verified revision and goes back to its last verified release after a failed deploy"
+    )]
+    MergeFirstNeedsScripts(String),
+    /// Every CI job is part of the full suite (SPEC-575 MFS-002).
+    #[error(
+        "every [[ci.jobs]] entry has 'after_merge = true': keep at least one quick check without it, since a pull request merges on those alone"
+    )]
+    NoQuickCheck,
+    /// A second merge-first environment (SPEC-575 MFS-001).
+    #[error(
+        "[{0}] has 'merge_first = true', but only one [cd.<name>] may be the shared staging target"
+    )]
+    SecondMergeFirst(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -302,10 +328,10 @@ const MAX_REVIEW_GLOBS: usize = 50;
 const BRANCH_POLICY_KEYS: &str = "preset, types";
 const POLICY_TYPES: &str = "1-20 space-separated types of 1-20 lowercase letters including feat (Yulius's task branches), like \"feat fix docs\"";
 const ENVIRONMENT_KEYS: &str = "name, after, command, verify";
-const CI_JOB_KEYS: &str =
-    "name, command, matrix, cpus, memory_gb, secrets, timeout_minutes, exclusive, paths";
-const CD_DEV_KEYS: &str =
-    "stage, deploy, verify, secrets, states, variables, about, rollback, migrations, parts";
+const CI_JOB_KEYS: &str = "name, command, matrix, cpus, memory_gb, secrets, timeout_minutes, \
+    exclusive, paths, after_merge";
+const CD_DEV_KEYS: &str = "stage, deploy, verify, secrets, states, variables, about, rollback, \
+    migrations, parts, merge_first";
 const CD_PROD_KEYS: &str = "stage, deploy, verify, secrets, states, variables, about, promote, \
     rollback, migrations, parts, drill";
 const CD_PARTS: &str = "at most 8 part names like [\"engine\", \"infra\"] (an array, or space-separated) of 1-32 lowercase letters, digits and '-', starting with a letter";
@@ -751,7 +777,7 @@ fn environment(table: &Table) -> Result<Environment, FormatError> {
 fn ci_job(table: &Table) -> Result<JobDef, FormatError> {
     let (mut name, mut command_text, mut matrix) = (None, None, Vec::new());
     let (mut need, mut secrets) = (Need::default(), Vec::new());
-    let (mut timeout_minutes, mut exclusive) = (None, false);
+    let (mut timeout_minutes, mut exclusive, mut after_merge) = (None, false, false);
     let mut paths_entry = None;
     for entry in &table.entries {
         match entry.key.as_str() {
@@ -779,6 +805,7 @@ fn ci_job(table: &Table) -> Result<JobDef, FormatError> {
                 timeout_minutes = Some(u32::try_from(minutes).unwrap_or(u32::MAX));
             }
             "exclusive" => exclusive = bool_value(entry)?,
+            "after_merge" => after_merge = bool_value(entry)?,
             // Read once the name is known, wherever it stands in the entry.
             "paths" => paths_entry = Some(entry),
             _ => return Err(unknown("[ci.jobs]", entry, CI_JOB_KEYS)),
@@ -806,6 +833,7 @@ fn ci_job(table: &Table) -> Result<JobDef, FormatError> {
         timeout_minutes,
         exclusive,
         paths,
+        after_merge,
     })
 }
 
@@ -851,6 +879,10 @@ fn ci_jobs(document: &Document, commands: &Commands) -> Result<Vec<JobDef>, Form
         |t| t.line,
     );
     project_jobs(commands.gate.as_deref(), &defs).map_err(|e| err(line, ConfigProblem::Ci(e)))?;
+    // A pull request merges on its quick checks: some job must stay one (SPEC-575 MFS-002).
+    if !defs.is_empty() && defs.iter().all(|def| def.after_merge) {
+        return Err(err(line, ConfigProblem::NoQuickCheck));
+    }
     Ok(defs)
 }
 
@@ -1050,6 +1082,7 @@ fn cd_target(env: &str, table: &Table) -> Result<CdTarget, FormatError> {
                 target.about = (!text.is_empty()).then(|| text.to_owned());
             }
             "promote" if stage == CdStage::Prod => target.promote = bool_value(entry)?,
+            "merge_first" if stage == CdStage::Dev => target.merge_first = bool_value(entry)?,
             "rollback" => target.rollback = Some(command(entry)?),
             "migrations" => {
                 let text = string_value(entry)?.trim();
@@ -1096,6 +1129,13 @@ fn cd_target(env: &str, table: &Table) -> Result<CdTarget, FormatError> {
             ConfigProblem::RollbackNeedsMigrations(name),
         ));
     }
+    // The shared staging target changes only to a verified revision and goes back to its last
+    // verified release after a failed deploy (SPEC-575 MFS-001, MFS-007).
+    if target.merge_first
+        && (target.deploy.is_none() || target.verify.is_none() || target.rollback.is_none())
+    {
+        return Err(err(table.line, ConfigProblem::MergeFirstNeedsScripts(name)));
+    }
     Ok(target)
 }
 
@@ -1140,6 +1180,19 @@ fn cd_of(document: &Document) -> Result<CdConfig, FormatError> {
             .map(|(env, table)| cd_target(env, table))
             .collect::<Result<_, _>>()?,
     };
+    // One shared staging target (SPEC-575 MFS-001).
+    if let Some(((_, table), second)) = document
+        .cd
+        .iter()
+        .zip(&config.environments)
+        .filter(|(_, target)| target.merge_first)
+        .nth(1)
+    {
+        return Err(err(
+            table.line,
+            ConfigProblem::SecondMergeFirst(format!("cd.{}", second.name)),
+        ));
+    }
     // A named drill environment is a dev-stage table of the same file (review of SPEC-415).
     for ((_, table), target) in document.cd.iter().zip(&config.environments) {
         if let Some(drill) = &target.drill
@@ -1515,6 +1568,9 @@ pub fn render_yulius_toml(config: &ProjectConfig) -> String {
         if !job.paths.is_empty() {
             let items: Vec<String> = job.paths.iter().map(|p| quote(p)).collect();
             out.push_str(&format!("paths = [{}]\n", items.join(", ")));
+        }
+        if job.after_merge {
+            out.push_str("after_merge = true\n");
         }
     }
     let profile = &config.delivery;
@@ -2240,6 +2296,7 @@ anything = { a = [1, 2.5, { b = 1979-05-27 }] }
                         timeout_minutes: None,
                         exclusive: false,
                         paths: Vec::new(),
+                        after_merge: false,
                     },
                     JobDef {
                         name: "test".to_owned(),
@@ -2253,6 +2310,7 @@ anything = { a = [1, 2.5, { b = 1979-05-27 }] }
                         timeout_minutes: Some(120),
                         exclusive: true,
                         paths: Vec::new(),
+                        after_merge: false,
                     },
                 ],
                 ..ProjectConfig::default()
@@ -2354,6 +2412,88 @@ anything = { a = [1, 2.5, { b = 1979-05-27 }] }
             Some((4, ConfigProblem::ExpectedBool("exclusive".to_owned())))
         );
         assert!(parse_yulius_toml(&job("timeout_minutes = 360\nexclusive = false")).is_ok());
+        Ok(())
+    }
+
+    /// SPEC-575 MFS-002: a job of the full suite says so with `after_merge`; its matrix jobs
+    /// inherit it, it renders back, and a value other than a boolean is refused.
+    #[test]
+    fn ci_jobs_mark_the_full_suite_after_merge() -> TestResult {
+        let text = "[[ci.jobs]]\nname = \"e2e\"\ncommand = \"scripts/e2e\"\nmatrix = \"a b\"\n\
+                    after_merge = true\n\n[[ci.jobs]]\nname = \"quick\"\ncommand = \"q\"\n";
+        let config = parse_yulius_toml(text)?;
+        assert_eq!(
+            config
+                .ci
+                .iter()
+                .map(|j| (j.name.as_str(), j.after_merge))
+                .collect::<Vec<_>>(),
+            [("e2e", true), ("quick", false)]
+        );
+        let jobs = crate::ci::project_jobs(None, &config.ci)?;
+        assert_eq!(
+            jobs.iter()
+                .map(|j| (j.name.as_str(), j.after_merge))
+                .collect::<Vec<_>>(),
+            [("e2e (a)", true), ("e2e (b)", true), ("quick", false)]
+        );
+        let rendered = render_yulius_toml(&config);
+        assert!(rendered.contains("after_merge = true\n"), "{rendered}");
+        assert_eq!(parse_yulius_toml(&rendered)?.ci, config.ci);
+        assert_eq!(
+            problem("[[ci.jobs]]\nname = \"x\"\ncommand = \"y\"\nafter_merge = \"yes\"\n"),
+            Some((4, ConfigProblem::ExpectedBool("after_merge".to_owned())))
+        );
+        // A pull request needs at least one quick check (review round 1).
+        assert_eq!(
+            problem("[[ci.jobs]]\nname = \"x\"\ncommand = \"y\"\nafter_merge = true\n"),
+            Some((1, ConfigProblem::NoQuickCheck))
+        );
+        Ok(())
+    }
+
+    /// SPEC-575 MFS-001: one dev-stage environment may be the merge-first staging target; it
+    /// deploys, verifies and rolls back, and is the only one.
+    #[test]
+    fn a_dev_stage_environment_is_the_merge_first_target() -> TestResult {
+        let staging = "[cd.staging]\nstage = \"dev\"\nmerge_first = true\ndeploy = \"d\"\n\
+                       verify = \"v\"\nrollback = \"r\"\nmigrations = \"none: stateless\"\n";
+        let cd = parse_yulius_toml_cd(&format!("[cd.dev]\n[cd.prod]\n{staging}"))?;
+        assert!(cd.target("staging").ok_or("staging")?.merge_first);
+        assert!(!cd.target("dev").ok_or("dev")?.merge_first);
+        assert_eq!(cd.merge_first().map(|t| t.name.as_str()), Some("staging"));
+        assert_eq!(parse_yulius_toml_cd("[cd.dev]\n")?.merge_first(), None);
+        // An empty `merge_first = false` table is no target.
+        assert_eq!(
+            parse_yulius_toml_cd("[cd.dev]\nmerge_first = false\n")?.merge_first(),
+            None
+        );
+        let without = |key: &str| {
+            staging
+                .lines()
+                .filter(|line| !line.starts_with(key))
+                .map(|line| format!("{line}\n"))
+                .collect::<String>()
+        };
+        for (bad, says) in [
+            (without("deploy"), "merge_first"),
+            (without("verify"), "merge_first"),
+            (without("rollback"), "merge_first"),
+            (
+                format!(
+                    "{staging}[cd.qa]\nstage = \"dev\"\nmerge_first = true\ndeploy = \"d\"\nverify = \"v\"\nrollback = \"r\"\nmigrations = \"m\"\n"
+                ),
+                "only one",
+            ),
+            ("[cd.prod]\nmerge_first = true\n".to_owned(), "merge_first"),
+            (
+                "[cd.dev]\nmerge_first = \"yes\"\n".to_owned(),
+                "merge_first",
+            ),
+        ] {
+            let error = parse_yulius_toml_cd(&bad).err().ok_or("refused")?;
+            assert!(error.to_string().contains(says), "{bad}: {error}");
+        }
         Ok(())
     }
 
