@@ -55,6 +55,8 @@ pub fn schema_version() -> u32 {
     u32::try_from(MIGRATIONS.len()).unwrap_or(u32::MAX)
 }
 
+const REUSABLE_SANDBOX_PORTS: &str = include_str!("migrations/0074_reusable_sandbox_ports.sql");
+
 /// Ordered migrations; index + 1 is the schema version stored in `PRAGMA user_version`.
 const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0001_initial.sql"),
@@ -199,6 +201,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0070_end_of_day_digest.sql"),
     // Schema version 72 (SPEC-535); 0071 is the reserved file number.
     include_str!("migrations/0071_reindex_session_passages.sql"),
+    REUSABLE_SANDBOX_PORTS,
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -389,14 +392,28 @@ fn prepare(conn: &mut Connection) -> Result<(), OpenError> {
         .enumerate()
         .skip(usize::try_from(version).unwrap_or(0))
     {
+        // Replacing a parent table with foreign keys enabled would cascade deletion
+        // into its children. SQLite checks the resulting graph before the rebuild commits.
+        let rebuild = *sql == REUSABLE_SANDBOX_PORTS;
+        if rebuild {
+            conn.pragma_update(None, "foreign_keys", "OFF")?;
+        }
         let tx = conn.transaction()?;
         tx.execute_batch(sql)?;
+        if rebuild && tx.prepare("PRAGMA foreign_key_check")?.exists([])? {
+            return Err(OpenError::Corrupt(
+                "invalid references after rebuilding sandbox ports".into(),
+            ));
+        }
         tx.pragma_update(
             None,
             "user_version",
             i64::try_from(index + 1).unwrap_or(i64::MAX),
         )?;
         tx.commit()?;
+        if rebuild {
+            conn.pragma_update(None, "foreign_keys", "ON")?;
+        }
     }
     Ok(())
 }
@@ -483,6 +500,7 @@ mod tests {
                 72,
                 include_str!("migrations/0071_reindex_session_passages.sql"),
             ),
+            (73, REUSABLE_SANDBOX_PORTS),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -491,7 +509,7 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 72, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 73, "a new migration is pinned here too");
     }
 
     #[test]

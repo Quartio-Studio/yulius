@@ -1222,6 +1222,13 @@ async fn remove_retires_the_sandbox_holder() -> TestResult {
     let removed = call(&w.h.router, Method::DELETE, &path, None, &alice).await?;
     assert_eq!(removed.status, StatusCode::NO_CONTENT);
     assert_eq!(*isolation.0.lock().map_err(|_| "lock")?, [sid.clone()]);
+    assert!(
+        w.h.app
+            .sandbox_ports(&SandboxId::parse(&sid)?)
+            .await?
+            .is_none(),
+        "the removed browser owns no range"
+    );
     let replacement = import(&w, &alice, "Quartio-Studio/shop").await?;
     assert_eq!(
         replacement.body["port_base"], 20020,

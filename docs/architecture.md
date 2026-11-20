@@ -550,7 +550,7 @@ egress proxy serves as that sandbox's browser (`EgressProxy::handle_browser`, wi
 `BrowserProxies`): it connects where the sandbox's processes could, plus the sandbox's own
 dev-server ports on the loopback and the welcome page, and never intercepts, injects or
 redacts; without its proxy a browser is not started
-([ADR-0321](decisions/0321-a-sandboxes-browser-goes-out-through-a-proxy-of-its-own.md)).
+([ADR-0321](decisions/0321-a-sandboxes-browser-goes-out-through-a-proxy-of-its-own.md)). Ranges of removed sandboxes can be reassigned once their work, holders and listeners have ended ([ADR-0393](decisions/0393-sandbox-port-ranges-are-reused-after-retirement.md)).
 The two Superagents drive it with the same tools: the
 sandbox Superagent its own sandbox's browser, the Global Superagent the browser of the project it
 names (`GLOBAL_ONLY_TOOLS`, `Action::Work` per call), both as a `SecretUser`, which says the

@@ -163,10 +163,16 @@ impl App {
         &self,
         sandbox: &SandboxId,
     ) -> AppResult<Option<std::ops::RangeInclusive<u16>>> {
-        Ok(self.deps.store.sandbox(sandbox).await?.map(|record| {
-            let of = self.sandbox_ref(&record);
-            of.port_first..=of.port_last
-        }))
+        Ok(self
+            .deps
+            .store
+            .sandbox(sandbox)
+            .await?
+            .filter(|record| record.removed_at.is_none())
+            .map(|record| {
+                let of = self.sandbox_ref(&record);
+                of.port_first..=of.port_last
+            }))
     }
 
     /// Whether `sandbox` reads as removed ([`reads_removed`]).

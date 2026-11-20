@@ -751,7 +751,10 @@ other instead of overlapping.
 
 `yulius sandbox-base status` tells whether the base matches the host.
 
-**Ports.** A sandbox's dev servers are reachable on the host's loopback only on its port range
+**Ports.** Yulius allocates the lowest available block of 20 ports from 20000 through 32759.
+A removed sandbox keeps its block until its work, holder and loopback listeners have ended.
+The next sandbox can then reuse it. Keep this span outside the host’s ephemeral port range.
+A sandbox's dev servers are reachable on the host's loopback only on its port range
 (PRJ-010, `YULIUS_PORT_BASE`…), and only while something listens on them inside. Other ports
 stay private to the sandbox. Two sandboxes can both use 3000 inside.
 

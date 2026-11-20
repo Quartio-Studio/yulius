@@ -1408,6 +1408,10 @@ impl Manager {
         };
         let entry = self.entry(&request.id);
         let mut state = entry.lock().await;
+        // Retirement may have been marked while this prepare waited for the holder.
+        if self.retired(&request.id) {
+            return Err(PrepareError::Retired);
+        }
         state.request = Some(request.clone());
         if quota && let Some(refusal) = self.quota_refusal(request, &mut state).await {
             return Err(refusal);
@@ -1656,6 +1660,15 @@ impl Manager {
             ),
             Err(error) => tracing::warn!(sandbox, %error, "the sandbox could not be retired"),
         }
+    }
+
+    /// Whether retirement bars new holders and the last holder has ended. Also
+    /// repairs a missed retirement after a restart between removing the row and marking it.
+    pub async fn retired_ports_idle(&self, sandbox: &str) -> bool {
+        if !self.retired(sandbox) {
+            self.retire(sandbox).await;
+        }
+        self.retired(sandbox) && !self.holder_live(sandbox).await
     }
 
     /// Whether `sandbox` was retired ([`Manager::retire`]).

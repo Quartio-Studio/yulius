@@ -32,6 +32,8 @@ use crate::ports::github::{GhRepo, GitHubAppConfig, RepoAccess, RulesetRequest};
 pub const PORT_RANGE_START: u16 = 20_000;
 /// Ports per sandbox (PRJ-010).
 pub const PORT_RANGE_SIZE: u16 = 20;
+/// Last port below Linux’s default ephemeral range. Allocate only whole blocks.
+const PORT_RANGE_END: u16 = 32_767;
 /// Longest GitHub repository name accepted.
 pub const MAX_REPO_NAME_BYTES: usize = 100;
 /// Most installation repositories examined by one listing (each needs a permission lookup).
@@ -715,6 +717,24 @@ impl App {
         mut record: SandboxRecord,
     ) -> AppResult<SandboxRecord> {
         let store = &self.deps.store;
+        // Older removed rows still hold their range after an upgrade. Retirement
+        // can also outlive DELETE. Recheck the lowest candidates when a range is needed.
+        for old in store.retiring_port_owners().await? {
+            if old.port_count != PORT_RANGE_SIZE || !self.still_running(&old.id).await?.is_empty() {
+                continue;
+            }
+            if let Some(isolation) = self.isolation.get()
+                && !isolation.retired_ports_idle(&old.id).await
+            {
+                continue;
+            }
+            let first = old.port_base;
+            let last = first.saturating_add(old.port_count.saturating_sub(1));
+            if self.deps.session_host.loopback_ports_idle(first..=last) {
+                store.release_removed_ports(&old.id).await?;
+                break;
+            }
+        }
         let base = slug_base(&record.repo_name);
         store
             .release_removed_slug(&base, &record.repo_owner, &record.repo_name)
@@ -736,6 +756,11 @@ impl App {
             record.port_base = store
                 .next_port_base(PORT_RANGE_START, PORT_RANGE_SIZE)
                 .await?;
+            if record.port_base > PORT_RANGE_END - (PORT_RANGE_SIZE - 1) {
+                return Err(AppError::Capacity(
+                    "no free sandbox port range below 32768".into(),
+                ));
+            }
             match store.insert_sandbox(&record).await {
                 Ok(()) => return Ok(record),
                 Err(AppError::Conflict(_)) => {
