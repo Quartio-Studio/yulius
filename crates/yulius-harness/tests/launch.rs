@@ -6,9 +6,8 @@ use std::path::PathBuf;
 use serde_json::{Value, json};
 use yulius_domain::harness::Harness;
 use yulius_harness::launch::{
-    CockpitRequest, CockpitYulius, Credential, DEFAULT_CODEX_EFFORT, DEFAULT_CODEX_MODEL,
-    LaunchError, LaunchMode, LaunchPlan, LaunchRequest, McpServerSpec, McpTransport,
-    PRIVATE_FILE_MODE, PlannedFile, plan_cockpit, plan_launch,
+    CockpitRequest, CockpitYulius, Credential, LaunchError, LaunchMode, LaunchPlan, LaunchRequest,
+    McpServerSpec, McpTransport, PRIVATE_FILE_MODE, PlannedFile, plan_cockpit, plan_launch,
 };
 use yulius_harness::secret::Secret;
 
@@ -1561,12 +1560,9 @@ fn codex_ultrafast_follows_the_assigned_subscription() -> TestResult {
     Ok(())
 }
 
-/// SPEC-511 CXD-001: a Codex task that names no model runs GPT-6.2 Astra, and one that names no
-/// effort runs at high effort, on every launch; a model or effort of its own is passed instead.
+/// SPEC-561: resolve effort from the effective model on each process start.
 #[test]
-fn codex_defaults_to_gpt_6_2_astra_at_high_effort() -> TestResult {
-    assert_eq!(DEFAULT_CODEX_MODEL, "gpt-6.2-astra");
-    assert_eq!(DEFAULT_CODEX_EFFORT, "high");
+fn codex_resolves_effort_for_new_and_resumed_tasks() -> TestResult {
     let modes = [
         LaunchMode::New {
             session_id: None,
@@ -1580,55 +1576,36 @@ fn codex_defaults_to_gpt_6_2_astra_at_high_effort() -> TestResult {
     ];
     for mode in modes {
         let mut request = codex_request(mode, true);
-        request.mcp_servers.clear();
-        request.model = None;
-        request.effort = None;
-        let plan = plan_launch(&request)?;
-        let tail: Vec<&str> = plan
-            .argv
-            .iter()
-            .skip(10)
-            .take(4)
-            .map(String::as_str)
-            .collect();
-        assert_eq!(
-            tail,
-            [
-                "-c",
-                "model_reasoning_effort=\"high\"",
-                "-m",
-                "gpt-6.2-astra"
-            ],
-            "{:?}",
-            plan.argv
-        );
-        request.model = Some("gpt-synthetic-codex".into());
-        request.effort = Some("xhigh".into());
-        let plan = plan_launch(&request)?;
-        let tail: Vec<&str> = plan
-            .argv
-            .iter()
-            .skip(10)
-            .take(4)
-            .map(String::as_str)
-            .collect();
-        assert_eq!(
-            tail,
-            [
-                "-c",
-                "model_reasoning_effort=\"xhigh\"",
-                "-m",
-                "gpt-synthetic-codex"
-            ],
-            "{:?}",
-            plan.argv
-        );
-        assert_eq!(
-            plan.argv.iter().filter(|a| a.as_str() == "-m").count(),
-            1,
-            "{:?}",
-            plan.argv
-        );
+        for (model, effort, expected_model, expected_effort) in [
+            (None, None, "gpt-6.2-astra", "xhigh"),
+            (Some("gpt-6.2-astra"), None, "gpt-6.2-astra", "xhigh"),
+            (None, Some("high"), "gpt-6.2-astra", "high"),
+            (Some("gpt-6.2-astra"), Some("low"), "gpt-6.2-astra", "low"),
+            (Some("gpt-6-astra"), None, "gpt-6-astra", "high"),
+            (Some("gpt-6.2-sol"), Some("xhigh"), "gpt-6.2-sol", "xhigh"),
+        ] {
+            request.model = model.map(str::to_owned);
+            request.effort = effort.map(str::to_owned);
+            let plan = plan_launch(&request)?;
+            let models: Vec<_> = plan
+                .argv
+                .windows(2)
+                .filter(|args| args[0] == "-m")
+                .map(|args| args[1].as_str())
+                .collect();
+            assert_eq!(models, [expected_model]);
+            let efforts: Vec<_> = plan
+                .argv
+                .windows(2)
+                .filter(|args| args[0] == "-c" && args[1].starts_with("model_reasoning_effort="))
+                .map(|args| args[1].as_str())
+                .collect();
+            assert_eq!(
+                efforts,
+                [format!("model_reasoning_effort=\"{expected_effort}\"")],
+                "{model:?} {effort:?}"
+            );
+        }
     }
     Ok(())
 }

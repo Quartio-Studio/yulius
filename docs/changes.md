@@ -7,6 +7,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-20
 
 - Task delivery links the landed commit to its CI and deployment checks, including individual reruns and skipped jobs. Projects can cite these results in a verification step without opening a bookkeeping PR (SPEC-562, task #555).
+- GPT-6.2 Astra now inherits extra high reasoning effort on new Codex launches and resumes.
+  Task details mark inherited effort so an explicit High control is identifiable (SPEC-561, task #554).
 - Intake browser tests wait up to the shared first-load budget for the sandbox task list.
   Proposal interactions keep their usual timeouts (SPEC-559, #1441).
 
