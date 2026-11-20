@@ -2186,6 +2186,16 @@ async fn a_merge_armed_on_a_run_of_skipped_jobs_happens_at_once() -> TestResult 
 /// run named, as a failed own run ends it outside a candidate.
 #[tokio::test]
 async fn a_member_whose_own_run_fails_leaves_the_candidate() -> TestResult {
+    failed_member_leaves(false).await
+}
+
+/// Issue #1398: the member's run fails during the decision about a red candidate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_member_failing_while_a_red_candidate_is_decided_leaves_the_candidate() -> TestResult {
+    failed_member_leaves(true).await
+}
+
+async fn failed_member_leaves(fail_during_decision: bool) -> TestResult {
     let f = fixture().await?;
     let app = f.h.app.clone();
     let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
@@ -2195,10 +2205,42 @@ async fn a_member_whose_own_run_fails_leaves_the_candidate() -> TestResult {
     app.ci_sync_sandbox(&sandbox).await?;
     f.arm(1, &one).await?;
     f.arm(2, &two).await?;
+    let own = if fail_during_decision {
+        Some(hold_own_run(&f, &app, 2).await?)
+    } else {
+        None
+    };
     f.advance_dev("other.txt")?;
     app.ci_sync_sandbox(&sandbox).await?;
     app.merge_armed(&f.sandbox).await;
-    assert_eq!(f.train_runs(&app).await?.len(), 1);
+    let trains = f.train_runs(&app).await?;
+    assert_eq!(trains.len(), 1);
+    if let Some(own) = own {
+        let candidate = &trains[0].id;
+        f.settle_but(&app, &own).await?;
+        assert_eq!(
+            app.deps
+                .store
+                .ci_run(candidate)
+                .await?
+                .ok_or("candidate")?
+                .state,
+            RunState::Failed
+        );
+
+        // The pass sees the member running. Its failure arrives before the pass decides
+        // whether to bisect the candidate, the order that produced the quarantine's audit.
+        let (at, go) = support::hold_point(yulius_app::race::Point::FailedTrainDeciding, candidate);
+        let pass = {
+            let app = Arc::clone(&app);
+            let sandbox = f.sandbox.clone();
+            tokio::spawn(async move { app.merge_armed(&sandbox).await })
+        };
+        support::point_reached(at).await?;
+        end_own_run(&app, &own, RunState::Failed).await?;
+        go.send(())?;
+        pass.await?;
+    }
     f.decide_until(&app, || async {
         app.ci_sync_sandbox(&sandbox).await?;
         f.settle(&app).await?;
@@ -2219,7 +2261,9 @@ async fn a_member_whose_own_run_fails_leaves_the_candidate() -> TestResult {
     )
     .await?;
     assert!(
-        dissolved.iter().any(|d| d.contains("#2's own run")),
+        dissolved
+            .iter()
+            .any(|d| d.contains("#2's own run") && d.contains("(why: member_failed)")),
         "{dissolved:?}"
     );
     Ok(())

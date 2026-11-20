@@ -9,7 +9,7 @@ status: in-progress
 
 Resolve the actionable reports in the November 20 GitHub issue inventory on green Yulius CI. Close reports superseded by a fix or a later product decision. Preserve unresolved reports and their acceptance evidence.
 
-Fixes #1441
+Fixes #1398
 
 ## Context
 
@@ -33,6 +33,8 @@ The inventory at dev 56f08db7f contained 20 issues. #1490 belongs to task #540. 
 
 - **ISS-003** The intake test waits for the first sandbox task list within the shared first-load budget. Later proposal and chaining interactions keep their ordinary assertion timeouts.
 
+- **ISS-004** When a red candidate checks a member whose own run is ending, preserve the member-failure outcome and the existing bounded wait. An active own run can still explain the red candidate.
+
 ## Plan
 
 - [x] Account for the open GitHub issues and close obsolete reports
@@ -42,6 +44,9 @@ The inventory at dev 56f08db7f contained 20 issues. #1490 belongs to task #540. 
 - [x] Reproduce the intake rail timeout with a held task list
 - [x] Verify the intake scenarios against the first-load budget
 - [x] Obtain independent approval for the intake regression
+- [ ] Reproduce the red-candidate split when its member fails
+- [ ] Preserve the known member failure in merge-train decisions
+- [ ] Obtain independent approval for the merge-train fix
 - [ ] Verify the independent fixes and reconcile the remaining issues
 
 ## Acceptance criteria
@@ -51,15 +56,21 @@ The inventory at dev 56f08db7f contained 20 issues. #1490 belongs to task #540. 
 
 - **AC-3** A delayed task list can still produce a supertask proposal. A task list that never arrives fails at the existing first-load timeout.
 
+- **AC-4** Hold the second member’s own run at the decision for a failed two-member candidate, then fail it. The first member merges, the second disarms, and the audit identifies the member failure. A genuine combination failure still takes the bisection path.
+
 ## Test plan
 
 Exercise the actual migration SQL and measure SQLite VM instructions. Run the focused Rust test with its index removed to prove the assertion. Run the intact fixture in 60 concurrent processes. Check the repository contracts, obtain independent review and verify the Yulius CI result on the merged tree. Check each linked issue, PR and existing owner's evidence separately.
 
 Hold the mock task list past the default assertion budget and run the affected intake scenario before and after the fix. Check the permanently held case and run the intake file with Chromium.
 
+Use the repository race-point fixture to exercise the order from PR #1397, and invoke the test directly outside its existing quarantine. Cover adjacent bisection, active, cancelled and errored cases.
+
 ## Decisions
 
 Use one pull request per independent concern. Retain outstanding reports that require a host measurement, another repository, an upgrade prerequisite or a product decision. Keep the SQL and production migration path unchanged for #1484.
+
+Task #541 owns #1398. Task #546 was archived before it started. Its independent successor #547 now follows #545 directly.
 
 ## Evidence
 
@@ -68,7 +79,8 @@ Use one pull request per independent concern. Retain outstanding reports that re
 - Independent review approved 8ae505256. The reviewer verified the replacement in 60 concurrent processes on one CPU and ran the adjacent version-27 upgrade through the production store entry point. The repository quick checks passed. Vidoc was disabled.
 - All 101 store library tests passed. The focused test also passed after integrating PR #1493.
 - The project mutation command reported “No mutant in the Rust lines changed against origin/dev.” The index-removal experiment above exercises the SQL regression directly.
-- Task #541 took #1441 from the queue after its first delivery. Task #544 will verify the issue after delivery.
+- Task #541 took #1441 from the queue after its first delivery. Task #544 was archived after #1495 merged, without starting a session.
 - PR #1494 merged and GitHub closed #1484. Yulius CI run 21f32f87 passed quality, both Rust shards and e2e on PR head c1c940306. Run 9f9b51c0 recorded the same passing tree on dev at 9c3b3d92f. Security was skipped with Vidoc disabled.
 - #1441 reproduced in Chromium with the task-list response held for 6.5 seconds. The five-second visibility check failed on the seeded Checkout API link before the proposal. With the shared first-load budget, all 18 scenarios in the intake file passed. In a separate probe with the response held indefinitely, the browser trace recorded a 30.0-second visibility check followed by failure on that same link. The probe was removed.
 - Independent review approved the intake fix at 015dd8f7c. The reviewer reran the delayed proposal and checked all eleven first-load assertions and the permanently held trace. The repository quick checks passed. The mutation command found no changed Rust code in this slice. Vidoc was disabled.
+- PR #1495 merged and GitHub closed #1441. The merge candidate passed quality, both Rust shards and e2e in run c4b1e6af. Yulius recorded success for head ed9bcb044 and the resulting dev commit ba2c36264 (run 38d7b047). Vidoc was disabled.
