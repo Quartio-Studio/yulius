@@ -10005,9 +10005,18 @@ async fn post_merge_evidence_recovers_the_expected_landing_after_github_returns(
     let agent = live_agent(&f, "t1", "tok-deferred-merge").await?;
     f.h.github.set_checks(&head, ChecksState::Success);
     f.h.github.fail_merged_reads.store(true, Ordering::SeqCst);
-    arm_merge(&f, &agent, &head).await?;
-    f.h.app.merge_armed(&SandboxId::parse("s1")?).await;
+    let answer = arm_merge(&f, &agent, &head).await?;
+    assert_eq!(answer["merged"], true, "immediate merge: {answer}");
     let sha = f.origin_sha("dev")?;
+    let receipt = answer["next"].as_str().ok_or("immediate merge receipt")?;
+    assert!(
+        receipt.contains(&format!(
+            "pull request #1 at {} from PR head {}",
+            &sha[..9],
+            &head[..9]
+        )),
+        "{receipt}"
+    );
     assert!(f.delivery("t1").await?["evidence"].is_null());
     let mut profile = DeliveryProfile::standard();
     profile.integration_branch = "another-base".into();
@@ -10175,11 +10184,41 @@ async fn post_merge_evidence_checks_the_pr_number_on_the_git_page() -> TestResul
     f.h.github
         .misnumber_merged_reads
         .store(true, Ordering::SeqCst);
+    let status = agent_tool(&f, &agent, "delivery_status", json!({})).await?;
+    let status = answer(&status)?;
+    assert_eq!(status["stage"], "pr_open", "{status}");
+    assert!(
+        status["pull_request"].is_null() && status["evidence"].is_null(),
+        "{status}"
+    );
+    let notes = status["notes"].as_array().ok_or("status notes")?;
+    assert!(
+        notes.iter().any(|note| note.as_str().is_some_and(
+            |text| text.contains("GitHub returned pull request #2 for the requested #1")
+        )),
+        "{status}"
+    );
+    assert!(
+        !notes.iter().any(|note| note
+            .as_str()
+            .is_some_and(|text| text.contains("is merged into"))),
+        "{status}"
+    );
+    let record =
+        f.h.app
+            .deps
+            .store
+            .delivery(&TaskId::parse("t1")?)
+            .await?
+            .ok_or("delivery")?;
+    assert_eq!(record.pr_number, Some(1));
     let page = f
         .req(Method::GET, "/api/sandboxes/s1/git", None, &f.bob)
         .await?;
     assert_eq!(page.status, StatusCode::OK);
-    assert!(f.delivery("t1").await?["evidence"].is_null());
+    let view = f.delivery("t1").await?;
+    assert_eq!(view["stage"], "pr_open");
+    assert!(view["evidence"].is_null());
     let path = format!("/api/tasks/t1/delivery/evidence/{sha}");
     assert_eq!(
         f.req(Method::GET, &path, None, &f.rita).await?.status,

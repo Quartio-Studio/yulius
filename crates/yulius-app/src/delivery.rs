@@ -1213,6 +1213,14 @@ impl SpecCheck {
     }
 }
 
+/// The refreshed delivery view and the receipt for the protected merge that produced it.
+pub(crate) struct MergedPull {
+    /// State after the merge for existing delivery callers.
+    pub view: Delivery,
+    /// The accepted PR head, returned commit and, when confirmed, its base branch.
+    pub receipt: String,
+}
+
 /// Why a merge of a task's pull request did not happen. Nothing was merged either way.
 #[derive(Debug)]
 pub(crate) enum MergeFailure {
@@ -1808,10 +1816,14 @@ impl App {
             let (owner, repo) = (&sandbox.repo_owner, &sandbox.repo_name);
             if let Some(number) = record.pr_number {
                 match github.get_pull(token, owner, repo, number).await {
-                    Ok(pull) => {
+                    Ok(pull) if pull.number == number => {
                         pr = Some(pull);
                         pr_known = true;
                     }
+                    Ok(pull) => notes.push(format!(
+                        "GitHub returned pull request #{} for the requested #{number}.",
+                        pull.number
+                    )),
                     Err(err) => notes.push(format!(
                         "Pull request #{number} can't be read: {}",
                         github_reason(&err)
@@ -2075,6 +2087,7 @@ impl App {
                 pull.number,
                 &pull.base,
                 &pull.head_sha,
+                pull.merge_commit_sha.as_deref(),
                 self.ci_gate_result(&sandbox, &pull.head_sha).await,
                 false,
                 "",
@@ -2311,6 +2324,7 @@ impl App {
                 && record.stage == DeliveryStage::PrOpen
                 && let Some(number) = record.pr_number
                 && let Ok(pull) = self.deps.github.get_pull(token, owner, name, number).await
+                && pull.number == number
             {
                 // Merged or closed outside Yulius: show it and reconcile the stage. An open one
                 // missing from the listed page has unread checks (#68).
@@ -2343,7 +2357,8 @@ impl App {
                         updated_at: self.now(),
                         ..record.clone()
                     };
-                    let merged_head = (pull.merged && pull.number == number)
+                    let merged_head = pull
+                        .merged
                         .then(|| crate::review::MergedHead::of_pull(&pull));
                     let _ = self
                         .dlv_transition_at(
@@ -4549,6 +4564,7 @@ impl App {
             .await?;
         self.dlv_merge(ctx, task, &token)
             .await
+            .map(|merged| merged.view)
             .map_err(MergeFailure::into_error)
     }
 
@@ -4564,7 +4580,7 @@ impl App {
         &self,
         ctx: &AuthContext,
         task_id: &str,
-    ) -> Result<Delivery, MergeFailure> {
+    ) -> Result<MergedPull, MergeFailure> {
         let task = self.load_task(ctx, task_id, Action::Work).await?;
         let sandbox = self.dlv_sandbox_of(&task).await?;
         // A playground merges through `playground_merge` under the armed-merge pass, which its
@@ -4733,7 +4749,7 @@ impl App {
         ctx: &AuthContext,
         task: TaskRecord,
         token: &Secret,
-    ) -> Result<Delivery, MergeFailure> {
+    ) -> Result<MergedPull, MergeFailure> {
         let sandbox = self.dlv_sandbox_of(&task).await?;
         let profile = delivery_profile(&sandbox);
         let observed = self
@@ -4799,6 +4815,12 @@ impl App {
                     &merge_sha,
                 )
             });
+        let commits = crate::agent_wait::merge_commits(
+            landing.as_ref().map(|l| l.branch.as_str()),
+            Some(&merge_sha),
+            &pull.head_sha,
+        );
+        let receipt = format!("Yulius merged pull request #{}{commits}", pull.number);
         let landing = landing.or_else(|| {
             let mut expected =
                 evidence::Landing::new(&profile.integration_branch, &pull.head_sha, &merge_sha)?;
@@ -4865,7 +4887,7 @@ impl App {
             .ok_or(AppError::NotFound)?;
         let mut view = self.delivery_view(&task, Some(&ctx.user)).await?;
         view.notes.extend(notes);
-        Ok(view)
+        Ok(MergedPull { view, receipt })
     }
 
     // ---------------------------------------------------------------- promotion
