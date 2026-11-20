@@ -941,20 +941,18 @@ fn subagent_id(file: &Path) -> Option<String> {
 
 impl Watch {
     /// What a line of the subagent `id`'s transcript says of it (SPEC-493 REV-004): the model of
-    /// an answer when it is not the one last seen, or that a usage limit cut it off.
+    /// each answer with its time, or that a usage limit cut it off. Only the store knows
+    /// which round the answer belongs to.
     fn subagent_fact(&mut self, id: &str, observed: &Observed, line: &str) -> Option<Observation> {
         match observed {
             Observed::AssistantMessage {
                 model: Some(model), ..
             } if model != "<synthetic>" => {
-                let known = self.subagent_models.get(id) == Some(model);
-                (!known).then(|| {
-                    self.subagent_models.insert(id.to_owned(), model.clone());
-                    Observation::SubagentAnswered {
-                        at: claude::record_time(line),
-                        agent_id: id.to_owned(),
-                        model: model.clone(),
-                    }
+                self.subagent_models.insert(id.to_owned(), model.clone());
+                Some(Observation::SubagentAnswered {
+                    at: claude::record_time(line),
+                    agent_id: id.to_owned(),
+                    model: model.clone(),
                 })
             }
             Observed::LimitReached {

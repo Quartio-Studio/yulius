@@ -215,8 +215,8 @@ pub enum Observation {
         /// When it was recorded, if known.
         at: Option<Timestamp>,
     },
-    /// A subagent of the session's own thread was answered by `model` (its first answer, and
-    /// each change of model since): the model that really ran a review round (SPEC-493 REV-004).
+    /// The actual model of each subagent answer. Consecutive answers on the same model
+    /// can belong to different rounds (SPEC-493 REV-004).
     SubagentAnswered {
         /// Claude Code's id of the subagent (its transcript `agent-<id>.jsonl`).
         agent_id: String,

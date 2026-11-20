@@ -493,12 +493,12 @@ async fn a_cut_off_continuation_keeps_its_recovery_on_older_hooks() -> TestResul
     for (event, body) in [("SubagentStart", &start), ("SubagentStop", &stop)] {
         h.app.cut_off_review_for_test(&task, "rev", None).await;
         let pending = (Some(String::from("rev")), true);
-        assert_eq!(h.app.review_recovery_for_test(&task), pending);
+        assert_eq!(h.app.review_recovery_for_test(&task).await, pending);
         hook_sent_at(&h.internal, "claude", event, body.clone(), Some(old)).await?;
-        after_replay.push(h.app.review_recovery_for_test(&task));
+        after_replay.push(h.app.review_recovery_for_test(&task).await);
         hook(&h.internal, event, body.clone()).await?;
         assert_eq!(
-            h.app.review_recovery_for_test(&task),
+            h.app.review_recovery_for_test(&task).await,
             (None, false),
             "{event}"
         );
@@ -552,7 +552,7 @@ async fn a_replayed_continuation_start_cannot_clear_a_later_cut_off() -> TestRes
     )
     .await?;
     assert_eq!(
-        h.app.review_recovery_for_test(&task),
+        h.app.review_recovery_for_test(&task).await,
         (Some("rev".to_owned()), true)
     );
     hook_sent_at(
@@ -563,7 +563,7 @@ async fn a_replayed_continuation_start_cannot_clear_a_later_cut_off() -> TestRes
         Some(sent + 2),
     )
     .await?;
-    assert_eq!(h.app.review_recovery_for_test(&task), (None, false));
+    assert_eq!(h.app.review_recovery_for_test(&task).await, (None, false));
     assert_eq!(rounds(&h, &task, true).await?.len(), 2);
     Ok(())
 }
@@ -586,12 +586,12 @@ async fn a_delayed_limit_from_a_completed_round_does_not_move_its_continuation()
     )
     .await?;
     h.app.cut_off_review_for_test(&task, "rev", Some(old)).await;
-    assert_eq!(h.app.review_recovery_for_test(&task), (None, false));
+    assert_eq!(h.app.review_recovery_for_test(&task).await, (None, false));
     h.app
         .cut_off_review_for_test(&task, "rev", Some(h.app.now()))
         .await;
     assert_eq!(
-        h.app.review_recovery_for_test(&task),
+        h.app.review_recovery_for_test(&task).await,
         (Some("rev".to_owned()), true)
     );
     Ok(())
@@ -642,7 +642,7 @@ async fn a_reviewer_resuming_during_the_limit_write_cancels_the_move() -> TestRe
         let record = h.store.account(&account).await?.ok_or("account")?;
         let usage = yulius_app::usage_json::from_json(record.usage_json.as_deref().unwrap_or("{}"));
         assert_eq!(usage.weekly_fable.and_then(|w| w.used_percent), Some(100.0));
-        pending.push(h.app.review_recovery_for_test(&task));
+        pending.push(h.app.review_recovery_for_test(&task).await);
     }
     assert_eq!(rounds(&h, &task, true).await?.len(), 2);
     assert_eq!(pending, [(None, false), (None, false)]);

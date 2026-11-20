@@ -1402,7 +1402,7 @@ pull request's rounds in the same transaction that records its merge
 (`transition_delivery`), so the task's next pull request starts at round 1.
 
 The transcript watch also reads each subagent of the session's own thread
-(`<session>/subagents/agent-<id>.jsonl`): the model of its answers, once per change
+(`<session>/subagents/agent-<id>.jsonl`): the model and time of each answer
 (`Observation::SubagentAnswered`), and a usage limit that refused it
 (`Observation::SubagentCutOff`). The supervisor uses the transcript time to identify the round
 that ran when the observation was written, including during restart replay

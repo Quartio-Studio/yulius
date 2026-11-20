@@ -221,7 +221,7 @@ impl App {
         };
         // A reviewer asked for again supersedes one a limit cut off: nothing tells the session
         // to resume that one any more (review round 1 of fix 7).
-        self.forget_cut_off_reviewer(&ctx.task.id);
+        self.forget_cut_off_reviewer(&ctx.task.id).await;
         let store = &self.deps.store;
         let rounds = store.review_rounds(&ctx.task.id, true).await?;
         // The round after the last one that reported: a round reported by two of its
@@ -508,13 +508,12 @@ impl App {
 
     /// Forgets `task`'s cut-off reviewer and any move due for it: a new reviewer was asked
     /// for, the session starts afresh, or its round is over (review round 1 of fix 7).
-    pub(crate) fn forget_cut_off_reviewer(&self, task: &yulius_domain::ids::TaskId) {
+    pub(crate) async fn forget_cut_off_reviewer(&self, task: &yulius_domain::ids::TaskId) {
         let Some(runtime) = self.existing_runtime(task) else {
             return;
         };
-        if let Ok(mut cut) = runtime.cut_off_reviewer.lock() {
-            *cut = None;
-        }
+        let mut cut = runtime.cut_off_reviewer.lock().await;
+        *cut = None;
         runtime
             .reviewer_move
             .store(false, std::sync::atomic::Ordering::SeqCst);
@@ -554,47 +553,25 @@ impl App {
 
     /// The cut-off reviewer `agent_id` of `task` started again or reported: nothing is left to
     /// tell a relaunch, and no move is due for it (RLM-002).
-    fn reviewer_went_on(&self, task: &yulius_domain::ids::TaskId, agent_id: &str, sent: Timestamp) {
+    async fn reviewer_went_on(
+        &self,
+        task: &yulius_domain::ids::TaskId,
+        agent_id: &str,
+        sent: Timestamp,
+    ) {
         let Some(runtime) = self.existing_runtime(task) else {
             return;
         };
-        if let Ok(mut cut) = runtime.cut_off_reviewer.lock()
-            && cut
-                .as_ref()
-                .is_some_and(|c| c.agent_id == agent_id && sent >= c.cut_off_at)
+        let mut cut = runtime.cut_off_reviewer.lock().await;
+        if cut
+            .as_ref()
+            .is_some_and(|c| c.agent_id == agent_id && sent >= c.cut_off_at)
         {
             *cut = None;
             runtime
                 .reviewer_move
                 .store(false, std::sync::atomic::Ordering::SeqCst);
         }
-    }
-
-    /// A usage limit cut off subagent `agent_id` of `task` (RLM-002). When it is an unfinished
-    /// review round's reviewer, a relaunch tells the session to resume it; and when the limit
-    /// binds the reviewer's model and not the session's (`moves`), the session moves to a
-    /// subscription that can run both: at once when its thread is idle, else at its turn's
-    /// end. A limit that binds the session's own model moves it as any limit does.
-    pub(crate) async fn reviewer_cut_off(
-        self: &Arc<Self>,
-        task: &yulius_domain::ids::TaskId,
-        reviewer: CutOffReviewer,
-        moves: bool,
-    ) {
-        let runtime = self.runtime(task);
-        if let Ok(mut cut) = runtime.cut_off_reviewer.lock() {
-            *cut = Some(reviewer);
-        }
-        if !moves {
-            return;
-        }
-        // Due now; the turn's end makes it. A round exists only with hooks (its start and its
-        // subagent are hook events), and Claude Code wakes the session's thread with the
-        // reviewer's failed task notification: that turn's Stop hook decides the move, with the
-        // gate's answer (review rounds 1 and 2 of fix 7).
-        runtime
-            .reviewer_move
-            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Injects the transcript watcher's usage-limit observation for an active reviewer in tests.
@@ -625,16 +602,13 @@ impl App {
 
     /// Reads the resume instruction's recipient and the scheduled subscription move in tests.
     #[cfg(feature = "test-support")]
-    pub fn review_recovery_for_test(
+    pub async fn review_recovery_for_test(
         &self,
         task: &yulius_domain::ids::TaskId,
     ) -> (Option<String>, bool) {
         let runtime = self.runtime(task);
-        let reviewer = runtime
-            .cut_off_reviewer
-            .lock()
-            .ok()
-            .and_then(|r| r.as_ref().map(|r| r.agent_id.clone()));
+        let cut = runtime.cut_off_reviewer.lock().await;
+        let reviewer = cut.as_ref().map(|r| r.agent_id.clone());
         (
             reviewer,
             runtime
@@ -653,7 +627,7 @@ impl App {
         current: Option<yulius_domain::ids::AccountId>,
     ) -> ReviewerMove {
         let runtime = self.runtime(&task.id);
-        let Some(reviewer) = runtime.cut_off_reviewer.lock().ok().and_then(|c| c.clone()) else {
+        let Some(reviewer) = runtime.cut_off_reviewer.lock().await.clone() else {
             return ReviewerMove::Nothing;
         };
         if self.switch_cooling(&task.id) {
@@ -666,9 +640,7 @@ impl App {
         if let Some(account) = yulius_domain::rotation::move_to_also_run(&input, family) {
             return ReviewerMove::To(account);
         }
-        if let Ok(mut cut) = runtime.cut_off_reviewer.lock() {
-            *cut = None;
-        }
+        *runtime.cut_off_reviewer.lock().await = None;
         let paste = format!("\x1b[200~{}\x1b[201~", reviewer_nowhere(&reviewer));
         let app = Arc::clone(self);
         let task = task.clone();
@@ -752,7 +724,7 @@ impl App {
         {
             Ok(ReviewStart::Ignored) => return,
             Ok(ReviewStart::Active) => {
-                self.reviewer_went_on(&ctx.task.id, id, at);
+                self.reviewer_went_on(&ctx.task.id, id, at).await;
                 return;
             }
             Ok(ReviewStart::Continued) => {
@@ -796,7 +768,7 @@ impl App {
             .end_review_round(&ctx.task.id, id, at, verdict, None)
             .await
         {
-            Ok(true) => self.reviewer_went_on(&ctx.task.id, id, at),
+            Ok(true) => self.reviewer_went_on(&ctx.task.id, id, at).await,
             Ok(false) => {}
             Err(err) => tracing::warn!(error = %err, task = %ctx.task.id, "review round not ended"),
         }

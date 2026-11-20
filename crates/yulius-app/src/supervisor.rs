@@ -195,7 +195,7 @@ pub struct TaskRuntime {
     pub proactive_switch: AtomicBool,
     /// A review round's reviewer a usage limit cut off, not yet resumed: a relaunch tells the
     /// session to resume it (SPEC-493 RLM-002).
-    pub(crate) cut_off_reviewer: Mutex<Option<crate::review::CutOffReviewer>>,
+    pub(crate) cut_off_reviewer: tokio::sync::Mutex<Option<crate::review::CutOffReviewer>>,
     /// The session moves for its cut-off reviewer at its next turn's end (RLM-002).
     pub(crate) reviewer_move: AtomicBool,
     /// The current run called a Yulius hook: its Stop hook is the turn boundary that decides
@@ -663,7 +663,7 @@ impl TaskRuntime {
             watcher_generation: AtomicU64::new(0),
             last_input_ms: AtomicI64::new(0),
             proactive_switch: AtomicBool::new(false),
-            cut_off_reviewer: Mutex::new(None),
+            cut_off_reviewer: tokio::sync::Mutex::new(None),
             reviewer_move: AtomicBool::new(false),
             hooks_seen: AtomicBool::new(false),
             at_limit: AtomicBool::new(false),
@@ -2176,12 +2176,7 @@ impl App {
         // round 1 of fix 7).
         let reviewer = match (&start, &previous) {
             (RunStart::Resume { .. } | RunStart::AfterLimit, Some(_)) => {
-                let cut = self
-                    .runtime(&task.id)
-                    .cut_off_reviewer
-                    .lock()
-                    .ok()
-                    .and_then(|cut| cut.clone());
+                let cut = self.runtime(&task.id).cut_off_reviewer.lock().await.clone();
                 match cut {
                     Some(cut) => {
                         self.open_round_reviewer(&task.id, &cut.agent_id, Some(cut.cut_off_at))
@@ -2193,7 +2188,7 @@ impl App {
             _ => None,
         };
         if reviewer.is_none() {
-            self.forget_cut_off_reviewer(&task.id);
+            self.forget_cut_off_reviewer(&task.id).await;
         }
         let resumes = |prompt: Option<&str>| {
             let prompt = if unfinished.is_empty() {
@@ -6965,6 +6960,10 @@ impl App {
         // also when no answer of it was read yet (refused at its first request, or resumed in a
         // new process); one of a subagent whose model cannot be told is no one's (review round
         // 1 of fix 7): it is never taken for the session's.
+        // Pair the eligibility read and reservation with the hooks that clear recovery.
+        // Release this lock before writing account usage so a reviewer can report meanwhile.
+        let runtime = self.runtime(task_id);
+        let mut pending = runtime.cut_off_reviewer.lock().await;
         let reviewer = self.open_round_reviewer(task_id, agent_id, *at).await;
         let scope = match (*scope, &reviewer) {
             (LimitScope::Model(None), Some(reviewer)) => {
@@ -6979,6 +6978,10 @@ impl App {
             tracing::info!(task = %task_id, %message, "a usage limit of a subagent whose model is not known: not the session's");
             return;
         }
+        if let Some(reviewer) = &reviewer {
+            *pending = Some(reviewer.clone());
+        }
+        drop(pending);
         let limit = ReportedLimit {
             scope,
             window_minutes: *window_minutes,
@@ -6990,10 +6993,6 @@ impl App {
         );
         tracing::info!(task = %task_id, %message, ?scope, binds_session, "usage limit reached by a subagent");
         if binds_session {
-            // Known before the relaunch the limit leads to, whose prompt names the reviewer.
-            if let Some(reviewer) = reviewer {
-                self.reviewer_cut_off(task_id, reviewer, false).await;
-            }
             self.limit_met(task_id, attempt, limit, *at, ObservationSource::Live)
                 .await;
             return;
@@ -7004,7 +7003,10 @@ impl App {
             self.record_limit(account, limit, family).await;
         }
         if let Some(reviewer) = reviewer {
-            self.reviewer_cut_off(task_id, reviewer, true).await;
+            let pending = runtime.cut_off_reviewer.lock().await;
+            if pending.as_ref() == Some(&reviewer) {
+                runtime.reviewer_move.store(true, Ordering::SeqCst);
+            }
         }
     }
 

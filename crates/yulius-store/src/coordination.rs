@@ -533,7 +533,8 @@ impl CoordinationStore for SqliteStore {
             {
                 tx.execute(
                     "UPDATE review_rounds SET model_answered = COALESCE(?1, model_answered), \
-                     cut_off = cut_off OR ?2 WHERE id = ?3",
+                     cut_off = cut_off OR ?2 WHERE id = ?3 \
+                     AND ((?1 IS NOT NULL AND model_answered IS NOT ?1) OR (?2 AND NOT cut_off))",
                     params![model, cut_off, id],
                 )
                 .map_err(db)?;
