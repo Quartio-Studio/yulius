@@ -906,6 +906,7 @@ async fn assert_no_playground_squash(h: &Harness, owner: &Creds) -> TestResult {
 enum AttributeFixtureChecks {
     Absent,
     Configured,
+    AddedOnTask,
     RemovedOnDev,
 }
 
@@ -918,7 +919,10 @@ async fn changed_merge_attribute(checks: AttributeFixtureChecks, added: bool) ->
     } else {
         world().await?
     };
-    let body = if checked {
+    let body = if matches!(
+        checks,
+        AttributeFixtureChecks::Configured | AttributeFixtureChecks::RemovedOnDev
+    ) {
         ci_playground(&h, &owner).await?
     } else {
         from_template(&h, &owner, "shop").await?.body
@@ -935,7 +939,11 @@ async fn changed_merge_attribute(checks: AttributeFixtureChecks, added: bool) ->
     git(&repo, &["checkout", "-q", "--detach", "origin/dev"])?;
     let worktree =
         playground_task(&h, &body, "t1", &[("notes", "base\ntask\n")], &["done"]).await?;
-    commit_in(&worktree, &[(".gitattributes", added.then_some(rule))])?;
+    let mut task_files = vec![(".gitattributes", added.then_some(rule))];
+    if checks == AttributeFixtureChecks::AddedOnTask {
+        task_files.push(("yulius.toml", Some(CI_JOBS)));
+    }
+    commit_in(&worktree, &task_files)?;
     let mut dev = push_to_dev(&h, &body, &[("notes", "integration\n")])?;
     if checks == AttributeFixtureChecks::RemovedOnDev {
         git(&repo, &["fetch", "-q", "origin"])?;
@@ -953,7 +961,10 @@ async fn changed_merge_attribute(checks: AttributeFixtureChecks, added: bool) ->
     .await?;
     assert_eq!(view.status, StatusCode::OK, "{}", view.body);
     let result = merge(&h, &owner, "t1").await?;
-    let clean = (checks == AttributeFixtureChecks::Configured) == added;
+    let clean = matches!(
+        checks,
+        AttributeFixtureChecks::Configured | AttributeFixtureChecks::AddedOnTask
+    ) == added;
     if clean {
         let merged = if checked {
             assert!(
@@ -1010,6 +1021,11 @@ async fn a_checked_squash_uses_the_task_that_adds_a_merge_attribute() -> TestRes
 #[tokio::test]
 async fn a_checked_squash_uses_the_task_that_removes_a_merge_attribute() -> TestResult {
     changed_merge_attribute(AttributeFixtureChecks::Configured, false).await
+}
+
+#[tokio::test]
+async fn a_task_adding_the_first_jobs_is_checked_with_its_own_merge_attribute() -> TestResult {
+    changed_merge_attribute(AttributeFixtureChecks::AddedOnTask, true).await
 }
 
 #[tokio::test]
