@@ -963,8 +963,15 @@ fn a_continued_session_is_compacted_after_an_unfinished_compaction() -> TestResu
             session_hash: None,
             token: None,
         };
-        app.continue_task(&ctx, id.as_str(), &ContinueTask { account_id: None })
-            .await?;
+        app.continue_task(
+            &ctx,
+            id.as_str(),
+            &ContinueTask {
+                account_id: None,
+                prompt: None,
+            },
+        )
+        .await?;
         wait_for("the continued run", Duration::from_secs(30), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
             attempts.len() == 2 && attempts[1].state == AttemptState::Live

@@ -1878,8 +1878,15 @@ const continueHandler = ({ db, p, body }) => {
   needClaude(db, providerOfTask(task));
   const account = db.accounts.find((a) => body && a.id === body.account_id);
   refuseOtherProvider(task, account);
+  const prompt = body && typeof body.prompt === 'string' ? body.prompt.trim() : '';
   touch(db, task, { status: 'starting', activity: null });
-  later(() => touch(db, task, { status: 'running', activity: 'waiting', account_label: account ? account.label : `${kindOf(providerOfTask(task))} #1` }), 1300);
+  later(() => {
+    touch(db, task, { status: 'running', activity: prompt ? 'working' : 'waiting', account_label: account ? account.label : `${kindOf(providerOfTask(task))} #1` });
+    if (prompt) {
+      const session = db.sessions.get(task.id);
+      if (session) session.appendLine(`${c(245, '>')} ${prompt}`);
+    }
+  }, 1300);
   return summary(task);
 };
 route('POST', `/api/tasks/${ID}/continue`, continueHandler);
@@ -6474,7 +6481,7 @@ class TermSession {
       return;
     }
     const bottom = this.regionBottom();
-    this.broadcast(`${E}?25l${E}${bottom};1H\r\n${line}${E}${bottom + 2};${3 + this.input.length}H${E}?25h`);
+    this.broadcast(`${E}?25l${E}1;${bottom}r${E}${bottom};1H\r\n${E}2K${line}${E}${bottom + 2};${3 + this.input.length}H${E}?25h`);
   }
 
   redrawPrompt() {
@@ -6483,7 +6490,8 @@ class TermSession {
   }
 
   canWrite() {
-    return (RANK[this.sandbox().access] || 0) >= RANK.write && LIVE.has(this.task.status)
+    return (RANK[this.sandbox().access] || 0) >= RANK.write
+      && (LIVE.has(this.task.status) || this.task.status === 'parked')
       && ownerOf(this.task).login === this.db.me.user.login;
   }
 

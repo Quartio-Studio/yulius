@@ -1094,6 +1094,82 @@ pub fn reconcile(stage: &DeliveryStage, facts: &DeliveryFacts) -> DeliveryStage 
     }
 }
 
+/// Facts deciding whether a committed local head on an existing task-owned open pull request
+/// is an eligible CI repair that Yulius publishes to its same feature branch even while
+/// verification steps remain open (SPEC-553 REP-001, ADR-0391).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenPrRepairFacts {
+    /// The pull request is open, recorded as this task's own pull request, targets the
+    /// integration branch, is not from a fork, and its head branch matches this task's
+    /// non-protected feature branch.
+    pub task_owned_open_pr: bool,
+    /// The worktree's checked-out HEAD matches `refs/heads/<task.branch>`.
+    pub on_task_branch: bool,
+    /// The worktree is confirmed clean (no uncommitted or untracked changes).
+    pub clean_worktree: bool,
+    /// The task spec is valid (or not required) and a required plan has steps.
+    pub spec_and_plan_ready: bool,
+    /// The open pull request's current head has failing CI checks (code failure, not pending,
+    /// passed, errored infrastructure, or unknown).
+    pub pr_checks_failing: bool,
+    /// Local HEAD differs from the open pull request's current head SHA.
+    pub new_commit: bool,
+    /// The open pull request's current head SHA is an ancestor of local HEAD (strict
+    /// fast-forward; never divergent, amended, rebased, or rewound).
+    pub fast_forward: bool,
+    /// A merge is currently armed for this task.
+    pub merge_armed: bool,
+    /// A human decision or explicit hold is pending (`needs_you`, held prompt, browser request,
+    /// `NeedsAttention`, pause, or a `Blocked` plan step).
+    pub human_decision_pending: bool,
+}
+
+/// Decision for publishing a local commit on an existing open pull request while plan steps
+/// remain open (SPEC-553 REP-001).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenPrRepairDecision {
+    /// Eligible: push the clean committed repair to the existing task-owned feature branch.
+    Publish,
+    /// Not an open-PR CI repair (no failing task-owned open PR, no new commit, merge armed, or
+    /// human decision pending): keep normal delivery rules.
+    NotApplicable,
+    /// The worktree is not on the task's feature branch (detached HEAD or another branch).
+    WrongBranch,
+    /// The worktree has uncommitted changes (or could not be confirmed clean).
+    DirtyWorktree,
+    /// The task spec or required plan is not valid.
+    SpecOrPlanInvalid,
+    /// The branch diverged from or rewound behind the open PR head: must not force-push.
+    Diverged,
+}
+
+/// Evaluates whether a local commit on an existing open pull request is an eligible CI repair
+/// (SPEC-553 REP-001).
+#[must_use]
+pub fn evaluate_open_pr_repair(facts: &OpenPrRepairFacts) -> OpenPrRepairDecision {
+    if !facts.task_owned_open_pr
+        || !facts.pr_checks_failing
+        || !facts.new_commit
+        || facts.merge_armed
+        || facts.human_decision_pending
+    {
+        return OpenPrRepairDecision::NotApplicable;
+    }
+    if !facts.on_task_branch {
+        return OpenPrRepairDecision::WrongBranch;
+    }
+    if !facts.clean_worktree {
+        return OpenPrRepairDecision::DirtyWorktree;
+    }
+    if !facts.spec_and_plan_ready {
+        return OpenPrRepairDecision::SpecOrPlanInvalid;
+    }
+    if !facts.fast_forward {
+        return OpenPrRepairDecision::Diverged;
+    }
+    OpenPrRepairDecision::Publish
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1721,5 +1797,85 @@ mod tests {
             .map(|i| manual_checkpoint(&format!("e{i}"), Stage::Integration))
             .collect();
         assert_eq!(many.validate(), Err(ProfileError::TooManyEnvironments));
+    }
+
+    fn eligible_repair() -> OpenPrRepairFacts {
+        OpenPrRepairFacts {
+            task_owned_open_pr: true,
+            on_task_branch: true,
+            clean_worktree: true,
+            spec_and_plan_ready: true,
+            pr_checks_failing: true,
+            new_commit: true,
+            fast_forward: true,
+            merge_armed: false,
+            human_decision_pending: false,
+        }
+    }
+
+    /// SPEC-553 REP-001: a clean committed fast-forward repair on a failing task-owned open PR
+    /// publishes, while every safeguard condition refuses with the expected decision.
+    #[test]
+    fn open_pr_repair_eligibility_enforces_every_safeguard() {
+        assert_eq!(
+            evaluate_open_pr_repair(&eligible_repair()),
+            OpenPrRepairDecision::Publish
+        );
+        for non_applicable in [
+            OpenPrRepairFacts {
+                task_owned_open_pr: false,
+                ..eligible_repair()
+            },
+            OpenPrRepairFacts {
+                pr_checks_failing: false,
+                ..eligible_repair()
+            },
+            OpenPrRepairFacts {
+                new_commit: false,
+                ..eligible_repair()
+            },
+            OpenPrRepairFacts {
+                merge_armed: true,
+                ..eligible_repair()
+            },
+            OpenPrRepairFacts {
+                human_decision_pending: true,
+                ..eligible_repair()
+            },
+        ] {
+            assert_eq!(
+                evaluate_open_pr_repair(&non_applicable),
+                OpenPrRepairDecision::NotApplicable,
+                "{non_applicable:?}"
+            );
+        }
+        assert_eq!(
+            evaluate_open_pr_repair(&OpenPrRepairFacts {
+                on_task_branch: false,
+                ..eligible_repair()
+            }),
+            OpenPrRepairDecision::WrongBranch
+        );
+        assert_eq!(
+            evaluate_open_pr_repair(&OpenPrRepairFacts {
+                clean_worktree: false,
+                ..eligible_repair()
+            }),
+            OpenPrRepairDecision::DirtyWorktree
+        );
+        assert_eq!(
+            evaluate_open_pr_repair(&OpenPrRepairFacts {
+                spec_and_plan_ready: false,
+                ..eligible_repair()
+            }),
+            OpenPrRepairDecision::SpecOrPlanInvalid
+        );
+        assert_eq!(
+            evaluate_open_pr_repair(&OpenPrRepairFacts {
+                fast_forward: false,
+                ..eligible_repair()
+            }),
+            OpenPrRepairDecision::Diverged
+        );
     }
 }
