@@ -273,6 +273,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   // tab is shown again. Reads of a sandbox never overlap, so an older one cannot answer last, and a
   // change announced during a read brings one more read after it.
   const pullWatch = new Map(); // sandbox id → { views, at, timer, due, soon }
+  const parkedReads = new Map(); // sandbox id → its in-flight task summary refresh
   const pullReads = new Map(); // sandbox id → { again } while its read runs, watched or not
   const pollPaused = () => document.hidden || navigator.onLine === false;
   // The overview takes seconds (GitHub and Git for every task), so this browser keeps what the
@@ -302,8 +303,59 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       for (const key of Object.keys(window.localStorage)) if (key.startsWith(PULLS_PREFIX)) window.localStorage.removeItem(key);
     } catch { /* storage unavailable: nothing kept */ }
   }
+  // A rerun on the same open PR changes its checks without changing the task's
+  // delivery stage. Refresh the server's parked groups alongside the watched
+  // overview. An SSE update or list replacement during this read takes precedence.
+  async function refreshParkedGroups(sandboxId) {
+    const tasks = state.tasks.get(sandboxId);
+    if (!tasks) return;
+    const watched = [...tasks.values()].filter(task => task.status === 'parked');
+    if (!watched.length) return;
+    let refreshed;
+    try {
+      const rows = await api.get(`/api/sandboxes/${enc(sandboxId)}/tasks?archived=false`);
+      refreshed = new Map(rows.map((task) => [task.id, task]));
+    } catch { /* A previously green PR is unverified until a later read succeeds. */ }
+    if (tasks !== state.tasks.get(sandboxId)) return;
+    let changed = false;
+    for (const prior of watched) {
+      if (tasks.get(prior.id) !== prior) continue;
+      const row = refreshed?.get(prior.id);
+      if (refreshed && (!row || row.status !== prior.status)) continue;
+      const open = prior.parked_pr?.open ?? (state.pulls.get(sandboxId)?.get(prior.id)?.state === 'open');
+      if (row ? typeof row.parked_needs_you !== 'boolean' : !open) continue;
+      // The group and the work that explains it come from the same verified row.
+      const updated = row ?? { ...prior, parked_needs_you: true };
+      if (JSON.stringify(updated) === JSON.stringify(prior)) continue;
+      tasks.set(prior.id, updated);
+      emit('task', updated);
+      changed = true;
+    }
+    if (changed) {
+      emit('tasks', sandboxId);
+      scheduleCountsRefresh();
+    }
+  }
+
+  function readParkedGroups(sandboxId, fresh) {
+    const running = parkedReads.get(sandboxId);
+    if (running) {
+      if (fresh) running.again = true;
+      return;
+    }
+    const read = { again: false };
+    parkedReads.set(sandboxId, read);
+    void refreshParkedGroups(sandboxId).finally(() => {
+      parkedReads.delete(sandboxId);
+      if (!read.again || !pullWatch.has(sandboxId)) return;
+      if (pollPaused()) pullWatch.get(sandboxId).due = true;
+      else readParkedGroups(sandboxId, false);
+    });
+  }
+
   /** Reads the sandbox's pull requests; `fresh`: a change was announced, so a read in flight (which may predate it) is followed by another. */
   async function loadPulls(sandboxId, fresh = false) {
+    readParkedGroups(sandboxId, fresh);
     const running = pullReads.get(sandboxId);
     if (running) {
       if (fresh) running.again = true;
@@ -371,6 +423,8 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       // watched (and so dropped): read again after it.
       const running = pullReads.get(sandboxId);
       if (running) running.again = true;
+      const parked = parkedReads.get(sandboxId);
+      if (parked) parked.again = true;
     }
     entry.views += 1;
     if (clock.now() - entry.at > 15_000) loadPulls(sandboxId);

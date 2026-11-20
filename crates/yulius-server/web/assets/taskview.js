@@ -509,11 +509,17 @@ export function mountTaskView(ctx, sandbox, task) {
     h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: sendReply }, 'Send'),
     h('button', { type: 'button', class: 'btn btn-sm', onClick: closeReply }, 'Cancel'));
   replyForm.hidden = true;
+  function currentStatusInfo() {
+    const row = ctx.store.state.tasks.get(current.sandbox_id)?.get(current.id);
+    const verified = current.status === 'parked' && row?.status === 'parked' &&
+      row.updated_at === current.updated_at && typeof row.parked_needs_you === 'boolean';
+    return taskInfo(verified ? row : current, ctx.store.state.actionRequests, ctx.store.pullsOf(current.sandbox_id).get(current.id));
+  }
   function renderAttention() {
     if (pressed) { attentionStale = true; return; }
     attentionStale = false;
     const pr = ctx.store.pullsOf(current.sandbox_id).get(current.id);
-    const info = taskInfo(current, ctx.store.state.actionRequests, pr);
+    const info = currentStatusInfo();
     // Failed checks already have their PR action in the strip.
     const waitingForReply = current.status === 'running' && current.activity === 'waiting' && info.group === 'needs' && !info.pr;
     const parkedWaiting = current.status === 'parked' && current.activity === 'waiting' && info.group === 'needs';
@@ -951,7 +957,7 @@ export function mountTaskView(ctx, sandbox, task) {
     renderQueue();
     const steps = current.steps || { done: 0, total: 0, current: null };
     // The session's state as the sidebar says it (pull request, browser request, usage limit).
-    const info = taskInfo(current, ctx.store.state.actionRequests, ctx.store.pullsOf(current.sandbox_id).get(current.id));
+    const info = currentStatusInfo();
     const total = steps.total || 0;
     const done = steps.done || 0;
     let n = total ? Math.min(total, done + (steps.current ? 1 : 0)) : 0;

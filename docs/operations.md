@@ -181,6 +181,8 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # the parked task under Needs you until a later read verifies its state.
 # Task lists and Home share the 750 ms PR lookup budget across their parked rows.
 # An unreadable PR counts toward Needs you while later healthy PRs can show Done.
+# Leave the terminal, Task Info or sidebar open across a CI rerun to see its parked group refresh.
+# When verification of a known open PR is unavailable, the task reads Needs you until the next successful read.
 # Use task_get for the current parked wait reason or tasks_list with scope needs_you
 # for the ordered page of tasks that currently need attention.
 #Environment=YULIUS_PARK_AFTER_MINUTES=30

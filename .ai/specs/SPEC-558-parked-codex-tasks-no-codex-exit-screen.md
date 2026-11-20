@@ -38,7 +38,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Give parked PRs fair status reads in task lists and Home
 - [x] Return the verified plan snapshot with parked HTTP task rows
 - [x] Filter and explain verified parked rows in MCP task reads
-- [ ] Refresh parked page and sidebar status independently of the Git overview
+- [x] Refresh parked page and sidebar status independently of the Git overview
 - [ ] Keep failed integration candidates with their original owner
 - [ ] Deliver bounded Codex goal continuation to dev
 - [ ] Recover screens from tasks parked before the upgrade
@@ -65,6 +65,10 @@ Capture a separate screen at the park decision because exiting can clear the ent
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
 ## Evidence
+
+- Browser status refresh (ADR-0417). On dev `5bdabd1a9`, three Chromium regressions failed for parked classification and status updates during an unavailable or held overview. Against the same assets the held-overview terminal and Task Info tests both stayed Done after CI failed, and a newly parked row never acquired its verified facts. The corrected `e2e run tests/parked.e2e.ts` passed all 14 cases. They cover both directions of a CI rerun, an unavailable summary, coalesced announcements, a later task event, an open plan and owner decisions.
+
+- PR #1542 delivered verified MCP filtering and wait explanations to dev at `5bdabd1a9`. The passing train ran the quality, Rust and browser jobs. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/5bdabd1a93590ac7b9d7552d2dffc1f8dbf27d2f)
 
 - The unchanged PR #1542 head `f9c6066cd` failed browser startup in CI runs `9fc67118-5115-4fdc-bac1-17a82b5ed009` and `77f4c481-947a-4168-ae52-2262b1399804`. The first run lost six tests and the second lost four different tests, including the parked-capacity check. All ten retained traces show Chromium losing startup scripts to `net::ERR_NETWORK_CHANGED` on the first open and its immediate recovery reload. Both Rust test shards passed on each run. A Chromium regression for two interrupted entry-script requests timed out at 30 seconds on that head. A preliminary two-recovery patch passed the focused cases, then exhausted three loads in under one second on real host changes. New regressions cover a three-interruption burst, persistent interruption and ordinary failure alongside a network change. The patched harness passed all 12 focused checks. The full browser suite with seven workers passed 1,186 tests with one optional model-backed test skipped.
 
