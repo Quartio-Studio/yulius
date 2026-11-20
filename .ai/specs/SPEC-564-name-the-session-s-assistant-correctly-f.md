@@ -1,6 +1,6 @@
 ---
 yulius-task: e32112f0-5b55-42c0-8d9c-80782ff60ab5
-status: in-progress
+status: done
 ---
 
 # SPEC-564 – Name the assistant in session transcripts
@@ -22,8 +22,8 @@ On dev at `a561121e7`, the shared transcript renderer in `pages/sessions.js` wri
 
 - [x] Reproduce the assistant name on dev and specify the correction
 - [x] Exercise assistant names in both transcript views
-- [ ] Render and verify the session’s assistant name
-- [ ] Obtain independent approval and record delivery evidence
+- [x] Render and verify the session’s assistant name
+- [x] Obtain independent approval and record delivery evidence
 
 ## Acceptance criteria
 
@@ -43,3 +43,6 @@ Use the existing harness name lookup and its Claude fallback for older metadata.
 - The new Chromium cases failed on dev `a561121e7` for Codex and Antigravity. Both reported Claude in the watch view, in search and on the saved transcript. Claude passed as the control.
 - `npx e2e run tests/watching.e2e.ts --grep 'watch and Sessions identify'` passed all three harness cases, including replacing a live tool call when its result arrives and searching alongside an imported Claude session.
 - A separate Playwright `ariaSnapshot()` of the first assistant entry contained the expected name in Chromium for each of the three harnesses in each view (six checks). The inputs were synthetic. Native screen-reader audio was not exercised.
+- The full watching and Sessions test files passed all 55 Chromium cases. Repository contracts and the formatting check passed with `scripts/dev quick`.
+- `scripts/dev security` reported Vidoc disabled by Yulius. `scripts/dev mutants` reported “No Rust code changed against origin/dev: nothing to mutate.”
+- Independent read-only review approved product head `d7338123b` with no findings. The reviewer reran the three harness cases and the subagent control in Chromium. All four passed.
