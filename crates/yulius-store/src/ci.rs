@@ -319,6 +319,26 @@ impl CiStore for SqliteStore {
         .await
     }
 
+    async fn has_finishing_ci_run(&self) -> AppResult<bool> {
+        self.call(|c| {
+            // The IN predicate selects the partial ci_runs_active index. Read only the indexed
+            // jobs of a running run, and stop at the first qualifying gate.
+            c.query_row(
+                "SELECT EXISTS (SELECT 1 FROM ci_runs r \
+                 WHERE r.state IN ('queued', 'running') AND r.state = 'running' AND EXISTS (\
+                   SELECT 1 FROM ci_jobs WHERE run_id = r.id GROUP BY run_id \
+                   HAVING COUNT(*) FILTER (WHERE state = 'passed' AND started_at IS NOT NULL \
+                                             AND exit_code = 0) > 0 \
+                      AND COUNT(*) FILTER (WHERE state = 'queued') = 0 \
+                      AND COUNT(*) FILTER (WHERE state = 'running') <= 1))",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(db)
+        })
+        .await
+    }
+
     async fn transition_ci_run(
         &self,
         id: &str,
@@ -1272,6 +1292,41 @@ mod tests {
                 .len(),
             1
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_finishing_ci_run_has_an_executed_pass_and_no_queued_work() -> TestResult {
+        use RunState::{Failed, Passed, Queued, Running, Skipped};
+        for (run_state, states, eligible) in [
+            (Running, vec![Passed, Running], true),
+            (Running, vec![Passed, Failed], true), // the executor is committing the red verdict
+            (Running, vec![Passed, Running, Skipped], true),
+            (Running, vec![Passed, Running, Queued], false),
+            (Running, vec![Passed, Running, Running], false),
+            (Running, vec![Skipped, Running], false),
+            (Queued, vec![Passed, Running], false),
+            (Passed, vec![Passed], false),
+        ] {
+            let store = SqliteStore::open_in_memory()?;
+            let mut run = run("r1", "a", 1)?;
+            run.state = run_state;
+            let jobs = (0_u32..)
+                .zip(states.iter())
+                .map(|(n, &state)| CiJobRecord {
+                    state,
+                    started_at: Some(Timestamp(2)),
+                    exit_code: (state == Passed).then_some(0),
+                    ..job(&format!("j{n}"), &run.id, n)
+                })
+                .collect::<Vec<_>>();
+            store.insert_ci_run(&run, &jobs).await?;
+            assert_eq!(
+                store.has_finishing_ci_run().await?,
+                eligible,
+                "{run_state:?} {states:?}"
+            );
+        }
         Ok(())
     }
 

@@ -2525,7 +2525,9 @@ commits. Nothing updates by itself: a superadmin chooses **Update now** and conf
    longest a deploy can last (twice the CI job timeout or the job timeout plus 35 minutes of
    preparation, whichever is longer, plus 5 minutes: 70 minutes by default) cancels the update
    (SPEC-342). A crash or a manual restart still ends a running deploy as `error`.
-2. **Pause tasks**: every task's agent is frozen at once with the cgroup v2 freezer (its process
+2. **Pause tasks**: during the first 30 seconds of this phase a version install also gives a CI gate
+   with passed work and only its last job left time to finish. **Continue without waiting** skips the
+   CI wait. An interrupted gate goes back through normal startup recovery. During the pause every task's agent is frozen at once with the cgroup v2 freezer (its process
    tree moves into `…/sandboxes/<sandbox>/agents/run-<attempt>` and that group is frozen; the
    ptyhost, shells and browsers keep running) and new starts queue. The agents are told nothing.
    This needs the delegated cgroups of §3 (`Delegate=yes`, `DelegateSubgroup=server`, and the

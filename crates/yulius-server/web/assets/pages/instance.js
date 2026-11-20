@@ -191,7 +191,7 @@ export function mountInstancePage(ctx) {
           : h('div', { class: 'row' }, h('strong', null, `Updating to ${shortSha(run.target.commit) || 'unknown'}`), h('span', { class: 'muted small' }, run.summary)),
         stepper(run),
         h('div', { class: 'row' },
-          run.can_proceed && run.tasks && run.tasks.waiting.length
+          run.can_proceed
             ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => proceed() }, 'Continue without waiting')
             : null,
           run.can_cancel
@@ -278,7 +278,7 @@ export function mountInstancePage(ctx) {
   async function proceed() {
     const ok = await confirmDialog({
       title: 'Restart without waiting?',
-      message: `Tasks still in a turn may see a short interruption of their ${BRAND.name} tools while the server restarts. The others stay paused as usual.`,
+      message: `Tasks still in a turn may see a short interruption of their ${BRAND.name} tools while the server restarts. The others stay paused as usual. CI runs still executing at shutdown will be queued again.`,
       confirmLabel: 'Restart now',
       danger: true,
     });

@@ -420,6 +420,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0404 -->
 - [0405](0405-a-confirmed-empty-claude-prompt-releases-a-held-message.md) releases an old keystroke hold when Claude Code shows its conversation input empty.
 <!-- ADR 0405 -->
+- [0406](0406-a-planned-install-gives-ci-on-its-last-job-a-short-grace-period.md) A planned install gives CI on its last job a short grace period.
 <!-- ADR 0406 -->
 <!-- ADR 0407 -->
 <!-- ADR 0408 -->
