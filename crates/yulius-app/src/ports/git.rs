@@ -509,6 +509,17 @@ pub trait GitPort: Send + Sync {
         let _ = (repo, url);
         unsupported("repointing origin")
     }
+    /// Paths where merging `head` into `base` conflicts; `None` for a clean merge.
+    /// Does not change the checkout, index or refs.
+    async fn merge_conflicts(
+        &self,
+        repo: &Path,
+        base: &str,
+        head: &str,
+    ) -> AppResult<Option<Vec<String>>> {
+        let _ = (repo, base, head);
+        unsupported("checking a merge for conflicts")
+    }
     /// Lands the request's head on its branch of `origin` as one commit: the tree Git's merge of
     /// `base` and `head` gives, with `base` as its only parent, pushed without forcing (SPEC-099:
     /// a playground's merge).

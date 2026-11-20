@@ -2143,7 +2143,8 @@ fn a_squash_lands_one_commit_on_the_remote_branch_or_names_the_conflicts() -> Te
     fs::write(feature.join("x.txt"), "x\n")?;
     fx.git
         .commit_all(&feature, "feat: x, part one", &author())?;
-    fs::write(feature.join("y.txt"), "y\n")?;
+    let unusual = "y with a tab\t.txt";
+    fs::write(feature.join(unusual), "y\n")?;
     fx.git
         .commit_all(&feature, "feat: x, part two", &author())?;
     let head = fx.git.rev_parse(&feature, "HEAD")?;
@@ -2215,10 +2216,11 @@ fn a_squash_lands_one_commit_on_the_remote_branch_or_names_the_conflicts() -> Te
     fx.git
         .worktree_add(&repo, &other, "feat/y", "origin/main")?;
     fs::write(other.join("x.txt"), "a different x\n")?;
+    fs::write(other.join(unusual), "a different y\n")?;
     fx.git.commit_all(&other, "feat: y", &author())?;
     assert_eq!(
         fx.git.merge_conflicts(&other, "origin/dev", "HEAD")?,
-        Some(vec!["x.txt".into()])
+        Some(vec!["x.txt".into(), unusual.into()])
     );
     assert_eq!(
         fx.raw(&other, &["status", "--porcelain"])?,
@@ -2241,7 +2243,10 @@ fn a_squash_lands_one_commit_on_the_remote_branch_or_names_the_conflicts() -> Te
             branch: "dev",
         },
     )?;
-    assert_eq!(conflict, SquashLanding::Conflict(vec!["x.txt".to_owned()]));
+    assert_eq!(
+        conflict,
+        SquashLanding::Conflict(vec!["x.txt".to_owned(), unusual.to_owned()])
+    );
     assert_eq!(fx.git.rev_parse(&remote, "dev")?, commit, "nothing pushed");
     Ok(())
 }

@@ -302,6 +302,21 @@ impl GitPort for GitAdapter {
         blocking(move || git.set_remote_url(&repo, "origin", &url)).await
     }
 
+    async fn merge_conflicts(
+        &self,
+        repo: &Path,
+        base: &str,
+        head: &str,
+    ) -> AppResult<Option<Vec<String>>> {
+        let (git, repo, base, head) = (
+            self.git(),
+            repo.to_path_buf(),
+            base.to_owned(),
+            head.to_owned(),
+        );
+        blocking(move || git.merge_conflicts(&repo, &base, &head)).await
+    }
+
     async fn land_squash(
         &self,
         repo: &Path,

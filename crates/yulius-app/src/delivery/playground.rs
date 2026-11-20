@@ -115,6 +115,27 @@ impl App {
         Ok(base)
     }
 
+    /// A diverged playground head must still merge cleanly into the refreshed base. This
+    /// is a preview for the delivery view; reading it never starts CI or lands the branch.
+    pub(super) async fn playground_conflict_preflight(
+        &self,
+        worktree: &str,
+        branch: &str,
+        integration: &str,
+        base: &str,
+        head: &str,
+    ) -> AppResult<()> {
+        if let Some(files) = self
+            .deps
+            .git
+            .merge_conflicts(Path::new(worktree), base, head)
+            .await?
+        {
+            return Err(conflict_refusal(branch, integration, &files));
+        }
+        Ok(())
+    }
+
     /// [`App::playground_merge`] for a person, who never arms a merge: while Yulius CI tests it,
     /// it is a `Conflict` saying so, unless the profile requires no checks (SPEC-163 PCI-004, as
     /// on GitHub). A merge the task's agent armed is then over.
