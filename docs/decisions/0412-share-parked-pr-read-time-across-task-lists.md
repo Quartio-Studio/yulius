@@ -6,7 +6,7 @@ Accepted for [SPEC-558](../../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exi
 
 ## Context
 
-Home and MCP can list tasks before anyone opens the sandbox Git overview. A recorded merge can precede a replacement PR on the same branch. Checking the head and its CI can take longer than rendering the rest of the list.
+Home and the sandbox task list can show tasks before anyone opens the sandbox Git overview. A recorded merge can precede a replacement PR on the same branch. Checking the head and its CI can take longer than rendering the rest of the list.
 
 ## Decision
 

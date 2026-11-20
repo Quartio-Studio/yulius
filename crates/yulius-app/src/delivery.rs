@@ -57,7 +57,7 @@ use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::permission::Action;
 use yulius_domain::spec_format::{self, MAX_CONFIG_BYTES, MAX_PATH_BYTES, SpecReport};
 use yulius_domain::steps::{DeliveryAsk, StepStatus};
-use yulius_domain::task::{AttentionFacts, PullSignal};
+use yulius_domain::task::PullSignal;
 use yulius_domain::time::Timestamp;
 
 use crate::auth::{AuthContext, rfc3339};
@@ -115,7 +115,6 @@ impl PrVerification {
 /// Identity to show even when the checks are unfinished or unreadable.
 #[derive(Default)]
 pub(crate) struct ParkedPullRead {
-    pub(crate) signal: Option<PullSignal>,
     pub(crate) pr: Option<yulius_contracts::api::tasks::ParkedPr>,
 }
 
@@ -144,7 +143,7 @@ impl ParkedPullRead {
                 .filter(|_| open || past_merge(&r.stage))
                 .map(|number| yulius_contracts::api::tasks::ParkedPr { number, open })
         });
-        Self { pr, signal: None }
+        Self { pr }
     }
 }
 
@@ -772,18 +771,6 @@ fn pull_facts(pull: &GhPull) -> PullFacts<'_> {
         base: &pull.base,
         from_fork: pull.from_fork,
     }
-}
-
-/// The eligibility fields from two observations of the same open pull.
-fn same_open_pull(before: &GhPull, after: &GhPull) -> bool {
-    is_open(after)
-        && before.number == after.number
-        && before.head_sha == after.head_sha
-        && before.head == after.head
-        && before.from_fork == after.from_fork
-        && before.base == after.base
-        && before.mergeable == after.mergeable
-        && before.behind == after.behind
 }
 
 fn is_open(pull: &GhPull) -> bool {
@@ -3952,25 +3939,25 @@ impl App {
         &self,
         task: &TaskRecord,
         facts: &ParkingPrs,
-    ) -> AppResult<Option<(u64, PullSignal)>> {
+    ) -> AppResult<Option<u64>> {
         for (number, head) in &facts.pulls {
-            if let Some(signal) = self
-                .parking_ci_signal(task, *number, head, facts.watched)
+            if self
+                .parking_ci_blocks(task, *number, head, facts.watched)
                 .await?
             {
-                return Ok(Some((*number, signal)));
+                return Ok(Some(*number));
             }
         }
         Ok(None)
     }
 
-    async fn parking_ci_signal(
+    async fn parking_ci_blocks(
         &self,
         task: &TaskRecord,
         number: u64,
         head: &str,
         watched: Option<u64>,
-    ) -> AppResult<Option<PullSignal>> {
+    ) -> AppResult<bool> {
         use yulius_domain::ci::{CiRef, RunState};
         let runs = self
             .deps
@@ -3981,11 +3968,10 @@ impl App {
             .iter()
             .find(|run| run.reference == CiRef::PullRequest(number))
         else {
-            return Ok(None);
+            return Ok(false);
         };
         match own.state {
-            RunState::Failed => Ok(Some(PullSignal::Failing)),
-            RunState::Error | RunState::Cancelled => Ok(Some(PullSignal::Errored)),
+            RunState::Failed | RunState::Error | RunState::Cancelled => Ok(true),
             RunState::Queued | RunState::Running => {
                 if watched == Some(number) && self.config.ci.enabled {
                     let recent = self
@@ -3998,12 +3984,12 @@ impl App {
                         .find(|run| run.reference == own.reference)
                         .is_some_and(|run| run.id == own.id && run.state.is_active())
                     {
-                        return Ok(None);
+                        return Ok(false);
                     }
                 }
-                Ok(Some(PullSignal::InReview))
+                Ok(true)
             }
-            RunState::Passed | RunState::Skipped => Ok(None),
+            RunState::Passed | RunState::Skipped => Ok(false),
         }
     }
 
@@ -4327,8 +4313,15 @@ impl App {
         // A title edit carries no eligibility evidence. Changes in membership,
         // head, base or mergeability do. Prefer a directly confirmed blocker
         // that still has the same facts over a newly listed, unchecked PR.
-        let unchanged =
-            |candidate: &GhPull| branch.iter().any(|prior| same_open_pull(prior, candidate));
+        let unchanged = |candidate: &GhPull| {
+            branch.iter().any(|prior| {
+                prior.number == candidate.number
+                    && prior.head_sha == candidate.head_sha
+                    && prior.base == candidate.base
+                    && prior.behind == candidate.behind
+                    && prior.mergeable == candidate.mergeable
+            })
+        };
         let changed = current.iter().rev().find(|candidate| !unchanged(candidate));
         if changed.is_some() || current.len() != branch.len() {
             // A recorded PR can be published on a different branch. In that
@@ -4345,14 +4338,12 @@ impl App {
                     .pr
                     .is_some_and(|pr| pr.open && survives(pr.number, None));
             if !blocker_survived {
-                observed.signal = None;
                 // A newly listed PR has no check result yet. A durable ordinary
                 // failure on a still-current, directly verified head takes priority.
                 facts
                     .pulls
                     .retain(|(number, sha)| survives(*number, Some(sha)));
-                if let Some((number, signal)) = self.parking_ci_blocker(task, &facts).await? {
-                    observed.signal = Some(signal);
+                if let Some(number) = self.parking_ci_blocker(task, &facts).await? {
                     observed.pr =
                         Some(yulius_contracts::api::tasks::ParkedPr { number, open: true });
                     return Ok(None);
@@ -4437,7 +4428,6 @@ impl App {
         };
         // Each unfinished or unreadable check belongs to the PR being verified.
         observed.pr = Some(yulius_contracts::api::tasks::ParkedPr { number, open: true });
-        observed.signal = None;
         let pull = read().await?;
         if !is_open(&pull) {
             observed.note_closed(&pull);
@@ -4447,12 +4437,6 @@ impl App {
             if purpose == PrVerification::Display {
                 let current = read().await?;
                 observed.note_closed(&current);
-                if same_open_pull(&pull, &current) {
-                    observed.signal = self
-                        .parking_ci_signal(task, number, &pull.head_sha, None)
-                        .await?
-                        .or(Some(PullSignal::Behind));
-                }
                 return Ok(current.merged.then_some(current));
             }
             return Ok(None);
@@ -4505,22 +4489,6 @@ impl App {
             }
             let current = read().await?;
             observed.note_closed(&current);
-            if same_open_pull(&pull, &current) {
-                let own = self
-                    .parking_ci_signal(task, number, &pull.head_sha, None)
-                    .await?;
-                let external = match gate {
-                    yulius_domain::ci::GateResult::Run(Some(_)) => None,
-                    _ if checks == "failure" => Some(PullSignal::Failing),
-                    _ if unreadable => Some(PullSignal::Errored),
-                    _ => PullSignal::from_wire("open", checks, false),
-                };
-                observed.signal = if external == Some(PullSignal::Failing) {
-                    external
-                } else {
-                    own.or(external)
-                };
-            }
             return Ok(current.merged.then_some(current));
         }
         // The local merge-driver check uses the configured integration branch. For a
@@ -4544,33 +4512,43 @@ impl App {
         // Checks and local conflict detection can take long enough for another push.
         let current = read().await?;
         observed.note_closed(&current);
-        let same_open_head = same_open_pull(&pull, &current);
+        let same_open_head = is_open(&current)
+            && !current.behind
+            && current.head_sha == pull.head_sha
+            && current.base == pull.base
+            && current.mergeable == pull.mergeable;
         if same_open_head && mergeable != Some(true) {
-            let own = self
-                .parking_ci_signal(task, number, &current.head_sha, None)
-                .await?;
-            observed.signal = own.or((mergeable == Some(false)).then_some(PullSignal::Conflicting));
             return Ok(None);
         }
         Ok((current.merged || same_open_head).then_some(current))
     }
 
     /// Local work and decisions must still be settled after GitHub replies.
-    async fn parked_local_facts(&self, task: &TaskRecord) -> AppResult<AttentionFacts> {
+    pub(crate) async fn parked_chain_clear(
+        &self,
+        task: &TaskRecord,
+        requested: Option<&std::collections::HashSet<String>>,
+        snapshot: &mut Option<Vec<crate::model::StepRecord>>,
+    ) -> AppResult<bool> {
         let store = &self.deps.store;
-        let mut facts = AttentionFacts::new(task.status, task.activity);
-        facts.browser_request = self
-            .browser_tab_requests(&task.sandbox_id)
-            .await
-            .contains(task.id.as_str())
-            || store.task_needs_you(&task.id).await?.is_some();
-        facts.held_prompt = store.pending_hold(&task.id).await?.is_some();
-        facts.plan_open = crate::sandboxes::plan_open(&store.steps(&task.id).await?);
-        if !facts.parked_has_local_work_or_request() {
-            facts.spec_unfinished = self.read_spec_unfinished(&task.id).await?;
-            facts.goal_unfinished = self.goal_unfinished_of(task).await;
+        let browser_request = match requested {
+            Some(requests) => requests.contains(task.id.as_str()),
+            None => self
+                .browser_tab_requests(&task.sandbox_id)
+                .await
+                .contains(task.id.as_str()),
+        };
+        if browser_request {
+            return Ok(false);
         }
-        Ok(facts)
+        let steps = store.steps(&task.id).await?;
+        let plan_open = crate::sandboxes::plan_open(&steps);
+        *snapshot = Some(steps);
+        Ok(!plan_open
+            && !self.read_spec_unfinished(&task.id).await?
+            && !self.goal_unfinished_of(task).await
+            && store.pending_hold(&task.id).await?.is_none()
+            && store.task_needs_you(&task.id).await?.is_none())
     }
 
     async fn parked_predecessor_done(&self, task: &TaskRecord) -> AppResult<bool> {
@@ -4580,10 +4558,7 @@ impl App {
             .as_ref()
             .is_some_and(|r| r.stage == DeliveryStage::PrOpen || past_merge(&r.stage));
         if (task.activity != Some(yulius_domain::task::Activity::Done) && !delivered)
-            || self
-                .parked_local_facts(task)
-                .await?
-                .parked_has_local_work_or_request()
+            || !self.parked_chain_clear(task, None, &mut None).await?
         {
             return Ok(false);
         }
@@ -4593,16 +4568,15 @@ impl App {
         else {
             return Ok(false);
         };
-        Ok(self
-            .parked_evidence_current(
-                task,
-                record.as_ref(),
-                Some(&prs),
-                PrVerification::Settled,
-                &mut ParkedPullRead::default(),
-            )
-            .await?
-            .0)
+        self.parked_evidence_current(
+            task,
+            record.as_ref(),
+            &prs,
+            PrVerification::Settled,
+            &mut ParkedPullRead::default(),
+            &mut None,
+        )
+        .await
     }
 
     /// Reconfirm the checkout and owner decisions before the final durable CI
@@ -4611,39 +4585,32 @@ impl App {
         &self,
         task: &TaskRecord,
         record: Option<&DeliveryRecord>,
-        prs: Option<&ParkingPrs>,
+        prs: &ParkingPrs,
         purpose: PrVerification,
         observed: &mut ParkedPullRead,
-    ) -> AppResult<(bool, AttentionFacts)> {
+        snapshot: &mut Option<Vec<crate::model::StepRecord>>,
+    ) -> AppResult<bool> {
         let store = &self.deps.store;
-        let checkout_current = if let Some(prs) = prs {
-            prs.pulls.is_empty() || self.verification_checkout(task, purpose).await? == prs.checkout
-        } else {
-            false
-        };
-        // Preserve a decision or a step opened while the PR was being read.
-        let local = self.parked_local_facts(task).await?;
-        let Some(prs) =
-            prs.filter(|_| checkout_current && !local.parked_has_local_work_or_request())
-        else {
-            return Ok((false, local));
-        };
-        if let Some((number, signal)) = self.parking_ci_blocker(task, prs).await? {
-            observed.signal = Some(signal);
+        if (!prs.pulls.is_empty()
+            && self.verification_checkout(task, purpose).await? != prs.checkout)
+            || !self.parked_chain_clear(task, None, snapshot).await?
+        {
+            return Ok(false);
+        }
+        if let Some(number) = self.parking_ci_blocker(task, prs).await? {
             observed.pr = Some(yulius_contracts::api::tasks::ParkedPr { number, open: true });
-            return Ok((false, local));
+            return Ok(false);
         }
         if store.delivery(&task.id).await?.as_ref() != record {
-            return Ok((false, local));
+            return Ok(false);
         }
         // Browser startup and checkout verification can outlast an owner resume.
-        let current = store.task(&task.id).await?.is_some_and(|current| {
+        Ok(store.task(&task.id).await?.is_some_and(|current| {
             current.status == task.status
                 && current.activity == task.activity
                 && current.branch == task.branch
                 && current.worktree_path == task.worktree_path
-        });
-        Ok((current, local))
+        }))
     }
 
     /// The part of [`App::task_is_done`] that needs no GitHub call: the turn ended, no background

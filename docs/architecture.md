@@ -2114,7 +2114,7 @@ green. Remote verification has a 750 ms deadline. Up to eight native Git operati
 run for these reads per application. Each keeps its permit until Git returns.
 [ADR-0409](decisions/0409-report-the-pr-that-blocks-a-parked-task.md)
 
-Task lists share one 750 ms PR verification budget. Each batch of up to eight rows receives a share of the remaining time. Home also divides that budget across visible projects. The MCP Needs you filter preserves activity order and stops once it fills the requested page. [ADR-0412](decisions/0412-share-parked-pr-read-time-across-task-lists.md)
+Task lists share one 750 ms PR verification budget. Each batch of up to eight rows receives a share of the remaining time. Home also divides that budget across visible projects. The HTTP response uses the plan read by the verifier for both progress and detailed steps. [ADR-0412](decisions/0412-share-parked-pr-read-time-across-task-lists.md)
 
 The end-of-day digest (`yulius-app/src/digest.rs`, SPEC-512 part 3,
 [decision 0380](decisions/0380-an-end-of-day-digest-built-from-task-state.md)) runs from the same

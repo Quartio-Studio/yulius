@@ -190,14 +190,12 @@ impl App {
             }
         }
         tasks.retain(|task| task.status != TaskStatus::Prepared && !held.contains(&task.number));
-        let facts = self
-            .list_attention_facts(&tasks, self.status_deadline())
-            .await?;
+        let groups = self.list_groups(&tasks, self.status_deadline()).await?;
         let mut numbers: Vec<_> = tasks
             .iter()
-            .zip(facts)
-            .filter_map(|(task, row)| {
-                (!matches!(row.group(), TaskGroup::Done | TaskGroup::Ended)).then_some(task.number)
+            .zip(groups)
+            .filter_map(|(task, group)| {
+                (!matches!(group, TaskGroup::Done | TaskGroup::Ended)).then_some(task.number)
             })
             .collect();
         numbers.sort_unstable();

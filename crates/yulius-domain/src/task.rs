@@ -402,8 +402,6 @@ pub enum PullSignal {
     /// Open with checks green or none required, and in conflict with its base: it cannot merge
     /// as it is, so it is not tested (SPEC-491 DON-001).
     Conflicting,
-    /// The pull request needs an update from its base branch.
-    Behind,
     /// Open with failing checks.
     Failing,
     /// Open while Yulius CI could not run its checks (disk, a timeout, the host): not the code
@@ -578,10 +576,7 @@ impl AttentionFacts {
                 } else if self.activity == Some(Activity::Done) {
                     G::Done
                 } else if self.yulius_wait
-                    || matches!(
-                        pull,
-                        PullSignal::InReview | PullSignal::Conflicting | PullSignal::Behind
-                    )
+                    || matches!(pull, PullSignal::InReview | PullSignal::Conflicting)
                 {
                     // Its agent waits for its checks or its armed merge (SPEC-130 DMD-003), or
                     // is told of the conflict by the pull request watch (SPEC-491 DON-003).

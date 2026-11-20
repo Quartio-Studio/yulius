@@ -12,7 +12,7 @@ use yulius_domain::task::{AttentionFacts, PullSignal, TaskGroup, TaskStatus};
 use crate::auth::AuthContext;
 use crate::context::App;
 use crate::error::AppResult;
-use crate::model::{SandboxRecord, TaskRecord};
+use crate::model::{SandboxRecord, StepRecord, TaskRecord};
 use tokio::sync::OnceCell;
 use tokio::time::Instant;
 use yulius_contracts::api::tasks::ParkedPr;
@@ -60,6 +60,13 @@ where
             .extend(futures::future::try_join_all(batch.iter().map(|row| read(row, until))).await?);
     }
     Ok(results)
+}
+
+/// Display result of one bounded read. An early timeout may precede the plan lookup.
+pub(crate) struct ParkedStatus {
+    pub(crate) needs_you: bool,
+    pub(crate) pr: Option<ParkedPr>,
+    pub(crate) steps: Option<Vec<StepRecord>>,
 }
 
 /// PR facts the Git overview supplied for a single task. A closed, unmerged PR
@@ -257,8 +264,8 @@ impl App {
     ) -> AppResult<Sandbox> {
         let tasks = self.deps.store.tasks(&record.id, false).await?;
         let mut counts = SandboxCounts::default();
-        for facts in self.list_attention_facts(&tasks, deadline).await? {
-            match facts.group() {
+        for group in self.list_groups(&tasks, deadline).await? {
+            match group {
                 TaskGroup::NeedsYou => counts.needs_attention += 1,
                 TaskGroup::Working => counts.running += 1,
                 TaskGroup::Queued => counts.queued += 1,
@@ -324,31 +331,30 @@ impl App {
     }
 
     /// A list shares one request snapshot per sandbox and one verification deadline.
-    pub(crate) async fn list_attention_facts(
+    pub(crate) async fn list_groups(
         &self,
         tasks: &[TaskRecord],
         deadline: Instant,
-    ) -> AppResult<Vec<AttentionFacts>> {
+    ) -> AppResult<Vec<TaskGroup>> {
         let requests = OnceCell::new();
         fair_rows(tasks, deadline, PARKED_READS, |task, until| {
-            self.display_attention(task, &requests, until)
+            let requests = &requests;
+            async move {
+                if task.status == TaskStatus::Parked {
+                    let status = self.parked_status(task, requests, until).await;
+                    return Ok(if status.needs_you {
+                        TaskGroup::NeedsYou
+                    } else {
+                        TaskGroup::Done
+                    });
+                }
+                let requested = requests
+                    .get_or_init(|| self.browser_requests(&task.sandbox_id))
+                    .await;
+                self.task_group(task, requested).await
+            }
         })
         .await
-    }
-
-    pub(crate) async fn display_attention(
-        &self,
-        task: &TaskRecord,
-        requests: &OnceCell<HashSet<String>>,
-        deadline: Instant,
-    ) -> AppResult<AttentionFacts> {
-        if task.status == TaskStatus::Parked {
-            return Ok(self.parked_status(task, requests, deadline).await.0);
-        }
-        let requested = requests
-            .get_or_init(|| self.browser_requests(&task.sandbox_id))
-            .await;
-        self.task_attention_facts(task, requested).await
     }
 
     /// Check the recorded and branch PRs before reporting Done, even before
@@ -358,49 +364,49 @@ impl App {
         task: &TaskRecord,
         requests: &OnceCell<HashSet<String>>,
         deadline: Instant,
-    ) -> (AttentionFacts, Option<ParkedPr>) {
+    ) -> ParkedStatus {
         use crate::delivery::PrVerification;
         // Seed from memory before waiting on any store or browser lock. Once
         // the record is read, a timed-out lookup can still name its delivery.
         let mut observed = self.known_parked_pull(task, None);
-        let mut facts = AttentionFacts::new(task.status, task.activity);
+        let mut steps = None;
         let check = async {
             let record = self.deps.store.delivery(&task.id).await?;
             observed = self.known_parked_pull(task, record.as_ref());
             let requested = requests
                 .get_or_init(|| self.browser_requests(&task.sandbox_id))
                 .await;
-            facts = self.task_attention_facts(task, requested).await?;
-            // Only fresh PR evidence can explain this display. A decision or open
-            // plan still determines the group when the last overview is obsolete.
-            facts.pull = None;
-            if facts.parked_has_local_work_or_request() {
-                return Ok(());
+            if !self
+                .parked_chain_clear(task, Some(requested), &mut steps)
+                .await?
+            {
+                return Ok(true);
             }
-            let prs = self
+            let Some(prs) = self
                 .verify_task_prs(
                     task,
                     record.as_ref(),
                     PrVerification::Display,
                     &mut observed,
                 )
-                .await?;
-            let (current, local) = self
+                .await?
+            else {
+                return Ok(true);
+            };
+            if !self
                 .parked_evidence_current(
                     task,
                     record.as_ref(),
-                    prs.as_ref(),
+                    &prs,
                     PrVerification::Display,
                     &mut observed,
+                    &mut steps,
                 )
-                .await?;
-            facts = local;
-            if !current {
-                if !facts.parked_has_local_work_or_request() {
-                    facts.pull = Some(observed.signal.unwrap_or(PullSignal::Errored));
-                }
-                return Ok(());
+                .await?
+            {
+                return Ok(true);
             }
+            let mut facts = AttentionFacts::new(task.status, task.activity);
             facts.pull = observed.pr.map(|pr| {
                 if pr.open {
                     PullSignal::Tested
@@ -408,12 +414,21 @@ impl App {
                     PullSignal::Merged
                 }
             });
-            Ok::<_, crate::error::AppError>(())
+            Ok::<_, crate::error::AppError>(facts.needs_you())
         };
-        if !matches!(tokio::time::timeout_at(deadline, check).await, Ok(Ok(()))) {
-            facts.pull = Some(PullSignal::Errored);
+        let needs_you = !matches!(
+            tokio::time::timeout_at(deadline, check).await,
+            Ok(Ok(false))
+        );
+        crate::race::reached(
+            crate::race::Point::ParkedStatusRead,
+            std::path::Path::new(task.id.as_str()),
+        );
+        ParkedStatus {
+            needs_you,
+            pr: observed.pr,
+            steps,
         }
-        (facts, observed.pr)
     }
 
     /// The facts that place the task in its sidebar group and explain a derived wait.

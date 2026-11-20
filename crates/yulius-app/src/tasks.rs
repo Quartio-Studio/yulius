@@ -690,8 +690,7 @@ impl App {
         .await
     }
 
-    /// Read the plan after parked PR verification, using those same steps for
-    /// progress and the detail's step list when work reopens during the lookup.
+    /// Render the plan from the parked eligibility check in both its progress and detail.
     async fn display_summary(
         &self,
         task: &TaskRecord,
@@ -699,16 +698,20 @@ impl App {
         requests: &tokio::sync::OnceCell<std::collections::HashSet<String>>,
         deadline: tokio::time::Instant,
     ) -> AppResult<(TaskSummary, Vec<StepRecord>)> {
-        let status = if task.status == TaskStatus::Parked {
+        let mut status = if task.status == TaskStatus::Parked {
             Some(self.parked_status(task, requests, deadline).await)
         } else {
             None
         };
-        let steps = self.deps.store.steps(&task.id).await?;
+        let steps = match status.as_mut().and_then(|read| read.steps.take()) {
+            Some(snapshot) => snapshot,
+            None => self.deps.store.steps(&task.id).await?,
+        };
         let mut summary = self.task_summary_among(task, project, &steps).await?;
-        if let Some((facts, pr)) = status {
-            summary.parked_needs_you = Some(facts.needs_you());
-            summary.parked_pr = pr;
+        if let Some(read) = status {
+            summary.parked_needs_you =
+                Some(read.needs_you || summary.spec_unfinished || summary.goal_unfinished);
+            summary.parked_pr = read.pr;
         }
         Ok((summary, steps))
     }
