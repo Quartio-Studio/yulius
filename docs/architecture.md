@@ -2105,7 +2105,7 @@ An externally opened replacement can hold the successor after the recorded deliv
 Yulius rechecks local work, durable CI and the owner’s state after the remote reads.
 An explicit `#N merged` rule follows the recorded merge.
 
-The individual task detail and MCP task_get verify both recorded and branch PRs.
+The individual HTTP task detail verifies both recorded and branch PRs.
 A durable ordinary CI failure identifies its own PR and head even when a newer PR is
 green. Remote verification has a 750 ms deadline. Up to eight native Git operations
 run for these reads per application. Each keeps its permit until Git returns.

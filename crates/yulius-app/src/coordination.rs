@@ -239,15 +239,8 @@ impl App {
         let task = self.agent_task_ref(caller, args).await?;
         let steps = self.deps.store.steps(&task.id).await?;
         let requested = self.browser_requests(&task.sandbox_id).await;
-        let facts = if task.status == yulius_domain::task::TaskStatus::Parked {
-            self.parked_attention(&task, &requested, crate::sandboxes::parked_pr_deadline())
-                .await?
-                .0
-        } else {
-            self.task_attention_facts(&task, &requested).await?
-        };
         let mut brief = self
-            .task_brief_shown(&task, facts, caller.task.is_none())
+            .task_brief_among(&task, &requested, caller.task.is_none())
             .await?;
         brief["prompt"] = json!(task.prompt.chars().take(4000).collect::<String>());
         brief["steps_list"] = json!(steps.iter().map(|s| json!({"id": s.id.as_str(), "title": s.title, "status": s.status, "note": s.note})).collect::<Vec<_>>());

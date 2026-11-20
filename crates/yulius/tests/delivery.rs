@@ -5200,13 +5200,11 @@ async fn overlapping_parked_status_reads_bound_git_workers_after_timeouts() -> T
         released: tokio::sync::Semaphore::new(0),
     });
     *f.git.parked_git_hold.lock().map_err(|_| "git hold")? = Some(hold.clone());
-    let caller = crate::task_message::superagent(&task.sandbox_id, &owner.user.id, "admin");
-    let args = json!({"task_id":task.id.as_str()});
     let checked = async {
         for _ in 0..2 {
-            let reads = (0..12).map(|_| app.tool_task_get(&caller, &args));
+            let reads = (0..12).map(|_| app.task_detail(&owner, task.id.as_str()));
             for row in futures::future::try_join_all(reads).await? {
-                assert_eq!(row["shows"], "needs_you");
+                assert_eq!(row.parked_needs_you, Some(true));
             }
         }
         Ok::<_, AppError>(())
@@ -5220,7 +5218,12 @@ async fn overlapping_parked_status_reads_bound_git_workers_after_timeouts() -> T
         (1..=8).contains(&started),
         "{started} Git workers started before any finished"
     );
-    assert_eq!(app.tool_task_get(&caller, &args).await?["shows"], "done");
+    assert_eq!(
+        app.task_detail(&owner, task.id.as_str())
+            .await?
+            .parked_needs_you,
+        Some(false)
+    );
     Ok(())
 }
 

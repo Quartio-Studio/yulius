@@ -3081,7 +3081,6 @@ async fn incomplete_git_overviews_preserve_the_current_parked_pr_observation() -
 async fn a_partial_overview_still_resolves_the_parked_tasks_recorded_pr() -> TestResult {
     let f = fixture().await?;
     install_compatibility_pull(&f).await?;
-    let ctx = f.h.app.agent_context(TOKEN).await?;
     let owner = idle_for_parking(&f).await?;
     f.h.app
         .deps
@@ -3110,11 +3109,6 @@ async fn a_partial_overview_still_resolves_the_parked_tasks_recorded_pr() -> Tes
         .push(unavailable);
     f.h.github
         .set_checks("abc123", yulius_app::ports::github::ChecksState::Failure);
-    let brief =
-        f.h.app
-            .tool_task_get(&ctx.caller(), &json!({"task_id": f.task.as_str()}))
-            .await?;
-    assert_eq!(brief["shows"], "needs_you", "{brief}");
     // The browser renders the task summary before its independent Git overview is available.
     let detail = f.h.app.task_detail(&owner, f.task.as_str()).await?;
     assert_eq!(serde_json::to_value(detail)?["parked_needs_you"], true);
@@ -3234,17 +3228,6 @@ async fn a_parked_task_names_the_blocking_pr_when_its_branch_has_two_open_prs() 
         let summary = serde_json::to_value(f.h.app.task_detail(&owner, f.task.as_str()).await?)?;
         assert_eq!(summary["parked_needs_you"], true);
         assert_eq!(summary["parked_pr"], json!({"number":1461, "open":true}));
-        let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
-        let brief =
-            f.h.app
-                .tool_task_get(&caller, &json!({"task_id":f.task.as_str()}))
-                .await?;
-        let reason = if behind {
-            "The parked task's pull request needs to be updated with its base branch."
-        } else {
-            "The parked task's pull request has a merge conflict."
-        };
-        assert_eq!(brief["wait_reason"], reason);
     }
     Ok(())
 }
@@ -3291,25 +3274,23 @@ async fn a_parked_task_names_the_ordinary_ci_failure_on_the_older_open_pr() -> T
     let summary = serde_json::to_value(app.task_detail(&owner, f.task.as_str()).await?)?;
     assert_eq!(summary["parked_needs_you"], true);
     assert_eq!(summary["parked_pr"], json!({"number":1461,"open":true}));
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
-    let brief = app
-        .tool_task_get(&caller, &json!({"task_id":f.task.as_str()}))
-        .await?;
+    // Losing the checks endpoint does not make the current PR disappear.
+    *f.h.github
+        .checks_error
+        .lock()
+        .map_err(|_| "checks fixture")? = Some(yulius_app::error::AppError::Upstream(
+        "checks unavailable".into(),
+    ));
+    let unavailable = serde_json::to_value(app.task_detail(&owner, f.task.as_str()).await?)?;
+    assert_eq!(unavailable["parked_needs_you"], true);
     assert_eq!(
-        brief["wait_reason"],
-        "The agent stopped and its pull request checks are failing."
+        unavailable["parked_pr"],
+        json!({"number":1461, "open":true})
     );
-    f.h.github
-        .set_checks("abc123", yulius_app::ports::github::ChecksState::Pending);
-    let pending = app
-        .tool_task_get(&caller, &json!({"task_id":f.task.as_str()}))
-        .await?;
-    assert_eq!(
-        pending["wait_reason"],
-        "The agent stopped and its pull request checks are failing."
-    );
-    f.h.github
-        .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
+    *f.h.github
+        .checks_error
+        .lock()
+        .map_err(|_| "checks fixture")? = None;
     // With CI enabled, the newest, failed run belongs to the *other* PR.
     super::delivery::insert_ci_attempt(
         &f.h.store,
@@ -3341,55 +3322,6 @@ async fn a_parked_task_names_the_ordinary_ci_failure_on_the_older_open_pr() -> T
 }
 
 #[tokio::test]
-async fn a_parked_task_explains_incomplete_ordinary_checks_on_its_head() -> TestResult {
-    use yulius_domain::ci::{CiRef, RunState};
-    let (f, owner) = owner_observed_external_pr().await?;
-    install_app(&f).await?;
-    f.h.github
-        .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
-    for (at, state, reason) in [
-        (
-            21,
-            RunState::Queued,
-            "The parked task is waiting for its pull request checks.",
-        ),
-        (
-            22,
-            RunState::Error,
-            "The parked task's pull request could not be verified.",
-        ),
-        (
-            23,
-            RunState::Cancelled,
-            "The parked task's pull request could not be verified.",
-        ),
-    ] {
-        super::delivery::insert_ci_attempt(
-            &f.h.store,
-            &format!("local-{at}"),
-            "abc123",
-            CiRef::PullRequest(1461),
-            state,
-            at,
-            &[],
-        )
-        .await?;
-        for enabled in [false, true] {
-            let mut config = f.h.app.config.clone();
-            config.ci.enabled = enabled;
-            let app = yulius_app::context::App::new(config, f.h.app.deps.clone());
-            let brief = app
-                .tool_task_get(&caller, &json!({"task_id":f.task.as_str()}))
-                .await?;
-            assert_eq!(brief["shows"], "needs_you");
-            assert_eq!(brief["wait_reason"], reason);
-        }
-    }
-    Ok(())
-}
-
-#[tokio::test]
 async fn a_parked_task_ignores_its_owner_observation_once_the_same_pr_is_merged() -> TestResult {
     use yulius_domain::delivery::DeliveryStage;
     let (f, owner) = owner_observed_external_pr().await?;
@@ -3409,6 +3341,13 @@ async fn a_parked_task_ignores_its_owner_observation_once_the_same_pr_is_merged(
     let detail = serde_json::to_value(f.h.app.task_detail(&owner, f.task.as_str()).await?)?;
     assert_eq!(detail["parked_needs_you"], false);
     assert_eq!(detail["parked_pr"], json!({"number":1461,"open":false}));
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    f.h.app
+        .tool_steps_set(&ctx, &json!({"steps":["Document the follow-up"]}))
+        .await?;
+    let detail = serde_json::to_value(f.h.app.task_detail(&owner, f.task.as_str()).await?)?;
+    assert_eq!(detail["parked_needs_you"], true);
+    assert_eq!(detail["parked_pr"], json!({"number":1461, "open":false}));
     Ok(())
 }
 
@@ -3432,16 +3371,6 @@ async fn a_parked_task_with_open_steps_keeps_its_owner_observed_pr() -> TestResu
 async fn a_parked_external_pr_seen_by_its_owner_requires_verification_without_an_app() -> TestResult
 {
     let (f, owner) = owner_observed_external_pr().await?;
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
-    let brief =
-        f.h.app
-            .tool_task_get(&caller, &json!({"task_id":f.task.as_str()}))
-            .await?;
-    assert_eq!(brief["shows"], "needs_you");
-    assert_eq!(
-        brief["wait_reason"],
-        "The agent stopped and its pull request checks are failing."
-    );
     let detail = serde_json::to_value(f.h.app.task_detail(&owner, f.task.as_str()).await?)?;
     assert_eq!(detail["parked_needs_you"], true);
     assert_eq!(detail["parked_pr"], json!({"number":1461, "open":true}));
@@ -3464,7 +3393,6 @@ async fn a_parked_external_pr_seen_by_its_owner_requires_verification_without_an
 #[tokio::test]
 async fn a_parked_external_pr_keeps_its_identity_when_the_app_has_no_installation() -> TestResult {
     let (f, owner) = owner_observed_external_pr().await?;
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     install_app(&f).await?;
     f.h.app.deps.store.set_installation(None).await?;
     f.h.github.no_installation.store(true, Ordering::SeqCst);
@@ -3478,14 +3406,6 @@ async fn a_parked_external_pr_keeps_its_identity_when_the_app_has_no_installatio
         "configured app lacks repository installation"
     );
     assert_eq!(summary["parked_needs_you"], true);
-    let brief =
-        f.h.app
-            .tool_task_get(&caller, &json!({"task_id":f.task.as_str()}))
-            .await?;
-    assert_eq!(
-        brief["wait_reason"],
-        "The agent stopped and its pull request checks are failing."
-    );
     f.h.github.no_installation.store(false, Ordering::SeqCst);
     f.h.github
         .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);

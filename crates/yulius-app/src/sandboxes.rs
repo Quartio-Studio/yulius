@@ -274,19 +274,19 @@ impl App {
 
     /// Check the recorded and branch PRs before reporting Done, even before
     /// anyone opens the sandbox Git overview. A missed deadline leaves work open.
-    pub(crate) async fn parked_attention(
+    pub(crate) async fn parked_status(
         &self,
         task: &TaskRecord,
         requested: &HashSet<String>,
         deadline: Instant,
-    ) -> AppResult<(AttentionFacts, Option<ParkedPr>)> {
+    ) -> AppResult<(bool, Option<ParkedPr>)> {
         use crate::delivery::PrVerification;
         let store = &self.deps.store;
         let mut facts = self.task_attention_facts(task, requested).await?;
         let record = store.delivery(&task.id).await?;
         let mut observed = self.known_parked_pull(task, record.as_ref());
         if facts.parked_has_local_work_or_request() {
-            return Ok((facts, observed.pr));
+            return Ok((true, observed.pr));
         }
         let check = async {
             let Some(prs) = self
@@ -309,17 +309,17 @@ impl App {
             )
             .await
         };
-        facts.pull = match tokio::time::timeout_at(deadline, check).await {
-            Ok(Ok(true)) => observed.pr.map(|pr| {
-                if pr.open {
-                    PullSignal::Tested
-                } else {
-                    PullSignal::Merged
-                }
-            }),
-            _ => Some(observed.signal.unwrap_or(PullSignal::Errored)),
-        };
-        Ok((facts, observed.pr))
+        if !matches!(tokio::time::timeout_at(deadline, check).await, Ok(Ok(true))) {
+            return Ok((true, observed.pr));
+        }
+        facts.pull = observed.pr.map(|pr| {
+            if pr.open {
+                PullSignal::Tested
+            } else {
+                PullSignal::Merged
+            }
+        });
+        Ok((facts.needs_you(), observed.pr))
     }
 
     /// The facts that place the task in its sidebar group and explain a derived wait.

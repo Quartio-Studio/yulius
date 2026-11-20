@@ -116,7 +116,6 @@ impl PrVerification {
 #[derive(Default)]
 pub(crate) struct ParkedPullRead {
     pub(crate) pr: Option<yulius_contracts::api::tasks::ParkedPr>,
-    pub(crate) signal: Option<PullSignal>,
 }
 
 impl ParkedPullRead {
@@ -144,7 +143,7 @@ impl ParkedPullRead {
                 .filter(|_| open || past_merge(&r.stage))
                 .map(|number| yulius_contracts::api::tasks::ParkedPr { number, open })
         });
-        Self { pr, signal: None }
+        Self { pr }
     }
 }
 
@@ -3925,25 +3924,25 @@ impl App {
         &self,
         task: &TaskRecord,
         facts: &ParkingPrs,
-    ) -> AppResult<Option<(u64, PullSignal)>> {
+    ) -> AppResult<Option<u64>> {
         for (number, head) in &facts.pulls {
-            if let Some(signal) = self
-                .parking_ci_signal(task, *number, head, facts.watched)
+            if self
+                .parking_ci_blocks(task, *number, head, facts.watched)
                 .await?
             {
-                return Ok(Some((*number, signal)));
+                return Ok(Some(*number));
             }
         }
         Ok(None)
     }
 
-    async fn parking_ci_signal(
+    async fn parking_ci_blocks(
         &self,
         task: &TaskRecord,
         number: u64,
         head: &str,
         watched: Option<u64>,
-    ) -> AppResult<Option<PullSignal>> {
+    ) -> AppResult<bool> {
         use yulius_domain::ci::{CiRef, RunState};
         let runs = self
             .deps
@@ -3954,11 +3953,10 @@ impl App {
             .iter()
             .find(|run| run.reference == CiRef::PullRequest(number))
         else {
-            return Ok(None);
+            return Ok(false);
         };
         match own.state {
-            RunState::Failed => Ok(Some(PullSignal::Failing)),
-            RunState::Error | RunState::Cancelled => Ok(Some(PullSignal::Errored)),
+            RunState::Failed | RunState::Error | RunState::Cancelled => Ok(true),
             RunState::Queued | RunState::Running => {
                 if watched == Some(number) && self.config.ci.enabled {
                     let recent = self
@@ -3971,12 +3969,12 @@ impl App {
                         .find(|run| run.reference == own.reference)
                         .is_some_and(|run| run.id == own.id && run.state.is_active())
                     {
-                        return Ok(None);
+                        return Ok(false);
                     }
                 }
-                Ok(Some(PullSignal::InReview))
+                Ok(true)
             }
-            RunState::Passed | RunState::Skipped => Ok(None),
+            RunState::Passed | RunState::Skipped => Ok(false),
         }
     }
 
@@ -4148,7 +4146,6 @@ impl App {
                 number: pr.number,
                 open: true,
             });
-            observed.signal = pr.signal.filter(|signal| *signal == PullSignal::Failing);
         }
         observed
     }
@@ -4284,7 +4281,6 @@ impl App {
         }
         let current = branch_pulls().await?;
         if current != branch {
-            observed.signal = None;
             if current.is_empty() && observed.pr.is_some_and(|pr| pr.open) {
                 // An external PR disappeared between reads. A closure obtained
                 // directly from get_pull is still valid evidence of what closed.
@@ -4363,10 +4359,6 @@ impl App {
                 if current != pull {
                     return Ok(current.merged.then_some(current));
                 }
-                let own = self
-                    .parking_ci_signal(task, number, &pull.head_sha, None)
-                    .await?;
-                observed.signal = own.or(Some(PullSignal::Behind));
             }
             return Ok(None);
         }
@@ -4384,11 +4376,22 @@ impl App {
         } else {
             yulius_domain::ci::GateResult::NotConfigured
         };
-        let head = self
+        let head = match self
             .checks_with_gate(sandbox, token, &pull.head_sha, gate)
-            .await?;
+            .await
+        {
+            Ok(report) => Some(report),
+            Err(_) if purpose == PrVerification::Display => None,
+            Err(err) => return Err(err),
+        };
         let profile = delivery_profile(sandbox);
-        let checks = tested_checks_word(&profile, head.word);
+        let checks = tested_checks_word(
+            &profile,
+            head.as_ref().map_or("unknown", |report| report.word),
+        );
+        let unreadable = head
+            .as_ref()
+            .is_none_or(|report| !report.unreadable.is_empty());
         let settled = match checks {
             "success" | "none" => true,
             "pending" if purpose.watches_pending(self.config.ci.enabled) => self
@@ -4401,7 +4404,7 @@ impl App {
                 .is_some_and(|run| run.sha == pull.head_sha && run.state.is_active()),
             _ => false,
         };
-        if !settled || !head.unreadable.is_empty() {
+        if !settled || unreadable {
             if purpose != PrVerification::Display {
                 return Ok(None);
             }
@@ -4411,22 +4414,6 @@ impl App {
             {
                 return Ok(current.merged.then_some(current));
             }
-            // A merge gate represents cancellation as a failed gate. This is a
-            // status explanation: keep the ordinary run's actual outcome. With
-            // independent GitHub checks, either source can establish a failure.
-            let external = match gate {
-                yulius_domain::ci::GateResult::Run(Some(_)) => None,
-                _ if !head.unreadable.is_empty() => Some(PullSignal::Errored),
-                _ => PullSignal::from_wire("open", checks, false),
-            };
-            let own = self
-                .parking_ci_signal(task, number, &current.head_sha, None)
-                .await?;
-            observed.signal = if external == Some(PullSignal::Failing) {
-                external
-            } else {
-                own.or(external)
-            };
             return Ok(None);
         }
         // The local merge-driver check uses the configured integration branch. For a
@@ -4456,10 +4443,6 @@ impl App {
             && current.base == pull.base
             && current.mergeable == pull.mergeable;
         if same_open_head && mergeable != Some(true) {
-            let own = self
-                .parking_ci_signal(task, number, &current.head_sha, None)
-                .await?;
-            observed.signal = own.or((mergeable == Some(false)).then_some(PullSignal::Conflicting));
             return Ok(None);
         }
         Ok((current.merged || same_open_head).then_some(current))
@@ -4523,9 +4506,8 @@ impl App {
         {
             return Ok(false);
         }
-        if let Some((number, signal)) = self.parking_ci_blocker(task, prs).await? {
+        if let Some(number) = self.parking_ci_blocker(task, prs).await? {
             observed.pr = Some(yulius_contracts::api::tasks::ParkedPr { number, open: true });
-            observed.signal = Some(signal);
             return Ok(false);
         }
         if store.delivery(&task.id).await?.as_ref() != record {
