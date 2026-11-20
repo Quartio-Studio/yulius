@@ -1,6 +1,6 @@
 ---
 yulius-task: 05e6cf27-efb2-4b85-904c-e8d451c75529
-status: in-progress
+status: done
 ---
 
 # SPEC-554 Fix twenty open GitHub issues
@@ -72,7 +72,7 @@ Task #494 owns #1106 and #1107.
 - [x] Correct host move and import instructions
 - [x] Preserve accurate freeze, thaw and readiness results
 - [x] Explain staged copy capacity and refuse a running update
-- [ ] Review and verify the combined fixes
+- [x] Review and verify the combined fixes
 - [x] Link all twenty fixes for closure when the reviewed delivery merges
 
 ## Acceptance criteria
@@ -116,3 +116,13 @@ Keep doctor and host setup independent of the coreutils implementation (#1166). 
 - The malformed-query HTTP regression and four neighboring GitHub sign-in tests passed. All 13 failure scanner and 15 PR watch unit cases passed.
 - Full Chromium suite on the integrated web changes: 1,154 passed, one model-dependent test skipped, 326.77 seconds.
 - #1078, #1082, #1083 and #1126. Five baseline cases failed, including both 90-second waits. All 45 hook, spec delivery and completion cases passed with the fixes. The final-file read checks the actual byte count against the limit before decoding.
+
+- First independent review requested five corrections. The overlapping subscription read failed first, then passed with the user’s intent recorded at dispatch. All 28 subscription and touch cases passed. The repeated full Chromium run again passed 1,154 with the model-dependent test skipped.
+- The retry notice regression failed on the stale error instruction. Queue notes now identify waits for this member's own run. The scanner regression failed when a passing Rust test printed a browser header. The fix also covers a failing Rust body and mixed runner output. All 642 application unit tests and 16 scanner/infrastructure unit tests passed.
+- Two simulations reproduced a frozen server left in startup or reload. All 248 migration, freeze and import cases passed after handling those transitions. Five paired onboarding and lost-run screen checks passed consecutively.
+- The second independent review approved `2431d5840`. The changed server, domain and application packages passed Clippy with warnings denied. The repository quick checks passed. Vidoc was disabled in Yulius and scanned no files.
+- Mutation testing on the review corrections reported 58 listed, 33 caught, 10 missed, zero timeouts, 15 unviable and zero unreached. Its package-only filter omitted the hook and queue integration tests. A focused sign-in mutation run separately found three caught and one that did not compile.
+- Targeted cargo-mutants runs accounted for all ten review-fix misses. The hook tests caught all five spec-reader mutations. Queue and PR-watch integration tests caught all four queue mutations. A new mixed-output scanner test caught the remaining mutation and all 14 scanner cases passed.
+- The scoped migration tests caught three thaw-report mutations, and the CLI test caught removal of the migrate entry point. Hook and delivery tests caught all 17 spec-reader, discovery and edit-gate mutations missed by either campaign. Focused browser-scanner coverage caught 15 of 16 mutations, with one that did not compile. The final independent review approved `d260aabf1`; its documentation nit was corrected by moving the title-policy comment to its test.
+- The pinned whole-branch run of `scripts/dev mutants --base 6d6168db7` reported 181 listed, 108 caught, 23 missed, zero timed out, 49 unviable and one unreached within 30 minutes. Targeted cargo-mutants runs caught all 23 originally missed (four migration, twelve spec/hook, four queue and three scanner). The sign-in run exercised the unreached query mutation. All eight viable remote/token-store mutations were caught, with one unviable.
+- On the final review changes, `scripts/dev mutants --base 2431d5840` reported seven listed, six caught, zero missed, zero timed out, one unviable and zero unreached.
