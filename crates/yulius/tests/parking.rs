@@ -1900,7 +1900,9 @@ fn a_ci_failure_before_digest_parking_reaches_the_idle_author_once() -> TestResu
             "the author to finish its turn while CI is pending",
             Duration::from_secs(30),
             || async {
-                screen(&app, &id).contains("ECHO: CI pending: answer with an echo")
+                let answer = screen(&app, &id);
+                answer.contains("ECHO: Message from admin")
+                    && answer.contains("CI pending: answer with an echo")
                     && status_of(&app, &id).await.1 == Some(Activity::Waiting)
             },
         )
