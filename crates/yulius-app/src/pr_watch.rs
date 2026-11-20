@@ -951,8 +951,9 @@ impl App {
         // A person must act first (a prompt on screen, `needs_you`): nothing is typed, the merge
         // notice included (review M1, round 2).
         let needs_you = !matches!(self.deps.store.task_needs_you(&task.id).await, Ok(None));
+        let flagged = task.activity == Some(yulius_domain::task::Activity::NeedsAttention);
         let person_must_act =
-            needs_you || task.activity == Some(yulius_domain::task::Activity::NeedsAttention);
+            needs_you || (flagged && !self.held_message_flag_outlived(task).await);
         if past_merge(&record.stage) {
             // Merged: said once, to a task the watch saw with it open (PRN-005, PRN-007).
             if !merge_untold(told, pr) {
@@ -1004,7 +1005,8 @@ impl App {
         // open PR missed turn-end publication (for example across a server restart). Reads only
         // local HEAD unless it differs from the failing PR run's SHA.
         if !armed
-            && !person_must_act
+            && !needs_you
+            && !flagged
             && let Some(failed_sha) = own
                 .as_ref()
                 .filter(|run| run.state == RunState::Failed)

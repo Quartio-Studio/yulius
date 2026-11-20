@@ -11,6 +11,8 @@ sent past their own possible draft (`task_message` with `with_draft`): it is typ
 text and both are submitted as one prompt, once their last key is more than a minute old.
 Yulius's own messages and everyone else's still wait.
 
+[ADR-0405](0405-a-confirmed-empty-claude-prompt-releases-a-held-message.md) adds screen evidence that a keystroke left the conversation input empty.
+
 ## Context
 
 Yulius types messages into running sessions through one function, `App::type_into_session`: a

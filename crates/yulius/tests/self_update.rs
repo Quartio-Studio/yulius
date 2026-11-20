@@ -175,6 +175,33 @@ async fn built(i: &Instance) -> Result<String, Box<dyn std::error::Error>> {
     Ok(run)
 }
 
+#[tokio::test]
+async fn an_unreadable_ci_observation_adds_no_install_delay() -> TestResult {
+    use yulius_app::ports::store_ext::CiStore as _;
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("yulius.db");
+    let i = instance_on(support::harness_with(support::HarnessOptions {
+        store: Some(yulius_store::SqliteStore::open(&file)?),
+        ..support::HarnessOptions::default()
+    })?)
+    .await?;
+    built(&i).await?;
+    rusqlite::Connection::open(&file)?
+        .execute("ALTER TABLE ci_jobs RENAME TO unavailable_jobs", [])?;
+    assert!(i.h.store.has_finishing_ci_run().await.is_err());
+    i.h.app.update_round().await;
+    assert_eq!(
+        i.helper.last().ok_or("build request")?.action,
+        HelperAction::Build
+    );
+    i.h.app.update_round().await;
+    assert_eq!(
+        i.helper.last().ok_or("install request")?.action,
+        HelperAction::Install
+    );
+    Ok(())
+}
+
 /// AC-OPS-6: the build is known; a newer `main` is offered to superadmins only, with a summary
 /// of its new commits; "Check now" is cached; an unreadable repository is reported.
 #[tokio::test]

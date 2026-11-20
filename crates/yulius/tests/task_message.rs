@@ -1250,6 +1250,579 @@ fn a_message_of_yulius_waits_for_a_persons_draft_and_tells_them() -> TestResult 
     Ok(())
 }
 
+/// A fake agent that draws full screen as Claude Code does: its prompt box (a row `❯` between
+/// two rules) with the cursor in it. The PTY echoes what a person types into that row, so a
+/// draft shows in the box, and `Ctrl+U` erases it there.
+fn full_screen() -> FakeAgentOptions {
+    FakeAgentOptions {
+        tui: true,
+        ..fake_agent()
+    }
+}
+
+/// [`app_behind`] with the full-screen agent, and a running task whose first turn ended: its
+/// prompt box is drawn empty.
+async fn idle_full_screen(
+    data: &Path,
+    behind_ms: i64,
+) -> Result<(Arc<App>, Arc<ShiftedClock>, TaskId, ProjectCaller), Error> {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let clock = Arc::new(ShiftedClock(AtomicI64::new(-behind_ms)));
+    let probe = Arc::new(ScriptedUsage::default());
+    let (app, _) = start_on(data, &fake, full_screen(), 0, probe, clock.clone(), |_| {}).await?;
+    let (id, caller) = running(&app, data).await?;
+    wait_for("the first turn's end", Duration::from_secs(30), || async {
+        activity(&app, &id).await.is_some_and(Activity::is_idle)
+    })
+    .await?;
+    wait_for("the empty prompt box", Duration::from_secs(30), || async {
+        fixture_box_empty(&app, &id)
+    })
+    .await?;
+    Ok((app, clock, id, caller))
+}
+
+/// The mark of a possible draft in the folder of `id`'s live run (SPEC-480 DRF-009).
+async fn draft_mark(app: &App, id: &TaskId) -> Result<std::path::PathBuf, Error> {
+    let run_dir = app.deps.store.live_attempt(id).await?.ok_or("run")?.run_dir;
+    Ok(Path::new(&run_dir).join("person-typed"))
+}
+
+/// Read the fake agent's rendered input independently of the production screen recognizer.
+fn fixture_box_empty(app: &App, id: &TaskId) -> bool {
+    screen(app, id).lines().any(|row| row.trim_end() == "❯")
+}
+
+/// Wait for the fake agent's SIGWINCH redraw before sending PTY-echoed draft text.
+async fn full_screen_terminal(
+    app: &Arc<App>,
+    caller: &ProjectCaller,
+    id: &TaskId,
+) -> Result<(AuthContext, TerminalAttach), Error> {
+    let terminal = terminal(app, caller, id).await?;
+    wait_for("the resized box", Duration::from_secs(30), || async {
+        fixture_box_empty(app, id) && screen(app, id).contains("120×40")
+    })
+    .await?;
+    Ok(terminal)
+}
+
+/// A key that leaves nothing in the prompt box: Backspace in an empty one.
+const KEY_WITHOUT_TEXT: &[u8] = b"\x7f";
+
+/// SPEC-572 AC1: a person presses a key that leaves nothing in the
+/// prompt box (Escape, an arrow, an answered dialog; here Backspace). Within the minute a
+/// message is kept out as for anyone at the keyboard. After it, the screen shows the box
+/// empty and the message is typed: the agent reads it as a prompt of its own, and the possible
+/// draft's mark is gone. Such a key used to keep every message out until a person sent a
+/// prompt (SPEC-480 took every keystroke for a possible draft).
+#[test]
+fn a_key_that_left_nothing_in_the_prompt_box_holds_no_message() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, clock, id, caller) = idle_full_screen(&data, 13 * MINUTE).await?;
+        let (ctx, attach) = full_screen_terminal(&app, &caller, &id).await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        app.terminal_input(&ctx, &attach, KEY_WITHOUT_TEXT, false)
+            .await?;
+        let mark = draft_mark(&app, &id).await?;
+        assert!(mark.exists(), "the key is a possible draft until looked at");
+
+        // Half a minute later the person may still be there: refused, whatever the screen shows.
+        let message = json!({"task_id": id.as_str(), "text": "Go on"});
+        clock.0.store(-13 * MINUTE + 30_000, Ordering::SeqCst);
+        let young = app.tool_task_message(&caller, &message).await.err();
+        assert!(
+            matches!(&young, Some(AppError::Conflict(why)) if why.contains("prompt box")),
+            "{young:?}"
+        );
+        assert!(mark.exists());
+
+        // Two minutes after the key the box is seen empty, and the message is typed.
+        clock.0.store(-11 * MINUTE, Ordering::SeqCst);
+        let answer = app.tool_task_message(&caller, &message).await?;
+        assert_eq!(answer["delivered"], "sent", "{answer}");
+        wait_for("the message", Duration::from_secs(30), || async {
+            read_alone(&app, &id, "Message from admin (through their Superagent):")
+        })
+        .await?;
+        assert!(!mark.exists(), "a box seen empty keeps no draft's mark");
+        assert_eq!(support::attention(&app, id.as_str()).await?, Value::Null);
+        assert_eq!(notices(&mut watch), Vec::<String>::new());
+        assert_eq!(audited(&data, &id)?.len(), 1);
+        app.terminal_leave(&attach).await;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-572 AC1 (the reported screen): a task whose person pressed a key that left
+/// nothing in the prompt box eleven minutes ago gets a message of Yulius's own (here the MCP
+/// watch's `/mcp reconnect yulius`) at the first pass, and nobody is asked for anything. The
+/// task used to read Needs your action, "Yulius has a message for this session and does not
+/// type it", with the command never typed.
+#[test]
+fn a_message_of_yulius_is_typed_into_a_box_a_key_left_empty() -> TestResult {
+    use yulius_app::mcp_watch::{RECONNECT_TEXT, WatchAction, WatchBounds};
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, clock, id, caller) = idle_full_screen(&data, 13 * MINUTE).await?;
+        let (ctx, attach) = full_screen_terminal(&app, &caller, &id).await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        let bounds = WatchBounds {
+            silent_after_ms: 1_000,
+            reconnect_gap_ms: 60_000,
+            ..WatchBounds::new(yulius_domain::time::Timestamp(0))
+        };
+        app.terminal_input(&ctx, &attach, KEY_WITHOUT_TEXT, false)
+            .await?;
+
+        clock.0.store(-2 * MINUTE, Ordering::SeqCst);
+        let typed = app.watch_mcp(&bounds).await;
+        assert_eq!(
+            typed,
+            vec![(id.clone(), WatchAction::Reconnect)],
+            "attention: {}",
+            support::attention(&app, id.as_str()).await?
+        );
+        wait_for(
+            "the command read alone",
+            Duration::from_secs(30),
+            || async { read_alone(&app, &id, RECONNECT_TEXT) },
+        )
+        .await?;
+        assert_eq!(support::attention(&app, id.as_str()).await?, Value::Null);
+        assert_eq!(notices(&mut watch), Vec::<String>::new());
+        app.terminal_leave(&attach).await;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-572 AC2: with the prompt box on screen, text a person typed into it
+/// and left there holds a message of Yulius's own as SPEC-480 requires: eleven minutes later
+/// nothing is typed, the task is flagged and its terminal says so. The person then clears the
+/// text and sends nothing. Within the minute the command still waits; after it the next pass
+/// types the command, which the agent reads alone, and the flag ends with the hold.
+#[test]
+fn a_draft_the_screen_shows_holds_until_it_is_cleared() -> TestResult {
+    use yulius_app::mcp_watch::{RECONNECT_TEXT, WatchAction, WatchBounds};
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, clock, id, caller) = idle_full_screen(&data, 13 * MINUTE).await?;
+        let (ctx, attach) = full_screen_terminal(&app, &caller, &id).await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        let bounds = WatchBounds {
+            silent_after_ms: 1_000,
+            reconnect_gap_ms: 60_000,
+            ..WatchBounds::new(yulius_domain::time::Timestamp(0))
+        };
+        app.terminal_input(&ctx, &attach, b"half a thought", false)
+            .await?;
+        wait_for("the draft in the box", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("❯ half a thought")
+        })
+        .await?;
+
+        // Eleven minutes later: held, flagged, said once.
+        clock.0.store(-2 * MINUTE, Ordering::SeqCst);
+        assert!(app.watch_mcp(&bounds).await.is_empty());
+        assert_eq!(
+            support::attention(&app, id.as_str()).await?,
+            held_message_flag()
+        );
+        assert_eq!(notices(&mut watch), [HELD_MESSAGE_NOTICE]);
+
+        // They clear it. Half a minute later the command still waits and the flag stands.
+        app.terminal_input(&ctx, &attach, b"\x15", false).await?;
+        wait_for("the cleared box", Duration::from_secs(30), || async {
+            fixture_box_empty(&app, &id)
+        })
+        .await?;
+        clock.0.store(-2 * MINUTE + 30_000, Ordering::SeqCst);
+        assert!(app.watch_mcp(&bounds).await.is_empty());
+        assert_eq!(
+            support::attention(&app, id.as_str()).await?,
+            held_message_flag()
+        );
+
+        // Past the minute the box is seen empty: the command is typed, the flag ends.
+        clock.0.store(-MINUTE + 1_000, Ordering::SeqCst);
+        assert_eq!(
+            app.watch_mcp(&bounds).await,
+            vec![(id.clone(), WatchAction::Reconnect)]
+        );
+        wait_for(
+            "the command read alone",
+            Duration::from_secs(30),
+            || async { read_alone(&app, &id, RECONNECT_TEXT) },
+        )
+        .await?;
+        assert_eq!(support::attention(&app, id.as_str()).await?, Value::Null);
+        let shown = screen(&app, &id);
+        assert!(!shown.contains("ECHO: half a thought"), "{shown}");
+        assert!(!draft_mark(&app, &id).await?.exists());
+        app.terminal_leave(&attach).await;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-572 AC3: a box seen empty ends the hold by itself, with no prompt hook to do it
+/// (a command Claude Code runs without one, a CLI without hooks; here an agent that runs none):
+/// a possible draft is flagged, its person clears it, and the pass that types the command has
+/// by then ended the flag and removed the draft's mark.
+#[test]
+fn a_box_seen_empty_ends_the_hold_its_mark_and_its_flag_without_a_prompt_hook() -> TestResult {
+    use yulius_app::mcp_watch::{WatchAction, WatchBounds};
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let fake =
+            locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+        let clock = Arc::new(ShiftedClock(AtomicI64::new(-13 * MINUTE)));
+        let probe = Arc::new(ScriptedUsage::default());
+        let hookless = FakeAgentOptions {
+            hooks: false,
+            ..full_screen()
+        };
+        let (app, _) = start_on(&data, &fake, hookless, 0, probe, clock.clone(), |config| {
+            config.goal_ready_ms = 2_000;
+        })
+        .await?;
+        let (id, caller) = running(&app, &data).await?;
+        // Without a Stop hook the task never reads idle; the watch asks the transcript whether
+        // a turn is open, so its passes are repeated until the first turn has closed.
+        wait_for("the empty prompt box", Duration::from_secs(30), || async {
+            fixture_box_empty(&app, &id)
+        })
+        .await?;
+        let (ctx, attach) = full_screen_terminal(&app, &caller, &id).await?;
+        let bounds = WatchBounds {
+            silent_after_ms: 1_000,
+            reconnect_gap_ms: 60_000,
+            ..WatchBounds::new(yulius_domain::time::Timestamp(0))
+        };
+        app.terminal_input(&ctx, &attach, b"half a thought", false)
+            .await?;
+        wait_for("the draft in the box", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("❯ half a thought")
+        })
+        .await?;
+        let mark = draft_mark(&app, &id).await?;
+        clock.0.store(-2 * MINUTE, Ordering::SeqCst);
+        wait_for("the flag", Duration::from_secs(30), || async {
+            app.watch_mcp(&bounds).await.is_empty()
+                && matches!(
+                    support::attention(&app, id.as_str()).await,
+                    Ok(flag) if flag == held_message_flag()
+                )
+        })
+        .await?;
+        assert!(mark.exists());
+
+        app.terminal_input(&ctx, &attach, b"\x15", false).await?;
+        wait_for("the cleared box", Duration::from_secs(30), || async {
+            fixture_box_empty(&app, &id)
+        })
+        .await?;
+        clock.0.store(-MINUTE + 1_000, Ordering::SeqCst);
+        assert_eq!(
+            app.watch_mcp(&bounds).await,
+            vec![(id.clone(), WatchAction::Reconnect)]
+        );
+        assert_eq!(support::attention(&app, id.as_str()).await?, Value::Null);
+        assert!(!mark.exists(), "the mark went with the hold");
+        app.terminal_leave(&attach).await;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-572 AC3: a key typed after the screen was read, while the hold's
+/// mark and flag are ended, is a possible draft of its own: the hold is judged again before
+/// anything is pasted, and the message is refused. The paste used to go in behind that key.
+#[test]
+fn a_key_typed_while_the_empty_box_is_taken_in_holds_the_message() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, clock, id, caller) = idle_full_screen(&data, 13 * MINUTE).await?;
+        let (ctx, attach) = full_screen_terminal(&app, &caller, &id).await?;
+        app.terminal_input(&ctx, &attach, KEY_WITHOUT_TEXT, false)
+            .await?;
+        clock.0.store(-11 * MINUTE, Ordering::SeqCst);
+        // The person's next key arrives exactly there (recorded as a viewer's key is, before
+        // it is passed on).
+        let mark = draft_mark(&app, &id).await?;
+        let interleaved = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = interleaved.clone();
+        let (typist, task, person) = (app.clone(), id.clone(), caller.user.clone());
+        yulius_app::race::on(
+            yulius_app::race::Point::BoxSeenEmpty,
+            Path::new(id.as_str()),
+            move || {
+                typist.record_typing(&task, &person);
+                observed.store(true, Ordering::SeqCst);
+            },
+        );
+        let message = json!({"task_id": id.as_str(), "text": "Go on"});
+        let refused = app.tool_task_message(&caller, &message).await.err();
+        assert!(
+            matches!(&refused, Some(AppError::Conflict(why)) if why.contains("prompt box")),
+            "{refused:?}"
+        );
+        assert!(
+            interleaved.load(Ordering::SeqCst),
+            "the new key arrived during the empty-box check"
+        );
+        assert!(mark.exists(), "the later key keeps the recovery mark");
+        // Refused before anything is written to the session, and so not audited.
+        assert!(audited(&data, &id)?.is_empty());
+        app.terminal_leave(&attach).await;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// A stash hint drawn during mark lookup invalidates the earlier empty frame.
+#[test]
+fn a_stash_hint_that_replaces_the_empty_box_proof_keeps_the_mark() -> TestResult {
+    runtime()?.block_on(async {
+        let (_dir, data) = data_dir()?;
+        let (app, clock, id, caller) = idle_full_screen(&data, 13 * MINUTE).await?;
+        let (ctx, attach) = full_screen_terminal(&app, &caller, &id).await?;
+        app.terminal_input(&ctx, &attach, KEY_WITHOUT_TEXT, false)
+            .await?;
+        clock.0.store(-11 * MINUTE, Ordering::SeqCst);
+        let runtime = app.runtime(&id);
+        yulius_app::race::on(
+            yulius_app::race::Point::BoxSeenEmpty,
+            Path::new(id.as_str()),
+            move || {
+                let hub = &runtime.hub;
+                let (_, rows) = hub.size();
+                // Retain the input cursor while changing only the hint above its upper rule.
+                hub.output(
+                    hub.output_seq() + 1,
+                    format!("\x1b7\x1b[{};1H› stashed\x1b8", rows - 4).as_bytes(),
+                );
+            },
+        );
+        let reply = send(&app, &caller, &id).await;
+        assert!(
+            screen(&app, &id).contains("› stashed"),
+            "the redraw occurred"
+        );
+        assert!(matches!(reply, Err(AppError::Conflict(_))));
+        assert!(draft_mark(&app, &id).await?.exists());
+        assert!(audited(&data, &id)?.is_empty());
+        app.terminal_leave(&attach).await;
+        stop(&app, &id).await
+    })
+}
+
+/// SPEC-572 AC3: after a restart of the server the possible draft is
+/// known from its mark alone, and the screen is the process host's snapshot of what the
+/// session showed. Clearing an old draft just before restart still holds the message
+/// for the typing minute. After a real repaint and the minute, it arrives alone.
+#[test]
+fn a_key_before_a_restart_that_left_nothing_holds_no_message() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let first = runtime()?;
+    let (port, id, caller) = first.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let clock = Arc::new(ShiftedClock(AtomicI64::new(-2 * MINUTE)));
+        let (app, port) =
+            start_on(&data, &fake, full_screen(), 0, probe, clock.clone(), |_| {}).await?;
+        let (id, caller) = running(&app, &data).await?;
+        wait_for("the first turn's end", Duration::from_secs(30), || async {
+            activity(&app, &id).await.is_some_and(Activity::is_idle) && fixture_box_empty(&app, &id)
+        })
+        .await?;
+        let (ctx, attach) = full_screen_terminal(&app, &caller, &id).await?;
+        app.terminal_input(&ctx, &attach, b"draft", false).await?;
+        wait_for("the draft to be drawn", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("❯ draft")
+        })
+        .await?;
+        clock.0.store(0, Ordering::SeqCst);
+        app.terminal_input(&ctx, &attach, b"\x15", false).await?;
+        wait_for("the cleared box", Duration::from_secs(30), || async {
+            fixture_box_empty(&app, &id)
+        })
+        .await?;
+        app.terminal_leave(&attach).await;
+        assert!(draft_mark(&app, &id).await?.exists());
+        Ok::<_, Error>((port, id, caller))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let rt = runtime()?;
+    rt.block_on(async {
+        let clock = Arc::new(ShiftedClock(AtomicI64::new(0)));
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, _) = start_on(
+            &data,
+            &fake,
+            full_screen(),
+            port,
+            probe,
+            clock.clone(),
+            |_| {},
+        )
+        .await?;
+        app.reconcile().await?;
+        wait_for(
+            "the idle host snapshot",
+            Duration::from_secs(30),
+            || async { fixture_box_empty(&app, &id) },
+        )
+        .await?;
+        let mark = draft_mark(&app, &id).await?;
+        // The restarted server knows the key from its mark: within the minute it holds.
+        let young = send(&app, &caller, &id).await.err();
+        assert!(
+            matches!(&young, Some(AppError::Conflict(why)) if why.contains("prompt box")),
+            "{young:?}"
+        );
+        assert!(mark.exists());
+        clock.0.store(2 * MINUTE, Ordering::SeqCst);
+        let answer = send(&app, &caller, &id).await?;
+        assert_eq!(answer["delivered"], "sent", "{answer}");
+        wait_for("the message", Duration::from_secs(30), || async {
+            read_alone(&app, &id, "Message from admin (through their Superagent):")
+        })
+        .await?;
+        assert!(!mark.exists(), "a box seen empty keeps no draft's mark");
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-572 AC2, with a pull request's news: text left in the prompt box holds the
+/// news of a red run, and eleven minutes later the task is flagged for it. The pull-request
+/// watch types nothing into a task whose person must act; a flag that only says a message
+/// waits does not stop it once the screen shows the box empty. The person clears their text
+/// and sends nothing: past the minute the watch types the news and the flag ends. The flag
+/// used to stand, with the news untyped, until a prompt was sent.
+#[test]
+fn a_flag_of_a_held_message_does_not_stop_the_pull_request_watch() -> TestResult {
+    use crate::pr_watch::{git, run};
+    use yulius_app::delivery::DeliveryRecord;
+    use yulius_app::pr_watch::WatchBounds;
+    use yulius_domain::ci::RunState;
+    use yulius_domain::delivery::DeliveryStage;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, clock, id, caller) = idle_full_screen(&data, 13 * MINUTE).await?;
+        // The task's pull request #7 is open at its head, and the head's run failed.
+        let task = app.deps.store.task(&id).await?.ok_or("task")?;
+        let seed_dir = data.join("seed");
+        git(&seed_dir, &["push", "-q", "origin", "main:dev"])?;
+        let repo = data
+            .join("sandboxes")
+            .join(task.sandbox_id.as_str())
+            .join("repo");
+        git(&repo, &["fetch", "-q", "origin"])?;
+        let worktree = task.worktree_path.clone().ok_or("no worktree")?;
+        let worktree = Path::new(&worktree);
+        std::fs::write(worktree.join("README.md"), "# the task's line\n")?;
+        git(worktree, &["commit", "-q", "-am", "task"])?;
+        let head = git(worktree, &["rev-parse", "HEAD"])?;
+        let open = DeliveryRecord {
+            task_id: id.clone(),
+            stage: DeliveryStage::PrOpen,
+            pr_number: Some(7),
+            updated_at: app.now(),
+        };
+        app.deps
+            .store
+            .transition_delivery(&DeliveryStage::None, &open)
+            .await?;
+        let bounds = WatchBounds::default();
+        let watched = |app: Arc<App>, id: TaskId| async move {
+            let typed = app.watch_prs(&WatchBounds::default()).await;
+            typed.into_iter().find(|(task, _)| *task == id)
+        };
+        assert!(app.watch_prs(&bounds).await.is_empty(), "no news yet");
+
+        let (ctx, attach) = full_screen_terminal(&app, &caller, &id).await?;
+        app.terminal_input(&ctx, &attach, b"half a thought", false)
+            .await?;
+        wait_for("the draft in the box", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("❯ half a thought")
+        })
+        .await?;
+        let (red, job) = run(&task.sandbox_id, "r1", &head, RunState::Failed, None, 1);
+        app.deps.store.insert_ci_run(&red, &[job]).await?;
+
+        // Eleven minutes after their last key: the news waits and the task is flagged; a
+        // second pass leaves it so.
+        clock.0.store(-2 * MINUTE, Ordering::SeqCst);
+        for _ in 0..2 {
+            assert_eq!(watched(app.clone(), id.clone()).await, None);
+            assert_eq!(
+                support::attention(&app, id.as_str()).await?,
+                held_message_flag()
+            );
+        }
+
+        // They clear it and send nothing; past the minute the watch types the news.
+        app.terminal_input(&ctx, &attach, b"\x15", false).await?;
+        wait_for("the cleared box", Duration::from_secs(30), || async {
+            fixture_box_empty(&app, &id)
+        })
+        .await?;
+        clock.0.store(-MINUTE + 1_000, Ordering::SeqCst);
+        let typed = watched(app.clone(), id.clone())
+            .await
+            .ok_or("the news was not typed into the flagged task")?;
+        assert!(
+            typed
+                .1
+                .starts_with("Yulius, about your pull request #7: Its Yulius CI run r1 at "),
+            "{typed:?}"
+        );
+        wait_for("the news read alone", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("ECHO: Yulius, about your pull request #7")
+        })
+        .await?;
+        assert_eq!(support::attention(&app, id.as_str()).await?, Value::Null);
+        let shown = screen(&app, &id);
+        assert!(!shown.contains("ECHO: half a thought"), "{shown}");
+
+        // Another reason a person must act still stops the watch, an empty box or not.
+        let (again, job) = run(&task.sandbox_id, "r2", &head, RunState::Failed, None, 2);
+        app.deps.store.insert_ci_run(&again, &[job]).await?;
+        wait_for("the turn's end", Duration::from_secs(30), || async {
+            activity(&app, &id).await.is_some_and(Activity::is_idle) && fixture_box_empty(&app, &id)
+        })
+        .await?;
+        app.deps
+            .store
+            .set_activity(&id, Some(Activity::NeedsAttention), app.now())
+            .await?;
+        clock.0.store(MINUTE, Ordering::SeqCst);
+        assert_eq!(watched(app.clone(), id.clone()).await, None);
+        app.terminal_leave(&attach).await;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-480 AC7 (DRF-006; review round 1): the wake after an outage is given up ten minutes
 /// after the start, so at its last pass a wake that a person's draft holds tells them, however
 /// young their keystroke is: here two minutes, at which an earlier pass says nothing. The task

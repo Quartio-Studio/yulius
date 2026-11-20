@@ -1879,7 +1879,7 @@ the document's `base` (IMP-004).
 
 ## 7. Runtime contracts
 
-### 7.1 ptyhost protocol (`yulius-contracts::ptyhost`, version 1)
+### 7.1 ptyhost protocol (`yulius-contracts::ptyhost`, versions 1 and 2)
 
 Frame: `u32 big-endian length` + `u8 type` + payload. Max frame 1 MiB; output frames ≤ 64 KiB.
 
@@ -1893,10 +1893,16 @@ Frame: `u32 big-endian length` + `u8 type` + payload. Max frame 1 MiB; output fr
 | C→H | `Ping` | nonce |
 | H→C | `Welcome` | attempt id, child pid, current seq, cols, rows |
 | H→C | `Snapshot` | seq, formatted screen bytes |
+| H→C | `RenderedSnapshot` (v2) | same payload, alternate screen rendered at the welcome dimensions |
 | H→C | `Output` | seq (monotonic per attempt), bytes |
 | H→C | `Exit` | exit code or signal, ended_at |
 | H→C | `Pong` | nonce |
 | H→C | `Error` | code, message |
+
+A v2 client retries with v1 once after an unsupported-version reply, within the original
+connect deadline. A v2 host sends the original snapshot type to a v1 client. A v2 snapshot
+from a locally resized grid uses the original type until a real alternate-screen erase.
+[SPEC-572](SPEC-572-deliver-the-empty-prompt-box-fix-from-th.md) defines its use for typing.
 
 Rules: the host authenticates the first frame within 5 s or drops the connection; one controlling
 client (the server) at a time — a new authenticated connection replaces the old one; the PTY reader

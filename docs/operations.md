@@ -970,10 +970,10 @@ silent. It types none of them while a person's draft may sit in the session's pr
 
 - **When a message waits.** Someone typed into the task's terminal since its prompt box was
   last empty (the session's start, or the last prompt sent from the box), however long ago.
-  Yulius sees keys and sent prompts, not the box, so every key counts until the next prompt is
-  sent: also an answer to one of Claude Code's dialogs, or Escape. Typed behind a draft, the
-  message and the unfinished text would be sent as one prompt. For a minute after any key
-  nothing is typed either.
+  A keystroke holds every message for one minute. After that, Yulius can release the hold
+  when Claude Code shows its empty conversation input, including its dim suggestion.
+  A stashed draft, a named input, a dialog or an unfamiliar layout keeps the hold.
+  Text that Claude restores after a submit also holds a message. [ADR-0405](decisions/0405-a-confirmed-empty-claude-prompt-releases-a-held-message.md)
 - **Who is told.** A message sent with `task_message` is refused with that reason at once, and
   the Superagent or the person's agent says so. A message of Yulius's own waits and is tried
   again (a pull request's news every 20 seconds; the wake after an outage until 10 minutes
@@ -981,10 +981,10 @@ silent. It types none of them while a person's draft may sit in the session's pr
   reads **Needs your action** ("Yulius has a message for this session and does not type it…")
   and its terminal says the same in one line; a wake that is dropped says so at its last try,
   whatever the key's age. A flagged task is not idle, so a finished one does not count as done
-  for the tasks chained after it until its person sent a prompt.
-- **What ends it.** Send what you typed in the task's terminal, or clear it and send any
-  prompt (`continue` will do). Yulius types its message after the next prompt sent from there;
-  by itself it never sends or clears a person's text. The task's owner can also tell their
+  for the tasks chained after it until the hold ends.
+- **What ends it.** Send what you typed in the task's terminal, or clear it. After a
+  minute a watch can deliver to the recognized empty box. On other screens, send any prompt
+  (`continue` will do) to release the hold. The task's owner can also tell their
   Superagent (or their own agent) to send a message past it: `task_message` with
   `with_draft: true` types the message behind that text and both go to the agent as one
   prompt, once the last key is more than a minute old (SPEC-487). That ends the hold too,
@@ -992,8 +992,9 @@ silent. It types none of them while a person's draft may sit in the session's pr
   prompt Yulius held for a decision is back in the box.
 - A restart of Yulius does not forget a draft: the key that begins one leaves `person-typed`
   (its time) in the run's folder (`<data>/runs/…`), removed when a prompt is sent from the
-  box, and a restarted server reads it when it reattaches the run. A draft it knows from
-  that file alone stays one until a prompt is sent after a key typed since the restart.
+  box or the box is confirmed empty. A restarted server reads the mark when it reattaches
+  the run. After a quiet minute, a snapshot the host confirms was rendered at the current size can release the hold. An older host needs a live repaint.
+  A window resize also requires a repaint because it can crop a draft or stash hint.
 
 ### Docker in sandboxes
 
@@ -2526,7 +2527,9 @@ commits. Nothing updates by itself: a superadmin chooses **Update now** and conf
    longest a deploy can last (twice the CI job timeout or the job timeout plus 35 minutes of
    preparation, whichever is longer, plus 5 minutes: 70 minutes by default) cancels the update
    (SPEC-342). A crash or a manual restart still ends a running deploy as `error`.
-2. **Pause tasks**: every task's agent is frozen at once with the cgroup v2 freezer (its process
+2. **Pause tasks**: during the first 30 seconds of this phase a version install also gives a CI gate
+   with passed work and only its last job left time to finish. **Continue without waiting** skips the
+   CI wait. An interrupted gate goes back through normal startup recovery. During the pause every task's agent is frozen at once with the cgroup v2 freezer (its process
    tree moves into `…/sandboxes/<sandbox>/agents/run-<attempt>` and that group is frozen; the
    ptyhost, shells and browsers keep running) and new starts queue. The agents are told nothing.
    This needs the delegated cgroups of §3 (`Delegate=yes`, `DelegateSubgroup=server`, and the

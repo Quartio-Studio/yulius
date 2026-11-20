@@ -775,7 +775,8 @@ impl Tui {
             )
         ));
         screen.push_str(&format!("╰{}╯", "─".repeat(cols - 2)));
-        let body = rows - 3 - 4;
+        // Leave Claude Code's hint row between the transcript and the upper input rule.
+        let body = rows - 3 - 5;
         if let Ok(lines) = self.lines.lock() {
             let start = lines.len().saturating_sub(body);
             for (i, line) in lines.iter().skip(start).enumerate() {
@@ -819,14 +820,17 @@ fn start_tui(session: &str) -> io::Result<()> {
         lines: Mutex::new(Vec::new()),
         session: session.to_owned(),
     });
+    let mut drawn_size = terminal_rows_cols();
     tui.draw()?;
     std::thread::spawn(move || {
         loop {
             std::thread::sleep(Duration::from_millis(20));
-            if resized.swap(false, Ordering::SeqCst)
-                && let Some(tui) = TUI.get()
-            {
-                let _ = tui.draw();
+            if resized.swap(false, Ordering::SeqCst) {
+                let size = terminal_rows_cols();
+                if size != drawn_size {
+                    drawn_size = size;
+                    let _ = tui.draw();
+                }
             }
         }
     });

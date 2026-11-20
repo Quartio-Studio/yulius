@@ -200,6 +200,7 @@ watching, steering and unblocking.
   they typed and did not send may still be in its prompt box (however old, SPEC-480: such a
   message is not typed behind a person's draft, and for a message of Yulius's own the task
   says so after ten minutes), or the task still asks a person whether to trust its folder (SPEC-230).
+  After that minute a confirmed empty Claude Code conversation input releases a waiting message.
   A draft visible in Claude Code’s input also holds the message, including one restored from
   a stash. The sender is told at once. An automatic message flags the session for its person
   ([SPEC-537](../.ai/specs/SPEC-537-preserve-restored-drafts-when-typing-int.md)). When a usage limit cuts its
@@ -702,7 +703,7 @@ watching, steering and unblocking.
   Once the new version is built, every task is frozen at once, mid-turn, and thawed after the
   restart; the agents don't notice (SPEC-160). A deploy (CD or environment run) running when the
   new version is built finishes first, and new deploys are refused until the update installed, so an
-  update never cuts a deploy (SPEC-342). **Restart…** on the Instance page restarts the server
+  update never cuts a deploy (SPEC-342). A planned install gives a CI gate with passed work and only its last job left up to 30 seconds from the start of the task pause. **Continue without waiting** skips this wait (SPEC-573). **Restart…** on the Instance page restarts the server
   the same way without installing anything (SPEC-432). Sessions live in a systemd unit of their
   own, so the restart keeps them on every systemd; on a host not set up for that, where the
   server could not start again while a session runs (systemd 258 and later), Restart and Update
