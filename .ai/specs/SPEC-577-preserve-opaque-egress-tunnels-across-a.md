@@ -156,3 +156,9 @@ without adoption support or a remote peer that times out can end a tunnel.
   surviving process. Coupling the helper's lifetime to the depositor experimentally produced
   a connection reset and failed the assertion. With the production lifetime, the original
   peers carry the queued and fresh bytes and the second adoption finds no socket.
+- At `de8e028c5`, deadline expiry left a peer connected if a stalled consumer retained a
+  descriptor it had already received. The synthetic test retained both descriptors after
+  receiving the batch and triggered expiry. It timed out awaiting peer EOF. The helper now
+  keeps the original handles until it confirms receipt of the complete batch. On incomplete
+  delivery it shuts down both stream halves before dropping its originals. With the consumer
+  and its duplicate handles still open, both fixture peers now observe EOF.

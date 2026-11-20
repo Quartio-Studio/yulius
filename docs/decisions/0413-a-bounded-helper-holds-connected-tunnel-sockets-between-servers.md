@@ -23,7 +23,11 @@ credential handling stay in the serving process.
 
 The batch accommodates 256 opaque tunnels and 256 relay pairs. Each pair has up to 32 KiB of
 private state. One two-minute deadline covers receipt, adoption and delivery. On expiry,
-disconnection or invalid input the helper drops its descriptors and state. The socket name
+disconnection or invalid input the helper drops its descriptors and state. During delivery it
+retains the original descriptors until the successor acknowledges the entire batch and the
+helper confirms adoption. If that exchange fails, the helper shuts down both halves of every
+stream. This also closes the connection when a duplicate descriptor is still queued in the
+successor's control socket. The socket name
 is removed on adoption or orderly exit. Payload bytes live in memory.
 
 ## Alternatives
