@@ -56,3 +56,22 @@ impl Redraw {
         parser.process(bytes);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Redraw;
+
+    #[test]
+    fn clearing_the_primary_screen_cannot_certify_a_cropped_alternate_screen() {
+        let mut grid = vt100::Parser::new(6, 40, 0);
+        grid.process(b"\x1b[?47hretained\x1b[1;31Hstashed");
+        let mut redraw = Redraw::default();
+        redraw.invalidate();
+        grid.screen_mut().set_size(6, 20);
+        redraw.process(&mut grid, b"\x1b[?47l\x1b[2J\x1b[?47h");
+        assert_eq!(grid.screen().contents().trim(), "retained");
+        assert!(!redraw.rendered());
+        redraw.process(&mut grid, b"\x1b[2Jnew paint");
+        assert!(redraw.rendered());
+    }
+}
