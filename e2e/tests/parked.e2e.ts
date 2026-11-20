@@ -260,7 +260,15 @@ for (const status of ['parked', 'queued', 'starting', 'waiting_capacity']) {
     const rows = browser.locator('.taskview .xterm-rows > div');
     await expect(rows).toHaveCount(90);
     await expect(rows.first()).toHaveText(/Last answer begins/);
+    // A phone's resize can arrive after the first rows of the saved screen are visible.
+    const afterResize = await browser.evaluate(() => {
+      type Session = { viewers: Set<unknown>; receive(viewer: unknown, data: string): void; state(): string };
+      const session = (window as unknown as { __yuliusMock: { sessions: Map<string, Session> } }).__yuliusMock.sessions.get('tsk_studio_12')!;
+      for (const viewer of session.viewers) session.receive(viewer, JSON.stringify({ type: 'resize', cols: 44, rows: 28 }));
+      return JSON.parse(session.state());
+    });
     await expect(rows.nth(88)).toHaveText(/Last answer ends/);
+    expect(afterResize).toMatchObject({ parked_screen: true, attempt_seq: null, rows: 90, cols: 220 });
     await expect(rows.last()).toHaveText(/Write to resume/);
     // Opening a parked page receives state and snapshot. Staying connected also receives exit.
     if (status === 'parked') {

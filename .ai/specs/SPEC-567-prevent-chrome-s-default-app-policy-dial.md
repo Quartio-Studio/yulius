@@ -1,13 +1,13 @@
 ---
 yulius-task: ce65d233-0ed5-403b-b36c-33036e6d1952
-status: done
+status: in-progress
 ---
 
 # SPEC-567. Prevent Chrome's default app policy dialog
 
 ## Goal
 
-Fixes #1411.
+Fixes #1411. Fixes #1517.
 
 Sandbox browsers open a usable display when Chrome applies Yulius's extension blocklist, including when a profile already contains Google Docs Offline. [Issue #1411](https://github.com/Quartio-Studio/yulius/issues/1411)
 
@@ -27,6 +27,8 @@ Task #490 saw Chrome's native administrator dialog after host setup. On dev `e15
 - [x] Capture the launch regression and preserve the wildcard policy
 - [x] Verify the corrected launch with real Chrome and document its scope
 - [x] Obtain independent approval for delivery to dev
+- [ ] Preserve the parked-screen fixture across a late viewer resize
+- [ ] Validate the ordered ADR index on the landed prefix and obtain delivery approval
 
 ## Acceptance criteria
 
@@ -38,6 +40,8 @@ Task #490 saw Chrome's native administrator dialog after host setup. On dev `e15
 ## Test plan
 
 Commit a failing launch-argument regression before changing the browser adapter. Compare full Xvfb framebuffers in a disposable container running branded Google Chrome, using a profile Chrome itself populated before applying policy. Exercise fresh and previously populated profiles. Check the browser's extension inventory, profile on disk, policy marker and PDF viewer. Keep all experimental policy files in the container. Record the independent review and Yulius CI run for delivery.
+
+PR CI also exercises the mock terminal shown to owners of parked tasks. Reproduce the loss of row 89 after a viewer's delayed resize, then verify the saved grid and the subsequent live-grid transition. Run the repository checker on the train that includes ADRs 0401 and 0402.
 
 ## Decisions
 
@@ -65,3 +69,9 @@ A fresh headless launch with the default-app switch alone completed an extension
 - The independent reviewer approved `241bf4168`, traced the production launch, passed all 59 browser library tests, checked formatting and inspected the Xvfb screenshots. The reviewer used the recorded real-Chrome results.
 - `scripts/dev quick` passed. `scripts/dev security` reported Vidoc disabled by Yulius and scanned nothing. The task's delivery record tracks the PR and landed-commit CI results and GitHub issue closure.
 - `scripts/dev mutants` tested all four mutations of the changed argument builders. Four caught, zero missed, timed out, unviable or unreached.
+
+### Delivery recovery
+
+The original PR head passed quality and both Rust test shards. Yulius run `244e8360-1160-4e37-9d0e-28f732cd1df3` failed the queued parked-screen e2e assertion because row 89 had no node. On `0bd899936`, delivering a 44×28 resize after the first saved row appeared reproduced the identical assertion. The mock had announced the 220×90 capture to viewers once, then reported its live terminal state on the next resize. The production terminal hub reports the retained screen's dimensions on subsequent state messages. [CI fixture issue #1517](https://github.com/Quartio-Studio/yulius/issues/1517)
+
+The three-PR train `fa2269928` failed the repository checker with 0402 before 0401. Its immediate parent listed 0400 then 0401. Swapping only those two intact entries in a detached copy of the failed train made `python3 scripts/check_repository.py` pass. Task #560 owns the general merge-order fix.
