@@ -9,6 +9,27 @@ status: in-progress
 
 Deliver the next twenty actionable repository fixes to dev and close each issue with evidence.
 
+Fixes #1052
+Fixes #1061
+Fixes #1070
+Fixes #1073
+Fixes #1078
+Fixes #1082
+Fixes #1083
+Fixes #1089
+Fixes #1101
+Fixes #1126
+Fixes #1136
+Fixes #1137
+Fixes #1147
+Fixes #1166
+Fixes #1181
+Fixes #1186
+Fixes #1187
+Fixes #1191
+Fixes #1195
+Fixes #1196
+
 ## Context
 
 Task #535 follows #517, #522, #529 and #534. Their fixes are in the starting dev tree.
@@ -42,17 +63,17 @@ Task #494 owns #1106 and #1107.
 ## Plan
 
 - [x] Identify twenty open repository fixes and their acceptance criteria
-- [ ] Correct task-tool guidance and GitHub sign-in errors
-- [ ] Report failed browser tests and current merge state
-- [ ] Show the available sandbox actions and release direction
+- [x] Correct task-tool guidance and GitHub sign-in errors
+- [x] Report failed browser tests and current merge state
+- [x] Show the available sandbox actions and release direction
 - [ ] Read complete specs and explain linked or oversized files
 - [ ] Make onboarding and lost-run completion tests reliable
-- [ ] Refresh Git task reviews and subscription edits
-- [ ] Correct host move and import instructions
-- [ ] Preserve accurate freeze, thaw and readiness results
-- [ ] Explain staged copy capacity and refuse a running update
+- [x] Refresh Git task reviews and subscription edits
+- [x] Correct host move and import instructions
+- [x] Preserve accurate freeze, thaw and readiness results
+- [x] Explain staged copy capacity and refuse a running update
 - [ ] Review and verify the combined fixes
-- [ ] Merge on green CI and confirm issue closures
+- [ ] Link all twenty fixes for closure when the reviewed delivery merges
 
 ## Acceptance criteria
 
@@ -78,3 +99,17 @@ Use controlled command and filesystem fixtures for import and move failures. Run
 ## Decisions
 
 Use one task and segregate editing by code ownership. Preserve existing protocols and defaults unless the named issue changes them.
+
+## Evidence
+
+- #1052. Compared `vidoc_scan.py --help` against `base_ref` and the shared MCP description against the restore handler. The revised help lists both default refs. All 92 tests in `scripts/test_vidoc_scan.py` passed.
+- #1061, #1073, #1089, #1147 and #1195. Five Chromium cases failed on the original UI. With the fixes, 80 cases passed across the CD, release, guest, protection, Git review, subscription and touch suites. Injecting a console error failed the touch test. These runs used the browser mock.
+- #1073. The current server maps a store failure to HTTP 500 (SPEC-483 P15). The test checks 500 for a configured sandbox, 422 for a playground, and both switch values after refusal.
+- #1101. The page and the mock now point to the other image type lists.
+- #1070. The original start handler returned `github_unconfigured` for invalid UTF-8 on the unconfigured instance. Axum's form decoder replaces invalid bytes, and duplicate fields can reject before the handler. Both start and callback now validate the query before using it.
+- #1136 and #1137. The original scanner returned no names for two failed browser tests. The watch reproduced a single notice saying both “passed” and “(pending)”. The issue fixtures match the pinned e2e runner's uncolored CI summary.
+
+- #1166. On Ubuntu 26.04.1 with uutils, the old chown form kept group root. Using the account’s primary group produced the expected ownership. The documented package selection was checked with apt’s dry run.
+- #1181, #1186, #1187, #1191 and #1196. The original scoped run had nine failures. With the fixes, 246 migration, freeze and import tests, 17 remote client/store tests and one real CLI sign-in integration test passed. Migration fixtures used fake systemd and SSH with temporary directories.
+- The malformed-query HTTP regression and four neighboring GitHub sign-in tests passed. All 13 failure scanner and 15 PR watch unit cases passed.
+- Full Chromium suite on the integrated web changes: 1,154 passed, one model-dependent test skipped, 326.77 seconds.
