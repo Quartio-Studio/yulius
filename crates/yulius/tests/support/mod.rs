@@ -131,6 +131,8 @@ pub struct FakeGitHub {
     /// Hold metadata reads while a same-head CI rerun finishes.
     pub pull_read_hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
     pub pull_read_entered: tokio::sync::Notify,
+    /// A PR closed between its metadata response and the next branch list.
+    pub close_before_branch_list: Mutex<Option<u64>>,
     /// The next this many reads show the heads before a push.
     pub stale_reads: Mutex<u32>,
 }
@@ -518,6 +520,21 @@ impl GitHubPort for FakeGitHub {
             return Err(AppError::Upstream("partial overview".into()));
         }
         self.refresh_heads();
+        if head.is_some()
+            && let Some(number) = self
+                .close_before_branch_list
+                .lock()
+                .map_err(AppError::internal)?
+                .take()
+            && let Some(pull) = self
+                .pulls
+                .lock()
+                .map_err(AppError::internal)?
+                .iter_mut()
+                .find(|pull| pull.number == number)
+        {
+            pull.state = "closed".into();
+        }
         Ok(self
             .pulls
             .lock()

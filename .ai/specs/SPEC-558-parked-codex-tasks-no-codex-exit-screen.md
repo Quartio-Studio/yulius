@@ -127,6 +127,10 @@ A human request can take precedence over unfinished work in the task list. Both 
 - PR #1527 delivered the ordered Git overview cache at `a1f42f8eb`. The exact PR head `a7ea115e3` passed Yulius CI run `e80317f4-3320-40d4-bab2-66799b1f5cdf` through train `d44d77bc-4b53-4281-a829-fe9cea66b5c1`. Security was skipped.
 - Fair parked summary reads share the parking verifier and its branch-scoped search. Batches reserve lookup time for subsequent rows, and native Git workers keep their capacity until completion. [ADR-0409](../../docs/decisions/0409-share-parked-pr-read-time-across-task-lists.md)
 
+- The ninth-row fixture verifies both Home and MCP under a held earlier PR. An open local step originally hid owner-observed PR #1461 even though the row showed Needs you. The direct HTTP regression returned its identity after the repair. The initial scoped run then passed 96 tests.
+- On `e0390b2cf`, a PR merging while its checks were held left the row naming closed #1461 after the same request discovered open #1462. The shared rule scan for `after_all_tasks` also exhausted its four-second test deadline. Rule construction now shares the Home read budget. The test uses the rule-size limit to isolate that scan from the subsequent chain eligibility check. The notifier and digest continue to read local state.
+- On `138f511b3`, the two-base fixture named the newer healthy PR instead of the older blocking PR. A separate final-confirmation fixture returned an external PR as open after it disappeared from the branch, despite the previously recorded merge. Both regressions assert the identity and group returned by the same request.
+
 ## Delivery slices
 
 PRs #1492 and #1493 delivered native Codex resume and the pre-stop screen for new parks. PR #1505 kept sessions with local unfinished work live. PR #1510 verified current ordinary PR checks and unpublished work before parking. PR #1524 delivered the parked predecessor gate. PR #1527 preserved known PR observations across overlapping Git overviews. Remaining deliveries cover fair parked task-list reads, page refresh, persisted integration failures, bounded Codex goals and pre-upgrade screens.

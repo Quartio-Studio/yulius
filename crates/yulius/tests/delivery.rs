@@ -5126,6 +5126,21 @@ async fn a_parked_successor_waits_for_the_replacement_ordinary_pr() -> TestResul
     f.h.github.set_checks(&head, ChecksState::Success);
     let summary = serde_json::to_value(f.h.app.task_summary(&parked).await?)?;
     assert_eq!(summary["parked_needs_you"], false, "replacement settled");
+    let held = f.h.github.hold_checks();
+    let app = f.h.app.clone();
+    let reading = tokio::spawn(async move { app.task_summary(&parked).await });
+    tokio::time::timeout(Duration::from_secs(5), f.h.github.checks_entered.notified()).await?;
+    *f.h.github
+        .close_before_branch_list
+        .lock()
+        .map_err(|_| "branch fixture")? = Some(2);
+    f.h.github.release_checks(&held);
+    let changed = serde_json::to_value(reading.await??)?;
+    assert_eq!(
+        changed["parked_needs_you"], true,
+        "branch changed during verification"
+    );
+    assert_eq!(changed["parked_pr"], json!({"number":1, "open":false}));
     f.h.app.advance_chains(&before).await;
     assert_ne!(
         f.h.store.task(&child).await?.ok_or("successor")?.status,

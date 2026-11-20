@@ -3374,6 +3374,34 @@ async fn owner_observed_external_pr()
 }
 
 #[tokio::test]
+async fn a_parked_task_names_the_blocking_pr_when_its_branch_has_two_open_prs() -> TestResult {
+    let (f, owner) = owner_observed_external_pr().await?;
+    install_app(&f).await?;
+    f.h.github
+        .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
+    {
+        let mut pulls = f.h.github.pulls.lock().map_err(|_| "pulls")?;
+        pulls[0].behind = true;
+        pulls.push(yulius_app::ports::github::GhPull {
+            number: 1462,
+            base: "release-2".into(),
+            ..compatibility_pull()
+        });
+    }
+    for behind in [true, false] {
+        {
+            let mut pulls = f.h.github.pulls.lock().map_err(|_| "pulls")?;
+            pulls[0].behind = behind;
+            pulls[0].mergeable = Some(behind);
+        }
+        let summary = serde_json::to_value(f.h.app.task_detail(&owner, f.task.as_str()).await?)?;
+        assert_eq!(summary["parked_needs_you"], true);
+        assert_eq!(summary["parked_pr"], json!({"number":1461, "open":true}));
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_parked_task_with_open_steps_keeps_its_owner_observed_pr() -> TestResult {
     let (f, owner) = owner_observed_external_pr().await?;
     let ctx = f.h.app.agent_context(TOKEN).await?;
@@ -3605,15 +3633,26 @@ async fn parked_lists_share_one_budget_for_unreadable_pr_heads() -> TestResult {
     })
     .await
     .map_err(|_| "parked PR reads stalled the lists")??;
+    // Make the generated rule exceed its atom limit, so this measures its
+    // construction independently of the later, authoritative chain evaluation.
+    for number in 11..=66 {
+        record.id = TaskId::parse(&format!("queued-{number}"))?;
+        record.number = number;
+        record.status = TaskStatus::Queued;
+        record.activity = None;
+        store.insert_task(&record).await?;
+    }
     let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let args = json!({"prompt":"Wait for the outstanding PRs", "after_all_tasks":true});
-    let chained = tokio::time::timeout(limit, f.h.app.tool_task_create(&caller, &args))
+    let problem = tokio::time::timeout(limit, f.h.app.tool_task_create(&caller, &args))
         .await
-        .map_err(|_| "after_all_tasks waited a full deadline for each parked task")??;
-    let rule = chained["task"]["start_rule"].as_str().ok_or("start rule")?;
-    for number in 3..=10 {
-        assert!(rule.contains(&format!("#{number} done")), "{rule}");
-    }
+        .map_err(|_| "after_all_tasks waited a full deadline for each parked task")?
+        .err()
+        .ok_or("unreadable parked PRs should be included in the start rule")?;
+    assert!(
+        problem.to_string().contains("a rule names at most 64"),
+        "{problem}"
+    );
     f.h.github.release_checks(&hold);
     let parked: Vec<_> = tasks
         .iter()

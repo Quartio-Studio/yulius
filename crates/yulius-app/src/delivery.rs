@@ -4275,11 +4275,13 @@ impl App {
             pulls.push((number, pull.head_sha));
         }
         let current = branch_pulls().await?;
-        if current != branch {
-            observed.note_open_branch(&current);
-            return Ok(None);
+        if current.is_empty() && current != branch && observed.pr.is_some_and(|pr| pr.open) {
+            // The branch no longer has the external PR. A directly confirmed
+            // closure, if we saw one, still names the PR that closed.
+            *observed = ParkedPullRead::recorded(record);
         }
-        Ok(Some(ParkingPrs {
+        observed.note_open_branch(&current);
+        Ok((current == branch).then_some(ParkingPrs {
             checkout,
             pulls,
             watched,
@@ -4317,6 +4319,8 @@ impl App {
                 .github
                 .get_pull(token, &sandbox.repo_owner, &sandbox.repo_name, number)
         };
+        // Each unfinished or unreadable check belongs to the PR being verified.
+        observed.pr = Some(yulius_contracts::api::tasks::ParkedPr { number, open: true });
         let pull = read().await?;
         if !is_open(&pull) {
             observed.note_closed(&pull);
@@ -4357,7 +4361,6 @@ impl App {
         };
         if !settled {
             observed.signal = PullSignal::from_wire("open", checks, false);
-            observed.pr = Some(yulius_contracts::api::tasks::ParkedPr { number, open: true });
             return Ok(None);
         }
         // The local merge-driver check uses the configured integration branch. For a
