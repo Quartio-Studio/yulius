@@ -4510,6 +4510,101 @@ async fn work_reopened_during_a_parked_check_supplies_the_wait_reason() -> TestR
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn parked_mcp_explains_a_hold_dismissed_during_the_read() -> TestResult {
+    use yulius_app::intake::{HoldRecord, hold_state};
+    let (f, owner) = owner_observed_external_pr().await?;
+    let store = &f.h.app.deps.store;
+    store
+        .insert_hold(&HoldRecord {
+            id: "dismissed-during-status".into(),
+            task_id: f.task.clone(),
+            class: yulius_domain::intake::PromptClass::NewScope,
+            prompt: "Private prompt".into(),
+            prompt_sha256: "0".repeat(64),
+            percent: 100,
+            typed_by: None,
+            state: hold_state::PENDING.into(),
+            created_at: f.h.app.now(),
+            resolved_by: None,
+            resolved_at: None,
+            new_task_id: None,
+        })
+        .await?;
+    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let app = Arc::clone(&f.h.app);
+    let args = json!({"task_id":f.task.as_str()});
+    let (at, resume) =
+        support::hold_point(yulius_app::race::Point::ParkedStatusRead, f.task.as_str());
+    let read = tokio::spawn(async move { app.tool_task_get(&caller, &args).await });
+    support::point_reached(at).await?;
+    assert!(
+        store
+            .resolve_hold(
+                "dismissed-during-status",
+                hold_state::PENDING,
+                hold_state::DISMISSED,
+                "user:admin",
+                f.h.app.now(),
+                None
+            )
+            .await?
+    );
+    resume.send(())?;
+    let row = read.await??;
+    assert_eq!(row["shows"], "needs_you");
+    assert!(row.get("held_prompt").is_none());
+    assert_eq!(
+        row["wait_reason"],
+        "A prompt was held for a decision when the task was checked."
+    );
+    assert!(!row.to_string().contains("Private prompt"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn tasks_list_skips_queue_capacity_reads_for_needs_you_nonmatches() -> TestResult {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use yulius_app::ports::store::TaskStore as _;
+    let f = fixture().await?;
+    let mut queued = f.h.store.task(&f.task).await?.ok_or("task")?;
+    let caller = crate::task_message::superagent(&f.sandbox, &queued.created_by, "admin");
+    let now = f.h.app.now();
+    f.h.store
+        .set_activity(&f.task, Some(Activity::NeedsAttention), now)
+        .await?;
+    queued.id = TaskId::parse("queue-before-owner")?;
+    queued.status = TaskStatus::Queued;
+    queued.activity = None;
+    queued.updated_at = Timestamp(now.0 + 1);
+    f.h.store.insert_task(&queued).await?;
+    let read = Arc::new(AtomicBool::new(false));
+    let seen = Arc::clone(&read);
+    yulius_app::race::on(
+        yulius_app::race::Point::QueuedRowCapacity,
+        queued.id.as_str().as_ref(),
+        move || {
+            seen.store(true, Ordering::SeqCst);
+        },
+    );
+    let page =
+        f.h.app
+            .tool_tasks_list(&caller, &json!({"scope":"needs_you","limit":1}))
+            .await?;
+    assert_eq!(page["tasks"][0]["task_id"], f.task.as_str());
+    assert!(
+        !read.load(Ordering::SeqCst),
+        "the skipped queued row read session capacity"
+    );
+    let all =
+        f.h.app
+            .tool_tasks_list(&caller, &json!({"scope":"all","limit":1}))
+            .await?;
+    assert_eq!(all["tasks"][0]["task_id"], queued.id.as_str());
+    assert!(read.load(Ordering::SeqCst));
+    Ok(())
+}
+
 #[tokio::test]
 async fn archived_task_list_spends_its_limit_on_archived_rows() -> TestResult {
     use yulius_app::ports::store::TaskStore as _;

@@ -54,6 +54,8 @@ pub fn group_name(group: TaskGroup) -> &'static str {
 fn derived_wait_reason(facts: &AttentionFacts) -> Option<&'static str> {
     if facts.browser_request {
         Some("A request for a person was pending when the task list was read.")
+    } else if facts.held_prompt {
+        Some("A prompt was held for a decision when the task was checked.")
     } else if facts.pull == Some(PullSignal::Failing) {
         Some("The agent stopped and its pull request checks are failing.")
     } else if facts.plan_open {

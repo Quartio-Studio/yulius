@@ -66,6 +66,8 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- Independent review of `7a280bd1c` found two regressions. A one-row Needs You search read session capacity for an earlier queued nonmatch. Dismissing a held prompt at `ParkedStatusRead` left the parked row with no reason for its Needs You classification. Both tests failed on that head. The filter now skips rendering ordinary nonmatches, and the historical hold explanation contains no prompt text. The same queued row still gets its capacity explanation when returned in an unfiltered list.
+
 - The MCP snapshot fixture initially returned before parked verification. It now pauses at the actual verified row, opens a step while a newer parked PR holds the page, and covers `task_get`, `all` and `needs_you` with and without a new owner decision. In the first response the plan is the verified empty plan. A displayed decision still changes its group. The subsequent response includes the reopened step. Two more tests initially failed because the structured and text MCP responses omitted PR #1461 beside its ordinary CI failure. After exposing the verified PR on both paths, the scoped application and product test run passed 116 tests. Repository contracts and formatting passed. Clippy passed for the application and product test targets.
 
 - PR #1539 passed Yulius CI run `3ab18c68-a747-45f4-b145-5336d1120f49` at `2f99dc674` and landed on dev at `646ce4f1e`. Quality, both test shards and e2e passed. Security was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/646ce4f1ee79b61b08b2bb657b9c3589caa9e32d)

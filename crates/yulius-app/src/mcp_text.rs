@@ -1151,8 +1151,6 @@ mod tests {
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-    /// SPEC-493 REV-005: `delivery_status` lists the review's rounds of the open pull request:
-    /// the model that answered (else the one asked for) and how each stands.
     #[test]
     fn parked_task_text_names_the_verified_pull_beside_its_reason() {
         let task = json!({"number":325,"title":"Finish compatibility","status":"parked",
@@ -1166,6 +1164,8 @@ mod tests {
         }
     }
 
+    /// SPEC-493 REV-005: `delivery_status` lists the review's rounds of the open pull request:
+    /// the model that answered (else the one asked for) and how each stands.
     #[test]
     fn delivery_status_lists_the_review_rounds() {
         let value = json!({"stage": "pr_open", "review_rounds": [

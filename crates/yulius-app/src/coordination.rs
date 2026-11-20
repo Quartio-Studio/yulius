@@ -134,6 +134,17 @@ impl App {
             .await
     }
 
+    async fn list_attention_facts(
+        &self,
+        task: &TaskRecord,
+        requests: &tokio::sync::OnceCell<std::collections::HashSet<String>>,
+    ) -> AppResult<AttentionFacts> {
+        let requested = requests
+            .get_or_init(|| self.browser_requests(&task.sandbox_id))
+            .await;
+        self.task_attention_facts(task, requested).await
+    }
+
     async fn brief_from_status(
         &self,
         task: &TaskRecord,
@@ -144,16 +155,7 @@ impl App {
     ) -> AppResult<Value> {
         let (mut facts, snapshot, pr) = match parked {
             Some(status) => (status.facts, status.steps, status.pr),
-            None => {
-                let requested = requests
-                    .get_or_init(|| self.browser_requests(&task.sandbox_id))
-                    .await;
-                (
-                    self.task_attention_facts(task, requested).await?,
-                    None,
-                    None,
-                )
-            }
+            None => (self.list_attention_facts(task, requests).await?, None, None),
         };
         let steps = match snapshot {
             Some(steps) => steps,
@@ -332,6 +334,18 @@ impl App {
                 remaining = remaining.saturating_sub(start.elapsed());
             }
             for task in batch {
+                if task.status != TaskStatus::Parked {
+                    let facts = self.list_attention_facts(task, &requests).await?;
+                    if facts.needs_you() {
+                        let steps = self.deps.store.steps(&task.id).await?;
+                        rows.push(
+                            self.task_brief_with_steps(task, facts, person, &steps)
+                                .await?,
+                        );
+                    }
+                    continue;
+                }
+                // Parked verification can finish before a new owner decision is recorded.
                 let row = self
                     .brief_from_status(task, person, false, verified.remove(&task.id), &requests)
                     .await?;

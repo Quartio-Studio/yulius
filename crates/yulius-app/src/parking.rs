@@ -471,6 +471,10 @@ impl App {
         if task.status != TaskStatus::Queued {
             return None;
         }
+        crate::race::reached(
+            crate::race::Point::QueuedRowCapacity,
+            task.id.as_str().as_ref(),
+        );
         let in_use = self.sessions_in_use().await.unwrap_or(u32::MAX);
         queue_reason(
             self.update_holds_starts(),
