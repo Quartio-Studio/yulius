@@ -43,6 +43,8 @@ pub const AUDIT_TARGET: &str = "telegram";
 const QUIET_MS: i64 = 10 * 60 * 1000;
 /// Chats remembered for that (TGC-014).
 const QUIET_CHATS: usize = 1024;
+/// A chat's intake messages waiting their turn at most (SPEC-512 TGI-002).
+const INTAKE_WAITING: usize = 5;
 /// Messages waiting to be sent (TGC-024).
 const OUTBOX: usize = 256;
 /// Bound of one `getMe` or `sendMessage` (the client's own deadline is shorter).
@@ -103,6 +105,8 @@ pub struct ChannelServices {
     poller: Mutex<Option<JoinHandle<()>>>,
     poll: Mutex<PollState>,
     quiet: Mutex<HashMap<String, i64>>,
+    /// One lane per chat: its intake messages run in order, a few waiting at most (TGI-002).
+    lanes: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     outbox: OnceLock<mpsc::Sender<Outgoing>>,
     /// Serializes set and remove, so the stored and the active bot agree.
     switching: tokio::sync::Mutex<()>,
@@ -122,6 +126,7 @@ impl ChannelServices {
             poller: Mutex::new(None),
             poll: Mutex::new(PollState::default()),
             quiet: Mutex::new(HashMap::new()),
+            lanes: Mutex::new(HashMap::new()),
             outbox: OnceLock::new(),
             switching: tokio::sync::Mutex::new(()),
             notifier: crate::notify::NotifierState::default(),
@@ -395,7 +400,17 @@ impl App {
             ChatCommand::Other if link.intake => {
                 let app = Arc::clone(self);
                 let message = message.clone();
+                let services = self.channel_services()?;
+                let lane = services.lanes.lock().map_or_else(
+                    |_| Arc::default(),
+                    |mut lanes| Arc::clone(lanes.entry(message.chat.clone()).or_default()),
+                );
+                // More than a few waiting: the chat floods, the rest is dropped (review round 2).
+                if Arc::strong_count(&lane) > INTAKE_WAITING + 1 {
+                    return Ok(());
+                }
                 tokio::spawn(async move {
+                    let _turn = lane.lock().await;
                     match app.telegram_intake(&link, &message).await {
                         Ok(answer) => {
                             app.enqueue_about(message.chat.clone(), answer.text, answer.about)

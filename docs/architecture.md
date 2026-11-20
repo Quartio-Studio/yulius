@@ -2870,13 +2870,17 @@ Each person can get their notifications in their own Telegram chat
   passes `App::redact_for_sandbox` (account text: the shape-based `redact`).
 - **Intake** (`crates/yulius-app/src/telegram_intake.rs`, SPEC-512 part 4,
   [decision 0392](decisions/0392-a-linked-telegram-chat-answers-and-starts-tasks-when-its-person-turns-intake-on.md)).
-  A notice about a task is queued with its task (`enqueue_about`); once sent, `telegram_sent`
-  (migration 0073) keeps which message was about which task, the last 500 per chat. With the
-  person's `intake` on, `on_inbound` hands a message to `App::telegram_intake`: a reply to such a
-  message is `tool_task_message` from a `ProjectCaller` for the person (every guard of their own
-  agent's), `/status` lists what waits for them, and any other message (an album merged into one)
-  starts a task through `create_task_as` with origin `telegram`, its files fetched into the
-  person's drafts folder and named in the prompt. Off, the chat gets the help reply.
+  A notice about a task is queued with what it is about (`enqueue_about`, `SentAbout`: the task
+  and, for a request, its `at`); once sent, `telegram_sent` (migration 0073) keeps it, the last
+  500 per chat, and the bot's own answers about a task too. With the person's `intake` on,
+  `on_inbound` hands a message to `App::telegram_intake` on its own task, in the chat's lane (in
+  order, five waiting at most), so the poll goes on: a reply to a remembered message is
+  `App::task_message_as` from a `ProjectCaller` for the person (`Channel::Telegram`, every guard
+  of their own agent's, the request's `at` passed to `answer_needs_you`); a reply to any other
+  message starts nothing; `/status` lists what waits for them; any other message (an album merged
+  into one) takes one of the project's 20 hourly tool slots (`reserve_tool_task`) and starts a
+  task through `create_task_as` with origin `telegram`, its files fetched into the person's drafts
+  folder and named in the prompt. Off, the chat gets the help reply.
 
 ```mermaid
 sequenceDiagram

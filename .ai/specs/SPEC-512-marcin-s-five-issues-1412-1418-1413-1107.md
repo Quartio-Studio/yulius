@@ -445,6 +445,13 @@ Review round 1 (head c6e1a673e, CHANGES REQUESTED), answered test-first:
 | Origin lists lacked `telegram` | added in `api.md`, `TaskSummary`, `TaskAnalytics` | by reading |
 | Nits | `/task` refuses a short name two projects share; `/status` reads every live state; plain `file_path` only; intake can always be turned off; a person's old chat forgets its messages on a move; drafts of a refused task are a known limit | adapter `only_a_plain_file_path_is_fetched`, store test (move), the bounds test (`/task` without access, 11 files, 30 MB) |
 
+Review round 2 (head a7cc9d7ed): APPROVED. Its minors closed after the approval: each chat's
+intake runs in order in its own lane, five waiting at most (15 product lines); a reply to an old
+notice after its request was replaced is refused (`telegram::a_reply_reaches_its_task_under_the_owner_rule`,
+fails when the reply drops the request's time: mutation); architecture, product and API describe
+the round-1 design. Nits left: the bot's own answers carry no request time; the bound's refusal
+says "tools"; the label, `Named::Several` and the `task.created` detail have no test.
+
 ### Part 3 (#1413)
 
 | Acceptance criterion | Test |

@@ -715,10 +715,11 @@ watching, steering and unblocking.
 - **Work from Telegram** (SPEC-512 part 4, ADR-0392, part 2 of #1107), off by default: a person
   turns it on for their own chat in Settings → Notifications and picks the project new messages
   start tasks in. A reply to a notification then answers its task as their message (the owner
-  rule holds: someone else's task takes only an answer it asks of them); any other message,
-  with photos, documents or voice notes up to 20 MB, starts a task as them, marked "From
-  Telegram"; `/task <project> <text>` picks another project and `/status` lists what waits for
-  them.
+  rule holds: someone else's task takes only an answer it asks of them, and only to the question
+  the notice told of); a new message (not a reply), with photos, documents or voice notes up to
+  20 MB, starts a task as them, marked "From Telegram", at most 20 an hour in a project as for
+  agents' tools; `/task <project> <text>` picks another project and `/status` lists what waits
+  for them.
 - **An end-of-day digest** (SPEC-512 part 3, ADR-0380, #1413), off by default: an instance
   administrator turns it on in Settings → Administration with a time (UTC) and, if they want, an
   idle threshold. Once a day each person with something to report gets what waits for them first,

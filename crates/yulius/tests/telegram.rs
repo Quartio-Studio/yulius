@@ -2075,6 +2075,29 @@ async fn a_reply_reaches_its_task_under_the_owner_rule() -> TestResult {
         .set_task_needs_you(&id, asked.as_ref(), w.h.app.now())
         .await?;
 
+    // A new request replaces the one carol's notice told of: her reply to that notice answers
+    // nothing later (review round 2: the notice keeps its request's time, ANS-004).
+    let mut newer = asked.clone().ok_or("asked")?;
+    newer.at += 1;
+    w.h.store
+        .set_task_needs_you(&id, Some(&newer), w.h.app.now())
+        .await?;
+    let before = w.fake.sent_to(300).len();
+    w.fake.raw(
+        300,
+        json!({"text": "Friday", "reply_to_message": {"message_id": to_carol}}),
+    );
+    let reply = next_reply(&w, 300, before).await?;
+    assert_eq!(
+        reply,
+        "Not sent to #1: the question you answered on task #1 was replaced by a new one: read it \
+         and answer again"
+    );
+    assert!(
+        w.h.store.task_needs_you(&id).await?.is_some(),
+        "the new request stays"
+    );
+
     // Alice's reply is her message to her task: the owner rule lets it through, and here (no
     // agent runs in this harness) `task_message` answers that the task has no live session; a
     // live or parked session takes it as `task_message` does (parking and task_message tests).
