@@ -546,6 +546,8 @@ itself that the host's managed policy, which switches those windows off, is in f
 (`BrowserInstance::viewer_input_allowed`: a hidden tab is sent to the address the policy
 blocks; `yulius_browser::policy`, written by `yulius host setup`;
 [ADR-0318](decisions/0318-viewers-input-reaches-a-sandbox-browser-only-under-the-hosts-managed-policy.md)).
+A writer can restart this sandbox's browser through the same grant. The manager reaps its process and display, reuses the profile, and installs the address guard before reopening the tabs. [ADR-0404](decisions/0404-restart-one-sandbox-browser-through-its-viewer-grant.md)
+
 Sandbox browsers skip default app installation. On a virtual display they also leave profile
 extensions unloaded, so a later policy reload can take effect without a native administrator
 dialog. [ADR-0402](decisions/0402-sandbox-browsers-skip-chromes-default-apps.md)
@@ -594,6 +596,7 @@ flowchart LR
   S["Sandbox Superagent (ck_)"] -->|"browser_* on its sandbox"| Y
   G["Global Superagent (gs_)"] -->|"browser_* with project"| Y
   V["Viewer"] -->|"viewer WebSocket"| Y
+  V -->|"Restart with sandbox write grant"| Y
   Y -->|"fd 3: requests"| C["Sandbox Chromium"]
   Y -->|"after a fill: probe page text before a screenshot"| C
   C -->|"fd 4: responses, events"| Y

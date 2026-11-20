@@ -56,12 +56,23 @@ pub(crate) struct NotReaped;
 
 pub(crate) struct Supervised {
     pid: u32,
+    #[cfg(test)]
+    signal_calls: std::sync::atomic::AtomicUsize,
     exit: watch::Receiver<Option<String>>,
+    stopped: tokio::sync::OnceCell<String>,
     stderr: Arc<Mutex<Vec<u8>>>,
     _monitor: JoinHandle<()>,
     stderr_reader: Option<JoinHandle<()>>,
     /// Turns `true` once stderr reached its end (every holder closed it) or failed.
     stderr_closed: watch::Receiver<bool>,
+}
+
+impl std::fmt::Debug for Supervised {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Supervised")
+            .field("pid", &self.pid)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Yulius's ends of a child's DevTools pipe (Chromium's `--remote-debugging-pipe`, ADR-0191).
@@ -193,7 +204,10 @@ impl Supervised {
         Ok((
             Self {
                 pid,
+                #[cfg(test)]
+                signal_calls: std::sync::atomic::AtomicUsize::new(0),
                 exit,
+                stopped: tokio::sync::OnceCell::new(),
                 stderr,
                 _monitor: monitor,
                 stderr_reader,
@@ -246,6 +260,9 @@ impl Supervised {
     }
 
     fn signal_group(&self, signal: Signal) {
+        #[cfg(test)]
+        self.signal_calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if let Ok(pid) = i32::try_from(self.pid) {
             // ESRCH (group already gone) is the expected outcome after exit.
             let _ = killpg(Pid::from_raw(pid), signal);
@@ -255,6 +272,14 @@ impl Supervised {
     /// Stops the process group: optional voluntary-exit wait, SIGTERM, SIGKILL; returns the
     /// exit status once reaped. Remaining group members are killed after the leader exits.
     pub(crate) async fn terminate(&self, timeouts: StopTimeouts) -> Result<String, NotReaped> {
+        // Once the group has been cleaned up its number can belong to a different process.
+        self.stopped
+            .get_or_try_init(|| self.stop_group(timeouts))
+            .await
+            .cloned()
+    }
+
+    async fn stop_group(&self, timeouts: StopTimeouts) -> Result<String, NotReaped> {
         let mut status = self.exit_status();
         if status.is_none() && !timeouts.graceful.is_zero() {
             status = self.wait_exit(timeouts.graceful).await;
@@ -305,4 +330,37 @@ pub(crate) fn resolve_program(
     std::env::split_paths(path_var)
         .map(|dir| dir.join(program))
         .find(|candidate| is_executable(candidate))
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    use super::{StopTimeouts, Supervised};
+    use std::path::Path;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn retrying_a_completed_stop_sends_no_more_group_signals()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let child = Supervised::spawn(Path::new("/bin/true"), &[], &[])?;
+        assert!(child.wait_exit(Duration::from_secs(5)).await.is_some());
+        assert!(
+            format!("{child:?}").contains(&child.pid().to_string()),
+            "cleanup diagnostics identify the supervised process"
+        );
+        let timeouts = StopTimeouts::default();
+        let first = child.terminate(timeouts).await;
+        assert!(first.is_ok());
+        let sent = child
+            .signal_calls
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert!(sent > 0, "the first stop cleans up the process group");
+        assert_eq!(child.terminate(timeouts).await, first);
+        assert_eq!(
+            child
+                .signal_calls
+                .load(std::sync::atomic::Ordering::Relaxed),
+            sent
+        );
+        Ok(())
+    }
 }

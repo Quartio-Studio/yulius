@@ -395,6 +395,8 @@ pub enum ViewerErrorCode {
     /// Clicks and keys are off: the host's browser policy is not in force (ADR-0318). Said
     /// once by the page, not at every key.
     InputLocked,
+    /// The policy is in force, but the display may still have a chooser from before it.
+    InputLockedUntilRestart,
     /// The browser failed or did not answer.
     Upstream,
     /// Unexpected server failure.

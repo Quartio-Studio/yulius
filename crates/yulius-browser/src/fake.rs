@@ -1505,6 +1505,7 @@ struct FakeDisplayInner {
     fail_encoder: AtomicBool,
     started: AtomicU64,
     stopped: AtomicU64,
+    stop_limit: AtomicU64,
 }
 
 /// A fake virtual display ([`DisplayMode::Fake`]). Clones share the recording.
@@ -1552,6 +1553,7 @@ impl FakeDisplay {
                 fail_encoder: AtomicBool::new(false),
                 started: AtomicU64::new(0),
                 stopped: AtomicU64::new(0),
+                stop_limit: AtomicU64::new(u64::MAX),
             }),
         }
     }
@@ -1659,8 +1661,18 @@ impl FakeDisplay {
         self.inner.started.fetch_add(1, Ordering::SeqCst);
     }
 
-    pub(crate) fn stopped(&self) {
+    /// Simulate a display that cannot be reaped after this many successful stops.
+    pub fn set_stop_limit(&self, limit: u64) {
+        self.inner.stop_limit.store(limit, Ordering::SeqCst);
+    }
+
+    pub(crate) fn stopped(&self) -> Result<(), crate::BrowserError> {
+        if self.inner.stopped.load(Ordering::SeqCst) >= self.inner.stop_limit.load(Ordering::SeqCst)
+        {
+            return Err(crate::BrowserError::NotReaped { pid: 12345 });
+        }
         self.inner.stopped.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 
     pub(crate) fn encoder(&self) -> FakeEncoderStart {

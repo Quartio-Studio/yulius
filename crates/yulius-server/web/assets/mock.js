@@ -3786,6 +3786,21 @@ function shellFolder(db, shell) {
   return task ? `/srv/yulius/sandboxes/${slug}/worktrees/${task.number}` : `/srv/yulius/sandboxes/${slug}/repo`;
 }
 const shellDto = (shell) => ({ id: shell.id, name: shell.name, task_id: shell.task_id, folder: shell.folder, created_at: shell.created_at });
+route('POST', `/api/sandboxes/${ID}/browser/restart`, async ({ db, p }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  need(sandbox, 'write');
+  if (db.browserRestartFails) fail(502, 'upstream', 'Chrome could not restart.');
+  const previous = db.browsers.get(sandbox.id);
+  const next = new BrowserSession(db, sandbox);
+  if (previous) {
+    next.tabs = previous.tabs.map((tab) => ({ ...tab, action_requested: null }));
+    for (const ws of previous.viewers.keys()) ws.serverClose(1011, 'browser stopped');
+  }
+  if (db.browserLockMessage) next.inputLocked = false;
+  db.browsers.set(sandbox.id, next);
+  if (db.holdBrowserRestartReply) await db.holdBrowserRestartReply;
+  return json(204);
+});
 route('GET', `/api/sandboxes/${ID}/shells`, ({ db, p }) => {
   need(sandboxOf(db, p[0]), 'write');
   return [...db.shells.values()].filter((shell) => shell.sandbox_id === p[0] && !shell.cockpit).map(shellDto);
@@ -7019,13 +7034,14 @@ class LoginSession {
  */
 /** What the server answers a click or a key while the host's browser policy is missing. */
 // The refusal with the reason a test may set (`browserLockMessage`, SPEC-493 fix 10b).
-const inputLocked = (db) => (db.browserLockMessage ? { ...INPUT_LOCKED, message: db.browserLockMessage } : INPUT_LOCKED);
+const inputLocked = (db) => (db.browserLockMessage ? { ...INPUT_LOCKED, code: 'input_locked_until_restart', message: db.browserLockMessage } : INPUT_LOCKED);
 const INPUT_LOCKED = { type: 'error', code: 'input_locked', message: "clicks and keys are off in this browser: the host's browser policy is not in force, so Chrome's own file dialogs and developer tools would reach the host's files. An administrator runs `sudo yulius host setup` on the host" };
 
 class BrowserSession {
   constructor(db, sandbox) {
     this.db = db;
     this.sandbox = sandbox;
+    this.inputLocked = db.browserLocked;
     this.viewers = new Map(); // ws → 'video' | 'pixels'
     this.size = { width: 1280, height: 800 };
     this.cursor = { x: 200, y: 200 };
@@ -7127,7 +7143,7 @@ class BrowserSession {
       case 'mouse': {
         const shown = this.tabs.find((t) => t.active);
         if (!shown || msg.event === 'wheel') break;
-        if (this.db.browserLocked && msg.event !== 'move') { ws.push(JSON.stringify(inputLocked(this.db))); break; }
+        if (this.inputLocked && msg.event !== 'move') { ws.push(JSON.stringify(inputLocked(this.db))); break; }
         this.cursor = { x: msg.x, y: msg.y };
         if (msg.event === 'down' && shown.id === 'tab-aws' && shown.action_requested && msg.x > 60 && msg.x < 360 && msg.y > 330 && msg.y < 380) {
           shown.action_requested = null;
@@ -7141,7 +7157,7 @@ class BrowserSession {
       case 'key': {
         const shown = this.tabs.find((t) => t.active);
         if (!shown) break;
-        if (this.db.browserLocked && msg.event !== 'up') { ws.push(JSON.stringify(inputLocked(this.db))); break; }
+        if (this.inputLocked && msg.event !== 'up') { ws.push(JSON.stringify(inputLocked(this.db))); break; }
         const typed = this.typed.get(shown.id) || '';
         if (msg.event === 'down' && msg.key === 'Backspace') this.typed.set(shown.id, typed.slice(0, -1));
         else if (msg.event === 'down' && typeof msg.key === 'string' && msg.key.length === 1) this.typed.set(shown.id, (typed + msg.key).slice(-80));
@@ -7685,6 +7701,7 @@ export function createMockTransport(params) {
       if (!signal) return work;
       return new Promise((resolve, reject) => {
         const abort = () => reject(new DOMException('The operation was aborted.', 'AbortError'));
+        if (db.holdBrowserRestartReply && url.endsWith('/browser/restart')) db.expireRestart = abort;
         if (signal.aborted) { abort(); return; }
         signal.addEventListener('abort', abort, { once: true });
         work.then(resolve, reject);

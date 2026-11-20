@@ -427,6 +427,10 @@ pub fn public() -> Router<AppState> {
             get(delivery::run),
         )
         .route("/api/sandboxes/{sid}/browser", get(browser::browser))
+        .route(
+            "/api/sandboxes/{sid}/browser/restart",
+            post(browser::restart),
+        )
         .route("/api/sandboxes/{sid}/previews", get(previews::info))
         .route("/api/previews/authorize", get(previews::authorize))
         .route(

@@ -921,3 +921,54 @@ async fn a_secret_is_not_typed_into_a_tab_that_is_leaving_in_a_real_chromium() -
     server.abort();
     Ok(())
 }
+
+/// Run with a disposable profile. Two loopback pages and their site's cookie survive restart.
+#[tokio::test]
+async fn restarting_real_chrome_reopens_the_active_page_with_its_cookie() -> TestResult {
+    let Some(exe) = std::env::var_os("YULIUS_TEST_CHROMIUM") else {
+        return Ok(());
+    };
+    let dir = tempfile::tempdir()?;
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let origin = format!("http://{}", listener.local_addr()?);
+    let server = tokio::spawn(serve(listener, origin.clone()));
+    let sandbox = SandboxId::parse("restart-test")?;
+    let mut config = BrowserConfig::new(exe.into(), dir.path().into());
+    config.no_sandbox = std::env::var_os("YULIUS_TEST_CHROMIUM_NO_SANDBOX").is_some();
+    let manager = BrowserManager::new(config);
+    let profile = manager.default_profile_dir(&sandbox);
+    let browser = manager.ensure(&sandbox, &profile).await?;
+    let tab = browser.tabs()[0].id.clone();
+    let one = format!("{origin}/one");
+    let two = format!("{origin}/two");
+    browser.navigate(&tab, &one).await?;
+    browser.open(&two).await?;
+    browser.activate(&tab).await?;
+    browser
+        .cdp()
+        .call(
+            "Storage.setCookies",
+            json!({"cookies":[{
+                "name":"restart_fixture", "value":"saved", "url":one, "expires":4102444800.0
+            }]}),
+        )
+        .await?;
+    let replacement = manager.restart(&sandbox, &profile).await?;
+    assert_ne!(browser.pid(), replacement.pid());
+    let tabs = replacement.tabs();
+    assert_eq!(tabs.len(), 2, "{tabs:?}");
+    assert!(tabs.iter().any(|t| t.url == one && t.active), "{tabs:?}");
+    assert!(tabs.iter().any(|t| t.url == two && !t.active), "{tabs:?}");
+    let cookies = replacement
+        .cdp()
+        .call("Storage.getCookies", json!({}))
+        .await?;
+    assert!(cookies["cookies"].as_array().is_some_and(|items| {
+        items
+            .iter()
+            .any(|c| c["name"] == "restart_fixture" && c["value"] == "saved")
+    }));
+    manager.shutdown(&sandbox).await?;
+    server.abort();
+    Ok(())
+}

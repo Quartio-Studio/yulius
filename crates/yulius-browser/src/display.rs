@@ -671,10 +671,7 @@ impl VirtualDisplay {
                 result
             }
             #[cfg(feature = "fake")]
-            Backend::Fake(fake) => {
-                fake.stopped();
-                Ok(())
-            }
+            Backend::Fake(fake) => fake.stopped(),
         };
         if let Some(path) = &self.xauthority {
             let _ = std::fs::remove_file(path);
