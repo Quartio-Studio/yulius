@@ -90,9 +90,9 @@
 //! deploy = "scripts/cd/deploy.sh platform"
 //!
 //! [cd.staging]                          # the shared staging target (SPEC-575 MFS-001): at most
-//! stage = "dev"                          # one dev-stage table; it changes only to a merged
-//! merge_first = true                     # revision whose full suite passed, and needs deploy,
-//! deploy = "scripts/cd/deploy.sh staging" # verify and rollback
+//! stage = "dev"                          # one dev-stage table, with deploy, verify and
+//! merge_first = true                     # rollback; its after_merge jobs leave pull requests
+//! deploy = "scripts/cd/deploy.sh staging" # (ADR-0410)
 //! verify = "scripts/cd/verify.sh staging"
 //! rollback = "scripts/cd/rollback.sh staging"
 //! migrations = "none: stateless"
@@ -267,6 +267,11 @@ pub enum ConfigProblem {
         "[{0}] has 'merge_first = true': it needs 'deploy', 'verify' and 'rollback', since staging changes only to a verified revision and goes back to its last verified release after a failed deploy"
     )]
     MergeFirstNeedsScripts(String),
+    /// Every CI job is part of the full suite (SPEC-575 MFS-002).
+    #[error(
+        "every [[ci.jobs]] entry has 'after_merge = true': keep at least one quick check without it, since a pull request merges on those alone"
+    )]
+    NoQuickCheck,
     /// A second merge-first environment (SPEC-575 MFS-001).
     #[error(
         "[{0}] has 'merge_first = true', but only one [cd.<name>] may be the shared staging target"
@@ -874,6 +879,10 @@ fn ci_jobs(document: &Document, commands: &Commands) -> Result<Vec<JobDef>, Form
         |t| t.line,
     );
     project_jobs(commands.gate.as_deref(), &defs).map_err(|e| err(line, ConfigProblem::Ci(e)))?;
+    // A pull request merges on its quick checks: some job must stay one (SPEC-575 MFS-002).
+    if !defs.is_empty() && defs.iter().all(|def| def.after_merge) {
+        return Err(err(line, ConfigProblem::NoQuickCheck));
+    }
     Ok(defs)
 }
 
@@ -2434,6 +2443,11 @@ anything = { a = [1, 2.5, { b = 1979-05-27 }] }
         assert_eq!(
             problem("[[ci.jobs]]\nname = \"x\"\ncommand = \"y\"\nafter_merge = \"yes\"\n"),
             Some((4, ConfigProblem::ExpectedBool("after_merge".to_owned())))
+        );
+        // A pull request needs at least one quick check (review round 1).
+        assert_eq!(
+            problem("[[ci.jobs]]\nname = \"x\"\ncommand = \"y\"\nafter_merge = true\n"),
+            Some((1, ConfigProblem::NoQuickCheck))
         );
         Ok(())
     }

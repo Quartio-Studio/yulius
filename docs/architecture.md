@@ -3964,8 +3964,11 @@ line.
   `merge_first = true` that deploys), its `after_merge` jobs end skipped, with their reason, on
   pull request heads, merge trains and playground tasks (`dom::after_merge_skip`, applied in
   `ci_queue_placed` before `paths`). They run on the integration and production branches' runs,
-  which never reuse a tree whose run skipped them. Without such a target `App::ci_jobs_at` clears
-  the flag (`dom::after_merge_in_force`), so every job runs on every head.
+  which never reuse a tree whose run skipped them (`dom::skipped_after_merge`, kept through
+  copied verdicts by `dom::copied_job_reason`), even after a change turned the move off. Without
+  such a target `App::ci_jobs_at` clears the flag (`dom::after_merge_in_force`), so every job
+  runs on every head, and a change's own "(this change)" jobs never carry it. Staging deploys
+  are not gated on that run yet (SPEC-575's staging queue).
 - **Episodes** in which a sandbox's CI has no gate because of its configuration are audited
   (`ci.config_blocked`, `ci.config_unblocked`) and counted as minutes by the merge-queue read.
 

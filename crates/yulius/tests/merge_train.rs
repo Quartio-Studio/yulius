@@ -3542,3 +3542,72 @@ async fn a_merge_github_reports_first_is_news_too() -> TestResult {
     );
     Ok(())
 }
+
+/// SPEC-575 MFS-002 (review round 1): with a merge-first environment a merge train skips the
+/// full suite like its members' heads, and the integration branch's run after the train merged
+/// runs it, never reusing the train's tree that skipped it.
+#[tokio::test]
+async fn a_train_skips_the_full_suite_and_the_merged_head_runs_it() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    f.advance_dev_with(
+        "yulius.toml",
+        &format!(
+            "{YULIUS_TOML}\n[[ci.jobs]]\nname = \"full\"\ncommand = 'echo full suite ran'\n\
+             after_merge = true\n\n[cd.dev]\n[cd.prod]\n\n[cd.staging]\nstage = \"dev\"\n\
+             merge_first = true\ndeploy = \"d\"\nverify = \"v\"\nrollback = \"r\"\n\
+             migrations = \"none: stateless\"\n"
+        ),
+    )?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    f.settle(&app).await?;
+    let mut worktrees = Vec::new();
+    for (n, file) in [(1u32, "a.txt"), (2, "b.txt")] {
+        worktrees.push(f.task(n, &[(file, "x\n")]).await?);
+    }
+    for (n, worktree) in (1u32..).zip(&worktrees) {
+        f.arm(n, worktree).await?;
+        f.record_passed(&app, n, &git(worktree, &["rev-parse", "HEAD"])?)
+            .await?;
+    }
+    f.advance_dev("other.txt")?;
+    f.decide_until(&app, || async {
+        app.ci_sync_sandbox(&sandbox).await?;
+        f.settle(&app).await?;
+        Ok(f.merged(&app, 1).await? && f.merged(&app, 2).await?)
+    })
+    .await?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    f.settle(&app).await?;
+    let mut trains = 0;
+    for run in f.runs(&app).await? {
+        if !matches!(run.reference, CiRef::Train(_)) {
+            continue;
+        }
+        trains += 1;
+        let jobs = app.deps.store.ci_jobs(&run.id, true).await?;
+        assert!(
+            jobs.iter()
+                .filter(|j| j.key == "full")
+                .all(|j| j.state == RunState::Skipped && !j.output.contains("full suite ran")),
+            "{jobs:?}"
+        );
+    }
+    assert!(trains > 0, "a train judged the two");
+    let dev = git(&f.origin, &["rev-parse", "dev"])?;
+    let head_run = f
+        .runs(&app)
+        .await?
+        .into_iter()
+        .find(|r| r.sha == dev && matches!(r.reference, CiRef::Branch(_)))
+        .ok_or("dev head run")?;
+    let jobs = app.deps.store.ci_jobs(&head_run.id, true).await?;
+    assert!(
+        jobs.iter().any(|j| j.key == "full"
+            && j.state == RunState::Passed
+            && j.output.contains("full suite ran")),
+        "the merged head ran the full suite: {head_run:?} {jobs:?}"
+    );
+    Ok(())
+}

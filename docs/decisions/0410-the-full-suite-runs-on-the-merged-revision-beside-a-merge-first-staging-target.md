@@ -35,16 +35,22 @@ shared target have nothing after the merge that would catch a failure before it 
   to the full suite.
   - While the integration head defines a merge-first environment that deploys, such jobs are
     skipped on pull request heads, merge trains and playground tasks. They end skipped with the
-    reason "part of the full suite: it runs on the merged revision before staging changes".
+    reason "part of the full suite: it runs on the merged revision (merge-first)".
   - A skipped job passes a run and blocks no merge, like a `paths` skip.
   - They run on the integration and production branches' runs.
-- **Without a target, nothing moves.** Where the integration head has no such environment (or
-  its CD tables cannot be read), `after_merge` is ignored and every job runs on every head.
+  - At least one job must not set it: a pull request merges on its quick checks alone.
+- **Without a target, nothing moves.** Where the integration head has no such environment,
+  `after_merge` is ignored and every job runs on every head.
 - **No reuse across the move.** The integration branch's run never reuses a same-tree run that
-  skipped a job it would run. A squash merge of an up-to-date pull request therefore runs the
-  full suite on the merged commit instead of copying the pull request's verdict.
-- **Toggling it is not a change to the job.** A pull request that only sets or clears
-  `after_merge` adds no "(this change)" twin: the job runs the same way either way.
+  skipped a job as part of the full suite, whatever the gate now says of that job. A squash
+  merge of an up-to-date pull request therefore runs the full suite on the merged commit instead
+  of copying the pull request's verdict. That holds also for a pull request that turns the move
+  off. A copied verdict (a reused tree, a merge train's) keeps the full suite's reason, so it is
+  never a source either.
+- **A change's own jobs stay on its pull request.** A job a change adds or changes runs before
+  it merges ([0360](0360-dev-s-gate-judges-every-change-and-a-bad-yulius-toml-never-turns-ci-off.md)),
+  so its "(this change)" twin is never part of the full suite. A pull request that only sets or
+  clears `after_merge` adds no twin: the job runs the same way either way.
 
 ## Alternatives
 
@@ -58,6 +64,11 @@ shared target have nothing after the merge that would catch a failure before it 
   `paths` skips do today ([0343](0343-a-ci-job-names-the-files-it-tests-and-is-never-skipped-on-doubt.md)).
 
 ## Consequences
+
+- Until the staging queue of SPEC-575 lands, nothing gates a deploy of the merge-first
+  environment on the full suite: `cd_deploy` deploys the integration head as before. The
+  integration branch's own run still runs the full suite on each head it tests, but an
+  intermediate merged revision that the branch moved past gets no run of its own.
 
 - Pull requests of merge-first projects wait only for the quick checks. The full suite runs once
   per merged revision, and duplicate pre-merge full runs (pull request head plus merge

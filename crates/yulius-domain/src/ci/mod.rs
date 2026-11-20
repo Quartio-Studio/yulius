@@ -295,9 +295,10 @@ pub fn parse_paths(job: &str, items: &[String]) -> Result<Vec<String>, CiConfigE
     Ok(out)
 }
 
-/// What a skipped job of the full suite says (SPEC-575 MFS-002).
+/// What a skipped job of the full suite says (SPEC-575 MFS-002); a verdict copied from such a
+/// job keeps it, so a branch's run can tell a source that never ran the job.
 pub const AFTER_MERGE_SKIP_REASON: &str =
-    "part of the full suite: it runs on the merged revision before staging changes";
+    "part of the full suite: it runs on the merged revision (merge-first)";
 
 /// The jobs with `after_merge` kept only when the integration head has a merge-first
 /// environment that deploys (`merge_first`); without one each job runs on every commit, so a
@@ -323,6 +324,26 @@ pub fn after_merge_skip(job: &Job, reference: &CiRef) -> Option<String> {
         CiRef::PullRequest(_) | CiRef::Train(_) | CiRef::Task(_)
     );
     (job.after_merge && off_the_merge).then(|| AFTER_MERGE_SKIP_REASON.to_owned())
+}
+
+/// The reason a copy of a job's verdict records (a tree reused, a merge train's verdict):
+/// `note`, after the full suite's reason when the source job was skipped as part of it, so the
+/// copy still says it never ran the job (SPEC-575 MFS-002, review round 1).
+#[must_use]
+pub fn copied_job_reason(source: Option<&str>, note: &str) -> String {
+    match source {
+        Some(reason) if reason.starts_with(AFTER_MERGE_SKIP_REASON) => {
+            format!("{AFTER_MERGE_SKIP_REASON}; {note}")
+        }
+        _ => note.to_owned(),
+    }
+}
+
+/// Whether a job of a run was skipped as part of the full suite there (its own skip, or a copy
+/// of one): such a run never ran it (SPEC-575 MFS-002).
+#[must_use]
+pub fn skipped_after_merge(state: RunState, reason: Option<&str>) -> bool {
+    state == RunState::Skipped && reason.is_some_and(|r| r.starts_with(AFTER_MERGE_SKIP_REASON))
 }
 
 /// Why a job with `paths` is skipped for a change of `changed` files (SPEC-493 CJP-002,
@@ -566,16 +587,20 @@ pub fn with_changed_jobs(mut gate: Gate, own: Vec<Job>, at_base: Option<&[Job]>)
     }
     // Equal in everything that decides how it runs (command, matrix, budget, time limit,
     // `exclusive`, secrets, `paths`): a change to any of it is the change's (review round 3).
-    // Moving a job into the full suite (`after_merge`, SPEC-575) is not how it runs.
-    let same = |a: &Job, b: &Job| {
-        a == b
-            || (a.after_merge != b.after_merge
-                && *a
-                    == Job {
-                        after_merge: a.after_merge,
-                        ..b.clone()
-                    })
+    // Moving a job into or out of the full suite (`after_merge`, SPEC-575) is not how it runs,
+    // and a job a change adds or changes runs before it merges (ADR-0360): the change's own jobs
+    // and what they are compared with are read without the flag.
+    let flagless = |jobs: &[Job]| -> Vec<Job> {
+        jobs.iter()
+            .map(|job| Job {
+                after_merge: false,
+                ..job.clone()
+            })
+            .collect()
     };
+    let (kept, at_base) = (flagless(&gate.jobs), at_base.map(flagless));
+    let own = flagless(&own);
+    let same = |a: &Job, b: &Job| a == b;
     let scanning: Vec<String> = gate
         .jobs
         .iter()
@@ -584,8 +609,12 @@ pub fn with_changed_jobs(mut gate: Gate, own: Vec<Job>, at_base: Option<&[Job]>)
         .collect();
     let changed: Vec<Job> = own
         .into_iter()
-        .filter(|job| !gate.jobs.iter().any(|kept| same(kept, job)))
-        .filter(|job| !at_base.is_some_and(|base| base.iter().any(|old| same(old, job))))
+        .filter(|job| !kept.iter().any(|k| same(k, job)))
+        .filter(|job| {
+            !at_base
+                .as_ref()
+                .is_some_and(|base| base.iter().any(|old| same(old, job)))
+        })
         .filter(|job| !scanning.contains(&job.key))
         .map(|job| Job {
             name: format!("{}{CHANGE_SUFFIX}", job.name),
@@ -1285,8 +1314,8 @@ mod tests {
     }
 
     /// SPEC-575 MFS-002: a job of the full suite is skipped, with the reason, on a pull request
-    /// head, a merge train and a playground task; the branches' runs and a merged candidate run
-    /// it, and a job of the quick checks runs everywhere.
+    /// head, a merge train and a playground task; the branches' runs run it, and a job of the
+    /// quick checks runs everywhere.
     #[test]
     fn the_full_suite_is_skipped_off_the_merged_revision() {
         let full = plain("e2e", true);
@@ -1304,16 +1333,59 @@ mod tests {
         assert_eq!(after_merge_skip(&full, &CiRef::Branch("main".into())), None);
     }
 
-    /// SPEC-575 MFS-002: a change that only moves a job into the full suite changes nothing about
-    /// how the job runs, so no twin of it runs beside the gate's.
+    /// SPEC-575 MFS-002 (review round 1): a copied verdict keeps saying the full suite was
+    /// skipped, and only such a skip counts as one.
     #[test]
-    fn moving_a_job_after_merge_adds_no_twin() {
+    fn a_copied_verdict_keeps_the_full_suites_skip() {
+        let own = after_merge_skip(&plain("e2e", true), &CiRef::PullRequest(1));
+        let copied = copied_job_reason(own.as_deref(), "not run again: same tree");
+        assert!(
+            skipped_after_merge(RunState::Skipped, Some(&copied)),
+            "{copied}"
+        );
+        assert!(copied.ends_with("not run again: same tree"), "{copied}");
+        let twice = copied_job_reason(Some(&copied), "a train's verdict");
+        assert!(
+            skipped_after_merge(RunState::Skipped, Some(&twice)),
+            "{twice}"
+        );
+        assert_eq!(copied_job_reason(Some(PATHS_SKIP_REASON), "n"), "n");
+        assert_eq!(copied_job_reason(None, "n"), "n");
+        assert!(!skipped_after_merge(RunState::Passed, Some(&copied)));
+        assert!(!skipped_after_merge(
+            RunState::Skipped,
+            Some(PATHS_SKIP_REASON)
+        ));
+        assert!(!skipped_after_merge(RunState::Skipped, None));
+    }
+
+    /// SPEC-575 MFS-002: a change that only moves a job into or out of the full suite changes
+    /// nothing about how the job runs, so no twin of it runs beside the gate's; a job a change
+    /// adds or changes runs before it merges (ADR-0360), so its twin is never part of the full
+    /// suite.
+    #[test]
+    fn a_changes_own_jobs_never_leave_its_pull_request() {
         let gate = Gate {
-            jobs: vec![plain("e2e", false)],
+            jobs: vec![plain("e2e", false), plain("slow", true)],
             source: GateSource::ProjectConfig,
         };
-        let moved = with_changed_jobs(gate.clone(), vec![plain("e2e", true)], None);
+        let moved = with_changed_jobs(
+            gate.clone(),
+            vec![plain("e2e", true), plain("slow", false)],
+            None,
+        );
         assert_eq!(moved, gate);
+        let added = with_changed_jobs(gate.clone(), vec![plain("new", true)], None);
+        let twin = added
+            .jobs
+            .last()
+            .cloned()
+            .unwrap_or_else(|| plain("", true));
+        assert_eq!(
+            (twin.name.as_str(), twin.after_merge),
+            ("new (this change)", false)
+        );
+        assert_eq!(&added.jobs[..2], &gate.jobs[..], "the gate keeps its flags");
     }
 
     /// SPEC-504 CFG-001: a change's own jobs run beside the gate's, never instead: changed and

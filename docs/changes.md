@@ -9,7 +9,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - A project with a shared staging target can mark it `merge_first = true` and its long jobs
   `after_merge = true`. Pull requests then wait only for the quick checks, and the full suite
   runs once on the merged revision instead of on every head. Projects without such a target keep
-  their full suite on pull requests ([ADR-0410](decisions/0410-the-full-suite-runs-on-the-merged-revision-beside-a-merge-first-staging-target.md), [SPEC-575](../.ai/specs/SPEC-575-make-task-local-testing-and-one-staging.md)).
+  their full suite on pull requests. Staging deploys are not yet gated on that run; SPEC-575's
+  staging queue adds the gate ([ADR-0410](decisions/0410-the-full-suite-runs-on-the-merged-revision-beside-a-merge-first-staging-target.md), [SPEC-575](../.ai/specs/SPEC-575-make-task-local-testing-and-one-staging.md)).
 - Clearing Claude Code’s prompt box releases a waiting session message after the last key’s one-minute grace period. Restored drafts still block delivery. [SPEC-572](../.ai/specs/SPEC-572-deliver-the-empty-prompt-box-fix-from-th.md)
 - A planned install briefly waits for CI gates finishing their last job. The operator can proceed immediately, and interrupted runs still use full recovery. [SPEC-573](../.ai/specs/SPEC-573-reduce-repeated-ci-work-across-planned-y.md)
 

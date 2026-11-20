@@ -843,11 +843,10 @@ impl App {
         let config = parse_yulius_toml(&text).map_err(|err| err.to_string())?;
         let jobs = dom::project_jobs(config.commands.gate.as_deref(), &config.ci)
             .map_err(|e| e.to_string())?;
-        // The full suite leaves the pull request only beside a shared staging target that
-        // deploys (SPEC-575 MFS-002); an unreadable CD table keeps it there.
+        // The full suite leaves the pull request only beside a shared staging target (SPEC-575
+        // MFS-002); the whole file, its CD tables included, parsed above.
         let merge_first = yulius_domain::spec_format::parse_yulius_toml_cd(&text)
-            .ok()
-            .is_some_and(|cd| cd.merge_first().is_some_and(|t| t.deploy.is_some()));
+            .is_ok_and(|cd| cd.merge_first().is_some());
         Ok(dom::after_merge_in_force(jobs, merge_first))
     }
 
@@ -1184,7 +1183,18 @@ impl App {
         {
             CiRunRecord {
                 state: RunState::Passed,
-                reason: Some("every job was skipped: no file they test changed".to_owned()),
+                reason: Some(
+                    if jobs
+                        .iter()
+                        .any(|j| dom::skipped_after_merge(j.state, j.reason.as_deref()))
+                    {
+                        "every job was skipped: no file the quick checks test changed, and the \
+                         full suite runs on the merged revision"
+                    } else {
+                        "every job was skipped: no file they test changed"
+                    }
+                    .to_owned(),
+                ),
                 started_at: Some(self.now()),
                 ended_at: Some(self.now()),
                 ..run
@@ -1584,17 +1594,20 @@ impl App {
                 continue;
             }
             let jobs = self.deps.store.ci_jobs(&run.id, false).await?;
-            // Likewise a source that skipped the full suite off the merged revision (SPEC-575
-            // MFS-002) never ran a job the integration branch's run must run.
             let skipped_a_paths_job = gate.jobs.iter().any(|job| {
-                (!job.paths.is_empty()
-                    || job.after_merge
-                        && yulius_domain::ci::after_merge_skip(job, &target.reference).is_none())
+                !job.paths.is_empty()
                     && jobs.iter().any(|t| {
                         t.key == job.key && t.matrix == job.matrix && t.state == RunState::Skipped
                     })
             });
-            if branch && skipped_a_paths_job {
+            // Likewise a source that skipped a job as part of the full suite (SPEC-575 MFS-002)
+            // never ran it, whatever the gate says of the job now (a change may have just turned
+            // the move off, review round 1): no source for a run of the merged revision.
+            let merged = matches!(target.reference, CiRef::Branch(_));
+            let skipped_the_full_suite = jobs
+                .iter()
+                .any(|t| dom::skipped_after_merge(t.state, t.reason.as_deref()));
+            if branch && skipped_a_paths_job || merged && skipped_the_full_suite {
                 continue;
             }
             // Every job of the gate ran there as it is defined now: a pull request judged by the
@@ -1644,9 +1657,10 @@ impl App {
                 // The job that ran as this one is defined, which tells a job from a change's twin
                 // of it (SPEC-504 review rounds 2 and 4). A job the source did not have (the gate
                 // changed since) is passed, as before SPEC-162.
-                let (state, exit_code) = dom::copied_job_verdict(
-                    tested.iter().find(|t| ran_as(t, job)).map(|t| t.state),
-                );
+                let source = tested.iter().find(|t| ran_as(t, job));
+                let (state, exit_code) = dom::copied_job_verdict(source.map(|t| t.state));
+                let reason =
+                    dom::copied_job_reason(source.and_then(|t| t.reason.as_deref()), &note);
                 CiJobRecord {
                     id: self.deps.crypto.new_id(),
                     run_id: run.id.clone(),
@@ -1656,7 +1670,7 @@ impl App {
                     command: job.command.clone(),
                     matrix: job.matrix.clone(),
                     state,
-                    reason: Some(note.clone()),
+                    reason: Some(reason),
                     exit_code: Some(exit_code),
                     output: format!("{note}.\n"),
                     failures: None,
@@ -2225,8 +2239,10 @@ impl App {
         if view.fallback_unknown {
             return None;
         }
+        // With no gate in force the integration head has no merge-first target: a change that
+        // brings CI runs its whole suite (SPEC-575 MFS-002, review round 1).
         let jobs = match self.ci_jobs_at(&repo, head).await {
-            Ok(jobs) if !jobs.is_empty() => jobs,
+            Ok(jobs) if !jobs.is_empty() => dom::after_merge_in_force(jobs, false),
             _ => return None,
         };
         let scans = self.ci_scans(sandbox).await;
