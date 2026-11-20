@@ -1,6 +1,6 @@
 ---
 yulius-task: 1c2c18ef-b209-4c4e-924b-19790ff0e5d6
-status: done
+status: in-progress
 ---
 
 # SPEC-547 Stabilize restart of a reattached run at its limit
@@ -34,6 +34,7 @@ Issue #1286 reports a timeout waiting for attempt two on plain dev under load. S
 - [x] Ready the independently reviewed fix for the green CI merge
 - [x] Resume the restored workflow when its first capacity pass is deferred
 - [x] Verify reattached refusals against the current sign-in after merging dev
+- [ ] Verify subscription reset labels across midnight in the browser fixture
 
 ## Acceptance criteria
 

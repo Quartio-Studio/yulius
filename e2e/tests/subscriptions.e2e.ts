@@ -147,10 +147,12 @@ test('a folded subscription marks a reading that may be out of date, and a windo
 async function openWithAWindowThatResetsInTenMinutes(app: { open: (path: string) => Promise<void> }, browser: Browser) {
   await app.open(mock('/s/studio', '&ambient=0'));
   await browser.evaluate(() => {
+    const now = new Date().setHours(23, 55, 0, 0);
+    Date.now = () => now;
     type Account = { label: string; status: string; usage: Record<string, unknown> };
     const db = (window as unknown as { __yuliusMock: { accounts: Account[] } }).__yuliusMock;
     const four = db.accounts.find((a) => a.label === 'Claude #4')!;
-    Object.assign(four, { status: 'ok', usage: { ...four.usage, primary: { used_percent: 100, resets_at: new Date(Date.now() + 10 * 60e3).toISOString(), window_minutes: 300 }, observed_at: new Date().toISOString() } });
+    Object.assign(four, { status: 'ok', usage: { ...four.usage, primary: { used_percent: 100, resets_at: new Date(Date.now() + 10 * 60e3).toISOString(), window_minutes: 300 }, observed_at: new Date(now).toISOString() } });
     location.hash = '#/admin/accounts';
   });
   await firstShown(browser.locator('main .account-card').first());
