@@ -1029,6 +1029,9 @@ The merge-first environment changes only through its staging queue (ADR-0411):
 - With a merge-first target, every promotion (a production deploy's, `POST …/delivery/promote`,
   the profile's automatic one) is refused (409) until staging serves the integration head,
   verified; the automatic promotion then runs once the staging queue verified it.
+- For every project, `POST …/delivery/promote` and the automatic promotion read the integration
+  head and its `[cd.*]` tables through the verified CD mirror first, and answer 409 when they
+  cannot be read: a fetch failure, or an invalid `yulius.toml` at the head.
 
 A run deploys the commit GitHub reports for the branch, taken into a mirror only Yulius writes
 (every object checked, replacement refs ignored). It writes the commit's files into the run's own

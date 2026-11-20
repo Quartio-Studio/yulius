@@ -8,7 +8,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - With a merge-first staging target, the Delivery page's Promote and the automatic promotion
   also take only the revision staging verified, read through the verified CD mirror; an
-  automatic promotion runs once the staging queue verified the head ([ADR-0411](decisions/0411-staging-changes-through-a-queue-of-tested-merged-revisions.md)).
+  automatic promotion runs once the staging queue verified the head. Any project's promotion is
+  refused while its verified head or `[cd.*]` tables cannot be read ([ADR-0411](decisions/0411-staging-changes-through-a-queue-of-tested-merged-revisions.md)).
 - New projects with a shared staging target are bootstrapped merge-first, with a `[local]`
   deployment inside each task's sandbox. Each onboarded sandbox gets one Infra bootstrap task
   that adopts it, keeping the project's own commands, targets and grants, or records that the

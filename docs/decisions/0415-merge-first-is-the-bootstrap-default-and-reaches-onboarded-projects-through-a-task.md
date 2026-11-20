@@ -69,6 +69,10 @@ Those projects differ:
     - Otherwise it makes the task: a stop before making it, or a creation refused for want of a
       Claude account.
   - A restart therefore makes no second task and never skips a project.
+  - A sandbox that is not onboarded at the release (waiting, preparing, or skipped) is laid,
+    although an onboarding task created before the release has the older prompt. Such a project
+    adopts the default through the skill its agent reads, or a person asks for it; that case is
+    narrow enough not to warrant an upgrade task.
 - **Deliveries in progress.** Nothing pins them: a staging request whose revision staging
   already serves is answered `included` (ADR-0411), so the rollout never deploys one twice.
 
