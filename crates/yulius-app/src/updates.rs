@@ -63,6 +63,8 @@ pub const ACK_GIVE_UP_MS: i64 = 90_000;
 pub const BUILD_MAX_MS: i64 = 3 * 3_600_000;
 /// Longest wait for every task to reach a pause point; then the update is cancelled.
 pub const DRAIN_MAX_MS: i64 = 30 * 60_000;
+/// Part of the task drain a version install gives a CI gate finishing its last job.
+const CI_GRACE_MS: i64 = 30_000;
 /// Longest install (stop, backup, start, check and a rollback).
 pub const INSTALL_MAX_MS: i64 = 15 * 60_000;
 /// `Retry-After` of a hook held for an update: released tasks go on within this.
@@ -1149,7 +1151,7 @@ impl App {
     }
 
     /// `POST /api/admin/update/proceed` (superadmin): stops waiting for tasks still in a turn
-    /// and restarts now (they may see a short interruption).
+    /// or CI gates finishing their last job, subject to the running-deploy guard.
     ///
     /// # Errors
     /// `Forbidden` for others; `Conflict` unless the run is pausing tasks.
@@ -1282,6 +1284,25 @@ impl App {
         }
     }
 
+    async fn wait_for_finishing_ci(&self, run: &UpdateRunRecord) -> bool {
+        let remaining = run
+            .state_since
+            .plus_millis(CI_GRACE_MS)
+            .millis_since(self.now());
+        if is_restart(run)
+            || self.updates.proceed.load(Ordering::SeqCst)
+            || !(1..=CI_GRACE_MS).contains(&remaining)
+        {
+            return false;
+        }
+        // An optional observation cannot hold an install if the store is busy or unavailable.
+        let remaining = Duration::from_millis(remaining.unsigned_abs());
+        matches!(
+            tokio::time::timeout(TICK.min(remaining), self.deps.store.has_finishing_ci_run()).await,
+            Ok(Ok(true))
+        )
+    }
+
     async fn drive_update(self: &Arc<Self>, services: &UpdateServices, run: UpdateRunRecord) {
         self.reset_phase(&run);
         // The building run closes the gate itself once built (SPEC-342 DPU-007).
@@ -1377,11 +1398,16 @@ impl App {
                     self.updates.ready_passes.store(0, Ordering::SeqCst);
                     0
                 };
+                let can_install = passes >= READY_PASSES || proceed;
+                let ci_wait = can_install && self.wait_for_finishing_ci(&run).await;
                 self.publish_run(
                     &run,
-                    &format!("{}/{}/{deploys:?}", progress.paused, progress.total),
+                    &format!(
+                        "{}/{}/{deploys:?}/{ci_wait}",
+                        progress.paused, progress.total
+                    ),
                 );
-                if passes >= READY_PASSES || proceed {
+                if can_install && !ci_wait {
                     let Some(helper) = services.helper.clone() else {
                         self.cancel_run(&run, "The update helper is gone.").await;
                         return;
@@ -1947,7 +1973,11 @@ impl App {
                 // A deploy holds the install (SPEC-342 DPU-005).
                 message = Some(match running {
                     Some(0) if pause.paused >= pause.total => {
-                        "Every task is paused. Restarting next.".to_owned()
+                        if self.wait_for_finishing_ci(run).await {
+                            "Tasks paused. Giving a finishing CI run time to complete.".to_owned()
+                        } else {
+                            "Every task is paused. Restarting next.".to_owned()
+                        }
                     }
                     Some(0) => {
                         format!("Pausing tasks: {} of {} paused.", pause.paused, pause.total)

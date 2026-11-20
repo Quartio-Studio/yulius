@@ -7372,3 +7372,5 @@ async fn a_ci_job_binds_the_agent_cli_of_its_join() -> TestResult {
     }
     Ok(())
 }
+
+mod planned_install;

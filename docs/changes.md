@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
+- A planned install briefly waits for CI gates finishing their last job. The operator can proceed immediately, and interrupted runs still use full recovery. [SPEC-573](../.ai/specs/SPEC-573-reduce-repeated-ci-work-across-planned-y.md)
+
 - Successors wait for a parked predecessor’s plan, goal, owner decision and current PR checks, including a replacement PR opened after the recorded delivery merged (SPEC-558).
 - A sandbox writer can choose **Restart browser** when Chrome's input stays locked after host setup. The panel reconnects with the same sandbox profile and reopened web tabs. [SPEC-570](../.ai/specs/SPEC-570-restart-the-locked-browser-of-one-sandbo.md)
 - Yulius retained its Rust mutation runner after paired compiler-cache trials preserved every mutant verdict and showed mixed elapsed times under shared-host load. [SPEC-569](../.ai/specs/SPEC-569-shorten-yulius-mutation-verification-whi.md)

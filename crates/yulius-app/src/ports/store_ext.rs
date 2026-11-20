@@ -500,6 +500,9 @@ pub trait CiStore: Send + Sync {
     ) -> AppResult<Vec<crate::ci::CiRunRecord>>;
     /// Queued and running runs of every sandbox, oldest first.
     async fn active_ci_runs(&self) -> AppResult<Vec<crate::ci::CiRunRecord>>;
+    /// A running gate with an executed pass, no queued job and at most one running job
+    /// (including an executor finalizing the verdict). Used by the planned-install drain.
+    async fn has_finishing_ci_run(&self) -> AppResult<bool>;
     /// Puts queued run `id` before the other queued runs of its sandbox (SPEC-487 MRG-004): its
     /// place becomes a millisecond before the earliest of theirs, but never before another run
     /// of the same commit (the latest run of a commit is read by place). `false`, and nothing
