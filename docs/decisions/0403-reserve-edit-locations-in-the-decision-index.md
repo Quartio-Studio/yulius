@@ -15,7 +15,9 @@ can check out the higher-numbered head first.
 
 Give upcoming numbers hidden Markdown comments. An author inserts the complete link and
 description immediately before its numbered comment and keeps that comment in place. The repository check verifies the
-layout and keeps a block of slots available ahead of the newest decision.
+layout and keeps a block of slots available ahead of the newest decision. For numbers issued
+after this migration, the marker must already exist at the branch's merge base with dev.
+A reservation that exhausts the reserve needs a shared empty extension before use.
 
 ## Alternatives
 

@@ -12,7 +12,8 @@ For ADR 0401 onward, insert the complete entry immediately **before** its number
 comment and keep the comment in place. This gives parallel entries distinct insertion points.
 When the check requests more slots, run `python3 scripts/decision_slots.py` to append the next
 block. If a reservation skips past all available slots, land an empty extension first with
-`python3 scripts/decision_slots.py NNNN` so concurrent branches share those insertion points.
+`python3 scripts/decision_slots.py NNNN` then merge dev into the author branch. The check reads the insertion points at the common ancestor
+of HEAD and origin/dev.
 
 - [0001](0001-single-rust-binary.md): One Rust binary with an embedded static web UI
 - [0002](0002-detached-ptyhost-per-run.md): A detached ptyhost process owns every agent run

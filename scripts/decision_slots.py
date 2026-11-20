@@ -2,6 +2,7 @@
 import argparse
 from pathlib import Path
 import re
+import subprocess
 
 FIRST = 401  # The first number after the index layout changed.
 BLOCK = 32
@@ -33,19 +34,48 @@ def slot_errors(index):
             if i + 1 == len(lines) or lines[i + 1] != marker(number):
                 errors.append(f"place entry {number:04} immediately before {marker(number)}")
     if markers or highest >= FIRST:
-        if markers != list(range(FIRST, max(markers, default=FIRST-1) + 1)):
+        if markers != list(range(FIRST, max(markers, default=FIRST - 1) + 1)):
             errors.append(f"keep each ADR slot in order, starting with {FIRST:04}")
-        if max(markers, default=FIRST-1) < reserve_end(highest):
+        if max(markers, default=FIRST - 1) < reserve_end(highest):
             errors.append("replenish the ADR slots with python3 scripts/decision_slots.py")
+    return errors
+
+
+def shared_slot_errors(index, base):
+    """0401 and 0402 predate this migration, and 0403 records the migration itself."""
+    used = {int(m[1]) for line in index.splitlines() if (m := ENTRY.match(line)) and int(m[1]) > 403}
+    shared = {int(m[1]) for line in base.splitlines() if (m := MARKER.fullmatch(line))}
+    return [f"ADR {n:04} needs its empty slot on dev before a branch fills it"
+            for n in sorted(used - shared)]
+
+
+def integration_slot_errors(root, index):
+    """Check the common base, even when origin/dev acquired the slot after this branch forked."""
+    relative = "docs/decisions/README.md"
+    bases = subprocess.run(
+        ["git", "merge-base", "--all", "HEAD", "refs/remotes/origin/dev"],
+        cwd=root, text=True, capture_output=True,
+    )
+    if bases.returncode:
+        return ["cannot check shared ADR slots: fetch origin/dev and its common history with HEAD"]
+    errors = []
+    for base in bases.stdout.splitlines():
+        result = subprocess.run(["git", "show", f"{base}:{relative}"], cwd=root, text=True, capture_output=True)
+        if result.returncode:
+            return [f"cannot read {relative} at integration merge base {base}"]
+        errors.extend(shared_slot_errors(index, result.stdout))
     return errors
 
 
 def extend(index, through=FIRST):
     """Append only empty markers, in identical blocks on branches that cross a boundary."""
     lines = index.splitlines()
-    last = max((int(match[1]) for line in lines if (match := MARKER.fullmatch(line))), default=FIRST-1)
-    highest = max((int(match[1]) for line in lines if (match := ENTRY.match(line))), default=FIRST-1)
-    return index + "".join(f"{marker(n)}\n" for n in range(last + 1, reserve_end(max(through, highest)) + 1))
+    last = max((int(match[1]) for line in lines if (match := MARKER.fullmatch(line))), default=FIRST - 1)
+    highest = max((int(match[1]) for line in lines if (match := ENTRY.match(line))), default=FIRST - 1)
+    added = "".join(f"{marker(n)}\n" for n in range(last + 1, reserve_end(max(through, highest)) + 1))
+    if added and index and not index.endswith("\n"):
+        index += "\n"
+    return index + added
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 
 from check_repository import ROOT, decision_errors
-from decision_slots import extend, slot_errors
+from decision_slots import extend, integration_slot_errors, slot_errors
 
 
 class DecisionSlots(unittest.TestCase):
@@ -79,3 +79,55 @@ class DecisionSlots(unittest.TestCase):
         for invalid in (index.replace(marker, ""), index.replace(marker, marker + marker)):
             self.assertTrue(slot_errors(invalid))
         self.assertFalse(slot_errors(index))
+
+    def test_authors_must_share_the_new_block_before_filling_neighbors(self):
+        # Dev has since acquired the empty block. Both branches still fork from the old
+        # base, so comparing to dev's current file alone would accept the broken pair.
+        base = extend("# Decisions\n")
+        extended = extend(base, through=465)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            def git(*args):
+                return subprocess.check_output(
+                    ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                     "-c", "commit.gpgSign=false", *args], cwd=repo, text=True, stderr=subprocess.PIPE,
+                ).strip()
+
+            git("init", "-q")
+            index = repo / "docs/decisions/README.md"
+            index.parent.mkdir(parents=True)
+            index.write_text(base)
+            git("add", ".")
+            git("commit", "-qm", "initial slots")
+            shared = git("rev-parse", "HEAD")
+            index.write_text(extended)
+            git("commit", "-qam", "reserve next block")
+            dev = git("rev-parse", "HEAD")
+            git("update-ref", "refs/remotes/origin/dev", dev)
+            for number in (465, 466):
+                git("checkout", "-q", "--detach", shared)
+                point = f"<!-- ADR {number:04} -->"
+                author = extended.replace(point, f"- [{number:04}]({number:04}-choice.md) Entry.\n" + point)
+                index.write_text(author)
+                git("commit", "-qam", "fill a slot beyond the fork point")
+                self.assertEqual(slot_errors(author), [])
+                self.assertTrue(any(str(number) in e for e in integration_slot_errors(repo, index.read_text())))
+                git("checkout", "-q", "--detach", dev)
+                index.write_text(author)
+                self.assertEqual(integration_slot_errors(repo, index.read_text()), [])
+                git("restore", "--", "docs/decisions/README.md")
+
+    def test_replenishing_an_unterminated_marker_keeps_it_on_its_own_line(self):
+        base = extend("# Decisions\n").rstrip("\n")
+        self.assertEqual(extend(base), base)
+        self.assertEqual(extend(base, through=465), extend(base + "\n", through=465))
+
+    def test_repeated_legacy_number_with_different_valid_links_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            for n in (399, 400):
+                (directory / f"{n:04}-choice.md").write_text(f"# {n:04}. Choice\n")
+            (directory / "README.md").write_text(
+                "- [0399](0399-choice.md) A\n- [0400](0400-choice.md) B\n- [0400](0399-choice.md) C\n"
+            )
+            self.assertTrue(any("0400" in e and "more than once" in e for e in decision_errors(directory)))
