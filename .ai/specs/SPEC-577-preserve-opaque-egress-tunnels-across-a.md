@@ -294,3 +294,8 @@ without adoption support or a remote peer that times out can end a tunnel.
   that mutation. It checks the last millisecond, exact expiry and the next surviving pair
   with a supplied clock. Receipt and the helper's final deadline use the same saturating
   calculation of time remaining.
+- On Linux, even a failed shutdown on a never-connected TCP socket can disable later writes
+  through a retained duplicate. An expired-frame fixture subsequently connected that original
+  socket to a local listener and got `BrokenPipe` on its first write. Cleanup now shuts down
+  endpoints which still have a peer and drops disconnected handles. The connected half of the
+  expired frame sees EOF and the original owner can still connect and send its synthetic marker.

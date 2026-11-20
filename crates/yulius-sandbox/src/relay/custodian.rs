@@ -250,7 +250,11 @@ struct PendingDelivery(Vec<Option<Pair>>);
 
 fn shut_down(pair: &Pair) {
     for socket in &pair.sockets {
-        let _ = net::shutdown(socket, net::Shutdown::Both);
+        // An expired frame may contain a TCP endpoint whose peer has already gone.
+        // shutdown on an unconnected Linux socket can disable a future owner's writes.
+        if net::getpeername(socket).is_ok_and(|peer| peer.is_some()) {
+            let _ = net::shutdown(socket, net::Shutdown::Both);
+        }
     }
 }
 
@@ -742,6 +746,29 @@ mod tests {
             assert!(result.is_err_and(|e| e.kind() == io::ErrorKind::InvalidData));
             let client = TcpStream::connect(address).await?;
             assert_eq!(listener.accept().await?.1, client.local_addr()?);
+            Ok(())
+        })
+        .await?
+    }
+
+    #[tokio::test]
+    async fn an_expired_disconnected_descriptor_can_still_be_used_by_its_original_owner()
+    -> io::Result<()> {
+        use tokio::net::{TcpListener, TcpSocket};
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let listener = TcpListener::bind("127.0.0.1:0").await?;
+            let unconnected = TcpSocket::new_v4()?;
+            let (mut short, mut peers) = pair(Vec::new())?;
+            short.sockets[0] = unconnected.as_fd().try_clone_to_owned()?;
+            short.expires = Some(0);
+            let (mut sender, mut receiver) = UnixStream::pair()?;
+            send(&mut sender, &[short]).await?;
+            assert!(receive(&mut receiver).await?.release().is_empty());
+            assert_eq!(peers[1].read(&mut [0]).await?, 0);
+            let mut client = unconnected.connect(listener.local_addr()?).await?;
+            let (mut peer, _) = listener.accept().await?;
+            client.write_all(b"okay").await?;
+            assert_eq!(peer.read_u32().await?.to_be_bytes(), *b"okay");
             Ok(())
         })
         .await?
