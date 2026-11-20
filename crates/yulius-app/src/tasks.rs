@@ -180,7 +180,8 @@ impl App {
     /// # Errors
     /// Store failures.
     pub async fn task_summary(&self, task: &TaskRecord) -> AppResult<TaskSummary> {
-        self.task_summary_among(task, None).await
+        self.task_summary_among(task, None, crate::sandboxes::parked_pr_deadline())
+            .await
     }
 
     /// [`Self::task_summary`] of a task listed with the rest of its project's unarchived tasks
@@ -192,6 +193,7 @@ impl App {
         &self,
         task: &TaskRecord,
         project: Option<&[TaskRecord]>,
+        deadline: tokio::time::Instant,
     ) -> AppResult<TaskSummary> {
         let store = &self.deps.store;
         let steps = store.steps(&task.id).await?;
@@ -311,7 +313,7 @@ impl App {
             goal_unfinished: idle_run && self.goal_unfinished_of(task).await,
             spec_unfinished: idle_run && self.spec_unfinished(&task.id).await,
             parked_needs_you: if task.status == TaskStatus::Parked {
-                Some(!self.shows_done(task).await)
+                Some(!self.shows_done_until(task, deadline).await)
             } else {
                 None
             },
@@ -677,8 +679,9 @@ impl App {
         // Unarchived, the list is the project the summaries need; archived ones wait for nothing.
         let project = (!archived).then_some(tasks.as_slice());
         let mut out = Vec::with_capacity(tasks.len());
+        let deadline = crate::sandboxes::parked_pr_deadline();
         for task in &tasks {
-            out.push(self.task_summary_among(task, project).await?);
+            out.push(self.task_summary_among(task, project, deadline).await?);
         }
         Ok(out)
     }
@@ -689,9 +692,10 @@ impl App {
     /// Store failures.
     pub async fn archived_tasks(&self, ctx: &AuthContext) -> AppResult<Vec<TaskSummary>> {
         let mut out = Vec::new();
+        let deadline = crate::sandboxes::parked_pr_deadline();
         for (sandbox, _) in self.visible_sandboxes(&ctx.user).await? {
             for task in self.deps.store.tasks(&sandbox.id, true).await? {
-                out.push(self.task_summary(&task).await?);
+                out.push(self.task_summary_among(&task, None, deadline).await?);
             }
         }
         Ok(out)

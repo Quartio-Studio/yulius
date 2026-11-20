@@ -2250,7 +2250,7 @@ fn a_codex_goal_repair_rotates_once_and_flags_at_the_original_bound() -> TestRes
     let (_dir, data) = temp()?;
     let rt = runtime()?;
     rt.block_on(async {
-        let app = build_full(
+        let mut app = build_full(
             &data,
             Some(&fake),
             FakeAgentOptions {
@@ -2261,6 +2261,9 @@ fn a_codex_goal_repair_rotates_once_and_flags_at_the_original_bound() -> TestRes
             },
             8,
         )?;
+        let waits = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        Arc::get_mut(&mut app).ok_or("unshared fixture app")?.deps.session_host =
+            crate::task_done::WaitingHost::new(Arc::clone(&waits));
         let (sandbox, user) = seed_records(&app).await?;
         let auth = codex_auth("2026-11-01T10:00:00Z");
         add_codex_account(&app, "a-one", &auth).await?;
@@ -2324,6 +2327,13 @@ fn a_codex_goal_repair_rotates_once_and_flags_at_the_original_bound() -> TestRes
             .store
             .set_account_state(old, AccountStatus::Relogin, None, None, app.now())
             .await?;
+        // The old account is out of capacity, but killing its wait would lose the awaited news.
+        waits.store(1, std::sync::atomic::Ordering::SeqCst);
+        assert!(matches!(app.hook_event("test-first", "codex", "Stop", &Default::default(), None).await?,
+            HookReply::Output(output) if output.decision.is_none()));
+        assert_eq!(task(&app, &id).await?.gate_blocks, 2);
+        assert_eq!(app.deps.store.live_attempt(&id).await?.ok_or("waiting attempt")?.id, first.id);
+        waits.store(0, std::sync::atomic::Ordering::SeqCst);
         assert!(matches!(
             app.hook_event("test-first", "codex", "Stop", &Default::default(), None)
                 .await?,

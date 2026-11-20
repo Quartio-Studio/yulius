@@ -222,7 +222,10 @@ impl App {
                     || !runtime.with_workflows(|workflows| workflows.runs().is_empty())
             }
         };
-        let mut facts = self.task_attention_facts(task, &requested.all).await.ok();
+        let mut facts = self
+            .task_attention_facts(task, &requested.all, crate::sandboxes::parked_pr_deadline())
+            .await
+            .ok();
         if let Some(facts) = &mut facts {
             // The first pass checks local eligibility. Only the final pass supplies
             // the current head, so a stale overview cannot veto a fresh check.

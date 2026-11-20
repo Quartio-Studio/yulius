@@ -788,9 +788,18 @@ fn a_typed_compaction_leaves_a_done_task_done() -> TestResult {
 
 /// The real session host whose probe also finds `waits` shells that only run `yulius wait`
 /// (what `yulius_ptyhost::shells::count_background` tells apart on a real process tree).
-struct WaitingHost {
+pub(crate) struct WaitingHost {
     inner: PtySessionHost,
     waits: Arc<std::sync::atomic::AtomicU32>,
+}
+
+impl WaitingHost {
+    pub(crate) fn new(waits: Arc<std::sync::atomic::AtomicU32>) -> Arc<Self> {
+        Arc::new(Self {
+            inner: PtySessionHost::new(PathBuf::from(env!("CARGO_BIN_EXE_yulius"))),
+            waits,
+        })
+    }
 }
 
 #[async_trait::async_trait]
@@ -852,11 +861,7 @@ fn an_agent_waiting_for_yulius_does_not_need_a_person() -> TestResult {
             ..FakeAgentOptions::default()
         };
         let waits = Arc::new(std::sync::atomic::AtomicU32::new(0));
-        let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
-        let host = Arc::new(WaitingHost {
-            inner: PtySessionHost::new(exe),
-            waits: Arc::clone(&waits),
-        });
+        let host = WaitingHost::new(Arc::clone(&waits));
         let (app, _) = start_on(&data, &fake, agent, 0, Some(host), None, false, None).await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let ctx = yulius_app::auth::AuthContext {

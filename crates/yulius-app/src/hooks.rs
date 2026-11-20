@@ -1046,7 +1046,7 @@ impl App {
             // leave time for rotation and the response, even on a slow GitHub.
             let pull = tokio::time::timeout(
                 std::time::Duration::from_millis(750),
-                self.task_pull_signal(task),
+                self.task_pull_signal(task, None),
             )
             .await;
             let failing = match pull {
@@ -1210,7 +1210,8 @@ impl App {
                 crate::review::ReviewerMove::To(account) => {
                     let prompts_before = self.prompts_passed(&task.id);
                     self.await_transcript_read(&task.id).await;
-                    if background
+                    if goal_waits
+                        || background
                         || self.background_work_now(&task.id).await != Some(false)
                         || self.prompt_waits_for_turns_end(&task.id, prompts_before)
                     {
@@ -1312,7 +1313,7 @@ impl App {
         }
         let stays = match decision {
             (Decision::Stay, _) => true,
-            (Decision::Switch { .. }, _) if background || busy => true,
+            (Decision::Switch { .. }, _) if goal_waits || background || busy => true,
             (Decision::Switch { .. }, _) if prompt_waits => {
                 tracing::info!(
                     task = %task.id,
@@ -1359,7 +1360,7 @@ impl App {
             }
         }
         if reasons.is_empty() {
-            if task.gate_blocks != 0 {
+            if !goal_waits && task.gate_blocks != 0 {
                 let update = TaskFieldUpdate {
                     gate_blocks: Some(0),
                     ..TaskFieldUpdate::default()

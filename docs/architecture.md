@@ -2040,7 +2040,11 @@ An unreadable recorded PR keeps its session through both grace-period and digest
 The hook returns the continuation and raises attention after three consecutive attempts.
 Capacity holds preserve that count. A replacement subscription receives the numbered continuation
 as its opening prompt and uses the same budget.
-An explicit request for a person or an autonomous delivery wait keeps control.
+An explicit request for a person or an autonomous delivery wait keeps control. A Codex goal waiting
+in `yulius wait` keeps its process when another subscription becomes available.
+Home, the task list and the tool list give their parked PR lookups one shared 750 ms deadline.
+Local unfinished work settles the group immediately. A recorded open PR whose checks cannot be
+read before the deadline remains under Needs you until a subsequent read resolves it.
 The supervisor saves the redacted screen with the elapsed idle time before requesting shutdown.
 The web terminal and `task_screen` use that snapshot once the task parks and while a resumed host attaches.
 [Decision 0396](decisions/0396-capture-the-parked-terminal-before-shutdown.md).

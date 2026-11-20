@@ -125,7 +125,9 @@ impl App {
         requested: &std::collections::HashSet<String>,
         person: bool,
     ) -> AppResult<Value> {
-        let facts = self.task_attention_facts(task, requested).await?;
+        let facts = self
+            .task_attention_facts(task, requested, crate::sandboxes::parked_pr_deadline())
+            .await?;
         self.task_brief_shown(task, facts, person).await
     }
 
@@ -207,12 +209,13 @@ impl App {
         let requested = self.browser_requests(&caller.sandbox).await;
         let limit = usize::try_from(limit).unwrap_or(30);
         let mut out = Vec::new();
+        let deadline = crate::sandboxes::parked_pr_deadline();
         for t in &tasks {
             if out.len() >= limit {
                 break;
             }
             // The tasks the list shows under "Needs you" (SPEC-487 QST-002), by its own rule.
-            let facts = self.task_attention_facts(t, &requested).await?;
+            let facts = self.task_attention_facts(t, &requested, deadline).await?;
             if scope == "needs_you" && facts.group() != TaskGroup::NeedsYou {
                 continue;
             }

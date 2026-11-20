@@ -3482,6 +3482,7 @@ impl App {
     pub(crate) async fn task_pull_signal(
         &self,
         task: &TaskRecord,
+        deadline: Option<tokio::time::Instant>,
     ) -> AppResult<Option<PullSignal>> {
         if let Some(record) = self.deps.store.delivery(&task.id).await? {
             if past_merge(&record.stage) {
@@ -3491,7 +3492,17 @@ impl App {
                 let number = record.pr_number.ok_or_else(|| {
                     AppError::Internal("open delivery has no pull request number".into())
                 })?;
-                return self.recorded_pull_signal(task, number).await;
+                let current = self.recorded_pull_signal(task, number);
+                return match deadline {
+                    Some(deadline) => {
+                        tokio::time::timeout_at(deadline, current)
+                            .await
+                            .map_err(|_| {
+                                AppError::Upstream("the parked PR lookup deadline expired".into())
+                            })?
+                    }
+                    None => current.await,
+                };
             }
         }
         Ok(self

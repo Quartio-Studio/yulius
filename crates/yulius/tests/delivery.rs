@@ -4566,6 +4566,42 @@ async fn working_and_queued_counts_split_the_sidebar_working_group() -> TestResu
     Ok(())
 }
 
+/// An achieved goal can release its chain even when its work produced no pull request.
+#[tokio::test]
+async fn a_parked_achieved_goal_releases_its_chain_without_a_pr() -> TestResult {
+    use yulius_app::ports::store_ext::IntakeStore as _;
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let before = TaskId::parse("t1")?;
+    let child = TaskId::parse("t2")?;
+    f.add_task("t1", "Answer the question", "feat/1-answer", "dev")
+        .await?;
+    f.add_task("t2", "Use the answer", "feat/2-after", "dev")
+        .await?;
+    let now = f.h.app.now();
+    f.h.store
+        .transition_task(&child, None, TaskStatus::Chained, None, now)
+        .await?;
+    f.h.store
+        .insert_chain(&yulius_app::intake::ChainRecord {
+            task_id: child.clone(),
+            after_task_id: Some(before.clone()),
+            after_number: 1,
+            blocked_reason: None,
+            created_at: now,
+            rule: None,
+        })
+        .await?;
+    for activity in [Activity::Waiting, Activity::Done] {
+        f.h.store
+            .transition_task(&before, None, TaskStatus::Parked, Some(activity), now)
+            .await?;
+        f.h.app.advance_chains(&before).await;
+        let status = f.h.store.task(&child).await?.ok_or("successor")?.status;
+        assert_eq!(status == TaskStatus::Chained, activity == Activity::Waiting);
+    }
+    Ok(())
+}
+
 /// A parked Waiting predecessor releases its chain only when all its PR checks can be read.
 #[tokio::test]
 async fn a_parked_predecessor_waits_for_the_complete_check_report() -> TestResult {

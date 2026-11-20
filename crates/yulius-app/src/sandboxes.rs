@@ -3,6 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
+use tokio::time::Instant;
 
 use yulius_contracts::api::sandboxes::{Profile, RepoRef, Sandbox, SandboxCounts};
 use yulius_domain::ids::{SandboxId, TaskId};
@@ -13,6 +14,11 @@ use crate::auth::AuthContext;
 use crate::context::App;
 use crate::error::AppResult;
 use crate::model::{SandboxRecord, TaskRecord};
+
+/// All parked PRs rendered by one list share the same remote lookup deadline.
+pub(crate) fn parked_pr_deadline() -> Instant {
+    Instant::now() + std::time::Duration::from_millis(750)
+}
 
 /// What each sandbox's Git overview last said about its tasks' pull requests (GIT-001): the same
 /// facts the web UI's sidebar reads, so the "needs you" counts agree with it without calling
@@ -53,11 +59,25 @@ impl App {
         record: &SandboxRecord,
         access: AccessLevel,
     ) -> AppResult<Sandbox> {
+        self.sandbox_view_until(record, access, parked_pr_deadline())
+            .await
+    }
+
+    async fn sandbox_view_until(
+        &self,
+        record: &SandboxRecord,
+        access: AccessLevel,
+        deadline: Instant,
+    ) -> AppResult<Sandbox> {
         let tasks = self.deps.store.tasks(&record.id, false).await?;
         let requested = self.browser_requests(&record.id).await;
         let mut counts = SandboxCounts::default();
         for task in &tasks {
-            match self.task_group(task, &requested).await? {
+            match self
+                .task_attention_facts(task, &requested, deadline)
+                .await?
+                .group()
+            {
                 TaskGroup::NeedsYou => counts.needs_attention += 1,
                 TaskGroup::Working => counts.running += 1,
                 TaskGroup::Queued => counts.queued += 1,
@@ -100,8 +120,14 @@ impl App {
     /// its plan complete, or an agent that answered with nothing open (SPEC-429 ANS-007). Archive
     /// and delete close such a task's session, as the UI offers them.
     pub(crate) async fn shows_done(&self, task: &TaskRecord) -> bool {
+        self.shows_done_until(task, parked_pr_deadline()).await
+    }
+
+    pub(crate) async fn shows_done_until(&self, task: &TaskRecord, deadline: Instant) -> bool {
         let requested = self.browser_requests(&task.sandbox_id).await;
-        matches!(self.task_group(task, &requested).await, Ok(TaskGroup::Done))
+        self.task_attention_facts(task, &requested, deadline)
+            .await
+            .is_ok_and(|facts| facts.group() == TaskGroup::Done)
     }
 
     /// A task's sidebar group (`AttentionFacts::group`), so Home's cards and the sandbox tabs
@@ -115,7 +141,10 @@ impl App {
         task: &TaskRecord,
         requested: &HashSet<String>,
     ) -> AppResult<TaskGroup> {
-        Ok(self.task_attention_facts(task, requested).await?.group())
+        Ok(self
+            .task_attention_facts(task, requested, parked_pr_deadline())
+            .await?
+            .group())
     }
 
     /// The facts that place the task in its sidebar group and explain a derived wait.
@@ -123,6 +152,7 @@ impl App {
         &self,
         task: &TaskRecord,
         requested: &HashSet<String>,
+        deadline: Instant,
     ) -> AppResult<AttentionFacts> {
         let store = &self.deps.store;
         if task.status.is_resting() || task.status == TaskStatus::Stopping {
@@ -147,10 +177,18 @@ impl App {
         let live = task.status == TaskStatus::Running && idle;
         // The pull request, the plan and the goal matter only after a finished turn: with no step
         // open and no unfinished goal, an idle agent answered (SPEC-429).
+        let goal_unfinished = finished && self.goal_unfinished_of(task).await;
         let (pull, plan_open, spec_unfinished) = if finished {
-            let pull = if task.status == TaskStatus::Parked {
+            let plan_open = plan_open(&store.steps(&task.id).await?);
+            let spec_unfinished = self.spec_unfinished(&task.id).await;
+            let local_needs = plan_open
+                || spec_unfinished
+                || goal_unfinished
+                || held_prompt
+                || requested.contains(task.id.as_str());
+            let pull = if task.status == TaskStatus::Parked && !local_needs {
                 // An incomplete overview can omit a task's recorded open PR.
-                self.task_pull_signal(task)
+                self.task_pull_signal(task, Some(deadline))
                     .await
                     .unwrap_or(Some(PullSignal::Errored))
             } else {
@@ -163,8 +201,7 @@ impl App {
                         .map(|_| PullSignal::Merged),
                 }
             };
-            let plan_open = plan_open(&store.steps(&task.id).await?);
-            (pull, plan_open, self.spec_unfinished(&task.id).await)
+            (pull, plan_open, spec_unfinished)
         } else {
             (None, false, false)
         };
@@ -176,7 +213,7 @@ impl App {
             chain_blocked,
             plan_open,
             spec_unfinished,
-            goal_unfinished: finished && self.goal_unfinished_of(task).await,
+            goal_unfinished,
             background_shells: live
                 && self
                     .background_shells_of(&task.id)
@@ -221,8 +258,9 @@ impl App {
     /// Store failures.
     pub async fn list_sandboxes(&self, ctx: &AuthContext) -> AppResult<Vec<Sandbox>> {
         let mut out = Vec::new();
+        let deadline = parked_pr_deadline();
         for (record, level) in self.visible_sandboxes(&ctx.user).await? {
-            out.push(self.sandbox_view(&record, level).await?);
+            out.push(self.sandbox_view_until(&record, level, deadline).await?);
         }
         Ok(out)
     }

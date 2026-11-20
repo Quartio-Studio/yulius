@@ -2713,3 +2713,83 @@ async fn a_partial_overview_still_resolves_the_parked_tasks_recorded_pr() -> Tes
     assert_eq!(serde_json::to_value(detail)?["parked_needs_you"], false);
     Ok(())
 }
+
+/// A list has one remote lookup budget for all its parked tasks. Local unfinished
+/// work takes no remote lookup; an unreadable open head counts as Needs you.
+#[tokio::test]
+async fn parked_lists_share_one_budget_for_unreadable_pr_heads() -> TestResult {
+    use std::time::Duration;
+    use yulius_domain::delivery::DeliveryStage;
+    let f = fixture().await?;
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    install_compatibility_pull(&f).await?;
+    let store = &f.h.app.deps.store;
+    let owner = yulius_app::auth::AuthContext {
+        user: store.user(&ctx.task.owner).await?.ok_or("owner")?,
+        csrf_token: None,
+        session_hash: None,
+        token: None,
+    };
+    let now = f.h.app.now();
+    f.h.app
+        .tool_steps_set(&ctx, &json!({"steps":["Complete this open step"]}))
+        .await?;
+    store
+        .transition_task(
+            &f.task,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Waiting),
+            now,
+        )
+        .await?;
+    let mut record = store.task(&f.task).await?.ok_or("parked task")?;
+    for number in 3..=10 {
+        record.id = TaskId::parse(&format!("t-parked-{number}"))?;
+        record.number = number;
+        store.insert_task(&record).await?;
+        store
+            .transition_delivery(
+                &DeliveryStage::None,
+                &yulius_app::delivery::DeliveryRecord {
+                    task_id: record.id.clone(),
+                    stage: DeliveryStage::PrOpen,
+                    pr_number: Some(1461),
+                    updated_at: now,
+                },
+            )
+            .await?;
+    }
+    let hold = f.h.github.hold_checks();
+    let local = tokio::select! {
+        result = f.h.app.task_detail(&owner, f.task.as_str()) => result?,
+        () = f.h.github.checks_entered.notified() => return Err("looked up checks despite a locally unfinished plan".into()),
+    };
+    assert_eq!(local.summary.parked_needs_you, Some(true));
+    let limit = Duration::from_secs(4);
+    let (tasks, home) = tokio::time::timeout(limit, async {
+        tokio::try_join!(
+            f.h.app.list_tasks(&owner, f.sandbox.as_str(), false),
+            f.h.app.list_sandboxes(&owner)
+        )
+    })
+    .await
+    .map_err(|_| "parked PR reads stalled the lists")??;
+    f.h.github.release_checks(&hold);
+    let parked: Vec<_> = tasks
+        .iter()
+        .filter(|task| task.status == "parked")
+        .collect();
+    assert_eq!(parked.len(), 9);
+    assert!(
+        parked
+            .iter()
+            .all(|task| task.parked_needs_you == Some(true))
+    );
+    assert!(
+        home.iter()
+            .find(|s| s.id == f.sandbox.as_str())
+            .is_some_and(|s| s.counts.needs_attention >= 9)
+    );
+    Ok(())
+}
