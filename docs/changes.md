@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
+- A red CI notice includes partial test failures observed before a sibling stopped the job. Agents can read each job’s retained diagnostics through `ci_status`. [SPEC-566](../.ai/specs/SPEC-566-report-tests-that-failed-in-a-ci-shard-b.md)
+
 - Task delivery links the landed commit to its CI and deployment checks, including individual reruns and skipped jobs. Projects can cite these results in a verification step without opening a bookkeeping PR (SPEC-562, task #555).
 - Idle sessions with an open step, unfinished spec or unfinished goal stay live through grace-period and digest parking, including when their owner has been asked (SPEC-558, #1490).
 - The merge queue attributes a failed candidate to a member whose own run failed during

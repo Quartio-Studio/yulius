@@ -509,7 +509,7 @@ watching, steering and unblocking.
   merged on green, whoever made it.
 - **Pull request notices** (every sandbox, SPEC-444): Yulius types what happens to a task's open
   pull request into its session within a minute, with the next step: a red run (failing jobs and
-  tests, where to read the log), a conflict, a dropped or refused merge, the merge, why a green
+  tests, partial failures observed in stopped siblings, where to read the logs), a conflict, a dropped or refused merge, the merge, why a green
   head is not merging, and "Hands off" while a merge candidate holds it. A quiet session gets a
   check-in, a pull request without progress for an hour is told and shown as stalled on the task
   list, `yulius wait` never ends on a fixed limit while its run is under way, and merging by hand

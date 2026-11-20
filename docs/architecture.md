@@ -1595,7 +1595,8 @@ person must act first (a prompt on screen, `needs_you`) or may have a draft in t
 (SPEC-480: the notice stays untold and is tried again):
 
 - a red run at its head (each failed job, its exit code and up to 5 failing test names read from
-  the kept failures, and the `ci_status` run and job), or one that errored;
+  the kept failures, partial observations from siblings stopped by a failed job, and the exact
+  `ci_status` run), or one that errored;
 - a red merge candidate of two or more holding it, with "do not re-arm, merge or push";
 - a conflict with the integration branch (checked in the task's worktree), once per head;
 - how its armed merge ended (the slot's outcome), and its merge (`merged_text`), after which the
@@ -3956,6 +3957,9 @@ job ends. `ci_status` with a `run_id` shows them before the end of a failed job'
 that failed early in a long job stays diagnosable
 ([SPEC-145](../.ai/specs/SPEC-145-fix-460-485-ci-keeps-a-failed-test-s-out.md),
 [decision 0119](decisions/0119-ci-keeps-failing-tests-output-from-the-whole-job.md)).
+On a failed run, retained blocks from a sibling stopped by fail-fast share the run detail budget.
+Asking for the job by name shows its full retained blocks.
+[Decision 0401](decisions/0401-red-ci-notices-include-partial-sibling-failures.md)
 
 ## CI job waits and time limits
 

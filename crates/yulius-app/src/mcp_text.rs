@@ -574,7 +574,8 @@ fn ci_status(value: &Value) -> Option<String> {
 
 /// `ci_status` with `run_id`: the run, each job's state and, for the jobs that failed, errored or
 /// were skipped (or the job asked for by `job` whatever its state), its failing tests' output
-/// kept from all of its output, then the end of its output.
+/// kept from all of its output, then the end of its output. A failed run also shows the partial
+/// failure blocks retained by siblings stopped by fail-fast.
 fn ci_run(value: &Value, wanted: Option<&str>) -> Option<String> {
     let jobs = value.get("jobs")?.as_array()?;
     let reason = text(value, "reason");
@@ -603,35 +604,50 @@ fn ci_run(value: &Value, wanted: Option<&str>) -> Option<String> {
         // A skipped job's output says why nothing was checked (SPEC-162).
         let failed = matches!(text(job, "state"), Some("failed" | "error" | "skipped"));
         let show = if wanted.is_some() { named(job) } else { failed };
-        match text(job, "output") {
-            Some(output) if show => {
+        let partial = text(value, "state") == Some("failed")
+            && text(job, "state") == Some("cancelled")
+            && !crate::ci::sibling_failure_names(
+                text(job, "reason"),
+                text(job, "failures").unwrap_or_default(),
+            )
+            .is_empty();
+        if show {
+            push_line(
+                &mut out,
+                &format!("  $ {}", text(job, "command").unwrap_or("")),
+            );
+        }
+        // A stopped sibling contributes only retained blocks to the default run detail.
+        if (show || (wanted.is_none() && partial))
+            && let Some(failures) = text(job, "failures").filter(|f| !f.trim().is_empty())
+        {
+            let label = if partial {
+                "Partial failing tests"
+            } else {
+                "Failing tests"
+            };
+            if wanted.is_some() || failures.len() <= failures_left {
+                failures_left = failures_left.saturating_sub(failures.len());
                 push_line(
                     &mut out,
-                    &format!("  $ {}", text(job, "command").unwrap_or("")),
+                    &format!(
+                        "  {label} of {} (kept from all of its output):",
+                        job_name(job)
+                    ),
                 );
-                // Its failing tests, wherever they were in its output (SPEC-145).
-                if let Some(failures) = text(job, "failures").filter(|f| !f.trim().is_empty()) {
-                    if wanted.is_some() || failures.len() <= failures_left {
-                        failures_left = failures_left.saturating_sub(failures.len());
-                        push_line(
-                            &mut out,
-                            &format!(
-                                "  Failing tests of {} (kept from all of its output):",
-                                job_name(job)
-                            ),
-                        );
-                        push_line(&mut out, failures.trim_end());
-                    } else {
-                        push_line(
-                            &mut out,
-                            &format!(
-                                "  Failing tests of {}: not shown here; ci_status with this run_id \
-                                 and job set to its name.",
-                                job_name(job)
-                            ),
-                        );
-                    }
-                }
+                push_line(&mut out, failures.trim_end());
+            } else {
+                push_line(
+                    &mut out,
+                    &format!(
+                        "  {label} of {}: not shown here; ci_status with this run_id and job set to its name.",
+                        job_name(job)
+                    ),
+                );
+            }
+        }
+        match text(job, "output") {
+            Some(output) if show => {
                 push_line(
                     &mut out,
                     &format!("  Output of {} (its end):", job_name(job)),
@@ -1475,6 +1491,67 @@ mod tests {
         );
         let text = render("ci_status", &json!({"run_id": "r3", "job": "two"}), &value);
         assert!(text.contains("FAIL [ 1.0s] two"), "{text}");
+        Ok(())
+    }
+
+    #[test]
+    fn stopped_sibling_blocks_are_discoverable_by_job_on_a_failed_run() -> TestResult {
+        let mut primary = job("quality", "failed", Some(1), None, "end");
+        primary.failures = Some("x".repeat(super::FAILURES_SHOWN));
+        let mut sibling = job(
+            "shard-2",
+            "cancelled",
+            None,
+            Some("stopped early: job quality failed"),
+            "other output",
+        );
+        sibling.failures =
+            Some("---- onboarding::checkbox stdout ----\nretained assertion\n".into());
+        let jobs = vec![primary, sibling];
+        let detail = |state, args| -> Result<String, serde_json::Error> {
+            let value = serde_json::to_value(run("r1", "PR #7", state, jobs.clone()))?;
+            Ok(render("ci_status", &args, &value))
+        };
+        let overview = detail("failed", json!({"run_id":"r1"}))?;
+        assert!(
+            overview.contains("Partial failing tests of shard-2") && overview.contains("job"),
+            "{overview}"
+        );
+        assert!(!overview.contains("retained assertion"), "aggregate bound");
+        let named = detail("failed", json!({"run_id":"r1","job":"shard-2"}))?;
+        assert!(
+            named.contains("shard-2 cancelled")
+                && named.contains("retained assertion")
+                && named.contains("Partial failing tests"),
+            "{named}"
+        );
+        let primary_detail = detail("failed", json!({"run_id":"r1","job":"quality"}))?;
+        assert!(
+            !primary_detail.contains("retained assertion")
+                && !primary_detail.contains("Partial failing tests")
+        );
+        let cancelled = detail("cancelled", json!({"run_id":"r1"}))?;
+        assert!(
+            !cancelled.contains("Partial failing tests")
+                && !cancelled.contains("retained assertion")
+        );
+        let mut sibling = jobs[1].clone();
+        let value = serde_json::to_value(run("r1", "PR #7", "failed", vec![sibling.clone()]))?;
+        let overview = render("ci_status", &json!({"run_id":"r1"}), &value);
+        assert!(
+            overview.contains("Partial failing tests of shard-2")
+                && overview.contains("retained assertion")
+        );
+        assert!(
+            !overview.contains("other output"),
+            "raw sibling tails stay behind job lookup"
+        );
+        sibling.reason = Some("superseded".into());
+        let value = serde_json::to_value(run("r1", "PR #7", "failed", vec![sibling]))?;
+        let overview = render("ci_status", &json!({"run_id":"r1"}), &value);
+        assert!(
+            !overview.contains("Partial failing tests") && !overview.contains("retained assertion")
+        );
         Ok(())
     }
 
