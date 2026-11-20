@@ -1,6 +1,6 @@
 ---
 yulius-task: 3673bc26-a616-43e2-9691-450c90e820c0
-status: in-progress
+status: done
 ---
 
 # SPEC-578: Actionable Needs You messages, browser handoff lifecycle, and task wait history
@@ -130,8 +130,8 @@ notifications, remote MCP consistency, and UI presentation.
 - [x] Expose consistent Needs You explanations and history across HTTP APIs, remote MCP, and notifications
 - [x] Show actionable Needs You messages, history, and browser handoff controls in the web UI
 - [x] Cover real browser handoffs, agent-recoverable failures, legacy records, and UI flows with regressions
-- [ ] Complete independent review, fix findings test-first, and update documentation
-- [ ] Verify green Yulius CI and deliver to dev
+- [x] Complete independent review, fix findings test-first, and update documentation
+- [x] Verify green Yulius CI and deliver to dev
 
 ## Acceptance criteria
 
@@ -195,8 +195,11 @@ notifications, remote MCP consistency, and UI presentation.
 ## Evidence
 
 - Baseline reproduction: `browser::browser_handoff_stays_visible_after_activity_change_and_clears_when_resolved` failed on unmodified `dev` with `"wait_reason": "A request for a person was pending when the task list was read."` and `needs_you: null` after `NeedsAttention -> Done -> Waiting`.
-- Unit & store suites: `cargo test -p yulius-domain -p yulius-store -p yulius-app --lib` (675 `yulius-app` tests, 104 `yulius-store` tests including `wait_messages_deduplicate_per_episode_and_record_distinct_waits` and pinned schema v78 migration `0080_task_wait_messages.sql`, and all `yulius-domain` tests passed).
-- Integration suites: `cargo test -p yulius --test main -- needs_you_messages:: browser:: agent_hooks:: telegram:: mcp_coordination::` (all passed after updating the legacy PR #1462 `wait_reason` expectation to the specific PR-named notice), covering real browser handoffs, legacy #334 `tasks.attention` without `tasks.needs_you` across `NeedsAttention -> Done -> Waiting`, superseding tabs, park survival, viewer `clear_action`, 5 open steps (#540 shape) with deduplicated wait history, failing PR check (#553 shape) distinguishing agent-recoverable / progressing CI runs from human-action failures, held-prompt excerpt access boundaries, and credential redaction.
-- Web E2E suite: `cd e2e && npm ci --ignore-scripts && npx e2e run` — 97 passed, 1 skipped (live-agent test), 1184/1184 assertions passed including `tests/needs-you-messages.e2e.ts` with zero axe accessibility violations.
-- Repository contracts & formatting: `scripts/dev quick` passed (including `scripts/decision_slots.py` for ADR-0414).
-- Security scan: `scripts/dev security` exited 0 reporting disabled (`Vidoc is turned off in Yulius, for this project or the whole instance; nothing was scanned`).
+- Unit & store suites: `cargo test -p yulius-domain -p yulius-store -p yulius-app --lib` (675 `yulius-app` tests, 104 `yulius-store` tests including `wait_messages_deduplicate_per_episode_and_record_distinct_waits` and pinned schema v79 migration `0080_task_wait_messages.sql`, and all `yulius-domain` tests passed; re-verified `the_latest_schema_versions_keep_their_migrations` after merging `origin/dev` `5addbfbb8`).
+- Integration suites:
+  - `cargo test -p yulius --test main -- needs_you_messages:: browser:: agent_hooks:: telegram:: mcp_coordination::` (all passed after updating the legacy PR #1462 `wait_reason` expectation to the specific PR-named notice).
+  - Post-Round-1 & post-merge (`136eac023796b6cc506a1174ab4434fd5ff86f4f`): `cargo test -p yulius --test main -- needs_you_messages:: browser_handoff browser_restart telegram_needs_you_notification` — 13/13 passed, covering real browser handoffs (inline `answer_needs_you` while `activity == NeedsAttention`, terminal prompt block, 0-viewer tab close, 2-viewer single `BrowserActionCleared` emission, `restart_browser` clearing, parked-task deletion clearing, orderly shutdown preservation, legacy #334 `tasks.attention` fallback across `NeedsAttention -> Done -> Waiting`, superseding tabs, park survival, viewer `clear_action`), 5 open steps (#540 shape) with deduplicated wait history, failing PR check (#553 shape) including superseded failed runs, re-entering resolved CI failure episodes, parked merged-PR non-phantom history, progressing CI `yulius_wait` web parity, held-prompt excerpt access boundaries, and vault + generic credential redaction across HTTP, MCP, wait history, and Telegram notifications.
+- Linting & repository contracts: `cargo clippy -p yulius-app -p yulius-server -p yulius --all-targets -- -D warnings` (0 warnings), `python3 scripts/decision_slots.py`, and `scripts/dev quick` all passed.
+- Web E2E suite: `cd e2e && npm ci --ignore-scripts && npx e2e run` — 97 passed, 1 skipped (live-agent test), 1184/1184 assertions passed; post-Round-1 re-run of `tests/needs-you-messages.e2e.ts` (4/4), `tests/attention.e2e.ts`, `tests/parked.e2e.ts`, and `tests/notifications.e2e.ts` passed with zero axe accessibility violations.
+- Independent review (`reviewer-r1`, `gemini-4-neon-high`, high effort): Round 1 (`fa7b855b5382e44826ae1c32e6cfe52661696306`) returned 6 Major + 3 Minor findings; all 9 fixed test-first; Round 2 (`136eac023796b6cc506a1174ab4434fd5ff86f4f`, PR #1543) returned `approve` with one docs-only schema-version nit (fixed here, 0 product lines changed).
+- Security scan & sandbox limits: `scripts/dev security` exited 0 reporting disabled (`Vidoc is turned off in Yulius, for this project or the whole instance; nothing was scanned`). `cargo-mutants` and `.tools/bin/macos-cc` are not installed in this sandbox; full gate + macOS cross-check run in Yulius CI on PR #1543.

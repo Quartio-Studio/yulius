@@ -27,4 +27,4 @@ Tasks could enter the Needs You group without telling the person what happened, 
 
 - Every task entering Needs You immediately shows what happened, what to do, and where to do it beside the status, in the attention bar, in Needs You lists, in notifications, and identically across `tasks_list` and `task_get`.
 - Legacy browser handoffs stay readable and dismissible until cleared, and answered or cleared handoffs stay cleared after refresh.
-- Schema version advances to 78 (`0080_task_wait_messages.sql`).
+- Schema version advances to 79 (`0080_task_wait_messages.sql`).
