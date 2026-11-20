@@ -530,15 +530,14 @@ export function mountAccountsPage(ctx, route) {
     if (pendingOwnRead ? inUse() : open()) { defer(); return; }
     pendingReload = false;
     delete host.dataset.refresh;
-    reload({ quiet: !pendingOwnRead });
+    readList({ quiet: !pendingOwnRead });
   };
   const flush = () => { if (pendingReload) refresh(); };
   // An update from elsewhere waits for every open field, so a refused value can be come back
   // to. What the person asked for themselves (the read after a removal, an Add, a sign-in)
   // waits only for a field in use: one set aside goes with the redraw, and the list shows what
   // they did.
-  const held = ({ quiet }) => {
-    if (!quiet) pendingOwnRead = true;
+  const held = () => {
     const wait = pendingOwnRead ? inUse() : open();
     if (wait) defer();
     else settled();
@@ -679,7 +678,7 @@ export function mountAccountsPage(ctx, route) {
   let rendered = false;
   // Refresh all follows what the list shows: painted once each read of the list is on the page.
   paintRefreshAll();
-  const reload = loader(host, 'the subscriptions', () => ctx.api.get('/api/admin/accounts').finally(() => setTimeout(paintRefreshAll, 0)), (list) => {
+  const readList = loader(host, 'the subscriptions', () => ctx.api.get('/api/admin/accounts').finally(() => setTimeout(paintRefreshAll, 0)), (list) => {
     if (rendered) loadCapacity();
     else firstCapacity.then((shown) => { if (!shown) loadCapacity(); });
     rendered = true;
@@ -759,6 +758,13 @@ export function mountAccountsPage(ctx, route) {
           } }, 'Remove')));
     }));
   }, { shape: 'cards', hold: held });
+
+  // Remember the person's action at dispatch: a later account update can supersede this read
+  // before its answer reaches held(). Before the first render there is no field to preserve.
+  const reload = () => {
+    pendingOwnRead = rendered;
+    return readList();
+  };
 
   // The agent first, then its way in (SPEC-502 TKP-008, SPEC-503 CDX-015). Claude: its own
   // sign-in in a terminal here (the default), or a token made with `claude setup-token` on any
