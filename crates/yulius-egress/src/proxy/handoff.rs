@@ -23,7 +23,10 @@ fn invalid() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "invalid opaque tunnel handoff")
 }
 
-fn remaining(expires: u64, now: u64) -> io::Result<Duration> {
+fn remaining(last: u64, expires: u64, now: u64) -> io::Result<Duration> {
+    if last > now {
+        return Err(invalid());
+    }
     let millis = expires
         .checked_sub(now)
         .ok_or_else(|| io::Error::from(io::ErrorKind::TimedOut))?;
@@ -67,7 +70,7 @@ impl Tunnel {
         request: oneshot::Receiver<oneshot::Sender<Pair>>,
     ) -> io::Result<()> {
         let mut upstream = Tracked::new(self.upstream, &slot);
-        let timeout = remaining(self.expires, monotonic_ms())?;
+        let timeout = remaining(slot.activity.last(), self.expires, monotonic_ms())?;
         let reply = tokio::select! {
             result = self.copy.transfer(&mut self.client, &mut upstream) => return result,
             () = tokio::time::sleep(timeout) => return Ok(()),
@@ -175,10 +178,7 @@ impl EgressProxy {
         let at = state.iter().position(|b| *b == b'\n').ok_or_else(invalid)?;
         let owner: Ownership = serde_json::from_slice(&state[..at])?;
         let expires = pair.expires.ok_or_else(invalid)?;
-        remaining(expires, monotonic_ms())?;
-        if owner.last > monotonic_ms() {
-            return Err(invalid());
-        }
+        remaining(owner.last, expires, monotonic_ms())?;
         let copy = CopyState::decode(&state[at + 1..])?;
         let [client, upstream] = pair.sockets;
         let tcp = |fd| {
@@ -272,10 +272,11 @@ mod tests {
     fn the_original_lifetime_bounds_both_sides_of_a_restart() -> io::Result<()> {
         let now = 10_000;
         let longest = now + u64::try_from(CONNECTION_MAX.as_millis()).map_err(io::Error::other)?;
-        assert_eq!(remaining(longest, now)?, CONNECTION_MAX);
-        assert_eq!(remaining(now + 1, now)?, Duration::from_millis(1));
+        assert_eq!(remaining(now, longest, now)?, CONNECTION_MAX);
+        assert_eq!(remaining(now - 1, now + 1, now)?, Duration::from_millis(1));
+        assert!(remaining(now + 1, longest, now).is_err());
         for deadline in [now - 1, now, longest + 1] {
-            assert!(remaining(deadline, now).is_err());
+            assert!(remaining(now, deadline, now).is_err());
         }
         Ok(())
     }
