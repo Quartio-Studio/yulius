@@ -70,8 +70,9 @@ pub fn shown_empty(screen: &vt100::Screen) -> bool {
         return false;
     }
     let dim = |c: u16| screen.cell(row, c).is_some_and(vt100::Cell::dim);
-    let rest_is_dim = (FIRST_CELL + 1..cols).all(|c| blank(row, c) || dim(c));
-    let dim_follows = (FIRST_CELL + 1..cols).any(|c| !blank(row, c) && dim(c));
+    let mut after_cursor = FIRST_CELL + 1..cols;
+    let rest_is_dim = after_cursor.clone().all(|c| blank(row, c) || dim(c));
+    let dim_follows = after_cursor.any(|c| !blank(row, c) && dim(c));
     let under_cursor_inverse = screen
         .cell(row, FIRST_CELL)
         .is_some_and(vt100::Cell::inverse);
@@ -164,6 +165,10 @@ mod tests {
     #[test]
     fn a_suggestion_or_hint_is_nothing_typed() {
         // The suggestion, focused: its first character is inverse under the caret.
+        // A single dim glyph can identify the focused suggestion. Dim whitespace
+        // alone cannot distinguish the inverse cursor glyph from a one-character draft.
+        assert!(empty(&boxed(&[&format!("❯ {INV}x{OFF}{DIM}y")], (9, 3))));
+        assert!(!empty(&boxed(&[&format!("❯ {INV}x{OFF}{DIM} ")], (9, 3))));
         let focused = format!("❯ {INV}r{OFF}{DIM}un the tests");
         assert!(empty(&boxed(&[&focused], (9, 3))));
         // Unfocused: dim throughout.
