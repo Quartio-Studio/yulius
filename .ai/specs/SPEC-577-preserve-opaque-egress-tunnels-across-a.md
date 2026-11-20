@@ -47,7 +47,7 @@ new request after the old sockets reach EOF. The issue requires the original con
 - [x] Release outbound relay sockets when their serving task is cancelled
 - [x] Obtain independent approval for the relay lifecycle slice
 - [x] Preserve buffered bytes and half-closes when an established copy pauses
-- [ ] Obtain independent approval for the resumable copy slice
+- [x] Obtain independent approval for the resumable copy slice
 - [ ] Hand established opaque connections and matching relay sockets to the restarted server
 - [ ] Verify same-socket continuity, admission limits and intercepted traffic through restart
 - [ ] Independent review in a fresh session, findings fixed test-first
@@ -126,3 +126,10 @@ without adoption support or a remote peer that times out can end a tunnel.
   code. The copy now retries interrupted reads and records EOF before polling shutdown. The
   new tests verify the marker, fatal error propagation, shutdown completion on resume and the
   peer's complete reply. All 20 relay tests and 42 egress tests passed with the corrections.
+- A fresh reviewer approved `8f5eccc53`, checked both fixes and independently passed the
+  20 relay and 42 egress tests. Repository quick checks and targeted Clippy passed. Vidoc
+  was disabled. The copy slice's first mutation run caught all 7 listed mutants, with
+  0 missed, 0 timed out, 0 unviable and 0 not reached.
+- The mutation run against the review fixes (`scripts/dev mutants --base 5ee4cb804`) listed
+  6 mutants and caught all 6, with 0 missed, 0 timed out, 0 unviable and 0 not reached.
+  Its unmutated baseline passed 3,256 tests (2 skipped).
