@@ -24,8 +24,8 @@ At dev `f97bf8ccc` the adapter detects this condition, but both lock reasons rea
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Restart the selected browser under its existing sandbox authorization
-- [ ] Recover viewer input through the locked browser panel
+- [x] Restart the selected browser under its existing sandbox authorization
+- [x] Recover viewer input through the locked browser panel
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
@@ -47,4 +47,7 @@ Use the existing browser grant, per-sandbox process slot, bounded stop and profi
 
 - At upstream dev `f97bf8ccc`, the API regression received 404 on the read-only request where the sandbox browser route must return 403. Chromium showed the existing lock message and found zero buttons named **Restart browser**.
 - Google Chrome 157.0.8103.50, on a disposable profile, restarted with a different PID, the same persistent cookie and exactly two loopback tabs. The first tab was active before and after restart. The opt-in `restarting_real_chrome_reopens_the_active_page_with_its_cookie` test passed.
-- The manager regression forced a failed replacement launch, recovered through the ordinary browser access path and saw the address guard installed before either restored navigation. All four focused Chromium panel scenarios passed, including a failed restart followed by typing into the replacement.
+- The manager regression forced a failed replacement launch, recovered through the ordinary browser access path and saw the address guard installed before either restored navigation. Five focused Chromium panel tests passed, including a failed restart followed by typing into the replacement and a successful restart whose HTTP reply was lost. The first full Chromium suite passed 1,176 tests with one skipped.
+- The independent reviewer requested three fixes on `667676000`. Regressions first reproduced a dropped page-created tab, lost ownership after replacement setup and cleanup both failed, and a disconnected panel after a lost HTTP reply. After the fixes all 13 manager tests and all five panel tests passed. The tab cap is applied to permitted addresses before stopping. A failed stop keeps the process and display owned and unavailable until cleanup succeeds. A lost reply reconnects once to the current browser.
+- The authorization regression explicitly uses a cookie session for the CSRF check. Its initial fixture supplied a CLI bearer, which legitimately accepts a request without the cookie session's CSRF header.
+- Focused nextest ran 47 browser tests and all passed. They include writable versus read-only access, cookie CSRF, inaccessible and missing sandboxes, other sandbox process identity and live input before and after replacement.

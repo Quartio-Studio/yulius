@@ -166,8 +166,24 @@ impl BrowserConfig {
 #[derive(Debug, Default)]
 struct BrowserSlot {
     instance: Option<Arc<BrowserInstance>>,
+    // An unpublished or retiring process and display still owned until both are reaped.
+    cleanup: Option<Arc<BrowserInstance>>,
     // Kept across a failed replacement launch, until it succeeds or the sandbox is stopped.
     reopen: Vec<yulius_contracts::browser::TabInfo>,
+}
+
+impl BrowserSlot {
+    async fn stop(&mut self, timeouts: StopTimeouts) -> Result<bool, BrowserError> {
+        if let Some(instance) = self.instance.take() {
+            self.cleanup = Some(instance);
+        }
+        let Some(instance) = &self.cleanup else {
+            return Ok(false);
+        };
+        instance.terminate(timeouts).await?;
+        self.cleanup = None;
+        Ok(true)
+    }
 }
 
 type Slot = Arc<tokio::sync::Mutex<BrowserSlot>>;
@@ -282,11 +298,7 @@ impl BrowserManager {
         let slot = self.slot(sandbox);
         let mut guard = slot.try_lock().map_err(|_| BrowserError::BrowserBusy)?;
         if let Some(existing) = &guard.instance {
-            guard.reopen = existing
-                .tabs()
-                .into_iter()
-                .take(self.config.max_tabs)
-                .collect();
+            guard.reopen = existing.tabs_to_reopen()?;
         }
         self.replace(&mut guard, sandbox, profile_dir).await
     }
@@ -297,15 +309,13 @@ impl BrowserManager {
         sandbox: &SandboxId,
         profile_dir: &Path,
     ) -> Result<Arc<BrowserInstance>, BrowserError> {
-        if let Some(previous) = &slot.instance {
-            previous.terminate(self.config.stop).await?;
-            slot.instance = None;
-        }
+        slot.stop(self.config.stop).await?;
         let instance = self.launch(sandbox, profile_dir).await?;
+        slot.cleanup = Some(Arc::clone(&instance));
         // Recursion guard first (BRW-008): fail closed rather than run without it.
         if let Err(error) = instance.deny_urls(self.config.deny.clone()).await {
             warn!(sandbox = %sandbox, %error, "could not enable the browser's address guard");
-            let _ = instance.terminate(self.config.stop).await;
+            slot.stop(self.config.stop).await?;
             return Err(error);
         }
         instance.set_new_tab_url(
@@ -315,12 +325,12 @@ impl BrowserManager {
                 .map(|template| template.replace("{sandbox}", sandbox.as_str())),
         );
         if let Err(error) = instance.reopen_tabs(&slot.reopen).await {
-            let _ = instance.terminate(self.config.stop).await;
+            slot.stop(self.config.stop).await?;
             return Err(error);
         }
         slot.reopen.clear();
         instance.show_welcome_in_blank_tabs().await;
-        slot.instance = Some(Arc::clone(&instance));
+        slot.instance = slot.cleanup.take();
         Ok(instance)
     }
 
@@ -421,13 +431,7 @@ impl BrowserManager {
         };
         let mut guard = slot.lock().await;
         guard.reopen.clear();
-        let Some(instance) = guard.instance.as_ref() else {
-            return Ok(false);
-        };
-        instance.terminate(self.config.stop).await?;
-        guard.instance = None;
-        info!(sandbox = %sandbox, "browser stopped");
-        Ok(true)
+        guard.stop(self.config.stop).await
     }
 
     /// Stops every browser (server shutdown). Returns the sandboxes whose process could not
@@ -456,21 +460,22 @@ impl BrowserManager {
             let Ok(mut guard) = slot.try_lock() else {
                 continue;
             };
-            let Some(instance) = &guard.instance else {
-                continue;
-            };
-            let idle = instance.frame_subscribers() == 0
-                && now.saturating_duration_since(instance.last_used()) >= self.config.idle_timeout;
-            if !idle && instance.is_alive() {
-                continue;
+            if let Some(instance) = &guard.instance {
+                let idle = instance.frame_subscribers() == 0
+                    && now.saturating_duration_since(instance.last_used())
+                        >= self.config.idle_timeout;
+                if !idle && instance.is_alive() {
+                    continue;
+                }
             }
-            if let Err(error) = instance.terminate(self.config.stop).await {
-                warn!(sandbox = %sandbox, %error, "idle browser could not be reaped");
-                continue;
+            match guard.stop(self.config.stop).await {
+                Ok(true) => {
+                    info!(sandbox = %sandbox, "idle or dead browser stopped");
+                    stopped.push(sandbox);
+                }
+                Ok(false) => {}
+                Err(error) => warn!(sandbox = %sandbox, %error, "idle browser could not be reaped"),
             }
-            guard.instance = None;
-            info!(sandbox = %sandbox, "idle or dead browser stopped");
-            stopped.push(sandbox);
         }
         stopped
     }

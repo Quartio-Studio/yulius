@@ -22,7 +22,8 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use yulius::wiring::browser::ChromiumBrowsers;
-use yulius_app::ports::store::TaskStore;
+use yulius_app::model::WebSessionRecord;
+use yulius_app::ports::store::{SessionStore as _, TaskStore};
 use yulius_browser::fake::{
     FAKE_ARGV_FILE, FAKE_AVCC, FAKE_PID_FILE, FakeCdpServer, FakeChromium, FakeDisplay,
     write_fake_chromium,
@@ -410,9 +411,24 @@ async fn restarting_one_browser_requires_its_write_grant_and_keeps_its_profile()
         std::fs::write(profile.join("profile-sentinel"), b"saved session")?;
         let path = "/api/sandboxes/s1/browser/restart";
         let outsider = seed_github_user(&f.h, "u-eve", "eve").await?;
+        let cookie = "browser-restart-session";
+        f.h.store
+            .insert_web_session(&WebSessionRecord {
+                id_hash: f.h.app.deps.crypto.sha256_hex(cookie.as_bytes()),
+                user_id: yulius_domain::ids::UserId::parse("u-alice")?,
+                csrf_token: "csrf".into(),
+                created_at: f.h.app.now(),
+                expires_at: f.h.app.now().plus_millis(3_600_000),
+                revoked_at: None,
+            })
+            .await?;
         let no_csrf = support::Creds {
-            csrf: None,
-            ..f.writer.clone()
+            cookie: Some(cookie.into()),
+            ..Default::default()
+        };
+        let writer = support::Creds {
+            csrf: Some("csrf".into()),
+            ..no_csrf.clone()
         };
         for (creds, status) in [
             (&outsider, StatusCode::NOT_FOUND),
@@ -442,7 +458,7 @@ async fn restarting_one_browser_requires_its_write_grant_and_keeps_its_profile()
         assert!(pid_alive(original));
         assert_eq!(pid(&profile)?, original);
         assert_eq!(
-            call(&f.h.router, Method::POST, path, None, &f.writer)
+            call(&f.h.router, Method::POST, path, None, &writer)
                 .await?
                 .status,
             StatusCode::NO_CONTENT

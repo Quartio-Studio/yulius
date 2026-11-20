@@ -1282,7 +1282,7 @@ resolves to nothing, the run gets the server without that variable or token.
 
 ## Browser, editor, shell
 
-- `POST /api/sandboxes/{sid}/browser/restart` uses the browser viewer's write grant and the usual CSRF check for cookie sessions. It returns 204 when the sandbox's replacement browser is ready. The profile stays in place. The caller reconnects its viewer WebSocket to receive the new tab IDs. A read-only user receives 403 and an invisible sandbox returns 404. A sandbox browser already starting or stopping returns 429 so a second restart cannot queue behind the first.
+- `POST /api/sandboxes/{sid}/browser/restart` uses the browser viewer's write grant and the usual CSRF check for cookie sessions. It returns 204 when the sandbox's replacement browser is ready. The profile stays in place. The caller reconnects its viewer WebSocket to receive the new tab IDs. A read-only user receives 403 and an invisible sandbox returns 404. A sandbox browser already starting or stopping returns 429. If page-created tabs have taken it over the configured limit, the restart also returns 429 and leaves Chrome running so the user can close excess tabs and retry.
 - A refused viewer click or key carries `input_locked` while the host policy is missing. It carries `input_locked_until_restart` when the policy is in force and the old display may still hold a chooser.
 
 - `WS /api/sandboxes/{sid}/browser` (write): the sandbox's Chrome — the browser agents drive —

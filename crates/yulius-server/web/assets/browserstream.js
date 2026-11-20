@@ -713,14 +713,18 @@ export function createStreamView(ctx, sandbox, hooks) {
     restartButton.disabled = true;
     try {
       await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/browser/restart`);
-      if (socket) {
-        lastError = null;
-        socket.retry();
-      }
     } catch (error) {
-      if (viewer === socket) toast(error.message || 'Chrome could not restart.', { kind: 'error' });
+      if (error.code !== 'timeout' && error.code !== 'network') {
+        if (viewer === socket) toast(error.message || 'Chrome could not restart.', { kind: 'error' });
+        return;
+      }
+      // The POST may have succeeded after its reply was lost. Reconnect to the current slot.
     } finally {
       restartButton.disabled = false;
+    }
+    if (socket) {
+      lastError = null;
+      socket.retry();
     }
   }
 

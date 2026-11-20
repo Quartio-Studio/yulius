@@ -646,6 +646,7 @@ async fn restart_reopens_tabs_after_the_address_guard_even_after_a_failed_launch
     let exe = make_launcher(first.pipe_port())?;
     let mut cfg = config(exe.clone(), dir.path());
     cfg.deny = yulius_browser::UrlDenyList::yulius("https://yulius.test", &[], vec![]);
+    cfg.max_tabs = 2;
     let manager = BrowserManager::new(cfg);
     let sandbox = SandboxId::parse("sandbox")?;
     let profile = manager.default_profile_dir(&sandbox);
@@ -654,7 +655,18 @@ async fn restart_reopens_tabs_after_the_address_guard_even_after_a_failed_launch
     browser
         .navigate(&first_tab, "https://page.test/one")
         .await?;
-    browser.open("https://page.test/two").await?;
+    // Non-web and refused addresses do not consume the replacement's two page slots.
+    let mut listed = browser.subscribe_tabs();
+    first
+        .open_from_page(first_tab.as_str(), "data:text/plain,ignored")
+        .await;
+    first
+        .open_from_page(first_tab.as_str(), "https://yulius.test/")
+        .await;
+    first
+        .open_from_page(first_tab.as_str(), "https://page.test/two")
+        .await;
+    tokio::time::timeout(WAIT, listed.wait_for(|tabs| tabs.len() == 4)).await??;
     browser.activate(&first_tab).await?;
 
     let parked_exe = dir.path().join("old-launcher");
@@ -684,5 +696,93 @@ async fn restart_reopens_tabs_after_the_address_guard_even_after_a_failed_launch
     assert!(index("Fetch.enable")? < index("Page.navigate")?);
     assert!(index("Fetch.enable")? < index("Target.createTarget")?);
     manager.shutdown(&sandbox).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn restart_refuses_excess_web_tabs_before_stopping_the_old_browser() -> TestResult {
+    let server = FakeCdpServer::start().await?;
+    let dir = tempfile::tempdir()?;
+    let exe = write_fake_chromium(
+        dir.path(),
+        "browser",
+        FakeChromium::Ready {
+            port: server.pipe_port(),
+        },
+    )?;
+    let mut cfg = config(exe, dir.path());
+    cfg.max_tabs = 2;
+    cfg.display = yulius_browser::fake::FakeDisplay::new().mode();
+    let manager = BrowserManager::new(cfg);
+    let sandbox = SandboxId::parse("many-tabs")?;
+    let profile = manager.default_profile_dir(&sandbox);
+    let old = manager.ensure(&sandbox, &profile).await?;
+    let opener = old.tabs()[0].id.clone();
+    old.open("https://page.test/one").await?;
+    let mut tabs = old.subscribe_tabs();
+    let third = server
+        .open_from_page(opener.as_str(), "https://page.test/popup")
+        .await;
+    tokio::time::timeout(
+        WAIT,
+        tabs.wait_for(|tabs| tabs.iter().any(|t| t.id.as_str() == third && t.active)),
+    )
+    .await??;
+    assert!(matches!(
+        manager.restart(&sandbox, &profile).await,
+        Err(BrowserError::TooManyTabs(2))
+    ));
+    assert!(Arc::ptr_eq(
+        &old,
+        &manager
+            .get(&sandbox)
+            .await
+            .ok_or("original browser stopped")?
+    ));
+    assert_eq!(old.tabs().len(), 3);
+    manager.shutdown(&sandbox).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn replacement_cleanup_holds_the_slot_and_saved_tabs_until_the_display_stops() -> TestResult {
+    for method in ["Fetch.enable", "Page.navigate"] {
+        let old_server = FakeCdpServer::start().await?;
+        let dir = tempfile::tempdir()?;
+        let launcher =
+            |port| write_fake_chromium(dir.path(), "browser", FakeChromium::Ready { port });
+        let mut cfg = config(launcher(old_server.pipe_port())?, dir.path());
+        let display = yulius_browser::fake::FakeDisplay::new();
+        cfg.display = display.mode();
+        cfg.deny = yulius_browser::UrlDenyList::yulius("https://yulius.test", &[], vec![]);
+        let manager = BrowserManager::new(cfg);
+        let sandbox = SandboxId::parse("cleanup")?;
+        let profile = manager.default_profile_dir(&sandbox);
+        let old = manager.ensure(&sandbox, &profile).await?;
+        old.navigate(&old.tabs()[0].id, "https://page.test/saved")
+            .await?;
+        let replacement = FakeCdpServer::start().await?;
+        replacement.fail_nth(method, 1, -32000, "replacement setup failed");
+        launcher(replacement.pipe_port())?;
+        display.set_stop_limit(1);
+        assert!(
+            matches!(
+                manager.restart(&sandbox, &profile).await,
+                Err(BrowserError::NotReaped { .. })
+            ),
+            "{method}"
+        );
+        assert!(manager.get(&sandbox).await.is_none());
+        assert!(matches!(
+            manager.ensure(&sandbox, &profile).await,
+            Err(BrowserError::NotReaped { .. })
+        ));
+        assert_eq!(display.lifecycle(), (2, 1));
+        display.set_stop_limit(u64::MAX);
+        let recovered = manager.restart(&sandbox, &profile).await?;
+        assert_eq!(display.lifecycle(), (3, 2));
+        assert_eq!(recovered.tabs()[0].url, "https://page.test/saved");
+        manager.shutdown(&sandbox).await?;
+    }
     Ok(())
 }

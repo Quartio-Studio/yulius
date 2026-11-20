@@ -139,6 +139,40 @@ test('a locked browser offers restart when policy arrives and accepts input afte
   )).toBe('recovered');
 });
 
+test('the panel reconnects when Chrome restarts but its HTTP reply times out', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&browser=locked'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', /^Browser/).click();
+  await expect(screen.getByRole('tab', /^Checkout/)).toHaveAttribute('aria-selected', 'true');
+  await browser.evaluate(() => {
+    (window as unknown as WithLock).__yuliusMock.browserLockMessage = 'A file dialog may still be open.';
+  });
+  await browser.locator('.bp-surface').click({ position: { x: 120, y: 270 } });
+  const restart = screen.getByRole('button', 'Restart browser');
+  await expect(restart).toBeVisible();
+  // Capture the client's request deadline and fire it once the old socket has closed.
+  type DelayedReply = Window & { __yuliusMock: {
+    holdBrowserRestartReply: Promise<void>; finishRestartReply: () => void; expireRestart: () => void
+  } };
+  await browser.evaluate(() => {
+    const db = (window as unknown as DelayedReply).__yuliusMock;
+    db.holdBrowserRestartReply = new Promise<void>((resolve) => { db.finishRestartReply = resolve; });
+  });
+  await restart.click();
+  await expect(screen.getByRole('button', 'Retry')).toBeVisible();
+  await browser.evaluate(() => {
+    const db = (window as unknown as DelayedReply).__yuliusMock;
+    db.expireRestart();
+    db.finishRestartReply();
+  });
+  await expect(screen.getByRole('button', 'Retry')).toBeHidden();
+  await browser.locator('.bp-surface').click({ position: { x: 120, y: 270 } });
+  await browser.keyboard.type('resumed');
+  await expect.poll(() => browser.evaluate(() =>
+    (window as unknown as WithMock).__yuliusMock.browsers.get('sb_studio')?.typed.get('tab-app') ?? ''
+  )).toBe('resumed');
+});
+
 test('browser tabs move by drag, keyboard and menu and stay so', async ({ app, browser, screen }) => {
   // product: no tab asks for an action (its attention pulse is studio's).
   await app.open(mock('/s/product', '&ambient=0&browserask=0'));

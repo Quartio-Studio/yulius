@@ -2218,25 +2218,40 @@ impl BrowserInstance {
         });
     }
 
+    /// Collect permitted pages before stopping Chrome. A page can open popups beyond the
+    /// tool's tab limit. Refuse the restart if they would not all fit in the replacement.
+    pub(crate) fn tabs_to_reopen(&self) -> Result<Vec<TabInfo>, BrowserError> {
+        let deny = lock(&self.deny);
+        let state = lock(&self.state);
+        let mut tabs = Vec::new();
+        for entry in &state.tabs {
+            let Ok(url) = normalize_url(&entry.url) else {
+                continue;
+            };
+            if deny.denies(&url) {
+                continue;
+            }
+            if tabs.len() == self.config.max_tabs {
+                return Err(BrowserError::TooManyTabs(self.config.max_tabs));
+            }
+            tabs.push(state.info(entry));
+        }
+        Ok(tabs)
+    }
+
     /// Restore visible web addresses only after the new browser's request guard is installed.
     pub(crate) async fn reopen_tabs(&self, previous: &[TabInfo]) -> Result<(), BrowserError> {
         let mut blank = self.tabs().into_iter().find(|tab| tab.url == "about:blank");
         let mut active = None;
         for tab in previous {
-            let Ok(url) = normalize_url(&tab.url) else {
-                continue;
-            };
-            if self.check_allowed(&url).is_err() {
-                continue;
-            }
             let id = if let Some(blank) = blank.take() {
                 // An offline page can reopen on Chrome's error page.
-                match self.navigate(&blank.id, &url).await {
+                match self.navigate(&blank.id, &tab.url).await {
                     Ok(()) | Err(BrowserError::NavigationFailed(_)) => blank.id,
                     Err(error) => return Err(error),
                 }
             } else {
-                self.open(&url).await?
+                self.open(&tab.url).await?
             };
             if tab.active {
                 active = Some(id);

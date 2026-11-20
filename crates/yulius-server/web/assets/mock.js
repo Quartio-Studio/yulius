@@ -3786,7 +3786,7 @@ function shellFolder(db, shell) {
   return task ? `/srv/yulius/sandboxes/${slug}/worktrees/${task.number}` : `/srv/yulius/sandboxes/${slug}/repo`;
 }
 const shellDto = (shell) => ({ id: shell.id, name: shell.name, task_id: shell.task_id, folder: shell.folder, created_at: shell.created_at });
-route('POST', `/api/sandboxes/${ID}/browser/restart`, ({ db, p }) => {
+route('POST', `/api/sandboxes/${ID}/browser/restart`, async ({ db, p }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'write');
   if (db.browserRestartFails) fail(502, 'upstream', 'Chrome could not restart.');
@@ -3798,6 +3798,7 @@ route('POST', `/api/sandboxes/${ID}/browser/restart`, ({ db, p }) => {
   }
   if (db.browserLockMessage) next.inputLocked = false;
   db.browsers.set(sandbox.id, next);
+  if (db.holdBrowserRestartReply) await db.holdBrowserRestartReply;
   return json(204);
 });
 route('GET', `/api/sandboxes/${ID}/shells`, ({ db, p }) => {
@@ -7700,6 +7701,7 @@ export function createMockTransport(params) {
       if (!signal) return work;
       return new Promise((resolve, reject) => {
         const abort = () => reject(new DOMException('The operation was aborted.', 'AbortError'));
+        if (db.holdBrowserRestartReply && url.endsWith('/browser/restart')) db.expireRestart = abort;
         if (signal.aborted) { abort(); return; }
         signal.addEventListener('abort', abort, { once: true });
         work.then(resolve, reject);
