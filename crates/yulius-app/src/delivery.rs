@@ -5400,7 +5400,6 @@ mod tests {
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-    /// SPEC-069 BPL-006: the titles Yulius generates for task pull requests pass the policy.
     #[test]
     fn a_spec_open_reports_missing_unreadable_and_outside_paths() {
         let missing = RepoReadError::from_open("spec.md", AppError::NotFound);
@@ -5429,6 +5428,7 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-069 BPL-006: the titles Yulius generates for task pull requests pass the policy.
     #[test]
     fn generated_titles_pass_the_policy() {
         let policy = BranchPolicy::standard();
