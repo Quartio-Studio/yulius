@@ -157,3 +157,16 @@ reviewer's copy).
 After the fix (head with fe7360834 and these documents): `telegram::` 34 passed; the three lane
 tests 12 runs in a row without a failure; `cargo doc --locked --workspace --all-features
 --no-deps`, clippy `-D warnings` and `fmt --check` clean; `check_repository.py` passed.
+
+### Review round 3 (head af5e4605e): APPROVED
+
+Yulius CI run 07d266a1 on af5e4605e passed (quality, both test shards, e2e; security skipped:
+Vidoc off, nothing scanned). Notes answered after the approval, tests only:
+
+| Finding | Change | Test |
+|---|---|---|
+| Minor: no test held the same-link guard of `intake_in_turn` | a test | `telegram::what_waits_never_runs_as_the_chats_next_person` (a message waiting as alice while the chat is linked to another person with intake on starts nothing; fails with the guard forced true) |
+| Nit: a person who re-links the same chat loses what waits in their lane without an answer | kept: re-linking is a new link, and a message of an earlier link never runs (TGI-001) | — |
+| Pre-existing: `yulius-store` `tests::a_large_step_history_backfills_quickly` failed once in four runs under host load | outside this change: on `dev` before it, tracked by #1484 | — |
+
+`telegram::` 35 passed after the test; clippy `-D warnings` clean.

@@ -2528,3 +2528,56 @@ async fn intake_off_or_stop_ends_what_waits_in_the_lane() -> TestResult {
     );
     Ok(())
 }
+
+/// SPEC-512 TGI-001 (review round 3 of task #538): a message that waited while the chat was one
+/// person's never runs as the person the chat is linked to by its turn.
+#[tokio::test]
+async fn what_waits_never_runs_as_the_chats_next_person() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    signed_in_subscription(&w).await?;
+    std::fs::create_dir_all(w.h.app.config.data_dir.join("sandboxes/s1"))?;
+    link(&w, &w.alice, 100).await?;
+    intake_on(&w, &w.alice, "s1").await?;
+    photo_held_with_waiting(&w, 100, &["Waiting as alice"]).await?;
+    link(&w, &w.admin, 100).await?;
+    let on = intake_on(&w, &w.admin, "s1").await?;
+    assert_eq!(on.status, StatusCode::OK, "{}", on.body);
+    let before = w.fake.sent_to(100).len();
+    w.fake.release_files();
+    let reply = next_reply(&w, 100, before).await?;
+    assert!(
+        reply.starts_with("Started #"),
+        "alice's running one ends: {reply}"
+    );
+    // Sent after: it runs once the waiting one had its turn.
+    w.fake.message(100, true, "Barrier");
+    let sent = w.fake.wait_sent(100, before + 2).await?;
+    assert!(sent[before + 1].starts_with("Started #"), "{sent:?}");
+    let mut owners = Vec::new();
+    for task in tasks_of(&w, "s1").await? {
+        let id = TaskId::parse(task["id"].as_str().unwrap_or_default())?;
+        let prompt =
+            w.h.store
+                .task(&id)
+                .await?
+                .map(|t| t.prompt)
+                .unwrap_or_default();
+        let owner = task["owner"]["login"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        owners.push((prompt.lines().next().unwrap_or_default().to_owned(), owner));
+    }
+    owners.sort();
+    assert_eq!(
+        owners.len(),
+        2,
+        "the waiting one started nothing: {owners:?}"
+    );
+    assert_eq!(owners[1].0, "First", "{owners:?}");
+    assert_eq!(owners[1].1, "alice", "{owners:?}");
+    assert_eq!(owners[0].0, "Barrier", "{owners:?}");
+    assert_ne!(owners[0].1, "alice", "{owners:?}");
+    Ok(())
+}
