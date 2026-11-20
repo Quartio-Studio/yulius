@@ -38,8 +38,8 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Give parked PRs fair status reads in task lists and Home
 - [x] Return the verified plan snapshot with parked HTTP task rows
 - [x] Filter and explain verified parked rows in MCP task reads
-- [x] Refresh parked page and sidebar status independently of the Git overview
-- [x] Preserve newer task events when parked task lists reload
+- [x] Reproduce parked-page refresh races with a held Git overview
+- [x] Keep the newest successful full task list and recover the cold task page
 - [ ] Reconcile parked lifecycle events and deliver the verified page and sidebar watch
 - [ ] Keep failed integration candidates with their original owner
 - [ ] Deliver bounded Codex goal continuation to dev
