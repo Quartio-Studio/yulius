@@ -278,6 +278,50 @@ fn observe_queue(record: &Map<String, Value>) -> Vec<Observed> {
     vec![Observed::Queue { change, at }]
 }
 
+/// The conversation's last goal status and the condition Claude can restore from it.
+///
+/// Scans the complete records present when opened, with the live watch's line limit.
+/// The condition is present only for an open goal on the conversation's main thread.
+///
+/// # Errors
+/// File metadata or read errors.
+pub fn last_goal(file: std::fs::File) -> std::io::Result<Option<(GoalOutcome, Option<String>)>> {
+    use std::io::{BufRead as _, BufReader, Read as _};
+    let size = file.metadata()?.len();
+    let mut reader = BufReader::new(file.take(size));
+    let limit = crate::tail::DEFAULT_MAX_LINE_BYTES as u64 + 1;
+    let mut line = Vec::new();
+    let mut last = None;
+    loop {
+        line.clear();
+        if (&mut reader).take(limit).read_until(b'\n', &mut line)? == 0 {
+            return Ok(last);
+        }
+        if !line.ends_with(b"\n") {
+            reader.skip_until(b'\n')?;
+            continue;
+        }
+        let Ok(text) = std::str::from_utf8(&line) else {
+            continue;
+        };
+        if !text.contains("\"goal_status\"") {
+            continue;
+        }
+        if let Some(record) = parse_object(text)
+            && str_of(&record, "type") == Some("attachment")
+            && let [Observed::Goal { outcome, .. }] = observe_attachment(&record).as_slice()
+        {
+            let condition = match outcome {
+                GoalOutcome::Set | GoalOutcome::NotMet => {
+                    obj_of(&record, "attachment").and_then(|goal| owned_str(goal, "condition"))
+                }
+                GoalOutcome::Met | GoalOutcome::Failed | GoalOutcome::Cleared => None,
+            };
+            last = Some((*outcome, condition));
+        }
+    }
+}
+
 /// The session goal's state from a `goal_status` attachment (see the module docs).
 fn observe_attachment(record: &Map<String, Value>) -> Vec<Observed> {
     let Some(attachment) = obj_of(record, "attachment") else {

@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
+- A prompt-mode task now remembers a person’s open Claude goal across manual subscription
+  moves, pool rotations and resumes past a usage limit. Its first clean Stop waits for the
+  evaluator before showing “Your turn” (SPEC-540, #1182).
 - An end-of-day digest, off by default (SPEC-512 part 3, task #494, #1413, ADR-0380): an
   instance administrator turns it on in Settings with a time (UTC) and an optional idle
   threshold. Once a day each person gets what waits for them, what was parked with the end of its

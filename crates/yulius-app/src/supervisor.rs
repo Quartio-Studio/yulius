@@ -2469,6 +2469,12 @@ impl App {
             }
         }
         let runtime = self.runtime(&task.id);
+        self.initialize_run_goal(
+            &task,
+            &attempt,
+            rest.is_some_and(|rest| rest.goal_unfinished),
+        )
+        .await;
         // Before the spawn, so the opening turn's Stop hook can never come first.
         runtime
             .opening_turn
@@ -2563,13 +2569,6 @@ impl App {
         let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
         runtime.run_starts(self.now().0).await;
         self.attach_run(&task.id, &attempt, &host_token).await?;
-        // The new run learns its goal from its own lines, and an idle one writes none: what the
-        // old run read of the goal still says what the agent left.
-        if let Some(rest) = rest {
-            runtime
-                .goal_unfinished
-                .store(rest.goal_unfinished, Ordering::SeqCst);
-        }
         runtime.hub.state_changed();
         self.publish_task(&task.id).await;
         // Control passed during the launch, after this run took its owner's personal MCP servers
@@ -4030,6 +4029,7 @@ impl App {
         }
         self.end_pause(task_id, "ended").await;
         if let Some(rt) = &runtime {
+            rt.verdict_stop_ms.clear();
             rt.watcher_alive.store(false, Ordering::SeqCst);
             *rt.run.lock().await = None;
             // What the store recorded, whoever won the transition.
@@ -4185,6 +4185,7 @@ impl App {
         });
         crate::race::reached(crate::race::Point::RunEndTaken, Path::new(task_id.as_str()));
         let session_end = runtime.session_end.lock().ok().and_then(|mut g| g.take());
+        runtime.verdict_stop_ms.clear();
         runtime.watcher_alive.store(false, Ordering::SeqCst);
         // Keep the last screen so viewers still see how the run ended after a server restart.
         let mut session_started = true;
@@ -5738,6 +5739,9 @@ impl App {
                     mark.written = true;
                 }
             }
+            if let Some(task) = store.task(&attempt.task_id).await? {
+                self.initialize_run_goal(&task, &attempt, false).await;
+            }
             let reattached = match host_token {
                 Some(token) => self
                     .attach_run(&attempt.task_id, &attempt, &token)
@@ -6070,6 +6074,55 @@ impl App {
         Some(record.label)
     }
 
+    /// Install the conversation's goal before a resumed process can send its first Stop.
+    /// Earlier goal records describe the condition, never a verdict on the new turn.
+    async fn initialize_run_goal(
+        &self,
+        task: &TaskRecord,
+        attempt: &AttemptRecord,
+        unfinished: bool,
+    ) {
+        let mut goal = None;
+        if task.mode == TaskMode::Prompt
+            && attempt.harness == Harness::ClaudeCode
+            && attempt.launch_kind == LaunchKind::Resume
+            && let (Some(session), Some(worktree)) =
+                (&attempt.provider_session_id, &task.worktree_path)
+            && yulius_domain::harness::valid_session_id(session)
+        {
+            let harness = Arc::clone(&self.deps.harness);
+            let path = harness.claude_transcript(
+                &self.sandbox_home(&task.sandbox_id),
+                Path::new(worktree),
+                session,
+            );
+            let anchor = self.sandbox_dir(&task.sandbox_id);
+            match tokio::task::spawn_blocking(move || harness.last_claude_goal(&anchor, &path))
+                .await
+            {
+                Ok(Ok(outcome)) => goal = outcome,
+                Ok(Err(err)) => {
+                    tracing::warn!(task = %task.id, error = %err, "could not read the resumed goal")
+                }
+                Err(err) => {
+                    tracing::warn!(task = %task.id, error = %err, "resumed goal read did not finish")
+                }
+            }
+        }
+        let runtime = self.runtime(&task.id);
+        runtime.goal_open.store(
+            goal.is_some_and(crate::finish::goal_stays_open),
+            Ordering::SeqCst,
+        );
+        runtime.goal_unfinished.store(
+            goal.map_or(unfinished, crate::finish::goal_unfinished),
+            Ordering::SeqCst,
+        );
+        runtime.goal_achieved.store(false, Ordering::SeqCst);
+        runtime.goal_submitted.store(false, Ordering::SeqCst);
+        runtime.verdict_stop_ms.clear();
+    }
+
     fn start_watcher(self: &Arc<Self>, task_id: &TaskId, attempt: &AttemptRecord) {
         let runtime = self.runtime(task_id);
         runtime.watcher_alive.store(true, Ordering::SeqCst);
@@ -6083,9 +6136,6 @@ impl App {
             *u = UsageSnapshot::default();
         }
         runtime.turn_started_ms.store(0, Ordering::SeqCst);
-        // A new attempt (or the same one after a restart) learns the goal from its transcript.
-        runtime.goal_achieved.store(false, Ordering::SeqCst);
-        runtime.goal_submitted.store(false, Ordering::SeqCst);
         runtime.background_shells.store(-1, Ordering::SeqCst);
         runtime.background_waits.store(-1, Ordering::SeqCst);
         runtime.background_agents.store(0, Ordering::SeqCst);
@@ -6103,9 +6153,6 @@ impl App {
         if let Ok(mut launches) = runtime.launches.lock() {
             launches.clear();
         }
-        runtime.goal_open.store(false, Ordering::SeqCst);
-        runtime.goal_unfinished.store(false, Ordering::SeqCst);
-        runtime.verdict_stop_ms.clear();
         if let Ok(mut end) = runtime.session_end.lock() {
             *end = None;
         }

@@ -3642,7 +3642,10 @@ that waits in `yulius wait` goes on by itself. Its task reads Working ("Waiting 
 merge"), even with a complete plan and a tested pull request; only an achieved goal makes it Done.
 
 While a goal is open, a clean Stop reads idle only after the goal verdict (or the turn record, or
-20 s). A proactive switch waits for any of this background work
+20 s). For a prompt-mode Claude resume, the supervisor reads the conversation’s last goal
+status before spawning the process. The new attempt still counts its turns and usage from its
+own start. [ADR-0386](decisions/0386-prompt-goals-follow-the-resumed-claude-conversation.md).
+A proactive switch waits for any of this background work
 ([ADR-0063](decisions/0063-background-work-and-goal-verdict-from-the-transcript.md)), also when
 the look at the session's processes gives no answer (`background_work_now` is `None`: not known
 counts as running for everyone who asks before a session ends, so a host whose look never
