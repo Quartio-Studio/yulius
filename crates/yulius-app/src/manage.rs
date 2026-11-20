@@ -163,7 +163,7 @@ impl App {
         sandbox: &SandboxId,
         of: Option<&TaskRecord>,
     ) -> AppResult<Option<String>> {
-        let tasks = self.deps.store.tasks(sandbox, false).await?;
+        let mut tasks = self.deps.store.tasks(sandbox, false).await?;
         let mut held: Vec<u32> = of.map(|task| task.number).into_iter().collect();
         while !held.is_empty() {
             let mut grew = false;
@@ -189,20 +189,17 @@ impl App {
                 break;
             }
         }
-        let requested = self.browser_requests(sandbox).await;
-        let mut numbers = Vec::new();
-        for task in &tasks {
-            if task.status == TaskStatus::Prepared || held.contains(&task.number) {
-                continue;
-            }
-            // By the list's own rule (`AttentionFacts::group`).
-            if !matches!(
-                self.task_group(task, &requested).await?,
-                TaskGroup::Done | TaskGroup::Ended
-            ) {
-                numbers.push(task.number);
-            }
-        }
+        tasks.retain(|task| task.status != TaskStatus::Prepared && !held.contains(&task.number));
+        let facts = self
+            .list_attention_facts(&tasks, self.status_deadline())
+            .await?;
+        let mut numbers: Vec<_> = tasks
+            .iter()
+            .zip(facts)
+            .filter_map(|(task, row)| {
+                (!matches!(row.group(), TaskGroup::Done | TaskGroup::Ended)).then_some(task.number)
+            })
+            .collect();
         numbers.sort_unstable();
         if numbers.len() > MAX_ATOMS {
             return Err(AppError::Invalid(format!(

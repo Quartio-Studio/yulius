@@ -431,6 +431,7 @@ If a reservation skips past all available slots, land an empty extension first w
 - [0410](0410-the-full-suite-runs-on-the-merged-revision-beside-a-merge-first-staging-target.md) The full suite runs on the merged revision beside a merge-first staging target.
 <!-- ADR 0410 -->
 <!-- ADR 0411 -->
+- [0412](0412-share-parked-pr-read-time-across-task-lists.md) shares the parked PR lookup budget across task lists and Home.
 <!-- ADR 0412 -->
 <!-- ADR 0413 -->
 <!-- ADR 0414 -->

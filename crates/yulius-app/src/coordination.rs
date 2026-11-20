@@ -204,27 +204,44 @@ impl App {
             _ => true,
         });
         tasks.sort_by_key(|t| std::cmp::Reverse(t.updated_at));
-        let requested = self.browser_requests(&caller.sandbox).await;
+        let requested = tokio::sync::OnceCell::new();
         let limit = usize::try_from(limit).unwrap_or(30);
         let mut out = Vec::new();
-        for t in &tasks {
-            if out.len() >= limit {
-                break;
+        let deadline = self.status_deadline();
+        if scope != "needs_you" || limit == 0 {
+            tasks.truncate(limit);
+        }
+        use futures::{StreamExt, stream::FuturesOrdered};
+        let requested = &requested;
+        'batches: for (batch, until) in
+            crate::sandboxes::fair_batches(&tasks, deadline, crate::sandboxes::PARKED_READS)
+        {
+            let mut reads = FuturesOrdered::new();
+            for task in batch {
+                reads.push_back(async move {
+                    self.display_attention(task, requested, until)
+                        .await
+                        .map(|facts| (task, facts))
+                });
             }
-            // The tasks the list shows under "Needs you" (SPEC-487 QST-002), by its own rule.
-            let facts = self.task_attention_facts(t, &requested).await?;
-            if scope == "needs_you" && facts.group() != TaskGroup::NeedsYou {
-                continue;
+            while let Some(result) = reads.next().await {
+                let (task, facts) = result?;
+                if scope == "needs_you" && facts.group() != TaskGroup::NeedsYou {
+                    continue;
+                }
+                out.push(
+                    self.task_brief_shown(task, facts, caller.task.is_none())
+                        .await?,
+                );
+                if out.len() == limit {
+                    break 'batches;
+                }
             }
-            out.push(
-                self.task_brief_shown(t, facts, caller.task.is_none())
-                    .await?,
-            );
         }
         // A Cockpit has no task of its own (MGT-007).
         match &caller.task {
             Some(own) => Ok(json!({
-                "you": self.task_brief_among(own, &requested, false).await?,
+                "you": self.task_brief_shown(own, self.display_attention(own, requested, deadline).await?, false).await?,
                 "tasks": out,
             })),
             None => Ok(json!({"tasks": out})),
@@ -238,9 +255,11 @@ impl App {
     pub async fn tool_task_get(&self, caller: &ProjectCaller, args: &Value) -> AppResult<Value> {
         let task = self.agent_task_ref(caller, args).await?;
         let steps = self.deps.store.steps(&task.id).await?;
-        let requested = self.browser_requests(&task.sandbox_id).await;
+        let facts = self
+            .display_attention(&task, &tokio::sync::OnceCell::new(), self.status_deadline())
+            .await?;
         let mut brief = self
-            .task_brief_among(&task, &requested, caller.task.is_none())
+            .task_brief_shown(&task, facts, caller.task.is_none())
             .await?;
         brief["prompt"] = json!(task.prompt.chars().take(4000).collect::<String>());
         brief["steps_list"] = json!(steps.iter().map(|s| json!({"id": s.id.as_str(), "title": s.title, "status": s.status, "note": s.note})).collect::<Vec<_>>());

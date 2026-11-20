@@ -228,6 +228,8 @@ impl App {
         let idle_run = matches!(task.status, TaskStatus::Running | TaskStatus::Parked)
             && task.activity.is_some_and(Activity::is_idle);
         Ok(TaskSummary {
+            parked_pr: None,
+            parked_needs_you: None,
             id: task.id.to_string(),
             sandbox_id: task.sandbox_id.to_string(),
             number: task.number,
@@ -671,11 +673,36 @@ impl App {
         let tasks = self.deps.store.tasks(&sid, archived).await?;
         // Unarchived, the list is the project the summaries need; archived ones wait for nothing.
         let project = (!archived).then_some(tasks.as_slice());
-        let mut out = Vec::with_capacity(tasks.len());
-        for task in &tasks {
-            out.push(self.task_summary_among(task, project).await?);
+        let requests = tokio::sync::OnceCell::new();
+        crate::sandboxes::fair_rows(
+            &tasks,
+            self.status_deadline(),
+            crate::sandboxes::PARKED_READS,
+            |task, until| {
+                let requests = &requests;
+                async move {
+                    let mut summary = self.task_summary_among(task, project).await?;
+                    self.set_parked_status(task, requests, until, &mut summary)
+                        .await;
+                    Ok(summary)
+                }
+            },
+        )
+        .await
+    }
+
+    async fn set_parked_status(
+        &self,
+        task: &TaskRecord,
+        requests: &tokio::sync::OnceCell<std::collections::HashSet<String>>,
+        deadline: tokio::time::Instant,
+        summary: &mut TaskSummary,
+    ) {
+        if task.status == TaskStatus::Parked {
+            let (facts, pr) = self.parked_status(task, requests, deadline).await;
+            summary.parked_needs_you = Some(facts.needs_you());
+            summary.parked_pr = pr;
         }
-        Ok(out)
     }
 
     /// Archived tasks across all visible sandboxes.
@@ -810,20 +837,14 @@ impl App {
         }
         let steps = store.steps(&task.id).await?;
         let started = !attempts.is_empty() || !store.provider_sessions(&task.id).await?.is_empty();
-        let (parked_needs_you, parked_pr) = if task.status == TaskStatus::Parked {
-            let (needs_you, pr) = self
-                .parked_status(
-                    &task,
-                    crate::sandboxes::parked_pr_deadline(self.config.parked_pr_read_ms),
-                )
-                .await;
-            (Some(needs_you), pr)
-        } else {
-            (None, None)
-        };
+        self.set_parked_status(
+            &task,
+            &tokio::sync::OnceCell::new(),
+            self.status_deadline(),
+            &mut summary,
+        )
+        .await;
         Ok(TaskDetail {
-            parked_needs_you,
-            parked_pr,
             summary,
             spec_path: task.spec_path.clone(),
             worktree: task.worktree_path.clone(),

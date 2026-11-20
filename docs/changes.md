@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
+- Task lists and Home check parked PRs in bounded batches. A stalled check leaves its task under Needs you and gives later tasks time to verify their own checks (SPEC-558).
+
 - Stopping a sandbox's outbound relay now closes the connections it owns and clears its occupied places. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
 
 - A parked task’s detail identifies the ordinary PR blocking Done, including when another PR on the same branch is green. Unfinished local work also keeps it under Needs you (SPEC-558).

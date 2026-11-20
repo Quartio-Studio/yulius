@@ -13,15 +13,53 @@ use crate::auth::AuthContext;
 use crate::context::App;
 use crate::error::AppResult;
 use crate::model::{SandboxRecord, TaskRecord};
+use tokio::sync::OnceCell;
 use tokio::time::Instant;
 use yulius_contracts::api::tasks::ParkedPr;
 
-/// Maximum active native Git workers used by parked status reads.
+/// Maximum concurrent reads per batch and active native Git workers per application.
 pub(crate) const PARKED_READS: usize = 8;
 
 /// Time allowed for remote verification of one parked task.
 pub(crate) fn parked_pr_deadline(budget_ms: u64) -> Instant {
     Instant::now() + std::time::Duration::from_millis(budget_ms)
+}
+
+/// Reserve a share of the remaining deadline for each unvisited batch.
+pub(crate) fn fair_batches<T>(
+    rows: &[T],
+    deadline: Instant,
+    concurrency: usize,
+) -> impl Iterator<Item = (&[T], Instant)> {
+    let mut batches = rows.chunks(concurrency);
+    std::iter::from_fn(move || {
+        let batch = batches.next()?;
+        let now = Instant::now();
+        let remaining = u32::try_from(batches.len() + 1).unwrap_or(u32::MAX);
+        Some((
+            batch,
+            now + deadline.saturating_duration_since(now) / remaining,
+        ))
+    })
+}
+
+/// Run at most eight reads together and reserve time for later rows. A stalled
+/// GitHub response can consume its batch's share, never the whole list's budget.
+pub(crate) async fn fair_rows<'a, T, R, F>(
+    rows: &'a [T],
+    deadline: Instant,
+    concurrency: usize,
+    read: impl Fn(&'a T, Instant) -> F,
+) -> AppResult<Vec<R>>
+where
+    F: std::future::Future<Output = AppResult<R>>,
+{
+    let mut results = Vec::with_capacity(rows.len());
+    for (batch, until) in fair_batches(rows, deadline, concurrency) {
+        results
+            .extend(futures::future::try_join_all(batch.iter().map(|row| read(row, until))).await?);
+    }
+    Ok(results)
 }
 
 /// PR facts the Git overview supplied for a single task. A closed, unmerged PR
@@ -207,11 +245,20 @@ impl App {
         record: &SandboxRecord,
         access: AccessLevel,
     ) -> AppResult<Sandbox> {
+        self.sandbox_view_until(record, access, self.status_deadline())
+            .await
+    }
+
+    async fn sandbox_view_until(
+        &self,
+        record: &SandboxRecord,
+        access: AccessLevel,
+        deadline: Instant,
+    ) -> AppResult<Sandbox> {
         let tasks = self.deps.store.tasks(&record.id, false).await?;
-        let requested = self.browser_requests(&record.id).await;
         let mut counts = SandboxCounts::default();
-        for task in &tasks {
-            match self.task_group(task, &requested).await? {
+        for facts in self.list_attention_facts(&tasks, deadline).await? {
+            match facts.group() {
                 TaskGroup::NeedsYou => counts.needs_attention += 1,
                 TaskGroup::Working => counts.running += 1,
                 TaskGroup::Queued => counts.queued += 1,
@@ -272,24 +319,63 @@ impl App {
         Ok(self.task_attention_facts(task, requested).await?.group())
     }
 
+    pub(crate) fn status_deadline(&self) -> Instant {
+        parked_pr_deadline(self.config.parked_pr_read_ms)
+    }
+
+    /// A list shares one request snapshot per sandbox and one verification deadline.
+    pub(crate) async fn list_attention_facts(
+        &self,
+        tasks: &[TaskRecord],
+        deadline: Instant,
+    ) -> AppResult<Vec<AttentionFacts>> {
+        let requests = OnceCell::new();
+        fair_rows(tasks, deadline, PARKED_READS, |task, until| {
+            self.display_attention(task, &requests, until)
+        })
+        .await
+    }
+
+    pub(crate) async fn display_attention(
+        &self,
+        task: &TaskRecord,
+        requests: &OnceCell<HashSet<String>>,
+        deadline: Instant,
+    ) -> AppResult<AttentionFacts> {
+        if task.status == TaskStatus::Parked {
+            return Ok(self.parked_status(task, requests, deadline).await.0);
+        }
+        let requested = requests
+            .get_or_init(|| self.browser_requests(&task.sandbox_id))
+            .await;
+        self.task_attention_facts(task, requested).await
+    }
+
     /// Check the recorded and branch PRs before reporting Done, even before
     /// anyone opens the sandbox Git overview. A missed deadline leaves work open.
     pub(crate) async fn parked_status(
         &self,
         task: &TaskRecord,
+        requests: &OnceCell<HashSet<String>>,
         deadline: Instant,
-    ) -> (bool, Option<ParkedPr>) {
+    ) -> (AttentionFacts, Option<ParkedPr>) {
         use crate::delivery::PrVerification;
         // Seed from memory before waiting on any store or browser lock. Once
         // the record is read, a timed-out lookup can still name its delivery.
         let mut observed = self.known_parked_pull(task, None);
+        let mut facts = AttentionFacts::new(task.status, task.activity);
         let check = async {
             let record = self.deps.store.delivery(&task.id).await?;
             observed = self.known_parked_pull(task, record.as_ref());
-            let requested = self.browser_requests(&task.sandbox_id).await;
-            let mut facts = self.task_attention_facts(task, &requested).await?;
+            let requested = requests
+                .get_or_init(|| self.browser_requests(&task.sandbox_id))
+                .await;
+            facts = self.task_attention_facts(task, requested).await?;
+            // Only fresh PR evidence can explain this display. A decision or open
+            // plan still determines the group when the last overview is obsolete.
+            facts.pull = None;
             if facts.parked_has_local_work_or_request() {
-                return Ok(true);
+                return Ok(());
             }
             let Some(prs) = self
                 .verify_task_prs(
@@ -300,7 +386,8 @@ impl App {
                 )
                 .await?
             else {
-                return Ok(true);
+                facts.pull = Some(observed.signal.unwrap_or(PullSignal::Errored));
+                return Ok(());
             };
             if !self
                 .parked_evidence_current(
@@ -312,7 +399,8 @@ impl App {
                 )
                 .await?
             {
-                return Ok(true);
+                facts.pull = Some(observed.signal.unwrap_or(PullSignal::Errored));
+                return Ok(());
             }
             facts.pull = observed.pr.map(|pr| {
                 if pr.open {
@@ -321,13 +409,12 @@ impl App {
                     PullSignal::Merged
                 }
             });
-            Ok::<_, crate::error::AppError>(facts.needs_you())
+            Ok::<_, crate::error::AppError>(())
         };
-        let needs_you = !matches!(
-            tokio::time::timeout_at(deadline, check).await,
-            Ok(Ok(false))
-        );
-        (needs_you, observed.pr)
+        if !matches!(tokio::time::timeout_at(deadline, check).await, Ok(Ok(()))) {
+            facts.pull = Some(PullSignal::Errored);
+        }
+        (facts, observed.pr)
     }
 
     /// The facts that place the task in its sidebar group and explain a derived wait.
@@ -426,11 +513,14 @@ impl App {
     /// # Errors
     /// Store failures.
     pub async fn list_sandboxes(&self, ctx: &AuthContext) -> AppResult<Vec<Sandbox>> {
-        let mut out = Vec::new();
-        for (record, level) in self.visible_sandboxes(&ctx.user).await? {
-            out.push(self.sandbox_view(&record, level).await?);
-        }
-        Ok(out)
+        let visible = self.visible_sandboxes(&ctx.user).await?;
+        fair_rows(
+            &visible,
+            self.status_deadline(),
+            1,
+            |(record, level), until| self.sandbox_view_until(record, *level, until),
+        )
+        .await
     }
 
     /// One sandbox, if visible.

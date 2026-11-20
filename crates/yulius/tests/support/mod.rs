@@ -120,6 +120,7 @@ pub struct FakeGitHub {
     /// How many times `set_issue_state` was called.
     pub issue_state_calls: std::sync::atomic::AtomicUsize,
     /// When set, reading checks waits for it (a slow GitHub); `checks_entered` says a read began.
+    checks_hold_sha: Mutex<Option<String>>,
     pub checks_hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
     pub checks_entered: tokio::sync::Notify,
     /// When set, permission lookups wait for it (a slow GitHub); `access_entered` says one began.
@@ -556,7 +557,14 @@ impl GitHubPort for FakeGitHub {
     }
     async fn checks(&self, _: &Secret, _: &str, _: &str, sha: &str) -> AppResult<ChecksReport> {
         let hold = self.checks_hold.lock().ok().and_then(|h| h.clone());
-        if let Some(hold) = hold {
+        if let Some(hold) = hold
+            && self
+                .checks_hold_sha
+                .lock()
+                .map_err(AppError::internal)?
+                .as_deref()
+                .is_none_or(|target| target == sha)
+        {
             self.checks_entered.notify_one();
             hold.notified().await;
         }
@@ -1353,6 +1361,10 @@ impl FakeGitHub {
         }
     }
     /// Holds every checks read until the returned handle is released with [`Self::release_checks`].
+    pub fn hold_checks_for(&self, sha: &str) -> AppResult<Arc<tokio::sync::Notify>> {
+        *self.checks_hold_sha.lock().map_err(AppError::internal)? = Some(sha.into());
+        Ok(self.hold_checks())
+    }
     pub fn hold_checks(&self) -> Arc<tokio::sync::Notify> {
         let hold = Arc::new(tokio::sync::Notify::new());
         if let Ok(mut h) = self.checks_hold.lock() {
@@ -1400,6 +1412,9 @@ impl FakeGitHub {
     pub fn release_checks(&self, hold: &tokio::sync::Notify) {
         if let Ok(mut h) = self.checks_hold.lock() {
             *h = None;
+        }
+        if let Ok(mut sha) = self.checks_hold_sha.lock() {
+            *sha = None;
         }
         hold.notify_waiters();
         hold.notify_one();

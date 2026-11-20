@@ -74,9 +74,20 @@ async fn fixture_of(
     tweak: impl FnOnce(&mut TaskRecord),
     agent: Agent,
 ) -> Result<Fixture, Box<dyn std::error::Error>> {
+    fixture_with_read_budget(workflow, tweak, agent, 10_000).await
+}
+
+async fn fixture_with_read_budget(
+    workflow: Option<(&str, bool)>,
+    tweak: impl FnOnce(&mut TaskRecord),
+    agent: Agent,
+    read_budget_ms: u64,
+) -> Result<Fixture, Box<dyn std::error::Error>> {
     let h = support::harness_with(support::HarnessOptions {
         git: Some(Arc::new(support::confined_git())),
-        configure: Some(Box::new(|config| config.parked_pr_read_ms = 10_000)),
+        configure: Some(Box::new(move |config| {
+            config.parked_pr_read_ms = read_budget_ms
+        })),
         ..Default::default()
     })?;
     let repo = tempfile::tempdir()?;
@@ -3578,6 +3589,17 @@ async fn a_parked_task_names_the_blocking_pr_when_its_branch_has_two_open_prs() 
         let summary = serde_json::to_value(f.h.app.task_detail(&owner, f.task.as_str()).await?)?;
         assert_eq!(summary["parked_needs_you"], true);
         assert_eq!(summary["parked_pr"], json!({"number":1461, "open":true}));
+        let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+        let brief =
+            f.h.app
+                .tool_task_get(&caller, &json!({"task_id":f.task.as_str()}))
+                .await?;
+        let reason = if behind {
+            "The parked task's pull request needs to be updated with its base branch."
+        } else {
+            "The parked task's pull request has a merge conflict."
+        };
+        assert_eq!(brief["wait_reason"], reason);
     }
     Ok(())
 }
@@ -3624,6 +3646,25 @@ async fn a_parked_task_names_the_ordinary_ci_failure_on_the_older_open_pr() -> T
     let summary = serde_json::to_value(app.task_detail(&owner, f.task.as_str()).await?)?;
     assert_eq!(summary["parked_needs_you"], true);
     assert_eq!(summary["parked_pr"], json!({"number":1461,"open":true}));
+    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let brief = app
+        .tool_task_get(&caller, &json!({"task_id":f.task.as_str()}))
+        .await?;
+    assert_eq!(
+        brief["wait_reason"],
+        "The agent stopped and its pull request checks are failing."
+    );
+    f.h.github
+        .set_checks("abc123", yulius_app::ports::github::ChecksState::Pending);
+    let pending = app
+        .tool_task_get(&caller, &json!({"task_id":f.task.as_str()}))
+        .await?;
+    assert_eq!(
+        pending["wait_reason"],
+        "The agent stopped and its pull request checks are failing."
+    );
+    f.h.github
+        .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
     // Losing the checks endpoint does not make the current PR disappear.
     *f.h.github
         .checks_error
@@ -3631,6 +3672,19 @@ async fn a_parked_task_names_the_ordinary_ci_failure_on_the_older_open_pr() -> T
         .map_err(|_| "checks fixture")? = Some(yulius_app::error::AppError::Upstream(
         "checks unavailable".into(),
     ));
+    let red = app
+        .tool_tasks_list(&caller, &json!({"scope":"needs_you"}))
+        .await?;
+    let row = red["tasks"]
+        .as_array()
+        .ok_or("rows")?
+        .iter()
+        .find(|row| row["task_id"] == f.task.as_str())
+        .ok_or("failed PR task")?;
+    assert_eq!(
+        row["wait_reason"],
+        "The agent stopped and its pull request checks are failing."
+    );
     let unavailable = serde_json::to_value(app.task_detail(&owner, f.task.as_str()).await?)?;
     assert_eq!(unavailable["parked_needs_you"], true);
     assert_eq!(
@@ -3698,6 +3752,43 @@ async fn a_parked_task_ignores_its_owner_observation_once_the_same_pr_is_merged(
     let detail = serde_json::to_value(f.h.app.task_detail(&owner, f.task.as_str()).await?)?;
     assert_eq!(detail["parked_needs_you"], true);
     assert_eq!(detail["parked_pr"], json!({"number":1461, "open":false}));
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    f.h.app
+        .tool_steps_set(&ctx, &json!({"steps":["Document the follow-up"]}))
+        .await?;
+    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let brief =
+        f.h.app
+            .tool_task_get(&caller, &json!({"task_id":f.task.as_str()}))
+            .await?;
+    assert_eq!(
+        brief["wait_reason"],
+        "The agent stopped with unfinished steps in its plan."
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_parked_task_keeps_a_confirmed_failure_in_an_incomplete_check_report() -> TestResult {
+    use yulius_app::ports::github::{ChecksReport, ChecksSource, ChecksState};
+    let (f, owner) = owner_observed_external_pr().await?;
+    install_app(&f).await?;
+    f.h.github.set_checks_report(
+        "abc123",
+        ChecksReport {
+            state: ChecksState::Failure,
+            unreadable: vec![ChecksSource::CommitStatuses],
+        },
+    );
+    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let brief =
+        f.h.app
+            .tool_task_get(&caller, &json!({"task_id":f.task.as_str()}))
+            .await?;
+    assert_eq!(
+        brief["wait_reason"],
+        "The agent stopped and its pull request checks are failing."
+    );
     Ok(())
 }
 
@@ -3709,9 +3800,9 @@ async fn a_parked_task_with_open_steps_keeps_its_owner_observed_pr() -> TestResu
         .tool_steps_set(&ctx, &json!({"steps":["Fix the failing check"]}))
         .await?;
     let row = f.h.app.task_detail(&owner, f.task.as_str()).await?;
-    assert_eq!(row.parked_needs_you, Some(true));
+    assert_eq!(row.summary.parked_needs_you, Some(true));
     assert_eq!(
-        serde_json::to_value(row.parked_pr)?,
+        serde_json::to_value(row.summary.parked_pr)?,
         json!({"number":1461,"open":true})
     );
     Ok(())
@@ -3774,5 +3865,327 @@ async fn a_parked_external_pr_keeps_its_identity_when_the_app_has_no_installatio
         serde_json::to_value(f.h.app.task_detail(&owner, f.task.as_str()).await?)?["parked_needs_you"],
         false
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn parked_list_home_and_mcp_classify_a_green_head_while_the_first_is_slow() -> TestResult {
+    use yulius_app::ports::github::ChecksState;
+    use yulius_app::ports::store::{SandboxStore as _, TaskStore as _};
+    use yulius_app::ports::store_ext::DeliveryStore as _;
+    use yulius_domain::delivery::DeliveryStage;
+    let f = fixture().await?;
+    install_compatibility_pull(&f).await?;
+    let owner = idle_for_parking(&f).await?;
+    let mut slow = f.h.store.task(&f.task).await?.ok_or("task")?;
+    let now = f.h.app.now();
+    f.h.store
+        .transition_task(
+            &slow.id,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Waiting),
+            now,
+        )
+        .await?;
+    let slow_id = TaskId::parse("parked-slow")?;
+    slow.id = slow_id.clone();
+    slow.number = 12;
+    slow.branch = Some("feat/slow".into());
+    slow.status = TaskStatus::Parked;
+    slow.activity = Some(Activity::Waiting);
+    slow.updated_at = Timestamp(now.0 + 1);
+    f.h.store.insert_task(&slow).await?;
+    // Lists order by descending task number. Six closed rows, the slow PR
+    // and the fixture’s other task fill the first batch. The healthy PR is ninth.
+    for number in 13..19 {
+        let mut closed = slow.clone();
+        closed.id = TaskId::parse(&format!("closed-{number}"))?;
+        closed.number = number;
+        closed.branch = None;
+        closed.activity = None;
+        closed.status = TaskStatus::Closed;
+        f.h.store.insert_task(&closed).await?;
+    }
+    let original = f.h.store.delivery(&f.task).await?.ok_or("PR")?;
+    f.h.store
+        .transition_delivery(
+            &DeliveryStage::None,
+            &yulius_app::delivery::DeliveryRecord {
+                task_id: slow_id.clone(),
+                pr_number: Some(1462),
+                ..original
+            },
+        )
+        .await?;
+    {
+        let mut pulls = f.h.github.pulls.lock().map_err(|_| "pulls")?;
+        // The fixture's external PRs have authoritative remote mergeability.
+        // No local merge-driver subprocess participates in the list deadline.
+        pulls[0].base = "release".into();
+        let other = yulius_app::ports::github::GhPull {
+            number: 1462,
+            head_sha: "slow-head".into(),
+            head: "feat/slow".into(),
+            ..pulls[0].clone()
+        };
+        pulls.push(other);
+    }
+    f.h.github.set_checks("abc123", ChecksState::Success);
+    let hold = f.h.github.hold_checks_for("slow-head")?;
+    let rows =
+        f.h.app
+            .list_tasks(&owner, f.sandbox.as_str(), false)
+            .await?;
+    assert_eq!(
+        rows.get(6).map(|row| row.id.as_str()),
+        Some(slow_id.as_str())
+    );
+    assert_eq!(
+        rows.get(8).map(|row| row.id.as_str()),
+        Some(f.task.as_str())
+    );
+    assert_eq!(
+        rows.iter()
+            .find(|t| t.id == f.task.as_str())
+            .and_then(|t| t.parked_needs_you),
+        Some(false)
+    );
+    assert_eq!(
+        rows.iter()
+            .find(|t| t.id == slow_id.as_str())
+            .and_then(|t| t.parked_needs_you),
+        Some(true)
+    );
+    let project = f.h.store.sandbox(&f.sandbox).await?.ok_or("project")?;
+    assert_eq!(
+        f.h.app
+            .sandbox_view(&project, yulius_domain::permission::AccessLevel::Write)
+            .await?
+            .counts
+            .needs_attention,
+        1
+    );
+    // MCP all orders by activity. Seven other rows and the slow PR precede
+    // the healthy PR at the boundary of the second batch.
+    f.h.store
+        .set_activity(
+            &TaskId::parse("t-other")?,
+            Some(Activity::Working),
+            Timestamp(now.0 + 1),
+        )
+        .await?;
+    let caller = crate::task_message::superagent(&f.sandbox, &slow.created_by, "admin");
+    let all =
+        f.h.app
+            .tool_tasks_list(&caller, &json!({"scope":"all","limit":9}))
+            .await?;
+    let rows = all["tasks"].as_array().ok_or("rows")?;
+    assert!(
+        rows[..8]
+            .iter()
+            .any(|row| row["task_id"] == slow_id.as_str() && row["shows"] == "needs_you")
+    );
+    assert_eq!(rows[8]["task_id"], f.task.as_str());
+    assert_eq!(rows[8]["shows"], "done");
+    // The healthy task is newest for MCP. Apply the owner's limit only after
+    // filtering Needs you, otherwise the slow task disappears from the page.
+    f.h.store
+        .set_activity(&f.task, Some(Activity::Waiting), Timestamp(now.0 + 2))
+        .await?;
+    let listing =
+        f.h.app
+            .tool_tasks_list(&caller, &serde_json::json!({"scope":"needs_you","limit":1}))
+            .await?;
+    assert_eq!(listing["tasks"].as_array().ok_or("tasks")?.len(), 1);
+    assert_eq!(listing["tasks"][0]["task_id"], slow_id.as_str());
+    // Eight newer local decisions qualify before the held PR is reached.
+    // Consume the preceding MCP lookup's signal, then catch any needless read.
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        f.h.github.checks_entered.notified(),
+    )
+    .await?;
+    for number in 20..28 {
+        let mut asks = slow.clone();
+        asks.id = TaskId::parse(&format!("decision-{number}"))?;
+        asks.branch = None;
+        asks.status = TaskStatus::Running;
+        asks.activity = Some(Activity::NeedsAttention);
+        asks.updated_at = Timestamp(now.0 + number);
+        f.h.store.insert_task(&asks).await?;
+    }
+    let empty =
+        f.h.app
+            .tool_tasks_list(&caller, &json!({"scope":"needs_you","limit":0}))
+            .await?;
+    assert_eq!(
+        empty["tasks"],
+        json!([]),
+        "a zero-sized page visits no rows"
+    );
+    let args = serde_json::json!({"scope":"needs_you","limit":1});
+    let listing = tokio::select! {
+        result = f.h.app.tool_tasks_list(&caller, &args) => result?,
+        () = f.h.github.checks_entered.notified() => return Err("read a later parked PR after the first page was filled".into()),
+    };
+    assert_eq!(listing["tasks"][0]["task_id"], "decision-27");
+    f.h.github.release_checks(&hold);
+    Ok(())
+}
+
+#[tokio::test]
+async fn parked_lists_share_one_budget_for_unreadable_pr_heads() -> TestResult {
+    use std::time::Duration;
+    use yulius_domain::delivery::DeliveryStage;
+    let f = fixture_with_read_budget(None, |_| {}, Agent::ClaudeCode, 750).await?;
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    install_compatibility_pull(&f).await?;
+    let store = &f.h.app.deps.store;
+    let owner = yulius_app::auth::AuthContext {
+        user: store.user(&ctx.task.owner).await?.ok_or("owner")?,
+        csrf_token: None,
+        session_hash: None,
+        token: None,
+    };
+    let now = f.h.app.now();
+    f.h.app
+        .tool_steps_set(&ctx, &json!({"steps":["Complete this open step"]}))
+        .await?;
+    store
+        .transition_task(
+            &f.task,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Waiting),
+            now,
+        )
+        .await?;
+    let hold = f.h.github.hold_checks();
+    let rows = tokio::select! {
+        result = f.h.app.list_tasks(&owner, f.sandbox.as_str(), false) => result?,
+        () = f.h.github.checks_entered.notified() => return Err("looked up checks despite a locally unfinished plan".into()),
+    };
+    let local = rows
+        .iter()
+        .find(|task| task.id == f.task.as_str())
+        .ok_or("parked row")?;
+    assert_eq!(local.parked_needs_you, Some(true));
+    assert_eq!(
+        local.parked_pr.map(|pr| (pr.number, pr.open)),
+        Some((1461, true)),
+        "locally unfinished work still names its recorded open PR"
+    );
+    let mut record = store.task(&f.task).await?.ok_or("parked task")?;
+    for number in 3..=10 {
+        record.id = TaskId::parse(&format!("t-parked-{number}"))?;
+        record.number = number;
+        store.insert_task(&record).await?;
+        store
+            .transition_delivery(
+                &DeliveryStage::None,
+                &yulius_app::delivery::DeliveryRecord {
+                    task_id: record.id.clone(),
+                    stage: DeliveryStage::PrOpen,
+                    pr_number: Some(1461),
+                    updated_at: now,
+                },
+            )
+            .await?;
+    }
+    let limit = Duration::from_secs(4);
+    let (tasks, home) = tokio::time::timeout(limit, async {
+        tokio::try_join!(
+            f.h.app.list_tasks(&owner, f.sandbox.as_str(), false),
+            f.h.app.list_sandboxes(&owner)
+        )
+    })
+    .await
+    .map_err(|_| "parked PR reads stalled the lists")??;
+    // Make the generated rule exceed its atom limit, so this measures its
+    // construction independently of the later, authoritative chain evaluation.
+    for number in 11..=66 {
+        record.id = TaskId::parse(&format!("queued-{number}"))?;
+        record.number = number;
+        record.status = TaskStatus::Queued;
+        record.activity = None;
+        store.insert_task(&record).await?;
+    }
+    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let args = json!({"prompt":"Wait for the outstanding PRs", "after_all_tasks":true});
+    let problem = tokio::time::timeout(limit, f.h.app.tool_task_create(&caller, &args))
+        .await
+        .map_err(|_| "after_all_tasks waited a full deadline for each parked task")?
+        .err()
+        .ok_or("unreadable parked PRs should be included in the start rule")?;
+    assert!(
+        problem.to_string().contains("a rule names at most 64"),
+        "{problem}"
+    );
+    f.h.github.release_checks(&hold);
+    let parked: Vec<_> = tasks
+        .iter()
+        .filter(|task| task.status == "parked")
+        .collect();
+    assert_eq!(parked.len(), 9);
+    assert!(
+        parked
+            .iter()
+            .all(|task| task.parked_needs_you == Some(true))
+    );
+    assert!(
+        home.iter()
+            .find(|s| s.id == f.sandbox.as_str())
+            .is_some_and(|s| s.counts.needs_attention >= 9)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_parked_task_explains_incomplete_ordinary_checks_on_its_head() -> TestResult {
+    use yulius_domain::ci::{CiRef, RunState};
+    let (f, owner) = owner_observed_external_pr().await?;
+    install_app(&f).await?;
+    f.h.github
+        .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
+    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    for (at, state, reason) in [
+        (
+            21,
+            RunState::Queued,
+            "The parked task is waiting for its pull request checks.",
+        ),
+        (
+            22,
+            RunState::Error,
+            "The parked task's pull request could not be verified.",
+        ),
+        (
+            23,
+            RunState::Cancelled,
+            "The parked task's pull request could not be verified.",
+        ),
+    ] {
+        super::delivery::insert_ci_attempt(
+            &f.h.store,
+            &format!("local-{at}"),
+            "abc123",
+            CiRef::PullRequest(1461),
+            state,
+            at,
+            &[],
+        )
+        .await?;
+        for enabled in [false, true] {
+            let mut config = f.h.app.config.clone();
+            config.ci.enabled = enabled;
+            let app = yulius_app::context::App::new(config, f.h.app.deps.clone());
+            let brief = app
+                .tool_task_get(&caller, &json!({"task_id":f.task.as_str()}))
+                .await?;
+            assert_eq!(brief["shows"], "needs_you");
+            assert_eq!(brief["wait_reason"], reason);
+        }
+    }
     Ok(())
 }

@@ -35,7 +35,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Gate parked successors on declared work, owner decisions and current branch PRs
 - [x] Preserve parked PR observations across overlapping Git overviews
 - [x] Report the blocking ordinary PR in parked HTTP task details
-- [ ] Give parked PRs fair status reads in task lists and Home
+- [x] Give parked PRs fair status reads in task lists and Home
 - [ ] Refresh parked page and sidebar status independently of the Git overview
 - [ ] Keep failed integration candidates with their original owner
 - [ ] Deliver bounded Codex goal continuation to dev
@@ -63,6 +63,10 @@ Capture a separate screen at the park decision because exiting can clear the ent
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
 ## Evidence
+
+- PR #1533 delivered the individual parked HTTP status verifier to dev at `0b213b7d7`. Its head passed CI run `968c3c81-1e1c-4c37-bba4-e4c7f6f37662`. The merge train passed run `5830d64b-97ac-46ba-9822-acfa1b66df6c`. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/0b213b7d7ce73ec8a0f33a522171d70190ce8337)
+- The two-PR competition regression failed on `3940f630f` because the ninth row omitted its parked classification. After the list repair the held PR was Needs you, the healthy ninth PR was Done, Home counted one task and the ordered MCP filter returned the held task. The concurrent production-budget fixture passed for HTTP, Home and construction of an `after_all_tasks` rule. The regressions ran with `cargo nextest run -p yulius -E 'test(parked_list)'`.
+- Four MCP tests initially returned no wait reason for a verified ordinary CI failure, a failed check with an unreadable source, pending CI and a PR behind its base. The stale-merge fixture already returned the open plan step as the reason. After carrying the directly confirmed or persisted check result through the verifier, all five passed. The scoped parking, Home, MCP and overview run passed 93 tests. Repository contracts and formatting passed with `scripts/dev quick`.
 
 - The PTY regression failed on the original supervisor with the #517 token-usage and resume text. With the fix it preserves the first answer and one parking notice after process exit and server restart. The remote `task_screen` shows the same screen. The next `task_message` starts a native resume for the parked attempt's rollout ID and the synthetic rollout contains both prompts.
 - The five-of-seven-step fixture with open PR #1461 and failed checks originally received no continuation. The HTTP Codex Stop tests now cover that combination, open steps alone, failed checks alone, the fourth Stop raising attention, and an explicit request for the owner. The historical parked terminal fixture removes the #517 footer and recovers its 35-minute idle interval.
@@ -152,7 +156,7 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Delivery slices
 
-PRs #1492 and #1493 delivered native Codex resume and the pre-stop screen for new parks. PR #1505 kept sessions with local unfinished work live. PR #1510 verified current ordinary PR checks and unpublished work before parking. PR #1524 delivered the parked predecessor gate. PR #1527 preserved known PR observations across overlapping Git overviews. This delivery verifies the blocking ordinary PR on individual HTTP detail reads. Remaining deliveries cover fair parked task-list reads, page refresh, persisted integration failures, bounded Codex goals and pre-upgrade screens.
+PRs #1492 and #1493 delivered native Codex resume and the pre-stop screen for new parks. PR #1505 kept sessions with local unfinished work live. PR #1510 verified current ordinary PR checks and unpublished work before parking. PR #1524 delivered the parked predecessor gate. PR #1527 preserved known PR observations across overlapping Git overviews. PR #1533 verified the blocking ordinary PR on individual HTTP detail reads. This slice shares that verification across parked list rows and Home. Remaining deliveries cover page refresh, persisted integration failures, bounded Codex goals and pre-upgrade screens.
 
 The native-resume regression checks the rollout in the native launch and reads the first and second user prompts from its on-disk history. It also exercises absent IDs and an older lineage entry. No paid provider is involved.
 

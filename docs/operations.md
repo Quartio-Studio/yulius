@@ -179,6 +179,8 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # An explicit #N merged rule follows the recorded merge.
 # The HTTP task detail names the ordinary PR blocking Done. Unreadable checks keep
 # the parked task under Needs you until a later read verifies its state.
+# Task lists and Home share the 750 ms PR lookup budget across their rows.
+# An unreadable PR counts toward Needs you while later healthy PRs can show Done.
 #Environment=YULIUS_PARK_AFTER_MINUTES=30
 # A server older than parking cannot read the status `parked`: before rolling back past it,
 # resume or archive the tasks marked "parked" in the task lists, with this set to 0 so no task
