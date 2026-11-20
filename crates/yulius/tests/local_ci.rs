@@ -1778,7 +1778,7 @@ fn squash_feat_one(f: &Fixture) -> BoxResult<String> {
     git(&f.work, &["merge", "-q", "--squash", "feat/one"])?;
     git(&f.work, &["commit", "-q", "-m", "feature (#1)"])?;
     git(&f.work, &["push", "-q", "origin", "dev"])?;
-    Ok(git(&f.work, &["rev-parse", "HEAD"])?)
+    git(&f.work, &["rev-parse", "HEAD"])
 }
 
 /// SPEC-575 MFS-002 (AC: quick checks on the pull request, full suite once on dev): with a
