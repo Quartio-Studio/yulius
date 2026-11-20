@@ -44,11 +44,13 @@ enum MergeTree {
     Conflict(Vec<String>),
 }
 
-/// Keep UTF-8 paths verbatim. For a Unix path that cannot be a Rust string, use Git's
-/// double-quoted byte representation, so every byte of the name can be recovered.
+/// A leading double quote identifies Git's byte-quoted representation. Quote paths
+/// that begin with one as well as non-UTF-8 paths, so a displayed name identifies one path.
 pub(crate) fn conflict_path(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
-    if let Ok(path) = std::str::from_utf8(bytes) {
+    if let Ok(path) = std::str::from_utf8(bytes)
+        && !path.starts_with('"')
+    {
         return path.to_owned();
     }
     let mut quoted = String::from("\"");
