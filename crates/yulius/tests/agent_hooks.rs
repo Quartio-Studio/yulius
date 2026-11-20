@@ -3065,7 +3065,7 @@ async fn incomplete_git_overviews_preserve_the_current_parked_pr_observation() -
         if let Some(row) = row {
             assert_eq!(
                 row["wait_reason"],
-                "The agent stopped and its pull request checks are failing."
+                "The task is parked and pull request #1462 checks are failing."
             );
         }
         assert_eq!(

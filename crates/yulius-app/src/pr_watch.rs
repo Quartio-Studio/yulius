@@ -231,7 +231,7 @@ fn message(pr: u64, texts: &[&str]) -> String {
 }
 
 /// Terminal failures and tests observed before fail-fast stopped a sibling (SPEC-566).
-fn failed_jobs(jobs: &[CiJobRecord]) -> String {
+pub(crate) fn failed_jobs(jobs: &[CiJobRecord]) -> String {
     let said: Vec<String> = jobs
         .iter()
         .filter_map(|job| {
@@ -853,6 +853,17 @@ impl App {
         self.pr_news_due_of(task, record.as_ref(), false).await
     }
 
+    /// Newest Yulius CI run for pull request `pr` in `sandbox`, if any (SPEC-578).
+    pub(crate) async fn latest_pr_ci_run(
+        &self,
+        sandbox: &yulius_domain::ids::SandboxId,
+        pr: u64,
+    ) -> Option<CiRunRecord> {
+        let runs = self.deps.store.ci_runs(sandbox, RUNS_READ).await.ok()?;
+        runs.into_iter()
+            .find(|run| run.reference == CiRef::PullRequest(pr))
+    }
+
     /// [`Self::pr_news_due`] for a decision that already read the task's delivery `record`, so
     /// that one decision rests on one reading of it (review round 2); `merged_elsewhere` when
     /// GitHub says its pull request is merged and the record does not say so yet.
@@ -890,20 +901,46 @@ impl App {
                 store.sandbox(&task.sandbox_id).await,
                 Ok(Some(sandbox)) if sandbox.is_playground()
             );
+        let paused = matches!(store.person_pause(&task.id).await, Ok(Some(_)));
         let facts = NewsFacts {
             armed: false,
             // A pause that cannot be read counts as none: the safe side for Done.
-            paused: matches!(store.person_pause(&task.id).await, Ok(Some(_))),
+            paused,
             pull,
             outcome,
             publish_problem,
             playground,
             ..typed
         };
-        self.with_pr_notices(|told| match told.get(task.id.as_str()) {
+        let due = self.with_pr_notices(|told| match told.get(task.id.as_str()) {
             Some(told) => news_due(&facts, told),
             None => news_due(&facts, &Told::default()),
-        })
+        });
+        if due {
+            return true;
+        }
+        // An untold failed/errored Yulius CI run on a live, unpaused, non-playground session
+        // with no open human request will be pasted into the agent by `watch_prs` so the agent
+        // can recover it without escalating to Needs You (SPEC-578).
+        if !paused
+            && self.existing_runtime(&task.id).is_some()
+            && let Some((pr, false)) = pull
+            && task.activity != Some(yulius_domain::task::Activity::NeedsAttention)
+            && matches!(store.task_needs_you(&task.id).await, Ok(None))
+            && let Some(run) = self.latest_pr_ci_run(&task.sandbox_id, pr).await
+            && matches!(run.state, RunState::Failed | RunState::Error)
+            && !matches!(
+                store.sandbox(&task.sandbox_id).await,
+                Ok(Some(sandbox)) if sandbox.is_playground()
+            )
+        {
+            return self.with_pr_notices(|told| {
+                told.get(task.id.as_str()).is_none_or(|t| {
+                    t.pr != pr || t.keys.get("run").map(String::as_str) != Some(run.id.as_str())
+                })
+            });
+        }
+        false
     }
 
     /// Writes what each task was told (whole, then renamed into place); failures are logged.

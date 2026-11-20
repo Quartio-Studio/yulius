@@ -227,6 +227,11 @@ impl App {
         };
         let idle_run = matches!(task.status, TaskStatus::Running | TaskStatus::Parked)
             && task.activity.is_some_and(Activity::is_idle);
+        let requested = self.browser_requests(&task.sandbox_id).await;
+        let facts = self.task_attention_facts(task, &requested).await?;
+        let needs_you_notice = self.resolve_needs_you_notice(task, &facts).await;
+        self.sync_wait_message(task, needs_you_notice.as_ref())
+            .await;
         Ok(TaskSummary {
             id: task.id.to_string(),
             sandbox_id: task.sandbox_id.to_string(),
@@ -285,8 +290,9 @@ impl App {
             needs_you: if task.status.is_resting() {
                 None
             } else {
-                self.needs_you_view(&task.id).await
+                self.needs_you_view(task).await
             },
+            needs_you_notice,
             attention: self.attention_view(task).await,
             auto: self.auto_choice_view(&task.id).await,
             supertask: task.supertask,
@@ -329,6 +335,10 @@ impl App {
         let Ok(Some(task)) = self.deps.store.task(task_id).await else {
             return;
         };
+        if task.status.is_resting() {
+            self.clear_task_browser_actions(&task.sandbox_id, &task.id, None)
+                .await;
+        }
         self.follow_working_stretch(&task).await;
         if let Ok(summary) = self.task_summary(&task).await {
             self.events.publish(
@@ -817,10 +827,15 @@ impl App {
                     crate::sandboxes::parked_pr_deadline(self.config.parked_pr_read_ms),
                 )
                 .await;
+            if !needs_you && summary.needs_you.is_none() {
+                summary.needs_you_notice = None;
+                self.sync_wait_message(&task, None).await;
+            }
             (Some(needs_you), pr)
         } else {
             (None, None)
         };
+        let wait_history = self.wait_history_view(&task).await;
         Ok(TaskDetail {
             parked_needs_you,
             parked_pr,
@@ -843,6 +858,7 @@ impl App {
             cli_version,
             cli_moves_to,
             cli_moves_stopped,
+            wait_history,
         })
     }
 

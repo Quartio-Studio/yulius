@@ -70,6 +70,17 @@ pub enum UiEvent {
         /// Requesting task.
         task_id: Option<String>,
     },
+    /// A pending browser user-action request was answered, superseded, closed, or cleared (SPEC-578).
+    #[serde(rename = "browser.action_cleared")]
+    BrowserActionCleared {
+        /// Sandbox id.
+        sandbox_id: String,
+        /// Tab id.
+        tab_id: String,
+        /// Task id, when known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task_id: Option<String>,
+    },
     /// An automation ran.
     #[serde(rename = "automation.run")]
     AutomationRun {

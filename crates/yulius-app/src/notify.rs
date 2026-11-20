@@ -54,6 +54,8 @@ struct TaskReading {
     signature: String,
     /// Its open `needs_you` request while it needs you.
     asked: Option<NeedsYouRecord>,
+    /// Actionable Needs You explanation for any Needs You state (SPEC-578).
+    notice: Option<yulius_contracts::api::tasks::NeedsYouNoticeView>,
 }
 
 /// The memory's subject of a sandbox-wide problem's episode (TGC-026).
@@ -326,23 +328,29 @@ impl App {
         ) {
             return Ok(None);
         }
-        let group = self.task_group(task, requested).await?;
+        let facts = self.task_attention_facts(task, requested).await?;
+        let group = facts.group();
         let kind = task_notice(group, task.status);
         let asked = match kind {
             Some(NoticeKind::NeedsYou) => self.deps.store.task_needs_you(&task.id).await?,
             _ => None,
         };
+        let notice = match kind {
+            Some(NoticeKind::NeedsYou) => self.resolve_needs_you_notice(task, &facts).await,
+            _ => None,
+        };
+        let episode_key = asked
+            .as_ref()
+            .map(|a| a.at.to_string())
+            .or_else(|| notice.as_ref().map(|n| n.episode.clone()));
         let signature = kind.map_or_else(String::new, |kind| {
-            task_signature(
-                kind,
-                task.status,
-                asked.as_ref().map(|a| a.at.to_string()).as_deref(),
-            )
+            task_signature(kind, task.status, episode_key.as_deref())
         });
         Ok(Some(TaskReading {
             kind,
             signature,
             asked,
+            notice,
         }))
     }
 
@@ -444,6 +452,7 @@ impl App {
             kind,
             signature,
             asked,
+            notice: resolved_notice,
         }) = self.task_reading(&task, &requested).await?
         else {
             return Ok(None);
@@ -478,12 +487,33 @@ impl App {
         let Some(sandbox) = store.sandbox(&task.sandbox_id).await? else {
             return Ok(None);
         };
-        let link = format!(
+        let task_link = format!(
             "{}/s/{}/t/{}",
             self.config.public_url.trim_end_matches('/'),
             sandbox.slug,
             task.number
         );
+        let asked_of = asked
+            .as_ref()
+            .map(|a| AskedOf {
+                happened: a.happened.as_deref(),
+                action: &a.action,
+                problem: a.problem.as_deref(),
+                decision: a.decision,
+            })
+            .or_else(|| {
+                resolved_notice.as_ref().map(|n| AskedOf {
+                    happened: Some(&n.happened),
+                    action: &n.action,
+                    problem: n.problem.as_deref(),
+                    decision: n.decision,
+                })
+            });
+        let link = asked
+            .as_ref()
+            .and_then(|a| a.link.as_deref())
+            .or_else(|| resolved_notice.as_ref().map(|n| n.link.as_str()))
+            .unwrap_or(&task_link);
         let notice = TaskNotice {
             kind,
             status: task.status,
@@ -491,13 +521,9 @@ impl App {
             sandbox: &sandbox.repo_name,
             number: task.number,
             title: &task.title,
-            asked: asked.as_ref().map(|a| AskedOf {
-                action: &a.action,
-                problem: a.problem.as_deref(),
-                decision: a.decision,
-            }),
+            asked: asked_of,
             shared: shared.map(|(_, _, words)| words),
-            link: &link,
+            link,
         };
         // The same redaction as the sandbox's transcripts (TGC-023).
         Ok(Some(Notice {

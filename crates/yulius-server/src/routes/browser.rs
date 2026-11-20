@@ -745,7 +745,12 @@ async fn pump(
                             return;
                         }
                     }
-                    Some(BrowserNotice::ActionCleared { .. }) => {}
+                    Some(BrowserNotice::ActionCleared { tab_id }) => {
+                        app.on_browser_action_cleared(&grant.sandbox_id, &tab_id).await;
+                        if !out.json(&ViewerServerMsg::ActionCleared { tab_id }).await {
+                            return;
+                        }
+                    }
                     Some(BrowserNotice::AgentActivity { tab_id, x, y, action, label }) => {
                         let message = ViewerServerMsg::AgentActivity { tab_id, x, y, action, label };
                         if !out.json(&message).await {
@@ -868,6 +873,24 @@ async fn pump(
                         } else {
                             Err((ViewerErrorCode::Invalid, "input arrives too fast; slow down".into()))
                         }
+                    }
+                    Ok(ViewerClientMsg::ClearAction { tab_id }) => {
+                        app.clear_browser_action_for_sandbox(&grant.sandbox_id, &tab_id)
+                            .await;
+                        Ok(())
+                    }
+                    Ok(ViewerClientMsg::Close { tab_id }) => {
+                        let closed = session
+                            .apply_viewer(ViewerClientMsg::Close {
+                                tab_id: tab_id.clone(),
+                            })
+                            .await
+                            .map_err(|failure| (failure.viewer_code(), failure.message));
+                        if closed.is_ok() {
+                            app.on_browser_action_cleared(&grant.sandbox_id, &tab_id)
+                                .await;
+                        }
+                        closed
                     }
                     Ok(message) => session.apply_viewer(message).await.map_err(|failure| {
                         (failure.viewer_code(), failure.message)

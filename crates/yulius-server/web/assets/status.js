@@ -313,6 +313,10 @@ export function pauseLine(pause) {
  * should do, in words — the reason of a browser request, the current step, or the state.
  */
 export function activityLine(task, info = statusInfo(task)) {
+  const notice = info.group === 'needs' ? task.needs_you_notice : null;
+  if (notice && (notice.happened || notice.action)) {
+    return [notice.happened, notice.action].filter(Boolean).join(' · ').replaceAll('`', '');
+  }
   if (task.status === 'parked') return PARKED_LINE;
   if (info.paused) return pauseLine(info.paused);
   if (info.request) return info.request.reason || 'Do something in the sandbox browser';
@@ -392,9 +396,21 @@ export function taskInfo(task, actionRequests, pr) {
     // conflict it is told of, a CI run to run again) is a person's now, never Working (review
     // round 1 of SPEC-512 part 1; the server's `parked_group`).
     const waits = shown.group === 'working' ? { icon: 'st-attention', tone: 'attention', group: 'needs' } : {};
-    return { ...shown, ...waits, label: `${shown.label} · parked`, parked: true };
+    const merged = { ...shown, ...waits, label: `${shown.label} · parked`, parked: true };
+    if (merged.group === 'needs' && task.needs_you_notice) {
+      merged.notice = task.needs_you_notice;
+      if (!merged.detail) merged.detail = [task.needs_you_notice.happened, task.needs_you_notice.action].filter(Boolean).join(' — ');
+    }
+    return merged;
   }
   let info = taskInfoOf(task, actionRequests, pr);
+  if (info.group === 'needs' && task.needs_you_notice) {
+    info = {
+      ...info,
+      notice: task.needs_you_notice,
+      detail: info.detail || [task.needs_you_notice.happened, task.needs_you_notice.action].filter(Boolean).join(' — '),
+    };
+  }
   // Another live task claims paths this one claims (SPEC-493 SCO-002): said beside the rest, a
   // stalled pull request's mark too; the detail names them when nothing else is said.
   const overlaps = (task.overlaps || []).filter((o) => o && o.task_number);

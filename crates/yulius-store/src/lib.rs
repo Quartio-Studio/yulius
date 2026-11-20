@@ -209,6 +209,8 @@ const MIGRATIONS: &[&str] = &[
     // Schema version 76 (SPEC-512 HOF-001); 0076 is the reserved file number.
     include_str!("migrations/0076_task_handoffs.sql"),
     include_str!("migrations/0077_task_merge_evidence.sql"),
+    // Schema version 78 (SPEC-578); 0080 is the reserved file number.
+    include_str!("migrations/0080_task_wait_messages.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -515,6 +517,7 @@ mod tests {
             (75, include_str!("migrations/0073_telegram_intake.sql")),
             (76, include_str!("migrations/0076_task_handoffs.sql")),
             (77, include_str!("migrations/0077_task_merge_evidence.sql")),
+            (78, include_str!("migrations/0080_task_wait_messages.sql")),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -523,7 +526,7 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 77, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 78, "a new migration is pinned here too");
     }
 
     #[test]

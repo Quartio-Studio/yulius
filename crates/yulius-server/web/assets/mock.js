@@ -538,6 +538,7 @@ function summary(task) {
     owner_asks_first: Boolean(task.ownerAsksFirst),
     // What the agent asked a person to do (`needs_you`, SPEC-134).
     needs_you: task.needs_you ? { ...task.needs_you } : null,
+    ...(task.needs_you_notice ? { needs_you_notice: { ...task.needs_you_notice } } : {}),
     // Why it reads needs_attention (SPEC-472): the flag's reason, only while it reads that flag.
     attention: task.status === 'running' && task.activity === 'needs_attention' && task.attention ? { ...task.attention } : null,
     steps: stepsSummary(task), archived: task.archived, account_label: task.account_label,
@@ -750,6 +751,7 @@ function detail(db, task) {
     ...(cli ? { cli_version: cli } : {}),
     ...(cli && live && cli !== db.claude.version ? { cli_moves_to: db.claude.version } : {}),
     cli_moves_stopped: Boolean(cli && live && cli !== db.claude.version && db.claude.movesStopped),
+    ...(Array.isArray(task.wait_history) && task.wait_history.length ? { wait_history: task.wait_history.map((e) => ({ ...e })) } : {}),
   };
 }
 
@@ -7595,6 +7597,10 @@ export function createMockTransport(params) {
     // Like the server, events reach only viewers of the sandbox (none without GitHub).
     if (db.noBrowserAsk || !db.sandboxes.some((s) => s.id === 'sb_studio')) return false;
     emit(db, { type: 'browser.action_requested', sandbox_id: 'sb_studio', tab_id: 'tab-aws', reason: 'Sign in to AWS so task #10 can deploy', task_id: 'tsk_studio_10' });
+    return true;
+  };
+  db.clearBrowserAction = (sandboxId, tabId, taskId = null) => {
+    emit(db, { type: 'browser.action_cleared', sandbox_id: sandboxId, tab_id: tabId, task_id: taskId });
     return true;
   };
   // The bot receives `text` from the person's chat (SPEC-498): `/start <code>` with the shown code

@@ -360,7 +360,7 @@ impl App {
         // The pull request, the plan and the goal matter only after a finished turn: with no step
         // open and no unfinished goal, an idle agent answered (SPEC-429).
         let (pull, plan_open, spec_unfinished) = if finished {
-            let pull = match self.observed_pulls.get(&task.sandbox_id, &task.id) {
+            let mut pull = match self.observed_pulls.get(&task.sandbox_id, &task.id) {
                 Some(observed) => observed,
                 // Not read since the server started: a merge recorded earlier is still known.
                 None => store
@@ -369,6 +369,28 @@ impl App {
                     .filter(|record| crate::delivery::past_merge(&record.stage))
                     .map(|_| PullSignal::Merged),
             };
+            // A newer Yulius CI run already queued or running supersedes a stale failing
+            // pull-request observation on a live task (SPEC-578).
+            if live && pull == Some(PullSignal::Failing) {
+                let pr = self
+                    .observed_pulls
+                    .known_pull(&task.sandbox_id, &task.id)
+                    .flatten()
+                    .map(|obs| obs.number)
+                    .or(match store.delivery(&task.id).await? {
+                        Some(rec) => rec.pr_number,
+                        None => None,
+                    });
+                if let Some(pr) = pr
+                    && let Some(run) = self.latest_pr_ci_run(&task.sandbox_id, pr).await
+                    && matches!(
+                        run.state,
+                        yulius_domain::ci::RunState::Queued | yulius_domain::ci::RunState::Running
+                    )
+                {
+                    pull = Some(PullSignal::InReview);
+                }
+            }
             let plan_open = plan_open(&store.steps(&task.id).await?);
             (pull, plan_open, self.spec_unfinished(&task.id).await)
         } else {

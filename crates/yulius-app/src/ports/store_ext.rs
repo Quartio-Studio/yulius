@@ -836,6 +836,31 @@ pub trait DigestStore: Send + Sync {
     async fn latest_digest(&self, user: &UserId) -> AppResult<Option<StoredDigest>>;
 }
 
+/// One timestamped Needs You system or agent message recorded in a task's history (SPEC-578).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WaitMessageRecord {
+    /// Task id.
+    pub task_id: TaskId,
+    /// Stable wait-episode key (`UNIQUE (task_id, episode)`).
+    pub episode: String,
+    /// `agent`, `browser`, `terminal`, or `system`.
+    pub source: String,
+    /// What happened.
+    pub happened: String,
+    /// Optional problem/context.
+    pub problem: Option<String>,
+    /// Concrete next action.
+    pub action: String,
+    /// Relevant Yulius link.
+    pub link: String,
+    /// Whether the person was asked to decide.
+    pub decision: bool,
+    /// When the wait episode was recorded.
+    pub created_at: Timestamp,
+    /// When the wait episode ended, or `None` while open.
+    pub resolved_at: Option<Timestamp>,
+}
+
 /// What a task's agent asked a person to do (SPEC-134 CDT-004, column `tasks.needs_you`).
 #[async_trait]
 pub trait NeedsYouStore: Send + Sync {
@@ -879,6 +904,27 @@ pub trait NeedsYouStore: Send + Sync {
     ) -> AppResult<bool>;
     /// Tasks of a sandbox with an open request.
     async fn needs_you_tasks(&self, sandbox: &SandboxId) -> AppResult<Vec<TaskId>>;
+    /// Records one wait-episode message idempotently (SPEC-578): resolves any other open wait
+    /// message for the same task and keeps a single row per `(task_id, episode)`. Returns `true`
+    /// when a new row was inserted.
+    async fn record_wait_message(&self, entry: &WaitMessageRecord) -> AppResult<bool>;
+    /// Marks every open wait message of `task` resolved at `at`. Returns `true` when any row
+    /// changed.
+    async fn resolve_wait_messages(&self, task: &TaskId, at: Timestamp) -> AppResult<bool>;
+    /// Timestamped wait messages of `task`, newest first (up to `limit`).
+    async fn task_wait_messages(
+        &self,
+        task: &TaskId,
+        limit: u32,
+    ) -> AppResult<Vec<WaitMessageRecord>>;
+    /// Reads the stored `tasks.attention` payload regardless of current `activity`, for legacy
+    /// browser-handoff fallback (SPEC-578).
+    async fn stored_task_attention(
+        &self,
+        task: &TaskId,
+    ) -> AppResult<Option<(crate::attention::AttentionRecord, Timestamp)>>;
+    /// Clears `tasks.attention` when a legacy browser handoff is resolved (SPEC-578).
+    async fn clear_stored_task_attention(&self, task: &TaskId) -> AppResult<bool>;
 }
 
 /// Notepads (SPEC-041): one row per scope (`team`, `sandbox:<sid>`).

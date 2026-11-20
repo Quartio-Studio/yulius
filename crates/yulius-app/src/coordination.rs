@@ -244,6 +244,10 @@ impl App {
             .await?;
         brief["prompt"] = json!(task.prompt.chars().take(4000).collect::<String>());
         brief["steps_list"] = json!(steps.iter().map(|s| json!({"id": s.id.as_str(), "title": s.title, "status": s.status, "note": s.note})).collect::<Vec<_>>());
+        let wait_history = self.wait_history_view(&task).await;
+        if !wait_history.is_empty() {
+            brief["wait_history"] = json!(wait_history);
+        }
         Ok(brief)
     }
 

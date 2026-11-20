@@ -2573,3 +2573,396 @@ async fn an_acknowledging_viewer_is_paced_and_its_congestion_lowers_the_tier() -
     })
     .await
 }
+
+/// SPEC-578 (Quartio-v2 #334): a browser handoff remains visible with its specific reason and link
+/// across activity changes, refresh, and remote list/detail reads, and clears cleanly when
+/// answered, resolved, superseded, or tab-closed.
+#[tokio::test]
+async fn browser_handoff_stays_visible_after_activity_change_and_clears_when_resolved() -> TestResult
+{
+    with_fixture(|f| async move {
+        let served = serve(f.h.router.clone()).await?;
+        let mut viewer =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut viewer).await?;
+        let tab = tabs["tabs"][0]["id"].as_str().ok_or("tab")?.to_owned();
+
+        let result = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_request_user_action",
+            json!({"tab_id": tab, "reason": "Sign in to Google Calendar"}),
+        )
+        .await?;
+        assert_eq!(result["isError"], false, "{result}");
+        let expected_link = format!("https://yulius.test/s/fixture/browser?tab={tab}");
+
+        // Activity moves on (`NeedsAttention -> Done -> Waiting`), reproducing Quartio-v2 #334:
+        // `tasks.attention` is no longer returned by `attention_view`, yet the browser handoff
+        // must still explain itself everywhere.
+        let task_id = TaskId::parse("t1")?;
+        for next_activity in [Activity::Done, Activity::Waiting] {
+            f.h.store
+                .set_activity(&task_id, Some(next_activity), f.h.app.now())
+                .await?;
+
+            let caller = yulius_app::coordination::ProjectCaller {
+                sandbox: SandboxId::parse("s1")?,
+                user: yulius_domain::ids::UserId::parse("u-alice")?,
+                actor: "remote:alice".into(),
+                channel: yulius_app::coordination::Channel::Remote,
+                detail: json!({}),
+                task: None,
+            };
+            let list =
+                f.h.app
+                    .tool_tasks_list(&caller, &json!({"scope": "needs_you"}))
+                    .await?;
+            let row = &list["tasks"][0];
+            assert_eq!(row["shows"], "needs_you", "{list}");
+            assert_eq!(row["needs_you"]["link"], expected_link, "{row}");
+            assert!(
+                row["needs_you"]["happened"]
+                    .as_str()
+                    .is_some_and(|s| s.contains("Sign in to Google Calendar")),
+                "list must explain the Google Calendar sign-in in {next_activity:?}: {row}"
+            );
+            assert!(
+                row.get("wait_reason")
+                    .and_then(Value::as_str)
+                    .is_none_or(|s| !s.contains("when the task list was read")),
+                "must never degrade to generic fallback: {row}"
+            );
+
+            let detail =
+                f.h.app
+                    .tool_task_get(&caller, &json!({"number": 1}))
+                    .await?;
+            assert_eq!(detail["needs_you"]["link"], expected_link, "{detail}");
+            assert_eq!(
+                detail["needs_you"]["happened"],
+                row["needs_you"]["happened"]
+            );
+        }
+
+        let caller = yulius_app::coordination::ProjectCaller {
+            sandbox: SandboxId::parse("s1")?,
+            user: yulius_domain::ids::UserId::parse("u-alice")?,
+            actor: "remote:alice".into(),
+            channel: yulius_app::coordination::Channel::Remote,
+            detail: json!({}),
+            task: None,
+        };
+
+        // Resolving via `needs_you {resolved: true}` clears both the persisted request and the
+        // running browser tab's action request so the task leaves Needs You.
+        let resolved = mcp_tool(&f.h, TOKEN, "needs_you", json!({"resolved": true})).await?;
+        assert_eq!(resolved["isError"], false, "{resolved}");
+        let after_list =
+            f.h.app
+                .tool_tasks_list(&caller, &json!({"scope": "needs_you"}))
+                .await?;
+        assert_eq!(
+            after_list["tasks"].as_array().map(Vec::len),
+            Some(0),
+            "resolved browser handoff must leave Needs You: {after_list}"
+        );
+        let browser =
+            f.h.app
+                .deps
+                .browser
+                .running(&SandboxId::parse("s1")?)
+                .await
+                .ok_or("running browser")?;
+        assert!(
+            browser.tabs().iter().all(|t| t.action_requested.is_none()),
+            "browser tab action_requested must be cleared too"
+        );
+        Ok(())
+    })
+    .await
+}
+
+async fn auth_ctx(
+    h: &Harness,
+    id: &str,
+) -> Result<yulius_app::auth::AuthContext, Box<dyn std::error::Error>> {
+    use yulius_app::ports::store::UserStore;
+    let user = h
+        .store
+        .user(&yulius_domain::ids::UserId::parse(id)?)
+        .await?
+        .ok_or("no such user")?;
+    Ok(yulius_app::auth::AuthContext {
+        user,
+        csrf_token: None,
+        session_hash: None,
+        token: None,
+    })
+}
+
+/// SPEC-578 (#334 legacy record): a task stored before SPEC-578 has persisted `tasks.attention`
+/// (`kind=yulius`, reason, browser link), an active in-memory browser tab request, and NO
+/// `tasks.needs_you`. When activity transitions `NeedsAttention -> Done -> Waiting`, `attention_view`
+/// returns `None`, yet `tasks_list`, `task_get`, HTTP task list/detail, and sandbox counts must
+/// still report `needs_you` + `needs_you_notice` with the concrete Google Calendar reason and link,
+/// record one deduplicated wait-history entry across polls, and clear cleanly when dismissed or
+/// cleared from the browser viewer.
+#[tokio::test]
+async fn legacy_browser_attention_without_needs_you_stays_visible_and_clears() -> TestResult {
+    with_fixture(|f| async move {
+        use yulius_app::ports::store_ext::NeedsYouStore;
+        let task_id = TaskId::parse("t1")?;
+        let sandbox_id = SandboxId::parse("s1")?;
+        let owner = auth_ctx(&f.h, "u-alice").await?;
+        let caller = yulius_app::coordination::ProjectCaller {
+            sandbox: sandbox_id.clone(),
+            user: yulius_domain::ids::UserId::parse("u-alice")?,
+            actor: "remote:alice".into(),
+            channel: yulius_app::coordination::Channel::Remote,
+            detail: json!({}),
+            task: None,
+        };
+
+        // Start the browser and create a real handoff, then remove `tasks.needs_you` to reproduce
+        // the exact legacy DB state (persisted `tasks.attention` + in-memory tab, no `needs_you`).
+        let served = serve(f.h.router.clone()).await?;
+        let mut viewer =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut viewer).await?;
+        let tab_id = tabs["tabs"][0]["id"].as_str().ok_or("tab_id")?.to_owned();
+        let req = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_request_user_action",
+            json!({
+                "tab_id": tab_id,
+                "reason": "Sign in to Google Calendar for the disposable customer."
+            }),
+        )
+        .await?;
+        assert_eq!(req["isError"], false, "{req}");
+        let expected_link = format!("https://yulius.test/s/fixture/browser?tab={tab_id}");
+        f.h.store
+            .set_task_needs_you(&task_id, None, f.h.app.now())
+            .await?;
+
+        // Exact transition reproduced on #334: NeedsAttention -> Done -> Waiting.
+        for next_activity in [Activity::Done, Activity::Waiting] {
+            f.h.store
+                .set_activity(&task_id, Some(next_activity), f.h.app.now())
+                .await?;
+
+            // Sandbox counter agrees with grouping.
+            assert_eq!(
+                f.h.app.list_sandboxes(&owner).await?[0]
+                    .counts
+                    .needs_attention,
+                1,
+                "legacy browser handoff stays counted in Needs You during {next_activity:?}"
+            );
+
+            let list =
+                f.h.app
+                    .tool_tasks_list(&caller, &json!({"scope": "needs_you"}))
+                    .await?;
+            let detail =
+                f.h.app
+                    .tool_task_get(&caller, &json!({"number": 1}))
+                    .await?;
+            let row = &list["tasks"][0];
+            assert_eq!(row["shows"], "needs_you");
+            assert_eq!(detail["shows"], "needs_you");
+            assert_eq!(row["needs_you"]["link"], expected_link);
+            assert_eq!(detail["needs_you"]["link"], expected_link);
+            assert_eq!(
+                row["needs_you"]["happened"],
+                detail["needs_you"]["happened"]
+            );
+            assert_eq!(row["needs_you_notice"], detail["needs_you_notice"]);
+            assert!(
+                row["needs_you_notice"]["happened"]
+                    .as_str()
+                    .is_some_and(|s| s.contains("Sign in to Google Calendar")),
+                "legacy handoff must surface concrete reason: {row}"
+            );
+
+            // HTTP API list & detail return the same concrete explanation.
+            let http_detail = f.h.app.task_detail(&owner, "t1").await?;
+            assert!(http_detail.summary.needs_you.is_some());
+            let notice = http_detail
+                .summary
+                .needs_you_notice
+                .as_ref()
+                .ok_or("http needs_you_notice")?;
+            assert!(notice.happened.contains("Sign in to Google Calendar"));
+            assert_eq!(notice.link, expected_link);
+            assert_eq!(
+                http_detail.wait_history.len(),
+                1,
+                "repeated polls must keep a single history entry for one wait episode"
+            );
+        }
+
+        // Clearing via owner dismiss clears the legacy in-memory tab AND stored browser attention
+        // and stays cleared across refresh.
+        let dismissed = f.h.app.dismiss_task_question(&owner, "t1").await?;
+        assert!(
+            dismissed.contains("Sign in to Google Calendar"),
+            "{dismissed}"
+        );
+
+        assert_eq!(
+            f.h.app.list_sandboxes(&owner).await?[0]
+                .counts
+                .needs_attention,
+            0
+        );
+        let after_list =
+            f.h.app
+                .tool_tasks_list(&caller, &json!({"scope": "needs_you"}))
+                .await?;
+        assert_eq!(after_list["tasks"].as_array().map(Vec::len), Some(0));
+        let after_detail = f.h.app.task_detail(&owner, "t1").await?;
+        assert_eq!(after_detail.summary.needs_you, None);
+        assert_eq!(after_detail.summary.needs_you_notice, None);
+        assert!(
+            after_detail.wait_history[0].resolved_at.is_some(),
+            "cleared handoff must resolve its wait history entry"
+        );
+        let browser =
+            f.h.app
+                .deps
+                .browser
+                .running(&sandbox_id)
+                .await
+                .ok_or("running browser")?;
+        assert!(browser.tabs().iter().all(|t| t.action_requested.is_none()));
+        Ok(())
+    })
+    .await
+}
+
+/// SPEC-578: superseding a browser handoff on tab A with tab B clears tab A; the handoff stays
+/// open while parked; non-owners cannot dismiss it; clearing via viewer WS (`clear_action`) clears
+/// the tab and persisted request and stays cleared.
+#[tokio::test]
+async fn browser_handoff_supersedes_old_tab_survives_park_and_clears_from_viewer() -> TestResult {
+    with_fixture(|f| async move {
+        let task_id = TaskId::parse("t1")?;
+        let sandbox_id = SandboxId::parse("s1")?;
+        let owner = auth_ctx(&f.h, "u-alice").await?;
+        let reader = auth_ctx(&f.h, "u-bob").await?;
+
+        let served = serve(f.h.router.clone()).await?;
+        let mut ws =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let initial = next_json(&mut ws).await?;
+        let t1 = initial["tabs"][0]["id"].as_str().ok_or("t1")?.to_owned();
+        let open2 = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_open",
+            json!({"url": "https://example.com/2"}),
+        )
+        .await?;
+        assert_eq!(open2["isError"], false, "{open2}");
+        let browser =
+            f.h.app
+                .deps
+                .browser
+                .running(&sandbox_id)
+                .await
+                .ok_or("browser")?;
+        let t2 = browser
+            .tabs()
+            .into_iter()
+            .find(|t| t.id.as_str() != t1)
+            .ok_or("second tab")?
+            .id
+            .to_string();
+
+        let first = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_request_user_action",
+            json!({"tab_id": t1, "reason": "First OAuth sign-in"}),
+        )
+        .await?;
+        assert_eq!(first["isError"], false, "{first}");
+        let second = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_request_user_action",
+            json!({"tab_id": t2, "reason": "Second billing confirmation"}),
+        )
+        .await?;
+        assert_eq!(second["isError"], false, "{second}");
+        let second_link = format!("https://yulius.test/s/fixture/browser?tab={t2}");
+
+        // Tab 1's superseded action request must already be cleared; only tab 2 stays active.
+        assert!(
+            browser
+                .tabs()
+                .iter()
+                .find(|t| t.id.as_str() == t1)
+                .and_then(|t| t.action_requested.as_ref())
+                .is_none(),
+            "superseded tab 1 must be cleared"
+        );
+        assert!(
+            browser
+                .tabs()
+                .iter()
+                .find(|t| t.id.as_str() == t2)
+                .and_then(|t| t.action_requested.as_ref())
+                .is_some(),
+            "active tab 2 must remain marked"
+        );
+
+        // Parking the task preserves the genuine owner handoff until answered.
+        f.h.store
+            .transition_task(
+                &task_id,
+                None,
+                TaskStatus::Parked,
+                Some(Activity::Waiting),
+                f.h.app.now(),
+            )
+            .await?;
+        let parked_detail = f.h.app.task_detail(&owner, "t1").await?;
+        let notice = parked_detail
+            .summary
+            .needs_you_notice
+            .as_ref()
+            .ok_or("parked notice")?;
+        assert!(notice.happened.contains("Second billing confirmation"));
+        assert_eq!(notice.link, second_link);
+        assert_eq!(notice.browser_tab.as_deref(), Some(t2.as_str()));
+
+        // A user without write/owner rights cannot dismiss the owner's handoff.
+        assert!(f.h.app.dismiss_task_question(&reader, "t1").await.is_err());
+
+        // Viewer with write access clears the action over the browser WebSocket.
+        send(&mut ws, json!({"type": "clear_action", "tab_id": t2})).await?;
+        let cleared = wait_json(&mut ws, |m| {
+            m["type"] == "action_cleared" && m["tab_id"] == t2
+        })
+        .await?;
+        assert_eq!(cleared["tab_id"], t2);
+
+        let after = f.h.app.task_detail(&owner, "t1").await?;
+        assert_eq!(after.summary.needs_you, None);
+        assert!(
+            after
+                .summary
+                .needs_you_notice
+                .as_ref()
+                .is_none_or(|n| n.source != "browser"),
+            "browser handoff must stay cleared after viewer clear: {:?}",
+            after.summary.needs_you_notice
+        );
+        Ok(())
+    })
+    .await
+}
