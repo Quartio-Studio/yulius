@@ -44,6 +44,35 @@ enum MergeTree {
     Conflict(Vec<String>),
 }
 
+/// Keep UTF-8 paths verbatim. For a Unix path that cannot be a Rust string, use Git's
+/// double-quoted byte representation, so every byte of the name can be recovered.
+fn conflict_path(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    if let Ok(path) = std::str::from_utf8(bytes) {
+        return path.to_owned();
+    }
+    let mut quoted = String::from("\"");
+    for &byte in bytes {
+        match byte {
+            b'"' => quoted.push_str(r#"\""#),
+            b'\\' => quoted.push_str(r"\\"),
+            7 => quoted.push_str(r"\a"),
+            8 => quoted.push_str(r"\b"),
+            b'\t' => quoted.push_str(r"\t"),
+            b'\n' => quoted.push_str(r"\n"),
+            11 => quoted.push_str(r"\v"),
+            12 => quoted.push_str(r"\f"),
+            b'\r' => quoted.push_str(r"\r"),
+            b' '..=b'~' => quoted.push(char::from(byte)),
+            _ => {
+                let _ = write!(quoted, "\\{byte:03o}");
+            }
+        }
+    }
+    quoted.push('"');
+    quoted
+}
+
 /// First line of Yulius's block in `info/attributes`.
 pub const ATTRIBUTES_BEGIN: &str = "# >>> yulius: merge attributes (SPEC-083); rewritten by Yulius";
 /// Last line of Yulius's block in `info/attributes`.
@@ -239,23 +268,23 @@ impl Git {
             invocation = invocation.arg(format!("--merge-base={base}"));
         }
         let output = self.run(invocation.args(["--end-of-options", ours, theirs]))?;
-        let text = output.stdout_text();
-        let mut records = text.split_terminator('\0');
-        let tree = records.next().unwrap_or_default();
+        let mut records = output.stdout.split(|&byte| byte == 0);
+        let first = records.next().unwrap_or_default();
         match output.status.code() {
-            Some(0) if is_object_id(tree) => Ok(MergeTree::Clean(tree.to_owned())),
-            Some(0) => Err(GitError::Parse {
-                command: "merge-tree",
-                detail: format!("not a tree id: {tree:?}"),
-            }),
-            Some(1) => {
-                let mut files: Vec<_> = records
+            Some(0) => match std::str::from_utf8(first) {
+                Ok(tree) if is_object_id(tree) => Ok(MergeTree::Clean(tree.to_owned())),
+                _ => Err(GitError::Parse {
+                    command: "merge-tree",
+                    detail: format!("not a tree id: {:?}", String::from_utf8_lossy(first)),
+                }),
+            },
+            // --name-only already lists each conflicted path once, before rendering it.
+            Some(1) => Ok(MergeTree::Conflict(
+                records
                     .filter(|path| !path.is_empty())
-                    .map(str::to_owned)
-                    .collect();
-                files.dedup();
-                Ok(MergeTree::Conflict(files))
-            }
+                    .map(conflict_path)
+                    .collect(),
+            )),
             _ => Err(failure("merge-tree", &output)),
         }
     }
