@@ -29,14 +29,17 @@ for (const [harness, name] of [['claude', 'Claude'], ['codex', 'Codex'], ['antig
     await touchTask(browser, 'sb_studio', 12, { harness, owner: { login: 'anna-q' } });
     await browser.evaluate(() => { location.hash = '#/s/studio/t/12'; });
     const prefix = '.ss-assistant > .sr-only';
-    const watch = browser.locator(`.watch ${prefix}`).first();
-    await expect(watch).toHaveCount(1);
-    const watched = await watch.textContent();
+    // The e2e locator reads rendered innerText. A screen-reader prefix belongs to the DOM
+    // even while content-visibility skips its entry, and CSS capitalizes the search badge.
+    const expectLabel = (selector: string, expected: string) => expect.poll(() =>
+      browser.evaluate((css) => document.querySelector(css)?.textContent, selector),
+      { message: `assistant label in ${selector}` }).toBe(expected);
+    await expectLabel(`.watch ${prefix}`, name);
     // A later result replaces its original assistant entry in the live transcript.
     await append(browser, [{ role: 'user', blocks: [{ type: 'tool_result', tool_use_id: 't2', text: 'Checkout edit completed', is_error: false, truncated: false }] }]);
     const call = '.watch .ss-assistant[data-line="3"]';
     await expect(browser.locator(call)).toContainText('Checkout edit completed');
-    const reprinted = await browser.locator(`${call} > .sr-only`).textContent();
+    await expectLabel(`${call} > .sr-only`, name);
 
     // A saved answer keeps its screen-reader prefix when the reader scrolls further on.
     await append(browser, Array.from({ length: 120 }, (_, i) => ({ role: 'assistant', text: `Checkout note ${i + 1}.` })));
@@ -45,8 +48,8 @@ for (const [harness, name] of [['claude', 'Claude'], ['codex', 'Codex'], ['antig
     const taskRow = '.ss-row-link[data-route*="/ses_task_12?line="]';
     const taskHit = browser.locator(taskRow);
     await expect(taskHit).toBeVisible();
-    const search = await browser.evaluate((row) => document.querySelector(`${row} .ss-hit-role`)?.textContent ?? null, taskRow);
-    await expect(browser.locator('.ss-row-link[data-route*="/ses_imp_checkout?line="] .ss-hit-role')).toHaveText(/^Claude$/i);
+    await expectLabel(`${taskRow} .ss-hit-role`, name);
+    await expectLabel('.ss-row-link[data-route*="/ses_imp_checkout?line="] .ss-hit-role', 'Claude');
     await taskHit.click();
     const saved = browser.locator(`.ss-page ${prefix}`).first();
     await expect(saved).toHaveCount(1);
@@ -54,7 +57,7 @@ for (const [harness, name] of [['claude', 'Claude'], ['codex', 'Codex'], ['antig
     await expect.poll(() => browser.evaluate((selector) =>
       document.querySelector(selector)?.checkVisibility({ contentVisibilityAuto: true }), `.ss-page ${prefix}`),
       { message: 'Chromium skipped painting the offscreen answer' }).toBe(false);
-    expect({ watched, reprinted, search, saved: await saved.textContent() }).toEqual({ watched: name, reprinted: name, search: name, saved: name });
+    await expectLabel(`.ss-page ${prefix}`, name);
   });
 }
 

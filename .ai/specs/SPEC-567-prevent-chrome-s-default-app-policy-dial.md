@@ -28,7 +28,7 @@ Task #490 saw Chrome's native administrator dialog after host setup. On dev `e15
 - [x] Verify the corrected launch with real Chrome and document its scope
 - [x] Obtain independent approval for delivery to dev
 - [x] Preserve the parked-screen fixture across a late viewer resize
-- [ ] Verify saved assistant names when transcript entries are offscreen
+- [x] Verify saved assistant names when transcript entries are offscreen
 - [ ] Validate the ordered ADR index on the landed prefix and obtain delivery approval
 
 ## Acceptance criteria
@@ -80,3 +80,9 @@ The three-PR train `fa2269928` failed the repository checker with 0402 before 04
 The test-first commit `fce570f41` forces the delayed resize. The corrected mock reads its retained capture for both state and snapshot replies until a live attempt takes over. All nine Chromium parking scenarios passed, including all four saved-grid statuses and the transition back to a live viewport.
 
 Review of the fixture found that an incorrect live terminal could still pass by mirroring 28 rows. With the UI deliberately forced to mirror every waiting-capacity terminal, the initial recovery test passed. Offering the original 220×90 server size at the live transition and checking that the owner leaves mirror mode failed that mutant (one mirrored host, expected zero). All nine parking scenarios passed with the actual UI.
+
+Yulius run `b1b56597-4952-48b4-97f6-097478bf80f3` on `f11a41632` read the correct Codex label in watch, on reprint and in search, then read an empty string on the saved page. On that page, each assistant entry carries its screen-reader span from creation. Chromium can skip painting an entry under the existing `content-visibility: auto` rule. With a long transcript scrolled to the end, the first Codex span had DOM `textContent` equal to `Codex` and rendered `innerText` equal to the empty string. The e2e locator reads the latter. The CI log records the empty value, while the local reproduction also measured Chrome's skipped state. [Assistant-label issue #1518](https://github.com/Quartio-Studio/yulius/issues/1518)
+
+The regression commit `6ef139e03` reproduced the empty saved label for Claude, Codex and Antigravity. The corrected checks read each prefix directly from the DOM and require its exact case, including the imported Claude search hit. Forcing saved entries to use Claude in an isolated checkout then failed only the Codex and Antigravity saved-label assertions. This repair changes the test. The browser UI already sets the span to the session's harness name.
+
+All 55 Chromium watching and Sessions tests passed on the repaired branch. `scripts/dev quick` passed. `scripts/dev mutants --base f11a41632` found no Rust changes in this test repair.
