@@ -664,6 +664,57 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn oversized_usage_is_refused_before_the_server_finishes_its_response()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let base = format!("http://{}", listener.local_addr()?);
+        let probe = ProviderUsage::at(&base)?;
+        let request = probe.http.get(&base);
+        let read = tokio::spawn(async move { probe.get_json(request).await });
+        let (mut socket, _) = listener.accept().await?;
+        let mut buffer = [0; 4096];
+        socket.read(&mut buffer).await?;
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+            .await?;
+        socket
+            .write_all(format!("{:x}\r\n", MAX_BODY + 1).as_bytes())
+            .await?;
+        socket.write_all(&vec![b' '; MAX_BODY + 1]).await?;
+        socket.write_all(b"\r\n").await?;
+        // The server has sent one oversized chunk. It deliberately keeps the stream open.
+        let failure = tokio::time::timeout(TIMEOUT / 2, read)
+            .await
+            .map_err(|_| "the probe kept reading after the size bound")??
+            .err()
+            .ok_or("oversized JSON accepted")?;
+        assert_eq!(failure.kind, UsageFailureKind::Unavailable);
+        assert_eq!(failure.message, TRY_AGAIN);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn usage_json_at_the_byte_bound_is_complete() -> Result<(), Box<dyn std::error::Error>> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let base = format!("http://{}", listener.local_addr()?);
+        let probe = ProviderUsage::at(&base)?;
+        let request = probe.http.get(&base);
+        let read = tokio::spawn(async move { probe.get_json(request).await });
+        let (mut socket, _) = listener.accept().await?;
+        let mut buffer = [0; 4096];
+        socket.read(&mut buffer).await?;
+        socket
+            .write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {MAX_BODY}\r\n\r\n").as_bytes())
+            .await?;
+        socket.write_all(&vec![b' '; MAX_BODY - 2]).await?;
+        socket.write_all(b"{}").await?;
+        assert_eq!(read.await?.map_err(|failure| failure.message)?, json!({}));
+        Ok(())
+    }
+
     /// SPEC-503 CDX-008: a Codex sign-in the usage endpoint will not answer (403) says so in
     /// Codex's words, never Claude's.
     #[tokio::test]

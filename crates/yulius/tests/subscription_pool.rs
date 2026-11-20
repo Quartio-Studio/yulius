@@ -1170,6 +1170,56 @@ async fn a_prompt_typed_into_a_held_turn_takes_the_task_out_of_the_pause() -> Te
     Ok(())
 }
 
+#[tokio::test]
+async fn the_preceding_turns_stop_preserves_a_queued_prompts_pause() -> TestResult {
+    let h = harness()?;
+    seed(&h).await?;
+    let t0 = now(&h);
+    let only = add_account(&h, "acc-only", None).await?;
+    let task = running_task(&h, TaskMode::Prompt, &only).await?;
+    assert_eq!(
+        hook(&h.internal, "UserPromptSubmit", json!({"prompt": "first"}))
+            .await?
+            .0,
+        200
+    );
+    h.store
+        .set_account_state(
+            &only,
+            AccountStatus::Ok,
+            Some(&usage(
+                98.0,
+                t0.plus_millis(2 * HOUR),
+                40.0,
+                t0.plus_millis(90 * HOUR),
+            )),
+            None,
+            t0,
+        )
+        .await?;
+    assert_eq!(
+        hook(&h.internal, "UserPromptSubmit", json!({"prompt": "second"}))
+            .await?
+            .0,
+        202
+    );
+    let held = h
+        .store
+        .open_pause(&task)
+        .await?
+        .ok_or("second prompt was not held")?;
+    assert_eq!(hook(&h.internal, "Stop", json!({})).await?.0, 200);
+    let still_held = h
+        .store
+        .open_pause(&task)
+        .await?
+        .ok_or("preceding Stop removed the queued prompt's hold")?;
+    assert_eq!(still_held.id, held.id);
+    assert_eq!(still_held.continuation.as_deref(), Some("second"));
+    assert_eq!(status(&h, &task).await?, TaskStatus::WaitingCapacity);
+    Ok(())
+}
+
 /// Answers every request with the 5-hour window at 55 % and counts the requests.
 struct CountingProbe(Arc<AtomicUsize>);
 

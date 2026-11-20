@@ -1400,6 +1400,46 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn workflow_agents_in_one_poll_agree_on_the_default_model_in_both_file_orders()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (answered, refused) in [("a", "b"), ("b", "a")] {
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("s1.jsonl");
+            std::fs::write(&path, "")?;
+            let run = yulius_harness::subagents::workflow_dir(&path).join("wf_1");
+            std::fs::create_dir_all(&run)?;
+            for agent in [answered, refused] {
+                std::fs::write(
+                    run.join(format!("agent-{agent}.meta.json")),
+                    r#"{"agentType":"workflow-subagent"}"#,
+                )?;
+            }
+            let answer = r#"{"type":"assistant","isSidechain":true,"message":{"id":"m1","role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"yes"}],"usage":{"input_tokens":1,"output_tokens":1}}}"#;
+            let refusal = r#"{"type":"assistant","isSidechain":true,"timestamp":"2026-11-15T10:13:28.400Z","message":{"id":"e2","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","content":[{"type":"text","text":"You're out of usage credits. /model to switch models."}]},"apiError":"model_requires_usage_credits","error":"rate_limit","isApiErrorMessage":true}"#;
+            std::fs::write(
+                run.join(format!("agent-{answered}.jsonl")),
+                format!("{answer}\n"),
+            )?;
+            std::fs::write(
+                run.join(format!("agent-{refused}.jsonl")),
+                format!("{refusal}\n"),
+            )?;
+            let seen = watch_of(&path)?.poll().map_err(|err| err.to_string())?;
+            assert!(
+                seen.iter().any(|one| matches!(
+                    one,
+                    Observation::WorkflowLimitReached {
+                        scope: LimitScope::Model(Some(ModelFamily::Opus)),
+                        ..
+                    }
+                )),
+                "{answered}: {seen:?}"
+            );
+        }
+        Ok(())
+    }
+
     /// SPEC-493 REV-004: a subagent of the session's own thread names the model that answered
     /// it (once, and again when it changes), and a usage limit that refuses it says it was cut
     /// off. A workflow agent's lines say neither, and a refusal's own record names no model.
