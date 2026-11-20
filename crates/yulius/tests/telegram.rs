@@ -74,6 +74,31 @@ impl FakeTelegram {
         self.arrived.notify_waiters();
     }
 
+    /// Any message `body` from the private chat `chat` (a reply, a photo; SPEC-512 TGI-002).
+    fn raw(&self, chat: i64, body: Value) {
+        let id = self.next_update.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut message = json!({"chat": {"id": chat, "type": "private"}, "from": {"id": chat}});
+        if let (Some(m), Some(extra)) = (message.as_object_mut(), body.as_object()) {
+            m.extend(extra.clone());
+        }
+        if let Ok(mut updates) = self.updates.lock() {
+            updates.push_back(json!({"update_id": id, "message": message}));
+        }
+        self.arrived.notify_waiters();
+    }
+
+    /// The id of the last message sent to `chat` that starts with `lead`.
+    fn sent_id(&self, chat: i64, lead: &str) -> Option<usize> {
+        let chat = chat.to_string();
+        self.sent.lock().ok().and_then(|sent| {
+            sent.iter()
+                .enumerate()
+                .rev()
+                .find(|(_, (c, t))| *c == chat && t.starts_with(lead))
+                .map(|(i, _)| i + 1)
+        })
+    }
+
     fn sent_to(&self, chat: i64) -> Vec<String> {
         let chat = chat.to_string();
         self.sent
@@ -116,14 +141,19 @@ async fn bot_api(
     };
     let result = match method.as_str() {
         "getMe" => me,
+        "getFile" => {
+            json!({"file_id": body["file_id"], "file_size": 3, "file_path": "photos/p.jpg"})
+        }
         "sendMessage" => {
             let chat = body["chat_id"].as_i64().unwrap_or_default().to_string();
             let text = body["text"].as_str().unwrap_or_default().to_owned();
-            if let Ok(mut sent) = fake.sent.lock() {
+            // Each sent message's id is its place among all sent (SPEC-512 TGI-002).
+            let id = fake.sent.lock().map_or(0, |mut sent| {
                 sent.push((chat, text));
-            }
+                sent.len()
+            });
             fake.sent_changed.notify_waiters();
-            json!({"message_id": 1})
+            json!({"message_id": id})
         }
         "getUpdates" => {
             loop {
@@ -203,6 +233,10 @@ async fn world_unstarted() -> Result<World, Box<dyn std::error::Error>> {
     let served = support::serve(
         Router::new()
             .route("/{bot}/{method}", post(bot_api))
+            .route(
+                "/file/{bot}/{*path}",
+                axum::routing::get(|| async { (StatusCode::OK, b"png".to_vec()) }),
+            )
             .with_state(fake.clone()),
     )
     .await?;
@@ -1775,5 +1809,251 @@ async fn a_digest_whose_listing_ends_after_midnight_keeps_the_next_days() -> Tes
         .await?;
     w.h.clock.0.store(claimed + day_ms, Ordering::SeqCst);
     assert_eq!(w.h.app.digest_tick().await.sent, 1, "the next day's digest");
+    Ok(())
+}
+
+/// Turns `who`'s intake on with `sandbox` as its project (SPEC-512 TGI-001).
+async fn intake_on(
+    w: &World,
+    who: &Creds,
+    sandbox: &str,
+) -> Result<support::Resp, Box<dyn std::error::Error>> {
+    api(
+        w,
+        Method::PUT,
+        "/api/me/telegram/intake",
+        Some(json!({"enabled": true, "sandbox_id": sandbox})),
+        who,
+    )
+    .await
+}
+
+/// The reply chat `chat` got after `before` messages (10 s at most).
+async fn next_reply(
+    w: &World,
+    chat: i64,
+    before: usize,
+) -> Result<String, Box<dyn std::error::Error>> {
+    Ok(w.fake.wait_sent(chat, before + 1).await?[before].clone())
+}
+
+/// A signed-in Claude subscription, so tasks may start.
+async fn signed_in_subscription(w: &World) -> TestResult {
+    w.h.store
+        .insert_account(&AccountRecord {
+            id: AccountId::parse("acc-ok")?,
+            provider: Provider::Anthropic,
+            label: "Team Max".into(),
+            credential: Some(
+                w.h.app
+                    .deps
+                    .crypto
+                    .seal(b"synthetic-subscription-credential")?,
+            ),
+            status: AccountStatus::Ok,
+            usage_json: None,
+            last_error: None,
+            created_at: w.h.app.now(),
+            updated_at: w.h.app.now(),
+            email: None,
+            email_checked_at: None,
+            email_typed: false,
+        })
+        .await?;
+    Ok(())
+}
+
+async fn tasks_of(w: &World, sandbox: &str) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
+    let r = api(
+        w,
+        Method::GET,
+        &format!("/api/sandboxes/{sandbox}/tasks"),
+        None,
+        &w.admin,
+    )
+    .await?;
+    Ok(r.body.as_array().cloned().unwrap_or_default())
+}
+
+/// SPEC-512 TGI-001: intake is off by default: a linked chat's message creates nothing and its
+/// answer says how to turn it on; it is turned on from a browser session with a project the
+/// person may work in, audited.
+#[tokio::test]
+async fn telegram_intake_is_off_by_default_and_set_with_a_project() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    link(&w, &w.alice, 100).await?;
+    let me = api(&w, Method::GET, "/api/me/telegram", None, &w.alice).await?;
+    assert_eq!(
+        me.body["intake"],
+        json!({"enabled": false, "sandbox_id": null}),
+        "{}",
+        me.body
+    );
+    let before = w.fake.sent_to(100).len();
+    w.fake.message(100, true, "Make the header blue");
+    let reply = next_reply(&w, 100, before).await?;
+    assert!(reply.contains("turn on Telegram intake"), "{reply}");
+    assert!(tasks_of(&w, "s1").await?.is_empty(), "nothing started");
+
+    let none = api(
+        &w,
+        Method::PUT,
+        "/api/me/telegram/intake",
+        Some(json!({"enabled": true, "sandbox_id": null})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(
+        none.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        none.body
+    );
+    let elsewhere = intake_on(&w, &w.alice, "s2").await?;
+    assert!(
+        matches!(
+            elsewhere.status,
+            StatusCode::FORBIDDEN | StatusCode::NOT_FOUND
+        ),
+        "alice cannot work in s2: {}",
+        elsewhere.body
+    );
+    let on = intake_on(&w, &w.alice, "s1").await?;
+    assert_eq!(on.status, StatusCode::OK, "{}", on.body);
+    assert_eq!(
+        on.body["intake"],
+        json!({"enabled": true, "sandbox_id": "s1"})
+    );
+    let alice = user_id(&w, "alice").await?;
+    assert_eq!(audits(&w, &alice, "telegram.intake").await?, ["on s1"]);
+    Ok(())
+}
+
+/// SPEC-512 TGI-003, TGI-004: with intake on, a message starts a task in the default project as
+/// the person, labelled from Telegram; a photo with a caption becomes its attachment; `/task`
+/// names another project; an unknown project is refused.
+#[tokio::test]
+async fn with_intake_a_message_starts_a_task_and_a_photo_is_its_attachment() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    signed_in_subscription(&w).await?;
+    // The project's folder, where its attachments live.
+    std::fs::create_dir_all(w.h.app.config.data_dir.join("sandboxes/s1"))?;
+    link(&w, &w.alice, 100).await?;
+    intake_on(&w, &w.alice, "s1").await?;
+    let before = w.fake.sent_to(100).len();
+    w.fake.message(100, true, "Fix the header");
+    let reply = next_reply(&w, 100, before).await?;
+    assert!(reply.starts_with("Started #"), "{reply}");
+    assert!(reply.contains("https://yulius.test/s/app/t/"), "{reply}");
+    let tasks = tasks_of(&w, "s1").await?;
+    assert_eq!(tasks.len(), 1, "{tasks:?}");
+    assert_eq!(tasks[0]["origin"], "telegram");
+    assert_eq!(tasks[0]["owner"]["login"], "alice", "{}", tasks[0]);
+
+    let before = w.fake.sent_to(100).len();
+    w.fake.raw(
+        100,
+        json!({"caption": "What is wrong here?", "photo": [
+            {"file_id": "ph1", "file_unique_id": "u1", "file_size": 3}
+        ]}),
+    );
+    let reply = next_reply(&w, 100, before).await?;
+    assert!(reply.starts_with("Started #"), "{reply}");
+    let mut prompts = Vec::new();
+    for task in tasks_of(&w, "s1").await? {
+        let id = TaskId::parse(task["id"].as_str().unwrap_or_default())?;
+        prompts.extend(w.h.store.task(&id).await?.map(|t| t.prompt));
+    }
+    let prompt = prompts
+        .iter()
+        .find(|p| p.starts_with("What is wrong here?"))
+        .ok_or("photo task")?;
+    assert!(prompt.contains("Attached from Telegram:\n- "), "{prompt}");
+    let path = prompt.rsplit("- ").next().unwrap_or_default().trim();
+    assert_eq!(std::fs::read(path)?, b"png", "the photo's bytes at {path}");
+
+    let before = w.fake.sent_to(100).len();
+    w.fake.message(100, true, "/task nowhere Do it");
+    let reply = next_reply(&w, 100, before).await?;
+    assert!(
+        reply.starts_with("No project you may work in is called nowhere"),
+        "{reply}"
+    );
+    let before = w.fake.sent_to(100).len();
+    w.fake.message(100, true, "/task app Tidy the README");
+    let reply = next_reply(&w, 100, before).await?;
+    assert!(reply.starts_with("Started #"), "{reply}");
+    assert_eq!(tasks_of(&w, "s1").await?.len(), 3);
+    Ok(())
+}
+
+/// SPEC-512 TGI-002, TGI-004: a reply to a notification reaches its task as the person's
+/// `task_message`; a teammate's reply to it is refused by the owner rule and changes nothing;
+/// `/status` lists what waits for the person, redacted.
+#[tokio::test]
+async fn a_reply_reaches_its_task_under_the_owner_rule() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    let created = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "PAYMENT_KEY", "value": SECRET})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    // Carol may write in s1 too, so she sees alice's task and its notice.
+    w.h.github.set_perm("carol", "acme/app", perms("write"));
+    link(&w, &w.alice, 100).await?;
+    link(&w, &w.carol, 300).await?;
+    intake_on(&w, &w.alice, "s1").await?;
+    intake_on(&w, &w.carol, "s1").await?;
+    let alice = user_id(&w, "alice").await?;
+    seed_task(&w.h, "t1", "s1", &alice, TaskStatus::Running, None).await?;
+    ask(&w, "t1", &format!("Checkout fails with {SECRET}")).await?;
+    w.fake.wait_sent(300, 2).await?;
+    let to_alice = w.fake.sent_id(100, "Needs you").ok_or("alice's notice")?;
+    let to_carol = w.fake.sent_id(300, "Needs you").ok_or("carol's notice")?;
+
+    // Once the request ended, carol's reply is no answer: the owner rule refuses it.
+    let id = TaskId::parse("t1")?;
+    let asked = w.h.store.task_needs_you(&id).await?;
+    w.h.store
+        .set_task_needs_you(&id, None, w.h.app.now())
+        .await?;
+    let before = w.fake.sent_to(300).len();
+    w.fake.raw(
+        300,
+        json!({"text": "Use the blue one", "reply_to_message": {"message_id": to_carol}}),
+    );
+    let reply = next_reply(&w, 300, before).await?;
+    assert!(reply.starts_with("Not sent to #"), "{reply}");
+    assert!(reply.contains("alice"), "it says whose task it is: {reply}");
+    assert!(audits(&w, "t1", "task.messaged").await?.is_empty());
+    w.h.store
+        .set_task_needs_you(&id, asked.as_ref(), w.h.app.now())
+        .await?;
+
+    // Alice's reply is her message to her task: the owner rule lets it through, and here (no
+    // agent runs in this harness) `task_message` answers that the task has no live session; a
+    // live or parked session takes it as `task_message` does (parking and task_message tests).
+    let before = w.fake.sent_to(100).len();
+    w.fake.raw(
+        100,
+        json!({"text": "Use the blue one", "reply_to_message": {"message_id": to_alice}}),
+    );
+    let reply = next_reply(&w, 100, before).await?;
+    assert_eq!(reply, "Not sent to #1: task #1 has no live session");
+    assert!(tasks_of(&w, "s1").await?.len() == 1, "a reply starts no task");
+
+    // /status lists the task that waits, redacted.
+    let before = w.fake.sent_to(100).len();
+    w.fake.message(100, true, "/status");
+    let status = next_reply(&w, 100, before).await?;
+    assert!(status.starts_with("Waiting for you (1):"), "{status}");
+    assert!(status.contains("https://yulius.test/s/app/t/"), "{status}");
     Ok(())
 }
