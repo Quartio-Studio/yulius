@@ -500,7 +500,7 @@ impl App {
             )));
         }
         let mine = crate::tasks::owns(&task, &ctx.user.id);
-        self.check_answer_authority(ctx, &task, &asked.named, &owner, mine)
+        self.check_answer_authority(ctx, &task, &asked.named, &owner)
             .await?;
         let login = self.login_of(&ctx.user.id).await;
         if parked {
@@ -562,8 +562,8 @@ impl App {
         task: &TaskRecord,
         named: &crate::needs_you::Named,
         owner: &str,
-        mine: bool,
     ) -> AppResult<()> {
+        let mine = crate::tasks::owns(task, &ctx.user.id);
         // A request that names people is theirs and its owner's (ANS-002).
         if !mine && named.narrows() {
             let login = self.login_of(&ctx.user.id).await.to_lowercase();
