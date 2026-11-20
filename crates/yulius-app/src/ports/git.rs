@@ -394,6 +394,17 @@ pub trait GitPort: Send + Sync {
         let _ = (worktree, base, since, head);
         unsupported("comparing trees")
     }
+    /// The place of `sha` on `head`'s first-parent history (its count of first-parent commits,
+    /// itself included), or `None` when that walk does not pass it (SPEC-575 MFS-006).
+    async fn first_parent_position(
+        &self,
+        repo: &Path,
+        head: &str,
+        sha: &str,
+    ) -> AppResult<Option<u64>> {
+        let _ = (repo, head, sha);
+        unsupported("ordering commits")
+    }
     /// The parents of commit `rev`, in order.
     async fn parents(&self, repo: &Path, rev: &str) -> AppResult<Vec<String>> {
         let _ = (repo, rev);
