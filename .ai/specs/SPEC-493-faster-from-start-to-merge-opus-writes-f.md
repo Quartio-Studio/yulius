@@ -191,10 +191,13 @@ person's decision is read as holding after an approval).
   asked: Fable 5.2. The start is never refused for that.
 - **REV-004** Each round is a record (`review_rounds`): the task, the round's number, the head
   commit at its start, the model asked for and why (`round`; `kept`, a reviewer started again for
-  a round with no report; `no_fable`), the subagent's id, the
+  an unfinished round or continued after a report; `no_fable`), the subagent's id, the
   model that answered (read from the reviewer's own transcript, not from what was asked), when it
   started and ended, its verdict (`approve`, `request_changes`, or none when the report has no
-  verdict line) and whether a usage limit cut it off. A resumed reviewer continues its record.
+  verdict line) and whether a usage limit cut it off. Resuming an unfinished reviewer continues its record.
+  Once it has reported, its next start on this pull request opens the round after the last
+  reported round, including when it gives the same verdict again. A repeated stop preserves
+  the completed record. See [ADR-0400](../../docs/decisions/0400-continuing-a-reviewer-after-its-report-opens-the-next-round.md).
 - **REV-005** A merge writes the models into its record: `audit_log` action
   `delivery.review.models` at the merge, with the model of each run that wrote the pull request
   (`attempts.model`) and each round's number, model, verdict and head; the rounds get the pull

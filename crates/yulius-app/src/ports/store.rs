@@ -768,6 +768,17 @@ pub trait CoordinationStore: Send + Sync {
         agents: &[&str],
         subagent: &str,
     ) -> AppResult<bool>;
+    /// Opens the next round of the same pull request when the latest round run by this
+    /// reviewer had already reported at its new start. Repeats while unfinished change nothing.
+    async fn continue_review_round(
+        &self,
+        task: &TaskId,
+        agent: &str,
+        subagent: &str,
+        id: String,
+        head: Option<String>,
+        at: Timestamp,
+    ) -> AppResult<()>;
     /// The review rounds of the pull requests of `sandboxes` merged in `[from, to)` (either end
     /// open when `None`), the newest merges first, at most a bound's worth (SPEC-493 REV-006).
     async fn merged_review_rounds(

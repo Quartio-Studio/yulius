@@ -1393,8 +1393,10 @@ there is none) and `ci_sync_sandbox` queues its Yulius CI run at once, so CI tes
 reviewer reads. A newer head's run supersedes the older one. When the head cannot go out the
 agent is told why, and the reviewer starts anyway. Merging still needs `delivery_merge` with the
 reviewed head and that head's passed run. `SubagentStart`
-links the round to Claude Code's subagent (a resumed one changes nothing), `SubagentStop` ends it
-with the verdict of its report's last line (`review::verdict_of`). A usage limit that cuts a
+links the round to Claude Code's subagent. Resuming an unfinished reviewer continues that round.
+Resuming it after its report opens the next round on the current head and keeps its model
+([ADR-0400](decisions/0400-continuing-a-reviewer-after-its-report-opens-the-next-round.md)).
+The first `SubagentStop` ends the round with the verdict of its report's last line (`review::verdict_of`). A usage limit that cuts a
 subagent off sends no `SubagentStop`, so such a round stays without a report. The store closes a
 pull request's rounds in the same transaction that records its merge
 (`transition_delivery`), so the task's next pull request starts at round 1.
@@ -1431,7 +1433,13 @@ sequenceDiagram
     A->>H: SubagentStart (agent_id, agent_type)
     H->>Y: link the round to the subagent
     A->>H: SubagentStop (last_assistant_message)
-    H->>Y: end the round with its verdict
+    H->>Y: end the unfinished round with its verdict
+    opt Author continues the same reviewer after its report
+        A->>H: SubagentStart (same agent_id)
+        H->>Y: open the next round on the current head
+        A->>H: SubagentStop (new report)
+        H->>Y: record that round's verdict
+    end
 ```
 
 ## Harness comparison

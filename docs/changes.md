@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
+- Continuing a reviewer after its report preserves both verdicts and counts the re-review
+  in the Review card. Duplicate stops preserve the original end time (SPEC-565, #1401).
+
 - Closing or stopping an answered task now honors the request when its reader has taken it and escalation records host loss. The attempt retains its lost exit reason. [SPEC-563](../.ai/specs/SPEC-563-honor-close-and-cancel-intents-when-host.md)
 
 - A GPT model now selects Codex for API and MCP task creation. Choosing a GPT or Gemini model

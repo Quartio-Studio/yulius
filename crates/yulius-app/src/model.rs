@@ -854,8 +854,8 @@ pub struct ReviewRoundRecord {
     pub agent: String,
     /// The model asked for (the agent's).
     pub model: String,
-    /// Why that model: `round` (the round's number), `kept` (a reviewer started again for a
-    /// round that had no report keeps its model), `no_fable` (no subscription could run Fable).
+    /// Why that model: `round` (the round's number), `kept` (a restarted or continued
+    /// reviewer keeps its model), `no_fable` (no subscription could run Fable).
     pub reason: String,
     /// Claude Code's id of the subagent, once it started.
     pub subagent_id: Option<String>,

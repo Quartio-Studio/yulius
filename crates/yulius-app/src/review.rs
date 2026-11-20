@@ -263,17 +263,7 @@ impl App {
                 return Ok(HookOutput::deny_tool(why));
             }
         }
-        let head = match ctx.task.worktree_path.as_deref() {
-            Some(worktree) => self
-                .deps
-                .git
-                .log(Path::new(worktree), "HEAD", 1)
-                .await
-                .ok()
-                .and_then(|commits| commits.into_iter().next())
-                .map(|commit| commit.sha),
-            None => None,
-        };
+        let head = self.review_head_at_start(ctx).await;
         store
             .insert_review_round(&ReviewRoundRecord {
                 id: self.deps.crypto.new_id(),
@@ -669,9 +659,28 @@ impl App {
         }
     }
 
-    /// `SubagentStart`: links a reviewer's subagent to the round that started it. A resumed
-    /// subagent (the same id) changes nothing, but that it was resumed (RLM-002).
-    pub(crate) async fn review_subagent_started(&self, ctx: &AgentContext, input: &HookInput) {
+    /// The worktree head observed at the start of this review.
+    async fn review_head_at_start(&self, ctx: &AgentContext) -> Option<String> {
+        match ctx.task.worktree_path.as_deref() {
+            Some(worktree) => self
+                .deps
+                .git
+                .log(Path::new(worktree), "HEAD", 1)
+                .await
+                .ok()
+                .and_then(|commits| commits.into_iter().next())
+                .map(|commit| commit.sha),
+            None => None,
+        }
+    }
+
+    /// Links a newly launched reviewer, or opens its next round when it continues after a report.
+    pub(crate) async fn review_subagent_started(
+        &self,
+        ctx: &AgentContext,
+        input: &HookInput,
+        at: Timestamp,
+    ) {
         let (Some(agent), Some(id)) = (input.agent_type.as_deref(), input.agent_id.as_deref())
         else {
             return;
@@ -680,18 +689,36 @@ impl App {
         if !REVIEWERS.contains(&agent) {
             return;
         }
-        if let Err(err) = self
-            .deps
-            .store
-            .link_review_subagent(&ctx.task.id, &[agent], id)
-            .await
-        {
-            tracing::warn!(error = %err, task = %ctx.task.id, "review subagent not linked");
+        let store = &self.deps.store;
+        let result = match store.link_review_subagent(&ctx.task.id, &[agent], id).await {
+            Ok(true) => return,
+            Ok(false) => {
+                let head = self.review_head_at_start(ctx).await;
+                store
+                    .continue_review_round(
+                        &ctx.task.id,
+                        agent,
+                        id,
+                        self.deps.crypto.new_id(),
+                        head,
+                        at,
+                    )
+                    .await
+            }
+            Err(err) => Err(err),
+        };
+        if let Err(err) = result {
+            tracing::warn!(error = %err, task = %ctx.task.id, "review subagent start not recorded");
         }
     }
 
     /// `SubagentStop`: a reviewer's report ends its round, with the verdict its last line says.
-    pub(crate) async fn review_subagent_stopped(&self, ctx: &AgentContext, input: &HookInput) {
+    pub(crate) async fn review_subagent_stopped(
+        &self,
+        ctx: &AgentContext,
+        input: &HookInput,
+        at: Timestamp,
+    ) {
         let Some(id) = input.agent_id.as_deref() else {
             return;
         };
@@ -711,7 +738,7 @@ impl App {
         if let Err(err) = self
             .deps
             .store
-            .end_review_round(&ctx.task.id, id, self.now(), verdict, None)
+            .end_review_round(&ctx.task.id, id, at, verdict, None)
             .await
         {
             tracing::warn!(error = %err, task = %ctx.task.id, "review round not ended");

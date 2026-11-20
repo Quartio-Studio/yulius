@@ -403,6 +403,37 @@ impl CoordinationStore for SqliteStore {
         .await
     }
 
+    async fn continue_review_round(
+        &self,
+        task: &TaskId,
+        agent: &str,
+        subagent: &str,
+        id: String,
+        head: Option<String>,
+        at: Timestamp,
+    ) -> AppResult<()> {
+        let task = task.as_str().to_owned();
+        let (agent, subagent) = (agent.to_owned(), subagent.to_owned());
+        self.call(move |c| {
+            // Test the last run and allocate the PR's next round in the same write. Two
+            // deliveries of the start can open only one round, and a merge closes eligibility.
+            c.execute(
+                "INSERT INTO review_rounds (id, task_id, round, head, agent, model, reason, \
+                 subagent_id, model_answered, started_at) \
+                 SELECT ?1, task_id, (SELECT MAX(round) + 1 FROM review_rounds \
+                     WHERE task_id = ?2 AND merged_at IS NULL AND ended_at IS NOT NULL), \
+                     ?3, agent, model, 'kept', subagent_id, model_answered, ?4 FROM review_rounds \
+                 WHERE rowid = (SELECT MAX(rowid) FROM review_rounds \
+                     WHERE task_id = ?2 AND subagent_id = ?5 AND merged_at IS NULL) \
+                 AND agent = ?6 AND ended_at <= ?4",
+                params![id, task, head, at.0, subagent, agent],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
     async fn merged_review_rounds(
         &self,
         sandboxes: &[SandboxId],
@@ -451,8 +482,8 @@ impl CoordinationStore for SqliteStore {
         self.call(move |c| {
             c.execute(
                 "UPDATE review_rounds SET model_answered = COALESCE(?1, model_answered), \
-                 cut_off = cut_off OR ?2 WHERE task_id = ?3 AND subagent_id = ?4 \
-                 AND merged_at IS NULL",
+                 cut_off = cut_off OR ?2 WHERE rowid = (SELECT MAX(rowid) FROM review_rounds \
+                     WHERE task_id = ?3 AND subagent_id = ?4 AND merged_at IS NULL)",
                 params![m, cut_off, t, s],
             )
             .map_err(db)?;
@@ -479,7 +510,8 @@ impl CoordinationStore for SqliteStore {
                 .execute(
                     "UPDATE review_rounds SET ended_at = ?1, verdict = ?2, \
                      model_answered = COALESCE(?3, model_answered) \
-                     WHERE task_id = ?4 AND subagent_id = ?5 AND merged_at IS NULL",
+                     WHERE task_id = ?4 AND subagent_id = ?5 AND merged_at IS NULL \
+                     AND ended_at IS NULL AND started_at <= ?1",
                     params![at.0, v, m, t, s],
                 )
                 .map_err(db)?;

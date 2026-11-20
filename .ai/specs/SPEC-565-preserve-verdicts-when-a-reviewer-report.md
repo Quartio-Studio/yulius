@@ -40,9 +40,11 @@ Drive the authenticated reviewer hooks with synthetic starts/stops, inspect SQLi
 
 ## Decisions
 
-Use the start after a report as the round boundary. Comparing verdicts or report text loses a second approval with identical wording. The existing schema holds several rows for one subagent. Past overwritten verdicts have no recoverable value in those rows.
+Use the start after a report as the round boundary. Comparing verdicts or report text loses a second approval with identical wording. The existing schema holds several rows for one subagent. [ADR-0400](../../docs/decisions/0400-continuing-a-reviewer-after-its-report-opens-the-next-round.md) records the numbering and replay rule. Past overwritten verdicts have no recoverable value in those rows.
 
 ## Evidence
 
 - On dev `645eff207`, `cargo test --locked -p yulius --test main review_rounds::continued_review` failed both new regressions. Repeating the stop moved the end time by 1 ms. The analytics endpoint returned median rounds 1, first rounds requesting changes 0, re-reviews after changes 0 and rounds after approval 0 for a three-report sequence.
 - The existing `a_resumed_reviewer_and_other_subagents_change_no_round` test passed on the same base. It only resumes an unfinished reviewer.
+- With the fix, both hook regressions passed. The API returned median rounds 3, first rounds requesting changes 1, re-reviews after changes 1 and rounds after approval 1. The store retained the first report's head, timestamp and model while the continued reviewer reported against a second real Git commit.
+- `scripts/dev quick` passed the repository contracts and Rust formatting checks.
