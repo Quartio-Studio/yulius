@@ -6,7 +6,9 @@ use serde_json::{Value, json};
 use yulius_contracts::mcp::{
     RpcRequest, RpcResponse, SUPPORTED_PROTOCOL_VERSIONS, ToolDescriptor, text_result,
 };
-use yulius_domain::harness::{DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL};
+use yulius_domain::harness::{
+    DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL, GPT_6_2_ASTRA, codex_effort,
+};
 use yulius_domain::ids::SandboxId;
 use yulius_domain::vault::redact::redact_text;
 
@@ -137,7 +139,8 @@ fn model_property() -> Value {
 
 /// `task_create`'s and `sandbox_task_create`'s `effort` argument, one definition for both.
 fn effort_property() -> Value {
-    json!({"type": "string", "description": format!("Effort override (default {DEFAULT_CLAUDE_EFFORT}; none for Haiku)")})
+    let astra_effort = codex_effort(GPT_6_2_ASTRA, None);
+    json!({"type": "string", "description": format!("Effort override (default {astra_effort} for {GPT_6_2_ASTRA}, {DEFAULT_CLAUDE_EFFORT} for other models, none for Haiku)")})
 }
 
 /// What the Yulius MCP tells a task's agent at `initialize`.
@@ -1823,7 +1826,7 @@ mod tests {
         );
         assert_eq!(
             described("effort"),
-            format!("Effort override (default {DEFAULT_CLAUDE_EFFORT}; none for Haiku)")
+            "Effort override (default xhigh for gpt-6.2-astra, high for other models, none for Haiku)"
         );
         assert_eq!(
             (DEFAULT_CLAUDE_MODEL, DEFAULT_CLAUDE_EFFORT),

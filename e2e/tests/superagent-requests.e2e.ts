@@ -21,7 +21,7 @@ type Asking = {
     withdrawSuperagentRequest: (source: string, id: string) => void;
     amendSuperagentRequest: (source: string, id: string, prompt: string) => void;
     askBrowserSignIn: () => boolean;
-    tasks: { sandbox_id: string; number: number; title: string; prompt: string; status: string; harness: string }[];
+    tasks: { sandbox_id: string; number: number; title: string; prompt: string; status: string; harness: string; model: string; effort: string; effort_default: boolean }[];
   };
 };
 
@@ -65,6 +65,22 @@ test('a request shows in full above the Superagent and Create task starts it in 
   await expect(browser.locator('.toast:has-text("Created #"):has-text("in product")')).toBeVisible();
   await browser.locator('.toast:has-text("Created #"):has-text("in product") button:has-text("Open")').click();
   await expect(browser).toHaveURL(/#\/s\/product\/t\/\d+$/);
+});
+
+test('approving an Astra task preserves its inherited or explicit effort', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await openSuperagent(browser, screen);
+  for (const [choice, model, effort, inherited] of [
+    [{}, 'gpt-6.2-astra', 'xhigh', true],
+    [{ effort: 'high' }, 'gpt-6.2-astra', 'high', false],
+    [{ model: 'codex' }, 'codex', 'high', true],
+  ] as const) {
+    await ask(browser, 'sb_studio', { sandbox: 'product', prompt: PROMPT, options: { harness: 'codex', prepared: true, ...choice } });
+    await screen.getByRole('button', 'Create task').click();
+    await expect(screen.getByRole('group', 'Your Superagent asks to start a task in product')).toBeHidden();
+    const task = await browser.evaluate(() => (window as unknown as Asking).__yuliusMock.tasks.filter((t) => t.sandbox_id === 'sb_product').at(-1));
+    expect(task).toMatchObject({ harness: 'codex', model, effort, effort_default: inherited });
+  }
 });
 
 // #978: the mock's sign-in request from the sandbox browser (5 s after the start) added a toast

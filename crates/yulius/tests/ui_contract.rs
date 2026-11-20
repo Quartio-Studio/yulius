@@ -575,10 +575,10 @@ fn the_composer_offers_antigravity_on_its_default_model() -> TestResult {
 }
 
 /// SPEC-511 CXD-003: the composer's Codex entry sends no model, so the server's default runs, and
-/// says which: GPT-6.2 Astra at high effort; the browser mock creates such a task on them.
+/// says which: GPT-6.2 Astra at extra high effort; the browser mock creates such a task on them.
 #[test]
 fn the_composer_says_codex_runs_its_default_model() -> TestResult {
-    use yulius_domain::harness::{DEFAULT_CODEX_EFFORT, DEFAULT_CODEX_MODEL};
+    use yulius_domain::harness::{DEFAULT_CODEX_MODEL, codex_effort};
     let models = std::fs::read_to_string(web_dir().join("assets/models.js"))?;
     let openai = models
         .split_once("    id: 'openai',")
@@ -587,7 +587,7 @@ fn the_composer_says_codex_runs_its_default_model() -> TestResult {
         .ok_or("models.js has no openai provider before google")?;
     assert!(
         openai.contains(
-            "{ id: 'codex', name: 'Codex default', description: 'GPT-6.2 Astra at high effort by default', harnessOnly: true }"
+            "{ id: 'codex', name: 'Codex default', description: 'GPT-6.2 Astra at extra high effort by default', harnessOnly: true }"
         ),
         "{openai}"
     );
@@ -595,11 +595,10 @@ fn the_composer_says_codex_runs_its_default_model() -> TestResult {
         DEFAULT_CODEX_MODEL, "gpt-6.2-astra",
         "the menu says GPT-6.2 Astra"
     );
-    assert_eq!(DEFAULT_CODEX_EFFORT, "high", "the menu says high");
+    assert_eq!(codex_effort(DEFAULT_CODEX_MODEL, None), "xhigh");
     let mock = std::fs::read_to_string(web_dir().join("assets/mock.js"))?;
     assert!(
-        mock.contains(&format!("harness === 'codex' ? '{DEFAULT_CODEX_MODEL}'"))
-            && mock.contains(&format!("harness === 'codex' ? '{DEFAULT_CODEX_EFFORT}'")),
+        mock.contains(&format!("harness === 'codex' ? '{DEFAULT_CODEX_MODEL}'")),
         "the mock creates a Codex task without a model on another default"
     );
     Ok(())
@@ -675,7 +674,7 @@ fn the_ui_describes_default_as_the_model_and_effort_a_launch_uses() -> TestResul
     );
     let level = named(DEFAULT_CLAUDE_EFFORT)?;
     assert!(
-        models.contains(&format!("{{ label: 'Default', description: '{level}',")),
+        models.contains(&format!("? 'xhigh' : '{DEFAULT_CLAUDE_EFFORT}'")) && level == "High",
         "the effort menu's Default is not {level}"
     );
     assert!(
