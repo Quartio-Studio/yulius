@@ -2103,6 +2103,12 @@ An externally opened replacement can hold the successor after the recorded deliv
 Yulius rechecks local work, durable CI and the owner’s state after the remote reads.
 An explicit `#N merged` rule follows the recorded merge.
 
+Task summaries, Home counts and MCP lists check parked tasks against the same recorded
+and current branch PRs. A list shares a 750 ms PR lookup budget across successive batches
+of up to eight rows, reserving time for later rows. Up to eight native Git reads from
+these requests can run per application. A worker holds its place until Git returns, including
+after a reader times out. A task with an unreadable result stays under Needs you.
+
 The end-of-day digest (`yulius-app/src/digest.rs`, SPEC-512 part 3,
 [decision 0380](decisions/0380-an-end-of-day-digest-built-from-task-state.md)) runs from the same
 tick: `digest_tick` reads `instance.digest`, and once today's time (UTC) passed takes the run with

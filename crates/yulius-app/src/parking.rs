@@ -214,7 +214,7 @@ impl App {
                     || !runtime.with_workflows(|workflows| workflows.runs().is_empty())
             }
         };
-        let mut facts = self.task_attention_facts(task, &requested.all).await.ok();
+        let mut facts = self.local_attention_facts(task, &requested.all).await.ok();
         if let Some(facts) = &mut facts {
             // The supervisor verifies the current head before the launch lock.
             // Local eligibility must not depend on a previous overview.
