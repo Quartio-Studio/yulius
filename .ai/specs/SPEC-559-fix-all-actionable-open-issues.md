@@ -47,6 +47,10 @@ The inventory at dev 56f08db7f contained 20 issues. #1490 belongs to task #540. 
 - [x] Reproduce the red-candidate split when its member fails
 - [x] Preserve the known member failure in merge-train decisions
 - [x] Obtain independent approval for the merge-train fix
+- [x] Verify the landed cold-screen fixture against the failed CI shard
+- [ ] Reproduce the parked terminal Reply timeout after Resume
+- [ ] Verify Resume and Reply in Chromium against the reproduced failure
+- [ ] Obtain independent approval for the parked terminal change if needed
 - [ ] Verify the independent fixes and reconcile the remaining issues
 
 ## Acceptance criteria
@@ -66,11 +70,15 @@ Hold the mock task list past the default assertion budget and run the affected i
 
 Use the repository race-point fixture to exercise the order from PR #1397, and invoke the test directly outside its existing quarantine. Cover adjacent bisection, active, cancelled and errored cases.
 
+For the parking failure on PR #1499, force the live queue to drain before the queued-to-starting assertion on the failed head. Integrate PR #1496's cold SQLite fixture from dev and run both callers directly.
+
 ## Decisions
 
 Use one pull request per independent concern. Retain outstanding reports that require a host measurement, another repository, an upgrade prerequisite or a product decision. Keep the SQL and production migration path unchanged for #1484.
 
 Task #541 owns #1398. Task #546 was archived before it started. Its independent successor #547 now follows #545 directly.
+
+The later reports #1498 and #1502 cover the same parking fixture repaired in PR #1496. The browser timeout in #1501 was discovered during that PR but concerns a different test. Task #541 will investigate it separately after the merge-train delivery.
 
 ## Evidence
 
@@ -88,3 +96,4 @@ Task #541 owns #1398. Task #546 was archived before it started. Its independent 
 - All 48 merge-train integration tests passed with the fix, including the original quarantined test, the forced race, the wait deadline, and bisection for a genuine combined failure. The independent reviewer approved adc28b79b and ran the forced race and deadline control on that head.
 - After integrating dev at 3cc2b1969, the original quarantined test, the forced race and the deadline control also passed on the reviewed head (3/3).
 - The mutation baseline passed 3,207 tests. The command reported “mutants: 2 listed, 1 caught, 0 missed, 0 timed out, 1 unviable, 0 not reached (bound 30 min, took 655 s)”. Vidoc was disabled.
+- PR #1499 run e45eacb9 failed in the parking fixture. Forcing the live queue to drain immediately before the queued-to-starting assertion reproduced the same failure on 561f47b76. PR #1496 had already fixed the fixture by isolating its cold reads in a SQLite copy. After integrating dev at a561121e7, both parking callers and all three focused merge-train tests passed (5/5). The dev tree passed Yulius CI in run 32a60a22, and GitHub closed #1427. Task #541 closed the parking reports #1498 and #1502 with this evidence, ending the quarantine.
