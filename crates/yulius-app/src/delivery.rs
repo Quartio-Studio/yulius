@@ -3780,8 +3780,8 @@ impl App {
         }
     }
 
-    /// A newer commit on this task's checked-out branch still needs publication.
-    /// Compare against GitHub's actual PR head, including when CI reruns the published commit.
+    /// A commit on this task's checked-out branch still needs publication if the verified PR
+    /// head does not contain it, including after a parallel upstream update or a CI rerun.
     async fn unpublished_pr_commit(&self, task: &TaskRecord, pull: &GhPull) -> bool {
         let Some(worktree) = task.worktree_path.as_deref().map(Path::new) else {
             return false;
@@ -3796,8 +3796,8 @@ impl App {
         head != pull.head_sha
             && self.worktree_on_branch(worktree, &pull.head, &head).await
             && matches!(
-                git.is_ancestor(worktree, &pull.head_sha, &head).await,
-                Ok(true)
+                git.is_ancestor(worktree, &head, &pull.head_sha).await,
+                Ok(false)
             )
     }
 

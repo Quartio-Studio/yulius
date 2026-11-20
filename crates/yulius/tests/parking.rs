@@ -2191,10 +2191,52 @@ fn an_unpublished_ci_repair_keeps_its_session_even_with_a_human_request() -> Tes
                 "a rerun on an older published commit cannot deliver the new one: {state:?}"
             );
         }
+        // A different upstream commit can also pass while the local repair is outstanding.
+        let tree = git(&["rev-parse", &format!("{repair_head}^{{tree}}")])?;
+        let parallel = git(&[
+            "commit-tree",
+            &tree,
+            "-p",
+            &repair_head,
+            "-m",
+            "Parallel upstream update",
+        ])?;
+        git(&[
+            "push",
+            "-q",
+            "origin",
+            &format!("{parallel}:refs/heads/{branch}"),
+        ])?;
+        set_pull_head(&github, 99, &parallel)?;
+        github.set_checks(&parallel, yulius_app::ports::github::ChecksState::Success);
+        assert_eq!(
+            app.park_idle_sessions_now().await,
+            0,
+            "the diverged upstream head does not contain the local repair"
+        );
+        git(&["merge", "--no-edit", &parallel])?;
         git(&["push", "-q", "origin", branch])?;
         let last = git(&["rev-parse", "HEAD"])?;
         set_pull_head(&github, 99, &last)?;
         github.set_checks(&last, yulius_app::ports::github::ChecksState::Success);
+        // The upstream may advance again. It now contains the repair, so the older checkout can park.
+        let tree = git(&["rev-parse", "HEAD^{tree}"])?;
+        let upstream = git(&[
+            "commit-tree",
+            &tree,
+            "-p",
+            &last,
+            "-m",
+            "Upstream after publication",
+        ])?;
+        git(&[
+            "push",
+            "-q",
+            "origin",
+            &format!("{upstream}:refs/heads/{branch}"),
+        ])?;
+        set_pull_head(&github, 99, &upstream)?;
+        github.set_checks(&upstream, yulius_app::ports::github::ChecksState::Success);
         parked(&app, &id).await?;
         assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Parked));
         Ok::<_, Error>(())
