@@ -2817,39 +2817,18 @@ async fn a_purge_waits_while_a_process_of_the_sandbox_runs() -> TestResult {
     Ok(())
 }
 
-/// A permanent purge also removes both namespace holders' state. A later server must
-/// recycle the range without restoring either tree while it checks for remaining holders.
-#[tokio::test]
-async fn reusing_a_purged_playgrounds_ports_leaves_both_holder_trees_absent() -> TestResult {
-    use yulius::wiring::sandbox::NamespaceIsolation;
+/// A real namespace manager for port-retirement checks without starting a privileged holder.
+fn retirement_manager(data: &Path) -> Arc<yulius_sandbox::manager::Manager> {
     use yulius_contracts::sandbox::IdMap;
-    use yulius_sandbox::manager::{
-        IdleConfig, IsolationConfig, Manager, PrepareError, SandboxRequest,
-    };
+    use yulius_sandbox::manager::{IdleConfig, IsolationConfig, Manager};
 
-    let (h, owner) = world().await?;
-    let old = from_template(&h, &owner, "purged").await?.body;
-    let sid = old["id"].as_str().ok_or("id")?;
-    assert_eq!(old["port_base"], 20000);
-    let data = &h.app.config.data_dir;
-    let holders = data.join("runtime/sandboxes");
-    let trees = [holders.join(sid), holders.join(format!("{sid}.prod"))];
-    for tree in &trees {
-        std::fs::create_dir_all(tree)?;
-        std::fs::write(tree.join("retired"), b"")?;
-    }
-    assert_eq!(purge(&h, &owner, sid).await?.body["state"], "purged");
-    assert!(trees.iter().all(|tree| !tree.exists()));
-
-    // A fresh namespace manager sees only the on-disk state left by the purge.
-    // This test exercises retirement and allocation without launching a holder.
     let map = IdMap {
         host: 1000,
         sub_start: 100_000,
         count: 65_535,
     };
-    let manager = Manager::new(IsolationConfig {
-        data_dir: data.clone(),
+    Manager::new(IsolationConfig {
+        data_dir: data.to_path_buf(),
         exe: PathBuf::new(),
         bwrap: PathBuf::new(),
         newuidmap: PathBuf::new(),
@@ -2868,7 +2847,61 @@ async fn reusing_a_purged_playgrounds_ports_leaves_both_holder_trees_absent() ->
         auto_build: false,
         docker: Err("disabled".into()),
         health: Arc::default(),
-    });
+    })
+}
+
+/// The production adapter holds a removed sandbox's range while a recorded holder may be
+/// alive. Once that record is gone it releases the same sandbox's range.
+#[tokio::test]
+async fn namespace_adapter_keeps_ports_until_the_removed_holder_is_idle() -> TestResult {
+    use yulius::wiring::sandbox::NamespaceIsolation;
+    use yulius_app::ports::isolation::SandboxIsolation as _;
+    use yulius_contracts::sandbox::HOLDER_RECORD_FILE;
+    use yulius_domain::ids::SandboxId;
+
+    let data = tempfile::tempdir()?;
+    let sandbox = SandboxId::parse("s1")?;
+    let isolation = NamespaceIsolation::new(retirement_manager(data.path()), false);
+    let state = data.path().join("runtime/sandboxes").join(sandbox.as_str());
+    std::fs::create_dir_all(&state)?;
+    let record = state.join(HOLDER_RECORD_FILE);
+    std::fs::write(&record, b"{")?;
+    assert!(
+        !isolation.retired_ports_idle(&sandbox).await,
+        "an unreadable holder record keeps its ports"
+    );
+    std::fs::remove_file(record)?;
+    assert!(
+        isolation.retired_ports_idle(&sandbox).await,
+        "once the holder is gone its ports can be reused"
+    );
+    Ok(())
+}
+
+/// A permanent purge also removes both namespace holders' state. A later server must
+/// recycle the range without restoring either tree while it checks for remaining holders.
+#[tokio::test]
+async fn reusing_a_purged_playgrounds_ports_leaves_both_holder_trees_absent() -> TestResult {
+    use yulius::wiring::sandbox::NamespaceIsolation;
+    use yulius_sandbox::manager::{PrepareError, SandboxRequest};
+
+    let (h, owner) = world().await?;
+    let old = from_template(&h, &owner, "purged").await?.body;
+    let sid = old["id"].as_str().ok_or("id")?;
+    assert_eq!(old["port_base"], 20000);
+    let data = &h.app.config.data_dir;
+    let holders = data.join("runtime/sandboxes");
+    let trees = [holders.join(sid), holders.join(format!("{sid}.prod"))];
+    for tree in &trees {
+        std::fs::create_dir_all(tree)?;
+        std::fs::write(tree.join("retired"), b"")?;
+    }
+    assert_eq!(purge(&h, &owner, sid).await?.body["state"], "purged");
+    assert!(trees.iter().all(|tree| !tree.exists()));
+
+    // A fresh namespace manager sees only the on-disk state left by the purge.
+    // This test exercises retirement and allocation without launching a holder.
+    let manager = retirement_manager(data);
     assert!(h.app.set_isolation(Arc::new(NamespaceIsolation::new(
         Arc::clone(&manager),
         false
