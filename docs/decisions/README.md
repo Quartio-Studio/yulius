@@ -410,6 +410,7 @@ If a reservation skips past all available slots, land an empty extension first w
 - [0398](0398-astra-6-2-inherits-extra-high-effort.md) GPT-6.2 Astra inherits extra high effort on fresh and resumed Codex launches. Task details distinguish an inherited effort from an explicit choice (SPEC-561).
 - [0399](0399-task-evidence-belongs-to-the-landed-commit.md) Task verification evidence binds the landed commit to its actual CI and environment attempts (SPEC-562).
 - [0400](0400-continuing-a-reviewer-after-its-report-opens-the-next-round.md) records a new round when an author continues a reviewer after its report.
+- [0401](0401-red-ci-notices-include-partial-sibling-failures.md) Red CI notices and run details include partial failures observed in siblings stopped by fail-fast.
 <!-- ADR 0401 -->
 <!-- ADR 0402 -->
 - [0403](0403-reserve-edit-locations-in-the-decision-index.md) gives each upcoming decision its own Git insertion point.

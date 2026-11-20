@@ -1,6 +1,6 @@
 ---
 yulius-task: 6f8be32a-a420-4198-b19f-2073647c10b0
-status: in-progress
+status: done
 ---
 
 # SPEC-559 Fix actionable open issues
@@ -9,9 +9,7 @@ status: in-progress
 
 Resolve the actionable reports in the November 20 GitHub issue inventory on green Yulius CI. Close reports superseded by a fix or a later product decision. Preserve unresolved reports and their acceptance evidence.
 
-Fixes #1501
-
-Fixes #1512
+Task #541 delivered the fixes for #1484, #1441, #1398, #1501 and #1512. Its final inventory below records the remaining owners and external prerequisites.
 
 ## Context
 
@@ -54,7 +52,7 @@ The inventory at dev 56f08db7f contained 20 issues. #1490 belongs to task #540. 
 - [x] Verify Resume and Reply in Chromium against the reproduced failure
 - [x] Obtain independent approval for the parked terminal change if needed
 - [x] Verify lowered CI capacity when both active jobs share a name
-- [ ] Verify the independent fixes and reconcile the remaining issues
+- [x] Verify the independent fixes and reconcile the remaining issues
 
 ## Acceptance criteria
 
@@ -111,3 +109,20 @@ The later reports #1498 and #1502 cover the same parking fixture repaired in PR 
 - PR #1509 run 728bbdfe failed the lowered CI slot test with four starts and only two ends. Probe the two running jobs being the two runs of job b before the test releases job a.
 - Holding both runs of job a at admission reproduced the shard’s exact s s s e s e log at 3973e86e6. Both b jobs timed out because the old fixture opened the shared a gate. The repaired fixture opens the gate for one running job by run ID and job name, then releases the rest. Its test requires the exact eight start/end markers of two simultaneous jobs followed by two sequential ones.
 - The forced lowered-limit regression, raised-limit control and admission-without-a-slot control passed together. Repository quick checks passed. Vidoc was disabled.
+
+### Reconciliation on 2026-11-20
+
+PR #1509 closed #1501 and #1512. Its incorporated head 81b586fc3 has passing run 90b01885-aceb-45ff-a8a6-3e3575a7bf17. Candidate run 5c21e41c-3efb-46bd-a919-714a4ff5f9cb passed quality, both Rust shards and Chromium. Vidoc was disabled. The dev squash is 5704b7d4e. [Yulius delivery evidence](https://yulius.quartio.ai/api/tasks/6f8be32a-a420-4198-b19f-2073647c10b0/delivery/evidence/5704b7d4e57756c7fb75bbd5d5109a78fc169090)
+
+Ten of the original twenty issues are closed. Three were obsolete (#1452, #1429 and #466). Seven were fixed on green dev (#1484, #1441, #1398, #1427, #1434, #1455 and #1401). Four reports opened during this work also closed (#1498, #1502, #1501 and #1512).
+
+| Independently delivered issue | Dev PR | Passing Yulius CI at the PR head |
+| --- | --- | --- |
+| #1427, GPT model routing | #1496 | [4b102c74f](https://yulius.quartio.ai/s/yulius/ci?run=eb19d949-27b7-45c3-906c-2637cef38375) |
+| #1434, close and cancel during host loss | #1500 | [a97a78b94](https://yulius.quartio.ai/s/yulius/ci?run=fdf63596-1001-4777-be93-091b507b4a23) |
+| #1455, assistant identity for screen readers | #1503 | [ab44cb4ab](https://yulius.quartio.ai/s/yulius/ci?run=6227ed2f-c947-453e-937c-d316426ef3e5) |
+| #1401, repeated reviewer verdicts | #1507 | [8e32066b4](https://yulius.quartio.ai/s/yulius/ci?run=7cdc91b6-ae3c-4895-ab30-9bebab4329c1) |
+
+At dev 5704b7d4e, eight actionable issues remained with independent owners. Task #540 owns #1490 (PRs #1492, #1493 and #1505 landed, with additional work on #1510). Task #548 owns #1411 in PR #1513. Tasks #549 through #553 own #1410, #1260, #638, #1133 and #529 respectively. Task #556 owns the later report #1506 in PR #1511. Each owner verifies and delivers its changes separately. At this checkpoint all eight issues remained open.
+
+The outstanding external checks were reconfirmed. The VM service cgroup tree for #321 was unavailable in the sandbox. Project access could not resolve quartio-v2 for #1385. On November 20, #1239 still lacked an upgrade guarantee for old sessions, seven days after the fingerprint format changed. These reports remain open.

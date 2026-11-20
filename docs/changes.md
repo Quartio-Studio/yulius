@@ -8,6 +8,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - Parallel ADR additions keep their numeric order in author updates and protected merge trains (SPEC-568, #1515).
 
+- A red CI notice includes partial test failures observed before a sibling stopped the job. Agents can read each job’s retained diagnostics through `ci_status`. [SPEC-566](../.ai/specs/SPEC-566-report-tests-that-failed-in-a-ci-shard-b.md)
 - The parked terminal Chromium test waits for the second park after Resume and checks that Reply delivers its prompt to the resumed session (#1501).
 - Continuing a reviewer after its report preserves both verdicts and counts the re-review
   in the Review card. Duplicate stops preserve the original end time (SPEC-565, #1401).
