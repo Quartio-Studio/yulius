@@ -2734,6 +2734,88 @@ async fn a_purge_waits_while_a_process_of_the_sandbox_runs() -> TestResult {
     Ok(())
 }
 
+/// A permanent purge also removes both namespace holders' state. A later server must
+/// recycle the range without restoring either tree while it checks for remaining holders.
+#[tokio::test]
+async fn reusing_a_purged_playgrounds_ports_leaves_both_holder_trees_absent() -> TestResult {
+    use yulius::wiring::sandbox::NamespaceIsolation;
+    use yulius_contracts::sandbox::IdMap;
+    use yulius_sandbox::manager::{
+        IdleConfig, IsolationConfig, Manager, PrepareError, SandboxRequest,
+    };
+
+    let (h, owner) = world().await?;
+    let old = from_template(&h, &owner, "purged").await?.body;
+    let sid = old["id"].as_str().ok_or("id")?;
+    let data = &h.app.config.data_dir;
+    let holders = data.join("runtime/sandboxes");
+    let trees = [holders.join(sid), holders.join(format!("{sid}.prod"))];
+    for tree in &trees {
+        std::fs::create_dir_all(tree)?;
+        std::fs::write(tree.join("retired"), b"")?;
+    }
+    assert_eq!(purge(&h, &owner, sid).await?.body["state"], "purged");
+    assert!(trees.iter().all(|tree| !tree.exists()));
+
+    // A fresh namespace manager sees only the on-disk state left by the purge.
+    // This test exercises retirement and allocation without launching a holder.
+    let map = IdMap {
+        host: 1000,
+        sub_start: 100_000,
+        count: 65_535,
+    };
+    let manager = Manager::new(IsolationConfig {
+        data_dir: data.clone(),
+        exe: PathBuf::new(),
+        bwrap: PathBuf::new(),
+        newuidmap: PathBuf::new(),
+        newgidmap: PathBuf::new(),
+        slirp4netns: None,
+        uid: map,
+        gid: map,
+        delegation: None,
+        limits: Default::default(),
+        disk_max: None,
+        forwards: Default::default(),
+        sudo_shim: String::new(),
+        idle: IdleConfig {
+            stop_after: std::time::Duration::from_secs(300),
+        },
+        auto_build: false,
+        docker: Err("disabled".into()),
+        health: Arc::default(),
+    });
+    assert!(h.app.set_isolation(Arc::new(NamespaceIsolation::new(
+        Arc::clone(&manager),
+        false
+    ))));
+    let replacement = from_template(&h, &owner, "replacement").await?;
+    assert_eq!(
+        replacement.status,
+        StatusCode::CREATED,
+        "{:?}",
+        replacement.body
+    );
+    assert_eq!(replacement.body["port_base"], old["port_base"]);
+    assert!(
+        trees.iter().all(|tree| !tree.exists()),
+        "allocation restored purged holder state"
+    );
+    let stale = SandboxRequest {
+        id: sid.to_owned(),
+        hostname: "purged".into(),
+        dir: sandbox_dir(&h, &old),
+        port_first: 20000,
+        port_last: 20019,
+    };
+    assert_eq!(manager.prepare(&stale).await, Err(PrepareError::Retired));
+    assert_eq!(
+        manager.prepare_production(&stale).await,
+        Err(PrepareError::Retired)
+    );
+    Ok(())
+}
+
 /// SPEC-171 PGL-005, PGL-007: purging on removal deletes the code at once when nothing runs, and
 /// its maker may make another playground at the limit of 10.
 #[tokio::test]
