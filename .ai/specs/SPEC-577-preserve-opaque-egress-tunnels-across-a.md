@@ -281,3 +281,16 @@ without adoption support or a remote peer that times out can end a tunnel.
   never connected and expects `NotConnected`. The oversized sender half-closes after the
   size field, so a missing size guard reaches EOF promptly. Removing each matching guard
   made its assertion fail in under a second.
+- An isolated container fixture started two real servers with `--contained --isolation
+  namespaces` and a synthetic live holder running the production port forward. The agent
+  reached the real manager's `out.sock`, established CONNECT, and exchanged markers before
+  the first server exited. After the replacement passed its health check with the same holder,
+  the original client read EOF in place of the downtime marker. The fixture used a private
+  network, synthetic database and subordinate-ID files inside the disposable container.
+  Nested namespace creation and a real systemd unit are unavailable in this task sandbox.
+- Returning the quotient of the absolute deadline and current time could keep the helper
+  checking a far-off deadline too frequently while eventual peer EOF still passed. A
+  deterministic custody test expected the next wake after 450 ms and received 1 ms on
+  that mutation. It checks the last millisecond, exact expiry and the next surviving pair
+  with a supplied clock. Receipt and the helper's final deadline use the same saturating
+  calculation of time remaining.

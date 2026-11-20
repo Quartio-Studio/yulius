@@ -75,7 +75,7 @@ fn require_live_peers(sockets: &[OwnedFd; 2], expires: Option<u64>) -> io::Resul
             Ok(None) => invalid("handoff requires connected streams"),
             Err(error) => error.into(),
         };
-        if expires.is_none_or(|end| end > monotonic_ms()) {
+        if expires.is_none_or(|end| !time_left(end, monotonic_ms()).is_zero()) {
             return Err(error);
         }
         break;
@@ -254,31 +254,35 @@ fn shut_down(pair: &Pair) {
     }
 }
 
+fn time_left(expires: u64, now: u64) -> Duration {
+    Duration::from_millis(expires.saturating_sub(now))
+}
+
 impl PendingDelivery {
     // A pair that expires releases its state and both original handles. Shutdown also
     // reaches any rights already queued at the receiving process.
-    fn expire(&mut self) -> Option<Duration> {
-        let now = monotonic_ms();
+    fn expire(&mut self, now: u64) -> Option<Duration> {
         let mut next = None;
         for slot in &mut self.0 {
             if let Some(expires) = slot.as_ref().and_then(|p| p.expires) {
-                if expires <= now {
+                let wait = time_left(expires, now);
+                if wait.is_zero() {
                     if let Some(pair) = slot.take() {
                         shut_down(&pair);
                     }
                 } else {
-                    next = Some(next.map_or(expires, |old: u64| old.min(expires)));
+                    next = Some(next.map_or(wait, |old: Duration| old.min(wait)));
                 }
             }
         }
-        next.map(|end| Duration::from_millis(end - now))
+        next
     }
 
     // Receipt, accept, send and confirmation all run under the original per-pair clocks.
     async fn during<T>(&mut self, operation: impl Future<Output = io::Result<T>>) -> io::Result<T> {
         tokio::pin!(operation);
         loop {
-            let Some(wait) = self.expire() else {
+            let Some(wait) = self.expire(monotonic_ms()) else {
                 return operation.await;
             };
             tokio::select! {
@@ -291,7 +295,7 @@ impl PendingDelivery {
 
     async fn send(&mut self, stream: &mut UnixStream) -> io::Result<()> {
         for index in 0..self.0.len() {
-            self.expire();
+            self.expire(monotonic_ms());
             let Some(pair) = &mut self.0[index] else {
                 continue;
             };
@@ -312,7 +316,7 @@ impl PendingDelivery {
     }
 
     fn release(mut self) -> Vec<Pair> {
-        self.expire();
+        self.expire(monotonic_ms());
         std::mem::take(&mut self.0).into_iter().flatten().collect()
     }
 }
@@ -359,7 +363,7 @@ async fn hold(control: &mut UnixStream, directory: &Path) -> io::Result<()> {
         Ok(())
     };
     if let Some(last) = last {
-        let wait = Duration::from_millis(last.saturating_sub(monotonic_ms())).min(LIFETIME);
+        let wait = time_left(last, monotonic_ms()).min(LIFETIME);
         tokio::time::timeout(wait, delivery).await.unwrap_or(Ok(()))
     } else {
         delivery.await
@@ -508,6 +512,29 @@ mod tests {
             },
             [a, b],
         ))
+    }
+
+    #[tokio::test]
+    async fn custody_wakes_at_the_earliest_deadline_and_releases_at_its_exact_tick()
+    -> io::Result<()> {
+        let (mut short, mut peers) = pair(Vec::new())?;
+        let (mut long, _live) = pair(Vec::new())?;
+        short.expires = Some(10_450);
+        long.expires = Some(12_000);
+        let mut pending = PendingDelivery(vec![Some(long), Some(short)]);
+        assert_eq!(pending.expire(10_000), Some(Duration::from_millis(450)));
+        assert_eq!(pending.expire(10_449), Some(Duration::from_millis(1)));
+        assert_eq!(pending.expire(10_450), Some(Duration::from_millis(1550)));
+        assert!(pending.0[1].is_none());
+        for peer in &mut peers {
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(2), peer.read(&mut [0])).await??,
+                0
+            );
+        }
+        assert!(pending.expire(12_001).is_none());
+        assert!(pending.0.iter().all(Option::is_none));
+        Ok(())
     }
 
     #[tokio::test]
