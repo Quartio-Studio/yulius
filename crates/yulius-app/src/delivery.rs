@@ -2118,12 +2118,14 @@ impl App {
             }
         };
         let mut open_pulls = Vec::new();
+        let mut complete_pull_list = false;
         let mut checks_by_pr = Vec::new();
         let mut checks_unreadable = Vec::new();
         if let Some(token) = &token {
             match self.deps.github.list_pulls(token, owner, name, None).await {
                 Ok(pulls) => {
-                    open_pulls = pulls.into_iter().filter(is_open).take(MAX_PULLS).collect()
+                    complete_pull_list = pulls.len() <= MAX_PULLS;
+                    open_pulls = pulls.into_iter().filter(is_open).take(MAX_PULLS).collect();
                 }
                 Err(err) => notes.push(format!(
                     "Pull requests can't be listed: {}",
@@ -2328,7 +2330,8 @@ impl App {
             tasks.push(view);
         }
         // The "needs you" counts read what this overview said (sandboxes.rs, #147).
-        self.observed_pulls.record(&sandbox.id, observed);
+        self.observed_pulls
+            .record(&sandbox.id, observed, complete_pull_list);
 
         let mut recent_commits = Vec::new();
         if cloned {
@@ -3993,48 +3996,101 @@ impl App {
         &self,
         task: &TaskRecord,
         record: Option<&DeliveryRecord>,
+        observed: Option<crate::sandboxes::ObservedPull>,
+    ) -> AppResult<bool> {
+        let tracked = record
+            .filter(|r| r.stage == DeliveryStage::PrOpen)
+            .map(|r| {
+                r.pr_number.ok_or_else(|| {
+                    AppError::Internal("open delivery has no pull request number".into())
+                })
+            })
+            .transpose()?;
+        let sandbox = self.dlv_sandbox_of(task).await?;
+        // A playground or an instance with no GitHub App can still park an answered task.
+        // A known open PR requires verification, even when its installation is unavailable.
+        if sandbox.is_playground() || !self.github_configured().await? {
+            return Ok(tracked.is_none()
+                && observed.is_none_or(|p| {
+                    p.signal == PullSignal::Merged
+                        || record
+                            .is_some_and(|r| past_merge(&r.stage) && r.pr_number == Some(p.number))
+                }));
+        }
+        let token = self.dlv_installation_token(&sandbox).await?;
+        let branch_pulls = || async {
+            let Some(branch) = task.branch.as_deref() else {
+                return Ok(Vec::new());
+            };
+            let mut pulls = self
+                .deps
+                .github
+                .list_pulls(
+                    &token,
+                    &sandbox.repo_owner,
+                    &sandbox.repo_name,
+                    Some(branch),
+                )
+                .await?;
+            pulls.sort_unstable_by_key(|pull| pull.number);
+            Ok::<_, AppError>(pulls)
+        };
+        // Branch-scoped discovery also finds PRs omitted by a partial sandbox overview
+        // and new PRs opened externally while an older recorded delivery is being reconciled.
+        let branch = branch_pulls().await?;
+        if branch.len() > MAX_PULLS {
+            return Ok(false);
+        }
+        let numbers: std::collections::BTreeSet<_> = branch
+            .iter()
+            .map(|p| p.number)
+            .chain(tracked)
+            .chain(observed.map(|p| p.number))
+            .collect();
+        if numbers.is_empty() {
+            return Ok(true);
+        }
+        for number in numbers {
+            if record.is_some_and(|r| past_merge(&r.stage) && r.pr_number == Some(number)) {
+                continue;
+            }
+            if !self
+                .pull_allows_parking(task, &sandbox, &token, number, tracked == Some(number))
+                .await?
+            {
+                return Ok(false);
+            }
+        }
+        Ok(branch_pulls().await? == branch)
+    }
+
+    /// Check one PR and reconfirm its head and mergeability after the slower checks.
+    async fn pull_allows_parking(
+        &self,
+        task: &TaskRecord,
+        sandbox: &SandboxRecord,
+        token: &Secret,
+        number: u64,
+        watched: bool,
     ) -> AppResult<bool> {
         use yulius_domain::ci::CiRef;
-        let tracked = record.filter(|r| r.stage == DeliveryStage::PrOpen);
-        let number = if let Some(record) = tracked {
-            record.pr_number.ok_or_else(|| {
-                AppError::Internal("open delivery has no pull request number".into())
-            })?
-        } else {
-            // A branch-matched PR may have been opened outside Yulius. Use its identity
-            // from the overview and verify its head independently of the cached checks.
-            let Some(observed) = self
-                .observed_pulls
-                .get(&task.sandbox_id, &task.id)
-                .flatten()
-            else {
-                return Ok(true);
-            };
-            if record.is_some_and(|r| past_merge(&r.stage) && r.pr_number == Some(observed.number))
-            {
-                return Ok(true);
-            }
-            observed.number
-        };
-        let sandbox = self.dlv_sandbox_of(task).await?;
-        let token = self.dlv_installation_token(&sandbox).await?;
         let read = || {
             self.deps
                 .github
-                .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, number)
+                .get_pull(token, &sandbox.repo_owner, &sandbox.repo_name, number)
         };
         let pull = read().await?;
         if !is_open(&pull) {
             return Ok(pull.merged);
         }
-        let head = self.dlv_checks_at(&sandbox, &token, &pull.head_sha).await?;
+        let head = self.dlv_checks_at(sandbox, token, &pull.head_sha).await?;
         if !head.unreadable.is_empty() {
             return Ok(false);
         }
-        let checks = tested_checks_word(&delivery_profile(&sandbox), head.word);
+        let checks = tested_checks_word(&delivery_profile(sandbox), head.word);
         let settled = match checks {
             "success" | "none" => true,
-            "pending" if tracked.is_some() && self.config.ci.enabled => self
+            "pending" if watched && self.config.ci.enabled => self
                 .deps
                 .store
                 .ci_runs(&sandbox.id, crate::pr_watch::RUNS_READ)
@@ -4044,7 +4100,7 @@ impl App {
                 .is_some_and(|run| run.sha == pull.head_sha && run.state.is_active()),
             _ => false,
         };
-        if !settled || self.pull_conflicts(task, &sandbox, &pull).await {
+        if !settled || self.pull_conflicts(task, sandbox, &pull).await {
             return Ok(false);
         }
         // Checks and local conflict detection can take long enough for another push.

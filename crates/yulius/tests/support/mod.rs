@@ -61,6 +61,8 @@ pub struct FakeGitHub {
     pub callback_entered: tokio::sync::Notify,
     /// Pull requests (delivery tests).
     pub pulls: Mutex<Vec<GhPull>>,
+    /// Simulates a failed repository-wide overview while individual PRs remain readable.
+    pub fail_overview_pulls: std::sync::atomic::AtomicBool,
     /// The branch of every `branch_pulls` call, in order: one GitHub request each (the hygiene
     /// scan's `MAX_PULL_LOOKUPS` bound).
     pub branch_pull_lookups: Mutex<Vec<String>>,
@@ -478,6 +480,13 @@ impl GitHubPort for FakeGitHub {
         _: &str,
         head: Option<&str>,
     ) -> AppResult<Vec<GhPull>> {
+        if head.is_none()
+            && self
+                .fail_overview_pulls
+                .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(AppError::Upstream("partial overview".into()));
+        }
         self.refresh_heads();
         Ok(self
             .pulls

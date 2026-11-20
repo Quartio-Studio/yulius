@@ -15,7 +15,7 @@ use crate::error::AppResult;
 use crate::model::{SandboxRecord, TaskRecord};
 
 /// A task PR identified by the Git overview, including PRs opened outside Yulius.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ObservedPull {
     /// The pull request the overview associated with the task branch.
     pub(crate) number: u64,
@@ -25,16 +25,25 @@ pub(crate) struct ObservedPull {
 
 /// What each sandbox's Git overview last said about its tasks' pull requests (GIT-001): the same
 /// facts the web UI's sidebar reads, so the "needs you" counts agree with it without calling
-/// GitHub for every sandbox list. Replaced per sandbox on every overview read; bounded by the
-/// sandboxes' tasks; empty after a restart until the next overview read.
+/// GitHub for every sandbox list. A complete overview replaces the sandbox entries. A partial
+/// overview updates known PRs. The cache starts empty after restart.
 #[derive(Debug, Default)]
 pub(crate) struct ObservedPulls(Mutex<HashMap<SandboxId, HashMap<TaskId, ObservedPull>>>);
 
 impl ObservedPulls {
-    /// Records one overview read of a sandbox.
-    pub(crate) fn record(&self, sandbox: &SandboxId, pulls: HashMap<TaskId, ObservedPull>) {
+    /// An incomplete overview can add observations but cannot disprove a known PR.
+    pub(crate) fn record(
+        &self,
+        sandbox: &SandboxId,
+        pulls: HashMap<TaskId, ObservedPull>,
+        complete: bool,
+    ) {
         if let Ok(mut map) = self.0.lock() {
-            map.insert(sandbox.clone(), pulls);
+            if complete {
+                map.insert(sandbox.clone(), pulls);
+            } else if !pulls.is_empty() {
+                map.entry(sandbox.clone()).or_default().extend(pulls);
+            }
         }
     }
 

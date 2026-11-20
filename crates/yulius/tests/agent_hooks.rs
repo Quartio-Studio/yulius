@@ -2445,33 +2445,9 @@ async fn parking_a_recorded_pr_waits_for_delivery_if_github_closed_it_unmerged()
     Ok(())
 }
 
-#[tokio::test]
-async fn parking_rechecks_a_green_overview_for_an_externally_opened_pr() -> TestResult {
-    use yulius_app::ports::github::ChecksState;
-    use yulius_domain::delivery::DeliveryStage;
-    let f = fixture().await?;
-    install_compatibility_pull(&f).await?;
-    let record =
-        f.h.app
-            .deps
-            .store
-            .delivery(&f.task)
-            .await?
-            .ok_or("delivery")?;
-    assert!(
-        f.h.app
-            .deps
-            .store
-            .transition_delivery(
-                &DeliveryStage::PrOpen,
-                &yulius_app::delivery::DeliveryRecord {
-                    stage: DeliveryStage::None,
-                    pr_number: None,
-                    ..record
-                }
-            )
-            .await?
-    );
+async fn idle_for_parking(
+    f: &Fixture,
+) -> Result<yulius_app::auth::AuthContext, Box<dyn std::error::Error>> {
     let ctx = f.h.app.agent_context(TOKEN).await?;
     std::fs::create_dir_all(&ctx.attempt.run_dir)?;
     let owner = yulius_app::auth::AuthContext {
@@ -2500,6 +2476,37 @@ async fn parking_rechecks_a_green_overview_for_an_externally_opened_pr() -> Test
         )
         .await?;
     f.h.clock.0.fetch_add(3_600_000, Ordering::SeqCst);
+    Ok(owner)
+}
+
+#[tokio::test]
+async fn parking_rechecks_a_green_overview_for_an_externally_opened_pr() -> TestResult {
+    use yulius_app::ports::github::ChecksState;
+    use yulius_domain::delivery::DeliveryStage;
+    let f = fixture().await?;
+    install_compatibility_pull(&f).await?;
+    let record =
+        f.h.app
+            .deps
+            .store
+            .delivery(&f.task)
+            .await?
+            .ok_or("delivery")?;
+    assert!(
+        f.h.app
+            .deps
+            .store
+            .transition_delivery(
+                &DeliveryStage::PrOpen,
+                &yulius_app::delivery::DeliveryRecord {
+                    stage: DeliveryStage::None,
+                    pr_number: None,
+                    ..record
+                }
+            )
+            .await?
+    );
+    let owner = idle_for_parking(&f).await?;
     f.h.github.set_checks("abc123", ChecksState::Success);
     let overview = f.h.app.git_overview(&owner, f.sandbox.as_str()).await?;
     assert_eq!(
@@ -2514,6 +2521,34 @@ async fn parking_rechecks_a_green_overview_for_an_externally_opened_pr() -> Test
     f.h.github.pulls.lock().map_err(|_| "pull fixture")?[0].head_sha = "external-push".into();
     f.h.github.set_checks("external-push", ChecksState::Failure);
     assert_eq!(f.h.app.park_idle_sessions_now().await, 0);
+    f.h.github.fail_overview_pulls.store(true, Ordering::SeqCst);
+    let partial = f.h.app.git_overview(&owner, f.sandbox.as_str()).await?;
+    assert!(
+        partial
+            .notes
+            .iter()
+            .any(|note| note.contains("can't be listed"))
+    );
+    assert!(
+        partial
+            .tasks
+            .iter()
+            .find(|t| t.task_id == f.task.as_str())
+            .is_some_and(|t| t.pr.is_none())
+    );
+    assert_eq!(
+        f.h.app.park_idle_sessions_now().await,
+        0,
+        "a partial overview hid the external red PR"
+    );
+    assert_eq!(f.h.app.send_digests_now(Some(1)).await.parked, 0);
+    let cold = yulius_app::context::App::new(f.h.app.config.clone(), f.h.app.deps.clone());
+    cold.runtime(&f.task);
+    assert_eq!(
+        cold.park_idle_sessions_now().await,
+        0,
+        "an external PR is also found after restart"
+    );
     f.h.github.set_checks("external-push", ChecksState::Success);
     assert_eq!(f.h.app.park_idle_sessions_now().await, 1);
     Ok(())
@@ -2548,6 +2583,54 @@ async fn one_open_step_keeps_an_idle_session_through_digest_and_grace_parking() 
     f.h.app
         .tool_step_update(&ctx, &json!({"ordinal":1,"status":"done"}))
         .await?;
+    assert_eq!(f.h.app.park_idle_sessions_now().await, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_merged_recorded_pr_cannot_park_a_new_failing_branch_pr() -> TestResult {
+    use yulius_app::ports::github::ChecksState;
+    let f = fixture().await?;
+    install_compatibility_pull(&f).await?;
+    let owner = idle_for_parking(&f).await?;
+    {
+        let mut pulls = f.h.github.pulls.lock().map_err(|_| "pull fixture")?;
+        let replacement = yulius_app::ports::github::GhPull {
+            number: 1462,
+            head_sha: "new-pr".into(),
+            ..pulls[0].clone()
+        };
+        pulls[0].state = "closed".into();
+        pulls[0].merged = true;
+        pulls.push(replacement);
+    }
+    f.h.github.set_checks("new-pr", ChecksState::Failure);
+    let overview = f.h.app.git_overview(&owner, f.sandbox.as_str()).await?;
+    assert_eq!(
+        overview
+            .tasks
+            .iter()
+            .find(|t| t.task_id == f.task.as_str())
+            .and_then(|t| t.pr.as_ref())
+            .map(|p| p.number),
+        Some(1462)
+    );
+    assert_eq!(
+        f.h.app
+            .deps
+            .store
+            .delivery(&f.task)
+            .await?
+            .and_then(|d| d.pr_number),
+        Some(1461)
+    );
+    assert_eq!(
+        f.h.app.park_idle_sessions_now().await,
+        0,
+        "the external replacement is failing"
+    );
+    assert_eq!(f.h.app.send_digests_now(Some(1)).await.parked, 0);
+    f.h.github.set_checks("new-pr", ChecksState::Success);
     assert_eq!(f.h.app.park_idle_sessions_now().await, 1);
     Ok(())
 }

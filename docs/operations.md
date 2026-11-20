@@ -169,7 +169,7 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # Send the task a message or choose Resume on its page to reopen the recorded provider session.
 # A message to a parked Codex task resumes its recorded rollout with the message as its next prompt.
 # While it waits for a subscription the message is retained and its last parked screen stays visible.
-# Open work or an unreadable recorded PR keeps the session live.
+# Open work, a failing PR on the task branch, or an unreadable PR keeps the session live.
 # A finished turn can park while Yulius CI runs on its current PR head. The PR watcher delivers the result.
 #Environment=YULIUS_PARK_AFTER_MINUTES=30
 # A server older than parking cannot read the status `parked`: before rolling back past it,

@@ -2042,7 +2042,7 @@ background shell, subagent or dynamic workflow, does not wait in `yulius wait`, 
 armed or pull request news due, no held prompt, no request in the sandbox browser, no pause, no
 possible draft or keystroke within the grace period, and is not an onboarding task.
 Parking also requires that no step, spec, goal or failing PR check needs the session.
-Both parking triggers verify known PRs against their current heads, including a PR the Git overview discovered on the task branch. An unreadable PR keeps its session.
+Both parking triggers look up open PRs on the task branch and verify them alongside the recorded delivery. An unreadable PR or a head that changes during verification keeps the session live.
 When the current PR head has a queued or running Yulius CI run, the PR watcher can resume
 the parked session on its result. Open agent work still requires the session.
 The supervisor saves the redacted screen with the elapsed idle time before requesting shutdown.
