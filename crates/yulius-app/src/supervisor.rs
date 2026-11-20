@@ -86,6 +86,13 @@ enum EndIntent {
     SwitchTimeout,
 }
 
+/// A task end the reader can hand to the competing loss recorder (SPEC-563).
+enum TakenRequest {
+    Close,
+    Cancel,
+    Park,
+}
+
 /// How the wait of a switch for its old run ended (SPEC-250 STW-006).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SwitchEnd {
@@ -101,6 +108,30 @@ enum SwitchEnd {
     Lost,
     /// The old run did not end in time and the switch ended it (SPEC-483 SWT-002).
     TimedOut,
+}
+
+/// A close ends a session cleanly, including one whose switch the close overtook.
+fn after_close(task: &TaskRecord) -> Option<TaskStatus> {
+    task.status
+        .apply(TaskEvent::Exited { normal: true })
+        .or_else(|_| {
+            task.status
+                .apply(TaskEvent::SwitchCompleted)
+                .and_then(|running| running.apply(TaskEvent::Exited { normal: true }))
+        })
+        .ok()
+}
+
+/// A stop reaps the run even if its reader beat the stop's change to Stopping.
+fn after_cancel(task: &TaskRecord) -> Option<TaskStatus> {
+    task.status
+        .apply(TaskEvent::Reaped)
+        .or_else(|_| {
+            task.status
+                .apply(TaskEvent::CancelRequested)
+                .and_then(|stopping| stopping.apply(TaskEvent::Reaped))
+        })
+        .ok()
 }
 
 /// Puts `next` in a task's end intent slot. A switch whose intent it replaces is told `why` it was
@@ -445,9 +476,8 @@ pub struct TaskRuntime {
     /// The activity a park was decided on (SPEC-512 PRK-003): what the parked task keeps when a
     /// switch it overtook cleared the stored one.
     parked_activity: Mutex<Option<Activity>>,
-    /// The run whose park's intent its reader took before recording its end (SPEC-512 PRK-003):
-    /// a loss recorded first by `mark_lost` parks the task all the same.
-    park_taken: Mutex<Option<AttemptId>>,
+    /// The request a reader took before it recorded this attempt's end (SPEC-563).
+    taken_request: Mutex<Option<(AttemptId, TakenRequest)>>,
 }
 
 /// Counts a run ending as being recorded until dropped (SPEC-065 END-003).
@@ -471,6 +501,15 @@ impl Drop for Finalizing<'_> {
 pub const SWITCH_COOLDOWN_MS: i64 = 10 * 60 * 1000;
 
 impl TaskRuntime {
+    /// Consumes the reader's request only for the attempt whose end was recorded.
+    fn take_reader_request(&self, attempt_id: &AttemptId) -> Option<TakenRequest> {
+        self.taken_request
+            .lock()
+            .ok()?
+            .take_if(|(run, _)| run == attempt_id)
+            .map(|(_, request)| request)
+    }
+
     /// Whether the screen `hub` shows is not what the program drew: its output is withheld
     /// (agent secrets cannot be read) or some was dropped since the last whole screen. A state
     /// that cannot be read counts.
@@ -705,7 +744,7 @@ impl TaskRuntime {
             finalizing: tokio::sync::watch::channel(0).0,
             end_failed: Mutex::new(None),
             parked_activity: Mutex::new(None),
-            park_taken: Mutex::new(None),
+            taken_request: Mutex::new(None),
         }
     }
 
@@ -4063,7 +4102,7 @@ impl App {
         self.codex_run_ended(task_id, attempt_id).await;
         self.antigravity_run_ended(attempt_id).await;
         let mut reason = reason;
-        let mut parking = false;
+        let mut request = None;
         if let Some(rt) = &runtime
             && let Ok(mut intent) = rt.intent.lock()
         {
@@ -4072,30 +4111,27 @@ impl App {
             if matches!(*intent, Some(EndIntent::SwitchTimeout)) {
                 reason = StopReason::SwitchTimeout;
             }
-            // The park's intent is here, or this run's reader took it and lost the record to
-            // this loss (review round 3 of SPEC-512 part 1). A stop, close or switch that came
-            // since owns the end instead.
-            let taken = rt
-                .park_taken
-                .lock()
-                .ok()
-                .and_then(|mut taken| taken.take_if(|run| run == attempt_id));
-            parking =
-                matches!(*intent, Some(EndIntent::Park)) || (intent.is_none() && taken.is_some());
+            let taken = rt.take_reader_request(attempt_id);
+            // A current intent takes precedence. Only a park changes the task outcome
+            // when the loss recorder consumes the current intent directly (SPEC-512).
+            request = match *intent {
+                Some(EndIntent::Park) => Some(TakenRequest::Park),
+                None => taken,
+                _ => None,
+            };
             // No exit will consume it: the next run must not inherit it.
             replace_intent(&mut intent, None, SwitchEnd::Lost);
         }
-        if parking {
-            // The idle session being parked was lost on its way out: the task lost nothing a
-            // park would have kept, so it is parked all the same (SPEC-512 PRK-003).
-            self.settle_parked(task_id, attempt_id, now).await;
-        } else {
-            // A finished task lost nothing with its idle session: it is Closed (SPEC-229
-            // RBT-001).
-            self.settle_ended(task_id, now, |task| {
-                task.status.after_loss(task.activity, reason).ok()
-            })
-            .await;
+        match request {
+            Some(TakenRequest::Close) => self.settle_ended(task_id, now, after_close).await,
+            Some(TakenRequest::Cancel) => self.settle_ended(task_id, now, after_cancel).await,
+            Some(TakenRequest::Park) => self.settle_parked(task_id, attempt_id, now).await,
+            None => {
+                self.settle_ended(task_id, now, |task| {
+                    task.status.after_loss(task.activity, reason).ok()
+                })
+                .await;
+            }
         }
         self.end_pause(task_id, "ended").await;
         if let Some(rt) = &runtime {
@@ -4256,14 +4292,22 @@ impl App {
         let store = &self.deps.store;
         let runtime = self.runtime(task_id);
         let _finalizing = Finalizing::start(&runtime.finalizing);
+        crate::race::reached(
+            crate::race::Point::RunEndTaking,
+            Path::new(task_id.as_str()),
+        );
         let intent = runtime.intent.lock().ok().and_then(|mut g| {
             let intent = g.take();
-            // Who records the run's end first decides it: a loss recorded meanwhile must still
-            // find the park this reader took (review round 3 of SPEC-512 part 1).
-            if matches!(intent, Some(EndIntent::Park))
-                && let Ok(mut taken) = runtime.park_taken.lock()
+            let request = match &intent {
+                Some(EndIntent::Park) => Some(TakenRequest::Park),
+                Some(EndIntent::Close) => Some(TakenRequest::Close),
+                Some(EndIntent::Cancel) => Some(TakenRequest::Cancel),
+                _ => None,
+            };
+            if let Some(request) = request
+                && let Ok(mut taken) = runtime.taken_request.lock()
             {
-                *taken = Some(attempt_id.clone());
+                *taken = Some((attempt_id.clone(), request));
             }
             intent
         });
@@ -4328,10 +4372,8 @@ impl App {
         if !first {
             return; // another observer already recorded the outcome
         }
-        // This reader recorded the end: the park it took is settled below.
-        if let Ok(mut taken) = runtime.park_taken.lock() {
-            *taken = None;
-        }
+        // This reader won and settles its request below.
+        runtime.take_reader_request(attempt_id);
         runtime.clear_start_counters(attempt_id);
         // A session restarted on a newer Claude Code that ended by itself before it started
         // there: that version gets no other session (SPEC-461 CCM-013).
@@ -4372,41 +4414,9 @@ impl App {
                 })
                 .await;
             }
-            Some(EndIntent::Close) => {
-                // The task was finished: whatever the exit code of the ended session, it is
-                // closed, like a session the user left.
-                // A switch the close overtook gave up: its task is closed from `Switching` too
-                // (SPEC-250 STW-006).
-                self.settle_ended(task_id, now, |task| {
-                    task.status
-                        .apply(TaskEvent::Exited { normal: true })
-                        .or_else(|_| {
-                            task.status
-                                .apply(TaskEvent::SwitchCompleted)
-                                .and_then(|running| {
-                                    running.apply(TaskEvent::Exited { normal: true })
-                                })
-                        })
-                        .ok()
-                })
-                .await;
-            }
+            Some(EndIntent::Close) => self.settle_ended(task_id, now, after_close).await,
             Some(EndIntent::Park) => self.settle_parked(task_id, attempt_id, now).await,
-            Some(EndIntent::Cancel) => {
-                // A stop's run ended: its task is stopped, also while still live when the run ended
-                // before the stop's status change was made (SPEC-250 STW-003).
-                self.settle_ended(task_id, now, |task| {
-                    task.status
-                        .apply(TaskEvent::Reaped)
-                        .or_else(|_| {
-                            task.status
-                                .apply(TaskEvent::CancelRequested)
-                                .and_then(|stopping| stopping.apply(TaskEvent::Reaped))
-                        })
-                        .ok()
-                })
-                .await;
-            }
+            Some(EndIntent::Cancel) => self.settle_ended(task_id, now, after_cancel).await,
             None => {
                 // A run that ends by itself while a switch that has not claimed its end yet
                 // holds the task `Switching` ends the task as from `Running`: the switch finds
@@ -4911,6 +4921,7 @@ impl App {
             if let Ok(Some(live)) = app.deps.store.live_attempt(&tid).await
                 && live.id == attempt
             {
+                crate::race::reached(crate::race::Point::EndEscalating, Path::new(tid.as_str()));
                 tracing::warn!(task = %tid, "run did not exit after escalation; terminating host");
                 app.terminate_then_mark_lost(&tid, &live, StopReason::Lost)
                     .await;
@@ -8181,6 +8192,23 @@ mod tests {
     }
 
     use super::branch_for;
+
+    #[test]
+    fn a_taken_request_belongs_to_one_attempt_and_is_consumed_once()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = super::TaskRuntime::new();
+        let owner = super::AttemptId::parse("a-owner")?;
+        let stale = super::AttemptId::parse("a-stale")?;
+        *runtime.taken_request.lock().map_err(|_| "request lock")? =
+            Some((owner.clone(), super::TakenRequest::Close));
+        assert!(runtime.take_reader_request(&stale).is_none());
+        assert!(matches!(
+            runtime.take_reader_request(&owner),
+            Some(super::TakenRequest::Close)
+        ));
+        assert!(runtime.take_reader_request(&owner).is_none());
+        Ok(())
+    }
 
     /// SPEC-268 PID-005, review round 1: an attempt reads only its own start counters, and a late
     /// end of an older attempt (or an observer that lost the transition) leaves the newer one's.

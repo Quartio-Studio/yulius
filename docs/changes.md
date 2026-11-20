@@ -8,6 +8,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - The merge queue attributes a failed candidate to a member whose own run failed during
   the split decision (SPEC-559, #1398).
+- Screen readers now identify Claude, Codex and Antigravity in watched and saved transcripts.
+  Sessions search uses the same assistant names (SPEC-564, #1455).
+- Closing or stopping an answered task now honors the request when its reader has taken it and escalation records host loss. The attempt retains its lost exit reason. [SPEC-563](../.ai/specs/SPEC-563-honor-close-and-cancel-intents-when-host.md)
 
 - A GPT model now selects Codex for API and MCP task creation. Choosing a GPT or Gemini model
   on a Claude Code task fails before creation or update (SPEC-560, #1427).
