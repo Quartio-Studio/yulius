@@ -45,8 +45,8 @@ The inventory at dev 56f08db7f contained 20 issues. #1490 belongs to task #540. 
 - [x] Verify the intake scenarios against the first-load budget
 - [x] Obtain independent approval for the intake regression
 - [x] Reproduce the red-candidate split when its member fails
-- [ ] Preserve the known member failure in merge-train decisions
-- [ ] Obtain independent approval for the merge-train fix
+- [x] Preserve the known member failure in merge-train decisions
+- [x] Obtain independent approval for the merge-train fix
 - [ ] Verify the independent fixes and reconcile the remaining issues
 
 ## Acceptance criteria
@@ -85,3 +85,6 @@ Task #541 owns #1398. Task #546 was archived before it started. Its independent 
 - Independent review approved the intake fix at 015dd8f7c. The reviewer reran the delayed proposal and checked all eleven first-load assertions and the permanently held trace. The repository quick checks passed. The mutation command found no changed Rust code in this slice. Vidoc was disabled.
 - PR #1495 merged and GitHub closed #1441. The merge candidate passed quality, both Rust shards and e2e in run c4b1e6af. Yulius recorded success for head ed9bcb044 and the resulting dev commit ba2c36264 (run 38d7b047). Vidoc was disabled.
 - The controlled failure of member 2 between the two checks reproduced the historical audit from PR #1397 on unchanged decision logic. The candidate was bisected even though the member’s own run had failed.
+- All 48 merge-train integration tests passed with the fix, including the original quarantined test, the forced race, the wait deadline, and bisection for a genuine combined failure. The independent reviewer approved adc28b79b and ran the forced race and deadline control on that head.
+- After integrating dev at 3cc2b1969, the original quarantined test, the forced race and the deadline control also passed on the reviewed head (3/3).
+- The mutation baseline passed 3,207 tests. The command reported “mutants: 2 listed, 1 caught, 0 missed, 0 timed out, 1 unviable, 0 not reached (bound 30 min, took 655 s)”. Vidoc was disabled.
