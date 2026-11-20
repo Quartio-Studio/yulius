@@ -237,6 +237,23 @@ test('failing checks wait for the agent’s own work before they need you', asyn
   await expect(screen.getByRole('region', 'Needs you').getByRole('link', /Payment webhook/)).toBeVisible();
 });
 
+test('a Codex wait and a failed check do not ask for a terminal reply', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/4'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#4 Payment webhook');
+  await touchStudioTask(browser, 4, { harness: 'codex', status: 'running', activity: 'waiting', yulius_wait: true });
+  await expect(browser.locator('.strip-status')).toHaveText(/Waiting for checks or merge · PR #209 checks failing/);
+  await expect(screen.getByRole('region', 'Working').getByRole('link', /Payment webhook/)).toBeVisible();
+  await expect(browser.locator('.attention-bar')).toBeHidden();
+
+  await touchStudioTask(browser, 4, { yulius_wait: false });
+  await expect(browser.locator('.strip-status')).toHaveText(/PR #209 · checks failing/);
+  await expect(browser.locator('.attention-bar')).toBeHidden();
+
+  await touchStudioTask(browser, 4, { needs_you: { action: 'Choose the test account', problem: 'Two accounts match.' } });
+  await expect(browser.locator('.attention-bar')).toHaveText(/Choose the test account/);
+  await expect(browser.locator('.attention-bar').getByRole('button', 'Reply')).toBeVisible();
+});
+
 test('a finished task whose pull request is tested can be archived and is closed', async ({ app, browser, screen }) => {
   // #11 finished its turn with a complete plan and green checks: Done (#35), although it idles.
   await app.open(mock('/s/studio/t/11'));

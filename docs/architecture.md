@@ -2038,6 +2038,19 @@ live overlay. While the park is under way nothing is typed into the session. A m
 prompt. A queued task's summary carries `queue_reason` (the session limit or an update), and
 `GET /api/capacity` counts working, idle, parked and queued sessions for the Capacity card.
 
+The end-of-day digest (`yulius-app/src/digest.rs`, SPEC-512 part 3,
+[decision 0380](decisions/0380-an-end-of-day-digest-built-from-task-state.md)) runs from the same
+tick: `digest_tick` reads `instance.digest`, and once today's time (UTC) passed takes the run with
+a conditional write of `digest_ran_at`. `send_digests_now` first parks, with
+`ParkRule::Digest(threshold)`, running tasks whose agent waits for its turn and that ask nobody
+(the same `park_task_now`, every guard of `ParkFacts`) and waits until those sessions ended, then
+builds one `DigestView` per person who can see each task's project (`can_view`) from task state
+and the transcript's last assistant message (`read_tail`), redacted with `redact_for_sandbox`,
+listing as parked what parked after the last listing and up to this one's mark
+(`digest_listed_at`: its value taken before the build, written after it), keeps it in `digests` (last seven), publishes `digest.ready` to that person and enqueues
+the text on their linked Telegram chat when `notify_digest` is on. The run is spawned off the
+tick.
+
 ```mermaid
 stateDiagram-v2
   running --> parked: idle past the grace period, nothing goes on (session ended)
@@ -3695,6 +3708,11 @@ every agent mid-turn: a run that is watched again takes the time back from the f
 (`watch_answerable_flag`), so the task reads Working once the person answered and the agent goes
 on, after a restart as before one. The same holds for a question that took a secret request's
 flag over.
+
+A live `yulius wait` under Codex counts as a wait whether Codex execs it directly or launches
+it through a shell. The process probe excludes waits adopted by the sandbox init. A failed PR
+check has its own action in the task strip. The terminal reply banner is for a person's turn
+or an explicit request ([SPEC-552](../.ai/specs/SPEC-552-on-codex-agent-keeps-calling-me-even-if.md)).
 
 Needs you means a person has to act. An idle agent that stopped reads "Your turn" under Needs you only
 while its work is visibly unfinished: plan steps open, or a goal that Claude Code last recorded as set,

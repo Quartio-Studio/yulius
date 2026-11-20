@@ -171,6 +171,7 @@ fn choices_view(choices: NotifyChoices) -> TelegramChoices {
         done: choices.done,
         failed: choices.failed,
         account: choices.account,
+        digest: choices.digest,
     }
 }
 
@@ -703,6 +704,7 @@ impl App {
             done: choices.done,
             failed: choices.failed,
             account: choices.account && admin,
+            digest: choices.digest,
         };
         if !self
             .deps

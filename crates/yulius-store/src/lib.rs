@@ -15,6 +15,7 @@ mod ci;
 mod coordination;
 pub mod crypto;
 mod delivery;
+mod digest;
 mod guests;
 mod imports;
 mod instance;
@@ -194,7 +195,9 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0069_reindex_codex_antigravity_sessions.sql"),
     // SPEC-534. The position is the schema version and 0072 is the reserved file number.
     include_str!("migrations/0072_pause_legacy_automations.sql"),
-    // Schema version 71 (SPEC-535).
+    // Schema version 71 (SPEC-512 DIG-001); 0070 is the reserved file number.
+    include_str!("migrations/0070_end_of_day_digest.sql"),
+    // Schema version 72 (SPEC-535); 0071 is the reserved file number.
     include_str!("migrations/0071_reindex_session_passages.sql"),
 ];
 
@@ -475,8 +478,9 @@ mod tests {
                 70,
                 include_str!("migrations/0072_pause_legacy_automations.sql"),
             ),
+            (71, include_str!("migrations/0070_end_of_day_digest.sql")),
             (
-                71,
+                72,
                 include_str!("migrations/0071_reindex_session_passages.sql"),
             ),
         ];
@@ -487,7 +491,7 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 71, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 72, "a new migration is pinned here too");
     }
 
     /// SPEC-514 PIN-003: a version-67 database's automations saved as `auto` (drawn for each
@@ -622,16 +626,17 @@ mod tests {
             assert_eq!(chunks("d-codex")?, 0);
             assert_eq!(matches("kept")?, 1);
             assert_eq!(matches("stalecodexpassage")?, 0);
-            // Start the upgrade at dev's schema version 70, with its automation migration applied.
+            // Bring the fixture to dev's schema, including the automation and digest migrations.
             conn.execute_batch(MIGRATIONS[69])?;
-            conn.pragma_update(None, "user_version", 70)?;
+            conn.execute_batch(MIGRATIONS[70])?;
+            conn.pragma_update(None, "user_version", 71)?;
             // A full session must become eligible for lazy reindexing too.
             conn.execute(
                 "UPDATE session_docs SET index_full = 1 WHERE id = 'd-claude'",
                 [],
             )?;
         }
-        // SPEC-535: an upgrade clears even a passage already indexed by a version-70 server.
+        // SPEC-535: an upgrade clears even a passage already indexed by a version-71 server.
         let store = SqliteStore::open(&path)?;
         let sandbox = yulius_domain::ids::SandboxId::parse("s1")?;
         let docs = store.session_docs(&sandbox).await?;

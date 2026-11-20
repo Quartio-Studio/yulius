@@ -18,7 +18,9 @@ that widens who can do what stays off by default; the owner rule (GIT-004) stays
 This spec is delivered in five parts, one per issue, each by its own pull request. A part's
 requirements carry its issue's prefix: PRK (#1412), ANS (#1418), DIG (#1413), TGI (#1107), HOF
 (#1106). Decisions: [ADR-0367](../../docs/decisions/0367-an-idle-session-is-parked-and-resumed-by-a-message.md)
-(parking) and the records the later parts add.
+(parking), [ADR-0379](../../docs/decisions/0379-a-needs-you-names-who-may-answer-it.md)
+(named requests), [ADR-0380](../../docs/decisions/0380-an-end-of-day-digest-built-from-task-state.md)
+(the digest) and the records the later parts add.
 
 ## Goal
 
@@ -157,10 +159,51 @@ steering (terminal input, Continue, merge, model, subscription) is the owner's. 
   on GitHub as its owner; terminal input, Continue (start), and `delivery_merge`/`task_merge`
   stay the owner's (tested for the named person); stop follows ADR-0331 as today.
 
-### Parts 3 to 5
+### Part 3: the end-of-day digest (#1413)
 
-Written when each part starts (see Context): DIG (#1413), TGI (#1107), HOF (#1106), each from its
-issue's acceptance criteria.
+Today (read on `dev` at 5cc48169e): parking (part 1) ends idle sessions of tasks that wait for a
+person or are Done after `YULIUS_PARK_AFTER_MINUTES`; nothing gathers what waits for a person. The
+browser's notification center is built from the event stream while a tab is open (kept in that
+browser); the Telegram notifier (ADR-0351) sends each linked person's chosen kinds, redacted with
+`redact_for_sandbox` (TGC-023). Instance settings live in columns of `instance`.
+
+- **DIG-001 The setting.** `GET`/`PUT /api/admin/digest` (superadmins and instance
+  administrators): `enabled` (default false), `at` (`HH:MM`, UTC, default `18:00`) and
+  `park_idle_hours` (1 to 720, or null: the digest parks nothing; default null). Stored in
+  `instance.digest`, audited `instance.digest.set`, shown in Settings, Instance. Turning it on
+  never sends at once: the first digest is the next `at`. Off, nothing below runs.
+- **DIG-002 Once a day.** The background tick runs the digest when it is on, today's `at` has passed
+  and it has not run since; the run is taken with one conditional write of `digest_ran_at`, so a
+  restart or a second tick never sends it twice. A server down at `at` sends it when it is back
+  the same day.
+- **DIG-003 It parks what waits for nobody.** With `park_idle_hours` set, the run first parks each
+  running task whose session has been quiet that long, whose agent waits for its turn (not Done),
+  that has no open `needs_you` and that every other guard of PRK-002 lets go (no turn,
+  background work, Yulius wait, held prompt, browser request, pause, keyboard, onboarding), as
+  part 1 parks: it resumes when someone writes to it. Done tasks and tasks waiting for a person
+  are never parked by the digest; part 1's own grace period is unchanged.
+- **DIG-004 What it says.** One digest per enabled person, about the tasks they own and the
+  requests that name them, in this order:
+  1. *Waiting for you*: their running or parked tasks with an open `needs_you` or a question in
+     the terminal, and other people's tasks whose open request names them (ADR-0379): project,
+     number, title, the request, the link.
+  2. *Parked*: their tasks parked since the last digest (by it or by part 1; the first digest
+     looks back 24 hours) and not listed above: title, how it ended (finished, or waiting for
+     their turn), what the agent's last message left (its end, at most 300 characters), the link.
+  3. *Still working*: how many, and up to ten one per line.
+  A person with nothing in any section gets no digest.
+- **DIG-005 Where it goes.** The digest is stored for the person (the last seven kept),
+  published to their open pages, and the bell shows it, also when the page opens later
+  (`GET /api/me/digest`); the entry opens `/digest`, which shows the latest digest with its links.
+  A linked Telegram chat gets it as one message unless the person turned digests off there
+  (`digest` among the Telegram choices, on by default once linked).
+- **DIG-006 Redaction.** Every text taken from a task (title, request, last message) passes the
+  same redaction as that sandbox's transcripts before it is stored or sent.
+
+### Parts 4 and 5
+
+Written when each part starts (see Context): TGI (#1107), HOF (#1106), each from its issue's
+acceptance criteria.
 
 ## Plan
 
@@ -176,12 +219,12 @@ issue's acceptance criteria.
 - [x] A named person answers an open needs_you on the web and with task_message
 - [x] The owner sees who may answer and withdraws it; answers attributed in transcript and audit
 - [x] Owner-only refusals tested for the named person; ADR and docs for answers
-- [ ] Review of the #1418 pull request answered test-first
-- [ ] Digest setting: on or off, time and idle threshold, off by default
-- [ ] The digest is built from task state and last messages
-- [ ] The digest parks idle tasks past the threshold and goes to the browser and Telegram
-- [ ] ADR and docs for the digest
-- [ ] Review of the #1413 pull request answered test-first
+- [x] Review of the #1418 pull request answered test-first
+- [x] Digest setting: on or off, time and idle threshold, off by default
+- [x] The digest is built from task state and last messages
+- [x] The digest parks idle tasks past the threshold and goes to the browser and Telegram
+- [x] ADR and docs for the digest
+- [x] Review of the #1413 pull request answered test-first
 - [ ] Telegram intake switch and default project per person, off by default
 - [ ] A reply to a Telegram notification reaches its task under the owner rule
 - [ ] A new Telegram message or file becomes a task with attachments
@@ -217,6 +260,17 @@ issue's acceptance criteria.
 - [x] Everything else on the task stays owner-only (GIT-004), with tests for terminal input,
   start, stop and merge by the named person (ANS-006).
 
+### #1413
+
+- [x] An instance setting turns the digest on and sets its time and the idle threshold, both off
+  by default (DIG-001).
+- [x] The digest goes to every notification channel the person has on: the browser and Telegram
+  (DIG-005).
+- [x] Tasks waiting for the person are listed first and are never parked by it (DIG-003, DIG-004).
+- [x] Idle tasks past the threshold are parked, listed with links and what their last message
+  left, and resume when someone writes to them (DIG-003, DIG-004).
+- [x] A digest with nothing to report is not sent (DIG-004).
+
 ## Test plan
 
 ### #1412
@@ -234,6 +288,19 @@ issue's acceptance criteria.
 - `queue_reason` at the session limit and during an update; the Capacity view's `sessions`.
 - Web unit tests (`status.js`): label and group of a parked task, `taskActions` offers Resume,
   the queued line; an e2e test for the Sessions tile and a parked task's row.
+
+### #1413
+
+- Unit: the digest's park rule (each guard keeps a session; Done and Needs you never park); the
+  digest's text (sections in order, cut last message, nothing to report → none); the day's run
+  decision (before and after `at`, ran already, turned on after `at`).
+- Store: `digest_ran_at` is taken once; digests kept per person, the last seven.
+- Integration (`crates/yulius/tests/telegram.rs` and `parking.rs`, the digest tests): off by default (no digest, no park); a run parks
+  an idle Your-turn task past the threshold and not a Needs-you or Done one, and a message
+  resumes it; the person's digest lists the waiting task first, the parked one with its last
+  message redacted, the working count; Telegram gets it (fake bot) and not with `digest` off;
+  nothing to report sends nothing; two ticks send one.
+- e2e (`digest.e2e.ts`): the setting in Settings; the bell's digest entry opens `/digest`.
 
 ## Decisions
 
@@ -271,7 +338,73 @@ issue's acceptance criteria.
   pending news by PRK-002; news that arrives later waits in its watch like any news for a
   session that takes none, and is told when the task resumes.
 
+- **The digest is built from task state and the transcript, without a model** (#1413's
+  recommended option). The last message's end (300 characters) stands for "the action it left":
+  an agent ends its turn with what it needs; a model to pick actions out stays a later option.
+  ADR-0380.
+- **The digest's parks are narrower than part 1's.** The issue says tasks waiting for the person
+  and Done tasks are never parked by the digest; part 1 parks both after its grace period. Both
+  hold: the digest adds a park for quiet Your-turn tasks past its own threshold (an instance that
+  turned part 1 off or set it long), and part 1 is unchanged.
+- **Stored per person, read by the bell.** The notification center lives in the browser from the
+  event stream; a digest sent while no page is open would be lost, so the server keeps the last
+  seven and the bell reads the latest when a page opens. Telegram is one message per digest,
+  outside the per-person rate bound (one a day).
+- **Who gets one.** Every enabled person with something in a section; there is no per-person
+  browser switch (the instance setting is the switch, as the issue's acceptance says), and
+  Telegram digests can be turned off among the chat's choices.
+
 ## Evidence
+
+### Part 3 (#1413)
+
+| Acceptance criterion | Test |
+|---|---|
+| An instance setting turns the digest on, sets its time and idle threshold, both off by default | `telegram::the_digest_is_off_by_default_and_set_by_an_instance_administrator` (defaults, instance administrators only, 422 for a bad time or threshold, audit); `digest::tests::a_time_is_hours_and_minutes`; e2e `digest.e2e.ts` "an instance administrator turns the digest on" and "a member sees no digest setting" |
+| It runs once a day after its time, never twice, never while off | `digest::tests::the_digest_is_due_once_a_day_after_its_time`; `telegram::the_digest_runs_once_a_day_after_its_time` (controlled clock); store `digest::tests::the_days_run_is_taken_once` |
+| It goes to every notification channel the person has on (browser and Telegram) | `telegram::a_digest_lists_what_waits_first_redacted_and_reaches_the_chat` (fake bot; not sent with `digest` off, still kept for the browser); e2e "a digest made while no page was open reaches the bell and opens /digest" and "the day's digest arrives while the page is open"; store `a_person_keeps_the_last_seven_digests` |
+| Tasks waiting for the person are listed first and never parked | `parking::the_digest_parks_a_quiet_task_that_asks_nobody_and_lists_its_last_message` (run says parked 0 while it asks: fails when the rule ignores the request, checked by mutation); `parking::tests::the_digest_parks_only_what_waits_for_nobody` (Done never); `digest::tests::the_message_lists_what_waits_first` |
+| Idle tasks past the threshold are parked, listed with links and their last message, and resume when written to | `parking::the_digest_parks_a_quiet_task_that_asks_nobody_and_lists_its_last_message` (real processes, part 1 off: parked, audited `task.parked`, "Last message: ECHO: …", `task_message` resumes it) |
+| Text that leaves the instance is redacted | `telegram::a_digest_lists_what_waits_first_redacted_and_reaches_the_chat` (an agent secret in the request is absent from the stored digest and the Telegram text) |
+| A digest with nothing to report is not sent | `telegram::a_digest_lists_what_waits_first_redacted_and_reaches_the_chat` (bob, with no task, gets none: `null` and no message) |
+
+Review round 1 (head 3d6fb8768, CHANGES REQUESTED), answered test-first:
+
+| Finding | Change | Test |
+|---|---|---|
+| The digest reached people who cannot see the project (owner who lost access, named person without access) | each recipient is checked with `can_view` per project, cached per run | `telegram::a_digest_reaches_only_people_who_can_see_the_project` (fails without the check: checked by mutation) |
+| A task the digest parked was listed again the next day | the listing has its own mark (`digest_listed_at`), its value taken once the run's parks settled (no longer live) and before the build, written after it; "parked since" is after the last mark and up to this one | `parking::the_digest_parks_…` (a second run sends nothing) and `telegram::a_digest_lists_…` (a second digest lists nothing parked); both fail when the window ignores the mark (mutation) |
+| A cleared bell entry came back on every load | the last digest heard is remembered per person apart from the list; the entry carries the digest's time | e2e "a cleared digest entry does not come back on the next load" (fails without the memory: mutation) |
+| No tests for named, withdrawn or disabled people, or for redacting a title or a last message | added | `telegram::a_digest_reaches_only_people_who_can_see_the_project` (named, withdrawn, disabled owner), `telegram::a_digest_lists_…` (secret in a title), `parking::the_digest_parks_…` (agent secret in the last message: `[secret:DIGEST_KEY]`) |
+| A save shortened the window; moving the time later sent a second digest that day | a save no longer touches the listing mark (the first digest looks back 24 hours); no digest when one already went out today | store `the_days_run_is_taken_once`, `digest::tests::the_digest_is_due_once_a_day_after_its_time`, `telegram::a_digest_lists_…` (saved before the first run, the parked task is still listed) |
+| Transcripts read inside the tick | the run is spawned off the tick; its claim keeps a second tick out | by reading (`background.rs`) |
+| One unreadable task cancelled every digest | a task that fails is logged and left out | by reading (`digest_drafts`) |
+| Guests were refused `/api/me/digest` | allowed for guests (their own digest; visibility is checked per project) | `guest_may_reach` |
+| Nits | `notify::truncate`; quiet time checked before a park's probe; "Finished" follows the list's group; `waiting_capacity` counts as working; digits-only times; `/digest` follows `digest.ready` | `a_time_is_hours_and_minutes`; parking test reads "Finished" as the list does |
+
+Review round 2 (head 809c5b974, CHANGES REQUESTED), answered test-first:
+
+| Finding | Change | Test |
+|---|---|---|
+| With two tabs open, only one tab's bell showed a live digest | only the read at page open asks the remembered id; a live `digest.ready` always adds its entry (the key dedups) | e2e "a digest arriving live reaches every open tab, also one whose browser already saw it" (failed before the change) |
+| A run crossing midnight UTC skipped the next day's digest | the same-day rule reads `digest_sent_at`, written only by a run's claim (with `digest_ran_at`), not the listing's end | `digest::tests::the_digest_is_due_once_a_day_after_its_time` (claim at 23:59:30), store `the_days_run_is_taken_once` (the claim writes it, a save leaves it) |
+| The listing window had no upper bound | "parked since" is after the last mark and up to this listing's mark | the parking and Telegram tests' second runs list nothing parked |
+| Wording in architecture, spec and ADR-0380 | corrected (the mark's value is taken before the build and written after it; the same-day rule and the settle wait in the ADR) | by reading |
+| CI at 3d6fb8768: the guest page test saw the mock refuse `/api/me/digest` | the mock's guest allowlist matches the server's | e2e `playground-guests.e2e.ts` "a guest sees their playground and nothing else" |
+
+Review round 3 (head 35aacf65f): APPROVED, nothing blocking. Its one test gap was closed after the
+approval (tests only): `telegram::a_digest_whose_listing_ends_after_midnight_keeps_the_next_days`
+fails when the tick reads the listing mark instead of the claim (checked by mutation). Nits left
+as they are: a digest park that takes over a minute to end is listed on two days; a page opened
+in the same instant as a live digest can add the previous digest's entry once more.
+
+Known limit (not changed): a stored digest is not redacted again when read, so a secret registered after a
+digest was made stays in up to seven stored digests of its person until they rotate out.
+
+Before and after: before, nothing gathered what waits for a person; they opened each project. After
+(with the digest on), one bell entry a day, "Your end-of-day digest: 1 waits for you · 1 parked ·
+2 still working", opens `/digest` with the sections and links, and the same text reaches the
+linked Telegram chat. An instance that changes nothing sees no difference.
 
 ### Part 2 (#1418)
 

@@ -226,8 +226,12 @@ function seed(params) {
     telegram: {
       bot: params.get('telegram') ? 'yulius_mock_bot' : null, setAt: params.get('telegram') ? '2026-11-07T08:00:00Z' : null, setBy: params.get('telegram') ? 'mkarp' : null,
       linkedAt: params.get('telegram') === 'linked' ? '2026-11-07T09:00:00Z' : null, code: null,
-      choices: { needs_you: true, done: false, failed: false, account: false },
+      choices: { needs_you: true, done: false, failed: false, account: false, digest: true },
     },
+    // The end-of-day digest (SPEC-512 part 3): the instance's setting and the person's latest
+    // digest (`digest=1` starts with one). `__yuliusMock.sendDigest()` makes a new one and sends
+    // `digest.ready`, as the server's daily run does.
+    digest: { setting: { enabled: false, at: '18:00', park_idle_hours: null }, latest: params.get('digest') ? mockDigest('dg_mock_1') : null },
     vidoc: { key: null, setAt: null, setBy: null, config: params.get('vidoc') === 'config', offAt: params.get('vidoc_off') ? '2026-10-30T09:00:00Z' : null, offBy: params.get('vidoc_off') ? 'superadmin' : null, fail: params.get('vidoc_fail') === '1', repo: params.get('vidoc_repo'), patchFail: params.get('vidoc_patch_fail') === '1' },
     // fail=<path> answers 500 to GET requests of that exact path, to show how a view says a load
     // failed (in place, naming what failed, with Try again; #147). A test may set `failPath` later;
@@ -1356,7 +1360,7 @@ const GUEST_PAGES = ['attachments', 'browser', 'ci', 'files', 'git', 'intake', '
 /** The server's `guest_may_reach` (crates/yulius-server/src/auth.rs). */
 function guestMayReach(method, path) {
   path = path.replace(/\/$/, '');
-  if (['/api/me', '/api/me/notes', '/api/auth/logout', '/api/events', '/api/archived-tasks', '/api/previews/authorize'].includes(path)) return true;
+  if (['/api/me', '/api/me/notes', '/api/me/digest', '/api/auth/logout', '/api/events', '/api/archived-tasks', '/api/previews/authorize'].includes(path)) return true;
   if (path === '/api/sandboxes') return method === 'GET';
   if (/^\/api\/(tasks|sessions|shells)\/.+/.test(path)) return true;
   const match = /^\/api\/sandboxes\/([^/]+)(?:\/([^/]+))?/.exec(path);
@@ -5636,9 +5640,34 @@ route('POST', '/api/me/telegram/link', ({ db }) => {
 route('DELETE', '/api/me/telegram', ({ db }) => { db.telegram.linkedAt = null; return myTelegramView(db); });
 route('PUT', '/api/me/telegram/choices', ({ db, body }) => {
   if (!db.telegram.linkedAt) fail(409, 'conflict', 'link a Telegram chat first');
-  db.telegram.choices = { needs_you: Boolean(body.needs_you), done: Boolean(body.done), failed: Boolean(body.failed), account: Boolean(body.account) && isAdmin(db) };
+  db.telegram.choices = { needs_you: Boolean(body.needs_you), done: Boolean(body.done), failed: Boolean(body.failed), account: Boolean(body.account) && isAdmin(db), digest: body.digest !== false };
   return myTelegramView(db);
 });
+
+// The end-of-day digest (SPEC-512 DIG-001, DIG-005), validated as the server does.
+function mockDigest(id) {
+  const item = (number, title, detail) => ({ project: 'quartio/studio', number, title, detail, link: `https://yulius.example/s/studio/t/${number}` });
+  return {
+    id,
+    created_at: new Date().toISOString(),
+    waiting: [item(12, 'Ruleset for main', 'Add a ruleset on main')],
+    parked: [item(7, 'Fix the export', 'Waits for your turn. Last message: Please promote dev to main.')],
+    working_count: 2,
+    working: [item(3, 'Billing page', null), item(4, 'Search index', null)],
+  };
+}
+route('GET', '/api/admin/digest', ({ db }) => { instanceAdminOnly(db); return db.digest.setting; });
+route('PUT', '/api/admin/digest', ({ db, body }) => {
+  instanceAdminOnly(db);
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(body.at || '').trim());
+  if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) fail(422, 'invalid', 'the time is HH:MM, in UTC');
+  const hours = body.park_idle_hours;
+  if (hours !== null && hours !== undefined && !(Number.isInteger(hours) && hours >= 1 && hours <= 720)) fail(422, 'invalid', 'the idle threshold is 1 to 720 hours, or none');
+  db.digest.setting = { enabled: Boolean(body.enabled), at: `${m[1].padStart(2, '0')}:${m[2]}`, park_idle_hours: hours ?? null };
+  return db.digest.setting;
+});
+// `reads` counts the page's reads of it, so a test knows the bell has read it.
+route('GET', '/api/me/digest', ({ db }) => { db.digest.reads = (db.digest.reads || 0) + 1; return db.digest.latest; });
 
 // The instance Vidoc key (SPEC-195 VDK-002): the Jev key's routes, for Vidoc.
 function vidocView(db) {
@@ -7232,6 +7261,10 @@ function startAmbient(db) {
 export function createMockTransport(params) {
   const db = seed(params);
   window.__yuliusMock = db; // debugging aid in the browser console (mock mode only)
+  db.sendDigest = (id = `dg_mock_${Date.now()}`) => {
+    db.digest.latest = mockDigest(id);
+    emit(db, { type: 'digest.ready', digest: db.digest.latest });
+  };
   // The Editor's shared text (SPEC-411): a window this one opened shares its hub and files.
   let opener = null;
   try { opener = window.opener && window.opener.__yuliusMock && window.opener.__yuliusMock.live ? window.opener.__yuliusMock : null; } catch { opener = null; }
