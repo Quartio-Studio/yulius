@@ -1,6 +1,6 @@
 ---
 yulius-task: ce65d233-0ed5-403b-b36c-33036e6d1952
-status: in-progress
+status: done
 ---
 
 # SPEC-567. Prevent Chrome's default app policy dialog
@@ -29,7 +29,7 @@ Task #490 saw Chrome's native administrator dialog after host setup. On dev `e15
 - [x] Obtain independent approval for delivery to dev
 - [x] Preserve the parked-screen fixture across a late viewer resize
 - [x] Verify saved assistant names when transcript entries are offscreen
-- [ ] Validate the ordered ADR index on the landed prefix and obtain delivery approval
+- [x] Validate the ordered ADR index on the landed prefix and obtain delivery approval
 
 ## Acceptance criteria
 
@@ -86,3 +86,9 @@ Yulius run `b1b56597-4952-48b4-97f6-097478bf80f3` on `f11a41632` read the correc
 The regression commit `6ef139e03` reproduced the empty saved label for Claude, Codex and Antigravity. The corrected checks read each prefix directly from the DOM and require its exact case, including the imported Claude search hit. Forcing saved entries to use Claude in an isolated checkout then failed only the Codex and Antigravity saved-label assertions. This repair changes the test. The browser UI already sets the span to the session's harness name.
 
 All 55 Chromium watching and Sessions tests passed on the repaired branch. `scripts/dev quick` passed. `scripts/dev mutants --base f11a41632` found no Rust changes in this test repair.
+
+PR head `6b0af30da` passed its own [Yulius CI run](https://yulius.quartio.ai/s/yulius/ci?run=d888c0ef-0272-407e-8418-bf1e8cedadd2). The independent reviewer approved `f11a41632` after verifying the live and saved grid controls. The assistant-label correction since that approval changes tests and evidence.
+
+The integration branch landed #1511 at `7645d73dc` and #1510 at `a97de183b`. Merging that dev into the task branch reproduced the repository checker's 0402-before-0401 failure. Commit `0fa27701f` orders the original index entries 0400, 0401 and 0402. The entries and decision files for 0401 and 0402 match their respective parent commits byte for byte. The combined tree passed `python3 scripts/check_repository.py`, `scripts/dev quick` and all 59 browser library tests.
+
+The combined tree passed all 37 Chromium parked and watching cases. The previously approved browser code and parked-screen mock are byte-identical on this tree. Vidoc was disabled by Yulius. The task delivery record tracks the final PR and landed-commit checks.
