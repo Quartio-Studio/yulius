@@ -845,6 +845,10 @@ async fn armed_pull_requests_merge_together_on_one_run() -> TestResult {
             outcome.contains(&format!("in a merge train with #{peer}.")),
             "{outcome}"
         );
+        assert!(
+            outcome.contains(&format!("candidate at {}", &train.sha[..9])),
+            "{outcome}"
+        );
         // A train's merge of a part is not the task's end either; a whole plan's is.
         let goes_on = outcome
             .contains("1 step(s) of your plan are still ahead (next: \"Later slice\")")
@@ -1718,6 +1722,10 @@ async fn a_passed_candidate_merges_while_a_members_own_run_goes() -> TestResult 
         "{text}"
     );
     assert!(text.contains("in a merge train."), "{text}");
+    assert!(
+        text.contains(&format!("candidate at {}", &train.sha[..9])),
+        "{text}"
+    );
     let delivery = app.task_delivery(&ctx, "t1").await?;
     assert!(
         delivery.notes.iter().any(
@@ -2665,8 +2673,16 @@ async fn a_green_current_pull_request_merges_on_the_next_pass() -> TestResult {
     assert_eq!(f.h.github.writes().len(), writes);
     f.record_passed(&app, 2, &git(&second, &["rev-parse", "HEAD"])?)
         .await?;
+    // The protected merge returns a commit even if the read confirming its base fails.
+    f.h.github.fail_merged_reads.store(true, Ordering::SeqCst);
     app.merge_decidable_everywhere().await;
+    f.h.github.fail_merged_reads.store(false, Ordering::SeqCst);
     assert_eq!(f.merges(), ["merge_pull #2 squash"]);
+    let sha = git(&f.origin, &["rev-parse", "dev"])?;
+    let state = f.wait(2, &second).await?;
+    let text = state["merge_outcome"].as_str().ok_or("merge outcome")?;
+    assert!(text.contains(&format!("at {}", &sha[..9])), "{text}");
+    assert!(!text.contains("into `dev`"), "unconfirmed base: {text}");
     // The stale candidate makes way for one on the new base, and #1 lands on it.
     f.decide_until(&app, || async {
         f.settle(&app).await?;
@@ -2731,6 +2747,39 @@ async fn a_pinned_hand_merge_on_a_green_head_counts() -> TestResult {
                 .is_some_and(|n| n.contains("counts as merged on green")))),
         "{status}"
     );
+    // A stale read of an open PR or a different closed PR cannot identify this landing.
+    for (merged, misnumbered) in [(false, false), (true, true)] {
+        f.h.github
+            .misnumber_merged_reads
+            .store(misnumbered, Ordering::SeqCst);
+        f.h.github
+            .pulls
+            .lock()
+            .map_err(|_| "pulls")?
+            .iter_mut()
+            .find(|pull| pull.number == 1)
+            .ok_or("merged PR")?
+            .merged = merged;
+        let again = support::mcp_tool(
+            &f.h,
+            "tok-t1",
+            "delivery_merge",
+            json!({"reviewed_head": head, "review_summary": "approve"}),
+        )
+        .await?;
+        let again = support::tool_text(&again);
+        assert!(
+            again["next"]
+                .as_str()
+                .is_some_and(|note| note.contains("could not read its merged head")
+                    && !note.contains("into `dev`")
+                    && !note.contains(&landed[..9])),
+            "{again}"
+        );
+    }
+    f.h.github
+        .misnumber_merged_reads
+        .store(false, Ordering::SeqCst);
 
     // Without the ruleset, a head that never passed is merged by hand: it does not count.
     f.h.github.strict.store(false, Ordering::SeqCst);
