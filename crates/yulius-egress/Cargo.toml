@@ -17,6 +17,7 @@ layer = "adapter"
 [dependencies]
 yulius-domain = { workspace = true }
 yulius-app = { workspace = true }
+yulius-sandbox = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }

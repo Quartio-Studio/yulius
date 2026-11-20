@@ -28,6 +28,8 @@ use yulius_domain::connections::{self, Activity, Admitted, Busier, Connections};
 use yulius_domain::vault::egress_destination_allowed;
 use yulius_domain::vault::redact::{Matcher, PlainMatcher, StreamRedactor, redact_all};
 
+use yulius_sandbox::relay::CopyState;
+
 use crate::ca::CertificateAuthority;
 
 /// Boxed error of bodies and resolvers.
@@ -1104,7 +1106,7 @@ pub(crate) async fn tunnel(addrs: Vec<SocketAddr>, upgraded: Upgraded, permit: S
     let mut server = Tracked::new(stream, &permit);
     let _ = tokio::time::timeout(
         CONNECTION_MAX,
-        tokio::io::copy_bidirectional(&mut client, &mut server),
+        CopyState::default().transfer(&mut client, &mut server),
     )
     .await;
     drop(permit);

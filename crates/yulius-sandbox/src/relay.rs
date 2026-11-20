@@ -12,6 +12,12 @@
 //! `out.sock`) closes its longest-idle connection past [`IDLE_FLOOR`] for a new one instead of
 //! refusing it (SPEC-355 SLR-001, ADR-0241).
 
+mod copy;
+#[cfg(target_os = "linux")]
+pub mod custodian;
+
+pub use copy::CopyState;
+
 use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -694,10 +700,11 @@ where
         return stream.write_u8(RELAY_FORBIDDEN).await;
     };
     match with_timeout(CONNECT_TIMEOUT, "connect", TcpStream::connect(*target)).await {
-        Ok(upstream) => {
+        Ok(mut upstream) => {
             stream.write_u8(RELAY_OK).await?;
-            splice(stream, upstream).await;
-            Ok(())
+            CopyState::default()
+                .transfer(&mut stream, &mut upstream)
+                .await
         }
         Err(_) => stream.write_u8(RELAY_REFUSED).await,
     }

@@ -1,0 +1,646 @@
+//! Short-lived descriptor custodian for an orderly restart (SPEC-577).
+//!
+//! The original server sends a batch on an inherited Unix stream. Each 'P' carries two
+//! connected descriptors via SCM_RIGHTS, then a big-endian u32 and that many bytes of
+//! private copy state. 'E' ends the batch. The helper acknowledges with 'E' after binding
+//! the successor's listener, and sends the same batch to its single accepted successor.
+//! The successor acknowledges complete receipt with 'A'. The helper confirms with 'C'.
+//! Until confirmation the helper can shut down every stream if delivery fails or expires.
+
+use std::fs;
+use std::io::{self, IoSlice, IoSliceMut};
+use std::mem::MaybeUninit;
+use std::os::fd::{AsFd, OwnedFd};
+use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
+use std::os::unix::net::UnixStream as StdUnixStream;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use rustix::net::{
+    self, AddressFamily, RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, ReturnFlags,
+    SendAncillaryBuffer, SendAncillaryMessage, SendFlags, SocketType,
+};
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, Interest};
+use tokio::net::{UnixListener, UnixStream};
+
+const MAX_PAIRS: usize = 512; // 256 opaque tunnels and their matching out.sock relays.
+const MAX_STATE: usize = 32 * 1024; // Two 8 KiB buffers, half-close state and ownership metadata.
+const LIFETIME: Duration = Duration::from_secs(120);
+
+/// Already-connected endpoints and their bounded private state. Never log this state.
+pub struct Pair {
+    /// The client-side and destination-side stream, in copy order.
+    pub sockets: [OwnedFd; 2],
+    /// Caller-encoded copy cursor and admission metadata.
+    pub state: Vec<u8>,
+}
+
+fn invalid(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+fn connected(fd: &OwnedFd) -> io::Result<()> {
+    if net::sockopt::socket_type(fd)? == SocketType::STREAM
+        && net::getpeername(fd)?.is_some_and(|addr| {
+            matches!(
+                addr.address_family(),
+                AddressFamily::INET | AddressFamily::INET6 | AddressFamily::UNIX
+            )
+        })
+    {
+        Ok(())
+    } else {
+        Err(invalid("handoff requires connected stream sockets"))
+    }
+}
+
+async fn header(stream: &UnixStream) -> io::Result<Option<[OwnedFd; 2]>> {
+    stream
+        .async_io(Interest::READABLE, || {
+            let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(2))];
+            let mut ancillary = RecvAncillaryBuffer::new(&mut space);
+            let mut tag = [0];
+            let result = net::recvmsg(
+                stream,
+                &mut [IoSliceMut::new(&mut tag)],
+                &mut ancillary,
+                RecvFlags::CMSG_CLOEXEC,
+            )?;
+            // A stream header has one byte. At EOF the untouched zero tag below is invalid.
+            if result.flags.contains(ReturnFlags::CTRUNC) {
+                return Err(invalid("incomplete tunnel handoff header"));
+            }
+            let mut sockets = Vec::new();
+            for message in ancillary.drain() {
+                let RecvAncillaryMessage::ScmRights(rights) = message else {
+                    return Err(invalid("unexpected tunnel handoff control message"));
+                };
+                sockets.extend(rights);
+            }
+            match tag[0] {
+                b'E' if sockets.is_empty() => Ok(None),
+                b'P' => {
+                    let pair: [OwnedFd; 2] = sockets
+                        .try_into()
+                        .map_err(|_| invalid("expected a socket pair"))?;
+                    for fd in &pair {
+                        connected(fd)?;
+                    }
+                    Ok(Some(pair))
+                }
+                _ => Err(invalid("unknown tunnel handoff header")),
+            }
+        })
+        .await
+}
+
+fn check_capacity(count: usize, state_bytes: usize) -> io::Result<()> {
+    if count > MAX_PAIRS || state_bytes > MAX_STATE {
+        return Err(invalid("tunnel handoff exceeds capacity"));
+    }
+    Ok(())
+}
+
+async fn receive(stream: &mut UnixStream) -> io::Result<Vec<Pair>> {
+    let mut pairs = Vec::new();
+    while let Some(sockets) = header(stream).await? {
+        let size = stream.read_u32().await? as usize;
+        check_capacity(pairs.len().saturating_add(1), size)?;
+        let mut state = vec![0; size];
+        stream.read_exact(&mut state).await?;
+        pairs.push(Pair { sockets, state });
+    }
+    Ok(pairs)
+}
+
+async fn send_header(stream: &UnixStream, sockets: &[OwnedFd; 2]) -> io::Result<()> {
+    stream
+        .async_io(Interest::WRITABLE, || {
+            let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(2))];
+            let mut ancillary = SendAncillaryBuffer::new(&mut space);
+            let fds = sockets.each_ref().map(AsFd::as_fd);
+            if !ancillary.push(SendAncillaryMessage::ScmRights(&fds)) {
+                return Err(invalid("insufficient ancillary space"));
+            }
+            if net::sendmsg(
+                stream,
+                &[IoSlice::new(b"P")],
+                &mut ancillary,
+                SendFlags::NOSIGNAL,
+            )? != 1
+            {
+                return Err(invalid("incomplete tunnel handoff write"));
+            }
+            Ok(())
+        })
+        .await
+}
+
+async fn send(stream: &mut UnixStream, pairs: &[Pair]) -> io::Result<()> {
+    for Pair { sockets, state } in pairs {
+        send_header(stream, sockets).await?;
+        stream
+            .write_u32(u32::try_from(state.len()).map_err(|_| invalid("copy state too large"))?)
+            .await?;
+        stream.write_all(state).await?;
+    }
+    stream.write_all(b"E").await
+}
+
+struct SocketPath {
+    path: PathBuf,
+    inode: u64,
+}
+
+// The directory lock belongs to this process and is released even on SIGKILL. A new helper
+// can reclaim a stale socket without unlinking another helper's live adoption listener.
+fn lock_directory(directory: &Path) -> io::Result<fs::File> {
+    let lock = fs::File::open(directory)?;
+    lock.try_lock()?;
+    Ok(lock)
+}
+
+fn remove_stale_socket(path: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_socket() => fs::remove_file(path),
+        Ok(_) => Err(invalid("expected a socket in the handoff directory")),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+impl Drop for SocketPath {
+    fn drop(&mut self) {
+        if fs::symlink_metadata(&self.path).is_ok_and(|m| m.ino() == self.inode) {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+fn private_directory(directory: &Path) -> io::Result<u32> {
+    let owner = nix::unistd::geteuid().as_raw();
+    let metadata = fs::symlink_metadata(directory)?;
+    if !metadata.is_dir() || metadata.uid() != owner || metadata.mode() & 0o077 != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "expected private service directory",
+        ));
+    }
+    Ok(owner)
+}
+
+fn service_peer(stream: &UnixStream, owner: u32) -> io::Result<()> {
+    if stream.peer_cred()?.uid() != owner {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "unexpected handoff peer",
+        ));
+    }
+    Ok(())
+}
+
+// SCM_RIGHTS already queued to a stalled receiver can outlive the sending control socket.
+// Retain the original endpoints until confirmation so an incomplete transfer can close
+// both halves even if a duplicate is still in the receiver's queue or descriptor table.
+struct PendingDelivery(Vec<Pair>);
+
+impl Drop for PendingDelivery {
+    fn drop(&mut self) {
+        for pair in &self.0 {
+            for socket in &pair.sockets {
+                let _ = net::shutdown(socket, net::Shutdown::Both);
+            }
+        }
+    }
+}
+
+async fn hold(control: &mut UnixStream, directory: &Path) -> io::Result<()> {
+    let owner = private_directory(directory)?;
+    service_peer(control, owner)?;
+    let lock = lock_directory(directory)?;
+    let pairs = receive(control).await?;
+    let path = directory.join("tunnels.sock");
+    remove_stale_socket(&path)?;
+    let listener = UnixListener::bind(&path)?;
+    let guard = SocketPath {
+        inode: fs::symlink_metadata(&path)?.ino(),
+        path,
+    };
+    control.write_all(b"E").await?;
+    let (mut successor, _) = listener.accept().await?;
+    drop(listener);
+    drop(guard);
+    service_peer(&successor, owner)?;
+    // Keep the helper's one place through a stalled transfer. Bound its kernel send queue
+    // as well as the batch it holds in memory.
+    net::sockopt::set_socket_send_buffer_size(&successor, MAX_STATE)?;
+    let mut pending = PendingDelivery(pairs);
+    send(&mut successor, &pending.0).await?;
+    if successor.read_u8().await? != b'A' {
+        return Err(invalid("batch receipt was not acknowledged"));
+    }
+    successor.write_all(b"C").await?;
+    pending.0.clear(); // Confirmed. Release our originals without shutting down the sockets.
+    drop(lock);
+    Ok(())
+}
+
+async fn hold_until(
+    control: &mut UnixStream,
+    directory: &Path,
+    expiry: impl Future<Output = ()>,
+) -> io::Result<()> {
+    tokio::select! {
+        biased;
+        () = expiry => Err(io::ErrorKind::TimedOut.into()),
+        result = hold(control, directory) => result,
+    }
+}
+
+/// Runs the internal helper with the old server's connected Unix control socket on stdin.
+/// One deadline covers receiving the batch, waiting for the successor and sending the batch.
+///
+/// # Errors
+/// Returns an error for invalid input, loss of either control connection or expiry.
+pub fn run(directory: &Path) -> io::Result<()> {
+    let input = StdUnixStream::from(io::stdin().as_fd().try_clone_to_owned()?);
+    input.set_nonblocking(true)?;
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(async {
+            let mut control = UnixStream::from_std(input)?;
+            hold_until(&mut control, directory, tokio::time::sleep(LIFETIME)).await
+        })
+}
+
+/// Send a batch to a helper that survives this process. On success the helper has bound its
+/// single-consumer listener and holds all the sockets. An empty batch starts no helper.
+///
+/// # Errors
+/// Fails on invalid capacity, directory permissions, failure to start or missing acknowledgement.
+pub async fn deposit(executable: &Path, directory: &Path, pairs: Vec<Pair>) -> io::Result<()> {
+    if pairs.is_empty() {
+        return Ok(());
+    }
+    for pair in &pairs {
+        check_capacity(pairs.len(), pair.state.len())?;
+    }
+    private_directory(directory)?;
+    let (mut stream, child_socket) = UnixStream::pair()?;
+    let stdin = OwnedFd::from(child_socket.into_std()?);
+    let mut child = tokio::process::Command::new(executable)
+        .arg("sandbox-host")
+        .arg("hold-tunnels")
+        .arg("--directory")
+        .arg(directory)
+        .process_group(0)
+        .env_clear()
+        .stdin(std::process::Stdio::from(stdin))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    // Reap while the depositing server is around. When it exits the helper is reparented.
+    tokio::spawn(async move {
+        let _ = child.wait().await;
+    });
+    tokio::time::timeout(LIFETIME, async {
+        send(&mut stream, &pairs).await?;
+        if stream.read_u8().await? != b'E' {
+            return Err(invalid("handoff was not acknowledged"));
+        }
+        Ok(())
+    })
+    .await?
+}
+
+/// Receive the previous server's complete batch. Partial batches drop all received descriptors.
+/// A missing socket is reported as `NotFound` so startup can distinguish an ordinary cold start.
+///
+/// # Errors
+/// Fails on directory or peer verification, invalid input, disconnection or deadline expiry.
+pub async fn adopt(directory: &Path) -> io::Result<Vec<Pair>> {
+    let owner = private_directory(directory)?;
+    tokio::time::timeout(LIFETIME, async {
+        let path = directory.join("tunnels.sock");
+        let mut stream = match UnixStream::connect(&path).await {
+            Ok(stream) => stream,
+            Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
+                let _lock = lock_directory(directory)?;
+                remove_stale_socket(&path)?;
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
+        service_peer(&stream, owner)?;
+        let pairs = receive(&mut stream).await?;
+        stream.write_all(b"A").await?;
+        if stream.read_u8().await? != b'C' {
+            return Err(invalid("adoption was not confirmed"));
+        }
+        Ok(pairs)
+    })
+    .await?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::Permissions;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    fn pair(state: Vec<u8>) -> io::Result<(Pair, [UnixStream; 2])> {
+        let (left, a) = UnixStream::pair()?;
+        let (right, b) = UnixStream::pair()?;
+        Ok((
+            Pair {
+                sockets: [left.into_std()?.into(), right.into_std()?.into()],
+                state,
+            },
+            [a, b],
+        ))
+    }
+
+    #[tokio::test]
+    async fn an_unclaimed_batch_expires_and_releases_both_peers() -> io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        fs::set_permissions(dir.path(), Permissions::from_mode(0o700))?;
+        let (mut old, mut control) = UnixStream::pair()?;
+        let (saved, mut peers) = pair(b"pending".to_vec())?;
+        let serving = async {
+            let (expire, expired) = tokio::sync::oneshot::channel();
+            let holding = hold_until(&mut control, dir.path(), async {
+                let _ = expired.await;
+            });
+            tokio::pin!(holding);
+            tokio::select! {
+                result = &mut holding => return result.and(Err(invalid("helper ended before acknowledgement"))),
+                answer = async {
+                    send(&mut old, &[saved]).await?;
+                    old.read_u8().await
+                } => assert_eq!(answer?, b'E'),
+            }
+            assert!(dir.path().join("tunnels.sock").exists());
+            let _ = expire.send(());
+            assert!(
+                holding
+                    .await
+                    .is_err_and(|error| error.kind() == io::ErrorKind::TimedOut)
+            );
+            Ok(())
+        };
+        tokio::time::timeout(Duration::from_secs(5), serving).await??;
+        assert!(!dir.path().join("tunnels.sock").exists());
+        for peer in &mut peers {
+            assert_eq!(peer.read(&mut [0]).await?, 0);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_short_or_oversize_record_drops_the_whole_batch() -> io::Result<()> {
+        for size in [MAX_STATE + 1, 10] {
+            let (mut source, mut dest) = UnixStream::pair()?;
+            let (record, mut peers) = pair(Vec::new())?;
+            let (previous, mut previous_peers) = pair(Vec::new())?;
+            send_header(&source, &previous.sockets).await?;
+            source.write_u32(0).await?;
+            drop(previous);
+            // Send a real pair, then truncate the state or declare more than the limit.
+            send_header(&source, &record.sockets).await?;
+            drop(record);
+            source
+                .write_u32(u32::try_from(size).map_err(io::Error::other)?)
+                .await?;
+            source.shutdown().await?;
+            let error = receive(&mut dest)
+                .await
+                .err()
+                .ok_or_else(|| invalid("accepted invalid batch"))?;
+            assert_eq!(
+                error.kind(),
+                if size == 10 {
+                    io::ErrorKind::UnexpectedEof
+                } else {
+                    io::ErrorKind::InvalidData
+                }
+            );
+            for peer in peers.iter_mut().chain(&mut previous_peers) {
+                assert_eq!(peer.read(&mut [0]).await?, 0);
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_cold_start_reclaims_only_the_stale_socket() -> io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        fs::set_permissions(dir.path(), Permissions::from_mode(0o700))?;
+        let path = dir.path().join("tunnels.sock");
+        drop(UnixListener::bind(&path)?);
+        assert!(
+            adopt(dir.path())
+                .await
+                .is_err_and(|e| e.kind() == io::ErrorKind::ConnectionRefused)
+        );
+        assert!(!path.exists());
+        fs::write(&path, b"keep")?;
+        assert!(remove_stale_socket(&path).is_err());
+        assert_eq!(fs::read(&path)?, b"keep");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_public_directory_or_published_symlink_cannot_receive_state() -> io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        fs::set_permissions(dir.path(), Permissions::from_mode(0o755))?;
+        assert!(
+            adopt(dir.path())
+                .await
+                .is_err_and(|e| e.kind() == io::ErrorKind::PermissionDenied)
+        );
+        let private = tempfile::tempdir()?;
+        fs::set_permissions(private.path(), Permissions::from_mode(0o700))?;
+        let alias = private.path().join("alias");
+        std::os::unix::fs::symlink(private.path(), &alias)?;
+        assert!(
+            adopt(&alias)
+                .await
+                .is_err_and(|e| e.kind() == io::ErrorKind::PermissionDenied)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_empty_deposit_needs_no_helper_and_oversize_state_fails_before_spawn()
+    -> io::Result<()> {
+        let missing = Path::new("/no-such-custodian-executable");
+        deposit(missing, missing, vec![]).await?;
+        let (large, _) = pair(vec![0; MAX_STATE + 1])?;
+        assert!(
+            deposit(missing, missing, vec![large])
+                .await
+                .is_err_and(|e| e.kind() == io::ErrorKind::InvalidData)
+        );
+        let (full, _) = pair(vec![0; MAX_STATE])?;
+        assert!(
+            deposit(missing, missing, vec![full])
+                .await
+                .is_err_and(|e| e.kind() == io::ErrorKind::NotFound)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_pair_requires_two_connected_streams_and_an_end_has_no_descriptors() -> io::Result<()>
+    {
+        let (mut sender, receiver) = UnixStream::pair()?;
+        sender.write_all(b"P").await?;
+        assert!(header(&receiver).await.is_err());
+        sender.write_all(b"?").await?;
+        assert!(header(&receiver).await.is_err());
+        let (files, _) = pair(vec![])?;
+        let (datagram, _peer) = std::os::unix::net::UnixDatagram::pair()?;
+        let nonstream: OwnedFd = datagram.into();
+        let [stream, _] = files.sockets;
+        send_header(&sender, &[stream, nonstream]).await?;
+        assert!(header(&receiver).await.is_err());
+        // A terminator carrying descriptors and a truncated rights array both reject the batch.
+        let (record, _) = pair(vec![])?;
+        for (tag, count) in [(b'E', 2), (b'P', 4)] {
+            let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(4))];
+            let mut ancillary = SendAncillaryBuffer::new(&mut space);
+            let fds = [record.sockets[0].as_fd(); 4];
+            assert!(ancillary.push(SendAncillaryMessage::ScmRights(&fds[..count])));
+            net::sendmsg(
+                &sender,
+                &[IoSlice::new(&[tag])],
+                &mut ancillary,
+                SendFlags::NOSIGNAL,
+            )?;
+            assert!(header(&receiver).await.is_err());
+        }
+        sender.shutdown().await?;
+        assert!(header(&receiver).await.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn the_batch_fits_every_tunnel_and_relay_but_rejects_one_extra_record_or_byte() -> io::Result<()>
+    {
+        check_capacity(512, 32 * 1024)?;
+        assert!(check_capacity(513, 0).is_err());
+        assert!(check_capacity(1, 32 * 1024 + 1).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn cleanup_keeps_a_replacement_inode() -> io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("tunnels.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path)?;
+        let guard = SocketPath {
+            inode: fs::symlink_metadata(&path)?.ino(),
+            path: path.clone(),
+        };
+        fs::remove_file(&path)?;
+        fs::write(&path, b"replacement")?;
+        drop(guard);
+        assert_eq!(fs::read(&path)?, b"replacement");
+        drop(listener);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_control_socket_peer_must_match_the_service_directory_owner() -> io::Result<()> {
+        let (stream, _) = UnixStream::pair()?;
+        let uid = stream.peer_cred()?.uid();
+        service_peer(&stream, uid)?;
+        assert!(
+            service_peer(&stream, uid.wrapping_add(1))
+                .is_err_and(|e| e.kind() == io::ErrorKind::PermissionDenied)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn failed_path_lookups_propagate_and_a_private_file_is_not_a_directory() -> io::Result<()>
+    {
+        let dir = tempfile::tempdir()?;
+        let file = dir.path().join("file");
+        fs::write(&file, b"keep")?;
+        fs::set_permissions(&file, Permissions::from_mode(0o600))?;
+        assert!(private_directory(&file).is_err());
+        assert!(
+            remove_stale_socket(&file.join("missing"))
+                .is_err_and(|e| e.kind() == io::ErrorKind::NotADirectory)
+        );
+        let _lock = lock_directory(dir.path())?;
+        // A cold lookup, even while a helper is receiving, stays a missing socket.
+        fs::set_permissions(dir.path(), Permissions::from_mode(0o700))?;
+        assert!(
+            adopt(dir.path())
+                .await
+                .is_err_and(|e| e.kind() == io::ErrorKind::NotFound)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn expiry_closes_connections_already_sent_to_an_unconfirmed_consumer() -> io::Result<()> {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let dir = tempfile::tempdir()?;
+            fs::set_permissions(dir.path(), Permissions::from_mode(0o700))?;
+            let (mut old, mut control) = UnixStream::pair()?;
+            let (saved, mut peers) = pair(b"private state".to_vec())?;
+            let (expire, expired) = tokio::sync::oneshot::channel();
+            let serving = hold_until(&mut control, dir.path(), async {
+                let _ = expired.await;
+            });
+            let stalled = async {
+                send(&mut old, &[saved]).await?;
+                assert_eq!(old.read_u8().await?, b'E');
+                let mut successor = UnixStream::connect(dir.path().join("tunnels.sock")).await?;
+                // Keep the duplicate descriptors and control connection open without acknowledging.
+                let received = receive(&mut successor).await?;
+                assert_eq!(received.len(), 1);
+                let _ = expire.send(());
+                for peer in &mut peers {
+                    assert_eq!(peer.read(&mut [0]).await?, 0);
+                }
+                drop((successor, received));
+                Ok::<_, io::Error>(())
+            };
+            let (held, received) = tokio::join!(serving, stalled);
+            received?;
+            assert!(held.is_err_and(|e| e.kind() == io::ErrorKind::TimedOut));
+            Ok(())
+        })
+        .await?
+    }
+
+    #[tokio::test]
+    async fn adoption_discards_received_descriptors_if_confirmation_is_missing() -> io::Result<()> {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let dir = tempfile::tempdir()?;
+            fs::set_permissions(dir.path(), Permissions::from_mode(0o700))?;
+            let listener = UnixListener::bind(dir.path().join("tunnels.sock"))?;
+            let (record, mut peers) = pair(b"partial transaction".to_vec())?;
+            let sending = async {
+                let (mut stream, _) = listener.accept().await?;
+                send(&mut stream, &[record]).await?;
+                assert_eq!(stream.read_u8().await?, b'A');
+                // Lose the helper after acknowledgement, before its final confirmation.
+                Ok::<_, io::Error>(())
+            };
+            let (sent, adopted) = tokio::join!(sending, adopt(dir.path()));
+            sent?;
+            assert!(adopted.is_err_and(|e| e.kind() == io::ErrorKind::UnexpectedEof));
+            for peer in &mut peers {
+                assert_eq!(peer.read(&mut [0]).await?, 0);
+            }
+            Ok(())
+        })
+        .await?
+    }
+}
