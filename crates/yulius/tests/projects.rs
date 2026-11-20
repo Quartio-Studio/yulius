@@ -1189,11 +1189,22 @@ async fn an_outstanding_browser_port_lease_holds_the_removed_range() -> TestResu
     }
     let shop = import(&w, &alice, "Quartio-Studio/shop").await?.body;
     let sid = SandboxId::parse(text(&shop["id"]))?;
-    let lease =
+    let (lease, _) =
         w.h.app
             .lease_sandbox_ports(&sid)
             .await?
             .ok_or("browser ports")?;
+    let second =
+        w.h.app
+            .lease_sandbox_ports(&sid)
+            .await?
+            .ok_or("second lease")?
+            .0;
+    assert!(
+        std::sync::Arc::ptr_eq(&lease, &second),
+        "both requests hold the same identity"
+    );
+    drop(second);
     let removed = call(
         &w.h.router,
         Method::DELETE,
@@ -1213,6 +1224,17 @@ async fn an_outstanding_browser_port_lease_holds_the_removed_range() -> TestResu
     assert_eq!(
         basket["port_base"], 20000,
         "the final proxy lease was dropped"
+    );
+    let basket_id = SandboxId::parse(text(&basket["id"]))?;
+    let _basket =
+        w.h.app
+            .lease_sandbox_ports(&basket_id)
+            .await?
+            .ok_or("basket lease")?;
+    assert_eq!(
+        w.h.app.browser_port_lease_entries(),
+        1,
+        "the expired shop identity was pruned"
     );
     Ok(())
 }

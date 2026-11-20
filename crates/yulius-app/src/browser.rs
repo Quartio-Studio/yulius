@@ -206,6 +206,16 @@ impl App {
             .map(|ports| (lease, ports)))
     }
 
+    /// Number of sandbox identities retained by the browser proxy lease registry.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn browser_port_lease_entries(&self) -> usize {
+        self.browser_port_leases
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+
     pub(crate) fn browser_holds_ports(&self, sandbox: &SandboxId) -> bool {
         self.browser_port_leases
             .lock()
