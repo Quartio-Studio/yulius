@@ -2269,10 +2269,25 @@ fn conflict_paths_preserve_distinct_non_utf8_names() -> TestResult {
         }
         fx.git.commit_all(tree, content, &author())?;
     }
-    assert_eq!(
-        fx.git.merge_conflicts(&branch, "main", "HEAD")?,
-        Some(vec![r#""x\"\\\t\220""#.into(), r#""x\"\\\t\221""#.into()]),
-    );
+    let preview = fx
+        .git
+        .merge_conflicts(&branch, "main", "HEAD")?
+        .ok_or("expected conflicts")?;
+    assert_eq!(preview, [r#""x\"\\\t\220""#, r#""x\"\\\t\221""#]);
+    let owned = fx.path("ci");
+    fs::create_dir(&owned)?;
+    let train = fx.git.build_train(
+        &repo,
+        &owned.join("train"),
+        &owned,
+        &TrainInput {
+            base: "main",
+            heads: &[fx.git.rev_parse(&branch, "HEAD")?],
+            landing: TrainLanding::MergeCommit,
+            author: &author(),
+        },
+    )?;
+    assert_eq!(train.steps, [TrainStep::Conflict(preview)]);
     Ok(())
 }
 
