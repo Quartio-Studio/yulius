@@ -991,6 +991,15 @@ merge_first = true                  # at most one; needs deploy, verify and roll
                                     #   after_merge jobs off pull requests (SPEC-575, ADR-0410)
 ```
 
+A task-local deployment (SPEC-575 MFS-010, ADR-0415) is one table:
+
+```toml
+[local]
+about = "the app and its database in docker compose, on this sandbox's ports"
+deploy = "scripts/cd/deploy.sh local"   # required; deploys into this sandbox only
+verify = "scripts/cd/verify.sh local"   # optional
+```
+
 The merge-first environment changes only through its staging queue (ADR-0411):
 
 - A task's agent's `cd_deploy` of it records a staging request for the task's newest landing on
@@ -1016,8 +1025,9 @@ The merge-first environment changes only through its staging queue (ADR-0411):
 - The deploy scripts of a merge-first target must be idempotent: a run lost to a restart is
   retried, up to three attempts.
 - A failed deploy that announced a rollback barrier is not restored; its request says so.
-- With a merge-first target, a production deploy that promotes is refused (409) until staging
-  serves the integration head, verified.
+- With a merge-first target, every promotion (a production deploy's, `POST …/delivery/promote`,
+  the profile's automatic one) is refused (409) until staging serves the integration head,
+  verified; the automatic promotion then runs once the staging queue verified it.
 
 A run deploys the commit GitHub reports for the branch, taken into a mirror only Yulius writes
 (every object checked, replacement refs ignored). It writes the commit's files into the run's own

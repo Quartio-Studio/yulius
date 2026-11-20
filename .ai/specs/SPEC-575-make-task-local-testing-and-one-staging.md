@@ -1,6 +1,6 @@
 ---
 yulius-task: ecd4476a-f231-43c0-b9d6-de0cf18baa0f
-status: in-progress
+status: done
 ---
 
 # SPEC-575 Merge-first staging: task-local testing and one staging deploy per task
@@ -115,7 +115,8 @@ What exists today (map of 2026-11-20, `dev` at f80f42cad):
     revision that environment serves, verified, with the tables read through the CD mirror.
     Promotion merges the integration branch, so the promoted revision is exactly the verified one
     (ADR-0411).
-  - Slice 2 gates the production deploy; the next slice gates the other two.
+  - Slice 2 gates the production deploy; slice 3 gates the other two, and the queue runs a
+    waiting automatic promotion once staging verified the head.
   - The authorization rules are unchanged: an administrator types the slug, and the rollback
     gate applies.
 - **MFS-010 Task-local deployment.**
@@ -154,13 +155,13 @@ What exists today (map of 2026-11-20, `dev` at f80f42cad):
 - [x] Failures reach the owning task; a failed deploy rolls staging back to its last verified release
 - [x] cd_status and the CD page show the staging queue with run and revision ids
 - [x] Production promotion takes the last verified staging revision
-- [ ] `[local]` task-local deployment in config and briefing
-- [ ] Bootstrap skill, workflow, delivery-pipeline, onboarding prompt and briefing teach merge-first
-- [ ] Upgrade task per onboarded sandbox for the new bootstrap revision
-- [ ] Every promotion path waits for the verified staging revision, read through the CD mirror
-- [ ] Scenario test: fresh bootstrap, existing sandbox, failed candidate then fix, concurrent tasks with a retried deploy
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] `[local]` task-local deployment in config and briefing
+- [x] Bootstrap skill, workflow, delivery-pipeline, onboarding prompt and briefing teach merge-first
+- [x] Upgrade task per onboarded sandbox for the new bootstrap revision
+- [x] Every promotion path waits for the verified staging revision, read through the CD mirror
+- [x] Scenario test: fresh bootstrap, existing sandbox, failed candidate then fix, concurrent tasks with a retried deploy
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -224,4 +225,108 @@ What exists today (map of 2026-11-20, `dev` at f80f42cad):
 
 ## Evidence
 
-Not yet.
+Delivered in three pull requests:
+- #1530 (slice 1, MFS-001 and MFS-002), merged at 5c8d321d8;
+- #1535 (slices 2 and 3, MFS-003 to MFS-009 for production deploys), merged at 81709b75a;
+- this pull request (MFS-009 for every promotion, MFS-010 to MFS-012).
+
+Every head went through Yulius CI and an independent review in a fresh session (Fable 5.2).
+
+### Scenarios (integration tests)
+
+All in `crates/yulius/tests/staging.rs` unless named otherwise. Each scenario reads run ids and
+revision ids from the store and the fake origin.
+
+- **Failed merged candidate, then a fix**
+  (`a_failing_candidate_leaves_staging_on_its_release_and_the_fix_deploys`):
+  - r1 is verified with CI run `ci-<r1>` and CD run X.
+  - r2's full gate fails: the request is `gate_failed` and its note names run `ci-<r2>` and the
+    failed job `full`.
+  - The deploy script's mark still holds r1, and the only deployed revision is r1.
+  - The fix r3 passes and is the one verified there. The deployed revisions are exactly
+    `[r1, r3]`.
+  - A duplicate request returns the same id.
+  - The API and `cd_status` list the queue with the revisions and the CI and CD run ids.
+- **Concurrent tasks, with a retried deploy**
+  (`a_lost_deploy_is_retried_and_concurrent_tasks_deploy_in_revision_order`):
+  - A deploy reconciled as lost after a restart is retried and verified (attempts 2).
+  - Two tasks asking together deploy in revision order, never back to an older revision.
+  - A delivery staging already serves is answered `included` with that run's id.
+  - Each task has exactly one success.
+- **More queue behaviour**, each with its own test:
+  - a failed deploy restores the last verified release, once
+    (`a_failed_deploy_puts_staging_back_on_its_last_verified_release`), but never past an
+    announced rollback barrier;
+  - a person's cancel stands;
+  - waiting behind another run or a held deploy gate costs no attempt;
+  - the owner's write access is required;
+  - a candidate run survives the branch moving on and decides the request through the real
+    executor (`ci_dispatch`);
+  - refusals and supersedes: open steps, no CI gate, a newer landing, a revision force-pushed
+    away, a target removed;
+  - pinned deploys only of a commit on the branch's own first-parent history.
+- **Fresh bootstrap:**
+  - The onboarding prompt teaches the merge-first default (`onboarding::tests`).
+  - The workflow, skill and template are shipped in the catalog (`workflows::catalog` tests).
+  - The adopting pull request still runs its full suite
+    (`local_ci::adopting_merge_first_runs_the_full_suite_on_its_own_pull_request`).
+- **Existing sandbox:**
+  - The upgrade task (`bootstrap_upgrade::an_onboarded_sandbox_gets_one_upgrade_task_per_revision`):
+    one Infra bootstrap task per onboarded sandbox and revision, none for a sandbox still
+    onboarding, none on a second start, and the claim is given back without a Claude account.
+  - Adoption (`a_project_that_adopts_merge_first_deploys_its_next_delivery_through_the_queue`):
+    staging deployed by hand before the switch, then the earlier delivery is `included`, and the
+    next one is verified through the queue.
+- **Duplicate pre-merge full-suite runs are gone**
+  (`local_ci::merge_first_runs_the_full_suite_once_on_the_merged_revision`):
+  - The pull request head's run skips `full` with the merge-first reason.
+  - The integration branch's run at the squash commit is the only run of it.
+  - A train skips it too, and the merged head runs it
+    (`merge_train::a_train_skips_the_full_suite_and_the_merged_head_runs_it`,
+    `merge_train::a_reused_candidate_still_leaves_the_full_suite_to_the_merged_head`).
+  - A candidate run counts as testing its commit
+    (`ci::tests::a_candidate_run_is_kept_and_counts_as_testing_its_commit`).
+- **Production from verified staging:**
+  - The production deploy is gated (`production_is_promoted_only_from_the_verified_staging_revision`).
+  - So are the Delivery page and the automatic promotion
+    (`every_promotion_waits_for_the_revision_staging_verified`): refused with the clone's
+    object rewritten, refused naming why when the CD mirror cannot be read, and promoted once
+    verified.
+  - Automatic promotion follows the verified deploy
+    (`automatic_promotion_follows_the_verified_staging_deploy`).
+
+### Mutations checked by hand
+
+Each of these was reverted, its test failed, and the code was restored:
+- the tree-reuse copy keeping the full suite's reason;
+- the restore call;
+- the barrier skip;
+- the cancel mapping;
+- the owner's write-access check;
+- the deploy-gate half of `staging_must_wait`;
+- the mirror-unreadable refusal for known merge-first projects.
+
+### Commands
+
+- `cargo nextest run` over the app, domain, store, git and contracts packages, plus the
+  `local_ci`, `merge_train`, `cd`, `cd_rollback`, `staging`, `delivery`, `production_branch`,
+  `parking`, `self_update`, `ui_contract`, `playground`, `bootstrap_upgrade` and onboarding
+  suites: 2081 passed.
+- `npx e2e run tests/cd.e2e.ts`: 28 passed, including the staging queue on the CD page.
+- `cargo clippy --workspace --all-targets -D warnings` and `scripts/dev quick`: clean.
+- The security scan is turned off for this project in Yulius: `yulius security-scan` prints
+  "Security scan disabled", and CI's `security` job ends skipped. Disabled, not passed.
+
+### Not tested here, and the rollout
+
+- Shipping, adoption on the Quartio and PerfectData instances, and Quartio-v2 as the first real
+  project need the release on `main` and each instance updated. Promotion to `main` and the
+  instance update (Settings, Instance, Update now) are a person's; task #561 asks for both with
+  `needs_you`.
+- After the update, the upgrade task in each onboarded sandbox reports whether it switched (and
+  its target) or has no shared target. Those reports are the adoption evidence. This task cannot
+  read other sandboxes: the handoff switch is off on this instance.
+- The update gate's real flow (an install closing the gate) is covered through a test seam
+  (`hold_deploys_for_tests`), not the self-update fixture.
+- Yulius's own repository has no shared staging target (`[cd.dev]` is empty), so it keeps its
+  full suite on pull requests. Its own upgrade task will report "no shared target".

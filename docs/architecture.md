@@ -3182,8 +3182,10 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
   - `tell_staging_outcomes` types each task's outcome into its session once.
   - `cd_status` and the CD page (`CdEnvironment.staging`) list the queue with revisions and run
     ids.
-  - A person's production deploy that promotes waits until staging serves the integration
-    head, verified (read through the CD mirror in `cd_prepare`).
+  - Every promotion waits until staging serves the integration head, verified, read through the
+    CD mirror: `cd_prepare` for a production deploy, `staging_promotion_head` for the Delivery
+    page and the automatic one. The queue's verified deploy runs the automatic promotion that
+    waited.
   - A failed deploy that announced a rollback barrier is not restored.
 - **Idempotence.** Each move is a compare-and-set from the state it was read in. One live
   request per requester and revision, and one success per task and environment. The background
@@ -3204,6 +3206,24 @@ stateDiagram-v2
     testing --> superseded: a newer revision of the task
     ready --> superseded: a newer revision of the task
 ```
+
+### Merge-first as the bootstrap default
+
+[Decision 0415](decisions/0415-merge-first-is-the-bootstrap-default-and-reaches-onboarded-projects-through-a-task.md)
+(SPEC-575 MFS-010 to MFS-012).
+
+- **The default, taught.** The built-in `infra-bootstrap` skill, its workflow, the
+  `delivery-pipeline` skill, the onboarding prompt (`onboarding.rs` `CD_SETUP`) and the
+  new-project template make a shared staging target merge-first and add a `[local]` deployment.
+- **The briefing.**
+  - `Foundations.merge_first` replaces "merges deploy nothing" with how staging changes.
+  - `Foundations.local` names `[local]` beside the dev-server ports
+    (`spec_format::parse_yulius_toml_local`).
+- **The upgrade.** At a server start (`App::create_bootstrap_upgrades`, `bootstrap_upgrade.rs`),
+  each onboarded sandbox below `BOOTSTRAP_REVISION` gets one Infra bootstrap task.
+  - It is owned by the sandbox's creator, with an automation's origin.
+  - The revision is claimed in `bootstrap_upgrades` (migration 0079) first, and given back when
+    the task cannot be created.
 
 ### Rollback
 

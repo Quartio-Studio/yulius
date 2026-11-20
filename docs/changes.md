@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
+- With a merge-first staging target, the Delivery page's Promote and the automatic promotion
+  also take only the revision staging verified, read through the verified CD mirror; an
+  automatic promotion runs once the staging queue verified the head ([ADR-0411](decisions/0411-staging-changes-through-a-queue-of-tested-merged-revisions.md)).
+- New projects with a shared staging target are bootstrapped merge-first, with a `[local]`
+  deployment inside each task's sandbox. Each onboarded sandbox gets one Infra bootstrap task
+  that adopts it, keeping the project's own commands, targets and grants, or records that the
+  project has no shared target ([ADR-0415](decisions/0415-merge-first-is-the-bootstrap-default-and-reaches-onboarded-projects-through-a-task.md)).
 - Merge-first staging target: a task's `cd_deploy` now queues a staging request for the task's
   merged revision instead of deploying the branch head.
   - Yulius runs the full gate on exactly that commit, then deploys and verifies revisions in
@@ -14,7 +21,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   - A deploy lost to a restart is retried, and duplicate requests answer with the recorded one.
   - A failed deploy restores staging and tells the task.
   - The CD page and `cd_status` show the queue.
-  - Production promotes only the revision staging verified
+  - A production deploy that promotes takes only the revision staging verified
     ([ADR-0411](decisions/0411-staging-changes-through-a-queue-of-tested-merged-revisions.md),
     [SPEC-575](../.ai/specs/SPEC-575-make-task-local-testing-and-one-staging.md)).
 - Task lists and Home check parked PRs in bounded batches. A stalled check leaves its task under Needs you and gives later tasks time to verify their own checks (SPEC-558).
