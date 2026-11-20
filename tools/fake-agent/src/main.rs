@@ -1983,7 +1983,7 @@ impl Entered {
         std::thread::spawn(move || {
             let stdin = io::stdin();
             let mut input = stdin.lock();
-            while let Ok(Some(line)) = read_prompt(&mut input) {
+            while let Ok(Some(line)) = read_message(&mut input) {
                 if lines.send(line).is_err() {
                     break;
                 }
@@ -1999,7 +1999,7 @@ impl Entered {
 
     /// A line entered meanwhile, if one was.
     fn meanwhile(&self) -> Option<String> {
-        self.0.try_recv().ok()
+        self.0.try_iter().find(|line| !line.is_empty())
     }
 }
 
@@ -2523,16 +2523,6 @@ fn read_message(input: &mut impl BufRead) -> io::Result<Option<String>> {
         message.push_str(&next);
     }
     Ok(Some(render_pastes(&drop_reports(&message))))
-}
-
-/// Enter in an empty prompt box starts no turn, including a retry after a dropped submit.
-fn read_prompt(input: &mut impl BufRead) -> io::Result<Option<String>> {
-    while let Some(message) = read_message(input)? {
-        if !message.is_empty() {
-            return Ok(Some(message));
-        }
-    }
-    Ok(None)
 }
 
 /// The message without the focus reports (`ESC [ I`, `ESC [ O`) and SGR or X10 mouse reports a
@@ -3092,13 +3082,13 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
     let mut direct = entered.is_none().then(|| io::stdin().lock());
     let mut next = || match (&entered, &mut direct) {
         (Some(entered), _) => Ok(entered.next()),
-        (None, Some(input)) => read_prompt(input),
+        (None, Some(input)) => read_message(input),
         (None, None) => Ok(None),
     };
     let mut to_drop = options.drop_lines;
     while let Some(line) = next()? {
         // A submit the TUI lost (`--drop-lines`): the first typed lines never reach the agent.
-        if to_drop > 0 {
+        if to_drop > 0 && !line.is_empty() {
             to_drop -= 1;
             continue;
         }
@@ -3117,6 +3107,8 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
             }
         }
         match line.as_str() {
+            // Enter can submit a restored draft even when no new text was typed.
+            "" => {}
             "/color" if options.tui => say("Color changed")?,
             "/exit" => {
                 if let Some(hooks) = &hooks {
