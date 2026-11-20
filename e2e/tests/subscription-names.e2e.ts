@@ -826,3 +826,21 @@ test('a subscription without an email reads "email unknown" in Task details (uni
   // An administrator's view says the email is unknown; anyone else's leaves it out (UI-022).
   expect(lines).toEqual(['personal · email unknown', 'work Max · pawel@example.com', null, 'personal']);
 });
+
+test("a held removal refresh completes when the other subscription's invalid email is left", async ({ app, browser, screen }) => {
+  await openSubscriptions(app, browser);
+  await holdListReads(browser);
+  await browser.locator('main .card:has-text("studio@example.com") button:has-text("Remove")').click();
+  await screen.getByRole('dialog', 'Remove Claude #5?').getByRole('button', 'Remove').click();
+  await expect.poll(() => listReads(browser)).toBe(2);
+  await screen.getByRole('button', 'Change the email of Claude spare').click();
+  const email = screen.getByRole('textbox', 'Email of Claude spare');
+  await expect(email).toBeFocused();
+  await email.fill('invalid address');
+  await browser.evaluate(() => (window as unknown as Mock).__yuliusMock.release());
+  await expect(refreshWaits(browser)).toHaveCount(1);
+  await browser.locator('main h1').click();
+  await expect.poll(async () => (await cards(browser)).map(c => c.name)).not.toContain('Claude #5');
+  await expect(email).toBeHidden();
+  expect(await sentFor(browser, 'acc_x3')).toBe(0);
+});

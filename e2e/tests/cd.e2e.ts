@@ -953,12 +953,12 @@ test('the CD page rolls back to an earlier release in one click', async ({ app, 
   // one action per release, the previous one's being the one-click default).
   await expect(dev.getByRole('button', 'Roll back to previous (v40) of dev')).toBeHidden();
   await expect(dev.getByRole('button', 'Roll back to this: dev v40')).toBeHidden();
-  // Any other kept release: "Roll back to this", here forward again (the rollback has ended).
-  const forward = dev.getByRole('button', 'Roll back to this: dev v42');
+  // v42 is newer than the release now deployed.
+  const forward = dev.getByRole('button', 'Roll forward to this: dev v42');
   await expect(forward).toBeEnabled();
   await forward.click();
-  await screen.getByRole('dialog', 'Roll back dev?').getByRole('button', 'Roll back to v42').click();
-  await expect(screen.getByText('Rolling dev back to v42.')).toBeVisible();
+  await screen.getByRole('dialog', 'Roll forward dev?').getByRole('button', 'Roll forward to v42').click();
+  await expect(screen.getByText('Rolling dev forward to v42.')).toBeVisible();
   expect(await browser.evaluate(() => (window as unknown as { __yuliusMock: { lastCdRollback?: { release?: string } } }).__yuliusMock.lastCdRollback?.release ?? null)).toBe('v42');
   await expect(row('Dev', 'v42')).toContainText('Deployed now');
 

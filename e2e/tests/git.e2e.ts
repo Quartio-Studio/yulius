@@ -210,3 +210,18 @@ test('a task overview links to its changes only when its worktree is there', asy
   expect(await changesLinks()).toHaveLength(2);
   expect(await axeViolations(browser)).toEqual([]);
 });
+
+test('the Git task review follows a request for a person without navigation', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/git/t/12', '&ambient=0'));
+  const state = browser.locator('.gt-state');
+  await expect(state).toBeVisible();
+  const initial = await browser.evaluate(() => document.querySelector('.gt-state')!.textContent);
+  const touch = (action: string | null) => browser.evaluate((value) => {
+    const db = (window as unknown as { __yuliusMock: { touchTask: Function } }).__yuliusMock;
+    db.touchTask('sb_studio', 12, { needs_you: value ? { action: value, decision: false, at: new Date().toISOString() } : null });
+  }, action);
+  await touch('Review the delivery');
+  await expect(state).toHaveText('Needs you: Review the delivery');
+  await touch(null);
+  await expect(state).toHaveText(initial!);
+});
