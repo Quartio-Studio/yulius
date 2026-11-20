@@ -259,11 +259,11 @@ Written when it starts (see Context): HOF (#1106), from its issue's acceptance c
 - [x] The digest parks idle tasks past the threshold and goes to the browser and Telegram
 - [x] ADR and docs for the digest
 - [x] Review of the #1413 pull request answered test-first
-- [ ] Telegram intake switch and default project per person, off by default
-- [ ] A reply to a Telegram notification reaches its task under the owner rule
-- [ ] A new Telegram message or file becomes a task with attachments
-- [ ] Telegram commands /status and /task; ADR and docs for intake
-- [ ] Pull request #1130 answered and closed as superseded
+- [x] Telegram intake switch and default project per person, off by default
+- [x] A reply to a Telegram notification reaches its task under the owner rule
+- [x] A new Telegram message or file becomes a task with attachments
+- [x] Telegram commands /status and /task; ADR and docs for intake
+- [x] Pull request #1130 answered and closed as superseded
 - [ ] Review of the #1107 pull request answered test-first
 - [ ] Handoff setting off, ask or automatic and a per-project opt-out
 - [ ] The sandbox_handoff tool with its checks and bounds
@@ -307,16 +307,16 @@ Written when it starts (see Context): HOF (#1106), from its issue's acceptance c
 
 ### #1107 (part 2: intake)
 
-- [ ] Off by default per person; turned on in Settings with a default project, from a browser
+- [x] Off by default per person; turned on in Settings with a default project, from a browser
   session only, audited (TGI-001).
-- [ ] With intake on, a reply to a notification reaches that task as a `task_message`, under the
+- [x] With intake on, a reply to a notification reaches that task as a `task_message`, under the
   owner rule; a refusal says why (TGI-002).
-- [ ] A new message, or one with a photo or document, becomes a task with attachments in the
+- [x] A new message, or one with a photo or document, becomes a task with attachments in the
   default project; `/task` targets another project (TGI-003, TGI-004).
-- [ ] With intake off, neither happens (TGI-001).
-- [ ] What the second person still cannot do through a reply: start, stop, merge, terminal input
+- [x] With intake off, neither happens (TGI-001).
+- [x] What the second person still cannot do through a reply: start, stop, merge, terminal input
   (TGI-002).
-- [ ] Docs: `product.md`, `api.md`, `changes.md` and an ADR (TGI-001..005).
+- [x] Docs: `product.md`, `api.md`, `changes.md` and an ADR (TGI-001..005).
 
 ## Test plan
 
@@ -402,6 +402,20 @@ Written when it starts (see Context): HOF (#1106), from its issue's acceptance c
   Telegram digests can be turned off among the chat's choices.
 
 ## Evidence
+
+### Part 4 (#1107, intake)
+
+| Acceptance criterion | Test |
+|---|---|
+| Off by default per person; on in Settings with a project they may work in, audited | `telegram::telegram_intake_is_off_by_default_and_set_with_a_project` (defaults, 422 without a project, refused for a project without access, audit `on s1`); store `intake_and_the_bots_messages_follow_the_chat`; e2e `telegram.e2e.ts` "a person turns their chat's intake on with a project" |
+| With intake off, nothing happens | `telegram::telegram_intake_is_off_by_default_and_set_with_a_project` (a message starts no task; the help says how to turn it on) |
+| A reply reaches its task as a `task_message` under the owner rule | `telegram::a_reply_reaches_its_task_under_the_owner_rule`: the owner's reply is handled as her `task_message` (here "task #1 has no live session": no agent runs in that harness; delivery to a live or parked session is `task_message`'s, tested in `task_message` and `parking`); a teammate's reply after the request ended is refused by the owner rule, nothing audited; the bot's messages are matched per chat (store test) |
+| A new message, or one with a photo or document, becomes a task with attachments; `/task` targets another project | `telegram::with_intake_a_message_starts_a_task_and_a_photo_is_its_attachment` (origin `telegram`, owner the person, the photo's bytes at the path named in the prompt, `/task app …`, unknown project refused); adapter `replies_captions_files_and_albums_are_read`, `a_file_is_fetched_within_its_bound`; `telegram::tests::an_album_is_one_message` |
+| What the second person still cannot do through a reply | a reply is only ever a `task_message`; the owner rule refuses a teammate's (test above); there is no Telegram path to start, stop, merge or type into a terminal |
+| `/status`, redaction | `telegram::a_reply_reaches_its_task_under_the_owner_rule` (`/status` lists the waiting task; the refusal carries no agent secret); `notify::tests::intake_commands_are_read` |
+| Docs and ADR | ADR-0392, `docs/product.md`, `docs/api.md`, `docs/architecture.md`, `docs/changes.md` |
+
+PR #1130 was commented on and closed as superseded by #1362 (part 1), naming this part 2.
 
 ### Part 3 (#1413)
 
