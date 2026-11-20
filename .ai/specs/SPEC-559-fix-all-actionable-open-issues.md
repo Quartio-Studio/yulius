@@ -11,6 +11,8 @@ Resolve the actionable reports in the November 20 GitHub issue inventory on gree
 
 Fixes #1501
 
+Fixes #1512
+
 ## Context
 
 The inventory at dev 56f08db7f contained 20 issues. #1490 belongs to task #540. Task #537 owns CI repair publication and parked-session wake. PR #1266 owns the proposed fix for #1260 but currently conflicts with dev. SPEC-521 and SPEC-529 document the fix and direct verification of #1452. #1484 records 55 failures in 60 concurrent runs because the migration test compares elapsed time with ten seconds. SQL migration 28 indexes events by step and ID.
@@ -51,7 +53,7 @@ The inventory at dev 56f08db7f contained 20 issues. #1490 belongs to task #540. 
 - [x] Reproduce the parked terminal Reply timeout after Resume
 - [x] Verify Resume and Reply in Chromium against the reproduced failure
 - [x] Obtain independent approval for the parked terminal change if needed
-- [ ] Verify lowered CI capacity when both active jobs share a name
+- [x] Verify lowered CI capacity when both active jobs share a name
 - [ ] Verify the independent fixes and reconcile the remaining issues
 
 ## Acceptance criteria
@@ -107,3 +109,5 @@ The later reports #1498 and #1502 cover the same parking fixture repaired in PR 
 - The reviewer found that a suffix comparison also accepted a reply with an extra prefix. With ANSI styling removed, a comparison of the complete prompt line rejected the deliberately altered message. The product mock was restored after this probe.
 - Round two approved 91146b0ac. All nine Chromium parking scenarios passed with the whole-line comparison. Quick checks passed. The mutation command found no changed Rust code. Vidoc was disabled.
 - PR #1509 run 728bbdfe failed the lowered CI slot test with four starts and only two ends. Probe the two running jobs being the two runs of job b before the test releases job a.
+- Holding both runs of job a at admission reproduced the shard’s exact s s s e s e log at 3973e86e6. Both b jobs timed out because the old fixture opened the shared a gate. The repaired fixture opens the gate for one running job by run ID and job name, then releases the rest. Its test requires the exact eight start/end markers of two simultaneous jobs followed by two sequential ones.
+- The forced lowered-limit regression, raised-limit control and admission-without-a-slot control passed together. Repository quick checks passed. Vidoc was disabled.
