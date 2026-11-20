@@ -2078,7 +2078,11 @@ impl App {
                 .landed_sha(&task.id, observed.record.pr_number, known.as_ref())
                 .await?
             {
-                view.evidence = self.deps.store.merge_evidence(&task.id, &sha, None).await?;
+                view.evidence = self
+                    .deps
+                    .store
+                    .merge_evidence(&task.id, &sha, None, None)
+                    .await?;
             } else {
                 view.notes.push(
                     "Post-merge evidence is unavailable because the landed commit is unknown."
@@ -4512,6 +4516,20 @@ impl App {
                 &pull.head_sha,
             )
             .await?;
+        // GitHub guards the head in the merge request, but the PR can be retargeted.
+        // Bind evidence only when the closed PR confirms where this merge actually landed.
+        let landing = self
+            .deps
+            .github
+            .get_pull(token, &sandbox.repo_owner, &sandbox.repo_name, pull.number)
+            .await
+            .ok()
+            .filter(|merged| {
+                merged.number == pull.number
+                    && merged.head_sha == pull.head_sha
+                    && merged.merge_commit_sha.as_deref() == Some(&merge_sha)
+            })
+            .and_then(|merged| evidence::Landing::of_pull(&merged, &profile.integration_branch));
         let next = DeliveryRecord {
             task_id: task.id.clone(),
             stage: DeliveryStage::MergedIntegration,
@@ -4525,7 +4543,7 @@ impl App {
             Some(&crate::review::MergedHead {
                 head: pull.head_sha.clone(),
                 base: Some(format!("{merge_sha}^1")),
-                landing: evidence::Landing::new(&pull.base, &pull.head_sha, &merge_sha),
+                landing,
             }),
         )
         .await?;

@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params};
-use yulius_app::delivery::evidence::{Landing, MergeEvidence};
+use yulius_app::delivery::evidence::{EvidenceRun, Landing, MergeEvidence};
 use yulius_app::delivery::{
     DeliveryRecord, EnvironmentRunKind, EnvironmentRunRecord, EnvironmentRunState,
 };
@@ -196,8 +196,10 @@ impl DeliveryStore for SqliteStore {
         task: &TaskId,
         sha: &str,
         run_id: Option<&str>,
+        before: Option<&str>,
     ) -> AppResult<Option<MergeEvidence>> {
         const LIMIT: u16 = 50;
+        let before = before.map(str::to_owned);
         let (task, sha, run_id) = (task.to_string(), sha.to_owned(), run_id.map(str::to_owned));
         self.call(move |c| {
             let landing = c
@@ -218,18 +220,33 @@ impl DeliveryStore for SqliteStore {
             let Some((pr_number, branch, head_sha)) = landing else {
                 return Ok(None);
             };
+            // The cursor names an attempt. Archiving preserves its original sort key.
+            let boundary: Option<(i64, i64)> = if let Some(cursor) = &before {
+                let found = c.query_row(
+                    "SELECT at, seq FROM task_merge_runs WHERE task_id = ?1 AND merged_sha = ?2 AND run_id = ?3",
+                    params![task, sha, cursor], |row| Ok((row.get(0)?, row.get(1)?)),
+                ).optional().map_err(db)?;
+                if found.is_none() {
+                    return Ok(None);
+                }
+                found
+            } else {
+                None
+            };
             let mut stmt = c
                 .prepare(
                     "SELECT result FROM task_merge_runs
                  WHERE task_id = ?1 AND merged_sha = ?2 AND (?3 IS NULL OR run_id = ?3)
-                 ORDER BY at DESC, seq DESC, run_id LIMIT ?4",
+                 AND (?4 IS NULL OR (at, seq, run_id) < (?5, ?6, ?4))
+                 ORDER BY at DESC, seq DESC, run_id DESC LIMIT ?7",
                 )
                 .map_err(db)?;
+            let (at, seq) = boundary.unzip();
             let rows = stmt
-                .query_map(params![task, sha, run_id, LIMIT + 1], |row| {
+                .query_map(params![task, sha, run_id, before, at, seq, LIMIT + 1], |row| {
                     let result: String = row.get(0)?;
-                    serde_json::from_str(&result)
-                        .map_err(|_| bad_column("merge evidence", "invalid result"))
+                    serde_json::from_str::<EvidenceRun>(&result)
+                        .map_err(|err| bad_column("merge evidence", &err.to_string()))
                 })
                 .map_err(db)?;
             let mut runs = rows.collect::<Result<Vec<_>, _>>().map_err(db)?;
@@ -238,6 +255,7 @@ impl DeliveryStore for SqliteStore {
             }
             let truncated = runs.len() > usize::from(LIMIT);
             runs.truncate(usize::from(LIMIT));
+            let next_before = runs.last().filter(|_| truncated).map(|run| run.run_id.clone());
             Ok(Some(MergeEvidence {
                 url: format!("/api/tasks/{task}/delivery/evidence/{sha}"),
                 task_id: task,
@@ -247,6 +265,7 @@ impl DeliveryStore for SqliteStore {
                 head_sha,
                 runs,
                 truncated,
+                next_before,
             }))
         })
         .await
@@ -529,7 +548,7 @@ mod tests {
         assert_eq!(store.delivery(&task).await?, Some(new));
         assert_eq!(
             store
-                .merge_evidence(&task, &landing.sha, None)
+                .merge_evidence(&task, &landing.sha, None, None)
                 .await?
                 .ok_or("old landing")?
                 .pr_number,

@@ -690,6 +690,10 @@ fn delivery_status(value: &Value) -> Option<String> {
                 evidence.branch, evidence.merged_sha, evidence.url
             ),
         );
+        push_line(
+            &mut out,
+            "When the project accepts task evidence, cite the matching run IDs and link in the verification step's step_update note and closing summary. Keep required checks open until verified, including manual or hardware checks. Commit required source evidence and changelog work through review.",
+        );
         if evidence.runs.is_empty() {
             push_line(&mut out, "No matching CI or environment run recorded.");
         }
@@ -712,8 +716,11 @@ fn delivery_status(value: &Value) -> Option<String> {
                 push_line(&mut out, &line);
             }
         }
-        if evidence.truncated {
-            push_line(&mut out, "Older attempts can be read with ?run_id=<id>.");
+        if let Some(cursor) = evidence.next_before {
+            push_line(
+                &mut out,
+                &format!("Older attempts: {}?before={cursor}", evidence.url),
+            );
         }
     }
     let problems: Vec<&str> = value

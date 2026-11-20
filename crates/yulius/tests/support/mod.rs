@@ -69,6 +69,8 @@ pub struct FakeGitHub {
     /// Branches (`owner/name:branch`) whose rules agents' tokens cannot bypass (ADR-0114); every
     /// other branch is writable by them.
     pub guarded_branches: Mutex<Vec<String>>,
+    /// A PR retargeted at GitHub after the client observed it and before the merge lands.
+    pub retarget_on_merge: Mutex<Option<String>>,
     /// Checks per commit SHA (default: `None`, every source read).
     pub check_states: Mutex<HashMap<String, ChecksReport>>,
     /// When set, reading checks fails with this error (as the adapter maps GitHub errors).
@@ -520,6 +522,20 @@ impl GitHubPort for FakeGitHub {
         expected_head: &str,
     ) -> AppResult<String> {
         self.refresh_heads();
+        if let Some(base) = self
+            .retarget_on_merge
+            .lock()
+            .map_err(AppError::internal)?
+            .take()
+            && let Some(pr) = self
+                .pulls
+                .lock()
+                .map_err(AppError::internal)?
+                .iter_mut()
+                .find(|p| p.number == number)
+        {
+            pr.base = base;
+        }
         let pull = self
             .pulls
             .lock()

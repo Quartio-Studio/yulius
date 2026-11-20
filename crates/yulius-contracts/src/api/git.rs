@@ -182,6 +182,9 @@ pub struct MergeEvidence {
     pub runs: Vec<EvidenceRun>,
     /// Older attempts exist beyond this response. A run ID selects its own result.
     pub truncated: bool,
+    /// Read the next page with `?before=<id>`. Anchored to the last attempt on this page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_before: Option<String>,
 }
 
 /// One CI or CD attempt at its recorded SHA, without scripts or logs.

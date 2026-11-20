@@ -763,11 +763,10 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          a turn waiting for one; decide, record why and carry on. When only a person can do \
          something (a credential, a paid plan, a permission outside the repository), ask with \
          `needs_you` and continue with the rest.\n\
-         Features and fixes take one path, with no human acceptance step: spec → implementation \
-         with tests → independent review → fixes → gates green → pull request → merge into \
-         {integration} on green → summary. Merges deploy nothing: `cd_deploy`/`cd_rollback` dev \
+         Features and fixes (no human acceptance step): spec → code and tests → independent \
+         review → fixes → green CI → PR → merge into {integration} on green → summary. Merges deploy nothing: `cd_deploy`/`cd_rollback` dev \
          only if asked; {production} is a person's: never promote. Each `[cd.*]` deploy has a \
-         `rollback`. Work that changes no file ends with its result.\n\
+         `rollback`. Report file-free results. Merge evidence is in `delivery_status`.\n\
          - Git (skill `git-hygiene`): work only on {branch}. Never commit or push to \
          {integration} or {production}, never `--no-verify`, never rewrite pushed commits (no \
          rebase, amend or force push: Yulius pushes plainly). Small conventional commits; nothing \
@@ -785,11 +784,6 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          head, call `delivery_merge`: on green it merges, else it arms and the queue merges in \
          turn: never hold a green one back. Fix failures on this branch, test-first. \
          {checks}\n\
-         - After a merge, read the verification evidence link in `delivery_status`. When your \
-         project accepts task evidence, cite the link and run IDs in the verification-only \
-         step's `step_update` note and closing summary. Check the exact environment, commit and \
-         individual results. Keep missing, manual or hardware checks open. Follow explicit \
-         source-document requirements and deliver code, tests and changelog work through review.\n\
          - Yulius types your PR's events with the next step (obey \"Hands off\"). To wait, \
          start `yulius wait` with run_in_background and end your turn; never poll (`sleep`, \
          `pgrep -f`) or hide an exit code behind `| tail`.\n\
@@ -1831,6 +1825,7 @@ mod tests {
             // SPEC-444 PRN-012: Yulius tells the task; it keeps its hands off when told.
             "Yulius types your PR's events with the next step (obey \"Hands off\")",
             "no human acceptance step",
+            "Merge evidence is in `delivery_status`",
             "on green",
             "`delivery_merge`",
             "`issue_create`",

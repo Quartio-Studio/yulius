@@ -171,6 +171,7 @@ pub trait DeliveryStore: Send + Sync {
         task: &yulius_domain::ids::TaskId,
         sha: &str,
         run_id: Option<&str>,
+        before: Option<&str>,
     ) -> crate::error::AppResult<Option<crate::delivery::evidence::MergeEvidence>>;
     /// Inserts a run. `Conflict` while another run of the same sandbox is `running`.
     async fn insert_environment_run(

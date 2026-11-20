@@ -47,6 +47,7 @@ pub async fn task_delivery(
 #[derive(serde::Deserialize)]
 pub struct EvidenceQuery {
     run_id: Option<String>,
+    before: Option<String>,
 }
 
 pub async fn merge_evidence(
@@ -56,8 +57,14 @@ pub async fn merge_evidence(
     axum::extract::Query(query): axum::extract::Query<EvidenceQuery>,
 ) -> ApiResult<Json<yulius_contracts::api::git::MergeEvidence>> {
     Ok(Json(
-        app.task_merge_evidence(&ctx, &tid, &sha, query.run_id.as_deref())
-            .await?,
+        app.task_merge_evidence(
+            &ctx,
+            &tid,
+            &sha,
+            query.run_id.as_deref(),
+            query.before.as_deref(),
+        )
+        .await?,
     ))
 }
 

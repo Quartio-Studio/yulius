@@ -37,7 +37,7 @@ An idle task's completion uses its declared steps and spec status. Spec synchron
 
 ## Test plan
 
-Exercise the delivery HTTP and MCP paths with a local Git/SQLite fixture. Cover exact and moved commits, missing proof, reruns, skipped jobs, CD command coverage, retention and the existing follow-up decision. Run targeted Rust tests, repository checks and the independent review before delivery.
+Exercise the delivery HTTP and MCP paths with a local Git/SQLite fixture. Retarget a PR at merge without changing its head, advance the integration branch, rerun CI while paging over archived results and sign in without access to the task. Cover missing proof, skipped jobs, a failed CD wrapper with misleading phase output and the existing follow-up decision. Run targeted Rust tests, repository checks and the independent review before delivery.
 
 ## Decisions
 

@@ -24,24 +24,23 @@ SELECT task_id, sandbox_id, merged_sha, head_sha, 'pr/' || pr_number FROM task_m
 CREATE VIEW task_merge_ci AS
 SELECT m.task_id, m.merged_sha, r.id AS run_id, r.queued_at AS at, r.rowid AS seq,
     json_object('run_id', r.id, 'kind', 'ci', 'reference', r.reference, 'sha', r.sha,
-        'state', r.state, 'reason', r.reason, 'checks', (
+        'state', r.state, 'reason', r.reason, 'checks', json((
         SELECT json_group_array(json_object('name', name, 'state', state, 'reason', reason) ORDER BY ordinal)
-        FROM ci_jobs WHERE run_id = r.id)) AS result
+        FROM ci_jobs WHERE run_id = r.id))) AS result
 FROM task_merge_ci_refs m JOIN ci_runs r
     ON r.sandbox_id = m.sandbox_id AND r.sha = m.sha AND r.reference = m.reference;
 
 -- The CD wrapper exits zero only after each configured command succeeded. On other outcomes
--- use the recorded phase span where available. A rollback or drill runs a different contract.
+-- project output and its diagnostic spans cannot attest individual command exits.
 CREATE VIEW task_merge_cd AS
 SELECT m.task_id, m.merged_sha, r.id AS run_id, r.started_at AS at, r.rowid AS seq,
     json_object('run_id', r.id, 'kind', 'cd', 'reference', r.environment, 'sha', r.sha,
-        'branch', r.branch, 'stage', r.stage, 'state', r.state, 'reason', r.reason, 'checks', (
+        'branch', r.branch, 'stage', r.stage, 'state', r.state, 'reason', r.reason, 'checks', json((
         SELECT json_group_array(json_object('name', phase, 'state', CASE
             WHEN nullif(trim(CASE phase WHEN 'deploy' THEN r.deploy ELSE r.verify END), '') IS NULL THEN 'not configured'
             WHEN r.state = 'passed' AND r.exit_code = 0 AND r.ended_at IS NOT NULL THEN 'passed'
-            ELSE coalesce((SELECT outcome FROM spans WHERE subject_kind = 'cd_run'
-                AND subject_id = r.id AND key = 'run/' || phase), 'unconfirmed') END))
-        FROM (SELECT 'deploy' AS phase UNION ALL SELECT 'verify'))) AS result
+            ELSE 'unconfirmed' END))
+        FROM (SELECT 'deploy' AS phase UNION ALL SELECT 'verify')))) AS result
 FROM task_merges m JOIN cd_runs r ON r.sandbox_id = m.sandbox_id AND r.sha = m.merged_sha
 WHERE r.kind = 'deploy';
 
@@ -57,22 +56,10 @@ CREATE TRIGGER archive_task_merge_ci BEFORE DELETE ON ci_runs BEGIN
     INSERT INTO task_merge_archived_runs SELECT * FROM task_merge_ci WHERE run_id = OLD.id;
 END;
 CREATE TRIGGER archive_task_merge_cd BEFORE DELETE ON cd_runs BEGIN
-    INSERT INTO task_merge_archived_runs SELECT * FROM task_merge_cd WHERE run_id = OLD.id
-    ON CONFLICT DO NOTHING;
-END;
--- The newest deployment can outlive its phase spans. Freeze the result before the first
--- contributing span is removed, so that the stable link keeps the observed phase outcomes.
-CREATE TRIGGER archive_task_merge_cd_phase BEFORE DELETE ON spans
-WHEN OLD.subject_kind = 'cd_run' AND OLD.key IN ('run/deploy', 'run/verify') BEGIN
-    INSERT INTO task_merge_archived_runs SELECT * FROM task_merge_cd
-    WHERE run_id = OLD.subject_id AND EXISTS (
-        SELECT 1 FROM cd_runs WHERE id = OLD.subject_id AND ended_at IS NOT NULL)
-    ON CONFLICT DO NOTHING;
+    INSERT INTO task_merge_archived_runs SELECT * FROM task_merge_cd WHERE run_id = OLD.id;
 END;
 CREATE VIEW task_merge_runs AS
-    SELECT * FROM task_merge_ci UNION ALL SELECT * FROM task_merge_cd cd
-    WHERE NOT EXISTS (SELECT 1 FROM task_merge_archived_runs a
-        WHERE a.task_id = cd.task_id AND a.merged_sha = cd.merged_sha AND a.run_id = cd.run_id)
+    SELECT * FROM task_merge_ci UNION ALL SELECT * FROM task_merge_cd
     UNION ALL SELECT * FROM task_merge_archived_runs
     UNION ALL
     SELECT m.task_id, m.merged_sha, r.id, r.started_at, r.rowid,

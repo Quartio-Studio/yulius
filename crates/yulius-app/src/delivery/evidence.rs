@@ -1,5 +1,5 @@
 //! Task-scoped post-merge evidence (SPEC-562).
-pub use yulius_contracts::api::git::MergeEvidence;
+pub use yulius_contracts::api::git::{EvidenceRun, MergeEvidence};
 
 use crate::auth::AuthContext;
 use crate::context::App;
@@ -22,9 +22,7 @@ impl Landing {
     /// Only full commit IDs can bind historical proof. An ambiguous playground recovery
     /// ("already there") or a missing merge result supplies no identity.
     pub(crate) fn new(branch: &str, head: &str, sha: &str) -> Option<Self> {
-        let full =
-            |id: &str| matches!(id.len(), 40 | 64) && id.bytes().all(|b| b.is_ascii_hexdigit());
-        (full(head) && full(sha)).then(|| Self {
+        (super::is_hex_sha(head) && super::is_hex_sha(sha)).then(|| Self {
             branch: branch.to_owned(),
             head: head.to_owned(),
             sha: sha.to_owned(),
@@ -54,11 +52,12 @@ impl App {
         task_id: &str,
         sha: &str,
         run_id: Option<&str>,
+        before: Option<&str>,
     ) -> AppResult<MergeEvidence> {
         let task = self.load_task(ctx, task_id, Action::View).await?;
         self.deps
             .store
-            .merge_evidence(&task.id, sha, run_id)
+            .merge_evidence(&task.id, sha, run_id, before)
             .await?
             .ok_or(AppError::NotFound)
     }

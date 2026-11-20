@@ -8755,6 +8755,21 @@ async fn post_merge_evidence_follows_the_landing_through_reruns_and_retention() 
         &[("security", RunState::Skipped)],
     )
     .await?;
+    let provenance =
+        "not run again: merge train #1 passed at aaaa000 (run candidate); this is step 1 of 1";
+    assert!(
+        f.h.store
+            .transition_ci_run(
+                "pr-head",
+                &[RunState::Passed],
+                RunState::Passed,
+                &yulius_app::ci::CiRunUpdate {
+                    reason: Some(provenance.into()),
+                    ..Default::default()
+                },
+            )
+            .await?
+    );
     insert_ci_attempt(
         &f.h.store,
         "candidate",
@@ -8788,8 +8803,12 @@ async fn post_merge_evidence_follows_the_landing_through_reruns_and_retention() 
         ],
     )
     .await?;
+    let mut other_project = f.h.store.ci_run("rerun").await?.ok_or("CI attempt")?;
+    other_project.id = "parallel-sandbox".into();
+    other_project.sandbox_id = SandboxId::parse("s2")?;
+    f.h.store.insert_ci_run(&other_project, &[]).await?;
     let evidence = read().await?.body;
-    assert_eq!(evidence["runs"][0]["run_id"], "rerun");
+    assert_eq!(evidence["runs"][0]["run_id"], "rerun", "{evidence}");
     assert_eq!(evidence["runs"][0]["state"], "passed");
     assert_eq!(
         evidence["runs"][0]["checks"],
@@ -8801,6 +8820,8 @@ async fn post_merge_evidence_follows_the_landing_through_reruns_and_retention() 
     assert_eq!(evidence["runs"].as_array().ok_or("runs")?.len(), 3);
     assert_eq!(evidence["runs"][2]["reference"], "pr/1");
     assert_eq!(evidence["runs"][2]["sha"], head);
+    assert_eq!(evidence["runs"][2]["reason"], provenance);
+    assert_eq!(evidence["runs"][2]["checks"][0]["state"], "skipped");
     f.h.store.prune_ci_runs(0, Timestamp(i64::MAX)).await?;
     assert!(f.h.store.ci_run("rerun").await?.is_none());
     assert_eq!(read().await?.body, evidence);
@@ -8809,6 +8830,8 @@ async fn post_merge_evidence_follows_the_landing_through_reruns_and_retention() 
         .await?;
     assert_eq!(pinned.body["runs"], json!([evidence["runs"][1]]));
     for unknown in [
+        format!("{path}?before=parallel-sandbox"),
+        format!("{path}?run_id=parallel-sandbox"),
         format!("{path}?run_id=after"),
         format!("/api/tasks/t1/delivery/evidence/{later}"),
     ] {
@@ -8824,6 +8847,11 @@ async fn post_merge_evidence_follows_the_landing_through_reruns_and_retention() 
         StatusCode::OK
     );
 
+    let outsider = add_user(&f.h, "u-outsider", "outsider", Default::default()).await?;
+    assert_eq!(
+        f.req(Method::GET, &path, None, &outsider).await?.status,
+        StatusCode::NOT_FOUND
+    );
     let status = agent_tool(&f, &agent, "delivery_status", json!({})).await?;
     let text = status["content"][0]["text"].as_str().ok_or("status")?;
     assert!(text.contains(&path) && text.contains("rerun"), "{text}");
@@ -8915,7 +8943,8 @@ async fn post_merge_evidence_requires_the_verified_cd_commit_and_both_commands()
     })
     .await?;
     insert(attempt("broken", &landed, RunState::Failed, 4)?).await?;
-    for (phase, outcome) in [("deploy", "passed"), ("verify", "failed")] {
+    // A nested command printed phase markers before the wrapper failed.
+    for phase in ["deploy", "verify"] {
         assert!(
             store
                 .insert_span(&yulius_app::stages::NewSpan {
@@ -8930,7 +8959,7 @@ async fn post_merge_evidence_requires_the_verified_cd_commit_and_both_commands()
                     job: None,
                     started_at: Timestamp(4),
                     ended_at: Some(Timestamp(5)),
-                    outcome: Some(outcome.into()),
+                    outcome: Some("passed".into()),
                     detail: None,
                 })
                 .await?
@@ -8971,7 +9000,9 @@ async fn post_merge_evidence_requires_the_verified_cd_commit_and_both_commands()
         })
         .await?;
     let read = || f.req(Method::GET, &path, None, &f.rita);
-    let body = read().await?.body;
+    let response = read().await?;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+    let body = response.body;
     let runs = body["runs"].as_array().ok_or("CD attempts")?;
     assert_eq!(runs.len(), 4, "{body}");
     assert_eq!(runs[3]["kind"], "environment command");
@@ -8987,13 +9018,90 @@ async fn post_merge_evidence_requires_the_verified_cd_commit_and_both_commands()
         json!([{"name":"deploy","state":"passed"},{"name":"verify","state":"passed"}])
     );
     assert_eq!(runs[1]["state"], "failed");
-    assert_eq!(runs[1]["checks"][0]["state"], "passed");
-    assert_eq!(runs[1]["checks"][1]["state"], "failed");
+    assert_eq!(runs[1]["checks"][0]["state"], "unconfirmed");
+    assert_eq!(runs[1]["checks"][1]["state"], "unconfirmed");
     assert_eq!(runs[2]["checks"][1]["state"], "not configured");
     store.prune_spans(Timestamp(i64::MAX)).await?;
     assert_eq!(read().await?.body, body);
     f.h.store.prune_cd_runs(0, Timestamp(i64::MAX)).await?;
     assert!(f.h.store.cd_run("smoke", false).await?.is_none());
     assert_eq!(read().await?.body, body);
+    Ok(())
+}
+
+#[tokio::test]
+async fn post_merge_evidence_refuses_a_pr_retargeted_at_merge() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Update the guide", "docs/1-guide", "dev")
+        .await?;
+    commit_file(&wt, "guide.md", "guide", "docs: update guide")?;
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    let base = f.origin_sha("dev")?;
+    git(&f.origin, &["branch", "another-base", &base])?;
+    let agent = live_agent(&f, "t1", "tok-retarget").await?;
+    f.h.github.set_checks(&head, ChecksState::Success);
+    *f.h.github
+        .retarget_on_merge
+        .lock()
+        .map_err(|_| "retarget lock")? = Some("another-base".into());
+    arm_merge(&f, &agent, &head).await?;
+    f.h.app.merge_armed(&SandboxId::parse("s1")?).await;
+    assert_eq!(f.origin_sha("dev")?, base);
+    let other = f.origin_sha("another-base")?;
+    assert_ne!(other, base);
+    assert!(f.delivery("t1").await?["evidence"].is_null());
+    assert_eq!(
+        f.req(
+            Method::GET,
+            &format!("/api/tasks/t1/delivery/evidence/{other}"),
+            None,
+            &f.rita
+        )
+        .await?
+        .status,
+        StatusCode::NOT_FOUND
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn post_merge_evidence_pages_over_archived_attempts_while_another_run_lands() -> TestResult {
+    use yulius_app::ports::store_ext::CiStore;
+    use yulius_domain::ci::RunState;
+    let (f, _, _) = merged_task().await?;
+    let sha = f.origin_sha("dev")?;
+    let path = format!("/api/tasks/t1/delivery/evidence/{sha}");
+    let store = &f.h.store;
+    for at in 0..51 {
+        yulius_ci_run(store, &format!("attempt-{at}"), &sha, RunState::Passed, at).await?;
+    }
+    yulius_ci_run(
+        store,
+        "new-tip",
+        &f.origin_sha("main")?,
+        RunState::Passed,
+        51,
+    )
+    .await?;
+    store.prune_ci_runs(0, Timestamp(i64::MAX)).await?;
+    assert!(store.ci_run("attempt-0").await?.is_none());
+    let first = f.req(Method::GET, &path, None, &f.rita).await?.body;
+    assert_eq!(first["runs"].as_array().ok_or("page")?.len(), 50);
+    assert_eq!(first["runs"][0]["run_id"], "attempt-50");
+    let cursor = first["next_before"].as_str().ok_or("missing next page")?;
+    yulius_ci_run(store, "new-rerun", &sha, RunState::Failed, 52).await?;
+    let last = f
+        .req(
+            Method::GET,
+            &format!("{path}?before={cursor}"),
+            None,
+            &f.rita,
+        )
+        .await?
+        .body;
+    assert_eq!(last["runs"].as_array().ok_or("last page")?.len(), 1);
+    assert_eq!(last["runs"][0]["run_id"], "attempt-0");
+    assert!(last["next_before"].is_null());
     Ok(())
 }
