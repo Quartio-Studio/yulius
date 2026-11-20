@@ -546,6 +546,9 @@ itself that the host's managed policy, which switches those windows off, is in f
 (`BrowserInstance::viewer_input_allowed`: a hidden tab is sent to the address the policy
 blocks; `yulius_browser::policy`, written by `yulius host setup`;
 [ADR-0318](decisions/0318-viewers-input-reaches-a-sandbox-browser-only-under-the-hosts-managed-policy.md)).
+Sandbox browsers skip default app installation. On a virtual display they also leave profile
+extensions unloaded, so a later policy reload can take effect without a native administrator
+dialog. [ADR-0402](decisions/0402-sandbox-browsers-skip-chromes-default-apps.md)
 The probe's tab and Chrome's own `chrome:` pages are never listed as tabs. Chrome is on the
 host's network, not its sandbox's, so each browser is started behind a proxy of its own
 (`BrowserNetwork`; `--proxy-server` for every address, the loopback included), a listener the
@@ -2072,8 +2075,7 @@ session as a close does (graceful shutdown, then the escalation). The run's end,
 its loss, makes the task `parked` with its activity (`settle_parked`) and audits `task.parked`.
 `parked` is neither live nor resting: no slot (`sessions_in_use` counts live runs only), its
 worktree, claims, `needs_you` and delivery stay, and the list groups it as an idle run with no
-live overlay. Idle sessions continue to park safely while CI runs on an open pull request (only an
-unpublished clean fast-forward CI repair awaiting publication defers parking). While the park is
+live overlay. Parking verifies the recorded PR and open repository PRs on the task branch. The published head must contain the current task checkout. An unreadable or failing check keeps the author live, including a failed ordinary CI run whose GitHub status still looks green. The PR watcher can take over pending checks for an active ordinary run on the recorded head. While the park is
 under way nothing is typed into the session. The web terminal treats `parked` as a non-live ended
 status so it shows the calm parked banner (distinct from a crash or operator stop) and a visible
 `Resume` button (plus `Reply` in the waiting bar for the owner), disables cursor blink, and wakes

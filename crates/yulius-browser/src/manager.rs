@@ -136,6 +136,7 @@ impl BrowserConfig {
             [
                 "--no-first-run",
                 "--no-default-browser-check",
+                "--disable-default-apps",
                 "--disable-background-timer-throttling",
                 "--disable-renderer-backgrounding",
             ]
@@ -505,6 +506,31 @@ mod tests {
         let args = explicit.chromium_args(Path::new("/p"), None);
         assert!(args.iter().any(|arg| arg == "--no-sandbox"));
         assert!(!args.iter().any(|arg| arg == "--headless=new"));
+    }
+
+    #[test]
+    fn sandbox_browsers_skip_default_app_installation() {
+        let mut config = BrowserConfig::new("chromium".into(), "/profiles".into());
+        for display in [
+            DisplayMode::Headless,
+            DisplayMode::Virtual(crate::DisplayConfig::new("/run".into())),
+        ] {
+            config.display = display;
+            let args = config.chromium_args(Path::new("/profiles/s1"), None);
+            assert!(args.iter().any(|arg| arg == "--disable-default-apps"));
+        }
+    }
+
+    #[test]
+    fn virtual_display_skips_extensions_already_in_the_profile() {
+        let mut config = BrowserConfig::new("chromium".into(), "/profiles".into());
+        let profile = Path::new("/profiles/s1");
+        let headless = config.chromium_args(profile, None);
+        assert!(!headless.iter().any(|arg| arg == "--disable-extensions"));
+
+        config.display = DisplayMode::Virtual(crate::DisplayConfig::new("/run".into()));
+        let args = config.chromium_args(profile, None);
+        assert!(args.iter().any(|arg| arg == "--disable-extensions"));
     }
 
     /// SPEC-483 E2: behind a proxy, Chrome is told to use it for every address (the loopback

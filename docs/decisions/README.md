@@ -412,6 +412,7 @@ If a reservation skips past all available slots, land an empty extension first w
 - [0400](0400-continuing-a-reviewer-after-its-report-opens-the-next-round.md) records a new round when an author continues a reviewer after its report.
 - [0401](0401-red-ci-notices-include-partial-sibling-failures.md) Red CI notices and run details include partial failures observed in siblings stopped by fail-fast.
 <!-- ADR 0401 -->
+- [0402](0402-sandbox-browsers-skip-chromes-default-apps.md) records how sandbox launches handle default apps and existing extensions on virtual displays.
 <!-- ADR 0402 -->
 - [0403](0403-reserve-edit-locations-in-the-decision-index.md) gives each upcoming decision its own Git insertion point.
 <!-- ADR 0403 -->
