@@ -1184,7 +1184,7 @@ export function mountTaskView(ctx, sandbox, task) {
       const previousStatus = current.status;
       const previousUpdate = current.updated_at;
       const previousOwner = owner();
-      current = { ...current, ...next, parked_needs_you: next.parked_needs_you, parked_pr: next.parked_pr };
+      current = { ...current, ...next, needs_you_notice: next.needs_you_notice, parked_needs_you: next.parked_needs_you, parked_pr: next.parked_pr };
       // Whether the task started is the detail's: a status with a run means it has, and any status
       // change reads the detail again (a start that found no capacity has not). A message someone
       // else queued changes the request: read it again too.

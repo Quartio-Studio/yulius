@@ -1786,3 +1786,88 @@ test(`the terminal displays verified parked work when its initial row was still 
   });
   await expect(browser.locator('.strip-status')).toHaveText(/Your turn.*parked|checks.*parked/);
 });
+
+test('a held detail can identify an open PR after a newer parked rename fails verification', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const initial = { id: 'p', sandbox_id: 's', status: 'parked', activity: 'done', parked_needs_you: false };
+    let reads = 0;
+    const store = createStore({ get: async () => {
+      if (++reads > 1) throw new Error('watch unavailable');
+      return [initial];
+    } });
+    await store.loadTasks('s');
+    const held = store.beginParkedDetail();
+    store.upsertTask({ ...initial, title: 'Renamed', parked_needs_you: undefined, needs_you: { action: 'Choose a version' } });
+    await store.loadTasks('s', true);
+    const older = { ...initial, parked_pr: { number: 42, open: true }, parked_needs_you: true };
+    const accepted = held(older);
+    const row = store.findTask('p');
+    const beforeHealthy = store.beginParkedDetail();
+    store.upsertTask({ ...initial, title: 'Verified' });
+    const healthy = beforeHealthy(older);
+    return [row.title, row.needs_you?.action, row.parked_needs_you ?? null, row.parked_pr?.number ?? null,
+      accepted.parked_needs_you ?? null, accepted.parked_pr?.number ?? null, healthy.parked_needs_you, healthy.parked_pr?.number ?? null];
+  });
+  expect(seen).toEqual(['Renamed', 'Choose a version', true, 42, true, 42, false, null]);
+});
+
+test('parked verification preserves the observed replacement PR while the Git chip keeps its own identity', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const parked = { id: 'p', sandbox_id: 's', status: 'parked', activity: 'done', parked_needs_you: false };
+    const results = [];
+    for (const gitFirst of [true, false]) {
+      let reads = 0;
+      const store = createStore({ get: async (path: string) => {
+        if (path.endsWith('/git')) return { tasks: [{ task_id: 'p', pr: { number: 41, state: 'open', checks: 'success' } }] };
+        if (++reads > 1) throw new Error('verification unavailable');
+        return [parked];
+      } });
+      await store.loadTasks('s');
+      const overview = new Promise<void>(resolve => { const off = store.on('pulls', () => { off(); resolve(); }); });
+      let detail = gitFirst ? undefined : store.beginParkedDetail();
+      const stop = store.watchPulls('s');
+      await overview;
+      detail ??= store.beginParkedDetail();
+      await store.loadTasks('s', true);
+      const observed = detail({ ...parked, parked_pr: { number: 42, open: true } });
+      const row = store.findTask('p');
+      results.push([row.parked_needs_you, observed.parked_pr?.number, row.parked_pr?.number, store.pullsOf('s').get('p').number]);
+      stop();
+    }
+    return results;
+  });
+  expect(seen).toEqual([[true, 42, 42, 41], [true, 41, 41, 41]]);
+});
+
+test('the terminal drops a resolved owner action when a parked PR later needs attention', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&ambient=0&pullgap=0&pullclock=manual'));
+  type Fixture = { __yuliusMock: { tasks: { id: string; parked_needs_you?: boolean; needs_you_notice?: object }[];
+    holdGitReads: boolean; touchTask(s: string, n: number, f: object): void; changePull(s: string, n: number, f: object): void } };
+  await touchTask(browser, 'sb_studio', 13, { status: 'parked', activity: 'done', parked_needs_you: false, parked_pr: { number: 520, open: true } });
+  await expect(screen.getByRole('region', 'Done').getByRole('link', /Improve the code/)).toBeVisible();
+  await browser.evaluate(() => {
+    const db = (window as unknown as Fixture).__yuliusMock;
+    db.holdGitReads = true;
+    Object.assign(db.tasks.find(t => t.id === 'tsk_studio_13')!, { parked_needs_you: true, needs_you_notice: { happened: 'Old owner action', action: 'Choose the old option' } });
+    location.hash = '/s/studio/t/13';
+  });
+  const strip = browser.locator('.strip-status');
+  await expect(strip).toHaveText(/Old owner action/);
+  for (const needs of [false, true]) {
+    await browser.evaluate(needs => {
+      const db = (window as unknown as Fixture).__yuliusMock;
+      const task = db.tasks.find(t => t.id === 'tsk_studio_13')!;
+      delete task.needs_you_notice;
+      task.parked_needs_you = needs;
+      db.changePull('sb_studio', 520, { checks: needs ? 'failure' : 'success' });
+    }, needs);
+    await expect(strip).toHaveText(needs ? /Your turn.*parked/ : /Done.*parked/);
+  }
+  await expect(strip).not.toHaveText(/Old owner action/);
+});
