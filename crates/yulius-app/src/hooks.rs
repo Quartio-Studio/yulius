@@ -1026,20 +1026,25 @@ impl App {
         let reported_background = antigravity && !failed && input.fully_idle == Some(false);
         // Antigravity sets `fullyIdle: false` for *any* live background task, including `yulius
         // wait`. Distinguish wait-only parking (idle for the merge queue and shown as waiting on
-        // Yulius) from real background work such as builds or subagents (SPEC-580 AWM-001).
-        let (background, agy_probe_waits) = if reported_background {
+        // Yulius), observable non-wait PTY/child shells (which `probe_idle_shells` clears as soon
+        // as the process exits), and in-process background work such as subagents or an
+        // unreadable probe (which stays tracked in `background_agents` until `fullyIdle: true` or
+        // the next prompt; SPEC-580 AWM-001, review F2).
+        let (agy_process_shells, agy_inprocess_background, agy_probe_waits) = if reported_background
+        {
             let active_waits = self.active_waits_of(&task.id);
             match self.background_probe_now(&task.id).await {
                 Some(found) => {
                     let waits = found.waits.max(active_waits);
-                    let wait_only = found.shells == 0 && waits > 0;
-                    (!wait_only, waits)
+                    let inprocess = found.shells == 0 && waits == 0;
+                    (found.shells, inprocess, waits)
                 }
-                None => (active_waits == 0, active_waits),
+                None => (0, active_waits == 0, active_waits),
             }
         } else {
-            (false, 0)
+            (0, false, 0)
         };
+        let background = agy_process_shells > 0 || agy_inprocess_background;
         // A turn held for capacity stays held while its pause lasts (also across a restart).
         let refreshed;
         let mut preceding_turn = false;
@@ -1292,7 +1297,26 @@ impl App {
             if antigravity {
                 let runtime = self.runtime(&task.id);
                 let now_ms = self.now().0;
-                if background {
+                if agy_process_shells > 0 {
+                    // Process-table shells are tracked directly (not pinned in `background_agents`)
+                    // so `probe_idle_shells` clears `background_shells` back to 0 as soon as the
+                    // command exits, even without another Stop hook (SPEC-580 review F2).
+                    runtime.background_agents.store(0, Ordering::SeqCst);
+                    let previous = runtime
+                        .background_shells
+                        .swap(i64::from(agy_process_shells), Ordering::SeqCst);
+                    if previous <= 0 {
+                        runtime.shells_since_ms.store(now_ms, Ordering::SeqCst);
+                    }
+                    if agy_probe_waits > 0 {
+                        runtime
+                            .background_waits
+                            .store(i64::from(agy_probe_waits), Ordering::SeqCst);
+                    }
+                } else if agy_inprocess_background {
+                    // In-process background work (e.g. subagent, or probe unavailable): pin
+                    // `background_agents = 1` so SPEC-528 never flickers Needs You until
+                    // `fullyIdle: true` or the next user prompt arrives.
                     runtime.background_agents.store(1, Ordering::SeqCst);
                     if runtime.background_shells.load(Ordering::SeqCst) <= 0 {
                         runtime.background_shells.store(1, Ordering::SeqCst);

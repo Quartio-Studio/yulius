@@ -1712,20 +1712,9 @@ impl App {
         timeout: Duration,
     ) -> AppResult<WaitState> {
         let deadline = tokio::time::Instant::now() + timeout.min(WAIT_MAX);
-        struct ActiveWaitGuard(Arc<crate::supervisor::TaskRuntime>);
-        impl Drop for ActiveWaitGuard {
-            fn drop(&mut self) {
-                self.0
-                    .active_waits
-                    .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-            }
-        }
         let ctx = self.agent_context(token).await?;
         let runtime = self.runtime(&ctx.task.id);
-        runtime
-            .active_waits
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let _active_wait = ActiveWaitGuard(runtime);
+        let _active_wait = ActiveWaitGuard::enter(runtime);
         // A failed push of this head that GitHub's branch has since reached is old news: the
         // wait goes on to the checks and the armed merge (SPEC-139 PSH-002, #366). Once per
         // request: a note written during the wait comes from a push that just asked GitHub.
@@ -1942,6 +1931,31 @@ fn armed_conflict_text(branch: &str, integration: &str, files: &[String]) -> Str
     }
 }
 
+/// RAII guard tracking an active `/internal/agent/wait` long-poll on a task's runtime.
+/// Uses saturating subtraction on drop so the counter can never wrap to `u32::MAX` (SPEC-580 F1).
+struct ActiveWaitGuard(Arc<crate::supervisor::TaskRuntime>);
+
+impl ActiveWaitGuard {
+    fn enter(runtime: Arc<crate::supervisor::TaskRuntime>) -> Self {
+        let _ = runtime.active_waits.try_update(
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+            |n| Some(n.saturating_add(1)),
+        );
+        Self(runtime)
+    }
+}
+
+impl Drop for ActiveWaitGuard {
+    fn drop(&mut self) {
+        let _ = self.0.active_waits.try_update(
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+            |n| Some(n.saturating_sub(1)),
+        );
+    }
+}
+
 fn short(sha: &str) -> &str {
     sha.get(..9).unwrap_or(sha)
 }
@@ -1949,6 +1963,38 @@ fn short(sha: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn active_wait_guard_balances_and_never_underflows() {
+        let runtime = Arc::new(crate::supervisor::TaskRuntime::new());
+        assert_eq!(
+            runtime
+                .active_waits
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        {
+            let _g1 = ActiveWaitGuard::enter(Arc::clone(&runtime));
+            let _g2 = ActiveWaitGuard::enter(Arc::clone(&runtime));
+            assert_eq!(
+                runtime
+                    .active_waits
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                2
+            );
+            // Even if reset externally while a guard is still live, Drop must saturate at 0
+            // rather than wrapping to u32::MAX.
+            runtime
+                .active_waits
+                .store(0, std::sync::atomic::Ordering::SeqCst);
+        }
+        assert_eq!(
+            runtime
+                .active_waits
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+    }
 
     #[test]
     fn only_a_missing_arm_registry_reads_as_empty() -> std::io::Result<()> {

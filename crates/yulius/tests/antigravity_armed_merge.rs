@@ -1080,22 +1080,11 @@ async fn antigravity_stop_with_both_shell_and_wait_holds_until_shell_exits() -> 
         "must hold merge queue while non-wait shell still runs alongside yulius wait"
     );
 
-    // Real shell exits; only `yulius wait` remains.
+    // Real shell exits; only `yulius wait` remains. `probe_idle_shells` alone (without another
+    // Stop hook) must clear `background_shells` to 0 and unblock `decidable_in` (SPEC-580 F2).
     f.shells.store(0, Ordering::SeqCst);
     f.waits.store(1, Ordering::SeqCst);
-    f.run_antigravity_hook(
-        "tok-t1",
-        "Stop",
-        json!({
-            "conversationId": "conv-both",
-            "cwd": worktree,
-            "modelName": "gemini-4-neon",
-            "terminationReason": "NO_TOOL_CALL",
-            "continuationActive": false,
-            "fullyIdle": false,
-        }),
-    )
-    .await?;
+    app.probe_idle_shells(&id).await;
 
     let task = app.deps.store.task(&id).await?.ok_or("t1")?;
     let summary = app.task_summary(&task).await?;
@@ -1103,15 +1092,18 @@ async fn antigravity_stop_with_both_shell_and_wait_holds_until_shell_exits() -> 
     assert!(summary.yulius_wait, "{summary:?}");
     assert!(
         app.decidable_in(&sandbox).await,
-        "decidable once only yulius wait remains"
+        "decidable once probe_idle_shells observes only yulius wait remains"
     );
     Ok(())
 }
 
-/// SPEC-580 AC-3 / SPEC-491 M1 preservation:
-/// When `origin/dev` advances modifying `CHANGES.md` (which has `merge=union` in `.gitattributes`)
-/// without fetching `f.repo` locally and GitHub reports `mergeable = false`, `task_delivery` must
-/// refresh the clone and still report `pr.conflicts = false` because Git merges it cleanly.
+/// SPEC-580 AC-3 / SPEC-491 M1 preservation (plus review F3):
+/// 1. When `origin/dev` advances modifying `CHANGES.md` (`merge=union`) without fetching `f.repo`
+///    locally and GitHub reports `mergeable = false`, `task_delivery` refreshes the clone and
+///    reports `pr.conflicts = false`.
+/// 2. Once local `origin/dev` already matches `pull.base_sha`, subsequent reads (and `merge_armed`)
+///    skip `dlv_refresh_clone` and keep `pr.conflicts = false` and the arm intact even if the
+///    remote is temporarily unreachable.
 #[tokio::test]
 async fn union_driver_collision_with_stale_clone_reports_conflicts_false() -> TestResult {
     let f = fixture().await?;
@@ -1130,11 +1122,13 @@ async fn union_driver_collision_with_stale_clone_reports_conflicts_false() -> Te
 
     // Advance `origin/dev` on `CHANGES.md` only, WITHOUT fetching `f.repo`, and mark GitHub's
     // `mergeable = false` (GitHub ignores `.gitattributes` `merge=union`).
-    f.advance_origin_dev("CHANGES.md", "# Changes\n\n- other PR\n- first\n", false)?;
+    let new_dev =
+        f.advance_origin_dev("CHANGES.md", "# Changes\n\n- other PR\n- first\n", false)?;
     if let Ok(mut pulls) = f.h.github.pulls.lock()
         && let Some(pull) = pulls.iter_mut().find(|p| p.number == 1)
     {
         pull.mergeable = Some(false);
+        pull.base_sha = new_dev;
     }
 
     let delivery = call(
@@ -1150,6 +1144,34 @@ async fn union_driver_collision_with_stale_clone_reports_conflicts_false() -> Te
         delivery.body["pr"]["conflicts"], false,
         "SPEC-491 M1 union-driver collision must still report conflicts=false after clone refresh: {}",
         delivery.body
+    );
+
+    // Local `origin/dev` now matches `pull.base_sha`: even if `origin` becomes temporarily
+    // unreachable (fetch fails), `pull_conflicts` must skip fetching, keep `conflicts = false`,
+    // and never drop the armed merge on a transient fetch failure (SPEC-580 review F3).
+    git(
+        &f.repo,
+        &["remote", "set-url", "origin", "/nonexistent/origin.git"],
+    )?;
+    let delivery2 = call(
+        &f.h.router,
+        Method::GET,
+        "/api/tasks/t1/delivery",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(delivery2.status, StatusCode::OK, "{}", delivery2.body);
+    assert_eq!(
+        delivery2.body["pr"]["conflicts"], false,
+        "matching base_sha must not re-fetch or flip union-driver PR to conflicts=true: {}",
+        delivery2.body
+    );
+    app.merge_armed(&f.sandbox).await;
+    let wait = f.wait_state(1, &worktree).await?;
+    assert_eq!(
+        wait["merge_armed"], true,
+        "transient fetch error must not drop an armed clean union-driver PR: {wait}"
     );
     Ok(())
 }
@@ -1305,20 +1327,18 @@ fn stalled_armed_green_pr_delivers_live_pty_check_in_then_escalates() -> TestRes
         )?;
         app.restore_armed_merges().await;
 
-        let bounds = WatchBounds {
+        // Use a generous escalation bound during the check-in loop so heavy CI load cannot skip
+        // past `CheckIn` straight to `Escalate` before the PTY quiet window opens (SPEC-580 F6).
+        let check_in_bounds = WatchBounds {
             check_in_after_ms: 60 * 60 * 1000,
             stall_after_ms: 60 * 60 * 1000,
             stall_quiet_ms: 5 * 60 * 1000,
             armed_check_in_after_ms: 300,
-            armed_needs_you_after_ms: 1_500,
+            armed_needs_you_after_ms: 60_000,
         };
 
-        // Let the live PTY's quiet window (`goal_ready_ms = 500`) settle before starting the
-        // armed-green clock so the check-in can actually be delivered before escalation.
-        tokio::time::sleep(Duration::from_millis(700)).await;
-
         // Pass 1 starts the armed-green clock (no message yet).
-        let typed1 = app.watch_prs(&bounds).await;
+        let typed1 = app.watch_prs(&check_in_bounds).await;
         assert!(typed1.is_empty(), "first pass starts clock: {typed1:?}");
 
         // Wait past `armed_check_in_after_ms` and until the live PTY is quiet/ready for input:
@@ -1326,7 +1346,7 @@ fn stalled_armed_green_pr_delivers_live_pty_check_in_then_escalates() -> TestRes
         let check_in_deadline = tokio::time::Instant::now() + Duration::from_secs(15);
         let sent = loop {
             tokio::time::sleep(Duration::from_millis(150)).await;
-            let typed = app.watch_prs(&bounds).await;
+            let typed = app.watch_prs(&check_in_bounds).await;
             if let Some((_, text)) = typed.into_iter().find(|(t, _)| *t == id) {
                 break text;
             }
@@ -1360,9 +1380,14 @@ fn stalled_armed_green_pr_delivers_live_pty_check_in_then_escalates() -> TestRes
             "must not escalate on the check-in pass: {summary_mid:?}"
         );
 
-        // Wait past `armed_needs_you_after_ms` without resolving: escalates to Needs You.
-        tokio::time::sleep(Duration::from_millis(1_600)).await;
-        let typed3 = app.watch_prs(&bounds).await;
+        // Now tighten `armed_needs_you_after_ms` and wait past it without resolving: escalates
+        // cleanly to Needs You.
+        let escalate_bounds = WatchBounds {
+            armed_needs_you_after_ms: 400,
+            ..check_in_bounds
+        };
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let typed3 = app.watch_prs(&escalate_bounds).await;
         assert!(
             typed3.is_empty(),
             "escalation pass must not send an extra generic check-in: {typed3:?}"
@@ -1384,4 +1409,150 @@ fn stalled_armed_green_pr_delivers_live_pty_check_in_then_escalates() -> TestRes
         let _ = stop(&app, &id).await;
         Ok(())
     })
+}
+
+/// SPEC-580 review F1:
+/// An active `/internal/agent/wait` long-poll alone (even when `host.background_probe` reports
+/// `waits = 0, shells = 0`, e.g. on platforms or wrapper trees without `/proc` visibility) lets
+/// Antigravity `Stop { fullyIdle: false }` settle cleanly (`activity = Waiting`, `yulius_wait =
+/// true`, `decidable_in = true`), and drops `yulius_wait` back to `false` once the long-poll
+/// finishes.
+#[tokio::test]
+async fn antigravity_stop_with_active_agent_wait_rpc_settles_without_probe_waits() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let worktree = f
+        .task_with(
+            1,
+            Harness::Antigravity,
+            Activity::Working,
+            &[("a.txt", "x\n")],
+        )
+        .await?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?;
+    f.arm(1, &worktree).await?;
+    f.record_passed(&app, 1, &head).await?;
+    f.advance_origin_dev("other.txt", "moved\n", true)?;
+
+    // Process probe sees neither shells nor waits: only the live `/internal/agent/wait` RPC proves
+    // `yulius wait` is active.
+    f.shells.store(0, Ordering::SeqCst);
+    f.waits.store(0, Ordering::SeqCst);
+
+    let initial = f.wait_state(1, &worktree).await?;
+    let internal = f.h.internal.clone();
+    let head_poll = head.clone();
+    let waiter = tokio::spawn(async move {
+        call(
+            &internal,
+            Method::POST,
+            "/internal/agent/wait",
+            Some(json!({"head": head_poll, "since": initial, "timeout_secs": 3})),
+            &Creds {
+                bearer: Some("tok-t1".into()),
+                ..Creds::default()
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())
+    });
+
+    // Wait (bounded) until the long-poll enters `agent_wait` and registers `active_waits`.
+    let id = TaskId::parse("t1")?;
+    let entered_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if app.active_waits_of(&id) > 0 {
+            break;
+        }
+        if tokio::time::Instant::now() > entered_deadline {
+            return Err("agent_wait long-poll did not register active_waits within 5s".into());
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    f.run_antigravity_hook(
+        "tok-t1",
+        "Stop",
+        json!({
+            "conversationId": "conv-rpc-wait",
+            "cwd": worktree,
+            "modelName": "gemini-4-neon",
+            "terminationReason": "NO_TOOL_CALL",
+            "continuationActive": false,
+            "fullyIdle": false,
+        }),
+    )
+    .await?;
+
+    let task = app.deps.store.task(&id).await?.ok_or("t1")?;
+    assert_eq!(task.activity, Some(Activity::Waiting));
+    let summary = app.task_summary(&task).await?;
+    assert_eq!(summary.background_shells, Some(0), "{summary:?}");
+    assert!(summary.yulius_wait, "{summary:?}");
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    assert!(
+        app.decidable_in(&sandbox).await,
+        "decidable while active_waits is registered on Stop"
+    );
+
+    // Wait (bounded) for the 3s long-poll to return and verify `ActiveWaitGuard` drops cleanly
+    // back to 0 (never underflowing).
+    let res = tokio::time::timeout(Duration::from_secs(10), waiter)
+        .await
+        .map_err(|_| "agent_wait long-poll did not return within 10s")???;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert_eq!(
+        app.active_waits_of(&id),
+        0,
+        "active_waits must return to 0 once the long-poll finishes"
+    );
+    Ok(())
+}
+
+/// SPEC-580 review F4:
+/// When a dirty-worktree armed green PR is merged directly on GitHub while local delivery is still
+/// `PrOpen`, `watch_prs` checks GitHub before escalating and must NOT falsely open a Needs You
+/// notice for an already-merged PR.
+#[tokio::test]
+async fn stalled_armed_green_pr_already_merged_on_github_does_not_escalate() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let worktree = f
+        .task_with(
+            1,
+            Harness::Antigravity,
+            Activity::Working,
+            &[("a.txt", "x\n")],
+        )
+        .await?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?;
+    f.arm(1, &worktree).await?;
+    f.record_passed(&app, 1, &head).await?;
+    f.advance_origin_dev("other.txt", "moved\n", true)?;
+
+    // Dirty worktree prevents automatic local merge, so local delivery remains `PrOpen`.
+    std::fs::write(worktree.join("wip.txt"), "uncommitted\n")?;
+    let id = TaskId::parse("t1")?;
+    let bounds = WatchBounds::default();
+    let _ = app.watch_prs(&bounds).await;
+
+    // A person merges the PR directly on GitHub.
+    if let Ok(mut pulls) = f.h.github.pulls.lock()
+        && let Some(pull) = pulls.iter_mut().find(|p| p.number == 1)
+    {
+        pull.state = "closed".into();
+        pull.merged = true;
+    }
+
+    // Advance past both check-in (10m) and escalation (20m) bounds.
+    f.h.clock.0.fetch_add(25 * 60 * 1000, Ordering::SeqCst);
+    let _ = app.watch_prs(&bounds).await;
+
+    let task = app.deps.store.task(&id).await?.ok_or("t1")?;
+    let summary = app.task_summary(&task).await?;
+    assert!(
+        summary.needs_you.is_none() && summary.needs_you_notice.is_none(),
+        "already-merged PR on GitHub must not trigger armed-stall Needs You: {summary:?}"
+    );
+    Ok(())
 }

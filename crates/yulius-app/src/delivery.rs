@@ -4811,7 +4811,30 @@ impl App {
             Some(false) if pull.mergeable == Some(false) => {
                 // GitHub reports CONFLICTING/DIRTY while our local clone said clean: either the
                 // clone's `origin/<integration>` is stale (the base moved on GitHub) or a union
-                // merge driver resolves it (SPEC-491 DON-001). Refresh the clone and re-check;
+                // merge driver resolves it (SPEC-491 DON-001). First check whether our local
+                // `origin/<integration>` already matches `pull.base_sha` — if so, `local_conflict`
+                // already evaluated the exact base GitHub used (clean union-driver merge) and no
+                // network fetch is needed (SPEC-580 review F3).
+                let integration =
+                    format!("origin/{}", delivery_profile(sandbox).integration_branch);
+                let base_matches = !pull.base_sha.is_empty()
+                    && match task.worktree_path.as_deref() {
+                        Some(wt) => self
+                            .deps
+                            .git
+                            .resolve_commit(std::path::Path::new(wt), &integration)
+                            .await
+                            .ok()
+                            .flatten()
+                            .is_some_and(|local_base| {
+                                local_base.eq_ignore_ascii_case(&pull.base_sha)
+                            }),
+                        None => false,
+                    };
+                if base_matches {
+                    return false;
+                }
+                // Local clone base differs (or `pull.base_sha` was absent): refresh and re-check;
                 // if the clone cannot be refreshed, trust GitHub's flag rather than a stale base
                 // (SPEC-580 AWM-003).
                 if self.dlv_refresh_clone(sandbox).await.is_ok() {

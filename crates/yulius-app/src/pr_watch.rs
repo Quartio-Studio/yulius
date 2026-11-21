@@ -938,11 +938,21 @@ impl App {
                     }
                 }
             };
-            if let ArmedStallAction::Escalate {
-                happened,
-                problem,
-                action,
-            } = armed_action
+            if !has_new_event
+                && let ArmedStallAction::Escalate {
+                    happened,
+                    problem,
+                    action,
+                } = armed_action
+                && !self.update_holds_starts()
+                && self.arm_observation(&task.id) == activation
+                && self.armed_now(&task.id) == slot
+                && source
+                    .as_ref()
+                    .is_none_or(|s| self.watched_train(&task, facts.pr) == s.train)
+                && !self
+                    .hosted_arm_stale_or_moved(&task, facts.pr, &facts.armed_head)
+                    .await
                 && let Some(at) = self
                     .escalate_armed_stall(&task, facts.pr, &happened, &problem, &action)
                     .await
@@ -1779,6 +1789,36 @@ impl App {
         }
     }
 
+    /// Checks GitHub (bounded to 5 s) before escalating a stalled armed green PR to Needs You:
+    /// returns `true` ONLY when GitHub positively confirms the PR is no longer open/unmerged at
+    /// `head` on the integration branch (so an already-merged or externally moved PR never pages a
+    /// person). Errors and timeouts return `false` so a GitHub outage cannot hide a genuine stall
+    /// (SPEC-580 review F4).
+    async fn hosted_arm_stale_or_moved(&self, task: &TaskRecord, pr: u64, head: &str) -> bool {
+        let Ok(Some(sandbox)) = self.deps.store.sandbox(&task.sandbox_id).await else {
+            return false;
+        };
+        let read = async {
+            let token = self.dlv_installation_token(&sandbox).await?;
+            self.deps
+                .github
+                .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, pr)
+                .await
+        };
+        match tokio::time::timeout(Duration::from_secs(5), read).await {
+            Ok(Ok(pull)) => {
+                !(pull.number == pr
+                    && pull.state == "open"
+                    && !pull.merged
+                    && !pull.from_fork
+                    && pull.base == delivery_profile(&sandbox).integration_branch
+                    && task.branch.as_deref() == Some(pull.head.as_str())
+                    && pull.head_sha.eq_ignore_ascii_case(head))
+            }
+            _ => false,
+        }
+    }
+
     /// Concrete reason why an armed green PR has not entered a merge candidate or merged yet
     /// (SPEC-580 AWM-004).
     async fn armed_wait_reason(
@@ -2343,7 +2383,7 @@ fn untold(told: Told, next: &Told) -> Told {
         Told {
             armed_green_key: next.armed_green_key.clone(),
             armed_green_since_ms: next.armed_green_since_ms,
-            armed_check_in_ms: told.armed_check_in_ms,
+            armed_check_in_ms: next.armed_check_in_ms,
             armed_needs_you_at: next.armed_needs_you_at,
             ..told
         }
@@ -3369,5 +3409,40 @@ mod tests {
         assert_eq!(told.armed_green_since_ms, 0);
         assert_eq!(told.armed_check_in_ms, 0);
         assert!(told.armed_green_key.is_empty());
+    }
+
+    #[test]
+    fn untold_resets_armed_check_in_on_new_head_and_preserves_on_same_head() {
+        let told_head_a = Told {
+            pr: 10,
+            armed_green_key: "10:aaaaaaa".to_owned(),
+            armed_green_since_ms: 60_000,
+            armed_check_in_ms: 660_000,
+            ..Told::default()
+        };
+        let next_same = Told {
+            pr: 10,
+            armed_green_key: "10:aaaaaaa".to_owned(),
+            armed_green_since_ms: 60_000,
+            armed_check_in_ms: 660_000,
+            ..Told::default()
+        };
+        let kept_same = untold(told_head_a.clone(), &next_same);
+        assert_eq!(kept_same.armed_green_key, "10:aaaaaaa");
+        assert_eq!(kept_same.armed_check_in_ms, 660_000);
+
+        // New head B: `decide_armed_stall` reset `next.armed_check_in_ms = 0`; a failed paste on
+        // the transition pass must NOT leak head A's check-in timestamp onto head B (SPEC-580 F5).
+        let next_head_b = Told {
+            pr: 10,
+            armed_green_key: "10:bbbbbbb".to_owned(),
+            armed_green_since_ms: 1_320_000,
+            armed_check_in_ms: 0,
+            ..Told::default()
+        };
+        let kept_b = untold(told_head_a, &next_head_b);
+        assert_eq!(kept_b.armed_green_key, "10:bbbbbbb");
+        assert_eq!(kept_b.armed_green_since_ms, 1_320_000);
+        assert_eq!(kept_b.armed_check_in_ms, 0);
     }
 }

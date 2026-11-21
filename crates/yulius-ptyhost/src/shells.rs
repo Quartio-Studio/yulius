@@ -424,6 +424,29 @@ mod imp {
         after.split_whitespace().nth(n)?.parse().ok()
     }
 
+    /// Reads both `tty_nr` (field 4 after `)`) and `started` (field 19 after `)`) from a single
+    /// `/proc/<pid>/stat` read (SPEC-580 review F7).
+    fn stat_tty_and_started(pid: u32) -> (u64, u64) {
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            return (0, 0);
+        };
+        let Some(after) = stat.rfind(')').and_then(|i| stat.get(i + 1..)) else {
+            return (0, 0);
+        };
+        let mut fields = after.split_whitespace();
+        let tty = fields
+            .nth(4)
+            .and_then(|s| s.parse::<i64>().ok())
+            .and_then(|n| u64::try_from(n).ok())
+            .unwrap_or(0);
+        // Field 19 is 14 positions after field 4 (`nth(14)` advances 15 elements: 5..=19).
+        let started = fields
+            .nth(14)
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        (tty, started)
+    }
+
     fn parent(pid: u32) -> Option<u32> {
         stat_field(pid, 1).and_then(|ppid| u32::try_from(ppid).ok())
     }
@@ -435,18 +458,7 @@ mod imp {
 
     /// Controlling terminal device number (`tty_nr`, field 4 after `)`); 0 when none or unreadable.
     pub(super) fn tty_nr(pid: u32) -> u64 {
-        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
-            return 0;
-        };
-        let Some(after) = stat.rfind(')').and_then(|i| stat.get(i + 1..)) else {
-            return 0;
-        };
-        after
-            .split_whitespace()
-            .nth(4)
-            .and_then(|s| s.parse::<i64>().ok())
-            .and_then(|n| u64::try_from(n).ok())
-            .unwrap_or(0)
+        stat_tty_and_started(pid).0
     }
 
     /// `SIGKILL`s `pid` if it still started at `started`; whether it was signalled. The check and
@@ -482,6 +494,7 @@ mod imp {
                 }
                 let line = command_line(kid);
                 let shell = is_agent_shell(&line);
+                let (tty_nr, started) = stat_tty_and_started(kid);
                 table.push(ProcessEntry {
                     pid: kid,
                     ppid: pid,
@@ -490,8 +503,8 @@ mod imp {
                     internal: is_yulius_internal(&line),
                     // A wrapper shell is never a namespace's init: its status is not read.
                     ns_init: !shell && ns_init(kid),
-                    tty_nr: tty_nr(kid),
-                    started: started(kid).unwrap_or(0),
+                    tty_nr,
+                    started,
                 });
                 queue.push_back((kid, depth + 1));
             }
@@ -531,6 +544,7 @@ mod imp {
                 if below.contains(&ppid) && !below.contains(&pid) && table.len() < MAX_PROCESSES {
                     below.insert(pid);
                     let (shell, waits, internal) = kinds(pid);
+                    let (tty_nr, started) = stat_tty_and_started(pid);
                     table.push(ProcessEntry {
                         pid,
                         ppid,
@@ -538,8 +552,8 @@ mod imp {
                         waits,
                         internal,
                         ns_init: !shell && ns_init(pid),
-                        tty_nr: tty_nr(pid),
-                        started: started(pid).unwrap_or(0),
+                        tty_nr,
+                        started,
                     });
                 }
             }

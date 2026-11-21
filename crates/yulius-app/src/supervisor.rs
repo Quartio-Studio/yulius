@@ -6413,7 +6413,9 @@ impl App {
         runtime.turn_started_ms.store(0, Ordering::SeqCst);
         runtime.background_shells.store(-1, Ordering::SeqCst);
         runtime.background_waits.store(-1, Ordering::SeqCst);
-        runtime.active_waits.store(0, Ordering::SeqCst);
+        // `active_waits` is RAII-balanced by `ActiveWaitGuard` per live `/internal/agent/wait`
+        // handler; resetting it here while an old attempt's long-poll is still dropping could
+        // desynchronize or underflow the counter (SPEC-580 review F1).
         runtime.background_agents.store(0, Ordering::SeqCst);
         runtime.notice_attention_ms.store(0, Ordering::SeqCst);
         runtime.turn_record_ms.store(0, Ordering::SeqCst);
