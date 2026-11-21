@@ -47,7 +47,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Publish a missed park discovered by terminal detail
 - [x] Publish terminal-discovered resumes to the active task list
 - [x] Restore resting tasks when terminal detail or the active list discovers Undo
-- [ ] Publish terminal-discovered archive removal after Closed
+- [x] Publish terminal-discovered archive removal after Closed
 - [ ] Publish verified parked task detail to Task Info
 - [ ] Keep failed integration candidates with their original owner
 - [ ] Deliver bounded Codex goal continuation to dev
@@ -75,6 +75,16 @@ Capture a separate screen at the park decision because exiting can clear the ent
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
 ## Evidence
+
+- Independent review approved `dc0bda31c` for terminal-discovered archive removal. The author passed 19 focused Chromium tests. The reviewer passed 26 archive and Undo cases and verified that notifications included the public account ID and excluded the account email, runs, wait history and model. Repository contracts, formatting and spec validation passed. No Rust mutation targets changed. Vidoc was disabled.
+
+- Full local Chromium run `01a1fc04-648d-7454-8283-863a0de167bb` on the earlier head `e3ce34f7a` timed out waiting to click Take control in the ownership-refusal fixture. Its captured screen showed Request control. A controlled detail refresh on dev `4706dbda6` reproduced that change of button between the server-side policy update and the click. [Issue #1558](https://github.com/Quartio-Studio/yulius/issues/1558)
+
+- Review of `e3ce34f7a` reproduced a Parked terminal missing both Closed and Archived, followed by the active list omitting its row before either detail read started. The mounted archive-and-Undo test stayed on “Opened parked detail”. The store test emitted no archive notice and left the restored row absent. A pending read now retains the mounted task’s identity even after omission. Both mounted starting states passed, and the store regression verified one archive notification, a genuine restoration, and precedence of deletion or a newer empty list.
+
+- On merged #1557, eleven of twelve archive regressions failed. The mounted terminal retained its archived title after Undo when it had received only the preceding Closed event, and it could leave the active task list unchanged when its detail discovered an archive. The change removes the row on verified archive, retains the observation through overlapping reads, and notifies the mounted terminal. The first notification can explain an earlier empty list without adding another membership change.
+
+- PR #1557 delivered verified restoration at dev `4706dbda6`. Yulius CI run `2c77d886-a75a-4b98-a199-724a10d03aac` passed quality, both Rust shards and e2e on `72a8cf148`. Dev run `54b1ee87-7773-4f2e-b266-f1f776ba87a2` reused the identical tree. The product commit passed 1,273 local Chromium tests with one optional skip. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe704d71f9/delivery/evidence/4706dbda696510c1a254ee1c6651802a04a3eca4)
 
 - Independent review approved `01095a7c4` for verified restoration. All four new Chromium regressions failed against the merged #1555 product code. The author passed nine focused tests, and the reviewer independently passed seven including both mounted Stopped-task cases. Direct checks confirmed that later removal took precedence and that private run data and the account email stayed out of the public row. Repository contracts, formatting and spec validation passed. No Rust mutation targets changed, and project Vidoc scanning was disabled.
 
