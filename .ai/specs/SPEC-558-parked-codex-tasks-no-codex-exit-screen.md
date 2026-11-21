@@ -117,6 +117,10 @@ The SQLite query returning a parked task includes the latest attempt ID in the s
 
 ## Evidence
 
+- Independent review approved `60166b3d725bcfc6687b7818782203b50aa1fc3e` against dev `00ff06cbf`. It traced parked messages to the recorded attempt under the launch lock and checked the separate ended-run, capacity and Move paths introduced on dev. Local run `a27d66ee-a845-4982-be86-e9408c6e3c0b` passed 330 of 331 tests with a previously built fake agent. The closed-conversation test timed out after interrupting a resumed Codex turn. The current fixture writes Codex’s `turn_aborted` record for that interrupt.
+
+- After `cargo build -p fake-agent`, the same 331 tests all passed in run `bee02f70-f2a4-4ad0-ae0a-3416cd2848dd` on the reviewed code. The reopened Codex conversation returned to Waiting after interruption. The suite also covered native rollout reuse, rejection of late parked messages, capacity and Move, and the remote and Telegram paths.
+
 - The dispatch fix’s mutation run listed 46 changes, caught 10, and found 36 unviable. None were missed, timed out or left untested at the 30-minute bound. Its unmutated baseline passed all 3,370 selected tests.
 - For the following screen-saving step, isolated run `4e5541b2-94cb-4c3b-bf7a-56b1d029c3cc` reproduced three failures on the approved dispatch code. A wake succeeded while the old screen was still being published, another started while an exit reader still held the old run, and a late exit reader overwrote the old run’s saved screen after resume. The successor’s held PR lookup allowed the owner to resume as expected.
 
