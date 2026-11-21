@@ -100,6 +100,8 @@ When the watcher sees an open PR during an active queue decision or its slot cha
 
 ## Evidence
 
+- The first owner-notice revision passed all 427 scoped Rust tests and Clippy. Review identified a durable scope decision, a push from another clone and a repeated check-in after candidate failure. All four review regressions failed on `46f228de8`, including an unavailable hosted PR. Armed advice now confirms the open hosted head within five seconds when a notice is due. A quiet watch uses local records. The second-clone fixture checks that the task’s tracking ref still names the failed head after the bare remote advances. No paid agent or live Quartio task is involved.
+
 - On landed dev `ec580fc3a`, 12 of 39 scoped owner-watch tests failed. Three strengthened race and identity regressions also failed. The watcher typed the old ordinary CI failure after a repair was pushed to the fixture’s bare Git remote. The fixtures reopen the SQLite database, restore the arm and run the owner’s watcher through a PTY. Changing the train’s members while it verifies the same red run leaves the prior observation unheard.
 
 - PR #1574 landed at dev `ec580fc3a`. Train run `8b6bf3ef-7a83-4490-9166-a988cf4aa5b6` passed quality, both Rust shards and browser E2E. PR run `6ce66313-3813-436a-b18e-8b2a2b20a606` and dev run `88ff2f78-4e23-4bbe-8b8d-4625c3fea241` reused the verified tree. Vidoc was disabled. The restored-position mutation campaign finished with 24 listed, 19 caught and five unviable. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/ec580fc3aaf5e25c81f6f385551285050b1e90a9)

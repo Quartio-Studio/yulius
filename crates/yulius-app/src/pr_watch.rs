@@ -585,7 +585,7 @@ impl App {
             let held =
                 update_holds || !matches!(self.deps.store.open_pause(&task.id).await, Ok(None));
             let facts = if task.status == TaskStatus::Running && !held {
-                self.pr_facts(&task, &told, &mut runs).await
+                self.pr_facts(&task, &told, &mut runs, bounds).await
             } else {
                 None
             };
@@ -983,6 +983,7 @@ impl App {
         task: &TaskRecord,
         told: &Told,
         runs: &mut BTreeMap<String, Vec<CiRunRecord>>,
+        bounds: &WatchBounds,
     ) -> Option<PrFacts> {
         // The slot before the delivery: a merge decided in between then reads as merged, never
         // as "no merge armed" on an open pull request (review minor 8).
@@ -1175,7 +1176,10 @@ impl App {
         if events.is_empty()
             && holding.is_some_and(|(_, members)| match candidate.map(|run| run.state) {
                 Some(RunState::Queued | RunState::Running | RunState::Passed) => false,
-                Some(RunState::Failed) => members.len() == 1,
+                Some(RunState::Failed) => {
+                    members.len() == 1
+                        || candidate.is_some_and(|run| told_key("candidate", &run.id))
+                }
                 Some(RunState::Error | RunState::Cancelled | RunState::Skipped) | None => true,
             })
         {
@@ -1317,10 +1321,12 @@ impl App {
         );
         if let Some(head) = arm_head
             && !person_must_act
-            && self
-                .confirm_armed_news(task, &sandbox, pr, head, own, (candidate_id, candidate))
-                .await
-                .is_none()
+            && ((decide(&facts, told, bounds).0.is_some()
+                && !self.hosted_arm_is_current(task, &sandbox, pr, head).await)
+                || self
+                    .confirm_armed_news(task, &sandbox, pr, head, own, (candidate_id, candidate))
+                    .await
+                    .is_none())
         {
             return observed_only();
         }
@@ -1350,6 +1356,28 @@ impl App {
             .filter(|run| run.sandbox_id == sandbox.id))
     }
 
+    /// A second clone can publish a repair without advancing this checkout's tracking ref.
+    /// Only a notice ready to type needs a hosted read. Keep outages bounded per notice.
+    async fn hosted_arm_is_current(
+        &self,
+        task: &TaskRecord,
+        sandbox: &SandboxRecord,
+        pr: u64,
+        head: &str,
+    ) -> bool {
+        let read = async {
+            let token = self.dlv_installation_token(sandbox).await?;
+            self.deps
+                .github
+                .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, pr)
+                .await
+        };
+        matches!(tokio::time::timeout(Duration::from_secs(5), read).await,
+            Ok(Ok(pull)) if pull.number == pr && pull.state == "open" && !pull.merged
+                && !pull.from_fork && pull.base == delivery_profile(sandbox).integration_branch
+                && task.branch.as_deref() == Some(pull.head.as_str()) && pull.head_sha.eq_ignore_ascii_case(head))
+    }
+
     /// Recheck the armed PR owner and the ordinary CI used by the queue.
     /// A change during verification leaves the notice unheard for the next pass.
     async fn confirm_armed_news(
@@ -1373,6 +1401,7 @@ impl App {
                 .ok()?
                 .is_some()
             || self.deps.store.open_pause(&task.id).await.ok()?.is_some()
+            || self.deps.store.pending_hold(&task.id).await.ok()?.is_some()
             || self
                 .browser_tab_request_for(&task.sandbox_id, &task.id)
                 .await

@@ -103,7 +103,25 @@ fn a_repair_pushed_during_dispatch_suppresses_the_old_ordinary_failure() -> Test
     cold_candidate_case(ColdCandidate::RepairPushedDuringRead)
 }
 
+#[test]
+fn a_repair_published_by_another_clone_during_dispatch_suppresses_stale_advice() -> TestResult {
+    cold_candidate_case(ColdCandidate::ExternalRepair)
+}
+
+#[test]
+fn an_armed_owner_with_a_durable_scope_decision_receives_ci_after_resolution() -> TestResult {
+    cold_candidate_case(ColdCandidate::ScopeDecision)
+}
+
+#[test]
+fn an_unverified_hosted_pull_keeps_its_ordinary_failure_unheard_until_recovery() -> TestResult {
+    cold_candidate_case(ColdCandidate::HostedPullUnavailable)
+}
+
 enum ColdCandidate {
+    HostedPullUnavailable,
+    ExternalRepair,
+    ScopeDecision,
     RepairPushedDuringRead,
     DisabledSharedFailure,
     FreeNoteChanges,
@@ -154,6 +172,11 @@ async fn seed_candidate(
         .resolve_commit(tree, "HEAD")
         .await?
         .ok_or("head")?;
+    let branch = task.branch.as_deref().ok_or("task branch")?;
+    crate::pr_watch::git(
+        tree,
+        &["push", "-q", "origin", &format!("HEAD:refs/heads/{branch}")],
+    )?;
     open_pull_at(&app, &github, &id, 1481, &head).await?;
     github.set_checks(&head, ChecksState::Success);
     app.deps
@@ -385,6 +408,9 @@ async fn check_after_restart(
             | ColdCandidate::SharedWhileRunning
             | ColdCandidate::FreeArmNote
             | ColdCandidate::RepairPushedDuringRead
+            | ColdCandidate::ExternalRepair
+            | ColdCandidate::HostedPullUnavailable
+            | ColdCandidate::ScopeDecision
             | ColdCandidate::HeldOrdinaryFailure
             | ColdCandidate::HeardOrdinaryFailure
             | ColdCandidate::SharedOrdinaryFailure
@@ -600,7 +626,13 @@ async fn check_after_restart(
                 "outdated train membership: {superseded:?}"
             );
             let news = cold.watch_prs(&bounds).await;
-            let repeated = cold.watch_prs(&bounds).await;
+            // Simulate the next due check-in after this candidate was already reported.
+            let due = WatchBounds {
+                check_in_after_ms: 0,
+                stall_quiet_ms: 0,
+                stall_after_ms: 0,
+            };
+            let repeated = cold.watch_prs(&due).await;
             cold.stop_task_now(id).await?;
             assert!(obsolete.is_empty(), "outdated train status: {obsolete:?}");
             assert_eq!(news.len(), 1, "{news:?}");
@@ -649,7 +681,64 @@ async fn check_after_restart(
             assert!(news[0].1.contains("ordinary-red"), "{news:?}");
         }
         std::fs::write(path, serde_json::to_vec(&train)?)?;
-        if matches!(case, ColdCandidate::RepairPushedDuringRead) {
+        if matches!(case, ColdCandidate::HostedPullUnavailable) {
+            let pull = remote
+                .pulls
+                .lock()
+                .map_err(|_| "fixture pull")?
+                .pop()
+                .ok_or("open pull")?;
+            let unseen = cold.watch_prs(&bounds).await;
+            assert!(unseen.is_empty(), "unavailable hosted PR: {unseen:?}");
+            remote.pulls.lock().map_err(|_| "fixture pull")?.push(pull);
+        }
+        if matches!(case, ColdCandidate::ScopeDecision) {
+            let (entered, release) = super::pause_watch_or_queue(super::Point::LivePrFactsRead, id);
+            let watcher = Arc::clone(&cold);
+            let pass = tokio::spawn(async move { watcher.watch_prs(&bounds).await });
+            tokio::time::timeout(Duration::from_secs(10), entered.notified()).await?;
+            cold.deps
+                .store
+                .insert_hold(&yulius_app::intake::HoldRecord {
+                    id: "scope-review".into(),
+                    task_id: id.clone(),
+                    class: yulius_domain::intake::PromptClass::NewScope,
+                    prompt: "Add a billing report".into(),
+                    prompt_sha256: "0".repeat(64),
+                    percent: 91,
+                    typed_by: None,
+                    state: yulius_app::intake::hold_state::PENDING.into(),
+                    created_at: cold.now(),
+                    resolved_by: None,
+                    resolved_at: None,
+                    new_task_id: None,
+                })
+                .await?;
+            release.notify_one();
+            let overtaken = pass.await?;
+            let pending = cold.watch_prs(&bounds).await;
+            assert!(
+                overtaken.is_empty() && pending.is_empty(),
+                "scope decision: {overtaken:?} {pending:?}"
+            );
+            assert!(
+                cold.deps
+                    .store
+                    .resolve_hold(
+                        "scope-review",
+                        yulius_app::intake::hold_state::PENDING,
+                        yulius_app::intake::hold_state::DISMISSED,
+                        "fixture",
+                        cold.now(),
+                        None
+                    )
+                    .await?
+            );
+        }
+        if matches!(
+            case,
+            ColdCandidate::RepairPushedDuringRead | ColdCandidate::ExternalRepair
+        ) {
             let (entered, release) = super::pause_watch_or_queue(super::Point::LivePrFactsRead, id);
             let watcher = Arc::clone(&cold);
             let pass = tokio::spawn(async move { watcher.watch_prs(&bounds).await });
@@ -657,6 +746,25 @@ async fn check_after_restart(
             let task = cold.deps.store.task(id).await?.ok_or("owner")?;
             let tree = Path::new(task.worktree_path.as_deref().ok_or("checkout")?);
             let branch = task.branch.as_deref().ok_or("branch")?;
+            let other = data.join("repair-clone");
+            let tree = if matches!(case, ColdCandidate::ExternalRepair) {
+                crate::pr_watch::git(
+                    tree,
+                    &["clone", "-q", ".", other.to_str().ok_or("clone path")?],
+                )?;
+                crate::pr_watch::git(
+                    &other,
+                    &[
+                        "remote",
+                        "set-url",
+                        "origin",
+                        origin.to_str().ok_or("bare origin")?,
+                    ],
+                )?;
+                other.as_path()
+            } else {
+                tree
+            };
             crate::pr_watch::git(
                 tree,
                 &[
@@ -671,6 +779,20 @@ async fn check_after_restart(
                 tree,
                 &["push", "-q", "origin", &format!("HEAD:refs/heads/{branch}")],
             )?;
+            if matches!(case, ColdCandidate::ExternalRepair) {
+                let checkout = Path::new(task.worktree_path.as_deref().ok_or("owner checkout")?);
+                assert_eq!(
+                    crate::pr_watch::git(
+                        checkout,
+                        &["rev-parse", &format!("refs/remotes/origin/{branch}")]
+                    )?,
+                    head
+                );
+                assert_ne!(
+                    crate::pr_watch::git(&origin, &["rev-parse", &format!("refs/heads/{branch}")])?,
+                    head
+                );
+            }
             release.notify_one();
             let superseded = pass.await?;
             let repeat = cold.watch_prs(&bounds).await;
