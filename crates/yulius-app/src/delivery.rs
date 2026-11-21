@@ -183,6 +183,18 @@ impl DeliveryRecord {
     }
 }
 
+/// An open delivery without its identity cannot be verified.
+fn open_pr_number(record: Option<&DeliveryRecord>) -> AppResult<Option<u64>> {
+    record
+        .filter(|r| r.stage == DeliveryStage::PrOpen)
+        .map(|r| {
+            r.pr_number.ok_or_else(|| {
+                AppError::Internal("open delivery has no pull request number".into())
+            })
+        })
+        .transpose()
+}
+
 /// State of an environment run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EnvironmentRunState {
@@ -4272,14 +4284,7 @@ impl App {
         purpose: PrVerification,
         observed: &mut ParkedPullRead,
     ) -> AppResult<Option<ParkingPrs>> {
-        let tracked = record
-            .filter(|r| r.stage == DeliveryStage::PrOpen)
-            .map(|r| {
-                r.pr_number.ok_or_else(|| {
-                    AppError::Internal("open delivery has no pull request number".into())
-                })
-            })
-            .transpose()?;
+        let tracked = open_pr_number(record)?;
         let sandbox = self.dlv_sandbox_of(task).await?;
         // A playground or an instance with no GitHub App can still park an answered task.
         // A known open PR requires verification, even when its installation is unavailable.
@@ -4703,6 +4708,23 @@ impl App {
         }))
     }
 
+    /// Check the same open delivery for status, capacity and successor admission.
+    pub(crate) async fn delivery_candidate_blocks(
+        &self,
+        task: &TaskRecord,
+        record: Option<&DeliveryRecord>,
+        verify_host: bool,
+    ) -> AppResult<bool> {
+        let Some(pr) = open_pr_number(record)? else {
+            return Ok(false);
+        };
+        if verify_host {
+            self.current_candidate_blocks(task, pr).await
+        } else {
+            self.local_candidate_blocks(task, pr).await
+        }
+    }
+
     /// The part of [`App::task_is_done`] that needs no GitHub call: the turn ended, no background
     /// shell runs, and the goal is achieved or no declared work is left with the change merged. The
     /// session limit counts tasks by it (SES-101), many times a minute.
@@ -4720,16 +4742,14 @@ impl App {
         }
         // One reading of its delivery for the whole decision: a merge recorded between two
         // readings would be "no news due" by the first and "merged" by the second.
-        let record = self.deps.store.delivery(&task.id).await.ok().flatten();
+        let Ok(record) = self.deps.store.delivery(&task.id).await else {
+            return false;
+        };
         if task.activity == Some(Activity::Done) {
-            if let Some(pr) = record
-                .as_ref()
-                .filter(|r| r.stage == DeliveryStage::PrOpen)
-                .and_then(|r| r.pr_number)
-            {
-                return !self.local_candidate_blocks(task, pr).await.unwrap_or(true);
-            }
-            return true;
+            return !self
+                .delivery_candidate_blocks(task, record.as_ref(), false)
+                .await
+                .unwrap_or(true);
         }
         if self.pr_news_due_of(task, record.as_ref(), false).await {
             return false;
@@ -4776,10 +4796,10 @@ impl App {
         let Ok(record) = store.delivery(&task.id).await else {
             return false;
         };
-        if let Some(pr) = record
-            .filter(|r| r.stage == DeliveryStage::PrOpen)
-            .and_then(|r| r.pr_number)
-            && self.local_candidate_blocks(task, pr).await.unwrap_or(true)
+        if self
+            .delivery_candidate_blocks(task, record.as_ref(), false)
+            .await
+            .unwrap_or(true)
         {
             return false;
         }
@@ -4811,12 +4831,8 @@ impl App {
             return false;
         };
         if running
-            && let Some(pr) = record
-                .as_ref()
-                .filter(|r| r.stage == DeliveryStage::PrOpen)
-                .and_then(|r| r.pr_number)
             && self
-                .current_candidate_blocks(task, pr)
+                .delivery_candidate_blocks(task, record.as_ref(), true)
                 .await
                 .unwrap_or(true)
         {

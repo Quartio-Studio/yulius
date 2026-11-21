@@ -176,6 +176,7 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # once a session and subscription are available. A pending human decision holds the wake.
 # The watch verifies the PR again when capacity returns. The page and wait history identify
 # the failed integration run and its reason. Reading that notice only refreshes status.
+# An unreadable open delivery keeps the session occupied and its successor waiting for verification.
 # A failed single-PR merge candidate names its source run, failing job and a redacted
 # excerpt or its recorded configuration error. The queue verifies the current PR head and integration base.
 # If it cannot verify them, read ordinary CI at that head or safely read the failing job,

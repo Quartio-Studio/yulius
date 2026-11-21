@@ -61,6 +61,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Verify restored arms and deliver current ordinary CI and train notices to the owner
 - [x] Report the active singleton and replay its recorded failure for the original owner
 - [x] Verify candidate status before parking, showing Done or resuming a parked owner
+- [ ] Hold the original owner’s session and successor while its open delivery cannot be verified
 - [ ] Render verified live integration status in the terminal, sidebar and Task Info
 - [ ] Deliver bounded Codex goal continuation to dev
 - [ ] Recover screens from tasks parked before the upgrade
@@ -106,9 +107,12 @@ The live watcher resolves ordinary CI for the owner at the armed head and reads 
 
 The parking decision and parked status use the queue decision saved for the original task and verify that its PR still has the tested head and integration base. A failed CI run from a larger candidate alone cannot assign work to a member. The parked watcher uses the same outcome identity as the live watcher. Reads of a task page never resume it.
 
-A capacity wait leaves the candidate failure unheard and the owner parked. Launch-lock contention also defers the notice to the next pass. Once a session and a subscription are available, the PR watch checks the decision again before delivering it. A published repair on a different head can produce its own ordinary green notice. Stop hooks, list rows and Home use the last locally available status for live candidates. A detail read or the periodic watch can refresh it, including when the PR has closed or changed branches. Capacity accounting shares the last hosted observation that disproved the exact recorded decision for two PR-watch intervals. A new decision, an expired observation or a restart requires verification again. Before releasing a successor, the verifier rereads the live owner and its merge request. The last attempt that actually ran supplies the parked goal marker, terminal and rollout after any interrupted resume.
+A capacity wait leaves the candidate failure unheard and the owner parked. Launch-lock contention also defers the notice to the next pass. Once a session and a subscription are available, the PR watch checks the decision again before delivering it. A published repair on a different head can produce its own ordinary green notice. Stop hooks, list rows and Home use the last locally available status for live candidates. A detail read or the periodic watch can refresh it, including when the PR has closed or changed branches. Capacity accounting shares the last hosted observation that disproved the exact recorded decision for two PR-watch intervals. A new decision, an expired observation or a restart requires verification again. Before releasing a successor, the verifier rereads the live owner and its merge request. An unreadable delivery or an open delivery with no PR number holds the session slot and the successor until its identity and candidate can be verified. The last attempt that actually ran supplies the parked goal marker, terminal and rollout after any interrupted resume.
 
 ## Evidence
+
+- After integrating dev `e55073a71` (PR #1581), independent review of `ed672eb60` identified an achieved owner releasing its session and dependency when the PR identity could not be read. Both regressions failed there. A malformed delivery and an open delivery with no PR number reported a free slot. The task detail had no pending candidate and the successor moved to Queued. Losing the number during the hosted Done check also moved the successor to Queued. The recovery fixture restores #1481, keeps the successor Chained through the current failure and then advances the integration base.
+
 
 - Replaying all four survivors from the server review fixes with the strengthened fixtures reported `4 mutants tested in 9m: 4 caught`. The tests distinguish a replacement arm from its later clearance, a new candidate failure during an ordinary PR read, an unreadable historical goal marker from a missing marker, and a closed PR from one still eligible for a verification wait.
 

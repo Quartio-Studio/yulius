@@ -471,30 +471,27 @@ impl App {
         verify_host: bool,
     ) -> AppResult<(AttentionFacts, bool)> {
         let mut facts = self.local_attention_facts(task, requested).await?;
-        let candidate_pending = task.status == TaskStatus::Running
-            && task
+        if task.status != TaskStatus::Running
+            || !task
                 .activity
                 .is_some_and(yulius_domain::task::Activity::is_idle)
-            && match self
-                .deps
-                .store
-                .delivery(&task.id)
-                .await?
-                .filter(|r| r.stage == yulius_domain::delivery::DeliveryStage::PrOpen)
-                .and_then(|r| r.pr_number)
-            {
-                Some(pr) if verify_host => self
-                    .current_candidate_blocks(task, pr)
-                    .await
-                    .unwrap_or(true),
-                Some(pr) => self.local_candidate_blocks(task, pr).await.unwrap_or(true),
-                None => false,
-            };
-        if candidate_pending {
-            facts.pull = Some(PullSignal::Failing);
-            facts.yulius_wait = true;
+        {
+            return Ok((facts, false));
         }
-        Ok((facts, candidate_pending))
+        let blocked = match self.deps.store.delivery(&task.id).await {
+            Ok(record) => {
+                self.delivery_candidate_blocks(task, record.as_ref(), verify_host)
+                    .await
+            }
+            Err(err) => Err(err),
+        };
+        facts.pull = Some(match blocked {
+            Ok(false) => return Ok((facts, false)),
+            Ok(true) => PullSignal::Failing,
+            Err(_) => PullSignal::Errored,
+        });
+        facts.yulius_wait = true;
+        Ok((facts, true))
     }
 
     /// The parking supervisor verifies hosted inputs separately before taking its launch lock.

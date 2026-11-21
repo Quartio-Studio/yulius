@@ -396,6 +396,102 @@ async fn candidate_peer(
 }
 
 #[test]
+fn an_unreadable_open_delivery_holds_the_owner_slot_and_successor_until_verification() -> TestResult
+{
+    with_candidate_owner(false, async |data, app, remote, task| {
+        use yulius_domain::task::{Activity, TaskStatus};
+        app.load_limits([(yulius_domain::limits::Limit::Sessions, 1)].into())
+            .await;
+        app.deps
+            .store
+            .set_activity(&task.id, Some(Activity::Done), app.now())
+            .await?;
+        let peer = candidate_peer(app, task, TaskStatus::Queued).await?;
+        let queued = app.deps.store.task(&peer).await?.ok_or("queued peer")?;
+        let ctx = yulius_app::auth::AuthContext {
+            user: app.deps.store.user(&task.owner).await?.ok_or("owner")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        let db = rusqlite::Connection::open(data.join("yulius.db"))?;
+        db.execute(
+            "UPDATE delivery SET stage='unreadable' WHERE task_id=?1",
+            [task.id.as_str()],
+        )?;
+        let unreadable_slot = app.task_summary(&queued).await?.queue_reason;
+        db.execute(
+            "UPDATE delivery SET stage=?1, pr_number=NULL WHERE task_id=?2",
+            rusqlite::params![DeliveryStage::PrOpen.wire_name(), task.id.as_str()],
+        )?;
+        let unidentified_slot = app.task_summary(&queued).await?.queue_reason;
+        let pending = app
+            .task_detail(&ctx, task.id.as_str())
+            .await?
+            .summary
+            .candidate_pending;
+        app.deps
+            .store
+            .transition_task(&peer, None, TaskStatus::Chained, None, app.now())
+            .await?;
+        app.deps
+            .store
+            .insert_chain(&yulius_app::intake::ChainRecord {
+                task_id: peer.clone(),
+                after_task_id: Some(task.id.clone()),
+                after_number: task.number,
+                blocked_reason: None,
+                created_at: app.now(),
+                rule: None,
+            })
+            .await?;
+        app.advance_chains(&task.id).await;
+        let held = super::status_of(app, &peer).await.0;
+        if held != Some(TaskStatus::Chained) {
+            app.stop_task_now(&peer).await?;
+        }
+        let full = Some("Waiting for a free session: 1 of 1 in use");
+        assert_eq!(
+            (
+                unreadable_slot.as_deref(),
+                unidentified_slot.as_deref(),
+                pending,
+                held
+            ),
+            (full, full, true, Some(TaskStatus::Chained))
+        );
+        db.execute(
+            "UPDATE delivery SET pr_number=1481 WHERE task_id=?1",
+            [task.id.as_str()],
+        )?;
+        app.advance_chains(&task.id).await;
+        assert_eq!(
+            super::status_of(app, &peer).await.0,
+            Some(TaskStatus::Chained)
+        );
+        remote.remote.lock().map_err(|_| "origin")?.take();
+        remote.pulls.lock().map_err(|_| "PR")?[0].base_sha = "new-base".into();
+        app.advance_chains(&task.id).await;
+        super::wait_for(
+            "successor running on the freed slot",
+            Duration::from_secs(5),
+            || async {
+                app.deps
+                    .store
+                    .live_attempt(&peer)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some()
+            },
+        )
+        .await?;
+        app.stop_task_now(&peer).await?;
+        Ok(())
+    })
+}
+
+#[test]
 fn a_rearm_during_the_done_check_holds_the_achieved_owners_successor() -> TestResult {
     with_candidate_owner(false, async |data, app, remote, task| {
         use yulius_domain::task::{Activity, TaskStatus};
@@ -458,6 +554,19 @@ fn a_rearm_during_the_done_check_holds_the_achieved_owners_successor() -> TestRe
 
 #[test]
 fn a_candidate_recorded_during_the_ordinary_done_check_still_holds_the_successor() -> TestResult {
+    successor_waits_for_update_during_done_check(
+        "UPDATE spans SET outcome='dropped' WHERE key='wait@15'",
+    )
+}
+
+#[test]
+fn a_pr_identity_lost_during_the_ordinary_done_check_still_holds_the_successor() -> TestResult {
+    successor_waits_for_update_during_done_check(
+        "UPDATE delivery SET pr_number=NULL WHERE pr_number=1481",
+    )
+}
+
+fn successor_waits_for_update_during_done_check(update: &str) -> TestResult {
     with_candidate_owner(false, async |data, app, remote, task| {
         use yulius_domain::task::{Activity, TaskStatus};
         app.deps
@@ -486,14 +595,14 @@ fn a_candidate_recorded_during_the_ordinary_done_check_still_holds_the_successor
             tokio::spawn(async move { app.advance_chains(&id).await })
         };
         tokio::time::timeout(Duration::from_secs(5), remote.pull_read_entered.notified()).await?;
-        db.execute("UPDATE spans SET outcome='dropped' WHERE key='wait@15'", [])?;
+        assert_eq!(db.execute(update, [])?, 1);
         *remote.pull_read_hold.lock().map_err(|_| "PR gate")? = None;
         gate.notify_one();
         check.await?;
         assert_eq!(
             super::status_of(app, &peer).await.0,
             Some(TaskStatus::Chained),
-            "a new integration failure holds the successor"
+            "the changed delivery holds the successor"
         );
         Ok(())
     })
