@@ -492,18 +492,18 @@ pub trait CiStore: Send + Sync {
         sandbox: &SandboxId,
         limit: u32,
     ) -> AppResult<Vec<crate::ci::CiRunRecord>>;
+    /// Bounded scheduler history, most recently admitted first. A new run may
+    /// inherit an older queue position from the head it superseded.
+    async fn ci_planning_runs(
+        &self,
+        sandbox: &SandboxId,
+        limit: u32,
+    ) -> AppResult<Vec<crate::ci::CiRunRecord>>;
     /// Runs of a sandbox for one commit, newest first.
     async fn ci_runs_for_sha(
         &self,
         sandbox: &SandboxId,
         sha: &str,
-    ) -> AppResult<Vec<crate::ci::CiRunRecord>>;
-    /// Runs at a full or uniquely abbreviated PR head, latest admission first.
-    /// A transferred queue place can precede an older verdict at the same head.
-    async fn ci_runs_for_pull_head(
-        &self,
-        sandbox: &SandboxId,
-        head: &str,
     ) -> AppResult<Vec<crate::ci::CiRunRecord>>;
     /// Queued and running runs of every sandbox, oldest first.
     async fn active_ci_runs(&self) -> AppResult<Vec<crate::ci::CiRunRecord>>;

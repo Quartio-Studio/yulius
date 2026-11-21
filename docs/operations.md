@@ -172,8 +172,6 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # An open plan step, unfinished spec or unfinished goal keeps the agent live, including while it asks its owner.
 # A failing ordinary PR run, unreadable check or unpublished repair keeps its author live.
 # The PR watcher delivers actionable failures once and waits for a pending human decision.
-# Two PRs at one commit initially share the same CI run. An ordinary rerun for a PR takes
-# precedence for its merge queue decision and the checks returned by its task’s yulius wait.
 # A partial Git overview keeps a known failing PR under Needs you. A complete lookup
 # can clear it. Refreshing this display sends no message to the parked task.
 # A successor waiting for Done (after_task or #N done) stays chained while its parked predecessor
@@ -1526,6 +1524,8 @@ a control question about one that cannot be registered: only when GitHub refuses
 and nothing is changed at GitHub.
 
 ### CI on this machine
+
+If a PR rerun failed because the integration branch’s CI configuration was invalid, repairing the configuration schedules another run at the same head. An earlier pass on that head predates the refusal.
 
 Yulius is the projects' only CI (SPEC-002 ADR-21). No GitHub Actions or paid GitHub feature is
 involved.

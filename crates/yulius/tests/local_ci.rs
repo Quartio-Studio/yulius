@@ -2061,6 +2061,48 @@ async fn a_head_refused_for_the_branchs_file_runs_again_once_it_is_valid() -> Te
     Ok(())
 }
 
+/// Repairing dev invalidates a later configuration refusal even when this
+/// same PR head has an older passing ordinary run.
+#[tokio::test]
+async fn a_second_integration_configuration_repair_tests_the_refused_head_once() -> TestResult {
+    let f = fixture_with(false, |_| one_job("first")).await?;
+    let head = git(&f.origin, &["rev-parse", "feat/one"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let passed = run_of_sha(&f, &head).await?;
+    assert_eq!(passed["state"], "passed");
+    let id = passed["id"].as_str().ok_or("passed CI run")?;
+    let broken = format!("[commands]\ngate = \"make ci\"\n\n{}", one_job("broken"));
+    f.push_dev("yulius.toml", Some(&broken))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let rerun = f
+        .post(&format!("/api/sandboxes/s1/ci/runs/{id}/rerun"), None)
+        .await?;
+    assert_eq!(rerun.status, StatusCode::OK, "{}", rerun.body);
+    f.settle().await?;
+    let refusal = run_of_sha(&f, &head).await?;
+    assert_eq!(refusal["state"], "failed", "{refusal}");
+    assert!(
+        refusal["reason"]
+            .as_str()
+            .is_some_and(|why| why.starts_with("yulius.toml is invalid on")),
+        "{refusal}"
+    );
+
+    f.push_dev("yulius.toml", Some(&one_job("repaired")))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let replacement = run_of_sha(&f, &head).await?;
+    assert_eq!(replacement["state"], "queued", "{replacement}");
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let after = run_of_sha(&f, &head).await?;
+    assert_eq!(after["id"], replacement["id"]);
+    assert_eq!(after["state"], "passed", "{after}");
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    assert_eq!(run_of_sha(&f, &head).await?["id"], replacement["id"]);
+    Ok(())
+}
+
 /// SPEC-504 review round 3 (major): a pull request that changes only a job's time limit runs
 /// its twin with the new limit (a change to how a job runs is a change), and a twin is told the
 /// job's own name in `YULIUS_CI_JOB`.

@@ -662,7 +662,7 @@ impl App {
             })
             .unwrap_or_else(|| member.head.clone());
         matches!(
-            self.ci_gate_for_pull(sandbox, member.pr, &head).await,
+            self.ci_gate_result(sandbox, &head).await,
             GateResult::Run(Some(RunState::Failed))
         )
         .then(|| {
@@ -678,7 +678,7 @@ impl App {
     /// it before it is bisected, since it may say why (SPEC-493 MQC-002).
     async fn own_run_going(&self, sandbox: &SandboxRecord, train: &Train, index: usize) -> bool {
         matches!(
-            self.ci_gate_for_pull(sandbox, train.members[index].pr, &train.members[index].head)
+            self.ci_gate_result(sandbox, &train.members[index].head)
                 .await,
             GateResult::Run(Some(RunState::Queued | RunState::Running))
         )
@@ -763,10 +763,7 @@ impl App {
             return;
         }
         let integration = delivery_profile(sandbox).integration_branch;
-        let own = match self
-            .ci_gate_for_pull(sandbox, suspect.pr, &suspect.head)
-            .await
-        {
+        let own = match self.ci_gate_result(sandbox, &suspect.head).await {
             GateResult::Run(Some(state)) => {
                 format!("its own run at {} {}", short(&suspect.head), {
                     match state {
@@ -1274,10 +1271,10 @@ impl App {
         let member = &train.members[index];
         let store = &self.deps.store;
         let runs = store
-            .ci_runs_for_pull_head(&sandbox.id, head)
+            .ci_runs_for_sha(&sandbox.id, head)
             .await
             .map_err(|_| Step::Wait)?;
-        if let Some(latest) = crate::ci::run_for_pull_head(&runs, member.pr) {
+        if let Some(latest) = runs.first() {
             return match latest.state {
                 RunState::Passed => Ok(None),
                 RunState::Queued | RunState::Running => Err(Step::Wait),
@@ -1433,7 +1430,7 @@ impl App {
             else {
                 continue;
             };
-            let checks = self.ci_gate_for_pull(sandbox, pr, &armed.head).await;
+            let checks = self.ci_gate_result(sandbox, &armed.head).await;
             let up_to_date = matches!(
                 self.deps
                     .git

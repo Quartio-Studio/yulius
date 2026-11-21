@@ -49,6 +49,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Restore resting tasks when terminal detail or the active list discovers Undo
 - [x] Publish terminal-discovered archive removal after Closed
 - [x] Publish verified parked task detail to Task Info
+- [ ] Restore ordinary CI coverage after a repeated integration configuration repair
 - [ ] Resolve shared ordinary CI for the original PR owner in the merge queue and wait
 - [ ] Record the singleton queue decision and its failing job for the original owner
 - [ ] Keep failed integration candidates with their original owner
@@ -77,11 +78,17 @@ Capture a separate screen at the park decision because exiting can clear the ent
 
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
-Yulius CI schedules one run per commit even when two PRs publish the same head. The queue and `yulius wait` prefer the owner’s own ordinary run when one exists. Otherwise they use the run that covers that commit under the scheduler’s rule. A cancellation of a different reference cannot lend a verdict. GitHub still enforces its required commit status when the queue submits the merge.
+The scheduler discards older completed verdicts for a head after a later run was refused because the integration configuration was invalid and that configuration has since been repaired. A fresh queued run covers the repair. The scheduler reads the 200 most recently admitted records through a sandbox index so a superseded queue position cannot reverse the history.
+
+The pending shared-head work addresses the following contract. Yulius CI schedules one run per commit even when two PRs publish the same head. The queue and `yulius wait` prefer the owner’s own ordinary run when one exists. Otherwise they use the run that covers that commit under the scheduler’s rule. A cancellation of a different reference cannot lend a verdict. GitHub still enforces its required commit status when the queue submits the merge.
 
 ## Evidence
 
-- A peer PR that moved onto the owner’s refused SHA inherited an older queue position. At `4a3fc966a`, the wait endpoint still reported the earlier refusal after the replacement passed. Ordinary PR lookups now compare admission order at a single commit. The dispatcher continues to use queue position.
+- A database regression put the most recently admitted refusal behind two older records in queue priority. A two-record priority window returned the old pass and an unrelated run. The admission window returns the refusal and the pass. Migration 0081 indexes existing sandbox CI rows for this read.
+
+- On dev `437188043`, a real ordinary head passed, a rerun was refused for the broken integration configuration, and restoring valid CI left the latest run `failed` when the next scheduler sync should have admitted one replacement. The fixture checks that repeated syncs keep a single replacement and that its job passes.
+
+- At the shared-head prototype, a peer PR that moved onto the owner’s refused SHA inherited an older queue position. At `4a3fc966a`, the wait endpoint still reported the earlier refusal after the replacement passed. The prototype at `6665e593e` compared admission order at a single commit and passed 354 scoped tests. Its independent review identified the scheduler recovery case and a SHA-256 abbreviation. Shared-owner selection remains open. The dispatcher continues to use queue position.
 
 - Five regressions failed at `bb554d9ff`. They cover an external merge followed by a red peer, a peer verdict during a train’s pushed-head confirmation, recovery after the integration CI configuration is repaired, the infrastructure retry budget for the owner, and a short SHA with more than 50 intervening runs. The prefix read checks for a unique commit in the sandbox’s indexed history.
 

@@ -1137,311 +1137,6 @@ async fn a_bisection_executes_the_failed_tree_only_once() -> TestResult {
     Ok(())
 }
 
-/// The scheduler executes a shared commit once. Each open PR can use that result.
-#[tokio::test]
-async fn the_other_pr_on_a_scheduled_head_can_wait_and_enter_the_queue() -> TestResult {
-    let f = fixture().await?;
-    let app = &f.h.app;
-    let (one, two, head) = shared_pull_heads(&f).await?;
-    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("sandbox")?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    let runs = app.deps.store.ci_runs_for_sha(&f.sandbox, &head).await?;
-    let [shared] = runs.as_slice() else {
-        return Err(format!("one scheduled run expected: {runs:?}").into());
-    };
-    let (pr, worktree) = match shared.reference {
-        CiRef::PullRequest(1) => (2, &two),
-        CiRef::PullRequest(2) => (1, &one),
-        _ => return Err(format!("unexpected shared run: {shared:?}").into()),
-    };
-    assert_eq!(f.wait(pr, worktree).await?["checks"], "queued");
-    f.advance_dev("moved-base.txt")?;
-    f.arm(pr, worktree).await?;
-    f.settle(app).await?;
-    let wait = app
-        .agent_wait_state(&format!("tok-t{pr}"), Some(&head))
-        .await?;
-    assert_eq!(wait.checks, "passed");
-    f.decide_until(app, || async {
-        f.settle(app).await?;
-        f.merged(app, pr).await
-    })
-    .await?;
-    assert_eq!(
-        app.deps
-            .store
-            .ci_runs_for_sha(&f.sandbox, &head)
-            .await?
-            .len(),
-        1
-    );
-    Ok(())
-}
-
-async fn shared_pull_heads(f: &Fixture) -> BoxResult<(PathBuf, PathBuf, String)> {
-    let one = f.task(1, &[("a.txt", "a\n")]).await?;
-    let two = f.task(2, &[("b.txt", "b\n")]).await?;
-    let first = git(&one, &["rev-parse", "HEAD"])?;
-    git(&two, &["merge", "-q", "--no-edit", &first])?;
-    let head = git(&two, &["rev-parse", "HEAD"])?;
-    git(&one, &["merge", "--ff-only", &head])?;
-    for worktree in [&one, &two] {
-        git(worktree, &["push", "-q", "origin", "HEAD"])?;
-    }
-    Ok((one, two, head))
-}
-
-/// An explicit owner rerun takes precedence over a later peer verdict on the same commit.
-#[tokio::test]
-async fn an_owner_failure_keeps_a_later_green_peer_from_merging_it() -> TestResult {
-    shared_owner_rerun(RunState::Failed, RunState::Passed).await
-}
-
-#[tokio::test]
-async fn an_owner_pass_survives_a_later_red_peer_in_the_merge_queue() -> TestResult {
-    shared_owner_rerun(RunState::Passed, RunState::Failed).await
-}
-
-/// Private merge and playground runs cannot substitute for ordinary scheduler CI.
-#[tokio::test]
-async fn the_shared_head_fallback_skips_private_runs_and_cancelled_peers() -> TestResult {
-    let f = fixture().await?;
-    let app = &f.h.app;
-    let (one, _two, head) = shared_pull_heads(&f).await?;
-    f.record_passed(app, 2, &head).await?;
-    let mut run = app
-        .deps
-        .store
-        .ci_runs_for_sha(&f.sandbox, &head)
-        .await?
-        .remove(0);
-    for (reference, state) in [
-        (CiRef::PullRequest(2), RunState::Cancelled),
-        (CiRef::Train(vec![1]), RunState::Failed),
-        (CiRef::Task(1), RunState::Error),
-    ] {
-        run.id = format!("new-{}", reference.key());
-        run.reference = reference;
-        run.state = state;
-        app.deps.store.insert_ci_run(&run, &[]).await?;
-        assert_eq!(f.wait(1, &one).await?["checks"], "passed", "{}", run.id);
-    }
-    f.record_run(app, 1, &head, RunState::Cancelled).await?;
-    assert_eq!(f.wait(1, &one).await?["checks"], "cancelled");
-    Ok(())
-}
-
-/// The final merge checks must agree with the queue when the base has not moved.
-#[tokio::test]
-async fn a_green_shared_head_owner_merges_with_its_published_green_status() -> TestResult {
-    shared_protected_merge(true).await
-}
-
-#[tokio::test]
-async fn the_host_can_refuse_a_green_owner_when_the_shared_status_is_red() -> TestResult {
-    shared_protected_merge(false).await
-}
-
-async fn shared_protected_merge(owner_publishes_last: bool) -> TestResult {
-    let f = fixture().await?;
-    let app = &f.h.app;
-    let (one, _two, head) = shared_pull_heads(&f).await?;
-    f.arm(1, &one).await?;
-    f.record_run(app, 1, &head, RunState::Passed).await?;
-    f.h.clock.0.fetch_add(1, Ordering::SeqCst);
-    f.record_run(app, 2, &head, RunState::Failed).await?;
-    if owner_publishes_last {
-        // A status publication retry can reach GitHub after the newer peer’s status.
-        let green =
-            f.h.github
-                .statuses()
-                .into_iter()
-                .find(|(sha, status)| sha == &head && status.state == "success")
-                .ok_or("owner's published green status")?;
-        f.h.github.statuses.lock().map_err(|_| "lock")?.push(green);
-    }
-    app.merge_armed(&f.sandbox).await;
-    let wait = f.wait(1, &one).await?;
-    assert_eq!(f.merged(app, 1).await?, owner_publishes_last, "{wait}");
-    if !owner_publishes_last {
-        assert!(
-            wait["merge_outcome"]
-                .as_str()
-                .is_some_and(|s| s.contains("Required status check")),
-            "{wait}"
-        );
-    }
-    assert_eq!(wait["checks"], "passed", "{wait}");
-    Ok(())
-}
-
-#[tokio::test]
-async fn a_shared_head_infrastructure_error_retries_the_owner_once() -> TestResult {
-    let f = fixture().await?;
-    let app = &f.h.app;
-    let (_, _, head) = shared_pull_heads(&f).await?;
-    f.record_run(app, 1, &head, RunState::Error).await?;
-    f.record_passed(app, 2, &head).await?;
-    f.record_run(app, 3, &head, RunState::Error).await?;
-    app.reconcile_deliveries().await;
-    let runs = app.deps.store.ci_runs_for_sha(&f.sandbox, &head).await?;
-    let retry = runs
-        .iter()
-        .find(|r| r.reference == CiRef::PullRequest(1) && r.state == RunState::Queued)
-        .ok_or_else(|| format!("owner retry missing: {runs:?}"))?;
-    app.deps
-        .store
-        .transition_ci_run(
-            &retry.id,
-            &[RunState::Queued],
-            RunState::Error,
-            &yulius_app::ci::CiRunUpdate::default(),
-        )
-        .await?;
-    app.reconcile_deliveries().await;
-    assert_eq!(
-        app.deps
-            .store
-            .ci_runs_for_sha(&f.sandbox, &head)
-            .await?
-            .len(),
-        runs.len()
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn a_new_shared_run_replaces_a_refusal_for_the_old_integration_configuration() -> TestResult {
-    let f = fixture().await?;
-    let app = &f.h.app;
-    let (one, _, head) = shared_pull_heads(&f).await?;
-    f.record_run(app, 1, &head, RunState::Running).await?;
-    let owner = app
-        .deps
-        .store
-        .ci_runs_for_sha(&f.sandbox, &head)
-        .await?
-        .remove(0);
-    let refused = yulius_app::ci::CiRunUpdate {
-        reason: Some("yulius.toml is invalid on dev and this change does not repair it".into()),
-        ended_at: Some(app.now()),
-        ..Default::default()
-    };
-    app.deps
-        .store
-        .transition_ci_run(&owner.id, &[RunState::Running], RunState::Failed, &refused)
-        .await?;
-    assert_eq!(f.wait(1, &one).await?["checks"], "failed");
-    // CI scheduling transfers a superseded run’s queue place to the replacement.
-    // This new row was admitted after the refusal, with a place before it.
-    let mut replacement = owner.clone();
-    replacement.id = "scheduled-replacement".into();
-    replacement.reference = CiRef::PullRequest(2);
-    replacement.queued_at.0 -= 1;
-    replacement.state = RunState::Queued;
-    app.deps.store.insert_ci_run(&replacement, &[]).await?;
-    for prefix in [head.as_str(), &head[..9]] {
-        assert_eq!(
-            app.agent_wait_state("tok-t1", Some(prefix)).await?.checks,
-            "queued"
-        );
-    }
-    app.deps
-        .store
-        .transition_ci_run(
-            &replacement.id,
-            &[RunState::Queued],
-            RunState::Passed,
-            &yulius_app::ci::CiRunUpdate::default(),
-        )
-        .await?;
-    for prefix in [head.as_str(), &head[..9]] {
-        assert_eq!(
-            app.agent_wait_state("tok-t1", Some(prefix)).await?.checks,
-            "passed"
-        );
-    }
-    // If a later ordinary run observes another invalid configuration, its new
-    // refusal supersedes the intervening pass.
-    f.record_run(app, 3, &head, RunState::Running).await?;
-    let newer = app
-        .deps
-        .store
-        .ci_runs_for_sha(&f.sandbox, &head)
-        .await?
-        .remove(0);
-    app.deps
-        .store
-        .transition_ci_run(&newer.id, &[RunState::Running], RunState::Failed, &refused)
-        .await?;
-    assert_eq!(f.wait(1, &one).await?["checks"], "failed");
-    Ok(())
-}
-
-#[tokio::test]
-async fn a_short_shared_head_finds_its_owner_beyond_recent_runs() -> TestResult {
-    let f = fixture().await?;
-    let app = &f.h.app;
-    let (_, _, head) = shared_pull_heads(&f).await?;
-    f.record_run(app, 1, &head, RunState::Failed).await?;
-    for n in 10..65 {
-        f.record_passed(app, n, &format!("{n:040x}")).await?;
-    }
-    f.record_passed(app, 2, &head).await?;
-    let short = &head[..9];
-    assert_eq!(
-        app.agent_wait_state("tok-t1", Some(short)).await?.checks,
-        "failed"
-    );
-    let other = format!(
-        "{short}{}",
-        if head.ends_with('0') {
-            "1".repeat(31)
-        } else {
-            "0".repeat(31)
-        }
-    );
-    f.record_passed(app, 3, &other).await?;
-    assert_eq!(
-        app.agent_wait_state("tok-t1", Some(short)).await?.checks,
-        "none"
-    );
-    Ok(())
-}
-
-async fn shared_owner_rerun(owner_state: RunState, peer_state: RunState) -> TestResult {
-    let f = fixture().await?;
-    let app = &f.h.app;
-    let (one, _two, head) = shared_pull_heads(&f).await?;
-    f.arm(1, &one).await?;
-    f.record_run(app, 1, &head, owner_state).await?;
-    f.h.clock.0.fetch_add(1, Ordering::SeqCst);
-    f.record_run(app, 2, &head, peer_state).await?;
-    f.advance_dev("moved-base.txt")?;
-    let wait = f.wait(1, &one).await?;
-    assert_eq!(wait["checks"], owner_state.as_str(), "{wait}");
-    app.merge_armed(&f.sandbox).await;
-    if owner_state == RunState::Failed {
-        let wait = f.wait(1, &one).await?;
-        assert_eq!(wait["merge_armed"], false, "{wait}");
-        assert!(
-            wait["merge_outcome"]
-                .as_str()
-                .is_some_and(|s| s.contains("checks of pull request #1 failed")),
-            "{wait}"
-        );
-        assert!(!f.merged(app, 1).await?);
-    } else {
-        assert!(
-            f.train_runs(app)
-                .await?
-                .iter()
-                .any(|r| r.reference == CiRef::Train(vec![1]))
-        );
-    }
-    Ok(())
-}
-
 /// A previous candidate may have lost its worker or been cancelled while testing this tree.
 /// A pull request's own failure also belongs to a different reference.
 #[tokio::test]
@@ -2750,29 +2445,10 @@ async fn a_yulius_base_merge_keeps_the_merge_armed() -> TestResult {
     let state = f.wait(1, &worktree).await?;
     assert_eq!(state["merge_armed"], true, "kept: {state}");
     assert_eq!(state["merge_outcome"], Value::Null, "{state}");
-    assert_eq!(saved_armed(&app, 1)?, Some((moved.clone(), armed_at)));
-    // An unrelated PR verdict arrives while GitHub catches up. Keep the already
-    // published owner verdict at this head and finish the candidate that passed.
-    let mut peer = app
-        .deps
-        .store
-        .ci_runs_for_sha(&f.sandbox, &moved)
-        .await?
-        .remove(0);
-    peer.id = "unpublished-red-peer".into();
-    peer.reference = CiRef::PullRequest(82);
-    peer.state = RunState::Failed;
-    app.deps.store.insert_ci_run(&peer, &[]).await?;
+    assert_eq!(saved_armed(&app, 1)?, Some((moved, armed_at)));
     *f.h.github.stale_reads.lock().map_err(|_| "lock")? = 0;
     f.decide_until(&app, || async { f.merged(&app, 1).await })
         .await?;
-    let ended = f.wait(1, &worktree).await?;
-    assert!(
-        ended["merge_outcome"]
-            .as_str()
-            .is_some_and(|s| s.contains("in a merge train")),
-        "{ended}"
-    );
     Ok(())
 }
 
@@ -3036,7 +2712,7 @@ async fn a_pinned_hand_merge_on_a_green_head_counts() -> TestResult {
     let f = fixture().await?;
     let app = f.h.app.clone();
     let person = yulius_app::model::Secret("person-token".into());
-    let (worktree, _peer, _) = shared_pull_heads(&f).await?;
+    let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
     f.arm(1, &worktree).await?;
     let head = git(&worktree, &["rev-parse", "HEAD"])?;
     f.record_passed(&app, 1, &head).await?;
@@ -3045,8 +2721,6 @@ async fn a_pinned_hand_merge_on_a_green_head_counts() -> TestResult {
         .github
         .merge_pull(&person, "acme", "app", 1, "squash", &head)
         .await?;
-    // Another PR finishes red at this same SHA after the person has merged the green owner.
-    f.record_run(&app, 2, &head, RunState::Failed).await?;
     app.merge_armed(&f.sandbox).await;
     let state = f.wait(1, &worktree).await?;
     assert_eq!(state["merge_armed"], false, "{state}");
@@ -3117,23 +2791,23 @@ async fn a_pinned_hand_merge_on_a_green_head_counts() -> TestResult {
 
     // Without the ruleset, a head that never passed is merged by hand: it does not count.
     f.h.github.strict.store(false, Ordering::SeqCst);
-    let untested = f.task(3, &[("b.txt", "x\n")]).await?;
-    f.arm(3, &untested).await?;
-    let red = git(&untested, &["rev-parse", "HEAD"])?;
+    let second = f.task(2, &[("b.txt", "x\n")]).await?;
+    f.arm(2, &second).await?;
+    let red = git(&second, &["rev-parse", "HEAD"])?;
     app.deps
         .github
-        .merge_pull(&person, "acme", "app", 3, "squash", &red)
+        .merge_pull(&person, "acme", "app", 2, "squash", &red)
         .await?;
     f.h.github
         .pulls
         .lock()
         .map_err(|_| "pulls")?
         .iter_mut()
-        .find(|pull| pull.number == 3)
+        .find(|pull| pull.number == 2)
         .ok_or("merged PR")?
         .merge_commit_sha = None;
     app.merge_armed(&f.sandbox).await;
-    let outcome = f.wait(3, &untested).await?["merge_outcome"]
+    let outcome = f.wait(2, &second).await?["merge_outcome"]
         .as_str()
         .unwrap_or_default()
         .to_owned();

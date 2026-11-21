@@ -1545,7 +1545,6 @@ request as it is:
 - a pull request's own run (its pre-check) always finishes: until it passed, Yulius never merges
   the integration branch into it, so a moving base never supersedes it;
 - green and up to date: merged now;
-- when open PRs share a commit, the scheduler tests it once. Each arm and its owner’s `yulius wait` use that result until the PR has a run of its own at that head;
 - green, or its own run still queued or running, and behind: into the next merge candidate
   (`merge_train.rs`), the integration branch with up to 8 such pull requests merged in, in arm
   order, tested by one run (`train/<n>+…`) beside the members' own runs (SPEC-493 MQC-001); once
@@ -4065,6 +4064,7 @@ outcome recorded")]
 `yulius.toml` is read with a TOML 1.1 parser (`spec_format::config`, the `toml` crate's spanned
 document): any valid layout parses, and invalid TOML is refused with the parser's message at its
 line.
+After the integration configuration is repaired, the scheduler reads its bounded run history in admission order. For a refused head, completed verdicts admitted before the refusal cannot cover the repair. A later active run covers it, and a cancellation retains its reference-specific effect.
 
 - **The gate in force** (`App::ci_configured_gate`) comes from the integration branch's head.
   While that file is invalid, the gate comes from the newest first-parent commit (at most 100

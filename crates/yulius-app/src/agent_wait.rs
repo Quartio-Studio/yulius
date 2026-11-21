@@ -532,22 +532,17 @@ impl App {
             let ArmedNow::Armed(armed) = self.armed_now(&task.id) else {
                 continue;
             };
-            let Some(pr) = self
-                .deps
-                .store
-                .delivery(&task.id)
-                .await
-                .ok()
-                .flatten()
-                .filter(|record| record.stage == yulius_domain::delivery::DeliveryStage::PrOpen)
-                .and_then(|record| record.pr_number)
-            else {
-                continue;
-            };
             if !matches!(
-                self.ci_gate_for_pull(sandbox, pr, &armed.head).await,
+                self.ci_gate_result(sandbox, &armed.head).await,
                 GateResult::Run(Some(RunState::Passed | RunState::Skipped))
             ) {
+                continue;
+            }
+            let open = matches!(
+                self.deps.store.delivery(&task.id).await,
+                Ok(Some(record)) if record.stage == yulius_domain::delivery::DeliveryStage::PrOpen
+            );
+            if !open {
                 continue;
             }
             let current = matches!(
@@ -886,11 +881,9 @@ impl App {
         let require_checks = profile.require_checks;
         // With Yulius CI, its run at the armed head decides: GitHub may still show an older head
         // whose run passed, and the base must not be merged into one whose run still goes.
-        let checks = crate::delivery::ci_checks_word(
-            self.ci_gate_for_pull(&sandbox, pr.number, &armed.head)
-                .await,
-        )
-        .map_or_else(|| pr.checks.clone(), str::to_owned);
+        let checks =
+            crate::delivery::ci_checks_word(self.ci_gate_result(&sandbox, &armed.head).await)
+                .map_or_else(|| pr.checks.clone(), str::to_owned);
         let green = checks == "success" || (checks == "none" && !require_checks);
         if checks == "failure" {
             return Verdict::Decided(format!(
@@ -1296,7 +1289,7 @@ impl App {
             &pull.base,
             &pull.head_sha,
             pull.merge_commit_sha.as_deref(),
-            self.ci_gate_for_pull(sandbox, number, &pull.head_sha).await,
+            self.ci_gate_result(sandbox, &pull.head_sha).await,
             next,
             &ahead,
         )
@@ -1315,29 +1308,25 @@ impl App {
             .filter(|h| h.len() >= 7 && h.chars().all(|c| c.is_ascii_hexdigit()))
             .map(str::to_ascii_lowercase)
             .unwrap_or_default();
-        let delivery = store.delivery(&task.id).await?;
-        let pr = delivery.as_ref().and_then(|record| record.pr_number);
         let (checks, checks_detail) = if head.is_empty() {
             ("none".to_owned(), None)
         } else {
-            let runs;
-            let run = if let Some(pr) = pr {
-                runs = store.ci_runs_for_pull_head(&task.sandbox_id, &head).await?;
-                crate::ci::run_for_pull_head(&runs, pr)
-            } else {
-                // A playground run can have tested the task head merged with the base (PCI-006).
-                runs = store.ci_runs(&task.sandbox_id, 50).await?;
-                match runs.iter().find(|run| run.sha.starts_with(&head)) {
-                    Some(run) => Some(run),
-                    None => self.task_run_of_head(task, &runs, &head).await,
-                }
+            let runs = store.ci_runs(&task.sandbox_id, 50).await?;
+            // A playground task's run tests its head merged into the integration branch (SPEC-163
+            // PCI-006): the newest that tested it.
+            let run = match runs.iter().find(|run| run.sha.starts_with(&head)) {
+                Some(run) => Some(run),
+                None => self.task_run_of_head(task, &runs, &head).await,
             };
             match run {
                 Some(run) => (run.state.as_str().to_owned(), run.reason.clone()),
                 None => ("none".to_owned(), None),
             }
         };
-        let stage = delivery.map_or_else(|| "none".to_owned(), |record| record.stage.encode());
+        let stage = store
+            .delivery(&task.id)
+            .await?
+            .map_or_else(|| "none".to_owned(), |record| record.stage.encode());
         // One read of the slot: the outcome and whether a merge is armed agree (WAI-003).
         let (merge_armed, outcome, note) = lock_slot(&self.runtime(&task.id)).view();
         let push_problem = self
