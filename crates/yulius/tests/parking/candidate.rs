@@ -116,6 +116,49 @@ fn a_new_pr_on_the_same_head_and_base_releases_the_candidate_owner() -> TestResu
     })
 }
 
+#[test]
+fn an_unrelated_or_merged_pr_releases_the_original_candidate_owner() -> TestResult {
+    for field in ["fork", "merged", "head branch", "base branch"] {
+        with_idle_candidate(async |_, app, remote, id, _| {
+            remote.remote.lock().map_err(|_| "remote")?.take();
+            {
+                let mut pulls = remote.pulls.lock().map_err(|_| "PR")?;
+                match field {
+                    "fork" => pulls[0].from_fork = true,
+                    "merged" => {
+                        pulls[0].merged = true;
+                        pulls[0].state = "closed".into();
+                    }
+                    "head branch" => pulls[0].head = "another-owner".into(),
+                    "base branch" => pulls[0].base = "another-target".into(),
+                    _ => unreachable!(),
+                }
+            }
+            super::parked(app, &id).await
+        })?;
+    }
+    Ok(())
+}
+
+#[test]
+fn an_open_candidate_with_a_missing_branch_defers_the_park() -> TestResult {
+    for missing_head_branch in [true, false] {
+        with_idle_candidate(async |_, app, remote, id, _| {
+            remote.remote.lock().map_err(|_| "remote")?.take();
+            {
+                let mut pulls = remote.pulls.lock().map_err(|_| "PR")?;
+                if missing_head_branch {
+                    pulls[0].head.clear();
+                } else {
+                    pulls[0].base.clear();
+                }
+            }
+            expect_park_deferred(app, &id, || {}).await
+        })?;
+    }
+    Ok(())
+}
+
 fn with_idle_candidate(
     check: impl AsyncFnOnce(
         &Path,

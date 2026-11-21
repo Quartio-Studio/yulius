@@ -115,8 +115,9 @@ impl PrVerification {
 /// Identity to show even when the checks are unfinished or unreadable.
 #[derive(Default)]
 pub(crate) struct ParkedPullRead {
-    /// The open PR whose failing ordinary checks were read, through the final branch lookup.
-    failed_pull: Option<GhPull>,
+    /// The last directly reconfirmed open head and whether the hosted checks reported failure.
+    /// Local CI for that head is read after the final branch listing.
+    checked_head: Option<(GhPull, bool)>,
     pub(crate) signal: Option<PullSignal>,
     pub(crate) pr: Option<yulius_contracts::api::tasks::ParkedPr>,
 }
@@ -4399,22 +4400,52 @@ impl App {
         if purpose != PrVerification::Display {
             return Ok((current == branch).then_some(facts));
         }
-        if let Some(failed) = observed.failed_pull.take() {
-            let listed = current.iter().find(|pull| pull.number == failed.number);
-            let independent = tracked == Some(failed.number)
-                && branch.iter().all(|pull| pull.number != failed.number);
-            if listed.map_or(independent, |pull| same_open_head(&failed, pull)) {
-                return Ok(None);
-            }
-            observed.signal = None;
-        }
         // A title edit carries no eligibility evidence. Changes in membership,
         // head, base or mergeability do. Prefer a directly confirmed blocker
         // that still has the same facts over a newly listed, unchecked PR.
         let unchanged =
             |candidate: &GhPull| branch.iter().any(|prior| same_open_pull(prior, candidate));
         let changed = current.iter().rev().find(|candidate| !unchanged(candidate));
-        if changed.is_some() || current.len() != branch.len() {
+        let listing_changed = changed.is_some() || current.len() != branch.len();
+        if !verified || listing_changed {
+            let last = observed.checked_head.take();
+            // A direct read can verify the head even if it cannot verify mergeability.
+            // Earlier confirmed pulls are in facts; the last blocked one is only in last.
+            for pull in facts
+                .pulls
+                .iter()
+                .chain(last.as_ref().filter(|_| !verified).map(|(pull, _)| pull))
+            {
+                let listed = current
+                    .iter()
+                    .find(|candidate| candidate.number == pull.number);
+                let independent = tracked == Some(pull.number)
+                    && branch.iter().all(|prior| prior.number != pull.number);
+                if !listed.map_or(independent, |candidate| same_open_head(pull, candidate)) {
+                    continue;
+                }
+                let hosted_red = last
+                    .as_ref()
+                    .is_some_and(|(checked, red)| *red && checked.number == pull.number);
+                if hosted_red
+                    || self
+                        .parking_ci_signal(task, pull.number, &pull.head_sha, None)
+                        .await?
+                        == Some(PullSignal::Failing)
+                {
+                    observed.pr = Some(yulius_contracts::api::tasks::ParkedPr {
+                        number: pull.number,
+                        open: true,
+                    });
+                    observed.signal = Some(PullSignal::Failing);
+                    return Ok(None);
+                }
+            }
+            if observed.signal == Some(PullSignal::Failing) {
+                observed.signal = None;
+            }
+        }
+        if listing_changed {
             // A recorded PR can be published on a different branch. In that
             // case its direct reads are independent of both branch listings.
             let survives = |number, head: Option<&str>| {
@@ -4522,15 +4553,25 @@ impl App {
         // Each unfinished or unreadable check belongs to the PR being verified.
         observed.pr = Some(yulius_contracts::api::tasks::ParkedPr { number, open: true });
         observed.signal = None;
+        observed.checked_head = None;
         let pull = read().await?;
         if !is_open(&pull) {
             observed.note_closed(&pull);
             return Ok(pull.merged.then_some(pull));
         }
+        let recheck = |observed: &mut ParkedPullRead, current: &GhPull, hosted_red| {
+            observed.note_closed(current);
+            if purpose == PrVerification::Display
+                && pull.number == number
+                && same_open_head(&pull, current)
+            {
+                observed.checked_head = Some((current.clone(), hosted_red));
+            }
+        };
         if pull.behind {
             if purpose == PrVerification::Display {
                 let current = read().await?;
-                observed.note_closed(&current);
+                recheck(observed, &current, false);
                 if same_open_pull(&pull, &current) {
                     observed.signal = self
                         .parking_ci_signal(task, number, &pull.head_sha, None)
@@ -4588,7 +4629,9 @@ impl App {
                 return Ok(None);
             }
             let current = read().await?;
-            observed.note_closed(&current);
+            let hosted_red =
+                checks == "failure" && !matches!(gate, yulius_domain::ci::GateResult::Run(Some(_)));
+            recheck(observed, &current, hosted_red);
             if current.number == number && same_open_head(&pull, &current) {
                 let own = self
                     .parking_ci_signal(task, number, &pull.head_sha, None)
@@ -4606,7 +4649,6 @@ impl App {
                 };
                 if signal == Some(PullSignal::Failing) {
                     observed.signal = signal;
-                    observed.failed_pull = Some(current);
                     return Ok(None);
                 }
                 if same_open_pull(&pull, &current) {
@@ -4635,7 +4677,7 @@ impl App {
         }
         // Checks and local conflict detection can take long enough for another push.
         let current = read().await?;
-        observed.note_closed(&current);
+        recheck(observed, &current, false);
         let same_open_head = same_open_pull(&pull, &current)
             && (purpose == PrVerification::Display || pull.base_sha == current.base_sha);
         if same_open_head && mergeable != Some(true) {

@@ -112,6 +112,9 @@ The final parking check compares the owner’s saved singleton decision with the
 
 ## Evidence
 
+- With GitHub reporting success on the PR head and an ordinary failed run recorded in SQLite, the base-transition fixture still returned “could not be verified” at `243a4a11a`. The final listing now checks the directly verified PR and commit against both sources. The fixture varies the source of the red check and whether the base advances at the second direct read or the final listing.
+- Removing the PR-number and published-head comparisons made both replacement controls time out while waiting for the owner to park. With the checks in place the two owners parked. The six focused merge-admission regressions also passed on the isolated settlement change, including genuine capacity and subscription waits.
+
 - At `e740eb5db`, when the integration branch advanced during an ordinary failure read and GitHub changed the PR to behind with unknown mergeability, task detail said the PR could not be verified. The detail fixture changes those fields during both the direct read and the final branch listing. Separate parking fixtures change only the published head or only the current PR number while the candidate’s tested base stays fixed. Each repaired owner parks.
 - At `2738859c6`, the isolated merge-admission fixture returned `armed: true` after a committed park crossed into WaitingCapacity and then closed. An ordinary capacity pause accepted the same pending merge. These cases belong to the separate settlement step.
 
