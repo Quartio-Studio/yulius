@@ -803,18 +803,24 @@ impl App {
                 {
                     return;
                 }
-                let Ok(Some(current)) = self.deps.store.task(task_id).await else {
-                    return;
-                };
-                let achieved = runtime.goal_achieved.load(Ordering::SeqCst);
-                if waited_turn_settles(current.activity, achieved)
-                    && let Err(err) = self.settle_clean_turn(&current).await
-                {
-                    tracing::warn!(task = %task_id, error = %err, "could not settle the turn");
-                }
+                self.settle_verdict_stop(task_id).await;
             }),
         )
         .await;
+    }
+
+    /// The caller owns the live attempt's verdict slot and the turn lock.
+    async fn settle_verdict_stop(self: &Arc<Self>, task_id: &TaskId) {
+        let runtime = self.runtime(task_id);
+        let Ok(Some(current)) = self.deps.store.task(task_id).await else {
+            return;
+        };
+        let achieved = runtime.goal_achieved.load(Ordering::SeqCst);
+        if waited_turn_settles(current.activity, achieved)
+            && let Err(err) = self.settle_clean_turn(&current).await
+        {
+            tracing::warn!(task = %task_id, error = %err, "could not settle the turn");
+        }
     }
 
     /// The person stopped the agent's turn (Esc, or Ctrl+C while it works; F 2026-10-10: "when I
@@ -1035,64 +1041,71 @@ impl App {
         outcome: GoalOutcome,
         at: Option<yulius_domain::time::Timestamp>,
     ) {
-        if !goal_stays_open(outcome) {
-            self.goal_ended_during_retry(task_id, outcome == GoalOutcome::Met)
-                .await;
-        }
-        let runtime = self.runtime(task_id);
-        runtime
-            .goal_open
-            .store(goal_stays_open(outcome), Ordering::SeqCst);
-        // The UI reads it beside an idle task (Answered or Your turn): a record that came after the
-        // turn settled is published (SPEC-429 ANS-008).
-        let unfinished = goal_unfinished(outcome);
-        if runtime.replace_goal_unfinished(unfinished).await != unfinished {
-            self.publish_task(task_id).await;
-        }
-        let verdict = matches!(
-            outcome,
-            GoalOutcome::Met | GoalOutcome::NotMet | GoalOutcome::Failed
-        );
-        // A verdict ends the turn's evaluation: a prompt sent before Claude Code recorded it is
-        // over. The record's own time, not when the watcher read it: the next turn's prompt is
-        // sent after it (SPEC-346 LPH-002).
-        if verdict {
-            let now = self.now().0;
-            let recorded = at.map_or(now, |at| at.0.min(now));
-            let _order = runtime.turn_order.lock().await;
-            runtime.turn_end_ms.fetch_max(recorded, Ordering::SeqCst);
-        }
-        let waiting = runtime.verdict_stop_ms.pending(attempt);
         crate::race::reached(
             crate::race::Point::NativeVerdictRead,
             std::path::Path::new(attempt.as_str()),
         );
-        if outcome == GoalOutcome::NotMet && runtime.verdict_stop_ms.take(attempt, None) {
-            // The agent goes on, and the task never read idle.
-            runtime.resumed_turn.store(true, Ordering::SeqCst);
-        } else if outcome == GoalOutcome::NotMet
-            && let Ok(Some(task)) = self.deps.store.task(task_id).await
-            && task.status == TaskStatus::Running
-            && let Some(next) = activity_on_goal_not_met(task.activity)
-        {
-            // The evaluator sent the agent back to work after Yulius's own Stop hook ended the
-            // turn (STA-004).
-            self.resume_working(&task, next, at).await;
-        }
-        let achieved = outcome == GoalOutcome::Met;
-        runtime.goal_submitted.store(true, Ordering::SeqCst);
-        runtime.goal_achieved.store(achieved, Ordering::SeqCst);
-        if verdict
-            && outcome != GoalOutcome::NotMet
-            && let Some(stop_ms) = waiting
-        {
-            if achieved {
-                tracing::info!(task = %task_id, "the agent achieved the task's goal");
-            }
-            self.settle_waited_turn(task_id, attempt, stop_ms).await;
-        } else if achieved {
-            tracing::info!(task = %task_id, "the agent achieved the task's goal");
-            self.settle_idle(task_id, None).await;
+        let Ok(Some(task)) = self.deps.store.task(task_id).await else {
+            return;
+        };
+        let idle = self
+            .publish_after_updates(
+                &task,
+                Box::pin(async {
+                    let runtime = self.runtime(task_id);
+                    let _order = runtime.turn_order.lock().await;
+                    if !self.attempt_live(task_id, attempt).await {
+                        return None;
+                    }
+                    let achieved = outcome == GoalOutcome::Met;
+                    if achieved {
+                        tracing::info!(task = %task_id, "the agent achieved the task's goal");
+                    }
+                    if !goal_stays_open(outcome) {
+                        self.goal_ended_during_retry(task_id, achieved).await;
+                    }
+                    runtime
+                        .goal_open
+                        .store(goal_stays_open(outcome), Ordering::SeqCst);
+                    let unfinished = goal_unfinished(outcome);
+                    if runtime.replace_goal_unfinished(unfinished).await != unfinished {
+                        self.publish_task(task_id).await;
+                    }
+                    runtime.goal_submitted.store(true, Ordering::SeqCst);
+                    runtime.goal_achieved.store(achieved, Ordering::SeqCst);
+                    if !matches!(
+                        outcome,
+                        GoalOutcome::Met | GoalOutcome::NotMet | GoalOutcome::Failed
+                    ) {
+                        return None;
+                    }
+                    // A prompt sent before the recorded verdict belongs to the turn it ended.
+                    let now = self.now().0;
+                    runtime
+                        .turn_end_ms
+                        .fetch_max(at.map_or(now, |at| at.0.min(now)), Ordering::SeqCst);
+                    let waited = runtime.verdict_stop_ms.take(attempt, None);
+                    if outcome == GoalOutcome::NotMet {
+                        if waited {
+                            runtime.resumed_turn.store(true, Ordering::SeqCst);
+                        } else if let Ok(Some(current)) = self.deps.store.task(task_id).await
+                            && current.status == TaskStatus::Running
+                            && let Some(next) = activity_on_goal_not_met(current.activity)
+                        {
+                            self.resume_working(&current, next, at).await;
+                        }
+                    } else if waited {
+                        self.settle_verdict_stop(task_id).await;
+                    } else if achieved {
+                        // The timeout may already have set Waiting. Apply Met to that settled state.
+                        return self.settle_idle_activity(task_id, None).await;
+                    }
+                    None
+                }),
+            )
+            .await;
+        if let Some(done) = idle {
+            self.after_idle_settlement(task_id, done).await;
         }
     }
 
@@ -1203,11 +1216,20 @@ impl App {
         task_id: &TaskId,
         replay: Option<TranscriptFacts>,
     ) {
-        let Ok(Some(task)) = self.deps.store.task(task_id).await else {
-            return;
-        };
+        if let Some(done) = self.settle_idle_activity(task_id, replay).await {
+            self.after_idle_settlement(task_id, done).await;
+        }
+    }
+
+    /// Apply the durable idle activity before probing shells or waking dependent tasks.
+    async fn settle_idle_activity(
+        &self,
+        task_id: &TaskId,
+        replay: Option<TranscriptFacts>,
+    ) -> Option<bool> {
+        let task = self.deps.store.task(task_id).await.ok()??;
         if task.status != TaskStatus::Running {
-            return;
+            return None;
         }
         let achieved = self.runtime(task_id).goal_achieved.load(Ordering::SeqCst);
         let next = match (task.activity, replay) {
@@ -1232,8 +1254,12 @@ impl App {
                 .await;
             self.publish_task(task_id).await;
         }
+        Some(next == Some(Activity::Done))
+    }
+
+    async fn after_idle_settlement(self: &Arc<Self>, task_id: &TaskId, done: bool) {
         self.probe_idle_shells(task_id).await;
-        if next == Some(Activity::Done) {
+        if done {
             // Tasks chained after this one start once it is Done (TSK-012), and a Done task no
             // longer counts against the session limit (SES-101): a queued task can start now.
             // Not from this loop, which must go on reading the record that says what is still

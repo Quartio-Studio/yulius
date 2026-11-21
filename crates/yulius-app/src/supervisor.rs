@@ -6878,11 +6878,11 @@ impl App {
             }
         }
         let runtime = self.runtime(&task.id);
+        // A verdict either commits before the new run installs its state, or sees the new owner.
+        let _order = runtime.turn_order.lock().await;
         runtime
             .replace_goal_unfinished(goal.map_or(unfinished, crate::finish::goal_unfinished))
             .await;
-        // A late Stop or verdict can finish only before this run installs its goal state.
-        let _order = runtime.turn_order.lock().await;
         runtime.goal_open.store(
             goal.is_some_and(crate::finish::goal_stays_open),
             Ordering::SeqCst,

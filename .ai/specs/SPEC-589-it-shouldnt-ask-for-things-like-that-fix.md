@@ -42,7 +42,7 @@ Earlier user requests establish the ownership rule. Task #534 concerned automate
 - [x] Recover admitted goals across harnesses, stale moves and oversized diagnostics
 - [x] Preserve the native evaluator on a goal’s first Stop
 - [x] Carry the opening verification turn across a capacity move before its native goal starts
-- [ ] Keep a delayed native-goal Stop and its verdict with their originating attempt
+- [x] Keep a delayed native-goal Stop and its verdict with their originating attempt
 - [ ] Keep transcript goal verdicts with their run and order them with timeout settlement
 
 ## Acceptance criteria
@@ -127,3 +127,5 @@ Make the continuation decision where the agent can act on it, at the shared Stop
 - After merging dev `77f285e08`, all 977 selected Rust tests passed, including the replacement’s exact work and attempt count, the pending native evaluator, and onboarding archive and readiness. The staging-script suite passed all 42 tests using its local fixture. All-feature Clippy passed with warnings denied.
 - The review of green head `1970822de` found that an old Stop could arm a verdict wait after its replacement started. On the integrated product at `21dd0869d`, the new subprocess regression in `b1bba5a5b` parked the old hook, moved subscriptions, submitted the replacement’s opening instruction and released the hook. The old verdict timeout changed the replacement from Working to Waiting after 20 seconds.
 - The preceding opening-turn mutation run finished all 8 candidates, with 2 caught and 6 unviable. The first-native-verdict run reported 25 listed, 5 caught, 3 missed, 0 timed out, 15 unviable and 2 not reached within 12 minutes. The three survivors replaced the capacity-recovery instruction with no text, an empty string or unrelated text. The expanded subprocess filter exercises the replacement launch instruction and its durable attempt count.
+- The authenticated Stop and the deadline each passed their two-run ownership regression at `91cbf6dab`. All 1,137 selected Rust tests passed on that implementation and all-feature Clippy passed with warnings denied.
+- The review of `91cbf6dab` found two transcript races. Both failed in test-first commit `e601fd4f2` using a real watcher and synthetic Claude records. After the old run reported Met, the replacement incorrectly became Done. When the live run reported Met as its deadline settled it, the task incorrectly stayed Waiting.
