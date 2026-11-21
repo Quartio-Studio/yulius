@@ -38,6 +38,8 @@ pub enum Point {
     ParkedResumePrepared,
     /// The parked status is durable, just before the reader restores the saved grid.
     ParkStateRecorded,
+    /// A new merge request owns the task’s arm writer before changing the slot.
+    ArmWriteStarted,
     /// Continue waits for the previous attempt's reader to finish writing its task state.
     ParkedResumeWaitsForReader,
     /// A parked read classified the task, before the response renders its plan. Keyed by task ID.

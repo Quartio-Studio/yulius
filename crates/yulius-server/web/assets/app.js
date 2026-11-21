@@ -14,7 +14,7 @@ import { BRAND } from './brand.js';
 import { h, setChildren, toast, errorToast, placeholder, icon, isLocalUrl, focusNextRegion, loadError, closeMenu, setErrorAction } from './dom.js';
 import { ACCOUNT_REQUIRED, connectAction } from './claude.js';
 import { notFound } from './pages/common.js';
-import { createTabRow, createSidebar } from './layout.js';
+import { createTabRow, createSidebar, githubWaitText } from './layout.js';
 import { createPanelHost } from './panels.js';
 import { mountTaskView, mountComposer } from './taskview.js';
 import { mountSetup, mountSignIn, mountJoin, signInProblem } from './pages/auth.js';
@@ -352,6 +352,28 @@ function createApp(root, transport) {
     setChildren(root, skip, appEl, backdrop, connBanner);
     // A playground's guest reaches no instance state (SPEC-410): no disk, relay or update pills.
     if (!ctx.guest()) {
+      const wait = h('div', { class: 'github-wait', role: 'status', hidden: true });
+      appEl.append(wait);
+      let alive = true;
+      let reading = false;
+      let expiry;
+      async function refreshGitHubWait() {
+        if (!alive || reading || document.hidden) return;
+        reading = true;
+        try {
+          const reset = await ctx.api.get('/api/status/github-reset');
+          if (!alive) return;
+          const message = githubWaitText(reset);
+          wait.hidden = !message;
+          if (wait.textContent !== message) wait.textContent = message;
+          clearTimeout(expiry);
+          if (message) expiry = setTimeout(() => { wait.hidden = true; }, Math.min(reset - Date.now(), 2_147_483_647));
+        } catch { /* A later status read can recover. */ }
+        finally { reading = false; }
+      }
+      refreshGitHubWait();
+      const poll = setInterval(refreshGitHubWait, 10_000);
+      unsubscribers.push(() => { alive = false; clearInterval(poll); clearTimeout(expiry); });
       // The server's disk running low (SPEC-276 RDA-007): a warning pill beside it, for everyone.
       const diskAlert = createDiskAlert(ctx);
       ctx.diskAlert = diskAlert;

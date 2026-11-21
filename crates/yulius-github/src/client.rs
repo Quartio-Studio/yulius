@@ -75,6 +75,12 @@ impl GitHubClient {
         })
     }
 
+    /// Active rate-limit reset reported for authenticated requests on this client.
+    #[must_use]
+    pub fn rate_limit_reset(&self) -> Option<yulius_domain::time::Timestamp> {
+        self.inner.transport.rate_limit_reset()
+    }
+
     /// The configuration this client was built with.
     #[must_use]
     pub fn config(&self) -> &GitHubConfig {

@@ -115,6 +115,9 @@ impl PrVerification {
 /// Identity to show even when the checks are unfinished or unreadable.
 #[derive(Default)]
 pub(crate) struct ParkedPullRead {
+    pub(crate) unavailable: bool,
+    pub(crate) fresh_head: bool,
+    pub(crate) head: Option<Arc<str>>,
     pub(crate) signal: Option<PullSignal>,
     pub(crate) pr: Option<yulius_contracts::api::tasks::ParkedPr>,
 }
@@ -122,6 +125,9 @@ pub(crate) struct ParkedPullRead {
 impl ParkedPullRead {
     fn note_open_branch(&mut self, branch: &[GhPull]) {
         if let Some(pull) = branch.last() {
+            self.fresh_head = true;
+            self.head = Some(Arc::from(pull.head_sha.as_str()));
+            self.signal = None;
             self.pr = Some(yulius_contracts::api::tasks::ParkedPr {
                 number: pull.number,
                 open: true,
@@ -129,11 +135,20 @@ impl ParkedPullRead {
         }
     }
 
-    fn note_closed(&mut self, pull: &GhPull) {
-        if !is_open(pull)
-            && let Some(pr) = self.pr.as_mut().filter(|pr| pr.number == pull.number)
-        {
-            pr.open = false;
+    fn note_current(&mut self, pull: &GhPull) {
+        let Some(pr) = self.pr.as_mut().filter(|pr| pr.number == pull.number) else {
+            return;
+        };
+        self.head = Some(Arc::from(pull.head_sha.as_str()));
+        self.fresh_head = true;
+        pr.open = is_open(pull);
+        if !pr.open {
+            // A directly observed unmerged closure still needs delivery reconciliation.
+            self.signal = Some(if pull.merged {
+                PullSignal::Merged
+            } else {
+                PullSignal::InReview
+            });
         }
     }
 
@@ -144,7 +159,11 @@ impl ParkedPullRead {
                 .filter(|_| open || past_merge(&r.stage))
                 .map(|number| yulius_contracts::api::tasks::ParkedPr { number, open })
         });
-        Self { pr, signal: None }
+        Self {
+            pr,
+            signal: pr.filter(|pr| !pr.open).map(|_| PullSignal::Merged),
+            ..Self::default()
+        }
     }
 }
 
@@ -204,14 +223,45 @@ impl FollowupDiscovery {
     pub(crate) fn publish(
         &mut self,
         task: &TaskId,
-        verified: Option<yulius_contracts::api::tasks::ParkedPr>,
+        observed: &ParkedPullRead,
+        signal: Option<PullSignal>,
     ) {
         if let (Some(read), Some(open)) = (self.read.take(), self.open.take()) {
-            let replacement = verified
+            let replacement = observed
+                .pr
                 .filter(|pr| pr.open && open.contains(&pr.number))
                 .map(|pr| pr.number)
                 .or_else(|| open.last().copied());
-            read.record_branch(task, self.merged, replacement);
+            if let (Some(number), Some(signal)) = (replacement, signal)
+                && observed.pr.is_some_and(|pr| pr.number == number && pr.open)
+            {
+                read.verified(
+                    task,
+                    Some(crate::sandboxes::ObservedPull {
+                        head: observed.head.clone(),
+                        number,
+                        open: true,
+                        conflicts: signal == PullSignal::Conflicting,
+                        signal: Some(signal),
+                    }),
+                );
+            } else if let Some(number) = replacement
+                && observed.fresh_head
+                && observed.pr.is_some_and(|pr| pr.open && pr.number == number)
+            {
+                read.record_identity(
+                    task,
+                    crate::sandboxes::ObservedPull {
+                        number,
+                        open: true,
+                        conflicts: false,
+                        head: observed.head.clone(),
+                        signal: Some(PullSignal::InReview),
+                    },
+                );
+            } else {
+                read.record_branch(task, self.merged, replacement);
+            }
         }
     }
 }
@@ -2368,6 +2418,7 @@ impl App {
         let mut open_pulls = Vec::new();
         let mut overview_complete = false;
         let mut checks_by_pr = Vec::new();
+        let mut partial_checks = std::collections::HashSet::new();
         let mut checks_unreadable = Vec::new();
         if let Some(token) = &token {
             match self.deps.github.list_pulls(token, owner, name, None).await {
@@ -2401,6 +2452,9 @@ impl App {
                     Ok(at) => {
                         // A missing permission is said once for the repository, not per PR.
                         merge_sources(&mut checks_unreadable, &at.unreadable);
+                        if !at.unreadable.is_empty() && at.word != "failure" {
+                            partial_checks.insert(pull.number);
+                        }
                         at.word
                     }
                     Err(err) => {
@@ -2434,11 +2488,15 @@ impl App {
         }
         let mut tasks = Vec::new();
         let mut observed = std::collections::HashMap::new();
+        let mut unavailable = std::collections::HashMap::new();
         let mut git_failed = false;
         for task in self.deps.store.tasks(&sandbox.id, false).await? {
             let Some(branch) = task.branch.clone() else {
                 continue;
             };
+            let listed = open_pulls.iter().find(|p| !p.from_fork && p.head == branch);
+            let mut head = listed.map(|p| Arc::from(p.head_sha.as_str()));
+            let mut unread_recorded = None;
             let mut view = TaskBranch {
                 task_id: task.id.to_string(),
                 title: task.title.clone(),
@@ -2448,14 +2506,11 @@ impl App {
                 files_changed: 0,
                 insertions: 0,
                 deletions: 0,
-                pr: open_pulls
-                    .iter()
-                    .find(|p| !p.from_fork && p.head == branch)
-                    .map(|p| pull_view(p, checks_of(p.number))),
+                pr: listed.map(|p| pull_view(p, checks_of(p.number))),
                 worktree: worktree_state(&task),
             };
             // GitHub's list says nothing about mergeability: Yulius's own clone does (DON-001).
-            if let Some(pull) = open_pulls.iter().find(|p| !p.from_fork && p.head == branch)
+            if let Some(pull) = listed
                 && self.pull_conflicts(&task, &sandbox, pull).await
             {
                 if let Some(pr) = view.pr.as_mut() {
@@ -2501,9 +2556,16 @@ impl App {
                 && let Ok(Some(record)) = self.deps.store.delivery(&task.id).await
                 && record.stage == DeliveryStage::PrOpen
                 && let Some(number) = record.pr_number
-                && let Ok(pull) = self.deps.github.get_pull(token, owner, name, number).await
-                && pull.number == number
+                && let Some(pull) =
+                    match self.deps.github.get_pull(token, owner, name, number).await {
+                        Ok(pull) if pull.number == number => Some(pull),
+                        _ => {
+                            unread_recorded = Some(number);
+                            None
+                        }
+                    }
             {
+                head = Some(Arc::from(pull.head_sha.as_str()));
                 // Merged or closed outside Yulius: show it and reconcile the stage. An open one
                 // missing from the listed page has unread checks (#68).
                 view.pr = Some(pull_view(
@@ -2567,11 +2629,88 @@ impl App {
                     conflicts: false,
                 });
             }
-            let pull = view.pr.as_ref().map(|pr| crate::sandboxes::ObservedPull {
+            // Publish only facts from this request. A displayed fallback must still be
+            // resolved in request order when another overview is in flight.
+            if let Some(pr) = view
+                .pr
+                .as_mut()
+                .filter(|pr| partial_checks.contains(&pr.number))
+            {
+                pr.checks = "unknown".into();
+            }
+            let fresh = view.pr.as_ref().map(|pr| crate::sandboxes::ObservedPull {
+                head,
+                open: pr.state == "open",
+                conflicts: pr.conflicts,
                 number: pr.number,
                 signal: PullSignal::from_wire(&pr.state, &pr.checks, pr.conflicts),
             });
-            observed.insert(task.id.clone(), pull);
+            let gap = unread_recorded.or_else(|| {
+                view.pr
+                    .as_ref()
+                    .filter(|pr| pr.checks == "unknown")
+                    .map(|pr| pr.number)
+            });
+            if let Some(number) = gap {
+                unavailable.insert(task.id.clone(), number);
+            }
+            let mut display = crate::sandboxes::ObservedPull::fallback(
+                self.observed_pulls
+                    .known_pull(&sandbox.id, &task.id)
+                    .flatten(),
+                fresh.as_ref(),
+                overview_complete,
+                gap,
+            );
+            let unchecked = fresh.as_ref().filter(|pr| gap == Some(pr.number));
+            if let Some(pr) = display.as_ref().or(unchecked).filter(|pr| pr.open)
+                && let Some(sha) = pr.head.as_deref()
+                && let Some(signal) = self.parking_ci_signal(&task, pr.number, sha, None).await?
+            {
+                display = Some(crate::sandboxes::ObservedPull {
+                    signal: Some(signal),
+                    ..pr.clone()
+                });
+            }
+            if let Some(known) = display {
+                let pr = view.pr.get_or_insert_with(|| PullView {
+                    number: known.number,
+                    url: String::new(),
+                    title: task.title.clone(),
+                    base: profile.integration_branch.clone(),
+                    head: branch.clone(),
+                    state: String::new(),
+                    checks: String::new(),
+                    conflicts: false,
+                });
+                pr.number = known.number;
+                pr.url = format!("https://github.com/{owner}/{name}/pull/{}", pr.number);
+                let (state, checks) = if known.open {
+                    (
+                        "open",
+                        match known.signal {
+                            Some(PullSignal::Tested | PullSignal::Conflicting) => "success",
+                            Some(PullSignal::Errored) => "error",
+                            Some(PullSignal::Failing) => "failure",
+                            Some(PullSignal::Behind | PullSignal::InReview) => "pending",
+                            _ => "unknown",
+                        },
+                    )
+                } else {
+                    (
+                        if known.signal == Some(PullSignal::Merged) {
+                            "merged"
+                        } else {
+                            "closed"
+                        },
+                        "none",
+                    )
+                };
+                pr.state = state.into();
+                pr.checks = checks.into();
+                pr.conflicts |= known.conflicts;
+            }
+            observed.insert(task.id.clone(), fresh);
             tasks.push(view);
         }
 
@@ -2603,7 +2742,7 @@ impl App {
         }
         // Only a completed overview publishes. Cancellation during the final Git
         // log drops the guard and frees its slot for the next request.
-        observation.record(overview_complete, observed);
+        observation.record_overview(overview_complete, observed, unavailable);
         Ok(GitOverview {
             integration_branch: profile.integration_branch.clone(),
             production_branch: profile.production_branch.clone(),
@@ -4109,7 +4248,7 @@ impl App {
         Ok(None)
     }
 
-    async fn parking_ci_signal(
+    pub(crate) async fn parking_ci_signal(
         &self,
         task: &TaskRecord,
         number: u64,
@@ -4314,14 +4453,40 @@ impl App {
             .observed_pulls
             .known_pull(&task.sandbox_id, &task.id)
             .flatten()
-            .filter(|pr| pr.open() && Some(pr.number) != merged);
+            .filter(|pr| {
+                Some(pr.number) != merged
+                    && (pr.open || observed.pr.is_none_or(|r| r.number == pr.number))
+            });
         if let Some(pr) = known {
             observed.pr = Some(yulius_contracts::api::tasks::ParkedPr {
                 number: pr.number,
-                open: true,
+                open: pr.open,
             });
+            observed.signal = None;
+            observed.head = pr.head;
         }
         observed
+    }
+
+    pub(crate) fn last_pull_signal(
+        &self,
+        task: &TaskRecord,
+        observed: &ParkedPullRead,
+    ) -> Option<PullSignal> {
+        let pr = observed.pr?;
+        observed.signal.or_else(|| {
+            self.observed_pulls
+                .known_pull(&task.sandbox_id, &task.id)
+                .flatten()
+                .filter(|known| known.number == pr.number && known.open == pr.open)
+                .and_then(|known| {
+                    if observed.head.is_some() && observed.head != known.head {
+                        Some(PullSignal::InReview)
+                    } else {
+                        known.signal
+                    }
+                })
+        })
     }
 
     /// Waits for all dispatched parked-display Git work to return its permits.
@@ -4420,6 +4585,7 @@ impl App {
         };
         let inconclusive = |observed: &mut ParkedPullRead| {
             *observed = self.known_parked_pull(task, record);
+            observed.unavailable = true;
             observed.pr.filter(|pr| !pr.open).map(|_| ParkingPrs {
                 followup_unverified: true,
                 ..ParkingPrs::default()
@@ -4437,7 +4603,12 @@ impl App {
         if let Some(read) = discovery.as_mut() {
             read.listed(&branch, &closed);
         }
-        *observed = ParkedPullRead::recorded(record);
+        if purpose != PrVerification::Display
+            || tracked.is_none()
+            || observed.pr.map(|pr| pr.number) != tracked
+        {
+            *observed = ParkedPullRead::recorded(record);
+        }
         observed.note_open_branch(&branch);
         if branch.len() > MAX_PULLS {
             return Ok(None);
@@ -4507,7 +4678,7 @@ impl App {
         {
             let Some(current) = read.lookup(branch_pulls(&token)).await else {
                 // Publish the directly confirmed merges before consulting concurrent observations.
-                read.publish(&task.id, observed.pr);
+                read.publish(&task.id, observed, None);
                 return Ok(inconclusive(observed));
             };
             current
@@ -4548,6 +4719,11 @@ impl App {
                     .pulls
                     .retain(|pull| survives(pull.number, Some(&pull.head_sha)));
                 if let Some((number, signal)) = self.parking_ci_blocker(task, &facts).await? {
+                    observed.head = facts
+                        .pulls
+                        .iter()
+                        .find(|p| p.number == number)
+                        .map(|p| Arc::from(p.head_sha.as_str()));
                     observed.signal = Some(signal);
                     observed.pr =
                         Some(yulius_contracts::api::tasks::ParkedPr { number, open: true });
@@ -4557,6 +4733,8 @@ impl App {
                     .filter(|pr| !closed.contains(&pr.number))
                     .or_else(|| current.iter().rev().find(|pr| !closed.contains(&pr.number)));
                 if let Some(open) = known_open {
+                    observed.fresh_head = true;
+                    observed.head = Some(Arc::from(open.head_sha.as_str()));
                     observed.pr = Some(yulius_contracts::api::tasks::ParkedPr {
                         number: open.number,
                         open: true,
@@ -4577,6 +4755,7 @@ impl App {
         // A branch list can lag a direct get_pull confirmation of a merge.
         // Among successful reads only a PR confirmed open can replace it.
         if verified && let Some(pull) = facts.pulls.last() {
+            observed.head = Some(Arc::from(pull.head_sha.as_str()));
             observed.pr = Some(yulius_contracts::api::tasks::ParkedPr {
                 number: pull.number,
                 open: true,
@@ -4632,17 +4811,22 @@ impl App {
                 .get_pull(token, &sandbox.repo_owner, &sandbox.repo_name, number)
         };
         // Each unfinished or unreadable check belongs to the PR being verified.
-        observed.pr = Some(yulius_contracts::api::tasks::ParkedPr { number, open: true });
-        observed.signal = None;
+        if observed.pr.is_none_or(|pr| pr.number != number) {
+            observed.fresh_head = false;
+            observed.head = None;
+            observed.signal = None;
+            observed.pr = Some(yulius_contracts::api::tasks::ParkedPr { number, open: true });
+        }
         let pull = read().await?;
+        observed.signal = None;
+        observed.note_current(&pull);
         if !is_open(&pull) {
-            observed.note_closed(&pull);
             return Ok(pull.merged.then_some(pull));
         }
         if pull.behind {
             if purpose == PrVerification::Display {
                 let current = read().await?;
-                observed.note_closed(&current);
+                observed.note_current(&current);
                 if same_open_pull(&pull, &current) {
                     observed.signal = self
                         .parking_ci_signal(task, number, &pull.head_sha, None)
@@ -4700,7 +4884,7 @@ impl App {
                 return Ok(None);
             }
             let current = read().await?;
-            observed.note_closed(&current);
+            observed.note_current(&current);
             if same_open_pull(&pull, &current) {
                 let own = self
                     .parking_ci_signal(task, number, &pull.head_sha, None)
@@ -4708,7 +4892,10 @@ impl App {
                 let external = match gate {
                     yulius_domain::ci::GateResult::Run(Some(_)) => None,
                     _ if checks == "failure" => Some(PullSignal::Failing),
-                    _ if unreadable => Some(PullSignal::Errored),
+                    _ if unreadable => {
+                        observed.unavailable = true;
+                        None
+                    }
                     _ => PullSignal::from_wire("open", checks, false),
                 };
                 observed.signal = if external == Some(PullSignal::Failing) {
@@ -4739,7 +4926,7 @@ impl App {
         }
         // Checks and local conflict detection can take long enough for another push.
         let current = read().await?;
-        observed.note_closed(&current);
+        observed.note_current(&current);
         let same_open_head = same_open_pull(&pull, &current)
             && (purpose == PrVerification::Display || pull.base_sha == current.base_sha);
         if same_open_head && mergeable != Some(true) {
@@ -4834,6 +5021,11 @@ impl App {
             return Ok(false);
         }
         if let Some((number, signal)) = self.parking_ci_blocker(task, prs).await? {
+            observed.head = prs
+                .pulls
+                .iter()
+                .find(|p| p.number == number)
+                .map(|p| Arc::from(p.head_sha.as_str()));
             observed.signal = Some(signal);
             observed.pr = Some(yulius_contracts::api::tasks::ParkedPr { number, open: true });
             return Ok(false);
@@ -6996,10 +7188,14 @@ mod tests {
         discovery.open = Some(vec![2, 3]);
         discovery.publish(
             &task,
-            Some(yulius_contracts::api::tasks::ParkedPr {
-                number: 4,
-                open: true,
-            }),
+            &ParkedPullRead {
+                pr: Some(yulius_contracts::api::tasks::ParkedPr {
+                    number: 4,
+                    open: true,
+                }),
+                ..ParkedPullRead::default()
+            },
+            Some(PullSignal::Tested),
         );
         assert_eq!(
             cache

@@ -2564,6 +2564,43 @@ async fn two_ci_syncs_of_a_sandbox_queue_a_head_once() -> TestResult {
     Ok(())
 }
 
+async fn start_delivery_attempt(f: &Fixture) -> TestResult {
+    let task = TaskId::parse("t1")?;
+    f.h.store
+        .insert_attempt(&AttemptRecord {
+            id: AttemptId::parse("a1")?,
+            task_id: task.clone(),
+            seq: 1,
+            harness: Harness::ClaudeCode,
+            account_id: None,
+            provider_session_id: None,
+            launch_kind: LaunchKind::New,
+            model: None,
+            state: AttemptState::Live,
+            run_dir: "/tmp/none".into(),
+            token_hash: f.h.app.deps.crypto.sha256_hex(b"tok-agent"),
+            host_token: Sealed(vec![0]),
+            ptyhost_pid: None,
+            child_pid: None,
+            started_at: Timestamp(1),
+            ended_at: None,
+            exit_code: None,
+            exit_reason: None,
+        })
+        .await?;
+    // A live run is a running task (an armed merge lives with it, SPEC-483 D6).
+    f.h.store
+        .transition_task(
+            &task,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Waiting),
+            f.h.app.now(),
+        )
+        .await?;
+    Ok(())
+}
+
 /// What `delivery_merge` answers for the reviewed head after `follow` changed the branch: whether
 /// it refused, its text, and the newest armed merge's audit entries. The task's pull request is open with `feature.rs` (30 lines) and its
 /// spec; the head at that point is the reviewed one; the checks are pending (an accepted call
@@ -2587,28 +2624,7 @@ async fn deliver_after_follow_up(
     follow(&f, &wt)?;
     let head = git(&wt, &["rev-parse", "HEAD"])?;
     f.h.github.set_checks(&head, ChecksState::Pending);
-    f.h.store
-        .insert_attempt(&AttemptRecord {
-            id: AttemptId::parse("a1")?,
-            task_id: TaskId::parse("t1")?,
-            seq: 1,
-            harness: Harness::ClaudeCode,
-            account_id: None,
-            provider_session_id: None,
-            launch_kind: LaunchKind::New,
-            model: None,
-            state: AttemptState::Live,
-            run_dir: "/tmp/none".into(),
-            token_hash: f.h.app.deps.crypto.sha256_hex(b"tok-agent"),
-            host_token: Sealed(vec![0]),
-            ptyhost_pid: None,
-            child_pid: None,
-            started_at: Timestamp(1),
-            ended_at: None,
-            exit_code: None,
-            exit_reason: None,
-        })
-        .await?;
+    start_delivery_attempt(&f).await?;
     let internal = yulius_server::internal_router(f.h.app.clone())
         .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1))));
     let agent = Creds {
@@ -2959,28 +2975,7 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
     let main_before = f.origin_sha("main")?;
 
     // An agent run of the task.
-    f.h.store
-        .insert_attempt(&AttemptRecord {
-            id: AttemptId::parse("a1")?,
-            task_id: TaskId::parse("t1")?,
-            seq: 1,
-            harness: Harness::ClaudeCode,
-            account_id: None,
-            provider_session_id: None,
-            launch_kind: LaunchKind::New,
-            model: None,
-            state: AttemptState::Live,
-            run_dir: "/tmp/none".into(),
-            token_hash: f.h.app.deps.crypto.sha256_hex(b"tok-agent"),
-            host_token: Sealed(vec![0]),
-            ptyhost_pid: None,
-            child_pid: None,
-            started_at: Timestamp(1),
-            ended_at: None,
-            exit_code: None,
-            exit_reason: None,
-        })
-        .await?;
+    start_delivery_attempt(&f).await?;
     let internal = yulius_server::internal_router(f.h.app.clone())
         .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1))));
     let agent = Creds {
@@ -3208,8 +3203,16 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
             ),
             "approved at the merged head; the agent's run on the default model wrote it"
         );
-        // The pull request's rounds closed with it: the view lists none for the next one.
-        assert_eq!(f.delivery("t1").await?["review_rounds"], json!([]));
+        // The delivered PR shows its review. A subsequent PR starts with no open rounds.
+        let delivered = f.delivery("t1").await?;
+        let rounds = delivered["review_rounds"]
+            .as_array()
+            .ok_or("review rounds")?;
+        assert_eq!(rounds.len(), 1);
+        assert_eq!(rounds[0]["pr_number"], 1);
+        assert_eq!(rounds[0]["head"], head);
+        assert_eq!(rounds[0]["verdict"], "approve");
+        assert!(f.h.store.review_rounds(&task.id, true).await?.is_empty());
     }
     // F 2026-10-11 (AC-GIT-3): on GitHub the creator merged and promoted, not the App.
     assert_eq!(f.h.github.actors_of("merge_pull"), ["bob"]);
@@ -5728,38 +5731,7 @@ impl ArmedTask {
         f.h.github.set_checks(&head, ChecksState::Pending);
         // Its plan is finished, as `delivery_merge` needs to deliver a later head (DMG-001).
         set_steps(&f, "t1", &["done", "done"]).await?;
-        f.h.store
-            .insert_attempt(&AttemptRecord {
-                id: AttemptId::parse("a1")?,
-                task_id: TaskId::parse("t1")?,
-                seq: 1,
-                harness: Harness::ClaudeCode,
-                account_id: None,
-                provider_session_id: None,
-                launch_kind: LaunchKind::New,
-                model: None,
-                state: AttemptState::Live,
-                run_dir: "/tmp/none".into(),
-                token_hash: f.h.app.deps.crypto.sha256_hex(b"tok-agent"),
-                host_token: Sealed(vec![0]),
-                ptyhost_pid: None,
-                child_pid: None,
-                started_at: Timestamp(1),
-                ended_at: None,
-                exit_code: None,
-                exit_reason: None,
-            })
-            .await?;
-        // A live run is a running task (an armed merge lives with it, SPEC-483 D6).
-        f.h.store
-            .transition_task(
-                &TaskId::parse("t1")?,
-                None,
-                TaskStatus::Running,
-                Some(Activity::Waiting),
-                f.h.app.now(),
-            )
-            .await?;
+        start_delivery_attempt(&f).await?;
         let internal = yulius_server::internal_router(f.h.app.clone())
             .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1))));
         let agent = Creds {
@@ -8806,6 +8778,38 @@ async fn pull_request_changes_are_announced_to_the_sandbox() -> TestResult {
     f.h.app.reconcile_deliveries().await;
     assert_eq!(f.delivery("t2").await?["stage"], "merged_integration");
     assert_eq!(announced.take(), 1, "reconciled with GitHub");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_later_unavailable_overview_cannot_overwrite_earlier_checks_in_flight() -> TestResult {
+    use std::sync::atomic::Ordering;
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let (_wt, head) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
+    let overview = || f.req(Method::GET, "/api/sandboxes/s1/git", None, &f.bob);
+    let checks = |page: &Value| {
+        page["tasks"]
+            .as_array()
+            .and_then(|tasks| tasks.iter().find(|row| row["task_id"] == "t1"))
+            .and_then(|row| row["pr"]["checks"].as_str())
+            .map(str::to_owned)
+    };
+    f.h.github.set_checks(&head, ChecksState::Success);
+    assert_eq!(checks(&overview().await?.body).as_deref(), Some("success"));
+    f.h.github.set_checks(&head, ChecksState::Failure);
+    let hold = Arc::new(tokio::sync::Notify::new());
+    *f.git.overview_log_hold.lock().map_err(|_| "log hold")? = Some(Arc::clone(&hold));
+    let mut earlier = Box::pin(overview());
+    tokio::select! {
+        _ = &mut earlier => return Err("earlier red read missed its Git log hold".into()),
+        reached = tokio::time::timeout(Duration::from_secs(5), f.git.overview_log_entered.notified()) => reached?,
+    }
+    *f.git.overview_log_hold.lock().map_err(|_| "log hold")? = None;
+    f.h.github.fail_overview_pulls.store(true, Ordering::SeqCst);
+    assert_eq!(checks(&overview().await?.body).as_deref(), Some("success"));
+    hold.notify_one();
+    assert_eq!(checks(&earlier.await?.body).as_deref(), Some("failure"));
+    assert_eq!(checks(&overview().await?.body).as_deref(), Some("failure"));
     Ok(())
 }
 
