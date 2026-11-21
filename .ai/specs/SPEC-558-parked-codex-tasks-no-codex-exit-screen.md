@@ -41,7 +41,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Reproduce parked-page refresh races with a held Git overview
 - [x] Keep the newest successful full task list and recover the cold task page
 - [x] Keep verified unfinished parked rows out of Done in the browser
-- [ ] Reconcile parked lifecycle changes and refresh the sidebar independently of Git
+- [x] Reconcile parked lifecycle changes and refresh the sidebar independently of Git
 - [ ] Publish verified parked task detail to the terminal and Task Info
 - [ ] Keep failed integration candidates with their original owner
 - [ ] Deliver bounded Codex goal continuation to dev
@@ -69,6 +69,8 @@ Capture a separate screen at the park decision because exiting can clear the ent
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
 ## Evidence
+
+- Independent review approved step 20 at `a2c8c0182`. The reviewer verified cold and cached rename outcomes, recovery after an unavailable verifier and both group transitions while the Git request remained pending. The remaining terminal/detail ordering, failed integration candidate, Codex goal and legacy screen deliveries stay open.
 
 - Review of `d3971166f` reproduced an unverified rename discarding Needs you when the prior verifier timed out before finding the PR. Cold and cached rows both showed Done incorrectly. The browser now preserves the title and Needs you across the failed read, then returns to Done on verified recovery. Six focused Chromium cases passed. The wider parked, onboarding and Git scope passed 72 cases on the initial integration. The mutation command found no changed Rust code. Vidoc was disabled.
 
