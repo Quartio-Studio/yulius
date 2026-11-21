@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- Continue on a named subscription checks the current model and subscription before starting or queuing the task. A refusal keeps the task stopped and preserves its archive and question. [SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
+
 - Deliveries check new tests by hand and request staging once after merge. The project mutation command runs only when a task requests it by name. New projects receive the same rule at bootstrap. [SPEC-600](../.ai/specs/SPEC-600-mutation-testing-sized-to-the-change-wit.md)
 - Continuing a stopped task waits for its previous terminal to finish parking. A timeout, a later archive or a replacement run leaves the task’s question and archive intact. [SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
 - Instance disk upkeep clears idle Rust compiler stores over 20 GiB or under remaining disk pressure. Removing a store refreshes sandbox quota usage and gives a blocked task one admission retry. [SPEC-595](../.ai/specs/SPEC-595-share-compiled-rust-across-worktrees-and.md)

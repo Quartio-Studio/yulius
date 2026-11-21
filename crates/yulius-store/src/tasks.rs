@@ -405,13 +405,15 @@ impl TaskStore for SqliteStore {
         &self,
         selected: &TaskRecord,
         queue: Option<&QueuedStart>,
+        requested: Option<&AccountId>,
         at: Timestamp,
-    ) -> AppResult<bool> {
+    ) -> AppResult<Option<yulius_app::capacity::ContinuationAdmission>> {
         let id = selected.id.as_str().to_owned();
         let status = selected.status;
         let archive = selected.archived_at.map(|time| time.0);
         let attempt = selected.resume_attempt_id.clone();
         let queue = queue.cloned();
+        let requested = requested.cloned();
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
             let claimed = tx.execute(
@@ -421,8 +423,17 @@ impl TaskStore for SqliteStore {
                 params![id, status.as_str(), archive, attempt.as_ref().map(AttemptId::as_str), at.0],
             ).map_err(db)?;
             if claimed == 0 {
-                return Ok(false);
+                return Ok(None);
             }
+            // The guarded update owns the write transaction. A placement refusal rolls
+            // back its archive, question and span changes together.
+            let admission = if let Some(requested) = requested {
+                let task = tx.query_row(&format!("SELECT {TASK_COLS}, {RESUME_ATTEMPT} FROM tasks WHERE id = ?1"),
+                    [&id], task_from_row).map_err(db)?;
+                yulius_app::capacity::ContinuationAdmission::named(&task, crate::accounts::list_accounts(&tx)?, &requested, at)?
+            } else {
+                yulius_app::capacity::ContinuationAdmission::Pool
+            };
             let next = if queue.is_some() {
                 TaskStatus::Queued
             } else {
@@ -433,7 +444,7 @@ impl TaskStore for SqliteStore {
                 keep_queued_start(&tx, &id, &start)?;
             }
             tx.commit().map_err(db)?;
-            Ok(true)
+            Ok(Some(admission))
         })
         .await
     }
