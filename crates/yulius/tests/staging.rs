@@ -2254,6 +2254,12 @@ async fn delivery_status_asks_a_merged_task_for_its_staging_request() -> TestRes
     );
     assert!(!after.contains("has no staging request"), "{after}");
     let r2 = land(&f, "t1", "two.txt").await?;
+    let cold = delivery_text(&f, "t1").await?;
+    assert!(
+        cold.contains("Live staging status refresh is paused"),
+        "{cold}"
+    );
+    *f.h.github.budget_view.lock().map_err(|_| "budget")? = None;
     let later = delivery_text(&f, "t1").await?;
     assert!(
         later.contains(&r2[..12]) && later.contains("already has its staging deployment"),
