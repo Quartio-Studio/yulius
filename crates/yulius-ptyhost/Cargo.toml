@@ -37,3 +37,6 @@ rustix = { workspace = true, features = ["event", "process"] }
 
 [dev-dependencies]
 yulius-ptyhost = { path = ".", version = "0.1.0", features = ["test-support"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+rustix = { workspace = true, features = ["thread"] }

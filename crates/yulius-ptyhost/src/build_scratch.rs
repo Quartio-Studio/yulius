@@ -5,7 +5,7 @@ use std::ffi::CString;
 use std::fs;
 use std::fs::File;
 use std::io::{self, Read, Write};
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use nix::dir::Dir;
@@ -247,6 +247,10 @@ fn clear_contents(root: &File) -> io::Result<()> {
         name: Option<CString>,
     }
     let level = |folder: File, name| -> io::Result<Level> {
+        // Dependency managers commonly make completed packages read-only.
+        if folder.metadata()?.mode() & 0o700 != 0o700 {
+            folder.set_permissions(std::fs::Permissions::from_mode(0o700))?;
+        }
         let entries = Dir::openat(&folder, ".", DIRECTORY, Mode::empty())?.into_iter();
         Ok(Level {
             folder,
@@ -275,7 +279,7 @@ fn clear_contents(root: &File) -> io::Result<()> {
         {
             continue;
         }
-        match openat(&current.folder, name, DIRECTORY, Mode::empty()) {
+        match open_for_cleanup(&current.folder, name) {
             Ok(child) => stack.push(level(File::from(child), Some(name.to_owned()))?),
             Err(Errno::ENOTDIR | Errno::ELOOP) => {
                 missing_ok(unlinkat(&current.folder, name, UnlinkatFlags::NoRemoveDir))?;
@@ -285,6 +289,26 @@ fn clear_contents(root: &File) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+fn open_for_cleanup(parent: &File, name: &std::ffi::CStr) -> nix::Result<std::os::fd::OwnedFd> {
+    let opened = openat(parent, name, DIRECTORY, Mode::empty());
+    #[cfg(target_os = "linux")]
+    if matches!(opened, Err(Errno::EACCES)) {
+        use std::os::fd::AsRawFd;
+        // O_PATH pins even an unreadable owned directory. chmod through its
+        // procfs descriptor, then reopen that same directory for enumeration.
+        let handle = openat(parent, name, DIRECTORY | OFlag::O_PATH, Mode::empty())?;
+        let pinned = format!("/proc/self/fd/{}", handle.as_raw_fd());
+        nix::sys::stat::fchmodat(
+            nix::fcntl::AT_FDCWD,
+            pinned.as_str(),
+            Mode::S_IRWXU,
+            nix::sys::stat::FchmodatFlags::FollowSymlink,
+        )?;
+        return openat(&handle, ".", DIRECTORY, Mode::empty());
+    }
+    opened
 }
 
 fn missing_ok(result: nix::Result<()>) -> io::Result<()> {
@@ -326,6 +350,48 @@ mod tests {
         );
         assert!(!owned.exists());
         assert!(recorded(run.path()), "receipt stays with the run metadata");
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn recovery_reclaims_owner_read_only_and_unreadable_dependencies() -> io::Result<()> {
+        use rustix::thread::{CapabilitySet, capabilities, set_capabilities};
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let run = tempfile::tempdir()?;
+        let sandbox = tempfile::tempdir()?;
+        let guard = own(
+            &File::open(run.path())?,
+            tempfile::tempdir_in(sandbox.path())?,
+            std::process::id(),
+            "ended",
+        )?;
+        let outside = sandbox.path().join("outside");
+        fs::create_dir(&outside)?;
+        fs::write(outside.join("keep"), b"live")?;
+        fs::set_permissions(&outside, fs::Permissions::from_mode(0o550))?;
+        for (name, mode) in [("readonly", 0o555), ("unreadable", 0)] {
+            let dependency = guard.payload().join(name);
+            fs::create_dir(&dependency)?;
+            fs::write(dependency.join("artifact"), b"build")?;
+            symlink(&outside, dependency.join("other"))?;
+            fs::set_permissions(&dependency, fs::Permissions::from_mode(mode))?;
+        }
+        // Exercise the permissions of the service even when CI runs tests as root.
+        let original = capabilities(None)?;
+        let mut limited = original;
+        limited
+            .effective
+            .remove(CapabilitySet::DAC_OVERRIDE | CapabilitySet::DAC_READ_SEARCH);
+        set_capabilities(None, limited)?;
+        let result = guard.receipt.reclaim();
+        set_capabilities(None, original)?;
+        result?;
+        assert!(!guard.path().exists());
+        assert!(outside.join("keep").exists());
+        assert_eq!(fs::metadata(&outside)?.mode() & 0o777, 0o550);
+        fs::set_permissions(outside, fs::Permissions::from_mode(0o700))?;
         Ok(())
     }
 
