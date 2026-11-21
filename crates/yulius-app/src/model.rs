@@ -21,7 +21,17 @@ impl std::fmt::Debug for Sealed {
 
 /// Plaintext secret with redacted formatting.
 #[derive(Clone, PartialEq, Eq)]
-pub struct Secret(pub String);
+pub struct PlaintextSecret(pub String, bool);
+
+/// Secret passed between adapters and application services.
+pub type Secret = PlaintextSecret;
+
+/// Construct an ordinary secret, retaining the original constructor API.
+#[allow(non_snake_case)]
+#[must_use]
+pub fn Secret(value: String) -> Secret {
+    PlaintextSecret(value, false)
+}
 
 impl std::fmt::Debug for Secret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -30,6 +40,18 @@ impl std::fmt::Debug for Secret {
 }
 
 impl Secret {
+    /// A bearer issued by the instance's GitHub App installation.
+    #[must_use]
+    pub fn github_installation(value: String) -> Self {
+        Self(value, true)
+    }
+
+    /// Whether the bearer uses the installation's request quota.
+    #[must_use]
+    pub fn is_github_installation(&self) -> bool {
+        self.1
+    }
+
     /// The secret text (use only at an I/O boundary).
     #[must_use]
     pub fn expose(&self) -> &str {

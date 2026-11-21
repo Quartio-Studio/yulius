@@ -8781,6 +8781,38 @@ async fn pull_request_changes_are_announced_to_the_sandbox() -> TestResult {
     Ok(())
 }
 
+#[tokio::test]
+async fn a_later_unavailable_overview_cannot_overwrite_earlier_checks_in_flight() -> TestResult {
+    use std::sync::atomic::Ordering;
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let (_wt, head) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
+    let overview = || f.req(Method::GET, "/api/sandboxes/s1/git", None, &f.bob);
+    let checks = |page: &Value| {
+        page["tasks"]
+            .as_array()
+            .and_then(|tasks| tasks.iter().find(|row| row["task_id"] == "t1"))
+            .and_then(|row| row["pr"]["checks"].as_str())
+            .map(str::to_owned)
+    };
+    f.h.github.set_checks(&head, ChecksState::Success);
+    assert_eq!(checks(&overview().await?.body).as_deref(), Some("success"));
+    f.h.github.set_checks(&head, ChecksState::Failure);
+    let hold = Arc::new(tokio::sync::Notify::new());
+    *f.git.overview_log_hold.lock().map_err(|_| "log hold")? = Some(Arc::clone(&hold));
+    let mut earlier = Box::pin(overview());
+    tokio::select! {
+        _ = &mut earlier => return Err("earlier red read missed its Git log hold".into()),
+        reached = tokio::time::timeout(Duration::from_secs(5), f.git.overview_log_entered.notified()) => reached?,
+    }
+    *f.git.overview_log_hold.lock().map_err(|_| "log hold")? = None;
+    f.h.github.fail_overview_pulls.store(true, Ordering::SeqCst);
+    assert_eq!(checks(&overview().await?.body).as_deref(), Some("success"));
+    hold.notify_one();
+    assert_eq!(checks(&earlier.await?.body).as_deref(), Some("failure"));
+    assert_eq!(checks(&overview().await?.body).as_deref(), Some("failure"));
+    Ok(())
+}
+
 /// Cancelling HTTP during the final Git log must return even a non-front slot.
 #[tokio::test]
 async fn cancelling_an_overview_at_the_final_git_log_admits_a_replacement() -> TestResult {
