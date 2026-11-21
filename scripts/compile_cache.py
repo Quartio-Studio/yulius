@@ -60,6 +60,57 @@ class UnreapedBuild(RuntimeError):
     """A build group may still be using its scratch target."""
 
 
+def enable_build_subreaper():
+    """The Linux launcher adopts workers orphaned by Cargo or its test runner."""
+    import ctypes
+    prctl = ctypes.CDLL(None, use_errno=True).prctl
+    prctl.argtypes = [ctypes.c_int, *([ctypes.c_ulong] * 4)]
+    if prctl(36, 1, 0, 0, 0) != 0:  # PR_SET_CHILD_SUBREAPER, linux/prctl.h
+        code = ctypes.get_errno()
+        raise OSError(code, f"cannot supervise build descendants: {os.strerror(code)}")
+
+
+def reap_adopted_workers():
+    """After reaping Cargo, each orphaned subtree has a waitable direct child."""
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        try:
+            pid, _ = os.waitpid(-1, os.WNOHANG)
+            if pid:
+                continue
+            # This launcher is single-threaded. A direct child's PID cannot be
+            # reused until we wait on it, even when it leaves Cargo's group.
+            children = Path("/proc/thread-self/children").read_text().split()
+            for pid in children:
+                try:
+                    os.kill(int(pid), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        except ChildProcessError:
+            return
+        except OSError as error:
+            raise UnreapedBuild(f"cannot observe adopted build workers: {error}") from error
+        time.sleep(0.025)
+    raise UnreapedBuild("adopted build workers still alive after SIGKILL")
+
+
+def session_members(session):
+    """Live PIDs in a terminal session on systems without Linux subreapers."""
+    try:
+        listing = subprocess.check_output(["/bin/ps", "-A", "-o", "pid=,stat="], text=True, timeout=2)
+        members = set()
+        for entry in listing.splitlines():
+            pid, state = entry.split()
+            try:
+                if not state.startswith("Z") and os.getsid(int(pid)) == session:
+                    members.add(int(pid))
+            except ProcessLookupError:
+                pass
+        return members
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        raise UnreapedBuild(f"cannot observe build session {session}: {error}") from error
+
+
 def stop_build_group(group, requested=None):
     """The leader is still waitable, so the kernel cannot recycle its group ID."""
     def send(sig):
@@ -131,6 +182,23 @@ def run_session(command, env, lease=None, *, interactive=False):
         if child is not None:
             raise Cancelled
 
+    subreaper = interactive and sys.platform == "linux"
+    previous_members = None
+    if subreaper:
+        enable_build_subreaper()
+    elif interactive:
+        previous_members = session_members(os.getsid(0))
+
+    def reap():
+        status = child.wait()
+        if subreaper:
+            reap_adopted_workers()
+        elif previous_members is not None and session_members(os.getsid(0)) - previous_members:
+            # Other groups in this shared terminal session may own a live test
+            # or belong to the caller. Preserve its target when ownership is uncertain.
+            raise UnreapedBuild("new processes remain in the build's terminal session")
+        return status
+
     terminal = None
     if interactive and foreground_terminal():
         terminal = os.open("/dev/tty", os.O_RDONLY | os.O_NOCTTY)
@@ -168,12 +236,12 @@ def run_session(command, env, lease=None, *, interactive=False):
         # never signal a process group whose leader PID the kernel can reuse.
         for sig in signals:
             signal.signal(sig, signal.SIG_IGN)
-        return child.wait()
+        return reap()
     except Cancelled:
         for sig in signals:
             signal.signal(sig, signal.SIG_IGN)
         stop_build_group(child.pid, requested)
-        child.wait()
+        reap()
         return -requested
     except UnreapedBuild:
         raise
@@ -182,7 +250,7 @@ def run_session(command, env, lease=None, *, interactive=False):
             for sig in signals:
                 signal.signal(sig, signal.SIG_IGN)
             stop_build_group(child.pid)
-            child.wait()
+            reap()
         raise
     finally:
         pending = sys.exception()

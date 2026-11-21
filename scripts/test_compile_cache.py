@@ -175,7 +175,10 @@ class CompileCache(unittest.TestCase):
     def test_cancelling_a_cached_disposable_target_reaps_its_backend(self):
         self.check_cached_cancellation(scratch=True)
 
-    def check_cached_cancellation(self, scratch):
+    def test_cancelled_cached_build_reaps_a_separate_test_group(self):
+        self.check_cached_cancellation(scratch=True, separate_group=True)
+
+    def check_cached_cancellation(self, scratch, separate_group=False):
         import fcntl
         import select
         import signal
@@ -188,7 +191,9 @@ class CompileCache(unittest.TestCase):
             listener.listen()
             listener.settimeout(5)
             self.cargo.write_text("#!/usr/bin/env python3\nimport os,signal,socket,sys\n"
-                                  "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                                  + ("if os.fork(): signal.pause(); sys.exit(1)\nos.setpgid(0,0)\n"
+                                     if separate_group else "")
+                                  + "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
                                   "s=socket.socket(socket.AF_UNIX);s.connect(sys.argv[2])\n"
                                   "s.sendall((str(os.getpid())+chr(10)+repr([os.readlink('/proc/self/fd/'+x) for x in os.listdir('/proc/self/fd') "
                                   "if os.path.exists('/proc/self/fd/'+x)])).encode());signal.pause()")
@@ -289,7 +294,10 @@ class CompileCache(unittest.TestCase):
     def test_hangup_keeps_scratch_when_worker_shutdown_is_unconfirmed(self):
         self.check_terminal_interrupt("signal.SIG_DFL", hangup=True, unconfirmed=True)
 
-    def check_terminal_interrupt(self, handler, *, hangup=False, unconfirmed=False):
+    def test_foreground_interrupt_reaps_a_worker_in_a_separate_test_group(self):
+        self.check_terminal_interrupt("signal.SIG_DFL", separate_group=True)
+
+    def check_terminal_interrupt(self, handler, *, hangup=False, unconfirmed=False, separate_group=False):
         import pty
         import select
         import signal
@@ -300,6 +308,7 @@ class CompileCache(unittest.TestCase):
 import signal, socket
 signal.signal(signal.SIGINT, {handler})
 if os.fork() == 0:
+    if {separate_group!r}: os.setpgid(0, 0)
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
     with socket.socket(socket.AF_UNIX) as conn:

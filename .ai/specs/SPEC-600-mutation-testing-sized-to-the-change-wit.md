@@ -28,7 +28,8 @@ On 2026-11-21 the owner measured 105 minutes waiting for mutation tests in 22 Co
 - [x] Install the instance's by-hand delivery policy and bootstrap contract
 - [x] Preserve Cargo cancellation and inherited jobserver tokens
 - [x] Reclaim attempt scratch after forced host termination
-- [ ] Verify by hand and deliver the reviewed change
+- [ ] Deliver the disk scratch, tmpfs cap and by-hand mutation policy
+- [ ] Deliver disposable Cargo targets and request staging
 
 ## Acceptance criteria
 
@@ -93,3 +94,5 @@ Review of 35d37017c found that terminal-generated Ctrl-C reached the foreground 
 Review of 7815fa4c5 found that restoring a hung-up PTY masked the HUP exit status or the unconfirmed-shutdown diagnostic. Closing the real PTY master reproduced both failures. Restoring handling of terminal loss returned 129 after worker exit and preserved the build target when exit could not be verified. Undoing that handling by hand failed both checks again. All 28 compiler-cache tests passed after restoration.
 
 The reviewer also found that the campaign command dropped its scratch guard after an unconfirmed stop. A command-free ownership test failed on the old handling. The command distinguishes an unconfirmed shutdown from a reaped error, reports the retained directory, and keeps the leader waitable through worker observation even on ordinary exit. An ordinary process fixture exited 7 and left a live worker on the previous implementation. The corrected supervisor stopped the worker and preserved 7. A stalled process-list fixture previously exceeded its observation deadline and now returns a timeout. These checks used filesystem and ordinary subprocess fixtures. Linux worker enumeration includes each thread. A fixture with a zombie main thread and a live worker reproduced an early return with the worker socket still open. Undoing thread enumeration and uncertain-shutdown retention by hand failed their two regressions, and restoring them passed. Clippy passed for all xtask targets on Linux and aarch64-apple-darwin.
+
+Review of b7e4e88af reproduced a live nextest test worker outside Cargo's initial process group after the launcher had returned 143 and discarded its target. Foreground and cached noninteractive fixtures using that process layout both failed on the reviewed code. The Linux disposable-target launcher now adopts orphaned workers as a child subreaper, ends them and waits until it has no children. By-hand undo of the adopted-worker check failed both regressions. On systems without Linux subreapers, an uncertain terminal-session change preserves and reports the target. The Cargo launcher is delivered in the second PR. The first ships the run-owned scratch path, session cap, campaign cleanup and by-hand policy.
