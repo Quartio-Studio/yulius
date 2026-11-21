@@ -3254,6 +3254,57 @@ async fn goal_stop_distinguishes_replay_from_an_edited_copy_of_the_issued_prompt
     Ok(())
 }
 
+/// Two invocations can be held at the same boundary. Each release acknowledges
+/// its own edited prompt even while the other one's Enter is outstanding.
+#[tokio::test]
+async fn goal_stop_releases_two_held_owner_submissions_independently() -> TestResult {
+    use yulius_app::hooks::HookReply;
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify dev").await?;
+    let app = &f.h.app;
+    let owner = UserId::parse("u1")?;
+    let store = &app.deps.store;
+    store
+        .set_person_pause(&f.task, &owner, &AttemptId::parse("at1")?, app.now())
+        .await?;
+    let prompts = [(1, "Verify dev"), (2, "Record the result")];
+    let submit = async |id, text: &str| {
+        app.hook_event(
+            TOKEN,
+            "codex",
+            "UserPromptSubmit",
+            &yulius_contracts::hooks::HookInput {
+                prompt: Some(text.to_owned()),
+                invocation: Some(id),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+    };
+    for (id, text) in prompts {
+        app.record_terminal_frame(&f.task, &owner, format!("{text}x\x7f\r").as_bytes());
+        assert!(matches!(submit(id, text).await?, HookReply::Hold { .. }));
+    }
+    store.clear_person_pause(&f.task, app.now()).await?;
+    assert!(matches!(
+        submit(1, prompts[0].1).await?,
+        HookReply::Output(_)
+    ));
+    assert!(
+        app.has_draft(&f.task),
+        "the second submission is still held"
+    );
+    assert!(matches!(
+        submit(2, prompts[1].1).await?,
+        HookReply::Output(_)
+    ));
+    assert!(
+        !app.has_draft(&f.task),
+        "both owner submissions were acknowledged"
+    );
+    Ok(())
+}
+
 /// The client has already sent Enter when the next draft reaches Yulius. The HTTP
 /// callback arrives later, carrying the client's send time.
 #[tokio::test]
