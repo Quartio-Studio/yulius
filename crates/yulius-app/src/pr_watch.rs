@@ -1292,20 +1292,15 @@ impl App {
                 &mut facts,
             )
             .await?;
-        }
-        crate::race::reached(
-            crate::race::Point::LivePrFactsRead,
-            std::path::Path::new(task.id.as_str()),
-        );
-        if let Some(head) = red_candidate_head
-            && self
-                .ordinary_pull_run(&sandbox, pr, head)
-                .await
-                .ok()?
-                .as_ref()
-                != own
-        {
-            return None;
+        } else if train.is_some() && !person_must_act {
+            let expected = red_candidate_head.map(|head| (head.as_str(), own));
+            self.confirm_candidate_news(task, &sandbox, pr, expected)
+                .await?;
+        } else {
+            crate::race::reached(
+                crate::race::Point::LivePrFactsRead,
+                std::path::Path::new(task.id.as_str()),
+            );
         }
         if self.armed_now(&task.id) != activation
             || self.merge_is_armed(&task.id) != armed
@@ -1361,31 +1356,22 @@ impl App {
             }
             _ => None,
         };
-        let fresh = self.deps.store.task(&task.id).await.ok()??;
-        if fresh.status != TaskStatus::Running
-            || fresh.archived_at.is_some()
-            || self
-                .deps
-                .store
-                .task_needs_you(&task.id)
-                .await
-                .ok()?
-                .is_some()
-            || self.deps.store.open_pause(&task.id).await.ok()?.is_some()
-            || self
-                .browser_tab_request_for(&task.sandbox_id, &task.id)
-                .await
-                .is_some()
-            || fresh.activity == Some(yulius_domain::task::Activity::NeedsAttention)
-                && !self.held_message_flag_outlived(&fresh).await
-            || self
-                .deps
-                .store
-                .latest_merge_wait(&task.id)
-                .await
-                .ok()?
-                .as_ref()
-                != Some(&span)
+        let expected = match &observation {
+            SingletonObservation::Current(ordinary) => {
+                Some((decision.head.as_str(), ordinary.as_deref()))
+            }
+            SingletonObservation::Changed(_) => None,
+        };
+        self.confirm_candidate_news(task, sandbox, facts.pr, expected)
+            .await?;
+        if self
+            .deps
+            .store
+            .latest_merge_wait(&task.id)
+            .await
+            .ok()?
+            .as_ref()
+            != Some(&span)
             || self.merge_is_armed(&task.id)
             || self.armed_view(&task.id).1.as_ref() != outcome
         {
@@ -1429,6 +1415,52 @@ impl App {
             key,
             text: decision.message,
         });
+        Some(())
+    }
+
+    /// Recheck the owner and the ordinary CI used for a train or a recovered decision.
+    /// A change during verification leaves the notice unheard for the next pass.
+    async fn confirm_candidate_news(
+        &self,
+        task: &TaskRecord,
+        sandbox: &SandboxRecord,
+        pr: u64,
+        expected: Option<(&str, Option<&CiRunRecord>)>,
+    ) -> Option<()> {
+        crate::race::reached(
+            crate::race::Point::LivePrFactsRead,
+            std::path::Path::new(task.id.as_str()),
+        );
+        let fresh = self.deps.store.task(&task.id).await.ok()??;
+        if fresh.status != TaskStatus::Running
+            || fresh.archived_at.is_some()
+            || self
+                .deps
+                .store
+                .task_needs_you(&task.id)
+                .await
+                .ok()?
+                .is_some()
+            || self.deps.store.open_pause(&task.id).await.ok()?.is_some()
+            || self
+                .browser_tab_request_for(&task.sandbox_id, &task.id)
+                .await
+                .is_some()
+            || fresh.activity == Some(yulius_domain::task::Activity::NeedsAttention)
+                && !self.held_message_flag_outlived(&fresh).await
+        {
+            return None;
+        }
+        if let Some((head, run)) = expected
+            && self
+                .ordinary_pull_run(sandbox, pr, head)
+                .await
+                .ok()?
+                .as_ref()
+                != run
+        {
+            return None;
+        }
         Some(())
     }
 

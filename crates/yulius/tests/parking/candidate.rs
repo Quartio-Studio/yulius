@@ -129,7 +129,25 @@ fn a_held_ordinary_failure_arriving_during_candidate_verification_is_told_once()
     cold_candidate_case(ColdCandidate::OrdinaryFailsDuringRead)
 }
 
+#[test]
+fn a_held_candidate_preserves_a_person_decision_arriving_at_final_verification() -> TestResult {
+    cold_candidate_case(ColdCandidate::HeldHumanDecision)
+}
+
+#[test]
+fn a_recorded_candidate_waits_for_an_ordinary_rerun_admitted_at_final_verification() -> TestResult {
+    cold_candidate_case(ColdCandidate::LateReceiptRerun)
+}
+
+#[test]
+fn an_armed_owner_outside_a_train_hears_the_queues_actual_reason_once() -> TestResult {
+    cold_candidate_case(ColdCandidate::FreeArmNote)
+}
+
 enum ColdCandidate {
+    FreeArmNote,
+    HeldHumanDecision,
+    LateReceiptRerun,
     OrdinaryFailsDuringRead,
     SharedOrdinaryFailure,
     HeldOrdinaryFailure,
@@ -450,10 +468,12 @@ async fn check_after_restart(
     if matches!(
         case,
         ColdCandidate::FreeArmTaken
+            | ColdCandidate::FreeArmNote
             | ColdCandidate::HeldOrdinaryFailure
             | ColdCandidate::HeardOrdinaryFailure
             | ColdCandidate::SharedOrdinaryFailure
             | ColdCandidate::OrdinaryFailsDuringRead
+            | ColdCandidate::HeldHumanDecision
     ) {
         std::fs::write(
             data.join(yulius_app::agent_wait::ARMED_MERGES_FILE),
@@ -463,6 +483,22 @@ async fn check_after_restart(
         )?;
         cold.restore_armed_merges().await;
         let sandbox = cold.deps.store.task(id).await?.ok_or("owner")?.sandbox_id;
+        if matches!(case, ColdCandidate::FreeArmNote) {
+            let pulls = std::mem::take(&mut *remote.pulls.lock().map_err(|_| "pulls")?);
+            cold.merge_armed(&sandbox).await;
+            *remote.pulls.lock().map_err(|_| "pulls")? = pulls;
+            let news = cold.watch_prs(&bounds).await;
+            let repeated = cold.watch_prs(&bounds).await;
+            cold.stop_task_now(id).await?;
+            assert_eq!(news.len(), 1, "{news:?}");
+            assert!(
+                news[0].1.contains("cannot read this task's pull request")
+                    && !news[0].1.contains("Hands off"),
+                "{news:?}"
+            );
+            assert!(repeated.is_empty(), "{repeated:?}");
+            return Ok(());
+        }
         if matches!(case, ColdCandidate::FreeArmTaken) {
             let (observed, finish_read) = hold_at(super::Point::LivePrFactsRead, id);
             let (deciding, finish_decision) = hold_at(super::Point::FreeArmTaken, id);
@@ -524,6 +560,21 @@ async fn check_after_restart(
             data.join(yulius_app::merge_train::MERGE_TRAINS_FILE),
             serde_json::to_vec(&train)?,
         )?;
+        if matches!(case, ColdCandidate::HeldHumanDecision) {
+            let (observed, finish_read) = hold_at(super::Point::LivePrFactsRead, id);
+            let app = Arc::clone(&cold);
+            let pass = tokio::spawn(async move { app.watch_prs(&bounds).await });
+            tokio::time::timeout(Duration::from_secs(10), observed.notified()).await?;
+            ask(&cold, id).await?;
+            finish_read.notify_one();
+            let interrupted = pass.await?;
+            assert!(interrupted.is_empty(), "person deciding: {interrupted:?}");
+            assert!(cold.watch_prs(&bounds).await.is_empty());
+            cold.deps
+                .store
+                .set_task_needs_you(id, None, cold.now())
+                .await?;
+        }
         if during {
             let stale = cold.watch_prs(&bounds).await;
             assert!(
@@ -555,13 +606,23 @@ async fn check_after_restart(
     }
     if matches!(
         case,
-        ColdCandidate::OwnerRerun | ColdCandidate::NewerRunAfterExpiry
+        ColdCandidate::OwnerRerun
+            | ColdCandidate::NewerRunAfterExpiry
+            | ColdCandidate::LateReceiptRerun
     ) {
-        let gate = Arc::new(tokio::sync::Notify::new());
-        *remote.pull_read_hold.lock().map_err(|_| "PR gate")? = Some(gate.clone());
+        let late = matches!(case, ColdCandidate::LateReceiptRerun);
+        let (entered, gate) = if late {
+            let (entered, gate) = hold_at(super::Point::LivePrFactsRead, id);
+            (Some(entered), gate)
+        } else {
+            let gate = Arc::new(tokio::sync::Notify::new());
+            *remote.pull_read_hold.lock().map_err(|_| "PR gate")? = Some(gate.clone());
+            (None, gate)
+        };
         let watcher = cold.clone();
         let pass = tokio::spawn(async move { watcher.watch_prs(&WatchBounds::default()).await });
-        tokio::time::timeout(Duration::from_secs(5), remote.pull_read_entered.notified()).await?;
+        let entered = entered.as_deref().unwrap_or(&remote.pull_read_entered);
+        tokio::time::timeout(Duration::from_secs(10), entered.notified()).await?;
         let task = cold.deps.store.task(id).await?.ok_or("owner")?;
         let (mut rerun, job) = crate::pr_watch::run(
             &task.sandbox_id,
