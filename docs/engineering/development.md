@@ -290,10 +290,11 @@ can use the same rust-analyzer component and toolchain. No global editor setting
 or agent permission overrides are installed.
 
 Yulius CI is the only CI ([SPEC-002 ADR-18](../../.ai/specs/SPEC-002-yulius-architecture.md),
-ADR-21): there are no GitHub Actions. It runs `quality`, `lint`, `macos`, `docs`, `deps`, `test`, `e2e` and `security`
+ADR-21): there are no GitHub Actions. It runs `quality`, `lint`, `macos`, `docs`, `deps`, `file-contracts`, `test`, `e2e` and `security`
 (`[[ci.jobs]]`, ADR-0438) and publishes
 the `yulius/ci` commit status, which the rulesets require. The `e2e` job gets no model key (agent
-steps are skipped). [Git delivery](git.md) defines promotion checks and post-merge evidence.
+steps are skipped). Run the file-reader selector locally with an explicit changed path, for example
+`python3 scripts/repository_tests.py crates/yulius-server/web/assets/mock.js`. With no arguments it compares HEAD with the integration branch. [Git delivery](git.md) defines promotion checks and post-merge evidence.
 
 ## Troubleshooting
 

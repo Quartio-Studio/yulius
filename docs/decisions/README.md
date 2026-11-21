@@ -499,6 +499,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0445 -->
 <!-- ADR 0446 -->
 <!-- ADR 0447 -->
+- [0448](0448-repository-file-readers-run-before-merge.md): Repository file readers run before merge.
 <!-- ADR 0448 -->
 <!-- ADR 0449 -->
 <!-- ADR 0450 -->
