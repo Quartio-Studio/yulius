@@ -61,6 +61,8 @@ pub struct FakeGitHub {
     pub callback_entered: tokio::sync::Notify,
     /// Pull requests (delivery tests).
     pub pulls: Mutex<Vec<GhPull>>,
+    /// REST calls to get or list PRs for discovery.
+    pub pull_reads: std::sync::atomic::AtomicUsize,
     /// Simulates a failed repository-wide overview while individual PRs remain readable.
     pub fail_overview_pulls: std::sync::atomic::AtomicBool,
     /// Hold the selected PR list until cancelled or explicitly released.
@@ -111,6 +113,8 @@ pub struct FakeGitHub {
     pub pull_authors: Mutex<HashMap<u64, String>>,
     /// Commit statuses published, in order: (sha, status).
     pub statuses: Mutex<Vec<(String, NewCommitStatus)>>,
+    /// Notifies a waiting CI test after GitHub receives a status.
+    pub status_published: tokio::sync::Notify,
     /// When set, publishing a commit status fails as without the App permission.
     pub statuses_forbidden: std::sync::atomic::AtomicBool,
     /// Issues opened (DLV-008).
@@ -345,6 +349,7 @@ impl GitHubPort for FakeGitHub {
             client_id: "Iv1.test".into(),
             client_secret: "secret".into(),
             private_key_pem: "pem".into(),
+            webhook_secret: None,
         })
     }
     async fn create_issue(
@@ -470,6 +475,7 @@ impl GitHubPort for FakeGitHub {
         Ok(created)
     }
     async fn get_pull(&self, _: &Secret, _: &str, _: &str, number: u64) -> AppResult<GhPull> {
+        self.pull_reads.fetch_add(1, Ordering::SeqCst);
         let hold = self
             .pull_read_hold
             .lock()
@@ -536,6 +542,7 @@ impl GitHubPort for FakeGitHub {
         _: &str,
         head: Option<&str>,
     ) -> AppResult<Vec<GhPull>> {
+        self.pull_reads.fetch_add(1, Ordering::SeqCst);
         let hold = self
             .pull_list_hold
             .lock()
@@ -749,6 +756,7 @@ impl GitHubPort for FakeGitHub {
             .lock()
             .map_err(AppError::internal)?
             .push((sha.to_owned(), status.clone()));
+        self.status_published.notify_one();
         Ok(())
     }
     async fn delete_branch(

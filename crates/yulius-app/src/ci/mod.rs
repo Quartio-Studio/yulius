@@ -41,6 +41,8 @@ mod findings;
 mod flaky;
 pub use flaky::Noted;
 pub mod hygiene;
+mod opening;
+pub use opening::PullOpening;
 pub(crate) mod playground;
 mod prove;
 mod rollback;
@@ -397,6 +399,14 @@ impl Drop for CiClaim {
 /// (SPEC-497).
 pub(crate) type LoadReading = (i64, Option<(u64, u64)>);
 
+/// A REST inventory can wait on GitHub while a signed opening schedules its own head.
+/// Full inventories stay ordered, and every writer of an ordinary scheduling plan is serialized.
+#[derive(Default)]
+struct SandboxSync {
+    inventory: tokio::sync::Mutex<()>,
+    schedule: tokio::sync::Mutex<()>,
+}
+
 /// Process-local CI state.
 #[derive(Default)]
 pub struct CiState {
@@ -430,7 +440,7 @@ pub struct CiState {
     pub(crate) hygiene_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// One CI sync of a sandbox at a time (the 60 s loop, a person's sync, a review's start):
     /// each reads the runs before it queues, so two at once would queue one head twice.
-    sync_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    sync_locks: Mutex<HashMap<String, Arc<SandboxSync>>>,
     /// One quarantine of a sandbox decided at a time (SPEC-497 OFC-002): two jobs failing the
     /// same test at once would each file an issue for it (review round 1); per sandbox, so a
     /// slow GitHub holds only that project's job ends (review round 2).
@@ -1560,21 +1570,24 @@ impl App {
             .flatten()
     }
 
+    fn ci_sync_lock(&self, sandbox: &SandboxId) -> Arc<SandboxSync> {
+        // Nothing panics while the map is held; a poisoned map is still the one map.
+        self.ci
+            .sync_locks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(sandbox.as_str().to_owned())
+            .or_default()
+            .clone()
+    }
+
     /// One scheduling round for a sandbox: fetch, read the heads, queue and supersede.
     ///
     /// # Errors
     /// GitHub or Git failures (the round is retried at the next poll).
     pub async fn ci_sync_sandbox(&self, sandbox: &SandboxRecord) -> AppResult<()> {
-        // Nothing panics while the map is held; a poisoned map is still the one map.
-        let lock = self
-            .ci
-            .sync_locks
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .entry(sandbox.id.as_str().to_owned())
-            .or_default()
-            .clone();
-        let _one_at_a_time = lock.lock().await;
+        let lock = self.ci_sync_lock(&sandbox.id);
+        let _inventory = lock.inventory.lock().await;
         let repo = self.sandbox_repo(&sandbox.id);
         if sandbox.removed_at.is_some() || !repo.join(".git").exists() {
             return Ok(());
@@ -1582,11 +1595,22 @@ impl App {
         // A playground has no GitHub (SPEC-163 PCI-001): no token and no pull request; its own
         // `origin` is fetched, and its tasks' heads are tested when they deliver.
         let playground = sandbox.is_playground();
-        let token = if playground {
-            None
+        let before_listing = self
+            .deps
+            .store
+            .ci_planning_runs(&sandbox.id, 1)
+            .await?
+            .pop();
+        let pulls = if playground {
+            Ok(Vec::new())
         } else {
-            Some(self.dlv_installation_token(sandbox).await?)
+            let token = self.dlv_installation_token(sandbox).await?;
+            self.deps
+                .github
+                .list_pulls(&token, &sandbox.repo_owner, &sandbox.repo_name, None)
+                .await
         };
+        let _schedule = lock.schedule.lock().await;
         self.dlv_refresh_clone(sandbox).await?;
         self.ci_forget_gate(&sandbox.id);
         let view = self.ci_gate(sandbox).await;
@@ -1616,19 +1640,10 @@ impl App {
                 }
             }
         }
-        let pulls = match &token {
-            Some(token) => {
-                self.deps
-                    .github
-                    .list_pulls(token, &sandbox.repo_owner, &sandbox.repo_name, None)
-                    .await?
-            }
-            None => Vec::new(),
-        };
         // A fork's pull request is never tested (ADR-0116): its author has no push access, and
         // its head can still be in the clone (an agent fetched `pull/N/head` to review it), so
         // GitHub's word that it comes from another repository decides, not the clone (#842).
-        for pull in pulls
+        for pull in pulls?
             .into_iter()
             .filter(|p| p.state == "open" && p.base == profile.integration_branch && !p.from_fork)
             .take(MAX_PULLS_TESTED)
@@ -1657,7 +1672,25 @@ impl App {
             .ci_planning_runs(&sandbox.id, PLAN_RUNS)
             .await?;
         let facts = ordinary_run_facts(&runs, view.problem.is_none());
-        let only_targets: Vec<Target> = targets.iter().map(|(t, _)| t.clone()).collect();
+        let mut only_targets: Vec<Target> = targets.iter().map(|(t, _)| t.clone()).collect();
+        // An opening can arrive after GitHub took the snapshot that produced this list.
+        // Preserve the webhook's exact target for this round, including an opening the
+        // snapshot omitted. The next inventory reconciles it normally.
+        for run in runs
+            .iter()
+            .take_while(|run| {
+                before_listing
+                    .as_ref()
+                    .is_none_or(|before| before.id != run.id)
+            })
+            .filter(|run| run.requested_by == opening::WEBHOOK_ACTOR)
+        {
+            only_targets.retain(|target| target.reference != run.reference);
+            only_targets.push(Target {
+                reference: run.reference.clone(),
+                sha: run.sha.clone(),
+            });
+        }
         let plan = dom::plan(&only_targets, &facts);
         crate::race::reached(
             crate::race::Point::CiSyncPlanned,

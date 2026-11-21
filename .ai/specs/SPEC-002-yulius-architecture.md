@@ -1299,6 +1299,7 @@ space-separated values) or `[commands] gate` (one job named `gate`) in `yulius.t
 
 **Scheduling** (`yulius_app::ci`, pure plan in `yulius_domain::ci::plan`).
 
+- A signed GitHub App PR opening can schedule a same-repository head immediately. [ADR-0441](../../docs/decisions/0441-github-pr-openings-trigger-exact-head-ci.md)
 - *Sync loop*, every 60 s (`YULIUS_CI_POLL_SECS`). For each sandbox:
   - fetch the clone with the installation token;
   - read the CI in force;

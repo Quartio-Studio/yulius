@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- A signed GitHub PR opening queues CI for its exact head without a discovery API read. Existing Apps can enable the webhook in their registration. [SPEC-606](../.ai/specs/SPEC-606-a-pull-request-not-opened-by-a-task-wait.md)
+
 - Agent and CI attempts receive private disk scratch for build trees. The process host caps each session’s memory-backed `/tmp` at 1 GiB. Named mutation campaigns reclaim their disk copies when workers exit. [SPEC-600](../.ai/specs/SPEC-600-mutation-testing-sized-to-the-change-wit.md)
 - Repeating a decided staging request gives the recorded verdict and the action its revision needs.
   [SPEC-597](../.ai/specs/SPEC-597-tests-that-hold-under-a-loaded-host-and.md)
