@@ -437,8 +437,10 @@ test('Ctrl+C copies a selection and interrupts without one; paste types the clip
     return event.defaultPrevented;
   }, key);
   // No menu at all, not even the browser's own over the program's right-click.
+  const sent = await recordInput(browser);
+  await browser.locator('.taskview .xterm-screen').secondaryTap();
+  await expect.poll(async () => (await sent()).join('')).toMatch(/\x1b\[<2;\d+;\d+M\x1b\[<2;\d+;\d+m/);
   expect(await rightClick(null), 'the browser menu is held back').toBe(true);
-  await settle();
   await expect(screen.getByRole('menuitem', /^Paste/)).toBeHidden();
   await rightClick(await pageKey(browser));
   await expect(screen.getByRole('menuitem', /^Copy/)).toBeVisible();
@@ -446,6 +448,43 @@ test('Ctrl+C copies a selection and interrupts without one; paste types the clip
   await expect(screen.getByRole('menuitem', /^Select all/)).toBeVisible();
   await browser.keyboard.press('Escape');
   await expect(screen.getByRole('menuitem', /^Paste/)).toBeHidden();
+});
+
+test('Codex right-click pastes from the viewer’s clipboard', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&still=1'));
+  await touchTask(browser, 'sb_studio', 12, { harness: 'codex' });
+  await browser.evaluate(() => { location.hash = '#/s/studio/t/12'; });
+  await terminalShown(browser);
+  await printUnasked(browser, '\x1b[?2004h', 'clipboard ready');
+  const point = await spot(browser, 'clipboard ready');
+  expect(point).not.toBeNull();
+  const sent = await recordInput(browser);
+  await browser.evaluate(() => {
+    navigator.clipboard.readText = async () => 'first line\nsecond line';
+  });
+
+  // A primary click still reaches the program in its requested mouse encoding.
+  await clickAt(browser, point!);
+  await expect.poll(async () => (await sent()).join('')).toMatch(/\x1b\[<0;\d+;\d+m/);
+  const before = (await sent()).length;
+  const paste = screen.getByRole('menuitem', /^Paste/);
+  const grid = browser.locator('.taskview .xterm-screen');
+  await grid.secondaryTap();
+  await expect(paste).toBeVisible();
+  await browser.keyboard.press('Escape');
+  await expect(paste).toBeHidden();
+  await grid.secondaryTap();
+  await paste.click();
+  const pasted = ['\x1b[200~first line\rsecond line\x1b[201~'];
+  await expect.poll(async () => (await sent()).slice(before)).toEqual(pasted);
+
+  await browser.evaluate(() => {
+    navigator.clipboard.readText = async () => { throw new DOMException('Denied', 'NotAllowedError'); };
+  });
+  await grid.secondaryTap();
+  await paste.click();
+  await expect(browser.locator('.taskview .term-notice')).toHaveText(/paste with (Ctrl\+V|⌘V)/);
+  expect((await sent()).slice(before)).toEqual(pasted);
 });
 
 type Clip = { __written: string[]; __refuse: boolean; __copied: string[] };

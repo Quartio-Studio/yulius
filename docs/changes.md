@@ -7,6 +7,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-21
 
 - Antigravity tasks parked on background `yulius wait` now settle cleanly to Waiting (`yulius_wait = true`, never stuck as Working) so their armed green PRs enter the merge queue on parity with Claude Code and Codex while non-wait background commands still hold the queue; `delivery_status` and `task_delivery` now refresh stale clones to report live PR conflicts (`pr.conflicts = true`) while preserving SPEC-491 union-driver merges and dropping conflicting armed merges with conflicting file names; and armed green PRs stuck outside a merge train now receive an agent check-in after 10 minutes and escalate via SPEC-578 Needs You after 20 minutes, auto-clearing once the PR moves or merges ([ADR-0419](decisions/0419-antigravity-stop-settles-turn-and-armed-green-prs-have-a-stall-bound.md), [SPEC-580](../.ai/specs/SPEC-580-an-armed-green-pr-merges-when-its-agent.md)).
+- A plain right-click in a Codex terminal opens the clipboard menu. Paste now uses the viewer’s clipboard, fixing “clipboard text is unavailable” on headless sandboxes. [SPEC-582](../.ai/specs/SPEC-582-fix-clipboard-on-codex.md)
+
 - After a restart, a failed single-PR merge train reports its recorded job failure once to the original task. The watcher checks for repairs, reruns and human decisions before sending it (SPEC-558).
 
 - The staging line in `delivery_status` names the fix's revision as due after a failed request, and carries each request's next step. Reading the merge-first target fetches the clone only when it lacks the verified head. [SPEC-575](../.ai/specs/SPEC-575-make-task-local-testing-and-one-staging.md)
