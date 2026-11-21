@@ -465,6 +465,7 @@ If a reservation skips past all available slots, land an empty extension first w
 - [0427](0427-task-authorization-covers-independent-re-review.md): A task's delivery authorization covers independent re-review of its in-scope corrections through approval.
 <!-- ADR 0427 -->
 <!-- ADR 0428 -->
+- [0429](0429-continue-stopped-codex-work-in-its-saved-session.md) resumes stopped Codex work in its saved conversation and shows a bare resume as idle.
 <!-- ADR 0429 -->
 - [0430](0430-yuliuss-staging-builds-in-cds-builder-and-installs-a-kept-release-with-its-store.md): Yulius's own staging (`[cd.dev]`) builds the exact commit in CD's Docker builder (Ubuntu 24.04, pinned toolchain), uploads it by SHA-256 over SSH with a pinned host key, and installs it with the replaced release's store kept beside it; verify proves the commit, HTTPS, the contained doctor, no lost rows and the Docker smoke; a rollback restores the release's own store across a schema change; rejected: the VM's update helper (main only, never older, needs a repository credential, rebuilds on rollback) (SPEC-591).
 <!-- ADR 0430 -->

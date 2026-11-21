@@ -72,6 +72,8 @@ account is left there. If a session document predates its rollout, transcript re
 file by session ID and the next index refresh saves its path on the same document.
 [SPEC-538](../.ai/specs/SPEC-538-repair-codex-session-documents-when-the.md)
 
+For an explicit restart of stopped Codex work, the supervisor carries a continuation prompt through admission and into the native resume. It derives initial activity from the launch mode and observes subsequent turns in the rollout. [Decision 0429](decisions/0429-continue-stopped-codex-work-in-its-saved-session.md)
+
 ```mermaid
 flowchart LR
   ACC["openai account (vault: auth.json)"] -->|"written before each run"| HOME["sandbox/codex/account: auth.json, config.toml, hooks.json"]
