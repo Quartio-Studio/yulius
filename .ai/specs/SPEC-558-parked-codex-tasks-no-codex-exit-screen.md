@@ -75,6 +75,8 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- At `3c574cf45`, two detail reads began on a Closed task. The older one observed Archive and the newer one observed Undo, but the active row remained absent in both reply orders. In the mounted terminal, releasing Archive then Undo left the title “Held archive”. The store now retains the newer public summary for the lifetime of an older overlapping request. The expanded ordering test and mounted regression both passed after the correction.
+
 - On the merged #1555 code, nine of ten controlled archive/Undo cases failed. The regression for Closed followed by a missed Archived event checks both reply orders of an outstanding active list. Additional coverage starts the list after terminal detail and lets it omit the task first. The initial prototype skipped the terminal notification in that order. The store now accepts a compatible archive observation to explain the omission while preserving the newer list’s membership.
 
 - PR #1555 delivered terminal-discovered resumes at dev `8617cb771`. Run `8882bbdb-055d-49be-b630-fb2ce29c6318` passed quality, both Rust shards and browser e2e on `5290d06f5`. The reviewed product commit passed 1,269 local Chromium tests with one optional skip. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe704d71f9/delivery/evidence/8617cb771643dc76175ec8ddcf020b6026baf24c)

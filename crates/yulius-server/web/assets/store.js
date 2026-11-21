@@ -391,7 +391,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     const order = ++nextListRead;
     // A mounted archived task is outside the active list. Its next detail
     // can establish that Undo restored it while the terminal was open.
-    const read = { row: state.tasks.get(startingRow?.sandbox_id)?.get(startingRow?.id) ??
+    const read = { order, row: state.tasks.get(startingRow?.sandbox_id)?.get(startingRow?.id) ??
       (startingRow?.archived ? startingRow : undefined) };
     if (read.row) activeDetails.add(read);
     const release = () => activeDetails.delete(read);
@@ -411,10 +411,25 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       // An empty active list agrees with an archive. The detail still tells
       // the mounted terminal why its row disappeared.
       const confirmsAbsence = detail.archived && (rowOrder.get(retained) ?? 0) <= order;
-      const retainOmitted = confirmsAbsence || ((crossedPark || startingRow?.archived) && listVersion < order);
+      const retainOmitted = confirmsAbsence || ((crossedPark || retained?.archived || startingRow?.archived) && listVersion < order);
       const row = laterEvent ? retained : listed ?? (retainOmitted ? retained : null);
+      if (!detail.archived && !row?.archived && !startingRow?.archived &&
+          detail.status !== 'parked' && row?.status !== 'parked' && startingRow?.status !== 'parked') {
+        // A same-status detail can be an Undo. Keep its public observation
+        // for any earlier pending request that may still report the archive.
+        const source = row ?? retained;
+        if (activeDetails.size && source && order > Math.max(listVersion, rowOrder.get(source) ?? 0)) {
+          const observed = lifecycleSummary(detail, source);
+          rowOrder.set(observed, order);
+          for (const pending of activeDetails) {
+            if (pending.order < order && pending.row?.id === detail.id && (rowOrder.get(pending.row) ?? 0) < order) {
+              pending.row = observed;
+            }
+          }
+        }
+        return view;
+      }
       if (!row) return undo ? { ...view, ...lifecycleSummary(startingRow, startingRow) } : view;
-      if (!detail.archived && !startingRow?.archived && detail.status !== 'parked' && row.status !== 'parked' && startingRow?.status !== 'parked') return view;
       const transition = detail.archived || row.archived || undo || crossedPark || row.status !== detail.status;
       recordVerification(detail, order);
       if (rowOrder.get(row) > order) {
