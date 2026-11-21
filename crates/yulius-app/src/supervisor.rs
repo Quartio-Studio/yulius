@@ -1024,12 +1024,12 @@ enum StartCondition<'a> {
     OwnerContinue(&'a TaskRecord),
     Any,
     Status(TaskStatus),
-    Parked(Option<AttemptId>, Option<&'a crate::pr_watch::ParkedNotice>),
+    Parked(&'a TaskRecord, Option<&'a crate::pr_watch::ParkedNotice>),
 }
 
 enum LaunchAdmission {
     Owner(crate::capacity::ContinuationAdmission),
-    Candidate(Box<Placed>),
+    Candidate(crate::capacity::ContinuationAdmission),
 }
 
 /// Which task state the requested switch may take over.
@@ -2284,17 +2284,31 @@ impl App {
                     }
                     Harness::ClaudeCode => {}
                 }
-                if let Some(notice) = notice
-                    && !self.parked_notice_inputs(&task, notice).await
-                {
-                    return Ok(false);
-                }
             }
             crate::race::reached(
                 crate::race::Point::StartPreflightFinished,
                 Path::new(task_id.as_str()),
             );
-            let guard = if decision.is_some() {
+            let guard = if let StartCondition::Parked(selected, Some(notice)) = condition
+                && decision.is_some()
+            {
+                // Finish preparing the old run before the final hosted read. Both lock
+                // acquisitions are immediate: a busy launcher leaves the verdict unheard.
+                {
+                    let Ok(_guard) = self.supervisor.launch.try_lock() else {
+                        return Ok(false);
+                    };
+                    let Some(current) = self.deps.store.task(task_id).await? else {
+                        return Ok(false);
+                    };
+                    if !current.matches_continuation(selected) {
+                        return Ok(false);
+                    }
+                    self.prepare_start_claim(task_id).await?;
+                }
+                if !self.parked_notice_inputs(selected, notice).await {
+                    return Ok(false);
+                }
                 let Ok(guard) = self.supervisor.launch.try_lock() else {
                     return Ok(false);
                 };
@@ -2337,9 +2351,9 @@ impl App {
                     }
                 }
                 StartCondition::Status(status) if *status != task.status => return Ok(false),
-                StartCondition::Parked(expected, _) => {
+                StartCondition::Parked(selected, _) => {
                     if task.status != TaskStatus::Parked
-                        || task.resume_attempt_id.as_ref() != expected.as_ref()
+                        || task.resume_attempt_id != selected.resume_attempt_id
                     {
                         return Ok(false);
                     }
@@ -2461,23 +2475,24 @@ impl App {
                 let Some(placed) = self.choose_account(&task, None).await? else {
                     return Ok(false);
                 };
-                self.prepare_start_claim(&task.id).await?;
                 let runtime = self.runtime(&task.id);
                 let Ok(writer) = runtime.arm_writer.try_lock() else {
                     return Ok(false);
                 };
-                if !self.parked_notice_current(&task, notice).await
-                    || !self
-                        .deps
-                        .store
-                        .claim_parked_candidate(&task, pr, span, self.now())
-                        .await?
-                {
+                if !self.parked_notice_current(&task, notice).await {
                     return Ok(false);
                 }
+                let Some(admitted) = self
+                    .deps
+                    .store
+                    .claim_parked_candidate(&task, pr, span, &placed.account.id, self.now())
+                    .await?
+                else {
+                    return Ok(false);
+                };
                 drop(writer);
                 self.publish_task(&task.id).await;
-                Some(LaunchAdmission::Candidate(Box::new(placed)))
+                Some(LaunchAdmission::Candidate(admitted))
             } else {
                 None
             };
@@ -2600,6 +2615,9 @@ impl App {
     ) -> AppResult<bool> {
         let store = &self.deps.store;
         let candidate_wake = matches!(admission, Some(LaunchAdmission::Candidate(_)));
+        let admission = admission.map(|accepted| match accepted {
+            LaunchAdmission::Owner(placement) | LaunchAdmission::Candidate(placement) => placement,
+        });
         let parked_activity = task.activity;
         let relaunch = start.clone();
         let sandbox = store
@@ -2649,15 +2667,11 @@ impl App {
         let lineage = store.provider_sessions(&task.id).await?;
         let previous = lineage.last().cloned();
         let harness = task.harness;
-        let placement = if let Some(LaunchAdmission::Candidate(placed)) = admission {
-            Some(*placed)
-        } else if let Some(LaunchAdmission::Owner(
-            crate::capacity::ContinuationAdmission::Named {
-                account,
-                model,
-                fallback,
-            },
-        )) = admission
+        let placement = if let Some(crate::capacity::ContinuationAdmission::Named {
+            account,
+            model,
+            fallback,
+        }) = admission
         {
             // A later model edit is for the next start. This run uses the accepted placement.
             task.model = model;
@@ -5749,7 +5763,7 @@ impl App {
             &task.id,
             RunStart::Resume { prompt },
             None,
-            StartCondition::Parked(task.resume_attempt_id.clone(), notice),
+            StartCondition::Parked(task, notice),
             rest,
             None,
         )

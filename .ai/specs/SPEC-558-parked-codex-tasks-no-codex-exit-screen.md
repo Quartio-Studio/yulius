@@ -126,6 +126,8 @@ The SQLite query returning a parked task includes the latest attempt ID in the s
 
 ## Evidence
 
+- Hand check for step 46. Removing the immediate launch-lock acquisition and session-capacity guard reproduced the busy-lock timeout and premature queued notice. Both guards were restored.
+- Independent review of `1525a57be` identified changes during launch preparation. Both regressions delivered an obsolete diagnosis before the fix, one after the integration base advanced and one after the subscription reached its limit. The last hosted read now follows preparation. The start transaction checks the current model and subscription, and the PTY regression compares the two nonempty provider session IDs.
 - Step 46 baseline on `d643f0262` exposed the parked owner receiving unarmed-green advice, accepting a wake without capacity and waiting on a busy launch lock. The published replacement-head control passed. A separate failing parked-detail assertion for ordinary CI during a base advance belongs to the remaining status-read work.
 
 - PR #1662 landed on `dev` at `8b38f0344`. The PR passed `ffcecebd-4a79-4afd-89e3-3da8d9438c12` and its merge train passed `a0e4ceb9-423d-4ff3-8014-a269555be9e0`. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/8b38f0344672b3bd804514bf52e2137f40de7fb6)

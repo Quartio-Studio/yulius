@@ -1130,6 +1130,43 @@ fn with_parked_candidate_owner(
 }
 
 #[test]
+fn a_base_change_at_launch_preparation_keeps_the_old_candidate_unheard() -> TestResult {
+    change_at_candidate_claim(true)
+}
+
+#[test]
+fn a_subscription_limit_at_launch_preparation_keeps_the_candidate_parked() -> TestResult {
+    change_at_candidate_claim(false)
+}
+
+fn change_at_candidate_claim(advance_base: bool) -> TestResult {
+    with_parked_candidate_owner(async |_, app, remote, task| {
+        let (ready, release) = super::pause_watch_or_queue(super::Point::StartClaimReady, &task.id);
+        let watcher = app.clone();
+        let pass = tokio::spawn(async move { watcher.watch_prs(&WatchBounds::default()).await });
+        tokio::time::timeout(Duration::from_secs(20), ready.notified()).await?;
+        if advance_base {
+            remote.remote.lock().map_err(|_| "origin")?.take();
+            remote.pulls.lock().map_err(|_| "pulls")?[0].base_sha = "advanced-base".into();
+        } else {
+            limit_only_subscription(app).await?;
+        }
+        release.notify_one();
+        let notices = pass.await?;
+        assert!(
+            notices.is_empty(),
+            "delivered from a superseded observation: {notices:?}"
+        );
+        assert_eq!(
+            super::status_of(app, &task.id).await.0,
+            Some(yulius_domain::task::TaskStatus::Parked)
+        );
+        assert!(app.deps.store.live_attempt(&task.id).await?.is_none());
+        Ok(())
+    })
+}
+
+#[test]
 fn an_already_parked_owner_receives_the_recorded_candidate_failure_once() -> TestResult {
     with_parked_candidate_owner(async |_, app, _, task| {
         let id = task.id.clone();
@@ -1194,6 +1231,15 @@ fn an_already_parked_owner_receives_the_recorded_candidate_failure_once() -> Tes
         .await?;
         let attempts = app.deps.store.attempts(&id).await?;
         assert_eq!(attempts.len(), before + 1);
+        let parked_session = attempts[before - 1]
+            .provider_session_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+            .ok_or("parked owner session")?;
+        assert_eq!(
+            attempts[before].provider_session_id.as_deref(),
+            Some(parked_session)
+        );
         assert_eq!(
             attempts[before].launch_kind,
             yulius_app::model::LaunchKind::Resume

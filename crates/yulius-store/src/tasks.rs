@@ -487,8 +487,10 @@ impl TaskStore for SqliteStore {
         selected: &TaskRecord,
         pr: u64,
         span: &yulius_app::stages::SpanRecord,
+        account: &AccountId,
         at: Timestamp,
-    ) -> AppResult<bool> {
+    ) -> AppResult<Option<yulius_app::capacity::ContinuationAdmission>> {
+        let account = account.clone();
         let id = selected.id.to_string();
         let attempt = selected.resume_attempt_id.clone();
         let branch = selected.branch.clone();
@@ -506,11 +508,24 @@ impl TaskStore for SqliteStore {
                 params![id, to_i64(pr), branch, attempt.as_ref().map(AttemptId::as_str)], |row| row.get(0)
             ).map_err(db)?;
             if !eligible || crate::spans::latest_merge_wait(&tx, &id)?.as_ref() != Some(&span) {
-                return Ok(false);
+                return Ok(None);
             }
+            let current = tx.query_row(
+                &format!("SELECT {TASK_COLS}, {RESUME_ATTEMPT} FROM tasks WHERE id = ?1"),
+                [&id], task_from_row,
+            ).map_err(db)?;
+            // The pool selected this subscription. Accept it only for the model
+            // and account limits in the same snapshot as the launch claim.
+            let placement = match yulius_app::capacity::ContinuationAdmission::named(
+                &current, crate::accounts::list_accounts(&tx)?, &account, at,
+            ) {
+                Ok(placement) => placement,
+                Err(AppError::Capacity(_)) => return Ok(None),
+                Err(error) => return Err(error),
+            };
             let started = transition(&tx, &id, Some(TaskStatus::Parked), TaskStatus::Starting, None, at, None)?;
             tx.commit().map_err(db)?;
-            Ok(started)
+            Ok(started.then_some(placement))
         }).await
     }
 
