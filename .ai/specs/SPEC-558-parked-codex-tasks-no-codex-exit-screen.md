@@ -52,7 +52,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Restore ordinary CI coverage after a repeated integration configuration repair
 - [x] Resolve shared ordinary CI for the original PR owner in the merge queue and wait
 - [x] Report the failing singleton job to its live PR owner
-- [ ] Preserve the latest queue decision for each existing task during history cleanup
+- [x] Preserve the latest queue decision for each existing task during history cleanup
 - [ ] Recover the recorded singleton decision and its replacement arm
 - [ ] Keep failed integration candidates with their original owner
 - [ ] Verify candidate status before parking, showing Done or resuming a parked owner
@@ -94,6 +94,7 @@ The subsequent recovery slice must persist the accepted singleton before releasi
 
 ## Evidence
 
+- Independent review approved the history cleanup at `0666e4327`. All 153 store tests, scoped Clippy, repository contracts and formatting passed. The reviewer ran nine span tests and applied the migration to a populated SQLite fixture. The per-owner lookup used the partial index. The mutation command reported `7 listed, 0 caught, 0 missed, 0 timed out, 7 unviable, 0 not reached (bound 30 min, took 240 s)`. The generated replacements for the Rust return type did not compile. The SQL behavior is verified by the two red/green assertions below. Vidoc was disabled.
 - Against the original hourly cleanup, the SQLite fixture expected the latest decision for task t1 and found no rows. An initial retention query then kept an expired unfinished wait for task t3, which had never recorded a verdict. Both checks use the actual pruning entry point. The fixture also covers ties, delayed older writes, a second owner, an ownerless record and another verdict replacing the retained decision.
 - On the queue recovery prototype, refusing a history write, corrupting saved arm data, and pruning an old decision reproduced loss of the owner’s recovery evidence. At `f870811fc` 396 scoped tests passed. Further regressions reproduced a saved older head displacing a consumed activation and a retry acknowledging unreadable retirement data. Six targeted tests passed at `bebef9c13`. Independent review of that head traced a direct merge retry that can clear a replacement before retiring its prior receipt. That recovery implementation remains open and is excluded from the history cleanup delivery. The pre-existing ordinary verdict recovery case is tracked in [#1564](https://github.com/Quartio-Studio/yulius/issues/1564).
 - The three combined prototype mutation runs stopped at the first split. The first had 11 caught, 7 missed and 29 unviable, the second had 4 unviable, and the third had no completed mutants. The queue-only recovery campaigns stopped at the second split. The first had 3 caught and 27 unviable, and the other two had no completed mutants. None of the interrupted campaigns recorded a timeout. They do not verify the history cleanup delivery.
