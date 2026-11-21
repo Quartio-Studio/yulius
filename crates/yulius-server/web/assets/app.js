@@ -46,7 +46,7 @@ import { mountDesignPage } from './pages/design.js';
 import { mountHomePage } from './pages/home.js';
 import { IS_MAC, showShortcuts } from './shortcuts.js';
 import { preloadTerminal } from './terminal.js';
-import { forgetDrafts } from './drafts.js';
+import { draftFor, forgetDrafts } from './drafts.js';
 import { forgetUnsavedNotes } from './notes.js';
 
 const params = new URLSearchParams(window.location.search);
@@ -708,9 +708,11 @@ function createApp(root, transport) {
         if (view.update) view.update(route);
         break;
       }
-      case 'composer':
-        setCenter(`composer:${sandbox.id}`, () => mountComposer(ctx, sandbox));
+      case 'composer': {
+        const draft = draftFor(store.state.me?.user?.id, sandbox.id);
+        setCenter(draft, () => mountComposer(ctx, sandbox, draft));
         break;
+      }
       case 'page': {
         const factory = SANDBOX_PAGES[route.page];
         const base = `${route.page}:${sandbox.id}`;

@@ -2650,20 +2650,20 @@ fn lines(n: u32, tag: &str) -> String {
         .collect()
 }
 
+fn assert_follow_up_accepted((refused, said, audited): (bool, String, String), counted: &str) {
+    assert!(!refused, "{said}");
+    assert!(said.contains(counted), "the answer: {said}");
+    assert!(audited.contains(counted), "the audit entry: {audited}");
+}
+
 /// SPEC-493 APR-001 to APR-004 (AC-17): an approval carries across a follow-up of at most 20
 /// product lines, counted commit by commit, with tests and documents not counted; more, a file of
 /// the reviewed change reverted out of it, or a conflicted merge, needs a new review. Accepted
 /// calls say what was counted.
 #[tokio::test]
 async fn an_approval_carries_across_a_small_follow_up() -> TestResult {
-    // Accepted: the answer and the armed merge's audit entry each say what was counted.
-    let accepted = |(refused, said, audited): (bool, String, String), counted: &str| {
-        assert!(!refused, "{said}");
-        assert!(said.contains(counted), "the answer: {said}");
-        assert!(audited.contains(counted), "the audit entry: {audited}");
-    };
     // 20 product lines, and 200 lines of tests and documents.
-    accepted(
+    assert_follow_up_accepted(
         deliver_after_follow_up(|_, wt| {
             commit_file(wt, "src/extra.rs", &lines(20, "e"), "Nits")?;
             commit_file(wt, "tests/it.rs", &lines(150, "t"), "Tests")?;
@@ -2688,8 +2688,13 @@ async fn an_approval_carries_across_a_small_follow_up() -> TestResult {
     })
     .await?;
     assert!(refused && said.contains("24 product lines"), "{said}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn follow_up_approval_counts_rust_and_git_diff_inputs() -> TestResult {
     // A Rust file's test module does not count, its code before it does.
-    accepted(
+    assert_follow_up_accepted(
         deliver_after_follow_up(|_, wt| {
             let tested = format!(
                 "{}#[cfg(test)]\nmod tests {{\n{}}}\n",
@@ -2742,8 +2747,13 @@ async fn an_approval_carries_across_a_small_follow_up() -> TestResult {
         refused && said.contains("`src/feature.rs` of the reviewed change left"),
         "{said}"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn follow_up_approval_checks_the_integration_merge() -> TestResult {
     // A clean merge of the integration branch and 5 lines: accepted.
-    accepted(
+    assert_follow_up_accepted(
         deliver_after_follow_up(|f, wt| {
             advance_base(f, "dev", "other.txt", "other\n")?;
             git(wt, &["fetch", "-q", "origin"])?;
@@ -2777,6 +2787,11 @@ async fn an_approval_carries_across_a_small_follow_up() -> TestResult {
     })
     .await?;
     assert!(refused && said.contains("resolved a conflict"), "{said}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn follow_up_approval_refuses_other_merge_parents() -> TestResult {
     // A merge of a branch other than the integration branch: its lines are not walked past,
     // also when a tag or a local branch named `origin/dev` points at it (review round 1).
     for shadow in [None, Some("tag"), Some("branch")] {
@@ -2798,8 +2813,13 @@ async fn an_approval_carries_across_a_small_follow_up() -> TestResult {
             "{shadow:?}: {said}"
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn follow_up_approval_requires_current_integration_rules() -> TestResult {
     // The integration branch's `[review] not_product` moves a path out of the count.
-    accepted(
+    assert_follow_up_accepted(
         deliver_after_follow_up(|f, wt| {
             advance_base(
                 f,
@@ -2852,6 +2872,11 @@ async fn an_approval_carries_across_a_small_follow_up() -> TestResult {
     })
     .await?;
     assert!(refused && said.contains("merged something other"), "{said}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn follow_up_approval_counts_files_loaded_by_product_code() -> TestResult {
     // A fixture that product code now builds in by its path counts, and the line that does it
     // refuses (review round 4).
     let (refused, said, _) = deliver_after_follow_up(|_, wt| {
