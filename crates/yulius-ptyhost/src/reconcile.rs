@@ -195,6 +195,7 @@ pub fn terminate_run_dir(run_dir: &Path) -> Result<(), TerminateError> {
 /// These values belong to the launch acknowledged by the server. CI may remove
 /// or reuse the control directory before the process waiter gets CPU time.
 pub(crate) struct BuildOwner {
+    tree: crate::build_scratch::OpenedTree,
     receipt: crate::build_scratch::Receipt,
     status: Option<StatusRecord>,
 }
@@ -212,8 +213,20 @@ impl BuildOwner {
         if !receipt.belongs_to(host_pid, token) {
             return Ok(None);
         }
-        let status = status.filter(|status| receipt.matches_status(status));
-        Ok(Some(Self { receipt, status }))
+        let Some(tree) = crate::build_scratch::OpenedTree::open(&receipt)? else {
+            return Ok(None);
+        };
+        let status = match status {
+            Some(status) => Some(status),
+            None => read_status(&run_dir.join(STATUS_FILE))
+                .map_err(|error| TerminateError::Status(error.to_string()))?,
+        }
+        .filter(|status| receipt.matches_status(status));
+        Ok(Some(Self {
+            tree,
+            receipt,
+            status,
+        }))
     }
 
     /// Bubblewrap dies with its host. Wait for the original child to disappear.
@@ -231,7 +244,7 @@ impl BuildOwner {
                 });
             }
         }
-        self.receipt.reclaim()?;
+        self.tree.clear(&self.receipt)?;
         Ok(())
     }
 }
@@ -242,9 +255,7 @@ pub(crate) fn reclaim_after_host_exit(
     host_pid: u32,
     token: &str,
 ) -> Result<(), TerminateError> {
-    let status = read_status(&run_dir.join(STATUS_FILE))
-        .map_err(|e| TerminateError::Status(e.to_string()))?;
-    if let Some(owner) = BuildOwner::capture(run_dir, host_pid, token, status)? {
+    if let Some(owner) = BuildOwner::capture(run_dir, host_pid, token, None)? {
         owner.reclaim()?;
     }
     Ok(())

@@ -212,7 +212,7 @@ fn attach_build_scratch(
     let scratch = crate::build_scratch::own(run_dir, scratch, std::process::id(), token)?;
     env.insert(
         "YULIUS_BUILD_SCRATCH".into(),
-        scratch.path().display().to_string(),
+        scratch.payload().display().to_string(),
     );
     Ok(Some(scratch))
 }
@@ -1342,7 +1342,7 @@ mod tests {
                 "test-token",
             )?
             .ok_or_else(|| io::Error::other("expected scratch"))?;
-            let path = PathBuf::from(&env["YULIUS_BUILD_SCRATCH"]);
+            let path = owned.path().to_owned();
             let moved = root.path().join(format!("moved-{close}"));
             fs::rename(&path, moved)?;
             fs::create_dir(&path)?;
@@ -1375,6 +1375,52 @@ mod tests {
         fs::remove_dir_all(run.path())?;
         guard.close()?;
         assert!(!path.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn clearing_exported_scratch_keeps_forced_cleanup_recoverable()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let sandbox = tempfile::tempdir()?;
+        let run = tempfile::tempdir()?;
+        let sibling_run = tempfile::tempdir()?;
+        let mut spec: yulius_contracts::ptyhost::BubblewrapSpec =
+            serde_json::from_str(r#"{"sandbox_root":"/s","home":"/s/home"}"#)?;
+        spec.sandbox_root = sandbox.path().display().to_string();
+        let contained = Containment::Bubblewrap(spec);
+        let mut env = std::collections::BTreeMap::from([("YULIUS_CI_RUN".into(), "ci".into())]);
+        let stopped = attach_build_scratch(
+            &fs::File::open(run.path())?,
+            &contained,
+            &mut env,
+            "stopped",
+        )?
+        .ok_or("no scratch")?;
+        let advertised = PathBuf::from(&env["YULIUS_BUILD_SCRATCH"]);
+        for entry in fs::read_dir(&advertised)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                fs::remove_dir_all(entry.path())?;
+            } else {
+                fs::remove_file(entry.path())?;
+            }
+        }
+        fs::write(advertised.join("target"), b"built after clearing scratch")?;
+        let sibling = attach_build_scratch(
+            &fs::File::open(sibling_run.path())?,
+            &contained,
+            &mut env,
+            "live",
+        )?
+        .ok_or("no live scratch")?;
+        let live = PathBuf::from(&env["YULIUS_BUILD_SCRATCH"]).join("active");
+        fs::write(&live, b"live build")?;
+        crate::reconcile::reclaim_after_host_exit(run.path(), std::process::id(), "stopped")?;
+        assert!(
+            !stopped.path().exists(),
+            "clearing the advertised scratch prevented recovery"
+        );
+        assert!(sibling.path().exists() && live.exists());
         Ok(())
     }
 
@@ -1419,8 +1465,9 @@ mod tests {
             )?
             .ok_or_else(|| io::Error::other("missing scratch"))?;
             let path = PathBuf::from(&env["YULIUS_BUILD_SCRATCH"]);
-            assert_eq!(path, owned.path());
-            assert_eq!(path.parent(), Some(root.path()));
+            assert_eq!(path, owned.payload());
+            assert_eq!(path.parent(), Some(owned.path()));
+            assert_eq!(owned.path().parent(), Some(root.path()));
             fs::write(path.join("target"), b"artifact")?;
             active.push((owned, path));
         }

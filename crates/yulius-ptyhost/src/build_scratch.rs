@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use nix::dir::Dir;
 use nix::errno::Errno;
 use nix::fcntl::{OFlag, openat};
-use nix::sys::stat::Mode;
+use nix::sys::stat::{Mode, mkdirat};
 use nix::unistd::{UnlinkatFlags, unlinkat};
 use serde::{Deserialize, Serialize};
 use yulius_contracts::ptyhost::StatusRecord;
@@ -72,6 +72,11 @@ impl Guard {
         &self.receipt.path
     }
 
+    /// Commands may clear or recreate everything under the advertised directory.
+    pub(crate) fn payload(&self) -> PathBuf {
+        self.path().join("payload")
+    }
+
     pub(crate) fn close(mut self) -> io::Result<()> {
         self.released = true;
         self.tree.clear(&self.receipt)
@@ -120,6 +125,7 @@ pub(crate) fn own(
     )?);
     marker.write_all(token.as_bytes())?;
     marker.sync_all()?;
+    mkdirat(&guard.tree.tree, "payload", Mode::S_IRWXU)?;
     guard.tree.tree.sync_all()?;
     guard.tree.parent.sync_all()?;
     atomic_write_at(
@@ -152,7 +158,7 @@ pub(crate) fn reclaim_unrecorded(run_dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
-struct OpenedTree {
+pub(crate) struct OpenedTree {
     parent: File,
     tree: File,
 }
@@ -174,7 +180,7 @@ impl OpenedTree {
         Ok(Some(Self { parent, tree }))
     }
 
-    fn open(receipt: &Receipt) -> io::Result<Option<Self>> {
+    pub(crate) fn open(receipt: &Receipt) -> io::Result<Option<Self>> {
         let Some(opened) = Self::at(&receipt.path)? else {
             return Ok(None);
         };
@@ -205,7 +211,7 @@ impl OpenedTree {
         Ok(Some(opened))
     }
 
-    fn clear(&self, receipt: &Receipt) -> io::Result<()> {
+    pub(crate) fn clear(&self, receipt: &Receipt) -> io::Result<()> {
         // Even if the name is exchanged after open(), all recursive deletion
         // is relative to the verified original directory.
         if self.tree.metadata()?.nlink() == 0 {
