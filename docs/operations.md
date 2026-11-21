@@ -176,6 +176,9 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # If it cannot verify them, read ordinary CI at that head or safely read the failing job,
 # the queue keeps the candidate for up to 15 minutes.
 # After a continuous outage, its arm can proceed one by one.
+# Restart reconciles a failed single-PR candidate with its saved merge request. An interrupted
+# receipt write keeps the original request recoverable. A later request keeps its queue position
+# while its earlier receipt is retired, including when a retry finds the PR already merged.
 # Hourly history cleanup retains the latest merge wait of each existing task, even when
 # its activation began more than 180 days ago. Removing the task releases this history.
 # The PR watcher delivers actionable failures once and waits for a pending human decision.

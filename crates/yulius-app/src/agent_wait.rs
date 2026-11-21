@@ -121,6 +121,9 @@ pub(crate) struct ArmedSlot {
     outcome: Option<MergeOutcome>,
     /// Raised by every arm and clear: a decision taken in an older generation is superseded.
     generation: u64,
+    last_armed_at: i64,
+    /// The replacement is on disk, but the earlier singleton is still being retired.
+    retirement_pending: Option<Timestamp>,
     /// Where the armed merge stands, in one sentence, as its last decision left it (SPEC-441
     /// MQ-007).
     note: Option<QueueNote>,
@@ -149,6 +152,7 @@ impl ArmedSlot {
     /// last outcome is forgotten.
     fn arm(&mut self, merge: ArmedMerge) {
         self.generation += 1;
+        self.last_armed_at = merge.armed_at;
         self.merge = Some(merge);
         self.outcome = None;
         self.note = None;
@@ -158,12 +162,16 @@ impl ArmedSlot {
     /// superseded.
     fn clear(&mut self) {
         self.generation += 1;
+        self.retirement_pending = None;
         self.merge = None;
         self.note = None;
     }
 
     /// Takes the armed merge out to decide it; it still reads as armed until [`Self::finish`].
     fn take(&mut self) -> Option<Deciding> {
+        if self.retirement_pending.is_some() {
+            return None;
+        }
         let merge = self.merge.take()?;
         self.deciding += 1;
         Some(Deciding {
@@ -304,56 +312,157 @@ impl App {
     /// it was, with its place in the queue (SPEC-441 MQ-006: arming it again took it out of its
     /// merge train); returns `false` then. A merge armed at `reviewed` follows `head` with its
     /// place.
-    pub(crate) fn arm_merge(
+    pub(crate) async fn arm_merge(
         &self,
         task: &TaskRecord,
         head: &str,
         reviewed: &str,
         summary: &str,
-    ) -> bool {
-        self.arm_merge_as(task, head, reviewed, summary, None)
+    ) -> AppResult<bool> {
+        self.arm_merge_as(task, head, reviewed, summary, None).await
     }
 
     /// [`Self::arm_merge`] for the task's owner `login`, who arms `head` themselves (SPEC-487
     /// MRG-003): no review covers it, and the merge it makes is audited as theirs.
-    pub(crate) fn arm_merge_for_person(&self, task: &TaskRecord, head: &str, login: &str) -> bool {
+    pub(crate) async fn arm_merge_for_person(
+        &self,
+        task: &TaskRecord,
+        head: &str,
+        login: &str,
+    ) -> AppResult<bool> {
         let summary = format!("armed by @{login}, the task's owner");
         self.arm_merge_as(task, head, head, &summary, Some(login.to_owned()))
+            .await
     }
 
-    fn arm_merge_as(
+    async fn arm_merge_as(
         &self,
         task: &TaskRecord,
         head: &str,
         reviewed: &str,
         summary: &str,
         by: Option<String>,
-    ) -> bool {
+    ) -> AppResult<bool> {
+        self.restore_task_arm_if_needed(&task.id).await;
         let runtime = self.runtime(&task.id);
-        let mut slot = lock_slot(&runtime);
-        if slot.merge.as_ref().is_some_and(|armed| armed.head == head) {
-            return false;
-        }
-        let reviewed = reviewed.to_ascii_lowercase();
-        let armed_at = slot
+        let _writer = runtime.arm_writer.lock().await;
+        self.reconcile_arm_change(&task.id, &runtime).await?;
+        if lock_slot(&runtime)
             .merge
             .as_ref()
-            .filter(|armed| reviewed.len() >= 7 && armed.head.starts_with(&reviewed))
-            .map_or_else(|| self.now().0, |armed| armed.armed_at);
-        let merge = ArmedMerge {
-            head: head.to_owned(),
-            summary: summary.to_owned(),
-            armed_at,
-            by,
-        };
-        self.save_armed(&task.id, Some(&merge));
-        slot.arm(merge);
-        true
+            .is_some_and(|armed| armed.head == head)
+        {
+            return Ok(false);
+        }
+        let last = self.deps.store.latest_merge_wait(&task.id).await?;
+        let prior = last
+            .as_ref()
+            .map(crate::merge_train::SingletonDecision::from_span)
+            .transpose()?
+            .flatten();
+        {
+            let mut slot = lock_slot(&runtime);
+            if let Some(span) = &last {
+                slot.last_armed_at = slot.last_armed_at.max(span.started_at.0);
+            }
+            let reviewed = reviewed.to_ascii_lowercase();
+            let armed_at = slot
+                .merge
+                .as_ref()
+                .filter(|armed| reviewed.len() >= 7 && armed.head.starts_with(&reviewed))
+                .map_or_else(
+                    || self.now().0.max(slot.last_armed_at.saturating_add(1)),
+                    |armed| armed.armed_at,
+                );
+            let merge = ArmedMerge {
+                head: head.to_owned(),
+                summary: summary.to_owned(),
+                armed_at,
+                by,
+            };
+            self.write_armed(&task.id, Some(&merge))
+                .map_err(crate::error::AppError::internal)?;
+            slot.arm(merge);
+            slot.retirement_pending = last
+                .filter(|_| prior.is_some_and(|decision| decision.superseded_at.is_none()))
+                .map(|span| span.started_at);
+        }
+        self.finish_retirement(&task.id, &runtime).await?;
+        Ok(true)
+    }
+
+    /// Call with the task's arm writer held. An interrupted retirement is retried
+    /// before a queue pass can take the replacement.
+    async fn finish_retirement(
+        &self,
+        task: &TaskId,
+        runtime: &crate::supervisor::TaskRuntime,
+    ) -> AppResult<()> {
+        let pending = lock_slot(runtime).retirement_pending;
+        if let Some(stamp) = pending {
+            let changed = || {
+                crate::error::AppError::Conflict(
+                    "The pending merge decision changed during retirement.".into(),
+                )
+            };
+            let span = self
+                .deps
+                .store
+                .latest_merge_wait(task)
+                .await?
+                .filter(|span| span.started_at == stamp)
+                .ok_or_else(changed)?;
+            let receipt =
+                crate::merge_train::SingletonDecision::from_span(&span)?.ok_or_else(changed)?;
+            if receipt.superseded_at.is_none()
+                && !self
+                    .deps
+                    .store
+                    .retire_singleton(task, &span, self.now())
+                    .await?
+            {
+                return Err(changed());
+            }
+            lock_slot(runtime).retirement_pending = None;
+        }
+        Ok(())
+    }
+
+    async fn restore_task_arm_if_needed(&self, task: &TaskId) {
+        if !self
+            .armed_restored
+            .load(std::sync::atomic::Ordering::SeqCst)
+            && self.merge_is_armed(task)
+        {
+            self.restore_armed_merges().await;
+        }
+    }
+
+    /// Call under the arm writer before changing or clearing a persisted activation.
+    async fn reconcile_arm_change(
+        &self,
+        task: &TaskId,
+        runtime: &crate::supervisor::TaskRuntime,
+    ) -> AppResult<()> {
+        let untouched = lock_slot(runtime).generation == 0;
+        if untouched && self.merge_is_armed(task) {
+            return Err(crate::error::AppError::Conflict(
+                "The saved merge arm is still being restored. Retry once its history is readable."
+                    .into(),
+            ));
+        }
+        self.finish_retirement(task, runtime).await
     }
 
     /// Nothing is armed for `task` any more: `delivery_merge` merged it at once.
-    pub(crate) fn clear_armed(&self, task: &TaskRecord) {
+    pub(crate) async fn clear_armed(&self, task: &TaskRecord) {
+        self.restore_task_arm_if_needed(&task.id).await;
         let runtime = self.runtime(&task.id);
+        let _writer = runtime.arm_writer.lock().await;
+        if let Err(err) = self.reconcile_arm_change(&task.id, &runtime).await {
+            tracing::warn!(task = %task.id, error = %err, "retaining the saved merge arm until its decision can be reconciled");
+            return;
+        }
         let mut slot = lock_slot(&runtime);
         slot.clear();
         self.save_armed(&task.id, None);
@@ -365,11 +474,17 @@ impl App {
     /// it, a task whose state keeps no armed merge. Failures are logged: the merge stays armed
     /// in memory.
     fn save_armed(&self, task: &TaskId, armed: Option<&ArmedMerge>) {
+        if let Err(err) = self.write_armed(task, armed) {
+            tracing::warn!(error = %err, "armed merges could not be saved");
+        }
+    }
+
+    fn write_armed(&self, task: &TaskId, armed: Option<&ArmedMerge>) -> std::io::Result<()> {
         let _guard = ARMED_FILE_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let path = self.config.data_dir.join(ARMED_MERGES_FILE);
-        let mut saved = read_armed(&path);
+        let mut saved = load_armed(&path)?;
         saved.retain(|entry| entry.task != task.as_str());
         if let Some(armed) = armed {
             saved.push(SavedArmed {
@@ -380,16 +495,13 @@ impl App {
                 by: armed.by.clone(),
             });
         }
-        let written = serde_json::to_vec(&saved)
+        serde_json::to_vec(&saved)
             .map_err(std::io::Error::other)
             .and_then(|bytes| {
                 let tmp = path.with_extension("json.tmp");
                 std::fs::write(&tmp, bytes)?;
                 std::fs::rename(&tmp, &path)
-            });
-        if let Err(err) = written {
-            tracing::warn!(error = %err, "armed merges could not be saved");
-        }
+            })
     }
 
     /// Puts back the armed merges after a restart (DLV-205) for the tasks whose run keeps one
@@ -401,36 +513,84 @@ impl App {
             let _guard = ARMED_FILE_LOCK
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            read_armed(&path)
+            load_armed(&path)
         };
+        let saved = match saved {
+            Ok(entries) => entries,
+            Err(err) => {
+                tracing::warn!(error = %err, "could not read saved arms for restoration");
+                self.armed_restored
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                return;
+            }
+        };
+        let mut complete = true;
         for entry in saved {
             let Ok(task_id) = TaskId::parse(&entry.task) else {
                 continue;
             };
-            let kept = matches!(
-                self.deps.store.task(&task_id).await,
-                Ok(Some(task)) if task.status.keeps_an_armed_merge()
-            );
+            let runtime = self.runtime(&task_id);
+            let _writer = runtime.arm_writer.lock().await;
+            // Every activation, including restoration, has a generation. The writer
+            // keeps this snapshot from displacing any decision made in this process.
+            if lock_slot(&runtime).generation != 0 {
+                continue;
+            }
+            let Ok(last) = self.deps.store.latest_merge_wait(&task_id).await else {
+                complete = false;
+                continue;
+            };
+            let receipt = match last
+                .as_ref()
+                .map(crate::merge_train::SingletonDecision::from_span)
+                .transpose()
+            {
+                Ok(value) => value.flatten(),
+                Err(err) => {
+                    tracing::warn!(task = %task_id, error=%err, "could not restore the recorded merge decision");
+                    complete = false;
+                    continue;
+                }
+            };
+            if let (Some(span), Some(receipt)) = (last, receipt) {
+                // A reviewed move to a new head keeps its activation stamp.
+                if span.started_at.0 >= entry.armed_at {
+                    self.save_armed(&task_id, None);
+                    lock_slot(&runtime).last_armed_at = span.started_at.0;
+                    continue;
+                }
+                if receipt.superseded_at.is_none()
+                    && !matches!(
+                        self.deps
+                            .store
+                            .retire_singleton(&task_id, &span, self.now())
+                            .await,
+                        Ok(true)
+                    )
+                {
+                    complete = false;
+                    continue;
+                }
+            }
+            let Ok(record) = self.deps.store.task(&task_id).await else {
+                complete = false;
+                continue;
+            };
+            let kept = record.is_some_and(|task| task.status.keeps_an_armed_merge());
             if !kept {
                 self.save_armed(&task_id, None);
                 continue;
             }
-            let runtime = self.runtime(&task_id);
-            let mut slot = lock_slot(&runtime);
-            // Only when nothing was armed or cleared in this process yet: what was armed or
-            // decided since this file was read is newer than it.
-            if slot.generation == 0 && slot.merge.is_none() && slot.deciding == 0 {
-                slot.merge = Some(ArmedMerge {
-                    head: entry.head,
-                    summary: entry.summary,
-                    armed_at: entry.armed_at,
-                    by: entry.by,
-                });
-                tracing::info!(task = %task_id, "armed merge restored after a restart");
-            }
+            lock_slot(&runtime).arm(ArmedMerge {
+                head: entry.head,
+                summary: entry.summary,
+                armed_at: entry.armed_at,
+                by: entry.by,
+            });
+            tracing::info!(task = %task_id, "armed merge restored after a restart");
         }
         self.armed_restored
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+            .store(complete, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Whether `task` has a merge armed as far as this server knows: its slot, and, until the
@@ -449,9 +609,11 @@ impl App {
         let _guard = ARMED_FILE_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        read_armed(&self.config.data_dir.join(ARMED_MERGES_FILE))
-            .iter()
-            .any(|entry| entry.task == task.as_str())
+        // An unreadable file cannot prove this owner was unarmed when the process stopped.
+        match load_armed(&self.config.data_dir.join(ARMED_MERGES_FILE)) {
+            Ok(saved) => saved.iter().any(|entry| entry.task == task.as_str()),
+            Err(_) => true,
+        }
     }
 
     /// At a start: puts back the armed merges (DLV-205), then tries them once, as the delivery
@@ -617,6 +779,9 @@ impl App {
     pub(crate) fn armed_now(&self, task: &TaskId) -> ArmedNow {
         let runtime = self.runtime(task);
         let slot = lock_slot(&runtime);
+        if slot.retirement_pending.is_some() {
+            return ArmedNow::None;
+        }
         match (&slot.merge, slot.deciding) {
             (_, 1..) => ArmedNow::Deciding,
             (Some(merge), 0) => ArmedNow::Armed(merge.clone()),
@@ -654,6 +819,62 @@ impl App {
         if decided {
             self.armed_wait_ended(task, &deciding.merge).await;
         }
+    }
+
+    /// Persist the accepted decision before releasing the saved arm. On a write error
+    /// the old train and arm remain recoverable. A replacement generation cannot be consumed.
+    pub(crate) async fn finish_singleton(
+        &self,
+        task: &TaskId,
+        sandbox: &SandboxId,
+        deciding: &Deciding,
+        decision: &crate::merge_train::SingletonDecision,
+    ) -> bool {
+        let runtime = self.runtime(task);
+        let _writer = runtime.arm_writer.lock().await;
+        if lock_slot(&runtime).generation != deciding.generation {
+            lock_slot(&runtime).finish(deciding, Verdict::Keep(deciding.merge.clone()));
+            return true;
+        }
+        let started_at = Timestamp(deciding.merge.armed_at);
+        let span = crate::stages::NewSpan::finished_task(
+            sandbox.clone(),
+            task,
+            ("wait", "merge_armed"),
+            (started_at, self.now()),
+            "dropped",
+            serde_json::json!(decision),
+        );
+        let saved = match self.deps.store.insert_span(&span).await {
+            Ok(true) => true,
+            Ok(false) => self
+                .deps
+                .store
+                .latest_merge_wait(task)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|old| {
+                    old.started_at == started_at
+                        && crate::merge_train::SingletonDecision::from_span(&old)
+                            .ok()
+                            .flatten()
+                            .as_ref()
+                            == Some(decision)
+                }),
+            Err(err) => {
+                tracing::warn!(%task,error=%err,"could not record the singleton decision");
+                false
+            }
+        };
+        let mut slot = lock_slot(&runtime);
+        if saved {
+            slot.finish(deciding, Verdict::Decided(decision.message.clone()));
+            self.save_armed(task, None);
+        } else {
+            slot.finish(deciding, Verdict::Keep(deciding.merge.clone()));
+        }
+        saved
     }
 
     /// Records an update of a task's branch onto the integration branch Yulius made (SPEC-137
@@ -703,6 +924,12 @@ impl App {
         // armed merge was dropped.
         let pass = self.armed_pass(sandbox);
         let _pass = pass.lock().await;
+        if !self
+            .armed_restored
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            self.restore_armed_merges().await;
+        }
         self.run_merge_train(sandbox).await;
         let Ok(mut tasks) = self.deps.store.tasks(sandbox, false).await else {
             return;
@@ -717,6 +944,12 @@ impl App {
             // Taken while it is decided, so a CI end and the delivery loop never merge twice; it
             // reads as armed for `yulius wait` until the decision ends, in one step (WAI-003).
             let runtime = self.runtime(&task.id);
+            if lock_slot(&runtime).retirement_pending.is_some() {
+                let _writer = runtime.arm_writer.lock().await;
+                if self.finish_retirement(&task.id, &runtime).await.is_err() {
+                    continue;
+                }
+            }
             let Some(deciding) = lock_slot(&runtime).take() else {
                 continue;
             };
@@ -1579,12 +1812,13 @@ fn lock_slot(runtime: &crate::supervisor::TaskRuntime) -> std::sync::MutexGuard<
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// The saved armed merges; none when the file is missing or unreadable.
-fn read_armed(path: &std::path::Path) -> Vec<SavedArmed> {
-    std::fs::read(path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+/// Absence is an empty arm registry. Malformed or inaccessible history is still unknown.
+fn load_armed(path: &std::path::Path) -> std::io::Result<Vec<SavedArmed>> {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(std::io::Error::other),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(err) => Err(err),
+    }
 }
 
 fn short(sha: &str) -> &str {

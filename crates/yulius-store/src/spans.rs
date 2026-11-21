@@ -148,6 +148,37 @@ impl SpanStore for SqliteStore {
         .await
     }
 
+    async fn retire_singleton(
+        &self,
+        task: &yulius_domain::ids::TaskId,
+        observed: &SpanRecord,
+        now: Timestamp,
+    ) -> AppResult<bool> {
+        let task = task.as_str().to_owned();
+        let (key, detail) = (observed.key.clone(), observed.detail.clone());
+        self.call(move |c| {
+            let updated = c.execute(
+                "UPDATE spans SET detail=json_set(detail, '$.superseded_at', COALESCE(json_extract(detail,'$.superseded_at'), ?2))
+                 WHERE id=(SELECT id FROM spans WHERE subject_kind='task' AND subject_id=?1 AND kind='wait' AND name='merge_armed' AND ended_at IS NOT NULL
+                    ORDER BY started_at DESC, id DESC LIMIT 1)
+                 AND outcome='dropped' AND key=?3 AND detail=?4
+                 AND json_valid(detail) AND json_type(detail,'$.singleton')='object'",
+                params![task, now.0, key, detail],
+            ).map_err(db)?;
+            Ok(updated != 0)
+        }).await
+    }
+
+    async fn latest_merge_wait(
+        &self,
+        task: &yulius_domain::ids::TaskId,
+    ) -> AppResult<Option<SpanRecord>> {
+        let args = vec![Value::Text(task.as_str().to_owned())];
+        self.call(move |c| {
+            Ok(select(c, "subject_kind = 'task' AND subject_id = ?1 AND kind = 'wait' AND name = 'merge_armed' ORDER BY started_at DESC, id DESC LIMIT 1", &args)?.pop())
+        }).await
+    }
+
     async fn subject_spans(
         &self,
         sandbox: &SandboxId,
@@ -437,6 +468,103 @@ mod tests {
         updated.retain(|span| span.kind == "wait");
         assert_eq!(updated.len(), 1);
         assert_eq!(updated[0].key, "later-verdict");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn only_the_latest_merge_wait_of_the_rearming_owner_is_retired() -> TestResult {
+        let store = seeded().await?;
+        let owner = TaskId::parse("t1")?;
+        let peer = TaskId::parse("t2")?;
+        let first = NewSpan {
+            sandbox_id: SandboxId::parse("s1")?,
+            subject_kind: SubjectKind::Task,
+            subject_id: owner.as_str().into(),
+            key: "wait@10".into(),
+            parent_key: None,
+            kind: "wait".into(),
+            name: "merge_armed".into(),
+            environment: None,
+            job: None,
+            started_at: Timestamp(10),
+            ended_at: Some(Timestamp(15)),
+            outcome: Some("dropped".into()),
+            detail: Some(r#"{"head":"same","singleton":{"pr":1}}"#.into()),
+        };
+        assert!(store.insert_span(&first).await?);
+        assert!(
+            store
+                .insert_span(&NewSpan {
+                    subject_id: peer.as_str().into(),
+                    ..first.clone()
+                })
+                .await?
+        );
+        let original = store.latest_merge_wait(&owner).await?.ok_or("owner")?;
+        assert!(
+            store
+                .retire_singleton(&owner, &original, Timestamp(16))
+                .await?
+        );
+        assert!(
+            !store
+                .retire_singleton(&owner, &original, Timestamp(17))
+                .await?
+        );
+        let retired = store.latest_merge_wait(&owner).await?.ok_or("owner")?;
+        assert!(
+            store
+                .retire_singleton(&owner, &retired, Timestamp(17))
+                .await?
+        );
+        assert_eq!(
+            detail(&store.latest_merge_wait(&owner).await?.ok_or("owner")?)["superseded_at"],
+            16
+        );
+        assert!(
+            detail(&store.latest_merge_wait(&peer).await?.ok_or("peer")?)["superseded_at"]
+                .is_null()
+        );
+        assert!(
+            store
+                .insert_span(&NewSpan {
+                    key: "wait@20".into(),
+                    started_at: Timestamp(20),
+                    ended_at: Some(Timestamp(21)),
+                    detail: Some(r#"{"head":"same"}"#.into()),
+                    ..first.clone()
+                })
+                .await?
+        );
+        assert!(
+            store
+                .insert_span(&NewSpan {
+                    key: "late-write".into(),
+                    started_at: Timestamp(19),
+                    ended_at: Some(Timestamp(22)),
+                    ..first
+                })
+                .await?
+        );
+        assert_eq!(
+            store
+                .latest_merge_wait(&owner)
+                .await?
+                .ok_or("ordinary decision")?
+                .key,
+            "wait@20"
+        );
+        let ordinary = store.latest_merge_wait(&owner).await?.ok_or("ordinary")?;
+        assert!(
+            !store
+                .retire_singleton(&owner, &retired, Timestamp(24))
+                .await?
+        );
+        assert!(
+            !store
+                .retire_singleton(&owner, &ordinary, Timestamp(24))
+                .await?
+        );
         Ok(())
     }
 

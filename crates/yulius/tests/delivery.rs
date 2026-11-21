@@ -6426,6 +6426,68 @@ async fn a_restore_never_brings_back_a_merge_decided_since() -> TestResult {
     Ok(())
 }
 
+/// The same stale snapshot after a cold ordinary decision must stay consumed.
+#[tokio::test]
+async fn a_second_restore_cannot_rearm_a_decided_cold_generation() -> TestResult {
+    let t = ArmedTask::new().await?;
+    t.arm().await?;
+    let cold = yulius_app::context::App::new(t.f.h.app.config.clone(), t.f.h.app.deps.clone());
+    let path = cold
+        .config
+        .data_dir
+        .join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+    let saved = std::fs::read(&path)?;
+    cold.restore_armed_merges().await;
+    commit_file(&t.wt, "landing.txt", "v2", "Later work")?;
+    cold.merge_armed(&SandboxId::parse("s1")?).await;
+    let before = cold.agent_wait_state("tok-agent", Some(&t.head)).await?;
+    assert!(!before.merge_armed);
+    std::fs::write(path, saved)?;
+    cold.restore_armed_merges().await;
+    let after = cold.agent_wait_state("tok-agent", Some(&t.head)).await?;
+    assert!(!after.merge_armed, "cold ordinary arm restored twice");
+    assert_eq!(after.merge_outcome, before.merge_outcome);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_newly_reviewed_head_gets_a_new_place_and_an_immediate_merge_clears_it() -> TestResult {
+    let t = ArmedTask::new().await?;
+    t.arm().await?;
+    let app = &t.f.h.app;
+    let path = app
+        .config
+        .data_dir
+        .join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+    let stored = || -> BoxResult<Value> { Ok(serde_json::from_slice(&std::fs::read(&path)?)?) };
+    let earlier = stored()?[0]["armed_at"].as_i64().ok_or("old stamp")?;
+    commit_file(&t.wt, "landing.txt", "reviewed v2", "New review")?;
+    let next = git(&t.wt, &["rev-parse", "HEAD"])?;
+    t.f.h
+        .clock
+        .0
+        .fetch_add(1000, std::sync::atomic::Ordering::SeqCst);
+    t.f.h.github.set_checks(&next, ChecksState::Pending);
+    let ctx = app.agent_context("tok-agent").await?;
+    let args = json!({"reviewed_head":next,"review_summary":"approve"});
+    let accepted = app.tool_delivery_merge(&ctx, &args).await?;
+    assert_eq!(accepted["armed"], true, "{accepted}");
+    assert!(
+        stored()?[0]["armed_at"].as_i64().ok_or("new stamp")? > earlier,
+        "new review inherited an older activation"
+    );
+    t.f.h.github.set_checks(&next, ChecksState::Success);
+    let accepted = app.tool_delivery_merge(&ctx, &args).await?;
+    assert_eq!(accepted["merged"], true, "{accepted}");
+    assert!(
+        !app.agent_wait_state("tok-agent", Some(&next))
+            .await?
+            .merge_armed
+    );
+    assert_eq!(stored()?, json!([]));
+    Ok(())
+}
+
 /// SPEC-116 DMG-001 (task #101): a goal task whose evaluator keeps its turn going never reaches
 /// the clean end of turn that opens its pull request, so `delivery_merge` delivers the head
 /// itself: pushed, the pull request opened by the task's creator, then the merge armed. A head
