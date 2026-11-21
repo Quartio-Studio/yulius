@@ -99,6 +99,8 @@ When the watcher sees an open PR during an active queue decision or its slot cha
 
 ## Evidence
 
+- On integrated commit `8505cfa60`, 270 scoped tests passed. A subsequent real queue retry kept the same arm and recorded a hosted PR read outage while the watcher was preparing advice. The old watcher reported a stall from before the retry. The regression checks for silence on the interrupted pass and delivery of the new reason exactly once. A separate count of successful takes distinguishes retries within the same request generation. The queue continues to use its request generation to reject superseded writers.
+
 - On `0cf75ad35` the queue reconciled a hosted merge and released the new arm before the watch returned. Both reads found an empty slot, and the task was told to rearm a PR whose merge had already been recorded. The regression requires the first pass to stay quiet and the next pass to deliver that merge once.
 
 - The live queue decision and startup registry recovery are separate deliveries. The startup-only regression from prototype `0cf75ad35` remains with the restored-arm step. The live watcher uses the queue’s existing generation to distinguish an unchanged free slot from a new request that finished before the watcher returned.

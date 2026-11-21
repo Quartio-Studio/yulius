@@ -25,7 +25,7 @@ use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::ids::TaskId;
 use yulius_domain::task::TaskStatus;
 
-use crate::agent_wait::{ArmedNow, QueueNote};
+use crate::agent_wait::QueueNote;
 use crate::ci::{CiJobRecord, CiRunRecord};
 use crate::context::App;
 use crate::delivery::{delivery_profile, past_merge};
@@ -1042,7 +1042,7 @@ impl App {
                 ..PrFacts::default()
             })
         };
-        if activation.1 == ArmedNow::Deciding {
+        if activation.deciding {
             return observed_only();
         }
         let integration = delivery_profile(&sandbox).integration_branch;

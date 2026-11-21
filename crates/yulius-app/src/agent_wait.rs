@@ -117,6 +117,8 @@ pub(crate) struct ArmedSlot {
     merge: Option<ArmedMerge>,
     /// Decisions in progress, each holding the merge it took.
     deciding: u32,
+    /// Successful takes, including a retry that ultimately keeps the same request.
+    decisions_started: u64,
     /// How the last armed merge ended, until another one is armed.
     outcome: Option<MergeOutcome>,
     /// Raised by every arm and clear: a decision taken in an older generation is superseded.
@@ -174,6 +176,7 @@ impl ArmedSlot {
         }
         let merge = self.merge.take()?;
         self.deciding += 1;
+        self.decisions_started += 1;
         Some(Deciding {
             merge,
             generation: self.generation,
@@ -217,6 +220,14 @@ impl ArmedSlot {
             self.note.clone().filter(|_| armed),
         )
     }
+}
+
+/// The live slot changes relevant to delivering advice prepared across asynchronous reads.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ArmObservation {
+    generation: u64,
+    decisions_started: u64,
+    pub(crate) deciding: bool,
 }
 
 /// An armed merge as a merge train sees it (SPEC-084).
@@ -797,21 +808,27 @@ impl App {
 
     /// `task`'s armed merge as a merge train sees it (SPEC-084).
     pub(crate) fn armed_now(&self, task: &TaskId) -> ArmedNow {
-        self.arm_observation(task).1
-    }
-
-    /// The generation distinguishes an unchanged empty slot from an intervening arm
-    /// that finished. Read it under the same lock as the request and its decision state.
-    pub(crate) fn arm_observation(&self, task: &TaskId) -> (u64, ArmedNow) {
         let runtime = self.runtime(task);
         let slot = lock_slot(&runtime);
-        let state = match (&slot.merge, slot.deciding) {
-            _ if slot.retirement_pending.is_some() => ArmedNow::None,
+        if slot.retirement_pending.is_some() {
+            return ArmedNow::None;
+        }
+        match (&slot.merge, slot.deciding) {
             (_, 1..) => ArmedNow::Deciding,
             (Some(merge), 0) => ArmedNow::Armed(merge.clone()),
             (None, 0) => ArmedNow::None,
-        };
-        (slot.generation, state)
+        }
+    }
+
+    /// Observe both new requests and completed retries under the same slot lock.
+    pub(crate) fn arm_observation(&self, task: &TaskId) -> ArmObservation {
+        let runtime = self.runtime(task);
+        let slot = lock_slot(&runtime);
+        ArmObservation {
+            generation: slot.generation,
+            decisions_started: slot.decisions_started,
+            deciding: slot.deciding > 0,
+        }
     }
 
     /// Takes `task`'s armed merge out to decide it (a merge train's step); `None` when nothing

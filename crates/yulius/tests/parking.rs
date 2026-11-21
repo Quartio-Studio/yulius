@@ -3054,7 +3054,13 @@ fn a_new_arm_that_merges_before_the_free_watch_returns_is_observed_once() -> Tes
     first_watch_during_queue_decision(QueueWatch::MergedDuringRead, None)
 }
 
+#[test]
+fn a_completed_queue_retry_preserves_its_new_reason_for_the_live_owner() -> TestResult {
+    first_watch_during_queue_decision(QueueWatch::KeptDuringRead, None)
+}
+
 enum QueueWatch {
+    KeptDuringRead,
     MergedDuringRead,
     Taken,
     TakenDuringRead,
@@ -3096,7 +3102,40 @@ fn first_watch_during_queue_decision(case: QueueWatch, previously_seen: Option<u
         let saved_arm = serde_json::to_vec(
             &json!([{"task":id.as_str(),"head":head,"summary":"reviewed","armed_at":30}]),
         )?;
-        if matches!(
+        if matches!(case, QueueWatch::KeptDuringRead) {
+            std::fs::write(&arms, &saved_arm)?;
+            app.restore_armed_merges().await;
+            let (mut green, job) = crate::pr_watch::run(
+                &caller.sandbox,
+                "green",
+                &head,
+                yulius_domain::ci::RunState::Passed,
+                None,
+                10,
+            );
+            green.reference = yulius_domain::ci::CiRef::PullRequest(1481);
+            app.deps.store.insert_ci_run(&green, &[job]).await?;
+            let (read, release) = pause_watch_or_queue(Point::LivePrFactsRead, &id);
+            let watcher = Arc::clone(&app);
+            let pass = tokio::spawn(async move { watcher.watch_prs(&due).await });
+            tokio::time::timeout(Duration::from_secs(10), read.notified()).await?;
+            let pulls = std::mem::take(&mut *github.pulls.lock().map_err(|_| "pull registry")?);
+            app.merge_armed(&caller.sandbox).await;
+            *github.pulls.lock().map_err(|_| "pull registry")? = pulls;
+            release.notify_one();
+            let outdated = pass.await?;
+            let fresh = app.watch_prs(&WatchBounds::default()).await;
+            assert!(
+                outdated.is_empty(),
+                "advice prepared before the retry: {outdated:?}"
+            );
+            assert_eq!(fresh.len(), 1, "{fresh:?}");
+            assert!(
+                fresh[0].1.contains("cannot read this task's pull request"),
+                "{fresh:?}"
+            );
+            assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
+        } else if matches!(
             case,
             QueueWatch::TakenDuringRead | QueueWatch::MergedDuringRead
         ) {
