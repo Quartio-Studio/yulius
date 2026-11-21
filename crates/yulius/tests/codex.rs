@@ -31,7 +31,7 @@ fn codex_auth(last_refresh: &str) -> String {
     )
 }
 
-async fn add_codex_account(
+pub(super) async fn add_codex_account(
     app: &App,
     id: &str,
     auth: &str,
@@ -57,7 +57,7 @@ async fn add_codex_account(
     Ok(account)
 }
 
-async fn new_codex_task(
+pub(super) async fn new_codex_task(
     app: &Arc<App>,
     sandbox: &SandboxId,
     user: &UserId,
