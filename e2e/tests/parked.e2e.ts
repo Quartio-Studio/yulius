@@ -31,8 +31,14 @@ test('a parked task reads as it did, marked parked, and resumes from its menu (u
     const acts = taskActions(parked, 'write', null, 'me');
     return {
       done: info(parked),
+      unfinishedDone: info({ ...asked, activity: 'done' }),
       yourTurn: info(asked),
-      request: info(withRequest),
+      noPullOverview: info({ ...parked, parked_needs_you: true }),
+      plainParkedStatus: statusInfo({ ...parked, parked_needs_you: true }).group,
+      staleGreenOverview: info({ ...parked, parked_needs_you: true }, open('success')),
+      staleRedOverview: info({ ...merged, parked_needs_you: false, parked_pr: { number: 7, open: true } }, open('failure')),
+      discoveredRed: info({ ...merged, parked_needs_you: false }, open('failure')),
+      request: info({ ...withRequest, parked_needs_you: false }, open('success')),
       stale: info(stale),
       merged: info(merged, { number: 7, state: 'merged', checks: 'success' }),
       checksRunning: info(merged, open('pending')),
@@ -42,7 +48,7 @@ test('a parked task reads as it did, marked parked, and resumes from its menu (u
       neverWorking: groups.every((group) => group === 'needs' || group === 'done'),
       // Its idle run's facts, as the server sends them for a parked task (review round 3, W1).
       specLeft: info({ ...merged, spec_unfinished: true }, { number: 7, state: 'open', checks: 'success' }),
-      goalLeft: info({ ...merged, goal_unfinished: true }),
+      goalLeft: info({ ...merged, goal_unfinished: true }, open('success')),
       line: activityLine(parked),
       live: isLive('parked'),
       actions: { continue: acts.continue, stop: acts.stop, archive: acts.archive, delete: acts.delete, move: acts.move },
@@ -54,7 +60,13 @@ test('a parked task reads as it did, marked parked, and resumes from its menu (u
   });
   expect(read).toEqual({
     done: ['Done · parked', 'done'],
+    unfinishedDone: ['Your turn · parked', 'needs'],
     yourTurn: ['Your turn · parked', 'needs'],
+    noPullOverview: ['Your turn · parked', 'needs'],
+    plainParkedStatus: 'needs',
+    staleGreenOverview: ['Your turn · parked', 'needs'],
+    staleRedOverview: ['PR #7 · checks failing · parked', 'needs'],
+    discoveredRed: ['PR #7 · checks failing · parked', 'needs'],
     request: ['Needs you: Choose the colour · parked', 'needs'],
     stale: ['Done · parked', 'done'],
     merged: ['Done · PR #7 merged · parked', 'done'],
@@ -523,3 +535,30 @@ for (const scenario of [
     expect(await browser.evaluate(() => (window as unknown as Fixture).archiveReads)).toBe(1);
   });
 }
+
+test('the sidebar keeps verified unfinished parked work under Needs you with a healthy Git chip', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&ambient=0&pullgap=0'));
+  type Fixture = { __yuliusMock: { tasks: { id: string; stepsList: { status: string }[] }[];
+    touchTask(s: string, n: number, fields: object): void; changePull(s: string, n: number, fields: object): void } };
+  await browser.evaluate(() => {
+    const db = (window as unknown as Fixture).__yuliusMock;
+    const task = db.tasks.find(t => t.id === 'tsk_studio_13')!;
+    db.changePull('sb_studio', 520, { checks: 'success' });
+    db.touchTask('sb_studio', 13, {
+      status: 'parked', activity: 'done', stepsList: task.stepsList.map(step => ({ ...step, status: 'done' })),
+      parked_needs_you: false, parked_pr: { number: 520, open: true },
+    });
+  });
+  const task = /PR #520\s*, pull request, open, checks passed.*Improve the code/;
+  await expect(screen.getByRole('region', 'Done').getByRole('link', task)).toBeVisible();
+  await touchTask(browser, 'sb_studio', 13, { parked_needs_you: true });
+  await expect(screen.getByRole('region', 'Needs you').getByRole('link', task)).toBeVisible();
+  await touchTask(browser, 'sb_studio', 13, { parked_needs_you: false });
+  await expect(screen.getByRole('region', 'Done').getByRole('link', task)).toBeVisible();
+  for (const flag of ['spec_unfinished', 'goal_unfinished']) {
+    await touchTask(browser, 'sb_studio', 13, { [flag]: true });
+    await expect(screen.getByRole('region', 'Needs you').getByRole('link', task)).toBeVisible();
+    await touchTask(browser, 'sb_studio', 13, { [flag]: false });
+    await expect(screen.getByRole('region', 'Done').getByRole('link', task)).toBeVisible();
+  }
+});

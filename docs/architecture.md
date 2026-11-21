@@ -2116,6 +2116,8 @@ run for these reads per application. Each keeps its permit until Git returns.
 
 Task lists share one 750 ms PR verification budget. Each batch of up to eight parked rows receives a share of the remaining time. Home verifies parked rows across all visible projects before it counts live rows. A slow local Git read for a running task cannot spend the parked rows’ lookup time. The HTTP response uses the plan read by the verifier for both progress and detailed steps. [ADR-0412](decisions/0412-share-parked-pr-read-time-across-task-lists.md)
 
+The browser uses the parked summary’s verified Needs you group and its open steps, spec or goal when classifying a task. It retains the displayed reason for a human decision or failing PR. [ADR-0412](decisions/0412-share-parked-pr-read-time-across-task-lists.md)
+
 When browser list requests overlap, the newest successful snapshot supplies the task list. A failed cold task page recovers when an overlapping request supplies the list. [ADR-0418](decisions/0418-keep-the-newest-successful-task-list.md)
 
 MCP parked task reads use the verifier’s plan snapshot for progress and detailed steps. The Needs you filter uses the group rendered with the owner’s current decision. Each page shares one parked PR lookup budget. [ADR-0416](decisions/0416-parked-mcp-rows-use-the-verified-plan-and-pr.md)

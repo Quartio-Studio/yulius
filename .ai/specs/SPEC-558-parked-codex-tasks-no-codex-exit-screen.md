@@ -40,7 +40,9 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Filter and explain verified parked rows in MCP task reads
 - [x] Reproduce parked-page refresh races with a held Git overview
 - [x] Keep the newest successful full task list and recover the cold task page
-- [ ] Reconcile parked lifecycle events and deliver the verified page and sidebar watch
+- [x] Keep verified unfinished parked rows out of Done in the browser
+- [ ] Reconcile parked lifecycle changes and refresh the sidebar independently of Git
+- [ ] Publish verified parked task detail to the terminal and Task Info
 - [ ] Keep failed integration candidates with their original owner
 - [ ] Deliver bounded Codex goal continuation to dev
 - [ ] Recover screens from tasks parked before the upgrade
@@ -67,6 +69,11 @@ Capture a separate screen at the park decision because exiting can clear the ent
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
 ## Evidence
+
+- Independent review approved `82ab510c7` for the conservative parked classification and checked 48 combinations of activity, plan, spec, goal and verified state, including owner requests and failing PRs. The subsequent completion record changes only this spec. The live sidebar watch, detail ordering, candidate ownership, bounded goal continuation and historical screens remain open.
+
+- PR #1548 landed in dev at `d54e2f190` on green Yulius CI. Its integration candidate and delivery commit passed quality, both test shards and browser e2e. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/d54e2f1909c84093bc2fd0cf2bcba80cac425805)
+- The browser classification slice consumes the parked work reported by the task summary. An open plan, unfinished spec or unfinished goal keeps an idle parked task out of Done. A verified Needs you group also takes precedence over a healthy Git chip. Independent polling, lifecycle reconciliation and task-detail ordering have their own remaining steps. Two Chromium regressions failed with the previous status classifier. Both passed with the correction, including a mounted sidebar moving from Done to Needs you and back on verified summaries while the row identified open PR #520 and said checks passed. Substituting pending checks failed this mounted assertion. Matching the mock to the server’s idle parked summary also exercised an unfinished spec and goal on that same row. The parked and Done suites passed 45 cases before the strengthened chip assertion, and both strengthened regressions passed. The mutation command found no changed Rust code.
 
 - On `25015275f`, a successful retry list could show active task #13 in the sidebar while the cold task page still applied an empty or failed archive lookup. Both held-lookup regressions failed. Returning the retry list after the archive had already reported the task missing reproduced the opposite ordering too. The page now checks the current active list at archive completion and reopens a missing task when a subsequent list contains it. All six direct-route recovery cases passed. Each requested at most one archive lookup.
 

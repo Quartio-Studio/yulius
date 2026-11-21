@@ -183,6 +183,7 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # An unreadable PR counts toward Needs you while later healthy PRs can show Done.
 # If two task list requests overlap, the sidebar keeps the newest successful snapshot.
 # A task page that initially showed a list error opens when the other request succeeds.
+# A parked task with unfinished work in its summary stays under Needs you even if its Git chip is green.
 # Use task_get for the current parked wait reason or tasks_list with scope needs_you
 # for the ordered page of tasks that currently need attention.
 #Environment=YULIUS_PARK_AFTER_MINUTES=30
