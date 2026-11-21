@@ -85,6 +85,7 @@ async fn an_overlapping_deposit_leaves_the_live_batch_for_its_successor() -> io:
             Ok((
                 [a, b],
                 Pair {
+                    established: None,
                     expires: None,
                     sockets: [left.into_std()?.into(), right.into_std()?.into()],
                     state: state.to_vec(),
@@ -120,6 +121,7 @@ async fn a_stalled_successor_holds_the_only_helper_place_until_its_transfer_ends
         // the listener has accepted; leaving the rest unread stalls the helper in send.
         for _ in 0..16 {
             batch.push(Pair {
+                established: None,
                 expires: None,
                 sockets: [
                     left.as_fd().try_clone_to_owned()?,
@@ -157,6 +159,7 @@ async fn deposit_in_the_old_process(directory: PathBuf) -> io::Result<()> {
     let addr = std::env::var("YULIUS_FIXTURE_HANDOFF_PEER").map_err(io::Error::other)?;
     let right = TcpStream::connect(addr).await?;
     let saved = Pair {
+        established: None,
         expires: None,
         sockets: [
             std::io::stdin().as_fd().try_clone_to_owned()?,
@@ -184,6 +187,7 @@ async fn one_tunnel_expires_in_custody_while_another_stays_adoptable() -> io::Re
             Ok((
                 [a, b],
                 Pair {
+                    established: None,
                     expires: Some(expires),
                     sockets: [left.into_std()?.into(), right.into_std()?.into()],
                     state: b"synthetic copy state".to_vec(),
@@ -233,6 +237,7 @@ async fn a_depositor_refuses_a_listener_before_shutting_down_expired_records() -
         let address = listener.local_addr()?;
         let (wire, _peer) = UnixStream::pair()?;
         let malformed = Pair {
+            established: None,
             expires: Some(0),
             sockets: [
                 listener.as_fd().try_clone_to_owned()?,
@@ -253,6 +258,127 @@ async fn a_depositor_refuses_a_listener_before_shutting_down_expired_records() -
         let client = TcpStream::connect(address).await?;
         assert_eq!(listener.accept().await?.1, client.local_addr()?);
         assert!(!dir.path().join("tunnels.sock").exists());
+        Ok(())
+    })
+    .await?
+}
+
+#[tokio::test]
+async fn a_disconnected_peer_before_deposit_keeps_the_other_original_pair() -> io::Result<()> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let directory = tempfile::tempdir()?;
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))?;
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let mut disconnected = TcpStream::connect(listener.local_addr()?).await?;
+        let (resetting, _) = listener.accept().await?;
+        nix::sys::socket::setsockopt(
+            &resetting,
+            nix::sys::socket::sockopt::Linger,
+            &nix::libc::linger {
+                l_onoff: 1,
+                l_linger: 0,
+            },
+        )?;
+        drop(resetting);
+        assert!(
+            disconnected
+                .read_u8()
+                .await
+                .is_err_and(|e| e.kind() == io::ErrorKind::ConnectionReset)
+        );
+        assert!(
+            disconnected
+                .peer_addr()
+                .is_err_and(|e| e.kind() == io::ErrorKind::NotConnected)
+        );
+        let (old, mut lost) = UnixStream::pair()?;
+        let (left, mut client) = UnixStream::pair()?;
+        let (right, mut upstream) = UnixStream::pair()?;
+        let batch = vec![
+            Pair {
+                established: None,
+                sockets: [disconnected.into_std()?.into(), old.into_std()?.into()],
+                state: b"gone".to_vec(),
+                expires: None,
+            },
+            Pair {
+                established: None,
+                sockets: [left.into_std()?.into(), right.into_std()?.into()],
+                state: b"live".to_vec(),
+                expires: None,
+            },
+        ];
+        deposit(
+            Path::new(env!("CARGO_BIN_EXE_yulius")),
+            directory.path(),
+            batch,
+        )
+        .await?;
+        assert_eq!(lost.read(&mut [0]).await?, 0);
+        client.write_all(b"gap!").await?;
+        let batch = adopt(directory.path()).await?;
+        assert_eq!(batch.len(), 1);
+        let live = batch
+            .into_iter()
+            .next()
+            .ok_or_else(|| io::Error::other("missing live pair"))?;
+        assert_eq!(live.state, b"live");
+        let [left, right] = live.sockets;
+        let mut left = UnixStream::from_std(left.into())?;
+        let mut right = UnixStream::from_std(right.into())?;
+        assert_eq!(left.read_u32().await?.to_be_bytes(), *b"gap!");
+        right.write_all(b"next").await?;
+        assert_eq!(upstream.read_u32().await?.to_be_bytes(), *b"next");
+        Ok(())
+    })
+    .await?
+}
+
+#[tokio::test]
+async fn an_original_tcp_receive_queue_survives_final_fin_before_deposit() -> io::Result<()> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let directory = tempfile::tempdir()?;
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))?;
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let mut retained = TcpStream::connect(listener.local_addr()?).await?;
+        let (mut origin, _) = listener.accept().await?;
+        let (local, mut client) = UnixStream::pair()?;
+        let established =
+            yulius_sandbox::relay::custodian::Established::connected(&local, &retained)?;
+        retained.shutdown().await?;
+        assert_eq!(origin.read(&mut [0]).await?, 0);
+        origin.write_all(b"final reply").await?;
+        origin.shutdown().await?;
+        while retained.peer_addr().is_ok() {
+            tokio::task::yield_now().await;
+        }
+        let saved = Pair {
+            established: Some(established),
+            sockets: [local.into_std()?.into(), retained.into_std()?.into()],
+            expires: Some(yulius_sandbox::relay::custodian::monotonic_ms() + 5_000),
+            state: b"cursor".to_vec(),
+        };
+        deposit(
+            Path::new(env!("CARGO_BIN_EXE_yulius")),
+            directory.path(),
+            vec![saved],
+        )
+        .await?;
+        let saved = adopt(directory.path())
+            .await?
+            .pop()
+            .ok_or_else(|| io::Error::other("missing original sockets"))?;
+        let [local, retained] = saved.sockets;
+        let mut source = TcpStream::from_std(retained.into())?;
+        let mut sink = UnixStream::from_std(local.into())?;
+        let mut bytes = Vec::new();
+        source.read_to_end(&mut bytes).await?;
+        assert_eq!(bytes, b"final reply");
+        sink.write_all(&bytes).await?;
+        sink.shutdown().await?;
+        bytes.clear();
+        client.read_to_end(&mut bytes).await?;
+        assert_eq!(bytes, b"final reply");
         Ok(())
     })
     .await?

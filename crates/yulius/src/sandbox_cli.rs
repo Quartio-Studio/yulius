@@ -120,12 +120,15 @@ fn fail(message: &str) -> ExitCode {
 pub fn host(action: HostAction) -> ExitCode {
     match action {
         #[cfg(target_os = "linux")]
-        HostAction::HoldTunnels { directory } => {
-            match yulius_sandbox::relay::custodian::run(&directory) {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(error) => fail(&format!("tunnel handoff: {error}")),
-            }
-        }
+        HostAction::HoldTunnels { directory } => match crate::wiring::tunnel_handoff::place_helper(
+            std::path::Path::new(yulius_sandbox::cgroup::CGROUP_ROOT),
+            std::path::Path::new("/proc/self/cgroup"),
+        )
+        .and_then(|()| yulius_sandbox::relay::custodian::run(&directory))
+        {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => fail(&format!("tunnel handoff: {error}")),
+        },
         HostAction::Start { spec } => match yulius_sandbox::holder::start(&spec) {
             Ok(record) => {
                 println!("holder {} ready", record.inner_pid);

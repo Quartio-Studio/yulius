@@ -7,6 +7,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-21
 
 - Recorded Yulius's Infra bootstrap revision 1 posture in `yulius.toml` (`[cd.dev] about`) and `AGENTS.md`: the repository has no shared staging target, so all CI jobs remain on pull requests ([SPEC-579](../.ai/specs/SPEC-579-adopt-merge-first-staging-infra-bootstra.md)).
+- Established opaque HTTP/1.1 CONNECT tunnels through the sandbox holder now resume on the same sockets after an orderly Linux server restart. Frozen clients receive queued bytes after thaw, and the restored relay counts against its original limits. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
+- A live task’s PR notice stays pending when a terminal resize or another input owns the writer. The next watch checks whether the owner can receive it (SPEC-558).
+
+- A saved merge request holds its owner’s PR check-in during startup. A passed train keeps the verified member head while GitHub catches up, and `yulius wait` names conflicting files only for the excluded request that produced them (SPEC-558).
+- During orderly Linux server shutdown, live sandbox outbound relays stop accepting new connections without reporting a capacity warning. An admitted copy can return its original sockets, pending bytes and write-half state for restart. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
+
+- A running task whose first PR watch occurs during a live merge queue decision still hears about the resulting merge once. Check-ins wait for the queue (SPEC-558).
+- On Linux in legacy mode, established opaque HTTP/1.1 CONNECT tunnels retain the agent’s original TCP peers and queued bytes across an orderly server restart. Multiplexed HTTP/2 sessions to the proxy reconnect. Intercepted connections reconnect through the host-bound secret policy. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
 
 - The merge queue saves a failed single-PR decision before clearing its request. After restart it preserves a later request for the same head, including a retry that finds the PR already merged. When a person merges the armed head, its agent can read the merge receipt immediately in `yulius wait` (SPEC-558).
 
@@ -37,6 +45,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - Browser task rows keep verified unfinished parked work under Needs you, including when the Git overview shows healthy checks (SPEC-558).
 
 ## 2026-11-20
+
+- The Linux tunnel custodian preserves final TCP receive queues and drops a lost connection independently. Original sockets transfer after the receiver has their complete identity metadata. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
 
 - 2026-11-20 Browser task lists keep the newest successful snapshot when requests overlap. A task page can recover from its initial load error as soon as the sidebar receives the list.
 - Every task entering Needs You now carries a redacted, actionable notice explaining what happened, what a person needs to do, and where to do it—shown beside the task status (even when stopped or parked), in the attention bar, Needs You lists, notifications, and identically in `tasks_list` and `task_get`—alongside deduplicated timestamped wait-episode history (`task_wait_messages`). Browser handoffs persist across activity transitions, parking, and restarts and clear cleanly when answered, dismissed, superseded, closed, or marked done; untold agent-recoverable CI failures and progressing reruns stay in Working until human action is needed ([ADR-0414](decisions/0414-actionable-needs-you-notices-and-wait-history.md), [SPEC-578](../.ai/specs/SPEC-578-show-an-actionable-message-whenever-a-ta.md)).

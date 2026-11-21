@@ -16,6 +16,10 @@ pub enum Point {
     QueuedRowCapacity,
     /// An idle running row reads its pending PR news. Keyed by task ID.
     LiveRowPrNews,
+    /// The live watch has read an open PR, before returning its advice. Keyed by task ID.
+    LivePrFactsRead,
+    /// A free arm has been taken by the queue, before its merge is decided.
+    FreeArmTaken,
     /// A review starts reading its Git head. Keyed by worktree path.
     ReviewHead,
     /// `file_read`: the path was resolved and checked, the file is not opened yet.
@@ -154,6 +158,8 @@ pub enum Point {
     /// The screen showed an empty box during an old-key hold. The typist is about to
     /// recheck under the draft lock before pasting. The path is the task id.
     BoxSeenEmpty,
+    /// A terminal resize owns the run writer. The path is the task id.
+    TerminalResizeOwnsWriter,
     /// A prompt hook (SPEC-346) passed its turn-end check under the turn lock; it has not set
     /// Working yet. The path is the task id.
     PromptTurnChecked,

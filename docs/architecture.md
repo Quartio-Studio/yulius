@@ -1619,12 +1619,16 @@ person must act first (a prompt on screen, `needs_you`) or may have a draft in t
   the kept failures, partial observations from siblings stopped by a failed job, and the exact
   `ci_status` run), or one that errored;
 - a red merge candidate of two or more holding it, with "do not re-arm, merge or push";
-- a failed single-PR candidate, with the source CI run, failing job and a bounded, redacted excerpt. The queue verifies the live PR head and integration base even when another candidate tested the same tree. Unavailable diagnostic or redaction data leaves the arm in place within the verification budget. A running ordinary check retains its original wait deadline. The queue saves the decision in the task’s latest completed merge wait before clearing its arm. The record identifies the original PR, head, tested base and tree, source run and redacted failure. Hourly cleanup retains it. Startup uses the activation time to discard a consumed arm or retire its decision for a newer saved arm.
+- a failed single-PR candidate, with the source CI run, failing job and a bounded, redacted excerpt. The queue verifies the live PR head and integration base even when another candidate tested the same tree. Unavailable diagnostic or redaction data leaves the arm in place within the verification budget. A running ordinary check retains its original wait deadline. The queue saves the decision in the task’s latest completed merge wait before clearing its arm. The record identifies the original PR, head, tested base and tree, source run and redacted failure. Hourly cleanup retains it. Startup uses the activation time to discard a consumed arm or retire its decision for a newer saved arm. The PR watcher defers advice for a saved request until its arm is restored. A passed train retains the admission head and records the verified integration head while waiting for GitHub. An exclusion identifies the request and head whose files conflicted. A legacy exclusion or replacement request gets the queue position alone.
 - a conflict with the integration branch (checked in the task's worktree), once per head;
 - how its armed merge ended (the slot's outcome), and its merge (`merged_text`), after which the
   watch is over for it;
 - a green head that is not merging: no merge armed, where the armed merge stands, or, held by a
   candidate, "Hands off".
+
+The watch remembers an open PR when it first observes its number. While the live queue decides the merge, or if its activation changes during a read, the watch defers advice and keeps that observation for the eventual merge notice.
+
+The first paste of a live PR notice needs immediate access to the session writer. If another input or resize holds it, the watcher keeps the event pending for its next pass.
 
 Each event has a key, typed once and kept in `<data>/pr-notices.json`. A session idle for 45
 minutes with nothing typed gets a check-in with the pull request's state; a pull request with no
@@ -3827,7 +3831,22 @@ The Linux `sandbox-host hold-tunnels` helper holds a bounded batch of connected 
 and private copy state for one successor. Its two-minute deadline includes the time spent
 receiving and returning the batch. Each timed pair also retains its original monotonic
 deadline. The helper releases expired pairs while a successor receives the remaining live
-records. The server integration is tracked in SPEC-577.
+records. A timed pair can carry its original kernel socket identities. The sender supplies
+them before transferring its descriptors. The receiver can drain a final TCP receive queue
+after both FINs, and a reset or timed-out stream releases its own pair. On orderly Linux
+shutdown the server pauses established opaque HTTP/1.1 CONNECT tunnels. In namespace mode it
+also pauses the outbound copy enrolled at CONNECT. The live internal endpoints identify
+the relay at enrollment. Its kernel socket cookie binds the two records across restart. HTTP/2 traffic inside the tunnel stays opaque. A multiplexed HTTP/2 session to
+the proxy reconnects.
+Capture and deposit have fifteen seconds, concurrent with five seconds to drain in-flight HTTP
+responses. The successor restores the original sockets, copy cursors, admission owners, last
+activity and expiry before serving new HTTP requests. Intercepted connections close at restart.
+Fresh connections use the successor's host-bound injection and redaction policy. The holder
+keeps its forward. The replacement verifies that holder's identity and reserves the saved
+outbound copies in their old admission order before the relay accepts again. Eviction or
+explicit cancellation releases both host-side places. A peer's FIN closes its write
+direction and allows the other direction to drain. A copy that finishes first remains
+available for handoff while the other copy still has outstanding bytes.
 [ADR-0413](decisions/0413-a-bounded-helper-holds-connected-tunnel-sockets-between-servers.md)
 The proxy also counts each connection's run (agent run, CI job, Superagent shell). When nothing was
 idle for 5 minutes, a full sandbox share takes the oldest connection of its busiest other run, and
@@ -3850,6 +3869,11 @@ flowchart LR
   A["process in the sandbox"] -->|"127.0.0.1:8081"| F["holder's forward (256 places)"]
   F -->|"out.sock"| O["server's out.sock relay (256 places)"]
   O --> I["internal listener: API, MCP, egress proxy (128 per sandbox, 256 in all)"]
+  D["direct agent connection (legacy mode)"] --> I
+  I -.->|"orderly stop of an established opaque tunnel"| C["Linux socket custodian"]
+  O -.->|"matching opaque tunnel and surviving holder"| C
+  C -.->|"restore original sockets and places before HTTP"| I
+  C -.->|"reserve original outbound places before accepting"| O
   F -.->|"full: the longest-idle place (idle 5 min or more) gives way"| F
   I -.->|"share full, all active: the busiest run's oldest tunnel gives way"| I
   I -.->|"still refused: a trouble"| H["ConnectionHealth"]
