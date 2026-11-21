@@ -1616,9 +1616,7 @@ impl App {
                 {
                     tracing::warn!(task = %task.id, error = %err, "audit of a train merge failed");
                 }
-                let next = self
-                    .after_merge_of(task, crate::agent_wait::PROFILE_ASKS)
-                    .await;
+                let next = self.after_merge_of(task, sandbox, merged.number).await;
                 let peers = if others.is_empty() {
                     String::new()
                 } else {

@@ -324,6 +324,9 @@ impl App {
                 .background_shells_since(&task.id)
                 .map(|ms| rfc3339(yulius_domain::time::Timestamp(ms))),
             yulius_wait,
+            staging_wait: facts
+                .staging_wait
+                .map(|state| state.task_wait_label().to_owned()),
             merge_armed: task.status == TaskStatus::Running
                 && task.activity.is_some_and(Activity::is_idle)
                 && self.merge_is_armed(&task.id),
