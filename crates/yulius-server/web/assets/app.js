@@ -652,7 +652,7 @@ function createApp(root, transport) {
         if (store.tasksOf(sandbox.id) === null && store.tasksError(sandbox.id)) {
           // The list failed to load: say so, rather than "Task #12 was not found".
           failed(`tasks-error:${sandbox.id}:${route.number}`, `Couldn’t load the tasks of ${sandbox.name}: ${store.tasksError(sandbox.id).message}`,
-            () => store.loadTasks(sandbox.id).then(() => refreshRoute(), () => {}));
+            () => store.loadTasks(sandbox.id).catch(() => {}));
           break;
         }
         task = await findTaskByNumber(sandbox, route.number);

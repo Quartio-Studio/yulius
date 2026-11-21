@@ -7720,7 +7720,7 @@ export function createMockTransport(params) {
       const dispatch = () => handleFetch(db, url, init);
       // Exercise dispatch order before simulated latency, with the normal abort handler.
       const intercept = window.__yuliusTaskListReply;
-      const work = intercept && String(url).includes('/tasks?archived=false')
+      const work = intercept && String(url).includes('/tasks?archived=')
         ? Promise.resolve(intercept(url)).then(reply => { signal?.throwIfAborted(); return reply ?? dispatch(); })
         : dispatch();
       if (!signal) return work;

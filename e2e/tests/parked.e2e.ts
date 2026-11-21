@@ -446,3 +446,24 @@ test('an aborted task-list fixture cannot return its held reply', async ({ app, 
   });
   expect(result).toBe('AbortError');
 });
+
+test('retrying a cold archived task opens it with one archive lookup', async ({ app, browser }) => {
+  type Fixture = { allowActiveList: boolean; archiveReads: number; __yuliusTaskListReply: (url: string) => Response | undefined };
+  await browser.addInitScript(() => {
+    const w = window as unknown as Fixture;
+    w.archiveReads = 0;
+    w.__yuliusTaskListReply = (url) => {
+      if (!String(url).includes('/sb_studio/tasks?archived=')) return;
+      const archived = String(url).includes('archived=true');
+      if (archived ? ++w.archiveReads === 1 : w.allowActiveList) return;
+      return new Response(JSON.stringify({ error: { code: 'unavailable', message: 'fixture list unavailable' } }), { status: 503 });
+    };
+  });
+  await app.open(mock('/s/studio/t/1', '&ambient=0'));
+  const retry = browser.locator('main .load-error button');
+  await expect(retry).toBeVisible();
+  await browser.evaluate(() => { (window as unknown as Fixture).allowActiveList = true; });
+  await retry.click();
+  await expect(browser.locator('.taskview .strip-status')).toBeVisible();
+  expect(await browser.evaluate(() => (window as unknown as Fixture).archiveReads)).toBe(1);
+});
