@@ -78,8 +78,9 @@ For an explicit restart of stopped Codex work, the supervisor carries a continua
 
 The generated Codex configuration hides the rate-limit model switch reminder. If a live terminal
 shows the picker, the terminal writer holds automated pastes and submits. The PR watch can deliver
-its pending notice after the picker closes. If the picker intercepted a submit, the run directory
-keeps the hold across server reattachment until a confirmed empty composer releases it.
+its pending notice after the picker closes. The run directory records the paste before it is sent.
+A successful Enter clears the record. After an interrupted submission or server reattachment,
+a confirmed empty composer clears it.
 [Decision 0443](decisions/0443-hold-codex-input-at-the-rate-limit-model-picker.md)
 
 ```mermaid

@@ -158,9 +158,21 @@ impl ObservationSource {
     }
 }
 
-pub(crate) enum PrNoticeInput<'a> {
+#[derive(Clone, Copy)]
+pub(crate) enum SessionInput<'a> {
+    Viewer(&'a [u8]),
     Paste(&'a [u8]),
+    ContinuePaste(&'a [u8]),
     Submit,
+}
+
+impl<'a> SessionInput<'a> {
+    fn bytes(self) -> &'a [u8] {
+        match self {
+            Self::Viewer(bytes) | Self::Paste(bytes) | Self::ContinuePaste(bytes) => bytes,
+            Self::Submit => b"\r",
+        }
+    }
 }
 
 struct ActiveRun {
@@ -169,40 +181,49 @@ struct ActiveRun {
     writer: Box<dyn RunWriter>,
 }
 
-/// A picker blocked Enter after a paste. The run directory preserves the hold
-/// when Yulius reattaches to the same Codex process after restarting.
+/// A Codex paste can remain in the composer if no Enter followed it. The run
+/// directory records the pending paste before it goes to the PTY.
 struct CodexSubmitHold {
     marker: PathBuf,
-    held: bool,
+    state: CodexPaste,
+}
+
+#[derive(PartialEq, Eq)]
+enum CodexPaste {
+    Idle,
+    InFlight,
+    Recovering,
 }
 
 impl CodexSubmitHold {
     fn load(run_dir: &str) -> Self {
         let marker = Path::new(run_dir).join("codex-submit-held");
-        let held = marker.try_exists().unwrap_or(true);
-        Self { marker, held }
+        let state = if marker.try_exists().unwrap_or(true) {
+            CodexPaste::Recovering
+        } else {
+            CodexPaste::Idle
+        };
+        Self { marker, state }
     }
 
-    fn hold(&mut self) {
+    fn record(&mut self) -> AppResult<()> {
         use std::os::unix::fs::OpenOptionsExt as _;
 
-        if self.held {
-            return;
-        }
-        self.held = true;
-        let created = std::fs::OpenOptions::new()
+        std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
-            .open(&self.marker);
-        if let Err(err) = created
-            && err.kind() != std::io::ErrorKind::AlreadyExists
-        {
-            tracing::warn!(marker = %self.marker.display(), error = %err, "could not record the withheld Codex submit");
-        }
+            .open(&self.marker)
+            .map_err(|err| {
+                tracing::warn!(marker = %self.marker.display(), error = %err, "could not record the pending Codex paste");
+                AppError::Conflict("could not record the Codex paste before sending it".into())
+            })?;
+        self.state = CodexPaste::InFlight;
+        Ok(())
     }
 
     fn release(&mut self) -> AppResult<()> {
+        self.state = CodexPaste::Recovering;
         if let Err(err) = std::fs::remove_file(&self.marker)
             && err.kind() != std::io::ErrorKind::NotFound
         {
@@ -211,7 +232,7 @@ impl CodexSubmitHold {
                 "the empty Codex composer was seen, but its paste hold could not be cleared".into(),
             ));
         }
-        self.held = false;
+        self.state = CodexPaste::Idle;
         Ok(())
     }
 }
@@ -602,16 +623,14 @@ impl TaskRuntime {
         &self,
         attempt: &AttemptId,
         now: Timestamp,
-        input: PrNoticeInput<'_>,
+        input: SessionInput<'_>,
     ) -> AppResult<()> {
-        let (mut run, bytes) = match input {
-            PrNoticeInput::Paste(bytes) => (
-                self.run
-                    .try_lock()
-                    .map_err(|_| AppError::Conflict("the session writer is busy".into()))?,
-                bytes,
-            ),
-            PrNoticeInput::Submit => (self.run.lock().await, b"\r".as_slice()),
+        let mut run = match input {
+            SessionInput::Paste(_) | SessionInput::ContinuePaste(_) => self
+                .run
+                .try_lock()
+                .map_err(|_| AppError::Conflict("the session writer is busy".into()))?,
+            SessionInput::Submit | SessionInput::Viewer(_) => self.run.lock().await,
         };
         let run = run
             .as_mut()
@@ -619,50 +638,82 @@ impl TaskRuntime {
             .ok_or_else(|| {
                 AppError::Conflict("the observed session is no longer attached".into())
             })?;
-        self.write_automatic_input(run, now, bytes).await
+        self.write_session_input(run, now, input).await
     }
 
     /// Check with the writer acquired, both before a paste and before its separate Enter.
-    async fn write_automatic_input(
+    async fn write_session_input(
         &self,
         run: &mut ActiveRun,
         now: Timestamp,
-        bytes: &[u8],
+        input: SessionInput<'_>,
     ) -> AppResult<()> {
+        if let SessionInput::Viewer(bytes) = input {
+            return run.writer.input(bytes).await;
+        }
         if let Some(hold) = &mut run.codex_submit_hold {
-            if self.screen_withheld()
-                || !self
-                    .screen_of
-                    .lock()
-                    .is_ok_and(|shown| shown.as_ref() == Some(&run.attempt_id))
-            {
-                return Err(AppError::Conflict(
-                    "the live Codex screen is unavailable".into(),
-                ));
-            }
-            if self.hub.codex_rate_limit_picker_shown() {
-                if bytes == b"\r" {
-                    hold.hold();
+            if let Err(err) = self.check_codex_input_screen(&run.attempt_id) {
+                if matches!(input, SessionInput::Submit) && hold.state == CodexPaste::InFlight {
+                    hold.state = CodexPaste::Recovering;
                 }
-                return Err(AppError::Conflict(
-                    "Codex's rate-limit model picker is open. Choose Keep current model \
-                     or dismiss the picker in the terminal."
-                        .into(),
-                ));
+                return Err(err);
             }
-            if hold.held {
+            // A new paste can follow a cancelled message whose Enter never ran.
+            let recovering = hold.state == CodexPaste::Recovering
+                || (hold.state == CodexPaste::InFlight && matches!(input, SessionInput::Paste(_)));
+            if recovering {
                 if !self.hub.prompt_box_shown_empty(Harness::Codex) {
                     return Err(AppError::Conflict(
-                        "Codex may still have text pasted before the model picker opened. \
+                        "Codex may still have an unsent automated paste. \
                          Inspect the composer before clearing any unsent paste and retrying."
                             .into(),
                     ));
                 }
                 hold.release()?;
             }
+            let starting = hold.state == CodexPaste::Idle && !matches!(input, SessionInput::Submit);
+            if starting {
+                hold.record()?;
+            }
+            if recovering || starting {
+                // The screen can redraw while the run's paste record is written.
+                self.check_codex_input_screen(&run.attempt_id)?;
+            }
         }
         self.last_input_ms.store(now.0, Ordering::SeqCst);
-        run.writer.input(bytes).await
+        let written = run.writer.input(input.bytes()).await;
+        if let Some(hold) = &mut run.codex_submit_hold
+            && hold.state == CodexPaste::InFlight
+        {
+            if written.is_err() {
+                hold.state = CodexPaste::Recovering;
+            } else if matches!(input, SessionInput::Submit) {
+                // A submit already written to the PTY is sent even if removing its mark fails.
+                let _ = hold.release();
+            }
+        }
+        written
+    }
+
+    fn check_codex_input_screen(&self, attempt: &AttemptId) -> AppResult<()> {
+        if self.screen_withheld()
+            || !self
+                .screen_of
+                .lock()
+                .is_ok_and(|shown| shown.as_ref() == Some(attempt))
+        {
+            return Err(AppError::Conflict(
+                "the live Codex screen is unavailable".into(),
+            ));
+        }
+        if self.hub.codex_rate_limit_picker_shown() {
+            return Err(AppError::Conflict(
+                "Codex's rate-limit model picker is open. Choose Keep current model \
+                 or dismiss the picker in the terminal."
+                    .into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Consumes the reader's request only for the attempt whose end was recorded.
@@ -3704,12 +3755,17 @@ impl App {
     /// to the task's current run, which would then be another session.
     async fn type_opening(&self, task_id: &TaskId, attempt_id: &AttemptId, pastes: Vec<Paste>) {
         let runtime = self.runtime(task_id);
-        for (paste, shown) in opening_pastes(pastes) {
+        for (index, (paste, shown)) in opening_pastes(pastes).into_iter().enumerate() {
             if !self.attempt_live(task_id, attempt_id).await {
                 return;
             }
             let before = runtime.hub.output_seq();
-            if let Err(err) = self.send_automatic_input(task_id, &paste).await {
+            let input = if index == 0 {
+                SessionInput::Paste(&paste)
+            } else {
+                SessionInput::ContinuePaste(&paste)
+            };
+            if let Err(err) = self.send_session_input(task_id, input).await {
                 tracing::warn!(task = %task_id, error = %err, "could not type the first message");
                 return;
             }
@@ -3737,7 +3793,7 @@ impl App {
         if !self.attempt_live(task_id, attempt_id).await {
             return;
         }
-        if let Err(err) = self.send_automatic_input(task_id, b"\r").await {
+        if let Err(err) = self.send_session_input(task_id, SessionInput::Submit).await {
             tracing::warn!(task = %task_id, error = %err, "could not submit the first message");
         }
     }
@@ -3937,7 +3993,9 @@ impl App {
                 return true;
             }
             if !input.is_empty()
-                && let Err(err) = app.send_automatic_input(task_id, &input).await
+                && let Err(err) = app
+                    .send_session_input(task_id, SessionInput::Paste(&input))
+                    .await
             {
                 tracing::warn!(task = %task_id, error = %err, "could not set the task goal");
                 return false;
@@ -3946,7 +4004,7 @@ impl App {
             // A separate Enter, so the TUI sees typed text first and then a submit.
             tokio::time::sleep(Duration::from_millis(300)).await;
             app.note_issued_prompt(task_id, command.as_bytes());
-            if let Err(err) = app.send_automatic_input(task_id, b"\r").await {
+            if let Err(err) = app.send_session_input(task_id, SessionInput::Submit).await {
                 tracing::warn!(task = %task_id, error = %err, "could not submit the task goal");
                 return false;
             }
@@ -6706,40 +6764,28 @@ impl App {
     /// # Errors
     /// `Conflict` when no run is attached.
     pub async fn send_input(&self, task_id: &TaskId, bytes: &[u8]) -> AppResult<()> {
-        self.write_session_input(task_id, bytes, false).await
+        self.send_session_input(task_id, SessionInput::Viewer(bytes))
+            .await
     }
 
-    /// Writes automated input after checking that a Codex picker cannot consume it.
-    pub(crate) async fn send_automatic_input(
+    /// Writes input through the attempt's writer, with a screen guard for automation.
+    pub(crate) async fn send_session_input(
         &self,
         task_id: &TaskId,
-        bytes: &[u8],
-    ) -> AppResult<()> {
-        self.write_session_input(task_id, bytes, true).await
-    }
-
-    async fn write_session_input(
-        &self,
-        task_id: &TaskId,
-        bytes: &[u8],
-        automatic: bool,
+        input: SessionInput<'_>,
     ) -> AppResult<()> {
         let runtime = self
             .existing_runtime(task_id)
             .ok_or_else(|| AppError::Conflict("the task is not running".into()))?;
         let now = self.now();
-        if !automatic {
+        if matches!(input, SessionInput::Viewer(_)) {
             runtime.last_input_ms.store(now.0, Ordering::SeqCst);
         }
         let mut run = runtime.run.lock().await;
         let run = run
             .as_mut()
             .ok_or_else(|| AppError::Conflict("the task is not running".into()))?;
-        if automatic {
-            runtime.write_automatic_input(run, now, bytes).await
-        } else {
-            run.writer.input(bytes).await
-        }
+        runtime.write_session_input(run, now, input).await
     }
 
     /// Resizes the run's PTY.

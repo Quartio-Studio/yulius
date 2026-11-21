@@ -650,10 +650,15 @@ impl App {
                 Some(d.hold.class.as_str()),
             )
             .await?;
-        Ok(match self.send_automatic_input(&d.task.id, b"\r").await {
-            Ok(()) => "Sent to the agent unchanged.".to_owned(),
-            Err(_) => "Recorded: press Enter in the terminal to send it unchanged.".to_owned(),
-        })
+        Ok(
+            match self
+                .send_session_input(&d.task.id, crate::supervisor::SessionInput::Submit)
+                .await
+            {
+                Ok(()) => "Sent to the agent unchanged.".to_owned(),
+                Err(_) => "Recorded: press Enter in the terminal to send it unchanged.".to_owned(),
+            },
+        )
     }
 
     /// A new task with the held prompt: started now, or chained after `after`. Settings

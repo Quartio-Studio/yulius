@@ -1896,6 +1896,15 @@ fn the_codex_rate_limit_picker_holds_input_when_its_heading_wraps() -> TestResul
 
 #[test]
 fn the_codex_rate_limit_picker_submit_hold_survives_a_server_restart() -> TestResult {
+    codex_paste_across_restart(false)
+}
+
+#[test]
+fn the_codex_rate_limit_picker_paste_is_recovered_before_enter_runs() -> TestResult {
+    codex_paste_across_restart(true)
+}
+
+fn codex_paste_across_restart(interrupt_before_enter: bool) -> TestResult {
     use yulius_app::pr_watch::WatchBounds;
     use yulius_app::race::{Point, on};
 
@@ -1904,10 +1913,27 @@ fn the_codex_rate_limit_picker_submit_hold_survives_a_server_restart() -> TestRe
     let (id, caller, port) = first.block_on(async {
         let (app, id, caller, port) = codex_with_pr_news(&data).await?;
         let drawn = (Arc::clone(&app), id.clone());
-        on(Point::PrNoticePasted, Path::new(id.as_str()), move || {
-            paint_codex(&drawn.0, &drawn.1, CODEX_RATE_LIMIT_PICKER);
-        });
-        assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
+        if interrupt_before_enter {
+            let (pasted, observed) = tokio::sync::oneshot::channel();
+            let (leave, paused) = std::sync::mpsc::channel();
+            on(Point::PrNoticePasted, Path::new(id.as_str()), move || {
+                paint_codex(&drawn.0, &drawn.1, CODEX_RATE_LIMIT_PICKER);
+                let _ = pasted.send(());
+                let _ = paused.recv_timeout(Duration::from_secs(10));
+            });
+            let watching = Arc::clone(&app);
+            let watch =
+                tokio::spawn(async move { watching.watch_prs(&WatchBounds::default()).await });
+            tokio::time::timeout(Duration::from_secs(10), observed).await??;
+            watch.abort();
+            leave.send(())?;
+            assert!(matches!(watch.await, Err(err) if err.is_cancelled()));
+        } else {
+            on(Point::PrNoticePasted, Path::new(id.as_str()), move || {
+                paint_codex(&drawn.0, &drawn.1, CODEX_RATE_LIMIT_PICKER);
+            });
+            assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
+        }
         assert!(screen(&app, &id).contains("Approaching rate limits"));
         Ok::<_, Error>((id, caller, port))
     })?;
@@ -1930,10 +1956,32 @@ fn the_codex_rate_limit_picker_submit_hold_survives_a_server_restart() -> TestRe
             )
             .await;
         assert!(
-            matches!(&reply, Err(AppError::Conflict(why)) if why.contains("pasted before the model picker")),
+            matches!(&reply, Err(AppError::Conflict(why)) if why.contains("unsent automated paste")),
             "{reply:?}"
         );
         paint_codex(&app, &id, CODEX_EMPTY_COMPOSER);
+        assert_eq!(send(&app, &caller, &id).await?["delivered"], "sent");
+        stop(&app, &id).await
+    })
+}
+
+#[test]
+fn the_codex_rate_limit_picker_requires_recording_a_paste_before_writing_it() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let (app, id, caller, _) = codex_with_pr_news(&data).await?;
+        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("attempt")?;
+        let marker = Path::new(&attempt.run_dir).join("codex-submit-held");
+        std::fs::create_dir(&marker)?;
+        let reply = send(&app, &caller, &id).await;
+        assert!(
+            matches!(&reply, Err(AppError::Conflict(why)) if why.contains("could not record the Codex paste")),
+            "{reply:?}"
+        );
+        assert!(audited(&data, &id)?.is_empty());
+        std::fs::remove_dir(&marker)?;
+        assert_eq!(send(&app, &caller, &id).await?["delivered"], "sent");
+        assert!(!marker.exists(), "a successful Enter clears the recorded paste");
         assert_eq!(send(&app, &caller, &id).await?["delivered"], "sent");
         stop(&app, &id).await
     })

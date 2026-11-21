@@ -42,7 +42,7 @@ use crate::error::{AppError, AppResult};
 use crate::lifecycle::MAX_PROMPT_BYTES;
 use crate::manage::tool_detail;
 use crate::model::TaskRecord;
-use crate::supervisor::{PrNoticeInput, TaskRuntime, trust_prompt_shown};
+use crate::supervisor::{SessionInput, TaskRuntime, trust_prompt_shown};
 use crate::vault::reach::Holder;
 
 /// Longest message, in bytes after cleaning.
@@ -932,10 +932,13 @@ impl App {
         let pasted = match what {
             Typed::PrNotice(attempt) => {
                 runtime
-                    .write_pr_notice(attempt, self.now(), PrNoticeInput::Paste(paste))
+                    .write_pr_notice(attempt, self.now(), SessionInput::Paste(paste))
                     .await
             }
-            Typed::Prompt | Typed::Command => self.send_automatic_input(&task.id, paste).await,
+            Typed::Prompt | Typed::Command => {
+                self.send_session_input(&task.id, SessionInput::Paste(paste))
+                    .await
+            }
         };
         if let Err(err) = pasted {
             runtime.message_typed_ms.store(before, Ordering::SeqCst);
@@ -968,10 +971,13 @@ impl App {
         let submitted = match what {
             Typed::PrNotice(attempt) => {
                 runtime
-                    .write_pr_notice(attempt, self.now(), PrNoticeInput::Submit)
+                    .write_pr_notice(attempt, self.now(), SessionInput::Submit)
                     .await
             }
-            Typed::Prompt | Typed::Command => self.send_automatic_input(&task.id, b"\r").await,
+            Typed::Prompt | Typed::Command => {
+                self.send_session_input(&task.id, SessionInput::Submit)
+                    .await
+            }
         };
         submitted.map_err(|err| {
             if past_draft {

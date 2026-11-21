@@ -10,7 +10,7 @@ Codex 0.170.0 can show a picker after a turn near a subscription limit. It initi
 
 ## Decision
 
-Set `notice.hide_rate_limit_model_nudge` in the generated Codex configuration. At the terminal writer, hold automated pastes and submits whenever the live Codex screen shows the model picker. A PR notice can be retried by its existing watch after the picker goes. If the picker blocks Enter after a paste, the run directory records the hold across reattachment. A confirmed empty composer clears it. A viewer can choose to keep their current model with the native controls.
+Set `notice.hide_rate_limit_model_nudge` in the generated Codex configuration. At the terminal writer, hold automated pastes and submits whenever the live Codex screen shows the model picker. A PR notice can be retried by its existing watch after the picker goes. Record an in-flight paste in its run directory before writing it. A successful Enter clears that record. If submission is interrupted, recovery waits for a confirmed empty composer. A viewer can choose to keep their current model with the native controls.
 
 ## Alternatives
 
