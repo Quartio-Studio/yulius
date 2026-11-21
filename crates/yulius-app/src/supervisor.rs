@@ -1918,8 +1918,8 @@ impl App {
         .map(drop)
     }
 
-    /// [`App::start_run`], only while the task still has the status `only` (when given), checked
-    /// under the launch lock: `false` when it no longer has it, so nothing was done. With
+    /// [`App::start_run`] with its admission condition checked under the launch lock.
+    /// A changed status skips a conditional start. A superseded owner Continue returns a conflict. With
     /// `rest`, the run's task is idle again from its launch on ([`IdleRest`]).
     fn start_run_if<'a>(
         self: &'a Arc<Self>,
@@ -4055,27 +4055,30 @@ impl App {
     /// restart (ADR-0050): ended and counted, or killed and, once proven gone, recorded lost.
     ///
     /// # Errors
-    /// `Conflict` while the run lives on or cannot be ended.
+    /// `Conflict` while the run lives on, cannot be ended, or its final write is still pending.
     async fn settle_resting_run(self: &Arc<Self>, task_id: &TaskId, resume: bool) -> AppResult<()> {
         let store = &self.deps.store;
         let Some(task) = store.task(task_id).await? else {
             return Ok(());
         };
-        if !task.status.is_resting() {
+        let resuming_park = resume && task.status == TaskStatus::Parked;
+        if !task.status.is_resting() && !resuming_park {
             return Ok(());
         }
-        let Some(run) = store.live_attempt(task_id).await? else {
-            if resume {
-                self.wait_for_previous_reader(task_id).await?;
+        if let Some(run) = store.live_attempt(task_id).await? {
+            if self.holds_run(task_id).await {
+                return Err(AppError::Conflict(
+                    "the task still has a live run: stop it first".into(),
+                ));
             }
-            return Ok(());
-        };
-        if self.holds_run(task_id).await {
-            return Err(AppError::Conflict(
-                "the task still has a live run: stop it first".into(),
-            ));
+            self.settle_unheld_run(task_id, &run.id).await?;
         }
-        self.settle_unheld_run(task_id, &run.id).await
+        // Another observer may have won the write that ended the unheld attempt.
+        // Its reader owns the task until finalization, just as when we found no attempt.
+        if resume {
+            self.wait_for_previous_reader(task_id).await?;
+        }
+        Ok(())
     }
 
     /// A reaped attempt's reader can still be writing the task's last state.
@@ -4392,6 +4395,10 @@ impl App {
                 Ok(false) => {}
                 Ok(true) => {
                     if to == TaskStatus::Parked {
+                        crate::race::reached(
+                            crate::race::Point::ParkStateRecorded,
+                            Path::new(task_id.as_str()),
+                        );
                         if let Some(run) = &attempt
                             && let Some((cols, rows, screen)) =
                                 crate::parking::publish_parked_screen(Path::new(&run.run_dir))

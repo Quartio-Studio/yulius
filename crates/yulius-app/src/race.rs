@@ -14,6 +14,8 @@ pub enum Point {
     OwnerContinueRequested,
     /// The host exit is recorded while the reader still owns finalization.
     RunReaped,
+    /// The parked status is durable, just before the reader restores the saved grid.
+    ParkStateRecorded,
     /// Continue waits for the previous attempt's reader to finish writing its task state.
     ContinueWaitsForReader,
     /// A parked read classified the task, before the response renders its plan. Keyed by task ID.

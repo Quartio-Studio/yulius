@@ -115,6 +115,8 @@ A Stop can settle a task while its reaped run is still finalizing. Continue wait
 
 ## Evidence
 
+- Independent review of `152859f3a` found that two observers can race to settle an unheld attempt after restart. A real detached-host regression showed Continue returning successfully while the observer that recorded the loss still held the task. Waiting for that observer preserved the new capacity pause. A second regression held the finalizer between the durable Parked status and restoring the saved grid. The old `task_message` returned a running task while that restore was still pending. Parked resumes now wait on the same reader as stopped owners.
+
 - At `f42ae9dc0`, all 17 focused nextest cases passed in run `7af47f2e-6d96-43f5-9b4e-b49c6c9ffa42`. The three review regressions had all failed on `ceea0550e`. The passing cases cover queued and capacity-delayed continuations, both reader orderings, a later Archive, timeout and retry, ordinary parked messages, escalation, switches and orphaned attempts. The real PTY ran a local fake agent. Vidoc was disabled.
 
 - Independent review of `ceea0550e` found two owner-state races. Three public Continue regressions failed on that implementation. A held live run and a run reaped after the owner submitted Continue both produced conflicts after the task had been unarchived. An Archive accepted while Continue was waiting instead let Continue succeed. The supervisor now checks the original status and archive timestamp under the launch lock after its single settlement check.

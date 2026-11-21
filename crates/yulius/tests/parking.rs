@@ -629,14 +629,27 @@ fn a_message_resumes_a_parked_task_in_its_own_session() -> TestResult {
         let app = app(&data, 8, 1).await?;
         let (id, caller) = answered(&app, &data).await?;
         ask(&app, &id).await?;
+        let (recorded, restore_screen) = pause_watch_or_queue(Point::ParkStateRecorded, &id);
         parked(&app, &id).await?;
+        tokio::time::timeout(Duration::from_secs(10), recorded.notified()).await?;
         assert!(asks(&app, &id).await?, "the request stays");
-        let answer = app
-            .tool_task_message(
-                &caller,
-                &json!({"number": 1, "text": "Blue: answer with an echo"}),
-            )
-            .await?;
+        let waiting = Arc::new(tokio::sync::Notify::new());
+        let ready = waiting.clone();
+        yulius_app::race::on(Point::ContinueWaitsForReader, Path::new(id.as_str()), move || ready.notify_one());
+        let resumed = app.clone();
+        let mut message = tokio::spawn(async move {
+            resumed.tool_task_message(&caller, &json!({"number": 1, "text": "Blue: answer with an echo"})).await
+        });
+        tokio::select! {
+            early = &mut message => {
+                restore_screen.notify_one();
+                return Err(format!("message resumed the task before its old reader published the parked screen: {:?}", early?).into());
+            }
+            () = waiting.notified() => (),
+        }
+        assert!(app.deps.store.live_attempt(&id).await?.is_none());
+        restore_screen.notify_one();
+        let answer = message.await??;
         assert_eq!(answer["delivered"], "resumed");
         wait_for("the resumed answer", Duration::from_secs(60), || async {
             screen(&app, &id).contains("Blue: answer with an echo")
