@@ -18,6 +18,14 @@ use yulius_app::model::{
     TaskOrigin, TaskRecord, UserRecord,
 };
 use yulius_app::ports::github::GitHubAppConfig;
+use yulius_app::ports::session::{
+    AttachedRun, LaunchPlan, RunEvent, RunExit, RunInspection, RunReader, RunSignal, RunWelcome,
+    RunWriter, SessionHost, SpawnedRun,
+};
+use yulius_app::{
+    context::App,
+    error::{AppError, AppResult},
+};
 use yulius_domain::harness::Harness as Agent;
 use yulius_domain::ids::{AttemptId, MessageId, SandboxId, TaskId, UserId};
 use yulius_domain::task::{Activity, AttemptState, TaskStatus};
@@ -85,6 +93,7 @@ async fn fixture_with_read_budget(
 ) -> Result<Fixture, Box<dyn std::error::Error>> {
     let h = support::harness_with(support::HarnessOptions {
         git: Some(Arc::new(support::confined_git())),
+        session_host: Some(Arc::new(IdleSessionHost)),
         configure: Some(Box::new(move |config| {
             config.parked_pr_read_ms = read_budget_ms
         })),
@@ -3824,6 +3833,124 @@ async fn a_delayed_goal_submit_retains_the_owner_and_the_next_draft() -> TestRes
     Ok(())
 }
 
+/// The parking fixtures already have a live attempt in the store. Its host can be
+/// reattached without starting a CLI or calling a provider.
+struct IdleSessionHost;
+
+#[async_trait::async_trait]
+impl SessionHost for IdleSessionHost {
+    async fn spawn(
+        &self,
+        _: &Path,
+        _: &str,
+        _: &str,
+        _: &LaunchPlan,
+        _: &[u8; 32],
+        _: (u16, u16),
+    ) -> AppResult<SpawnedRun> {
+        Err(AppError::Upstream(
+            "fixture only reattaches seeded runs".into(),
+        ))
+    }
+
+    async fn attach(&self, _: &Path, _: &[u8; 32]) -> AppResult<AttachedRun> {
+        let (exit, events) = tokio::sync::oneshot::channel();
+        Ok(AttachedRun {
+            welcome: RunWelcome {
+                child_pid: 2,
+                seq: 0,
+                cols: 80,
+                rows: 24,
+                rendered: true,
+                snapshot: None,
+            },
+            reader: Box::new(IdleSessionReader(events)),
+            writer: Box::new(IdleSessionWriter(Some(exit))),
+        })
+    }
+
+    fn inspect(&self, _: &Path) -> RunInspection {
+        RunInspection::Missing
+    }
+
+    fn terminate(&self, _: &Path) -> AppResult<()> {
+        Ok(())
+    }
+}
+
+struct IdleSessionReader(tokio::sync::oneshot::Receiver<RunEvent>);
+
+#[async_trait::async_trait]
+impl RunReader for IdleSessionReader {
+    async fn next(&mut self) -> AppResult<Option<RunEvent>> {
+        Ok((&mut self.0).await.ok())
+    }
+}
+
+struct IdleSessionWriter(Option<tokio::sync::oneshot::Sender<RunEvent>>);
+
+#[async_trait::async_trait]
+impl RunWriter for IdleSessionWriter {
+    async fn input(&mut self, _: &[u8]) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn resize(&mut self, _: u16, _: u16) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn signal(&mut self, _: RunSignal) -> AppResult<()> {
+        self.shutdown(0).await
+    }
+
+    async fn shutdown(&mut self, _: u32) -> AppResult<()> {
+        if let Some(exit) = self.0.take() {
+            let _ = exit.send(RunEvent::Exit(RunExit {
+                code: Some(0),
+                signal: None,
+                spawn_failed: false,
+                usage: None,
+            }));
+        }
+        Ok(())
+    }
+}
+
+async fn attach_idle_run(f: &Fixture, app: &Arc<App>) -> TestResult {
+    let attempt = app
+        .deps
+        .store
+        .live_attempt(&f.task)
+        .await?
+        .ok_or("live run")?;
+    let session = "idle-parking-session";
+    app.deps
+        .store
+        .set_attempt_session(&attempt.id, session)
+        .await?;
+    let home = app
+        .config
+        .data_dir
+        .join("sandboxes")
+        .join(f.sandbox.as_str())
+        .join("home");
+    let transcript = app
+        .deps
+        .harness
+        .claude_transcript(&home, &f.worktree, session);
+    std::fs::create_dir_all(transcript.parent().ok_or("transcript directory")?)?;
+    std::fs::write(transcript, "")?;
+    let runtime = app.runtime(&f.task);
+    let before = runtime.transcript_rounds();
+    app.reconcile().await?;
+    crate::first_message::wait_for(
+        "idle run transcript replay",
+        std::time::Duration::from_secs(15),
+        || async { runtime.transcript_rounds() >= before + 2 },
+    )
+    .await
+}
+
 async fn idle_parking_fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
     let f = fixture().await?;
     let ctx = f.h.app.agent_context(TOKEN).await?;
@@ -3841,6 +3968,7 @@ async fn idle_parking_fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
         )
         .await?;
     f.h.clock.0.fetch_add(3_600_000, Ordering::SeqCst);
+    attach_idle_run(&f, &f.h.app).await?;
     Ok(f)
 }
 
@@ -3860,6 +3988,19 @@ async fn one_open_step_keeps_an_idle_session_through_digest_and_grace_parking() 
         .tool_step_update(&ctx, &json!({"ordinal":1,"status":"done"}))
         .await?;
     assert_eq!(f.h.app.park_idle_sessions_now().await, 1);
+    crate::first_message::wait_for(
+        "the idle run to settle as parked",
+        std::time::Duration::from_secs(15),
+        || async {
+            f.h.app
+                .deps
+                .store
+                .task(&f.task)
+                .await
+                .is_ok_and(|task| task.is_some_and(|task| task.status == TaskStatus::Parked))
+        },
+    )
+    .await?;
     Ok(())
 }
 
@@ -3975,6 +4116,7 @@ async fn an_idle_task_with_a_pending_pr_keeps_its_run_on_a_cold_cache() -> TestR
         )
         .await?;
     f.h.clock.0.fetch_add(3_600_000, Ordering::SeqCst);
+    attach_idle_run(&f, &f.h.app).await?;
     assert_eq!(f.h.app.park_idle_sessions_now().await, 0);
     assert_eq!(f.h.app.send_digests_now(Some(1)).await.parked, 0);
     let owner = yulius_app::auth::AuthContext {
@@ -4085,6 +4227,7 @@ async fn parking_a_recorded_pr_waits_for_delivery_if_github_closed_it_unmerged()
         )
         .await?;
     f.h.clock.0.fetch_add(3_600_000, Ordering::SeqCst);
+    attach_idle_run(&f, &f.h.app).await?;
     f.h.github.pulls.lock().map_err(|_| "pull fixture")?[0].state = "closed".into();
     assert_eq!(f.h.app.park_idle_sessions_now().await, 0);
     f.h.github.pulls.lock().map_err(|_| "pull fixture")?[0].merged = true;
@@ -4153,6 +4296,7 @@ async fn untracked_parking_fixture()
             .await?
     );
     let owner = idle_for_parking(&f).await?;
+    attach_idle_run(&f, &f.h.app).await?;
     Ok((f, owner))
 }
 
@@ -4228,7 +4372,7 @@ async fn parking_rechecks_a_green_overview_for_an_externally_opened_pr() -> Test
     );
     assert_eq!(f.h.app.send_digests_now(Some(1)).await.parked, 0);
     let cold = yulius_app::context::App::new(f.h.app.config.clone(), f.h.app.deps.clone());
-    cold.runtime(&f.task);
+    attach_idle_run(&f, &cold).await?;
     assert_eq!(
         cold.park_idle_sessions_now().await,
         0,
@@ -4245,6 +4389,7 @@ async fn a_merged_recorded_pr_cannot_park_a_new_failing_branch_pr() -> TestResul
     let f = fixture().await?;
     install_compatibility_pull(&f).await?;
     let owner = idle_for_parking(&f).await?;
+    attach_idle_run(&f, &f.h.app).await?;
     {
         let mut pulls = f.h.github.pulls.lock().map_err(|_| "pull fixture")?;
         let replacement = yulius_app::ports::github::GhPull {
@@ -4413,6 +4558,7 @@ async fn parking_rechecks_a_recorded_pr_when_its_base_advances_during_checks() -
     let f = fixture().await?;
     install_compatibility_pull(&f).await?;
     idle_for_parking(&f).await?;
+    attach_idle_run(&f, &f.h.app).await?;
     // This recorded delivery is visible by number even though branch discovery omits it.
     f.h.github.pulls.lock().map_err(|_| "pull fixture")?[0].head = "published-elsewhere".into();
     f.h.github
@@ -4441,7 +4587,7 @@ async fn parking_waits_for_external_checks_when_an_old_local_run_finishes() -> T
     let mut config = f.h.app.config.clone();
     config.ci.enabled = false;
     let app = yulius_app::context::App::new(config, f.h.app.deps.clone());
-    app.runtime(&f.task);
+    attach_idle_run(&f, &app).await?;
     f.h.github
         .set_checks("abc123", yulius_app::ports::github::ChecksState::Pending);
     super::delivery::insert_ci_attempt(
@@ -5711,6 +5857,7 @@ async fn a_parked_task_with_open_steps_keeps_its_owner_observed_pr() -> TestResu
 async fn parking_a_finished_turn_without_an_app_uses_its_own_delivery_record() -> TestResult {
     let (f, owner) = owner_observed_external_pr().await?;
     idle_for_parking(&f).await?;
+    attach_idle_run(&f, &f.h.app).await?;
     f.h.github
         .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
     f.h.app.git_overview(&owner, f.sandbox.as_str()).await?;

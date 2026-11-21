@@ -7,6 +7,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-21
 
 - Task reads reuse terminal pull requests and share open refreshes. Status reports the installation quota and request purposes, including when display yields capacity to delivery. [SPEC-609](../.ai/specs/SPEC-609-reading-tasks-must-not-spend-the-github.md)
+- Claude Code and Codex task delivery show the just-landed pull request's review rounds
+  and whether each round reported. Parking integration tests exercise an attached idle session.
+  [SPEC-605](../.ai/specs/SPEC-605-record-the-review-rounds-of-codex-tasks.md)
 - Codex tasks start with the rate-limit model switch reminder hidden. If an existing session shows it, Yulius holds automated input so a message cannot confirm the switch. [SPEC-603](../.ai/specs/SPEC-603-codex-s-rate-limit-prompt-must-not-switc.md)
 - Claude Code task delivery shows current review rounds. Codex task delivery also keeps the
   just-merged PR's review visible. [SPEC-605](../.ai/specs/SPEC-605-record-the-review-rounds-of-codex-tasks.md)
