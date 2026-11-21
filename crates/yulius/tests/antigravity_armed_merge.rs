@@ -1556,3 +1556,94 @@ async fn stalled_armed_green_pr_already_merged_on_github_does_not_escalate() -> 
     );
     Ok(())
 }
+
+/// SPEC-580 merge review F2:
+/// When a stalled armed green PR disarms and the unarmed `watch_prs` pass defers via
+/// `observed_only()` (e.g. GitHub installation lookup unavailable while checking a dropped
+/// singleton), all four armed-stall fields (`armed_green_key`, `armed_green_since_ms`,
+/// `armed_check_in_ms`, `armed_needs_you_at`) must clear together so re-arming the same head
+/// starts a fresh 10+10 min cycle rather than immediately re-escalating to Needs You.
+#[tokio::test]
+async fn disarmed_pr_on_deferred_pass_resets_stall_clock_before_rearm() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let worktree = f
+        .task_with(
+            1,
+            Harness::Antigravity,
+            Activity::Working,
+            &[("a.txt", "x\n")],
+        )
+        .await?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?;
+    f.arm(1, &worktree).await?;
+    f.record_passed(&app, 1, &head).await?;
+    f.advance_origin_dev("other.txt", "moved\n", true)?;
+
+    // Dirty worktree holds the PR outside a merge train; advance past 20m so it escalates.
+    std::fs::write(worktree.join("wip.txt"), "uncommitted\n")?;
+    let id = TaskId::parse("t1")?;
+    let bounds = WatchBounds::default();
+    let _ = app.watch_prs(&bounds).await;
+    f.h.clock.0.fetch_add(25 * 60 * 1000, Ordering::SeqCst);
+    let _ = app.watch_prs(&bounds).await;
+    let task = app.deps.store.task(&id).await?.ok_or("t1")?;
+    assert!(
+        app.task_summary(&task).await?.needs_you_notice.is_some(),
+        "precondition: stalled armed PR escalated to Needs You"
+    );
+
+    // Disarm the PR via a real `merge_armed` drop (wrong base branch), then restore `base = dev`.
+    if let Ok(mut pulls) = f.h.github.pulls.lock()
+        && let Some(pull) = pulls.iter_mut().find(|p| p.number == 1)
+    {
+        pull.base = "main".into();
+    }
+    app.merge_armed(&f.sandbox).await;
+    if let Ok(mut pulls) = f.h.github.pulls.lock()
+        && let Some(pull) = pulls.iter_mut().find(|p| p.number == 1)
+    {
+        pull.base = "dev".into();
+    }
+    let wait = f.wait_state(1, &worktree).await?;
+    assert_eq!(wait["merge_armed"], false, "PR must be disarmed: {wait}");
+
+    // Force `if !armed` to defer via `observed_only()` (GitHub unavailable during `hosted_owner_pull`).
+    f.h.github.no_installation.store(true, Ordering::SeqCst);
+    let _ = app.watch_prs(&bounds).await;
+    f.h.github.no_installation.store(false, Ordering::SeqCst);
+
+    let notices: Value = serde_json::from_str(&std::fs::read_to_string(
+        app.config.data_dir.join("pr-notices.json"),
+    )?)?;
+    assert_eq!(
+        notices["t1"]["armed_green_key"], "",
+        "deferred unarmed pass must clear armed_green_key: {notices}"
+    );
+    assert_eq!(
+        notices["t1"]["armed_green_since_ms"], 0,
+        "deferred unarmed pass must clear armed_green_since_ms: {notices}"
+    );
+    assert_eq!(
+        notices["t1"]["armed_check_in_ms"], 0,
+        "deferred unarmed pass must clear armed_check_in_ms: {notices}"
+    );
+    assert_eq!(
+        notices["t1"]["armed_needs_you_at"], 0,
+        "deferred unarmed pass must clear armed_needs_you_at: {notices}"
+    );
+
+    // Re-arm the exact same head and advance 1 minute: must start a fresh clock, NOT immediately
+    // re-escalate to Needs You.
+    f.arm(1, &worktree).await?;
+    let _ = app.watch_prs(&bounds).await;
+    f.h.clock.0.fetch_add(60 * 1000, Ordering::SeqCst);
+    let _ = app.watch_prs(&bounds).await;
+    let task_after = app.deps.store.task(&id).await?.ok_or("t1")?;
+    let summary_after = app.task_summary(&task_after).await?;
+    assert!(
+        summary_after.needs_you.is_none() && summary_after.needs_you_notice.is_none(),
+        "re-arming the same head after a deferred disarm must not immediately re-escalate: {summary_after:?}"
+    );
+    Ok(())
+}

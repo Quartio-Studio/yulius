@@ -210,6 +210,17 @@ pub struct Told {
     pub armed_needs_you_at: i64,
 }
 
+impl Told {
+    /// Clears all armed-green PR stall tracking fields together so a deferred pass can never
+    /// preserve a half-cleared stall clock (SPEC-580 merge review F2).
+    fn clear_armed_stall(&mut self) {
+        self.armed_green_key.clear();
+        self.armed_green_since_ms = 0;
+        self.armed_check_in_ms = 0;
+        self.armed_needs_you_at = 0;
+    }
+}
+
 /// Bounded action for a stalled armed green PR (SPEC-580 AWM-004).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArmedStallAction {
@@ -724,7 +735,14 @@ impl App {
 
     /// One pass over the live tasks with an open pull request: types into each session what it
     /// was not told yet; returns the tasks and what was typed.
+    ///
+    /// Heap-boxed so callers awaiting multiple passes in one async frame stay well within the
+    /// default 2 MiB thread stack (SPEC-580 merge review F1).
     pub async fn watch_prs(self: &Arc<Self>, bounds: &WatchBounds) -> Vec<(TaskId, String)> {
+        Box::pin(self.watch_prs_pass(bounds)).await
+    }
+
+    async fn watch_prs_pass(self: &Arc<Self>, bounds: &WatchBounds) -> Vec<(TaskId, String)> {
         let path = self.config.data_dir.join(PR_NOTICES_FILE);
         let saved = self.with_pr_notices(Clone::clone);
         let attempts = match self.deps.store.live_attempts().await {
@@ -766,8 +784,7 @@ impl App {
             let activation = self.arm_observation(&task.id);
             let slot = self.armed_now(&task.id);
             let facts = if task.status == TaskStatus::Running && !held {
-                self.pr_facts(&task, &mut told, &mut runs, &activation, &slot)
-                    .await
+                Box::pin(self.pr_facts(&task, &mut told, &mut runs, &activation, &slot)).await
             } else {
                 None
             };
@@ -777,10 +794,7 @@ impl App {
                 if task.status == TaskStatus::Running && !held && told.armed_needs_you_at > 0 {
                     self.end_needs_you_asked_at(&task.id, told.armed_needs_you_at, None)
                         .await;
-                    told.armed_needs_you_at = 0;
-                    told.armed_green_key.clear();
-                    told.armed_green_since_ms = 0;
-                    told.armed_check_in_ms = 0;
+                    told.clear_armed_stall();
                 }
                 // Not watched now (no open pull request, paused, not running): no stall shows
                 // (review minor 3), and what it was told stays while its pull request may come
@@ -965,12 +979,12 @@ impl App {
                 && source
                     .as_ref()
                     .is_none_or(|s| self.watched_train(&task, facts.pr) == s.train)
-                && !self
-                    .hosted_arm_stale_or_moved(&task, facts.pr, &facts.armed_head)
+                && !Box::pin(self.hosted_arm_stale_or_moved(&task, facts.pr, &facts.armed_head))
                     .await
-                && let Some(at) = self
-                    .escalate_armed_stall(&task, facts.pr, &happened, &problem, &action)
-                    .await
+                && let Some(at) = Box::pin(
+                    self.escalate_armed_stall(&task, facts.pr, &happened, &problem, &action),
+                )
+                .await
             {
                 next.armed_needs_you_at = at;
             }
@@ -1011,7 +1025,7 @@ impl App {
                 let told = saved.get(task.id.as_str()).cloned().unwrap_or_default();
                 let paused = !matches!(self.deps.store.open_pause(&task.id).await, Ok(None));
                 let facts = if !paused {
-                    self.pr_facts_parked(&task, &told, &mut runs).await
+                    Box::pin(self.pr_facts_parked(&task, &told, &mut runs)).await
                 } else {
                     None
                 };
@@ -1316,10 +1330,7 @@ impl App {
             if told.armed_needs_you_at > 0 {
                 self.end_needs_you_asked_at(&task.id, told.armed_needs_you_at, None)
                     .await;
-                told.armed_needs_you_at = 0;
-                told.armed_green_key.clear();
-                told.armed_green_since_ms = 0;
-                told.armed_check_in_ms = 0;
+                told.clear_armed_stall();
             }
             // Merged: said once, to a task the watch saw with it open (PRN-005, PRN-007).
             if !merge_untold(told, pr) {
@@ -1365,14 +1376,15 @@ impl App {
         let flagged_active = flagged && !self.held_message_flag_outlived(task).await;
         let mut person_must_act = needs_you || browser_req || flagged_active;
         // A deferred pass remembers the open PR and leaves its existing stall clock alone.
+        let prior_progress = if told.pr == pr {
+            told.progress.clone()
+        } else {
+            String::new()
+        };
         let observed = || PrFacts {
             pr,
             now_ms,
-            progress: if told.pr == pr {
-                told.progress.clone()
-            } else {
-                String::new()
-            },
+            progress: prior_progress.clone(),
             ..PrFacts::default()
         };
         let observed_only = || {
@@ -1397,12 +1409,14 @@ impl App {
         // a different train's result. Verify the hosted inputs before choosing ordinary CI.
         let mut receipt = None;
         if !armed {
-            // Disarmed PR leaves armed-green waiting immediately: clear any earlier armed-stall
-            // Needs You before checking `person_must_act` on the dropped-singleton receipt.
-            if told.armed_needs_you_at > 0 {
-                self.end_needs_you_asked_at(&task.id, told.armed_needs_you_at, None)
+            // Disarmed PR leaves armed-green waiting immediately: reset all stall-clock fields
+            // (and clear any earlier armed-stall Needs You) before any deferred `observed_only()`
+            // return so re-arming the same head always starts a fresh bound (SPEC-580 merge F2).
+            let armed_needs_you_at = told.armed_needs_you_at;
+            told.clear_armed_stall();
+            if armed_needs_you_at > 0 {
+                self.end_needs_you_asked_at(&task.id, armed_needs_you_at, None)
                     .await;
-                told.armed_needs_you_at = 0;
                 needs_you = !matches!(self.deps.store.task_needs_you(&task.id).await, Ok(None));
                 person_must_act = needs_you || browser_req || flagged_active;
             }
@@ -1718,7 +1732,7 @@ impl App {
         {
             self.end_needs_you_asked_at(&task.id, told.armed_needs_you_at, None)
                 .await;
-            told.armed_needs_you_at = 0;
+            told.clear_armed_stall();
             needs_you = !matches!(self.deps.store.task_needs_you(&task.id).await, Ok(None));
             person_must_act = needs_you || browser_req || flagged_active;
         }
