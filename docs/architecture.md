@@ -77,7 +77,8 @@ file by session ID and the next index refresh saves its path on the same documen
 For an explicit restart of stopped Codex work, the supervisor carries a continuation prompt through admission and into the native resume. It derives initial activity from the launch mode and observes subsequent turns in the rollout. [Decision 0429](decisions/0429-continue-stopped-codex-work-in-its-saved-session.md)
 
 The generated Codex configuration hides the rate-limit model switch reminder. If a live terminal
-shows the picker, the terminal writer holds automated pastes and submits. The PR watch can deliver
+shows the picker or its resized alternate grid has yet to repaint, the terminal writer holds
+automated pastes and submits. The PR watch can deliver
 its pending notice after the picker closes. The run directory records the paste before it is sent.
 A successful Enter clears the record. After an interrupted submission or server reattachment,
 a confirmed empty composer clears it.

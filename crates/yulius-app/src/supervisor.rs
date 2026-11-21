@@ -706,14 +706,18 @@ impl TaskRuntime {
                 "the live Codex screen is unavailable".into(),
             ));
         }
-        if self.hub.codex_rate_limit_picker_shown() {
-            return Err(AppError::Conflict(
+        match self.hub.codex_rate_limit_picker_shown() {
+            Some(false) => Ok(()),
+            Some(true) => Err(AppError::Conflict(
                 "Codex's rate-limit model picker is open. Choose Keep current model \
                  or dismiss the picker in the terminal."
                     .into(),
-            ));
+            )),
+            None => Err(AppError::Conflict(
+                "the Codex terminal is waiting for a repaint before it can take this message"
+                    .into(),
+            )),
         }
-        Ok(())
     }
 
     /// Consumes the reader's request only for the attempt whose end was recorded.

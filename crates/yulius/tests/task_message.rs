@@ -1895,6 +1895,49 @@ fn the_codex_rate_limit_picker_holds_input_when_its_heading_wraps() -> TestResul
 }
 
 #[test]
+fn the_codex_rate_limit_picker_holds_enter_when_resize_crops_out_the_picker() -> TestResult {
+    use yulius_app::pr_watch::WatchBounds;
+    use yulius_app::race::{Point, on};
+
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let (app, id, _, _) = codex_with_pr_news(&data).await?;
+        let drawn = (Arc::clone(&app), id.clone());
+        on(Point::PrNoticePasted, Path::new(id.as_str()), move || {
+            paint_codex(&drawn.0, &drawn.1, CODEX_RATE_LIMIT_PICKER);
+            assert!(screen(&drawn.0, &drawn.1).contains("Approaching rate limits"));
+            drawn.0.runtime(&drawn.1).hub.resize(120, 24);
+            assert!(!screen(&drawn.0, &drawn.1).contains("Approaching rate limits"));
+        });
+        let bounds = WatchBounds::default();
+        assert!(
+            app.watch_prs(&bounds).await.is_empty(),
+            "cropped picker kept Enter out"
+        );
+        assert!(
+            app.watch_prs(&bounds).await.is_empty(),
+            "still waiting for repaint"
+        );
+        paint_codex(&app, &id, "\x1b[H\x1b[J");
+        assert!(
+            app.watch_prs(&bounds).await.is_empty(),
+            "erase alone is not a repaint"
+        );
+        let composer = CODEX_EMPTY_COMPOSER
+            .replace("[34;", "[18;")
+            .replace("[40;", "[24;");
+        paint_codex(&app, &id, &composer);
+        assert_eq!(
+            app.watch_prs(&bounds).await.len(),
+            1,
+            "repaint released the notice"
+        );
+        assert!(app.watch_prs(&bounds).await.is_empty());
+        stop(&app, &id).await
+    })
+}
+
+#[test]
 fn the_codex_rate_limit_picker_submit_hold_survives_a_server_restart() -> TestResult {
     codex_paste_across_restart(false)
 }

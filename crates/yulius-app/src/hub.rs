@@ -272,11 +272,21 @@ impl Hub {
             .is_ok_and(|s| crate::visible_draft::shown(s.parser.screen()))
     }
 
-    /// Whether the current grid shows Codex's rate-limit model picker.
-    pub(crate) fn codex_rate_limit_picker_shown(&self) -> bool {
-        self.screen.lock().map_or(true, |screen| {
-            crate::prompt_box::codex_rate_limit_picker_shown(screen.parser.screen())
-        })
+    /// Whether the current grid shows Codex's rate-limit model picker. A cropped
+    /// or freshly erased alternate grid cannot tell whether the picker is gone.
+    pub(crate) fn codex_rate_limit_picker_shown(&self) -> Option<bool> {
+        let screen = self.screen.lock().ok()?;
+        let grid = screen.parser.screen();
+        if crate::prompt_box::codex_rate_limit_picker_shown(grid) {
+            return Some(true);
+        }
+        if grid.alternate_screen()
+            && (!screen.redraw.rendered()
+                || grid.rows(0, grid.size().1).all(|row| row.trim().is_empty()))
+        {
+            return None;
+        }
+        Some(false)
     }
 
     /// Visible screen text (for previews and tests).
