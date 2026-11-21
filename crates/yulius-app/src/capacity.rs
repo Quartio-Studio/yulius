@@ -1280,6 +1280,9 @@ fn pool_view(pool: &PoolTokens) -> PoolTokensView {
         per_day,
         unknown_usage_runs: pool.unknown_usage_runs,
         unpriced_runs: pool.unpriced_runs,
+        ultrafast_cost_usd: pool
+            .ultrafast_premium_usd
+            .map(|premium| all.cost_usd + premium),
     }
 }
 
@@ -1316,6 +1319,52 @@ fn rollout_reading(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mixed_pool_prices_only_the_weeks_eligible_tokens_at_ultrafast()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let promotion_ends = Timestamp(1_803_888_000_000);
+        let hour = 3_600_000;
+        for (now, astra_multiplier) in
+            [(promotion_ends.plus_millis(-1), 3.0), (promotion_ends, 6.0)]
+        {
+            let run = |model: &str, start: i64, end: i64| TokenRun {
+                span: Span {
+                    start: now.plus_millis(start * hour),
+                    end: Some(now.plus_millis(end * hour)),
+                },
+                model: Some(model.into()),
+                input: Some(1_000_000),
+                output: Some(1_000_000),
+                cache_read: Some(1_000_000),
+                cache_write: Some(1_000_000),
+            };
+            let runs = [
+                run("gpt-6.2-astra", -170, -166), // only half in the window
+                run("gpt-6.2-sol", -40, 0),       // spans two days
+                run("gpt-6-astra", -18, -17),
+                run("gpt-6.1-sol", -10, -9),
+                run("gpt-6-luna", -1, 0),
+                run("claude-opus-5-5", -1, 0),
+                run("unknown", -1, 0),
+            ];
+            let view =
+                |runs: &[TokenRun]| pool_view(&yulius_domain::capacity::pool_tokens(runs, now, 7));
+            let base_eligible = 58.4 / 2.0 + 14.6;
+            let older_eligible = 73.5 + 14.6;
+            let ineligible = 0.735 + 29.2;
+            let priced = serde_json::to_value(view(&runs))?;
+            assert_eq!(priced["unpriced_runs"], 1);
+            let base = priced["last_7d"]["cost_usd"].as_f64().ok_or("base")?;
+            assert!((base - (base_eligible + older_eligible + ineligible)).abs() < 1e-9);
+            let scenario = priced["ultrafast_cost_usd"].as_f64().ok_or("Ultrafast")?;
+            let expected = base_eligible * astra_multiplier + older_eligible * 6.0 + ineligible;
+            assert!((scenario - expected).abs() < 1e-9);
+            let no_eligible = serde_json::to_value(view(&runs[4..]))?;
+            assert!(no_eligible["ultrafast_cost_usd"].is_null());
+        }
+        Ok(())
+    }
 
     #[test]
     fn persisted_pause_kinds_identify_which_pauses_hold_a_process() {

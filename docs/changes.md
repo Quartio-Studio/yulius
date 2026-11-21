@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- The seven-day API estimate includes recorded GPT-6 Codex runs at Standard prices and shows what the pool would cost if eligible runs used Ultrafast. [SPEC-602](../.ai/specs/SPEC-602-it-doesnt-seem-real-verify-i-think-it-s.md)
+
 - Resuming a parked task waits for its old screen to finish saving. If that takes too long, Yulius asks the sender to retry and keeps the outstanding question open. [SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
 
 - A message prepared for an earlier parked attempt asks the sender to try again if another turn resumes and parks first. The new turn keeps its own outstanding decision. [SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)

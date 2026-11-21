@@ -17,12 +17,12 @@ test('the subscriptions page shows the pool capacity and nothing to manage but a
   }
   // Token use and its cost at API list prices, each with a 7-day chart (SPEC-110 TUS-006, TUS-010).
   await expect(capacity.getByText(/^≈ \$[\d,.]+$/)).toBeVisible();
-  await expect(capacity.getByText(/at Claude API list prices/)).toBeVisible();
+  await expect(capacity.getByText(/Recorded runs at standard API prices/)).toBeVisible();
   for (const name of ['Tokens', 'API cost', 'Burn rate', 'Paused']) {
     await expect(capacity.getByRole('img', new RegExp(`^${name}, last 7 days: first .+, highest .+, last .+$`))).toBeVisible();
   }
   // Each subscription's observed tokens say what they would cost on the API (TUS-004).
-  await expect(screen.getByText(/^[\d.,]+[KMB]? tokens · 9 runs · 8 tasks · ≈ \$[\d,.]+ at API prices$/).first()).toBeVisible();
+  await expect(screen.getByText(/^[\d.,]+[KMB]? tokens · 9 runs · 8 tasks · ≈ \$[\d,.]+ at standard API prices$/).first()).toBeVisible();
   await expect(screen.getByRole('button', 'Add subscription')).toBeVisible();
   await expect(screen.getByRole('button', 'Sign in again')).toBeVisible();
   // No priority, ordering or on/off controls remain (only the account list's Remove buttons).
@@ -918,6 +918,22 @@ test('an unknown cost reads as unknown, never as $0 (unit, in the page)', async 
   expect(text).toContain('≈ $1.50');
   expect(text).toContain('last 24 h: —');
   expect(text).not.toContain('$0.00');
+  expect(text).not.toContain('Ultrafast');
+});
+
+test('the weekly estimate identifies the Ultrafast scenario and omitted runs', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const text = await browser.evaluate(async () => {
+    const url = '/assets/layout.js';
+    const { capacityPanel } = await import(url);
+    const spend = { input: 0, output: 0, cache_read: 100, cache_write: 0, cost_usd: 10 };
+    const tokens = { last_7d: spend, last_24h: spend, ultrafast_cost_usd: 25, unpriced_runs: 2, unknown_usage_runs: 1 };
+    return capacityPanel({ subscriptions: 1, tokens }).textContent;
+  });
+  expect(text).toContain('≈ $25.00 if eligible Codex runs used Ultrafast');
+  expect(text).toContain('Separate Codex subagent sessions excluded');
+  expect(text).toContain('2 runs without a model price');
+  expect(text).toContain('1 run without usage');
 });
 
 /**
