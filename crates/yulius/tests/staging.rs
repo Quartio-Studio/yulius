@@ -1234,6 +1234,63 @@ async fn a_project_that_adopts_merge_first_deploys_its_next_delivery_through_the
     Ok(())
 }
 
+/// What `task`'s agent reads in `delivery_status`.
+async fn delivery_text(f: &Fixture, task: &str) -> BoxResult<String> {
+    let answer = support::mcp_tool(&f.h, &token(task), "delivery_status", json!({})).await?;
+    assert_eq!(answer["isError"], false, "{answer}");
+    Ok(answer["content"][0]["text"]
+        .as_str()
+        .ok_or("text")?
+        .to_owned())
+}
+
+/// SPEC-575 MFS-013: a task whose work merged into a merge-first project reads in
+/// `delivery_status` that staging waits for its request, then where its request stands. A task
+/// whose session began before its project switched (the switch's own task) learns it there,
+/// since every merge receipt sends the agent to `delivery_status`.
+#[tokio::test]
+async fn delivery_status_asks_a_merged_task_for_its_staging_request() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "t1").await?;
+    let before = delivery_text(&f, "t1").await?;
+    assert!(!before.contains("Staging"), "nothing merged yet: {before}");
+    let r1 = land(&f, "t1", "one.txt").await?;
+    let asks = delivery_text(&f, "t1").await?;
+    let short = &r1[..12];
+    assert!(
+        asks.contains(&format!(
+            "Staging ([cd.staging], merge-first): your merged revision {short} has no staging \
+             request. Once your whole delivery merged (no steps open), ask once with cd_deploy \
+             {{\"environment\":\"staging\"}}: Yulius runs the full gate on that revision, then \
+             deploys it and tells you the outcome."
+        )),
+        "{asks}"
+    );
+    let ci = gate(&f, &r1, RunState::Passed).await?;
+    let asked = ask(&f, "t1").await?;
+    settle(&f).await?;
+    let id = asked["id"].as_str().ok_or("id")?;
+    let done = request(&f, id).await?;
+    assert_eq!(done.state, StagingState::Verified, "{done:?}");
+    let after = delivery_text(&f, "t1").await?;
+    assert!(
+        after.contains(&format!(
+            "Staging ([cd.staging], merge-first): request {id} for revision {short} is verified, \
+             CI run {ci}, CD run {}",
+            done.cd_run_id.as_deref().ok_or("cd run")?
+        )),
+        "{after}"
+    );
+    assert!(!after.contains("has no staging request"), "{after}");
+    // Without a merge-first target a merge asks for nothing.
+    let plain = fixture(&staging_toml().replace("merge_first = true\n", "")).await?;
+    agent(&plain, "t2").await?;
+    land(&plain, "t2", "two.txt").await?;
+    let none = delivery_text(&plain, "t2").await?;
+    assert!(!none.contains("Staging"), "{none}");
+    Ok(())
+}
+
 /// `staging_toml` whose production promotes.
 fn promoting_toml() -> String {
     staging_toml().replace(
