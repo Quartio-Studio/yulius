@@ -3829,7 +3829,9 @@ receiving and returning the batch. Each timed pair also retains its original mon
 deadline. The helper releases expired pairs while a successor receives the remaining live
 records. A timed pair can carry its original kernel socket identities. The sender supplies
 them before transferring its descriptors. The receiver can drain a final TCP receive queue
-after both FINs, and a reset or timed-out stream releases its own pair. In Linux legacy mode the server pauses established opaque agent tunnels on orderly shutdown.
+after both FINs, and a reset or timed-out stream releases its own pair. In Linux legacy mode
+the server pauses established opaque HTTP/1.1 CONNECT tunnels on orderly shutdown. HTTP/2
+traffic inside the tunnel stays opaque. A multiplexed HTTP/2 session to the proxy reconnects.
 Capture and deposit have fifteen seconds, concurrent with five seconds to drain in-flight HTTP
 responses. The successor restores the original sockets, copy cursors, admission owners, last
 activity and expiry before serving new HTTP requests. Intercepted connections close at restart.

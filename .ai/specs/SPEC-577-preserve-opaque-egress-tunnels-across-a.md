@@ -91,6 +91,9 @@ mutation checks and quick checks. Review each slice independently and deliver th
 Use a bounded handoff of connected descriptors and in-memory copy state during an orderly
 restart. A private host-side custodian can hold those descriptors between server processes.
 This leaves all dialing and host-bound secret handling in the authorized server.
+An opaque HTTP/1.1 CONNECT gives its dedicated TCP connection to the copy. The bytes inside,
+including TLS carrying HTTP/2 to the destination, stay opaque. An outer HTTP/2 CONNECT to
+the proxy runs on a multiplexed session owned by the HTTP server and reconnects on restart.
 A custodian launched by a delegated service uses the service-owned sessions unit's existing
 legacy process leaf where available. A surviving child in a delegated server unit with active
 controllers can prevent systemd 258 and later from starting it. Where the sessions unit cannot
@@ -440,3 +443,13 @@ without adoption support or a remote peer that times out can end a tunnel.
   written between server processes. The five real-process direct cases passed in 8.37 s
   in the rehearsal. All 17 source, test and Cargo files in this integration match those
   exercised in the rehearsal.
+- At `b0706ff51` the five direct server restart cases passed in 7.67 s. Independent
+  review also passed those five and all five focused egress handoff tests. It found the
+  product documentation overstated the eligible protocol. Its synthetic agent established
+  a cleartext HTTP/2 CONNECT directly to the proxy, received HTTP 200, and exchanged
+  `TEST` and `BACK`. After SIGTERM and successor readiness the destination read EOF.
+  The source documentation now identifies the dedicated HTTP/1.1 CONNECT to the proxy.
+- A separate real-server fixture negotiated TLS with HTTP/2 to a synthetic destination
+  inside an opaque HTTP/1.1 CONNECT. The destination accepted one TLS session. Its original
+  HTTP/2 stream delivered a response written while the direct server was down, received
+  more request bytes after successor readiness, and returned its final reply.
