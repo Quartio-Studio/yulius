@@ -1,6 +1,6 @@
 ---
 yulius-task: d72a43d2-fda5-4cf6-b8e4-d81011fe5c5f
-status: in-progress
+status: done
 ---
 
 # SPEC-588 Continue independent review under the task's existing authorization
@@ -26,8 +26,8 @@ Task #570 twice raised a Needs You request for another independent review after 
 - [x] Trace the review authorization prompt to the instructions that produced it
 - [x] Cover continued review in task briefings and bundled guidance
 - [x] Align review instructions with the task’s existing authorization
-- [ ] Independently review the fix and resolve findings
-- [ ] Record the reviewed fix and verification evidence for green-CI delivery
+- [x] Independently review the fix and resolve findings
+- [x] Record the reviewed fix and verification evidence for green-CI delivery
 
 ## Acceptance criteria
 
@@ -48,3 +48,6 @@ Keep the existing independent reviewer and merge gate. Three rounds may prompt t
 - On the test-first commit `be6f1faa7`, nextest ran both regression tests against the previous instructions. Both failed. The connected briefing invited `needs_you` after three rounds, and the bundled delivery skill capped re-review.
 - The corrected briefings, skills and built-in workflows passed all 58 scoped nextest cases. These cover all three harnesses in connected projects and playgrounds, the briefing size limit, the own-code finding rules and the independent review instructions.
 - APM regenerated the repository skills. `apm audit` scanned 16 files and found no drift. The tests exercise the instructions delivered to agents. They use no live provider account.
+- Independent review approved `ddf6bf359` with no findings. The reviewer reran the 58 scoped cases, `scripts/dev quick` and `git diff --check`. `scripts/dev security` reported that Vidoc was disabled for this project.
+- `scripts/dev mutants --jobs 1` completed with 4 listed, 4 caught, 0 missed, 0 timed out, 0 unviable and 0 not reached. Its baseline ran 3,346 tests successfully and skipped two. The first attempts were interrupted or failed on temporary Unix socket path length. The completed campaign used a short disk-backed directory. The six-mode briefing regression alone also caught all four mutants.
+- All 58 scoped tests passed after each clean merge of `origin/dev` at `c748520a4` and `f24514af2`. Hosted CI and the landed revision are recorded in the task's delivery evidence.
