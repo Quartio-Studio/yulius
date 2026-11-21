@@ -53,6 +53,8 @@ new request after the old sockets reach EOF. The issue requires the original con
 - [x] Resume established direct opaque CONNECT sockets in the replacement server
 - [x] Keep each original deadline during custody and preserve the live remainder of a mixed batch
 - [x] Obtain independent approval for the custody deadline slice
+- [x] Preserve original terminal receive queues and isolate connection loss during custody
+- [x] Obtain independent approval for terminal socket custody
 - [ ] Obtain independent approval for the proxy restart slice
 - [ ] Hand established opaque connections and matching relay sockets to the restarted server
 - [ ] Verify same-socket continuity, admission limits and intercepted traffic through restart
@@ -324,3 +326,107 @@ without adoption support or a remote peer that times out can end a tunnel.
 - The final mutation run on the clock and connected-endpoint cleanup fixes passed all
   3,292 selected baseline tests. Its summary was 11 listed, 9 caught, 0 missed,
   0 timed out, 2 unviable and 0 not reached.
+- PR #1540 landed at dev squash `2571d8155`. PR run `f0d72521-e19a-4b4d-a275-e709064c3dec`
+  passed at `fb8bc445c`, and dev run `f0fb5457-e381-4b67-a8cb-0091fbbbd02c` passed on
+  the identical tree. Both shards, quality and e2e passed. Vidoc was disabled.
+  [Dev verification](https://yulius.quartio.ai/api/tasks/35adb14d-65fe-4a9f-b9fa-370d776d4139/delivery/evidence/2571d8155c21b530a887a918e718e238ffca6931?run_id=f0fb5457-e381-4b67-a8cb-0091fbbbd02c)
+- On the custody-only code the two direct-server tests failed. The original client got EOF
+  instead of the downtime marker, and an invalid handoff directory produced no diagnostic.
+  With the direct proxy integrated both passed in 0.41 s. The domain, egress and sandbox
+  suites passed 918 tests, with two host-environment cases ignored. The same two-server
+  Rust fixture using the production holder forward and manager relay still failed with EOF.
+- Four earlier mutations removed the HTTP transport's scalar or vectored write capability
+  or bypassed flush and write-half shutdown. A synthetic scalar writer exposed the incorrect
+  capability and missing flush before correction. The scalar and real TCP fixtures caught
+  all four mutations on the corrected adapter.
+- Independent review of the direct proxy at `5aea045e1` reproduced three defects. With two
+  original CONNECT tunnels, a TCP reset during downtime made the healthy client read EOF.
+  A second fixture reset a destination before deposit and got `NotConnected` for the whole
+  batch. A disconnected frame with missing or oversized state also bypassed its framing error.
+  Deposit and receipt now retain connected siblings and validate every frame within the
+  original descriptor and state limits.
+- An established direct tunnel shared a server with a plain HTTP download. Its synthetic
+  origin declared 128 bytes, sent 64 and held its socket open. After the client received
+  body data, the old server still had not exited ten seconds after SIGTERM. Capture now runs
+  concurrently with bounded HTTP shutdown. The real-server regression keeps the unfinished
+  download open through successor readiness and requires the original tunnel to transfer in
+  each direction.
+- Restoring a full one-place proxy reported a sandbox-share refusal. Ordinary admission on
+  the same table reported a total refusal. A domain fixture covers a share equal to the
+  whole table and a separate, smaller sandbox share. Restoration now uses the same limit
+  precedence as admission.
+- Two pre-existing proxy warning-capture tests could interfere when plain libtest ran them
+  in parallel. This reproduced on the older test binary. Each passed in isolation, as run
+  by nextest in CI. The independent test issue is tracked in
+  [#1544](https://github.com/Quartio-Studio/yulius/issues/1544).
+- On corrected head `959ab7448`, both isolated real-process tests passed. The unfinished
+  download stayed open while the old process exited and the original CONNECT carried new
+  bytes through the successor. Resetting a second destination during downtime preserved the
+  healthy original sockets. The domain, egress and sandbox suites passed 920 tests with two
+  environment-dependent tests ignored. Targeted Clippy and quick checks passed. Vidoc was disabled.
+- The second independent reader identified an orderly close that resembled a disconnected
+  socket. The client half-closed first and the destination observed EOF. In the restart gap
+  the destination sent `last reply` followed by its FIN. The original client received zero
+  of the ten bytes after the successor became healthy. The real-server regression reproduced
+  this on `959ab7448`. With both FINs already exchanged before deposit, a separate helper
+  fixture also returned `NotConnected` with the final reply still in the original TCP queue.
+  The regression covers both transfer directions and a terminal receive queue whose remaining
+  application bytes are already in the saved copy cursor.
+- With the final-FIN correction, all five direct real-server tests passed. The two original
+  peers delivered the last reply and last request, then EOF, across the replacement. A
+  separate proxy test previously failed with errno 107 after both FINs and an empty kernel
+  receive queue. It now flushes exactly five pending application bytes to its original
+  destination. A mismatched socket identity is rejected and its original Unix peer can
+  still transfer bytes. Targeted Clippy and the repository quick checks passed.
+- The third direct-slice review at `fbfa58eea` requested two custody corrections. The
+  legitimate sender's first identity message already carried both descriptors before the
+  receiver could verify the cookies. A partial metadata read could therefore grant cleanup
+  authority too soon. A wire regression failed because the metadata carried descriptors.
+  With the new framing, the deadline and both cookies precede the descriptor transfer.
+  Receipt interrupted before the second cookie, including at the original deadline, leaves
+  the sender able to exchange its synthetic marker.
+- On an isolated TCP connection the reviewer observed `NotConnected` from the peer-name
+  query and `TimedOut` from a terminal queue check. A deterministic fixture injected that
+  read outcome and the preceding implementation aborted the batch with errno 110. The
+  corrected terminal queue check discards that pair. The fixture transfers the surviving
+  original sockets and exchanges bytes in both directions. Role, cookie and framing errors
+  still invalidate the delivery.
+- The terminal socket custody changes are a separate delivery. The saved direct proxy
+  implementation passed 120 targeted nextest cases on `fbfa58eea`. Its service wiring and
+  the production holder integration remain open for their own reviews and CI.
+- On the separated custody change, 47 relay library tests and all seven helper-process
+  tests passed. They cover the original final receive queue before deposit, single adoption,
+  independent expiry, reset isolation, identity mismatches, interrupted metadata and final
+  confirmation. Repository contract and formatting checks passed.
+- Independent review of the separated scope at `7d815ba59` passed the 47 relay and seven
+  helper-process tests. It found that the earlier, in-process collection of capture replies
+  could enroll a pair before verifying its identity. The live capture regression expected
+  rejection for a mismatched cookie and received a pair instead. Additional fixtures found
+  that collection accepted oversized state and an identified record without a deadline.
+  Collection now performs the same checks as deposit before its cleanup state takes a
+  socket. The original peer can still send its marker after the refused record's deadline.
+  The updated relay library suite passed all 49 tests.
+- The mutation run on the first direct review's corrections passed 3,312 selected baseline
+  tests. Its summary was 17 listed, 15 caught, 0 missed, 0 timed out, 2 unviable and 0 not reached.
+- The initial direct proxy mutation run listed 126, caught 72, found 54 unviable and
+  missed none. The final-FIN run listed 23, caught 17, found five unviable and missed one.
+  The separated custody run listed 33, caught 24, found eight unviable and missed the same
+  mutation. All three campaigns reached every mutation without a timeout. The surviving edit
+  replaced bitwise union with exclusive-or for two disjoint Linux receive flags. Both produce
+  0x42 from MSG_PEEK (0x02) and MSG_DONTWAIT (0x40). The terminal read now uses the flag
+  type's named union operation. The final-FIN process fixture checks that the peek leaves
+  the queued bytes for the successor.
+- After merging current dev `1d97b363c`, independent review approved the custody slice
+  at `407be69d9` and reran all 49 relay tests. All seven helper-process tests passed
+  on the same head. The review corrected ADR-0413's description of wire receipt.
+  The receiver verifies original socket roles and identities before taking custody. The
+  original deadline covers the subsequent state-length read and bounded allocation.
+- The capture-validation mutation run passed all 3,302 selected baseline tests. It listed
+  seven mutations, caught five and found two unviable. The terminal-read change passed
+  all 3,314 selected baseline tests and caught both mutations. Both runs reported zero
+  missed, timed out or unreached. Targeted Clippy passed with warnings denied. The instance
+  disabled Vidoc.
+- On the current custody-only server, the original client and destination exchanged bytes
+  through the holder before shutdown. The successor became healthy with that same holder.
+  The original client then received EOF in place of the marker written during restart.
+  Proxy and holder wiring remain necessary for AC-1.

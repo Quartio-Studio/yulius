@@ -3,7 +3,8 @@
 //! The original server sends a batch on an inherited Unix stream. Each 'P' carries two
 //! connected descriptors via SCM_RIGHTS, then a big-endian u32 and that many bytes of
 //! private copy state. A 'D' record adds the original monotonic deadline (u64) before
-//! the state size. 'E' ends the batch. The helper acknowledges with 'E' after binding
+//! the state size. An 'I' prefix carries the deadline and two u64 kernel socket cookies
+//! without descriptors. A following 'T' transfers the two identified sockets and their state. 'E' ends the batch. The helper acknowledges with 'E' after binding
 //! the successor's listener, and sends the same batch to its single accepted successor.
 //! The successor acknowledges complete receipt with 'A'. The helper confirms with 'C'.
 //! Until confirmation the helper can shut down every stream if delivery fails or expires.
@@ -37,12 +38,33 @@ pub fn monotonic_ms() -> u64 {
     u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
 }
 
+/// Kernel identities captured after both endpoints of an established copy have peers.
+/// Linux retains the cookie when a duplicated TCP descriptor loses its peer name after FIN.
+#[derive(Clone, Copy)]
+pub struct Established([u64; 2]);
+
+impl Established {
+    /// Record both identities while the original connections are live.
+    ///
+    /// # Errors
+    /// Either endpoint is disconnected or its kernel identity cannot be read.
+    pub fn connected(left: impl AsFd, right: impl AsFd) -> io::Result<Self> {
+        let cookie = |fd: std::os::fd::BorrowedFd<'_>| -> io::Result<u64> {
+            net::getpeername(fd)?.ok_or(io::ErrorKind::NotConnected)?;
+            Ok(net::sockopt::socket_cookie(fd)?)
+        };
+        Ok(Self([cookie(left.as_fd())?, cookie(right.as_fd())?]))
+    }
+}
+
 /// Already-connected endpoints and their bounded private state. Never log this state.
 pub struct Pair {
     /// The client-side and destination-side stream, in copy order.
     pub sockets: [OwnedFd; 2],
     /// Original Linux monotonic deadline, when the owning flow has one.
     pub expires: Option<u64>,
+    /// The original identities of a timed copy enrolled while both sockets had peers.
+    pub established: Option<Established>,
     /// Caller-encoded copy cursor and admission metadata.
     pub state: Vec<u8>,
 }
@@ -65,25 +87,64 @@ fn stream_socket(fd: &OwnedFd) -> io::Result<()> {
     }
 }
 
-// Linux can forget the TCP peer after shutdown even while SCM_RIGHTS holds a duplicate.
-// A deadline may pass between the syscall and checking its result. A still-live frame
-// must have two connected peers; an expired one is drained under the same size bounds.
-fn require_live_peers(sockets: &[OwnedFd; 2], expires: Option<u64>) -> io::Result<()> {
-    for fd in sockets {
-        let error = match net::getpeername(fd) {
-            Ok(Some(_)) => continue,
-            Ok(None) => invalid("handoff requires connected streams"),
-            Err(error) => error.into(),
-        };
-        if expires.is_none_or(|end| !time_left(end, monotonic_ms()).is_zero()) {
-            return Err(error);
+impl Pair {
+    /// Verify that this copy can resume on the original sockets. A TCP receive queue
+    /// remains readable after the final FIN even when Linux has discarded the peer name.
+    ///
+    /// # Errors
+    /// Invalid state size, timing metadata, stream roles or identities, or a failed
+    /// kernel query for the original socket.
+    pub fn resumable(&self) -> io::Result<bool> {
+        check_capacity(1, self.state.len())?;
+        if self.established.is_some() && self.expires.is_none() {
+            return Err(invalid("identified handoff requires a deadline"));
         }
-        break;
+        for (index, fd) in self.sockets.iter().enumerate() {
+            stream_socket(fd)?;
+            if let Some(ids) = self.established
+                && net::sockopt::socket_cookie(fd)? != ids.0[index]
+            {
+                return Err(invalid("handoff socket identity changed"));
+            }
+        }
+        for fd in &self.sockets {
+            match net::getpeername(fd) {
+                Ok(Some(_)) => continue,
+                Err(rustix::io::Errno::NOTCONN) => {
+                    if self
+                        .expires
+                        .is_some_and(|end| time_left(end, monotonic_ms()).is_zero())
+                    {
+                        continue;
+                    }
+                    if self.established.is_some() {
+                        let mut byte = [0u8; 1];
+                        let flags = RecvFlags::PEEK.union(RecvFlags::DONTWAIT);
+                        if terminal_queue(net::recv(fd, &mut byte, flags).map(|_| ())) {
+                            continue;
+                        }
+                    }
+                    return Ok(false);
+                }
+                Ok(None) => return Err(invalid("handoff requires connected streams")),
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(true)
     }
-    Ok(())
 }
 
-async fn header(stream: &UnixStream) -> io::Result<Option<([OwnedFd; 2], bool)>> {
+// At this point the original socket has been identified, but Linux reports no peer.
+// A terminal transport error ends only this copy. An interrupted or not-yet-ready
+// nonblocking read leaves the normal bounded transfer responsible for its next read.
+fn terminal_queue(result: rustix::io::Result<()>) -> bool {
+    matches!(
+        result,
+        Ok(()) | Err(rustix::io::Errno::INTR | rustix::io::Errno::AGAIN)
+    )
+}
+
+async fn message(stream: &UnixStream) -> io::Result<(u8, Vec<OwnedFd>)> {
     stream
         .async_io(Interest::READABLE, || {
             let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(2))];
@@ -106,21 +167,47 @@ async fn header(stream: &UnixStream) -> io::Result<Option<([OwnedFd; 2], bool)>>
                 };
                 sockets.extend(rights);
             }
-            match tag[0] {
-                b'E' if sockets.is_empty() => Ok(None),
-                b'P' | b'D' => {
-                    let pair: [OwnedFd; 2] = sockets
-                        .try_into()
-                        .map_err(|_| invalid("expected a socket pair"))?;
-                    for fd in &pair {
+            match (tag[0], sockets.len()) {
+                (b'I' | b'E', 0) => {}
+                (b'P' | b'D' | b'T', 2) => {
+                    for fd in &sockets {
                         stream_socket(fd)?;
                     }
-                    Ok(Some((pair, tag[0] == b'D')))
                 }
-                _ => Err(invalid("unknown tunnel handoff header")),
+                _ => return Err(invalid("invalid tunnel handoff message")),
             }
+            Ok((tag[0], sockets))
         })
         .await
+}
+
+async fn header(stream: &mut UnixStream) -> io::Result<Option<Pair>> {
+    let (tag, sockets) = message(stream).await?;
+    let (sockets, expires, established) = match tag {
+        b'E' => return Ok(None),
+        b'P' => (sockets, None, None),
+        b'D' => (sockets, Some(stream.read_u64().await?), None),
+        b'I' => {
+            // No descriptors are in our custody while these fields may be interrupted.
+            let expires = stream.read_u64().await?;
+            let ids = Established([stream.read_u64().await?, stream.read_u64().await?]);
+            let (tag, sockets) = message(stream).await?;
+            if tag != b'T' {
+                return Err(invalid("expected identified tunnel sockets"));
+            }
+            (sockets, Some(expires), Some(ids))
+        }
+        _ => return Err(invalid("unknown tunnel handoff header")),
+    };
+    let sockets = sockets
+        .try_into()
+        .map_err(|_| invalid("expected a socket pair"))?;
+    Ok(Some(Pair {
+        sockets,
+        expires,
+        established,
+        state: Vec::new(),
+    }))
 }
 
 fn check_capacity(count: usize, state_bytes: usize) -> io::Result<()> {
@@ -131,20 +218,21 @@ fn check_capacity(count: usize, state_bytes: usize) -> io::Result<()> {
 }
 
 async fn receive(stream: &mut UnixStream) -> io::Result<PendingDelivery> {
+    receive_with(stream, Pair::resumable).await
+}
+
+async fn receive_with(
+    stream: &mut UnixStream,
+    resumable: impl Fn(&Pair) -> io::Result<bool>,
+) -> io::Result<PendingDelivery> {
     let mut pending = PendingDelivery(Vec::new());
-    while let Some((sockets, timed)) = pending.during(header(stream)).await? {
-        let expires = if timed {
-            Some(pending.during(stream.read_u64()).await?)
-        } else {
-            None
-        };
-        require_live_peers(&sockets, expires)?;
-        // Track the original deadline even while the producer is still writing the state.
-        pending.0.push(Some(Pair {
-            sockets,
-            expires,
-            state: Vec::new(),
-        }));
+    let mut accepted = false;
+    while let Some(pair) = pending.during(header(stream)).await? {
+        // Validate roles and identities before granting rollback authority. A lost
+        // connection still occupies one input frame and is drained under the size bound.
+        let connected = resumable(&pair)?;
+        accepted |= connected;
+        pending.0.push(connected.then_some(pair));
         let size = pending.during(stream.read_u32()).await? as usize;
         check_capacity(pending.0.len(), size)?;
         let mut state = vec![0; size];
@@ -152,6 +240,9 @@ async fn receive(stream: &mut UnixStream) -> io::Result<PendingDelivery> {
         if let Some(Some(pair)) = pending.0.last_mut() {
             pair.state = state;
         }
+    }
+    if !accepted && !pending.0.is_empty() {
+        return Err(io::ErrorKind::NotConnected.into());
     }
     Ok(pending)
 }
@@ -180,10 +271,20 @@ async fn send_header(stream: &UnixStream, sockets: &[OwnedFd; 2], tag: u8) -> io
 }
 
 async fn send_record(stream: &mut UnixStream, pair: &Pair) -> io::Result<()> {
-    let tag = if pair.expires.is_some() { b'D' } else { b'P' };
-    send_header(stream, &pair.sockets, tag).await?;
-    if let Some(expires) = pair.expires {
-        stream.write_u64(expires).await?;
+    match (pair.expires, pair.established) {
+        (Some(expires), Some(ids)) => {
+            stream.write_u8(b'I').await?;
+            stream.write_u64(expires).await?;
+            stream.write_u64(ids.0[0]).await?;
+            stream.write_u64(ids.0[1]).await?;
+            send_header(stream, &pair.sockets, b'T').await?;
+        }
+        (Some(expires), None) => {
+            send_header(stream, &pair.sockets, b'D').await?;
+            stream.write_u64(expires).await?;
+        }
+        (None, None) => send_header(stream, &pair.sockets, b'P').await?,
+        (None, Some(_)) => return Err(invalid("identified handoff requires a deadline")),
     }
     stream
         .write_u32(u32::try_from(pair.state.len()).map_err(|_| invalid("copy state too large"))?)
@@ -312,6 +413,7 @@ impl PendingDelivery {
                     right.as_fd().try_clone_to_owned()?,
                 ],
                 expires: pair.expires,
+                established: pair.established,
                 state: std::mem::take(&mut pair.state),
             };
             self.during(send_record(stream, &sending)).await?;
@@ -403,6 +505,32 @@ pub fn run(directory: &Path) -> io::Result<()> {
         })
 }
 
+/// Collect the replies to a bounded capture in admission order. Keep each original
+/// deadline running while other copies finish pausing. Dropped senders yield no pair.
+///
+/// # Errors
+/// Rejects too many captures or a failed collection task. The caller bounds the whole wait.
+pub async fn collect(replies: Vec<tokio::sync::oneshot::Receiver<Pair>>) -> io::Result<Vec<Pair>> {
+    check_capacity(replies.len(), 0)?;
+    let mut pending = PendingDelivery((0..replies.len()).map(|_| None).collect());
+    let mut waiting = tokio::task::JoinSet::new();
+    for (index, reply) in replies.into_iter().enumerate() {
+        waiting.spawn(async move { (index, reply.await.ok()) });
+    }
+    while let Some(result) = pending
+        .during(async { Ok(waiting.join_next().await) })
+        .await?
+    {
+        let (index, pair) = result?;
+        if let Some(pair) = pair
+            && pair.resumable()?
+        {
+            pending.0[index] = Some(pair);
+        }
+    }
+    Ok(pending.release())
+}
+
 /// Send a batch to a helper that survives this process. On success the helper has bound its
 /// single-consumer listener and holds all the sockets. An empty batch starts no helper.
 ///
@@ -412,12 +540,15 @@ pub async fn deposit(executable: &Path, directory: &Path, pairs: Vec<Pair>) -> i
     if pairs.is_empty() {
         return Ok(());
     }
-    for pair in &pairs {
-        check_capacity(pairs.len(), pair.state.len())?;
-        for fd in &pair.sockets {
-            stream_socket(fd)?;
+    check_capacity(pairs.len(), 0)?;
+    let mut connected = Vec::with_capacity(pairs.len());
+    for pair in pairs {
+        if pair.resumable()? {
+            connected.push(pair);
         }
-        require_live_peers(&pair.sockets, pair.expires)?;
+    }
+    if connected.is_empty() {
+        return Err(io::ErrorKind::NotConnected.into());
     }
     private_directory(directory)?;
     let (mut stream, child_socket) = UnixStream::pair()?;
@@ -438,7 +569,7 @@ pub async fn deposit(executable: &Path, directory: &Path, pairs: Vec<Pair>) -> i
         let _ = child.wait().await;
     });
     tokio::time::timeout(LIFETIME, async {
-        let mut pending = PendingDelivery(pairs.into_iter().map(Some).collect());
+        let mut pending = PendingDelivery(connected.into_iter().map(Some).collect());
         pending.send(&mut stream).await?;
         if pending.during(stream.read_u8()).await? != b'E' {
             return Err(invalid("handoff was not acknowledged"));
@@ -484,6 +615,30 @@ mod tests {
     use std::fs::Permissions;
     use std::os::unix::fs::PermissionsExt as _;
 
+    #[tokio::test]
+    async fn expiry_while_another_copy_is_still_pausing_releases_both_peers() -> io::Result<()> {
+        let (send, short) = tokio::sync::oneshot::channel();
+        let (delayed, other) = tokio::sync::oneshot::channel();
+        let (left, mut client) = UnixStream::pair()?;
+        let (right, mut upstream) = UnixStream::pair()?;
+        let _ = send.send(Pair {
+            established: None,
+            sockets: [left.into_std()?.into(), right.into_std()?.into()],
+            state: b"expired".to_vec(),
+            expires: Some(monotonic_ms() + 200),
+        });
+        let collection = tokio::spawn(collect(vec![short, other]));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            assert_eq!(client.read(&mut [0]).await?, 0);
+            assert_eq!(upstream.read(&mut [0]).await?, 0);
+            io::Result::Ok(())
+        })
+        .await??;
+        assert!(!collection.is_finished());
+        drop(delayed);
+        assert!(collection.await??.is_empty());
+        Ok(())
+    }
     #[test]
     fn handoff_clock_uses_the_same_epoch_as_other_processes() -> io::Result<()> {
         use rustix::time::{ClockId, clock_gettime};
@@ -510,6 +665,7 @@ mod tests {
         let (right, b) = UnixStream::pair()?;
         Ok((
             Pair {
+                established: None,
                 expires: None,
                 sockets: [left.into_std()?.into(), right.into_std()?.into()],
                 state,
@@ -641,6 +797,7 @@ mod tests {
             let (right, _) = listener.accept().await?;
             Ok((
                 Pair {
+                    established: None,
                     sockets: [left.into_std()?.into(), right.into_std()?.into()],
                     state: b"private cursor".to_vec(),
                     expires: Some(monotonic_ms() + 60_000),
@@ -725,6 +882,238 @@ mod tests {
                 .is_err_and(|e| e.kind() == io::ErrorKind::NotConnected)
         );
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn collecting_a_capture_checks_identity_before_its_deadline_owns_the_original()
+    -> io::Result<()> {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let (other, _other_peers) = pair(Vec::new())?;
+            let (mut captured, [mut client, _right]) = pair(b"cursor".to_vec())?;
+            let retained = captured.sockets[0].as_fd().try_clone_to_owned()?;
+            let mut original = UnixStream::from_std(retained.into())?;
+            let end = monotonic_ms() + 100;
+            captured.expires = Some(end);
+            captured.established = Some(Established::connected(
+                &other.sockets[0],
+                &captured.sockets[1],
+            )?);
+            let (reply, ready) = tokio::sync::oneshot::channel();
+            assert!(reply.send(captured).is_ok());
+            assert!(
+                collect(vec![ready])
+                    .await
+                    .is_err_and(|e| e.kind() == io::ErrorKind::InvalidData)
+            );
+            // Passing the refused record's original deadline cannot take the sender's connection.
+            assert!(
+                tokio::time::timeout(time_left(end, monotonic_ms()), client.read_u8())
+                    .await
+                    .is_err()
+            );
+            client.write_all(b"kept").await?;
+            assert_eq!(original.read_u32().await?.to_be_bytes(), *b"kept");
+            Ok(())
+        })
+        .await?
+    }
+
+    #[tokio::test]
+    async fn collecting_rejects_out_of_bounds_state_and_untimed_identities_before_custody()
+    -> io::Result<()> {
+        let mut refused = Vec::new();
+        for oversized in [true, false] {
+            let (mut captured, _peers) = pair(Vec::new())?;
+            if oversized {
+                captured.state.resize(MAX_STATE + 1, 0);
+            } else {
+                captured.established = Some(Established::connected(
+                    &captured.sockets[0],
+                    &captured.sockets[1],
+                )?);
+            }
+            let (reply, ready) = tokio::sync::oneshot::channel();
+            assert!(reply.send(captured).is_ok());
+            refused.push(
+                collect(vec![ready])
+                    .await
+                    .is_err_and(|e| e.kind() == io::ErrorKind::InvalidData),
+            );
+        }
+        assert_eq!(
+            refused,
+            [true, true],
+            "oversized state and untimed identity"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_sender_supplies_complete_identities_before_transferring_ownership()
+    -> io::Result<()> {
+        let (mut record, _peers) = pair(b"saved".to_vec())?;
+        let ids = Established::connected(&record.sockets[0], &record.sockets[1])?;
+        let end = monotonic_ms() + 3_000;
+        record.expires = Some(end);
+        record.established = Some(ids);
+        let (mut sender, mut receiver) = UnixStream::pair()?;
+        send_record(&mut sender, &record).await?;
+        // Read one byte of the valid producer's first message, including any attached handles.
+        let mut bytes = [0u8; 1];
+        let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(2))];
+        let mut ancillary = RecvAncillaryBuffer::new(&mut space);
+        net::recvmsg(
+            &receiver,
+            &mut [IoSliceMut::new(&mut bytes)],
+            &mut ancillary,
+            RecvFlags::CMSG_CLOEXEC,
+        )?;
+        assert!(
+            ancillary.drain().next().is_none(),
+            "metadata has no socket ownership"
+        );
+        assert_eq!(bytes, [b'I']);
+        assert_eq!(receiver.read_u64().await?, end);
+        assert_eq!(receiver.read_u64().await?, ids.0[0]);
+        assert_eq!(receiver.read_u64().await?, ids.0[1]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_interrupted_identity_prefix_leaves_the_original_connection_with_its_sender()
+    -> io::Result<()> {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            for wait_for_expiry in [false, true] {
+                let (record, [mut client, _right]) = pair(Vec::new())?;
+                let ids = Established::connected(&record.sockets[0], &record.sockets[1])?;
+                let (mut sender, mut receiver) = UnixStream::pair()?;
+                let mut receiving = tokio::spawn(async move { receive(&mut receiver).await });
+                let end = monotonic_ms() + 50;
+                sender.write_u8(b'I').await?;
+                sender.write_u64(end).await?;
+                sender.write_u64(ids.0[0]).await?;
+                if wait_for_expiry {
+                    assert!(
+                        tokio::time::timeout(time_left(end, monotonic_ms()), &mut receiving)
+                            .await
+                            .is_err()
+                    );
+                }
+                sender.shutdown().await?;
+                assert!(
+                    receiving
+                        .await?
+                        .is_err_and(|e| e.kind() == io::ErrorKind::UnexpectedEof)
+                );
+                let [left, _right] = record.sockets;
+                let mut original = UnixStream::from_std(left.into())?;
+                client.write_all(b"kept").await?;
+                assert_eq!(original.read_u32().await?.to_be_bytes(), *b"kept");
+            }
+            Ok(())
+        })
+        .await?
+    }
+
+    #[tokio::test]
+    async fn a_terminal_transport_timeout_leaves_the_other_original_stream_usable() -> io::Result<()>
+    {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            // Inject the terminal read outcome of a timed-out TCP stream at the queue check.
+            let (ended, _closed) = pair(Vec::new())?;
+            let ended_cookie = net::sockopt::socket_cookie(&ended.sockets[0])?;
+            let (healthy, [mut client, mut peer]) = pair(b"healthy".to_vec())?;
+            let (mut old, mut next) = UnixStream::pair()?;
+            send(&mut old, &[ended, healthy]).await?;
+            let mut received = receive_with(&mut next, |candidate| {
+                if net::sockopt::socket_cookie(&candidate.sockets[0])? == ended_cookie {
+                    Ok(terminal_queue(Err(rustix::io::Errno::TIMEDOUT)))
+                } else {
+                    candidate.resumable()
+                }
+            })
+            .await?
+            .release();
+            assert_eq!(received.len(), 1);
+            let saved = received
+                .pop()
+                .ok_or_else(|| invalid("missing healthy stream"))?;
+            let [left, right] = saved.sockets;
+            let mut left = UnixStream::from_std(left.into())?;
+            let mut right = UnixStream::from_std(right.into())?;
+            client.write_all(b"live").await?;
+            assert_eq!(left.read_u32().await?.to_be_bytes(), *b"live");
+            right.write_all(b"back").await?;
+            assert_eq!(peer.read_u32().await?.to_be_bytes(), *b"back");
+            Ok(())
+        })
+        .await?
+    }
+
+    #[tokio::test]
+    async fn an_identity_from_another_pair_cannot_take_its_live_endpoints() -> io::Result<()> {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let (other, _peers) = pair(Vec::new())?;
+            let (mut record, [mut peer, _right]) = pair(b"kept".to_vec())?;
+            let retained = record.sockets[0].as_fd().try_clone_to_owned()?;
+            let mut original = UnixStream::from_std(retained.into())?;
+            record.established = Some(Established::connected(
+                &other.sockets[0],
+                &record.sockets[1],
+            )?);
+            record.expires = Some(monotonic_ms() + 3_000);
+            assert!(
+                record
+                    .resumable()
+                    .is_err_and(|e| e.kind() == io::ErrorKind::InvalidData)
+            );
+            let (mut sender, mut receiver) = UnixStream::pair()?;
+            send(&mut sender, &[record]).await?;
+            assert!(
+                receive(&mut receiver)
+                    .await
+                    .is_err_and(|e| e.kind() == io::ErrorKind::InvalidData)
+            );
+            peer.write_all(b"original").await?;
+            let mut marker = [0; 8];
+            original.read_exact(&mut marker).await?;
+            assert_eq!(&marker, b"original");
+            Ok(())
+        })
+        .await?
+    }
+
+    #[tokio::test]
+    async fn a_disconnected_record_still_requires_a_complete_bounded_frame() -> io::Result<()> {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            for (size, expected) in [
+                (5, io::ErrorKind::UnexpectedEof),
+                (
+                    u32::try_from(MAX_STATE + 1).map_err(io::Error::other)?,
+                    io::ErrorKind::InvalidData,
+                ),
+            ] {
+                let (mut sender, mut receiver) = UnixStream::pair()?;
+                let (live, [mut left, mut right]) = pair(b"live".to_vec())?;
+                send_record(&mut sender, &live).await?;
+                let (mut lost, _peers) = pair(Vec::new())?;
+                lost.sockets[0] = net::socket(AddressFamily::INET, SocketType::STREAM, None)?;
+                send_header(&sender, &lost.sockets, b'P').await?;
+                sender.write_u32(size).await?;
+                sender.write_all(b"x").await?;
+                sender.shutdown().await?;
+                assert!(
+                    receive(&mut receiver)
+                        .await
+                        .is_err_and(|e| e.kind() == expected)
+                );
+                // Incomplete delivery shuts down even the fully received predecessor.
+                assert_eq!(left.read(&mut [0]).await?, 0);
+                assert_eq!(right.read(&mut [0]).await?, 0);
+            }
+            Ok(())
+        })
+        .await?
     }
 
     #[tokio::test]
@@ -898,17 +1287,17 @@ mod tests {
     #[tokio::test]
     async fn a_pair_requires_two_connected_streams_and_an_end_has_no_descriptors() -> io::Result<()>
     {
-        let (mut sender, receiver) = UnixStream::pair()?;
+        let (mut sender, mut receiver) = UnixStream::pair()?;
         sender.write_all(b"P").await?;
-        assert!(header(&receiver).await.is_err());
+        assert!(header(&mut receiver).await.is_err());
         sender.write_all(b"?").await?;
-        assert!(header(&receiver).await.is_err());
+        assert!(header(&mut receiver).await.is_err());
         let (files, _) = pair(vec![])?;
         let (datagram, _peer) = std::os::unix::net::UnixDatagram::pair()?;
         let nonstream: OwnedFd = datagram.into();
         let [stream, _] = files.sockets;
         send_header(&sender, &[stream, nonstream], b'P').await?;
-        assert!(header(&receiver).await.is_err());
+        assert!(header(&mut receiver).await.is_err());
         // A terminator carrying descriptors and a truncated rights array both reject the batch.
         let (record, _) = pair(vec![])?;
         for (tag, count) in [(b'E', 2), (b'P', 4)] {
@@ -922,10 +1311,10 @@ mod tests {
                 &mut ancillary,
                 SendFlags::NOSIGNAL,
             )?;
-            assert!(header(&receiver).await.is_err());
+            assert!(header(&mut receiver).await.is_err());
         }
         sender.shutdown().await?;
-        assert!(header(&receiver).await.is_err());
+        assert!(header(&mut receiver).await.is_err());
         Ok(())
     }
 

@@ -3827,7 +3827,10 @@ The Linux `sandbox-host hold-tunnels` helper holds a bounded batch of connected 
 and private copy state for one successor. Its two-minute deadline includes the time spent
 receiving and returning the batch. Each timed pair also retains its original monotonic
 deadline. The helper releases expired pairs while a successor receives the remaining live
-records. The server integration is tracked in SPEC-577.
+records. A timed pair can carry its original kernel socket identities. The sender supplies
+them before transferring its descriptors. The receiver can drain a final TCP receive queue
+after both FINs, and a reset or timed-out stream releases its own pair. The server integration
+is tracked in SPEC-577.
 [ADR-0413](decisions/0413-a-bounded-helper-holds-connected-tunnel-sockets-between-servers.md)
 The proxy also counts each connection's run (agent run, CI job, Superagent shell). When nothing was
 idle for 5 minutes, a full sandbox share takes the oldest connection of its busiest other run, and
