@@ -646,7 +646,11 @@ fn jobs_cover_target(reference: &CiRef, gate: &Gate, jobs: &[CiJobRecord]) -> bo
     let skipped_the_full_suite = jobs
         .iter()
         .any(|t| dom::skipped_after_merge(t.state, t.reason.as_deref()));
-    if branch && skipped_a_paths_job || merged && skipped_the_full_suite {
+    // A train still requires its path-scoped jobs to have passed. Branches and merge
+    // candidates use the execution evidence below, including an actual skip exit.
+    if matches!(reference, CiRef::Train(_)) && skipped_a_paths_job
+        || merged && skipped_the_full_suite
+    {
         return false;
     }
     // Every job of the gate ran there as it is defined now: a pull request judged by the

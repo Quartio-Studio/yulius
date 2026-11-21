@@ -940,7 +940,23 @@ async fn deploy_with_shared_ci(newer_pending: bool) -> TestResult {
     explicit.reference = CiRef::Branch("dev".into());
     explicit.state = RunState::Running;
     explicit.ended_at = None;
-    f.h.store.insert_ci_run(&explicit, &[]).await?;
+    let mut jobs = f.h.store.ci_jobs(&id, false).await?;
+    for job in &mut jobs {
+        job.id = format!("explicit-{}", job.key);
+        job.run_id.clone_from(&explicit.id);
+        if job.key == "full" {
+            // Path filters do not prevent a branch job from running. It can start and
+            // decide to skip, or have that executed verdict copied from the same tree.
+            job.state = RunState::Skipped;
+            job.exit_code = Some(yulius_domain::ci::SKIP_EXIT_CODE);
+            job.reason = newer_pending.then(|| yulius_domain::ci::EXECUTED_SKIP_REASON.into());
+        } else {
+            job.state = RunState::Passed;
+            job.exit_code = Some(0);
+            job.reason = None;
+        }
+    }
+    f.h.store.insert_ci_run(&explicit, &jobs).await?;
     let checking = f.deploy(&f.bob, "prod", Some("app")).await?;
     assert_eq!(
         checking.status,
@@ -948,6 +964,16 @@ async fn deploy_with_shared_ci(newer_pending: bool) -> TestResult {
         "{}",
         checking.body
     );
+    f.h.store
+        .execute_for_tests("UPDATE ci_runs SET state='passed' WHERE id='explicit-branch-rerun'")
+        .await?;
+    let checked = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert!(
+        checked.status.is_success(),
+        "executed path-scoped job: {}",
+        checked.body
+    );
+    assert_eq!(f.head("main")?, a);
     Ok(())
 }
 
