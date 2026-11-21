@@ -120,7 +120,7 @@ pub fn inspect_run_dir(run_dir: &Path) -> RunDirState {
     if boot.is_some()
         && !host_alive
         && !child_alive
-        && let Err(error) = crate::build_scratch::reclaim(run_dir)
+        && let Err(error) = crate::build_scratch::reclaim_recorded(run_dir, &status)
     {
         eprintln!("cannot reclaim finished build scratch: {error}");
     }
@@ -186,28 +186,67 @@ pub fn terminate_run_dir(run_dir: &Path) -> Result<(), TerminateError> {
     {
         terminate_recorded(&status)?;
         if current_boot_id().is_some() {
-            crate::build_scratch::reclaim(run_dir)?;
+            crate::build_scratch::reclaim_recorded(run_dir, &status)?;
         }
     }
     Ok(())
 }
 
-/// The server has reaped this host. The only scratch-bearing children are
-/// bubblewrap processes with --die-with-parent. Also terminate a recorded
-/// child that is still shutting down before removing its build tree.
-pub(crate) fn reclaim_after_host_exit(run_dir: &Path) -> Result<(), TerminateError> {
-    if !crate::build_scratch::recorded(run_dir) {
-        return Ok(());
-    }
-    if let Some(status) = read_status(&run_dir.join(STATUS_FILE))
-        .map_err(|error| TerminateError::Status(error.to_string()))?
-    {
-        if current_boot_id().is_none() {
-            return Err(TerminateError::Status("unknown boot identity".into()));
+/// These values belong to the launch acknowledged by the server. CI may remove
+/// or reuse the control directory before the process waiter gets CPU time.
+pub(crate) struct BuildOwner {
+    receipt: crate::build_scratch::Receipt,
+    status: Option<StatusRecord>,
+}
+
+impl BuildOwner {
+    pub(crate) fn capture(
+        run_dir: &Path,
+        host_pid: u32,
+        token: &str,
+        status: Option<StatusRecord>,
+    ) -> Result<Option<Self>, TerminateError> {
+        let Some(receipt) = crate::build_scratch::read(run_dir)? else {
+            return Ok(None);
+        };
+        if !receipt.belongs_to(host_pid, token) {
+            return Ok(None);
         }
-        terminate_recorded(&status)?;
+        let status = status.filter(|status| receipt.matches_status(status));
+        Ok(Some(Self { receipt, status }))
     }
-    crate::build_scratch::reclaim(run_dir)?;
+
+    /// Bubblewrap dies with its host. Wait for the original child to disappear.
+    /// A delayed process waiter has no reason to signal any host or child.
+    pub(crate) fn reclaim(self) -> Result<(), TerminateError> {
+        if let Some(status) = self.status {
+            let boot = current_boot_id()
+                .ok_or_else(|| TerminateError::Status("unknown boot identity".into()))?;
+            if boot == status.boot_id
+                && let Some(child) = child_matches(&status)
+                && wait_gone(&[child], TERMINATE_WAIT).is_some()
+            {
+                return Err(TerminateError::StillAlive {
+                    pid: status.child_pid,
+                });
+            }
+        }
+        self.receipt.reclaim()?;
+        Ok(())
+    }
+}
+
+/// If startup failed before the ready handshake, recover only this launch's receipt.
+pub(crate) fn reclaim_after_host_exit(
+    run_dir: &Path,
+    host_pid: u32,
+    token: &str,
+) -> Result<(), TerminateError> {
+    let status = read_status(&run_dir.join(STATUS_FILE))
+        .map_err(|e| TerminateError::Status(e.to_string()))?;
+    if let Some(owner) = BuildOwner::capture(run_dir, host_pid, token, status)? {
+        owner.reclaim()?;
+    }
     Ok(())
 }
 

@@ -104,6 +104,7 @@ pub fn run_host(run_dir: &Path) -> Result<(), HostError> {
     let absolute = std::path::absolute(run_dir).unwrap_or_else(|_| run_dir.to_path_buf());
     let run_dir = absolute.as_path();
     // Taken first: a run directory removed while the host starts is still detected as orphaned.
+    let control = fs::File::open(run_dir).map_err(io_error("open run directory"))?;
     let identity = dir_identity(run_dir);
     let mut launch = load_launch(run_dir)?;
     let attempt = launch.attempt_id.clone();
@@ -132,9 +133,14 @@ pub fn run_host(run_dir: &Path) -> Result<(), HostError> {
 
     // Keep build trees inside the measured sandbox filesystem. The guard outlives
     // the child and reclaims alternate targets even if their command was interrupted.
-    let scratch = attach_build_scratch(run_dir, &launch.containment, &mut launch.env)
-        .map_err(io_error("create build scratch"))
-        .map_err(|e| fail(ExitReason::SpawnFailed, e))?;
+    let scratch = attach_build_scratch(
+        &control,
+        &launch.containment,
+        &mut launch.env,
+        &launch.token_sha256,
+    )
+    .map_err(io_error("create build scratch"))
+    .map_err(|e| fail(ExitReason::SpawnFailed, e))?;
     let command = prepare_command(&launch).map_err(|e| fail(ExitReason::SpawnFailed, e))?;
     let size = PtySize {
         rows: launch.rows,
@@ -185,11 +191,12 @@ pub fn run_host(run_dir: &Path) -> Result<(), HostError> {
     Ok(())
 }
 
-fn attach_build_scratch<'a>(
-    run_dir: &'a Path,
+fn attach_build_scratch(
+    run_dir: &fs::File,
     containment: &Containment,
     env: &mut std::collections::BTreeMap<String, String>,
-) -> io::Result<Option<crate::build_scratch::Guard<'a>>> {
+    token: &str,
+) -> io::Result<Option<crate::build_scratch::Guard>> {
     let Containment::Bubblewrap(spec) = containment else {
         return Ok(None);
     };
@@ -202,7 +209,7 @@ fn attach_build_scratch<'a>(
         .prefix("build-")
         .permissions(Permissions::from_mode(0o700))
         .tempdir_in(&spec.sandbox_root)?;
-    let scratch = crate::build_scratch::own(run_dir, scratch)?;
+    let scratch = crate::build_scratch::own(run_dir, scratch, std::process::id(), token)?;
     env.insert(
         "YULIUS_BUILD_SCRATCH".into(),
         scratch.path().display().to_string(),
@@ -1261,18 +1268,27 @@ mod tests {
         spec.sandbox_root = root.path().display().to_string();
         let contained = Containment::Bubblewrap(spec);
         let mut env = std::collections::BTreeMap::from([("YULIUS_CI_RUN".into(), "ci".into())]);
-        // Keep the guard in scope so only reconciliation can satisfy the assertion.
-        let stopped = attach_build_scratch(run_dir.path(), &contained, &mut env)?
-            .ok_or("expected scratch")?;
-        let lost = stopped.path();
-        let active = attach_build_scratch(other_run.path(), &contained, &mut env)?
-            .ok_or("expected scratch")?;
-        fs::write(lost.join("target"), b"build")?;
-        fs::write(active.path().join("target"), b"live")?;
         let mut host = std::process::Command::new("sleep")
             .arg("60")
             .process_group(0)
             .spawn()?;
+        // Keep the guard in scope so only reconciliation can satisfy the assertion.
+        let stopped = crate::build_scratch::own(
+            &fs::File::open(run_dir.path())?,
+            tempfile::tempdir_in(root.path())?,
+            host.id(),
+            "",
+        )?;
+        let lost = stopped.path();
+        let active = attach_build_scratch(
+            &fs::File::open(other_run.path())?,
+            &contained,
+            &mut env,
+            "test-token",
+        )?
+        .ok_or("expected scratch")?;
+        fs::write(lost.join("target"), b"build")?;
+        fs::write(active.path().join("target"), b"live")?;
         let status = StatusRecord {
             version: RECORD_VERSION,
             attempt_id: "scratch-test".into(),
@@ -1319,8 +1335,13 @@ mod tests {
             let run = tempfile::tempdir()?;
             let mut env =
                 std::collections::BTreeMap::from([("YULIUS_TASK_WORKTREE".into(), "one".into())]);
-            let owned = attach_build_scratch(run.path(), &contained, &mut env)?
-                .ok_or_else(|| io::Error::other("expected scratch"))?;
+            let owned = attach_build_scratch(
+                &fs::File::open(run.path())?,
+                &contained,
+                &mut env,
+                "test-token",
+            )?
+            .ok_or_else(|| io::Error::other("expected scratch"))?;
             let path = PathBuf::from(&env["YULIUS_BUILD_SCRATCH"]);
             let moved = root.path().join(format!("moved-{close}"));
             fs::rename(&path, moved)?;
@@ -1343,7 +1364,12 @@ mod tests {
     fn the_guard_reclaims_builds_after_ci_removes_its_run_record() -> io::Result<()> {
         let run = tempfile::tempdir()?;
         let sandbox = tempfile::tempdir()?;
-        let guard = crate::build_scratch::own(run.path(), tempfile::tempdir_in(sandbox.path())?)?;
+        let guard = crate::build_scratch::own(
+            &fs::File::open(run.path())?,
+            tempfile::tempdir_in(sandbox.path())?,
+            std::process::id(),
+            "test-token",
+        )?;
         let path = guard.path().to_owned();
         fs::write(path.join("target"), b"build")?;
         fs::remove_dir_all(run.path())?;
@@ -1361,16 +1387,37 @@ mod tests {
         spec.sandbox_root = root.path().display().to_string();
         let contained = Containment::Bubblewrap(spec);
         let mut env = std::collections::BTreeMap::new();
-        assert!(attach_build_scratch(runs[0].path(), &contained, &mut env)?.is_none());
+        assert!(
+            attach_build_scratch(
+                &fs::File::open(runs[0].path())?,
+                &contained,
+                &mut env,
+                "test-token"
+            )?
+            .is_none()
+        );
         let mut active = Vec::new();
         for (key, run) in ["YULIUS_CI_RUN", "YULIUS_TASK_WORKTREE"]
             .into_iter()
             .zip(&runs)
         {
             let mut env = std::collections::BTreeMap::from([(key.into(), "one".into())]);
-            assert!(attach_build_scratch(run.path(), &Containment::None, &mut env)?.is_none());
-            let owned = attach_build_scratch(run.path(), &contained, &mut env)?
-                .ok_or_else(|| io::Error::other("missing scratch"))?;
+            assert!(
+                attach_build_scratch(
+                    &fs::File::open(run.path())?,
+                    &Containment::None,
+                    &mut env,
+                    "test-token"
+                )?
+                .is_none()
+            );
+            let owned = attach_build_scratch(
+                &fs::File::open(run.path())?,
+                &contained,
+                &mut env,
+                "test-token",
+            )?
+            .ok_or_else(|| io::Error::other("missing scratch"))?;
             let path = PathBuf::from(&env["YULIUS_BUILD_SCRATCH"]);
             assert_eq!(path, owned.path());
             assert_eq!(path.parent(), Some(root.path()));

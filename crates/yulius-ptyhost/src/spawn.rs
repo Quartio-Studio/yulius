@@ -253,7 +253,10 @@ pub async fn spawn_host(
     let mut child = command.spawn().map_err(io_error("spawn ptyhost"))?;
     let host_pid = child.id().unwrap_or(0);
     let (sender, mut exit) = watch::channel(None);
+    let (supply_owner, owner_at_ready) =
+        tokio::sync::oneshot::channel::<Option<crate::reconcile::BuildOwner>>();
     let cleanup_dir = run_dir.to_owned();
+    let cleanup_token = launch.token_sha256.clone();
     let waiter = tokio::spawn(async move {
         let status = child.wait().await;
         let status_reaped = status.is_ok();
@@ -269,8 +272,18 @@ pub async fn spawn_host(
         );
         let _ = sender.send(Some(exit));
         if status_reaped {
+            let owner = owner_at_ready.await;
             let _ = tokio::task::spawn_blocking(move || {
-                if let Err(error) = crate::reconcile::reclaim_after_host_exit(&cleanup_dir) {
+                let result = match owner {
+                    Ok(Some(owner)) => owner.reclaim(),
+                    Ok(None) => Ok(()),
+                    Err(_) => crate::reconcile::reclaim_after_host_exit(
+                        &cleanup_dir,
+                        host_pid,
+                        &cleanup_token,
+                    ),
+                };
+                if let Err(error) = result {
                     eprintln!("cannot reclaim stopped host's build scratch: {error}");
                 }
             })
@@ -278,13 +291,34 @@ pub async fn spawn_host(
         }
     });
     match wait_ready(run_dir, &exit, timeout).await {
-        Ok(status) => Ok(SpawnedHost {
-            status,
-            run_dir: run_dir.to_path_buf(),
-            host_pid,
-            exit,
-            _waiter: waiter,
-        }),
+        Ok(status) => {
+            let owner_dir = run_dir.to_owned();
+            let owner_status = status.clone();
+            let token = launch.token_sha256.clone();
+            let owner = blocking(move || {
+                crate::reconcile::BuildOwner::capture(
+                    &owner_dir,
+                    host_pid,
+                    &token,
+                    Some(owner_status),
+                )
+            })
+            .await;
+            match owner {
+                Ok(Ok(owner)) => {
+                    let _ = supply_owner.send(owner);
+                }
+                Ok(Err(error)) => eprintln!("cannot retain build scratch ownership: {error}"),
+                Err(error) => eprintln!("cannot read build scratch ownership at startup: {error}"),
+            }
+            Ok(SpawnedHost {
+                status,
+                run_dir: run_dir.to_path_buf(),
+                host_pid,
+                exit,
+                _waiter: waiter,
+            })
+        }
         Err(error) => {
             if exit.borrow().is_none() {
                 if let Some(pid) = process::pid(host_pid) {
