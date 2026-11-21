@@ -141,7 +141,12 @@ pub trait DeliveryStore: Send + Sync {
     async fn terminal_branches_for_discovery(
         &self,
         sandbox: &yulius_domain::ids::SandboxId,
-    ) -> crate::error::AppResult<Vec<(TaskId, String, u64)>>;
+        after: Option<&TaskId>,
+        limit: u32,
+    ) -> crate::error::AppResult<Vec<(TaskId, String, super::github::GhPull)>>;
+    /// A directly confirmed reopening invalidates the closed-unmerged observation.
+    async fn forget_reopened_pull(&self, task: &TaskId, number: u64)
+    -> crate::error::AppResult<()>;
     /// Last directly observed terminal PR of the task, optionally by number.
     async fn terminal_pull(
         &self,

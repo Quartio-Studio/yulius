@@ -21,6 +21,8 @@ At 30 polls/hour, 15 merged parked rows at the warmed fixture rate of one branch
 
 These figures depend on the paths that actually completed. The old parked verifier can re-list a branch after checking it. Two completed one-page branch lists per parked row would raise the modeled script total from 1,183 to 1,633. The web sidebar's visible project watch refreshes its parked-task list and Git overview once per minute, plus event-driven reads paced at three seconds per source. For a single tab showing eight parked merged tasks for a full hour, one branch list per row implies another 480 requests; two imply 960. An overview adds an open-PR listing and, for readable checks, a check-runs and combined-status read per open head. The staging tick is once per minute per eligible queue and reads the integration ref even to evaluate its target. Open deliveries are reconciled every three minutes. Hours spent open, active queue counts, open-head lifetimes, retries and actual UI events are unknown. These rates explain how the recorded operations could add up without identifying a dominant caller. [Confirmed regression, issue #1650](https://github.com/Quartio-Studio/yulius/issues/1650) [GitHub organization API Insights](https://docs.github.com/en/rest/orgs/api-insights#get-route-stats-by-actor)
 
+The hour ending at the warning and GitHub's quota window also differ. If the reported retry interval ends at the hourly reset, the evening window was 21:28:10–22:28:10 UTC and ran for 44 minutes 56 seconds before exhaustion. A two-minute poller then had 22 or 23 cycles in that window before refusal. At 35 modeled PR reads per cycle, that is 770–805 regular reads, or 903–938 if all 133 bulk reads also landed in the window. With two completed branch listings per parked row, the corresponding estimate including all bulk reads is 1,233–1,283. The afternoon retry implies a reset at 14:27:46 and 50 minutes 21 seconds elapsed. No matching afternoon workload was reported.
+
 ## Requirements
 
 - GB-001 Measure list and delivery requests on the existing implementation before changing them. Report the workload assumptions and what can be attributed.
@@ -31,9 +33,9 @@ These figures depend on the paths that actually completed. The old parked verifi
 ## Plan
 
 - [x] Measure the existing polling paths and document the incident evidence
-- [ ] Share conditional display reads and retain terminal pull requests
+- [x] Share conditional display reads and retain terminal pull requests
 - [x] Attribute hourly requests and reserve capacity for delivery
-- [ ] Serve budget evidence in instance status and the Status panel
+- [x] Serve budget evidence in instance status and the Status panel
 - [ ] Verify the behavior, obtain independent review and deliver to dev
 
 ## Acceptance criteria
@@ -48,7 +50,8 @@ Count calls at list and delivery entry points on a synthetic parked task. Exerci
 
 [Decision 0447](../../docs/decisions/0447-task-display-shares-github-reads-and-yields-to-delivery.md) describes the reserve and cache lifetime. Use the same transport to observe response headers and count attempts, including retries. Reading the counters itself must cost zero GitHub requests.
 
-
 ## Evidence
 
 The fake GitHub transport suite exercised concurrent readers of an open PR, credential isolation, ETag revalidation, physical retries, all six purposes, quota-window rollover and the reserve. The two parked-task regressions saw zero branch-list and zero numbered-PR calls on consecutive list and delivery reads. The counter readings are process-local, with a separate lower bound for GitHub-charged requests outside the observed attempts.
+
+Manually changing the reserve from 10% to zero in an isolated source copy made the transport regression fail: it expected DisplayPaused at 500 remaining and received a successful repository read. The unmodified suite passed. Vidoc is disabled for this project.

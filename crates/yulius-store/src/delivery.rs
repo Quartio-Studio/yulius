@@ -89,17 +89,44 @@ impl DeliveryStore for SqliteStore {
     async fn terminal_branches_for_discovery(
         &self,
         sandbox: &SandboxId,
-    ) -> AppResult<Vec<(TaskId, String, u64)>> {
+        after: Option<&TaskId>,
+        limit: u32,
+    ) -> AppResult<Vec<(TaskId, String, yulius_app::ports::github::GhPull)>> {
         let sandbox = sandbox.to_string();
+        let after = after.map(ToString::to_string).unwrap_or_default();
         self.call(move |c| {
-            let mut statement = c.prepare("SELECT t.id, t.branch, max(p.pr_number) FROM tasks t JOIN terminal_pulls p ON p.task_id=t.id
-                JOIN delivery d ON d.task_id=t.id WHERE t.sandbox_id=?1 AND (t.status='parked' OR d.stage='none') AND t.archived_at IS NULL
-                AND t.branch IS NOT NULL AND d.stage != 'pr_open' GROUP BY t.id").map_err(db)?;
-            statement.query_map([sandbox], |r| {
-                let id: String = r.get(0)?;
-                Ok((TaskId::parse(&id).map_err(|_| bad_column("task id", &id))?, r.get(1)?, to_u64(r.get(2)?)))
-            }).map_err(db)?.collect::<Result<Vec<_>, _>>().map_err(db)
+            let mut statement = c.prepare(
+                "SELECT t.id, coalesce(t.branch, ''), p.snapshot FROM tasks t
+                 LEFT JOIN delivery d ON d.task_id=t.id JOIN terminal_pulls p ON p.task_id=t.id
+                 WHERE t.sandbox_id=?1 AND t.archived_at IS NULL AND t.id>?2
+                 AND coalesce(d.stage,'none')!='pr_open' AND p.pr_number=(SELECT max(pr_number) FROM terminal_pulls WHERE task_id=t.id)
+                 AND (t.status='parked' OR coalesce(d.stage,'none')='none' OR
+                     p.needs_confirmation)
+                 ORDER BY t.id LIMIT ?3"
+            ).map_err(db)?;
+            let rows = statement.query_map(params![sandbox, after, limit], |r| {
+                Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?))
+            }).map_err(db)?;
+            rows.map(|r| {
+                let (id, branch, json) = r.map_err(db)?;
+                Ok((TaskId::parse(&id).map_err(yulius_app::error::AppError::internal)?, branch,
+                    serde_json::from_str(&json).map_err(yulius_app::error::AppError::internal)?))
+            }).collect()
         }).await
+    }
+
+    async fn forget_reopened_pull(&self, task: &TaskId, number: u64) -> AppResult<()> {
+        let task = task.to_string();
+        self.call(move |c| {
+            c.execute(
+                "DELETE FROM terminal_pulls WHERE task_id=?1 AND pr_number=?2
+                       AND NOT json_extract(snapshot,'$.merged')",
+                params![task, to_i64(number)],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
     }
 
     async fn terminal_pull(
@@ -122,14 +149,19 @@ impl DeliveryStore for SqliteStore {
         task: &TaskId,
         pull: &yulius_app::ports::github::GhPull,
     ) -> AppResult<()> {
+        let needs_confirmation =
+            pull.merged && !pull.from_fork && Landing::closed_pull(pull).is_none();
         let snapshot =
             serde_json::to_string(pull).map_err(yulius_app::error::AppError::internal)?;
         let (task, number) = (task.to_string(), to_i64(pull.number));
         self.call(move |c| {
             c.execute(
-                "INSERT INTO terminal_pulls(task_id, pr_number, snapshot) VALUES (?1, ?2, ?3)
-                       ON CONFLICT DO NOTHING",
-                params![task, number, snapshot],
+                "INSERT INTO terminal_pulls(task_id, pr_number, snapshot, needs_confirmation) VALUES (?1, ?2, ?3, ?4)
+                       ON CONFLICT(task_id,pr_number) DO UPDATE SET snapshot=excluded.snapshot, needs_confirmation=excluded.needs_confirmation
+                       WHERE json_extract(excluded.snapshot,'$.merged')
+                         AND (NOT json_extract(terminal_pulls.snapshot,'$.merged')
+                           OR (terminal_pulls.needs_confirmation AND NOT excluded.needs_confirmation))",
+                params![task, number, snapshot, needs_confirmation],
             )
             .map_err(db)?;
             Ok(())
@@ -225,6 +257,11 @@ impl DeliveryStore for SqliteStore {
                 ],
             )
             .map_err(db)?;
+            if next.stage == DeliveryStage::PrOpen && let Some(pr) = next.pr_number {
+                tx.execute("DELETE FROM terminal_pulls WHERE task_id=?1 AND pr_number=?2
+                            AND NOT json_extract(snapshot,'$.merged')",
+                    params![next.task_id.as_str(), to_i64(pr)]).map_err(db)?;
+            }
             if next.stage == DeliveryStage::PrOpen && let (Some(base), Some(pr)) = (opening_base, next.pr_number) {
                 tx.execute(
                     "INSERT INTO task_merge_recovery(task_id, pr_number, branch) VALUES (?1, ?2, ?3) ON CONFLICT DO NOTHING",
@@ -561,6 +598,62 @@ mod tests {
             })
             .await?;
         Ok(task.id)
+    }
+
+    #[tokio::test]
+    async fn terminal_discovery_pages_advance_over_the_whole_project() -> TestResult {
+        let store = SqliteStore::open_in_memory()?;
+        seed(&store).await?;
+        let sandbox = SandboxId::parse("s1")?;
+        store.call(|conn| {
+            conn.execute_batch(
+                "UPDATE tasks SET status='parked' WHERE id='t1';
+                 INSERT INTO tasks (id,sandbox_id,number,title,prompt,harness,status,branch,origin,created_by,created_at,updated_at)
+                 VALUES ('t2','s1',2,'Next','Prompt','codex','parked','next','ui','u1',1,2);
+                 INSERT INTO delivery (task_id,stage,pr_number,updated_at) VALUES ('t1','merged_integration',1,2),('t2','merged_integration',2,2);"
+            ).map_err(db)?;
+            Ok(())
+        }).await?;
+        for number in 1..=2 {
+            let task = TaskId::parse(&format!("t{number}"))?;
+            store
+                .remember_terminal_pull(
+                    &task,
+                    &yulius_app::ports::github::GhPull {
+                        number,
+                        html_url: String::new(),
+                        title: String::new(),
+                        state: "closed".into(),
+                        merged: true,
+                        base: "dev".into(),
+                        base_sha: String::new(),
+                        head: String::new(),
+                        head_sha: "a".repeat(40),
+                        mergeable: None,
+                        behind: false,
+                        from_fork: false,
+                        merge_commit_sha: Some("b".repeat(40)),
+                    },
+                )
+                .await?;
+        }
+        let first = store
+            .terminal_branches_for_discovery(&sandbox, None, 1)
+            .await?;
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].0.as_str(), "t1");
+        let second = store
+            .terminal_branches_for_discovery(&sandbox, Some(&first[0].0), 1)
+            .await?;
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].0.as_str(), "t2");
+        assert!(
+            store
+                .terminal_branches_for_discovery(&sandbox, Some(&second[0].0), 1)
+                .await?
+                .is_empty()
+        );
+        Ok(())
     }
 
     #[tokio::test]

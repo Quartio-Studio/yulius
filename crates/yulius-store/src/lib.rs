@@ -577,7 +577,12 @@ mod tests {
              VALUES ('t','s',1,'Checkout','Change checkout','codex','parked','feature','user','u',1,2);
              INSERT INTO delivery (task_id,stage,pr_number,updated_at) VALUES ('t','merged_integration',41,2);
              INSERT INTO task_merges (task_id,sandbox_id,merged_sha,branch,pr_number,head_sha)
-             VALUES ('t','s','landed','dev',41,'reviewed');",
+             VALUES ('t','s','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','dev',41,'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');",
+        )?;
+        conn.execute_batch(
+            "INSERT INTO tasks (id,sandbox_id,number,title,prompt,harness,status,branch,origin,created_by,created_at,updated_at)
+             VALUES ('older','s',2,'Renamed task','Old prompt','codex','parked','renamed','user','u',1,2);
+             INSERT INTO delivery (task_id,stage,pr_number,updated_at) VALUES ('older','merged_integration',42,2);"
         )?;
         prepare(&mut conn)?;
         let json: String = conn.query_row(
@@ -590,8 +595,20 @@ mod tests {
             (pull.number, pull.merged, pull.base.as_str()),
             (41, true, "dev")
         );
-        assert_eq!(pull.head_sha, "reviewed");
-        assert_eq!(pull.merge_commit_sha.as_deref(), Some("landed"));
+        assert_eq!(pull.head_sha, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        assert_eq!(
+            pull.merge_commit_sha.as_deref(),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        let json: String = conn.query_row(
+            "SELECT snapshot FROM terminal_pulls WHERE task_id='older'",
+            [],
+            |r| r.get(0),
+        )?;
+        let older: yulius_app::ports::github::GhPull = serde_json::from_str(&json)?;
+        assert!(older.merged && older.merge_commit_sha.is_none());
+        assert_eq!(older.title, "Pull request #42");
+        assert!(older.head.is_empty() && older.head_sha.is_empty());
         Ok(())
     }
 

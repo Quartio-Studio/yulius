@@ -218,6 +218,16 @@ impl OverviewRead {
         self.publish(PullObservation::Branch(task.clone(), pr));
     }
 
+    pub(crate) fn record_terminal(self, task: &TaskId, pull: &crate::ports::github::GhPull) {
+        self.publish(PullObservation::Branch(
+            task.clone(),
+            ObservedPull {
+                number: pull.number,
+                signal: pull.merged.then_some(PullSignal::Merged),
+            },
+        ));
+    }
+
     fn publish(mut self, observation: PullObservation) {
         if let Some(id) = self.id.take()
             && let Ok(mut order) = self.cache.lock()

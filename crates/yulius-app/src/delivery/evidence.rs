@@ -43,7 +43,9 @@ impl Landing {
         })
     }
 
-    pub(crate) fn closed_pull(pull: &GhPull) -> Option<Self> {
+    /// The landing identity reported by a terminal pull, when it supplies both full commit IDs.
+    #[must_use]
+    pub fn closed_pull(pull: &GhPull) -> Option<Self> {
         if !pull.merged || pull.from_fork {
             return None;
         }

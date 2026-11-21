@@ -43,6 +43,7 @@ impl Clock for TestClock {
 /// Fake GitHub: OAuth codes map to users; permissions per (login, repo).
 #[derive(Default)]
 pub struct FakeGitHub {
+    pub branch_read_purposes: Mutex<Vec<yulius_app::ports::github::GitHubPurpose>>,
     pub budget_view: Mutex<Option<yulius_app::ports::github::GitHubBudget>>,
     pub users_by_code: Mutex<HashMap<String, GhUser>>,
     pub perms: Mutex<HashMap<(String, String), GitHubPermissions>>,
@@ -806,6 +807,16 @@ impl GitHubPort for FakeGitHub {
         _: &str,
         branch: &str,
     ) -> AppResult<Option<String>> {
+        let purpose = yulius_app::ports::github::current_purpose();
+        self.branch_read_purposes
+            .lock()
+            .map_err(AppError::internal)?
+            .push(purpose);
+        if purpose == yulius_app::ports::github::GitHubPurpose::Display
+            && self.budget(None).display_paused
+        {
+            return Err(AppError::Upstream("display refreshes paused".into()));
+        }
         if self.fail_pinned_merge_read.load(Ordering::SeqCst)
             && self
                 .pulls

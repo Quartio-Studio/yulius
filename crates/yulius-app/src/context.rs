@@ -6,6 +6,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
+use yulius_domain::ids::{SandboxId, TaskId};
+
 use crate::events::EventBus;
 use crate::ports::git::GitPort;
 use crate::ports::github::GitHubPort;
@@ -325,6 +327,7 @@ pub struct App {
     /// The Claude Code sandboxes get (SPEC-461); unset: runs use the host's as it is.
     pub(crate) agent_cli: OnceLock<crate::claude_code::AgentCliServices>,
     /// Pull requests the Git overview last observed, for the "needs you" counts (#147).
+    pub(crate) terminal_scan_after: Mutex<HashMap<SandboxId, TaskId>>,
     pub(crate) observed_pulls: crate::sandboxes::ObservedPulls,
     /// Local Git checks can outlive the page read that requested them.
     pub(crate) parked_git: Arc<tokio::sync::Semaphore>,
@@ -436,6 +439,7 @@ impl App {
             ci: crate::ci::CiState::default(),
             isolation: OnceLock::new(),
             agent_cli: OnceLock::new(),
+            terminal_scan_after: Mutex::default(),
             observed_pulls: crate::sandboxes::ObservedPulls::default(),
             parked_git: Arc::new(tokio::sync::Semaphore::new(crate::sandboxes::PARKED_READS)),
             parked_git_app: app.clone(),

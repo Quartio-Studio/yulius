@@ -1922,12 +1922,11 @@ impl App {
         let terminal = self.deps.store.terminal_pull(&task.id, number).await?;
         Ok(terminal.filter(|p| {
             number.is_some()
-                || (!p.merged
-                    && self
-                        .observed_pulls
-                        .known_pull(&task.sandbox_id, &task.id)
-                        .flatten()
-                        .is_none_or(|known| !known.open() || known.number == p.number))
+                || (self
+                    .observed_pulls
+                    .known_pull(&task.sandbox_id, &task.id)
+                    .flatten()
+                    .is_none_or(|known| !known.open() || known.number == p.number))
         }))
     }
 
@@ -1998,7 +1997,7 @@ impl App {
             }
             ObserveAccess::Provided(token) => token,
         };
-        let mut pr = terminal.filter(|pull| pull.merged || record.pr_number.is_some());
+        let mut pr = terminal.filter(|_| record.pr_number.is_some());
         // Only an answer from GitHub may change the recorded stage; failures never do.
         let mut pr_known = record.stage == DeliveryStage::PrOpen && pr.is_some();
         let mut checks = ChecksState::None;
@@ -2518,6 +2517,31 @@ impl App {
                     .map(|p| pull_view(p, checks_of(p.number))),
                 worktree: worktree_state(&task),
             };
+            // A branch list may lag a closure. Before invalidating a closed-unmerged
+            // snapshot on a positive overview, confirm the same PR itself reopened.
+            if let Some(token) = &token
+                && let Some(listed) = open_pulls.iter().find(|p| !p.from_fork && p.head == branch)
+                && self
+                    .deps
+                    .store
+                    .terminal_pull(&task.id, Some(listed.number))
+                    .await?
+                    .is_some_and(|prior| !prior.merged)
+                && let Ok(direct) = self
+                    .deps
+                    .github
+                    .get_pull(token, owner, name, listed.number)
+                    .await
+                && direct.number == listed.number
+                && is_open(&direct)
+                && !direct.from_fork
+                && direct.head == branch
+            {
+                self.deps
+                    .store
+                    .forget_reopened_pull(&task.id, direct.number)
+                    .await?;
+            }
             // GitHub's list says nothing about mergeability: Yulius's own clone does (DON-001).
             if let Some(pull) = open_pulls.iter().find(|p| !p.from_fork && p.head == branch)
                 && self.pull_conflicts(&task, &sandbox, pull).await
@@ -5179,37 +5203,112 @@ impl App {
     /// Discover external follow-ups once per repository on the delivery tick. A task read
     /// can then verify a new number without probing each terminal branch for replacements.
     async fn refresh_terminal_branches(&self, sandbox: &SandboxRecord) -> AppResult<()> {
-        let candidates = self
-            .deps
-            .store
-            .terminal_branches_for_discovery(&sandbox.id)
+        const PAGE: u32 = 24;
+        let after = self
+            .terminal_scan_after
+            .lock()
+            .map_err(AppError::internal)?
+            .get(&sandbox.id)
+            .cloned();
+        let store = &self.deps.store;
+        let candidates = store
+            .terminal_branches_for_discovery(&sandbox.id, after.as_ref(), PAGE)
             .await?;
+        // At most one page reserves branch publication slots on a tick. Rotate even if a
+        // credential or a single upstream pull is unavailable, so other pages get their turn.
+        {
+            let mut cursors = self
+                .terminal_scan_after
+                .lock()
+                .map_err(AppError::internal)?;
+            if candidates.len() == PAGE as usize
+                && let Some(last) = candidates.last()
+            {
+                cursors.insert(sandbox.id.clone(), last.0.clone());
+            } else {
+                cursors.remove(&sandbox.id);
+            }
+        }
         if candidates.is_empty() {
             return Ok(());
         }
         let reads: Vec<_> = candidates
             .into_iter()
-            .filter_map(|(task, branch, number)| {
-                self.observed_pulls
-                    .begin_branch(&sandbox.id, &task)
-                    .ok()
-                    .map(|read| (task, branch, number, read))
+            .filter_map(|(task, branch, terminal)| {
+                let read = self.observed_pulls.begin_branch(&sandbox.id, &task).ok()?;
+                let known = self
+                    .observed_pulls
+                    .known_pull(&sandbox.id, &task)
+                    .flatten()
+                    .filter(|p| p.open());
+                Some((task, branch, terminal, read, known))
             })
             .collect();
         let token = self.dlv_installation_token(sandbox).await?;
-        let pulls = self
-            .deps
-            .github
-            .list_pulls(&token, &sandbox.repo_owner, &sandbox.repo_name, None)
-            .await?;
-        for (task, branch, terminal, read) in reads {
-            let replacement = pulls
+        let (owner, repo) = (&sandbox.repo_owner, &sandbox.repo_name);
+        let github = &self.deps.github;
+        for (task, _, terminal, _, _) in &reads {
+            if terminal.merged
+                && !terminal.from_fork
+                && evidence::Landing::closed_pull(terminal).is_none()
+            {
+                let refreshed = crate::ports::github::for_purpose(
+                    crate::ports::github::GitHubPurpose::Merges,
+                    github.get_pull(&token, owner, repo, terminal.number),
+                )
+                .await;
+                if let Ok(pull) = refreshed
+                    && pull.number == terminal.number
+                    && let Some(landing) = evidence::Landing::closed_pull(&pull)
+                {
+                    store.remember_terminal_pull(task, &pull).await?;
+                    store
+                        .landed_sha(task, Some(pull.number), Some(&landing))
+                        .await?;
+                }
+            }
+        }
+        let pulls = github.list_pulls(&token, owner, repo, None).await?;
+        for (task, branch, terminal, read, known) in reads {
+            let newest = pulls
                 .iter()
-                .filter(|p| !p.from_fork && p.head == branch && is_open(p) && p.number > terminal)
-                .map(|p| p.number)
-                .max();
-            if replacement.is_some() {
-                read.record_branch(&task, terminal, replacement);
+                .filter(|p| !p.from_fork && p.head == branch && is_open(p))
+                .max_by_key(|p| p.number);
+            if let Some(new) = newest.filter(|p| p.number > terminal.number) {
+                read.record_branch(&task, terminal.number, Some(new.number));
+                continue;
+            }
+            // A listing can be truncated or lag a merge. Confirm identity changes by number.
+            let reopen = !terminal.merged && newest.is_some_and(|p| p.number == terminal.number);
+            let number = if reopen {
+                terminal.number
+            } else if let Some(open) = known {
+                open.number
+            } else {
+                continue;
+            };
+            let Ok(pull) = github.get_pull(&token, owner, repo, number).await else {
+                continue;
+            };
+            if pull.number != number {
+                continue;
+            }
+            if is_open(&pull) {
+                if !pull.from_fork
+                    && pull.head == branch
+                    && !(number == terminal.number && terminal.merged)
+                {
+                    store.forget_reopened_pull(&task, number).await?;
+                    read.record_branch(&task, terminal.number, Some(number));
+                }
+            } else {
+                store.remember_terminal_pull(&task, &pull).await?;
+                if let Some(landing) = evidence::Landing::closed_pull(&pull) {
+                    store
+                        .landed_sha(&task, Some(number), Some(&landing))
+                        .await?;
+                }
+                read.record_terminal(&task, &pull);
             }
         }
         Ok(())
@@ -7077,6 +7176,14 @@ impl App {
     /// # Errors
     /// Store failures.
     pub async fn tool_delivery_status(&self, ctx: &AgentContext, args: &Value) -> AppResult<Value> {
+        crate::ports::github::for_purpose(
+            crate::ports::github::GitHubPurpose::Display,
+            self.delivery_status_read(ctx, args),
+        )
+        .await
+    }
+
+    async fn delivery_status_read(&self, ctx: &AgentContext, args: &Value) -> AppResult<Value> {
         let task = self
             .deps
             .store

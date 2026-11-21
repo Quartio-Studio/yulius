@@ -10871,6 +10871,70 @@ async fn reading_a_closed_unmerged_parked_task_spends_no_pull_requests() -> Test
         pulls.push(replacement);
     }
     f.h.app.reconcile_deliveries().await;
+    edit_pull(&f, 2, |p| p.state = "closed".into());
+    f.h.app.reconcile_deliveries().await;
+    f.h.github.pull_list_count.store(0, Ordering::SeqCst);
+    for _ in 0..2 {
+        assert_eq!(f.delivery("t1").await?["stage"], "none");
+    }
+    assert_eq!(f.h.github.pull_list_count.load(Ordering::SeqCst), 0);
+    edit_pull(&f, 2, |p| p.state = "open".into());
+    f.h.app.reconcile_deliveries().await;
     assert_eq!(f.delivery("t1").await?["pr"]["number"], 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_background_observation_recovers_a_reopened_pr_that_later_merges() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    delivered_with_a_successor(&f, &finished_spec("t1")).await?;
+    edit_pull(&f, 1, |p| p.state = "closed".into());
+    f.h.app.reconcile_deliveries().await;
+    assert_eq!(f.delivery("t1").await?["stage"], "none");
+    edit_pull(&f, 1, |p| p.state = "open".into());
+    f.h.app.reconcile_deliveries().await;
+    assert_eq!(f.delivery("t1").await?["stage"], "pr_open");
+    // If the Git page sees the next reopening first, direct confirmation retires the
+    // stored closure before the next reconciliation tick.
+    edit_pull(&f, 1, |p| p.state = "closed".into());
+    f.h.app.reconcile_deliveries().await;
+    edit_pull(&f, 1, |p| p.state = "open".into());
+    let owner =
+        f.h.app
+            .authenticate_bearer(f.bob.bearer.as_deref().ok_or("token")?)
+            .await?
+            .ok_or("owner")?;
+    f.h.app.git_overview(&owner, "s1").await?;
+    assert_eq!(f.delivery("t1").await?["stage"], "pr_open");
+    edit_pull(&f, 1, |p| {
+        p.state = "closed".into();
+        p.merged = true;
+    });
+    f.h.app.reconcile_deliveries().await;
+    let view = f.delivery("t1").await?;
+    assert_eq!(view["stage"], "merged_integration");
+    assert_eq!(view["pr"]["state"], "merged");
+    Ok(())
+}
+
+#[tokio::test]
+async fn reconciliation_enriches_a_terminal_pull_missing_its_merge_commit() -> TestResult {
+    use std::sync::atomic::Ordering;
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    delivered_with_a_successor(&f, &finished_spec("t1")).await?;
+    edit_pull(&f, 1, |p| {
+        p.state = "closed".into();
+        p.merged = true;
+        p.merge_commit_sha = None;
+    });
+    f.h.app.reconcile_deliveries().await;
+    assert_eq!(f.delivery("t1").await?["stage"], "merged_integration");
+    assert!(f.delivery("t1").await?["evidence"].is_null());
+    let landed = f.origin_sha("dev")?;
+    edit_pull(&f, 1, |p| p.merge_commit_sha = Some(landed.clone()));
+    f.h.app.reconcile_deliveries().await;
+    f.h.github.pull_get_count.store(0, Ordering::SeqCst);
+    assert_eq!(f.delivery("t1").await?["evidence"]["merged_sha"], landed);
+    assert_eq!(f.h.github.pull_get_count.load(Ordering::SeqCst), 0);
     Ok(())
 }

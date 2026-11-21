@@ -2223,3 +2223,39 @@ async fn installation_budget_counts_retries_and_preserves_operational_requests()
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn admission_counts_redirect_hops_and_protects_the_remaining_quota() -> TestResult {
+    use yulius_contracts::api::status::GitHubPurpose;
+    let fake = FakeGitHub::start().await?;
+    fake.add_repo("acme", "new", true);
+    let id = fake.add_installation("acme", OwnerKind::Organization);
+    let clock = Arc::new(TestClock(AtomicI64::new(SystemClock.now().0)));
+    let meter = yulius_github::RequestMeter::default();
+    let client = GitHubClient::metered(fake.config(), clock.clone(), meter.clone(), || {
+        GitHubPurpose::Display
+    })?;
+    let token = client.create_installation_token(id).await?.token;
+    let redirect = || {
+        FakeFault::new("GET", "/repos/acme/old", 301, 1)
+            .header("location", "/api/repos/acme/new")
+            .header("x-ratelimit-limit", "5000")
+            .header(
+                "x-ratelimit-reset",
+                &(clock.now().0 / 1000 + 120).to_string(),
+            )
+    };
+    fake.inject_fault(redirect().header("x-ratelimit-remaining", "4500"));
+    client.get_repo(&token, "acme", "old").await?;
+    assert_eq!(
+        meter.snapshot(Some(id), clock.now()).attempts[&GitHubPurpose::Display],
+        2
+    );
+    fake.inject_fault(redirect().header("x-ratelimit-remaining", "500"));
+    assert_eq!(
+        client.get_repo(&token, "acme", "old").await,
+        Err(GitHubError::DisplayPaused)
+    );
+    assert_eq!(fake.count("GET", "/repos/acme/new"), 1);
+    Ok(())
+}

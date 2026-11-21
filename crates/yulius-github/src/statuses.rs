@@ -152,13 +152,17 @@ impl GitHubClient {
         segments.extend(branch.split('/'));
         let url = self.api_url(&segments)?;
         let call = Call::new(Method::GET, url, Some(token.expose()));
-        let reply = self.send_any(&call).await?;
-        if reply.status == 404 {
-            return Ok(None);
-        }
-        if !reply.is_success() {
-            return Err(self.error_for(&reply, &call));
-        }
+        let reply = if (self.inner.transport.purpose)()
+            == yulius_contracts::api::status::GitHubPurpose::Display
+        {
+            self.inner.display.read(call, &self.inner.transport).await
+        } else {
+            self.send_ok(call).await
+        };
+        let reply = match reply {
+            Err(GitHubError::NotFound) => return Ok(None),
+            other => other?,
+        };
         let wire: WireGitRef = decode(&reply)?;
         // The id is handed to Git (the CD mirror's fetch): never anything but a commit id.
         if validate::sha(&wire.object.sha).is_err() {
