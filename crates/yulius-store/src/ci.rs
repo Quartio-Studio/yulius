@@ -156,6 +156,39 @@ fn select_runs(
 
 #[async_trait]
 impl CiStore for SqliteStore {
+    async fn ci_admitted_pulls(&self, sandbox: &SandboxId) -> AppResult<Vec<u64>> {
+        let sandbox = sandbox.as_str().to_owned();
+        self.call(move |c| {
+            let numbers: String = c
+                .query_row(
+                    "SELECT ci_open_pulls FROM sandboxes WHERE id = ?1",
+                    [sandbox],
+                    |row| row.get(0),
+                )
+                .map_err(db)?;
+            serde_json::from_str(&numbers).map_err(AppError::internal)
+        })
+        .await
+    }
+
+    async fn set_ci_admitted_pulls(&self, sandbox: &SandboxId, numbers: &[u64]) -> AppResult<()> {
+        let sandbox = sandbox.as_str().to_owned();
+        let numbers = serde_json::to_string(numbers).map_err(AppError::internal)?;
+        self.call(move |c| {
+            let changed = c
+                .execute(
+                    "UPDATE sandboxes SET ci_open_pulls = ?2 WHERE id = ?1",
+                    params![sandbox, numbers],
+                )
+                .map_err(db)?;
+            if changed == 0 {
+                return Err(AppError::NotFound);
+            }
+            Ok(())
+        })
+        .await
+    }
+
     async fn insert_ci_run(&self, run: &CiRunRecord, jobs: &[CiJobRecord]) -> AppResult<()> {
         let (run, jobs) = (run.clone(), jobs.to_vec());
         self.call(move |c| {

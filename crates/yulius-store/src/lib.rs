@@ -218,6 +218,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0080_task_wait_messages.sql"),
     include_str!("migrations/0081_ci_run_admission.sql"),
     include_str!("migrations/0082_task_merge_wait.sql"),
+    include_str!("migrations/0085_ci_pull_window.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -546,6 +547,7 @@ mod tests {
             (80, include_str!("migrations/0080_task_wait_messages.sql")),
             (81, include_str!("migrations/0081_ci_run_admission.sql")),
             (82, include_str!("migrations/0082_task_merge_wait.sql")),
+            (83, include_str!("migrations/0085_ci_pull_window.sql")),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -554,7 +556,41 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 82, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 83, "a new migration is pinned here too");
+    }
+
+    #[test]
+    fn ci_pull_admission_upgrade_keeps_existing_active_prs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let at = MIGRATIONS
+            .iter()
+            .position(|sql| sql.contains("ADD COLUMN ci_open_pulls"))
+            .unwrap_or(MIGRATIONS.len());
+        let mut conn = Connection::open_in_memory()?;
+        for sql in &MIGRATIONS[..at] {
+            conn.execute_batch(sql)?;
+        }
+        conn.pragma_update(None, "user_version", i64::try_from(at)?)?;
+        conn.execute_batch(
+            "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at)
+             VALUES ('u', 'User', 0, 0, 1);
+             INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile,
+                 port_base, port_count, created_by, onboarding_state, created_at)
+             VALUES ('s', 'shop', 'org', 'shop', 'dev', '{}', 20000, 20, 'u', 'ready', 1);
+             INSERT INTO ci_runs (id, sandbox_id, reference, sha, source, state, requested_by, queued_at)
+             VALUES ('1','s','pr/12','abc','profile','running','yulius',1),
+                    ('2','s','pr/10','def','profile','queued','yulius',2),
+                    ('3','s','pr/11','ghi','profile','passed','yulius',3),
+                    ('4','s','branch/dev','jkl','profile','queued','yulius',4);"
+        )?;
+        prepare(&mut conn)?;
+        let pulls: String = conn.query_row(
+            "SELECT ci_open_pulls FROM sandboxes WHERE id = 's'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(serde_json::from_str::<Vec<u64>>(&pulls)?, vec![12, 10]);
+        Ok(())
     }
 
     /// SPEC-575 (a person's integration finding on PR #1541): a populated database at the

@@ -7879,7 +7879,7 @@ async fn outside_opening_queues_while_inventory_status_is_in_flight() -> TestRes
 
 #[tokio::test]
 async fn outside_opening_waits_for_a_vacant_pr_slot_and_keeps_its_head() -> TestResult {
-    let f = opening_fixture().await?;
+    let mut f = opening_fixture().await?;
     let original = f.h.github.pulls.lock().map_err(|_| "PRs")?[0].clone();
     // The inventory counts PRs even when some heads share a SHA and verdict.
     for number in 2..=30 {
@@ -7899,6 +7899,14 @@ async fn outside_opening_waits_for_a_vacant_pr_slot_and_keeps_its_head() -> Test
         });
     }
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    // A new server process sees the same persisted CI state before its first inventory.
+    f.h.app = yulius_app::context::App::new(f.h.app.config.clone(), f.h.app.deps.clone());
+    f.h.router = yulius_server::public_router(f.h.app.clone()).layer(
+        axum::extract::connect_info::MockConnectInfo(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            5000,
+        ))),
+    );
     // Move only the overflow head to a distinct SHA.
     git(&f.work, &["checkout", "-b", "feat/overflow"])?;
     git(&f.work, &["commit", "--allow-empty", "-m", "overflow"])?;
@@ -7909,6 +7917,11 @@ async fn outside_opening_waits_for_a_vacant_pr_slot_and_keeps_its_head() -> Test
     event["pull_request"]["head"]["ref"] = "feat/overflow".into();
     event["pull_request"]["head"]["sha"] = sha.clone().into();
     github_opening(&f, &event, OPENING_KEY).await?;
+    assert_eq!(
+        f.h.github.pull_reads.load(Ordering::SeqCst),
+        1,
+        "restart uses local admission state"
+    );
     assert!(
         f.h.store
             .ci_runs_for_sha(&f.sandbox.id, &sha)

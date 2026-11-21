@@ -404,7 +404,8 @@ pub(crate) type LoadReading = (i64, Option<(u64, u64)>);
 #[derive(Default)]
 struct SandboxSync {
     inventory: tokio::sync::Mutex<()>,
-    schedule: tokio::sync::Mutex<opening::PullWindow>,
+    // Only observations since the current REST inventory started are process-local.
+    schedule: tokio::sync::Mutex<HashMap<u64, String>>,
 }
 
 /// Process-local CI state.
@@ -1610,7 +1611,7 @@ impl App {
         // A playground has no GitHub (SPEC-163 PCI-001): no token and no pull request; its own
         // `origin` is fetched, and its tasks' heads are tested when they deliver.
         let playground = sandbox.is_playground();
-        lock.schedule.lock().await.since_listing.clear();
+        lock.schedule.lock().await.clear();
         let pulls = if playground {
             Ok(Vec::new())
         } else {
@@ -1621,11 +1622,11 @@ impl App {
                 .await
         };
         let mut publications = Vec::new();
-        let mut window = lock.schedule.lock().await;
+        let openings = lock.schedule.lock().await;
         let result = self
-            .ci_record_inventory(sandbox, pulls, &mut window, &mut publications)
+            .ci_record_inventory(sandbox, pulls, &openings, &mut publications)
             .await;
-        drop(window);
+        drop(openings);
         for run in publications {
             self.ci_publish(&run).await;
             self.ci_wake();
@@ -1637,7 +1638,7 @@ impl App {
         &self,
         sandbox: &SandboxRecord,
         pulls: AppResult<Vec<crate::ports::github::GhPull>>,
-        window: &mut opening::PullWindow,
+        openings: &HashMap<u64, String>,
         publications: &mut Vec<String>,
     ) -> AppResult<()> {
         let repo = self.sandbox_repo(&sandbox.id);
@@ -1678,9 +1679,14 @@ impl App {
             .into_iter()
             .filter(|p| p.state == "open" && p.base == profile.integration_branch && !p.from_fork)
             .collect::<Vec<_>>();
-        window.restore(self, sandbox).await?;
-        window.reconcile(&eligible);
-        for (number, sha) in &window.heads {
+        let store = &self.deps.store;
+        let admitted = store.ci_admitted_pulls(&sandbox.id).await?;
+        let heads = opening::inventory_heads(&admitted, &eligible, openings);
+        let numbers: Vec<_> = heads.iter().map(|(number, _)| *number).collect();
+        if numbers != admitted {
+            store.set_ci_admitted_pulls(&sandbox.id, &numbers).await?;
+        }
+        for (number, sha) in &heads {
             // A head not in the clone (not fetched yet) is tested at a later round.
             if !matches!(self.deps.git.resolve_commit(&repo, sha).await, Ok(Some(_))) {
                 continue;

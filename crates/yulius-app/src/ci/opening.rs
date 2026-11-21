@@ -1,6 +1,6 @@
 //! Queue a signed opening without asking GitHub to list or read pull requests (SPEC-606).
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -37,52 +37,34 @@ pub struct PullOpening {
     pub created_at: String,
 }
 
-/// Admitted open PRs in stable order. Openings observed during a REST request take
-/// precedence over its older snapshot. Both collections are bounded by MAX_PULLS_TESTED.
-#[derive(Default)]
-pub(super) struct PullWindow {
-    pub(super) heads: Vec<(u64, String)>,
-    pub(super) since_listing: HashSet<u64>,
-    restored: bool,
-}
-
-impl PullWindow {
-    fn has_room(&self, number: u64) -> bool {
-        self.heads.len() < MAX_PULLS_TESTED || self.heads.iter().any(|(n, _)| *n == number)
-    }
-
-    fn admit(&mut self, number: u64, sha: &str) {
-        if let Some((_, head)) = self.heads.iter_mut().find(|(n, _)| *n == number) {
-            sha.clone_into(head);
-        } else if self.heads.len() < MAX_PULLS_TESTED {
-            self.heads.push((number, sha.to_owned()));
+/// Preserve each admitted PR that is still eligible, then fill vacancies in inventory
+/// order. Signed openings observed while GitHub listed PRs override the older snapshot.
+pub(super) fn inventory_heads(
+    admitted: &[u64],
+    pulls: &[GhPull],
+    openings: &HashMap<u64, String>,
+) -> Vec<(u64, String)> {
+    let mut heads: Vec<_> = admitted
+        .iter()
+        .filter_map(|number| {
+            let sha = openings.get(number).or_else(|| {
+                pulls
+                    .iter()
+                    .find(|p| p.number == *number)
+                    .map(|p| &p.head_sha)
+            })?;
+            Some((*number, sha.clone()))
+        })
+        .collect();
+    for pull in pulls {
+        if heads.len() == MAX_PULLS_TESTED {
+            break;
+        }
+        if !heads.iter().any(|(number, _)| *number == pull.number) {
+            heads.push((pull.number, pull.head_sha.clone()));
         }
     }
-
-    pub(super) fn reconcile(&mut self, pulls: &[GhPull]) {
-        self.heads.retain(|(n, _)| {
-            self.since_listing.contains(n) || pulls.iter().any(|p| p.number == *n)
-        });
-        for pull in pulls {
-            if !self.since_listing.contains(&pull.number) {
-                self.admit(pull.number, &pull.head_sha);
-            }
-        }
-    }
-
-    pub(super) async fn restore(&mut self, app: &App, sandbox: &SandboxRecord) -> AppResult<()> {
-        if !self.restored {
-            for run in app.deps.store.active_ci_runs().await? {
-                if run.sandbox_id == sandbox.id
-                    && let CiRef::PullRequest(number) = run.reference
-                {
-                    self.admit(number, &run.sha);
-                }
-            }
-            self.restored = true;
-        }
-        Ok(())
-    }
+    heads
 }
 
 impl App {
@@ -157,7 +139,7 @@ impl App {
         opening: &PullOpening,
     ) -> AppResult<()> {
         let lock = self.ci_sync_lock(&sandbox.id);
-        let Ok(mut window) =
+        let Ok(mut openings) =
             tokio::time::timeout(Duration::from_secs(60), lock.schedule.lock()).await
         else {
             return Err(AppError::Capacity("the sandbox CI sync is busy".into()));
@@ -172,8 +154,10 @@ impl App {
         {
             return Ok(());
         }
-        window.restore(self, &sandbox).await?;
-        if !window.has_room(opening.number) {
+        let store = &self.deps.store;
+        let mut admitted = store.ci_admitted_pulls(&sandbox.id).await?;
+        let new_pr = !admitted.contains(&opening.number);
+        if new_pr && admitted.len() >= MAX_PULLS_TESTED {
             return Ok(());
         }
         self.dlv_refresh_clone(&sandbox).await?;
@@ -201,8 +185,11 @@ impl App {
             .ci_planning_runs(&sandbox.id, PLAN_RUNS)
             .await?;
         let facts = ordinary_run_facts(&runs, view.problem.is_none());
-        window.admit(opening.number, &opening.sha);
-        window.since_listing.insert(opening.number);
+        if new_pr {
+            admitted.push(opening.number);
+            store.set_ci_admitted_pulls(&sandbox.id, &admitted).await?;
+        }
+        openings.insert(opening.number, opening.sha.clone());
         // Only the full inventory can supersede runs. This event describes one target.
         if !ci::plan(std::slice::from_ref(&target), &facts)
             .queue
@@ -219,7 +206,7 @@ impl App {
                     self.now(),
                 )
                 .await?;
-            drop(window);
+            drop(openings);
             self.ci_publish(&run.id).await;
             self.ci_wake();
         }

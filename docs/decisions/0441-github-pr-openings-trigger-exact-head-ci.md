@@ -10,7 +10,7 @@ Task delivery triggers CI as soon as it pushes. People opening PRs through GitHu
 
 ## Decision
 
-Accept GitHub App pull request opening events authenticated with HMAC-SHA256. Verify the installation, repository, base and head before scheduling with the existing CI gate. Keep periodic reconciliation for missed deliveries. Serialize queue decisions per sandbox and let a webhook pass an outstanding REST inventory. Publish commit statuses after releasing the scheduling lock. Track up to 30 open PRs per sandbox across both paths. Each keeps its place until a fresh inventory observes its closure or ineligibility. An inventory that predates a signed opening preserves that head until the next round. Bound incoming deliveries before buffering bodies or reading credentials. Register new Apps for these events and support enabling them on existing Apps.
+Accept GitHub App pull request opening events authenticated with HMAC-SHA256. Verify the installation, repository, base and head before scheduling with the existing CI gate. Keep periodic reconciliation for missed deliveries. Serialize queue decisions per sandbox and let a webhook pass an outstanding REST inventory. Publish commit statuses after releasing the scheduling lock. Track up to 30 open PRs per sandbox across both paths. Keep the ordered PR numbers in the sandbox’s SQLite row, including PRs that share a tested commit. Each keeps its place across server restarts until a fresh inventory observes its closure or ineligibility. An inventory that predates a signed opening preserves that head until the next round. Bound incoming deliveries before buffering bodies or reading credentials. Register new Apps for these events and support enabling them on existing Apps.
 
 ## Alternatives
 
