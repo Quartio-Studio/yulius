@@ -119,10 +119,8 @@ impl Pair {
                     }
                     if self.established.is_some() {
                         let mut byte = [0u8; 1];
-                        if terminal_queue(
-                            net::recv(fd, &mut byte, RecvFlags::PEEK | RecvFlags::DONTWAIT)
-                                .map(|_| ()),
-                        ) {
+                        let flags = RecvFlags::PEEK.union(RecvFlags::DONTWAIT);
+                        if terminal_queue(net::recv(fd, &mut byte, flags).map(|_| ())) {
                             continue;
                         }
                     }

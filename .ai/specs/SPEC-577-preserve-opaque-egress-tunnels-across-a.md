@@ -408,3 +408,11 @@ without adoption support or a remote peer that times out can end a tunnel.
   The updated relay library suite passed all 49 tests.
 - The mutation run on the first direct review's corrections passed 3,312 selected baseline
   tests. Its summary was 17 listed, 15 caught, 0 missed, 0 timed out, 2 unviable and 0 not reached.
+- The initial direct proxy mutation run listed 126, caught 72, found 54 unviable and
+  missed none. The final-FIN run listed 23, caught 17, found five unviable and missed one.
+  The separated custody run listed 33, caught 24, found eight unviable and missed the same
+  mutation. All three campaigns reached every mutation without a timeout. The surviving edit
+  replaced bitwise union with exclusive-or for two disjoint Linux receive flags. Both produce
+  0x42 from MSG_PEEK (0x02) and MSG_DONTWAIT (0x40). The terminal read now uses the flag
+  type's named union operation. The final-FIN process fixture checks that the peek leaves
+  the queued bytes for the successor.
