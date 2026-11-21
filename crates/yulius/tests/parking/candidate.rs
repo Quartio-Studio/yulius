@@ -411,21 +411,33 @@ async fn check_after_restart(
                 "left-out note for a different owner or PR: {obsolete:?}"
             );
             state[sandbox.as_str()]["train"]["left_out"][0] = json!({"task":id.as_str(),"pr":1481,"head":head,"armed_at":30,"files":["owned.rs"]});
-            for (old_head, old_activation) in [
+            for (index, (old_head, old_activation)) in [
                 (Some("previous-head"), Some(30)),
                 (Some(head), Some(29)),
                 (None, None),
-            ] {
+            ]
+            .into_iter()
+            .enumerate()
+            {
                 let mut older = state.clone();
                 let excluded = &mut older[sandbox.as_str()]["train"]["left_out"][0];
                 excluded["head"] = json!(old_head);
                 excluded["armed_at"] = json!(old_activation);
                 std::fs::write(&path, serde_json::to_vec(&older)?)?;
                 let notices = cold.watch_prs(&bounds).await;
-                assert!(
-                    notices.iter().all(|(_, text)| !text.contains("owned.rs")),
-                    "obsolete exclusion: {notices:?}"
-                );
+                if index == 0 {
+                    assert_eq!(notices.len(), 1, "queue position: {notices:?}");
+                    assert!(
+                        notices[0].1.contains("waits behind merge train #90")
+                            && !notices[0].1.contains("owned.rs"),
+                        "{notices:?}"
+                    );
+                } else {
+                    assert!(
+                        notices.is_empty(),
+                        "same queue position repeated or old files attributed: {notices:?}"
+                    );
+                }
             }
             std::fs::write(&path, serde_json::to_vec(&state)?)?;
             let news = cold.watch_prs(&bounds).await;
@@ -778,7 +790,7 @@ async fn check_after_restart(
                 &task.sandbox_id,
                 "later-train",
                 "merge",
-                RunState::Running,
+                RunState::Passed,
                 None,
                 32,
             );
@@ -788,7 +800,20 @@ async fn check_after_restart(
             let train = &mut moving[task.sandbox_id.as_str()]["train"];
             train["merging"] = json!(true);
             train["members"][0]["head"] = json!("original-admission-head");
-            train["members"][0]["verified_head"] = json!(head);
+            // A restart can see the saved moved arm before the train checkpoint.
+            for merging in [false, true] {
+                moving[task.sandbox_id.as_str()]["train"]["merging"] = json!(merging);
+                std::fs::write(&path, serde_json::to_vec(&moving)?)?;
+                let premature = cold.watch_prs(&due).await;
+                assert!(premature.is_empty(), "unverified moved head: {premature:?}");
+            }
+            std::fs::write(&path, b"[")?;
+            let unreadable = cold.watch_prs(&due).await;
+            assert!(
+                unreadable.is_empty(),
+                "unreadable holding train: {unreadable:?}"
+            );
+            moving[task.sandbox_id.as_str()]["train"]["members"][0]["verified_head"] = json!(head);
             std::fs::write(&path, serde_json::to_vec(&moving)?)?;
         }
         let seen = cold.watch_prs(&bounds).await;
@@ -800,7 +825,9 @@ async fn check_after_restart(
         if matches!(case, ColdCandidate::RearmedInTrain) {
             assert_eq!(seen.len(), 1, "active replacement train: {seen:?}");
             assert!(
-                seen[0].1.contains("later-train") && seen[0].1.contains("Hands off"),
+                seen[0].1.contains("#1481 is number 1 of 1")
+                    && seen[0].1.contains("combined result passed")
+                    && seen[0].1.contains("Hands off"),
                 "{seen:?}"
             );
             let task = cold.deps.store.task(id).await?.ok_or("owner")?;
@@ -814,28 +841,36 @@ async fn check_after_restart(
                 "the queue is verifying its sole member: {held:?}"
             );
             current[task.sandbox_id.as_str()]["train"]["run"] = json!("gone");
-            std::fs::write(path, serde_json::to_vec(&current)?)?;
-            let (mut run, job) = crate::pr_watch::run(
-                &task.sandbox_id,
-                "ordinary-red",
-                head,
-                RunState::Failed,
-                None,
-                33,
-            );
-            run.reference = CiRef::PullRequest(1481);
-            cold.deps.store.insert_ci_run(&run, &[job]).await?;
-            let news = cold.watch_prs(&bounds).await;
-            assert_eq!(
-                news.len(),
-                1,
-                "ordinary failure with missing candidate: {news:?}"
-            );
-            assert!(
-                news[0].1.contains("ordinary-red") && !news[0].1.contains("Hands off"),
-                "{news:?}"
-            );
-            assert!(cold.watch_prs(&bounds).await.is_empty());
+            for (queued, (run_id, registry)) in [
+                ("ordinary-red", serde_json::to_vec(&current)?),
+                ("ordinary-red-rerun", b"[".to_vec()),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                std::fs::write(&path, registry)?;
+                let (mut run, job) = crate::pr_watch::run(
+                    &task.sandbox_id,
+                    run_id,
+                    head,
+                    RunState::Failed,
+                    None,
+                    33 + i64::try_from(queued)?,
+                );
+                run.reference = CiRef::PullRequest(1481);
+                cold.deps.store.insert_ci_run(&run, &[job]).await?;
+                let news = cold.watch_prs(&bounds).await;
+                assert_eq!(
+                    news.len(),
+                    1,
+                    "ordinary failure with unavailable candidate: {news:?}"
+                );
+                assert!(
+                    news[0].1.contains(run_id) && !news[0].1.contains("Hands off"),
+                    "{news:?}"
+                );
+                assert!(cold.watch_prs(&bounds).await.is_empty());
+            }
         }
         cold.stop_task_now(id).await?;
         return Ok(());

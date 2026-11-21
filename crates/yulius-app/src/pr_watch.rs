@@ -1113,8 +1113,9 @@ impl App {
                 .find(|run| run.reference == CiRef::PullRequest(pr))
                 .cloned();
         }
-        let train = self.watched_train(task, pr);
-        let holding = train.as_ref().and_then(|train| train.candidate.as_ref());
+        let train_read = self.watched_train(task, pr);
+        let train = train_read.as_ref().ok().and_then(Option::as_ref);
+        let holding = train.and_then(|train| train.candidate.as_ref());
         let candidate_id = holding.map(|(id, _)| id.as_str());
         let Ok(candidate) = self.holding_run(&sandbox, candidate_id).await else {
             return observed_only();
@@ -1159,6 +1160,9 @@ impl App {
                 }),
                 _ => {}
             }
+        }
+        if train_read.is_err() && events.is_empty() {
+            return observed_only();
         }
         // A disappearing train, or one awaiting its singleton decision, has no
         // instructions for its member. An untold ordinary failure still takes priority.
@@ -1225,7 +1229,7 @@ impl App {
             }
         }
         if let Some(head) = &conflict_head
-            && train.is_none()
+            && matches!(train_read, Ok(None))
             && self.conflicts(task, &sandbox, head).await
         {
             events.push(Event {
@@ -1237,10 +1241,7 @@ impl App {
         let green =
             own.is_some_and(|run| matches!(run.state, RunState::Passed | RunState::Skipped));
         let arm_note = self.arm_queue_note(&task.id);
-        let queue_note = train
-            .as_ref()
-            .map(|train| &train.note)
-            .or(arm_note.as_ref());
+        let queue_note = train.map(|train| &train.note).or(arm_note.as_ref());
         if let (true, Some(head)) = (green, &head)
             && candidate.is_none_or(|run| run.state != RunState::Failed)
         {
@@ -1320,7 +1321,7 @@ impl App {
         if self.arm_observation(&task.id) != activation
             || self.armed_now(&task.id) != slot
             || self.merge_is_armed(&task.id) != armed
-            || (armed && self.watched_train(task, pr) != train)
+            || (armed && self.watched_train(task, pr) != train_read)
             || (armed && train.is_none() && self.arm_queue_note(&task.id) != arm_note)
         {
             return observed_only();

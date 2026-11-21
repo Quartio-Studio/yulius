@@ -186,6 +186,7 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # A running owner hears about the train holding its current PR and head. If ordinary CI
 # fails, it receives that failure once, including for a shared run at its armed head.
 # When a passed train updates its member’s head, the owner keeps its train position while GitHub catches up.
+# If the saved train and arm disagree after restart, queue guidance waits for reconciliation. A current ordinary CI failure still reaches the owner.
 # An excluded PR’s conflict files belong to the head and request tested. Older records and later requests show that the PR waits behind the train.
 # A red singleton with green ordinary
 # CI waits for the queue’s decision. A pending human decision holds these notices.
