@@ -2118,6 +2118,8 @@ Task lists share one 750 ms PR verification budget. Each batch of up to eight pa
 
 The browser uses the parked summary’s verified Needs you group and its open steps, spec or goal when classifying a task. It retains the displayed reason for a human decision or failing PR. [ADR-0412](decisions/0412-share-parked-pr-read-time-across-task-lists.md)
 
+The sidebar watches the bounded task list and Git overview independently. It can update a parked group while the Git read is pending. The list reader confirms an overlapping parked lifecycle change once. [ADR-0417](decisions/0417-refresh-parked-task-status-alongside-the-git-overview.md)
+
 When browser list requests overlap, the newest successful snapshot supplies the task list. A failed cold task page recovers when an overlapping request supplies the list. [ADR-0418](decisions/0418-keep-the-newest-successful-task-list.md)
 
 MCP parked task reads use the verifier’s plan snapshot for progress and detailed steps. The Needs you filter uses the group rendered with the owner’s current decision. Each page shares one parked PR lookup budget. [ADR-0416](decisions/0416-parked-mcp-rows-use-the-verified-plan-and-pr.md)

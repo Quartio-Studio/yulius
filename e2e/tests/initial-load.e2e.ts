@@ -77,6 +77,26 @@ test('persistent startup interruptions exhaust one recovery budget', async ({ ap
   assert.ok(requests() >= 3);
 });
 
+test('an interrupted startup reports its recovery budget when the reload itself times out', async ({ app }) => {
+  const gate = Promise.withResolvers<void>();
+  let requests = 0;
+  await surface.context().route(entryScript, async (route) => {
+    if (++requests === 1) {
+      route.request().failure = () => ({ errorText: 'net::ERR_NETWORK_CHANGED' });
+      await route.abort('connectionreset');
+    } else {
+      await gate.promise;
+      await route.fallback();
+    }
+  });
+  try {
+    await assert.rejects(app.open(path), /startup budget exhausted.*ERR_NETWORK_CHANGED/);
+    expect(requests).toBe(2);
+  } finally {
+    gate.resolve();
+  }
+});
+
 test('an ordinary script failure still surfaces on the first open', async ({ app }) => {
   const requests = await interruptRequests(entryScript, 1, false);
   await assert.rejects(app.open(path), /__yuliusMock was never installed/);

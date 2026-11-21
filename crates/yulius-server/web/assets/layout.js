@@ -1112,7 +1112,7 @@ export function createSidebar(ctx) {
   let shape = '';
   let archivingAll = false; // "Archive all" runs: its button stays disabled until it ends
 
-  const rowInfo = (task) => taskInfo(task, ctx.store.state.actionRequests, ctx.store.pullsOf(task.sandbox_id).get(task.id));
+  const rowInfo = (task) => taskInfo(task, ctx.store.state.actionRequests, ctx.store.pullForStatus(task));
 
   // One Needs you card per sandbox-level problem (SPEC-494): the tasks whose request names the
   // same cause are grouped under one card that names them all, first asker first; each keeps
