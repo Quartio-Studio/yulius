@@ -163,7 +163,8 @@ Settings and keys
 - MIG-027 **Reverse proxy.** A Caddy on the old host is carried: `/etc/caddy` and the service's
   drop-ins with the old host name replaced by the new one, the proxy's copy of the proxy secret
   included, validated (`caddy validate`) and enabled before the cutover, so its certificate is
-  there when the instance starts. Another proxy is named in the plan (`manual`).
+  there when the instance starts; restarted on every pass and asked on the new host's own port 443
+  ([SPEC-592](SPEC-592-instance-move-caddy-keeps-serving-its-pr.md)). Another proxy is named in the plan (`manual`).
 - MIG-028 **Firewall.** An enabled ufw is carried (its rule files and settings) and enabled as
   the flow's last act on the target, after the one-time key is removed and with the SSH port the
   move used allowed. Another firewall is named in the plan (`manual`).
