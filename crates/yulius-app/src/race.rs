@@ -14,6 +14,10 @@ pub enum Point {
     ParkedMessageSelected,
     /// The parked predecessor's local work is settled and its successor needs hosted PR facts.
     ParkedPredecessorChecksPr,
+    /// A host exit was received, before the run reader enters finalization.
+    HostExitReceived,
+    /// A host exit reader finished finalizing its attempt.
+    HostExitFinalized,
     /// A parked resume completed preflight, before it owns the launch lock.
     ParkedResumePrepared,
     /// The parked status is durable, just before the reader restores the saved grid.

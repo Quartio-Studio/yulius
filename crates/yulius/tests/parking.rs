@@ -508,6 +508,120 @@ fn a_parked_message_resumes_while_its_successor_checks_the_pull_request() -> Tes
     result
 }
 
+#[test]
+fn a_parked_resume_waits_for_the_exit_reader_that_lost_to_escalation() -> TestResult {
+    losing_exit_reader(false)
+}
+
+#[test]
+fn a_late_exit_reader_preserves_the_lost_run_screen_after_resume() -> TestResult {
+    losing_exit_reader(true)
+}
+
+fn losing_exit_reader(before_finalization: bool) -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    let result = rt.block_on(async {
+        let (app, _) = configured_app_with_pulls(&data, 8, 1, |config| {
+            config.stop_escalation_ms = 1000;
+        })
+        .await?;
+        let (id, caller) = answered(&app, &data).await?;
+        let old = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("the first run")?;
+        let (point, key) = if before_finalization {
+            (Point::HostExitReceived, old.id.as_str())
+        } else {
+            (Point::RunEndTaken, id.as_str())
+        };
+        let (entered, finish) = pause_at_key(point, key);
+        let finished = Arc::new(tokio::sync::Notify::new());
+        let done = finished.clone();
+        yulius_app::race::on(
+            Point::HostExitFinalized,
+            Path::new(old.id.as_str()),
+            move || done.notify_one(),
+        );
+        let mut frames = app.runtime(&id).hub.watch();
+        parked(&app, &id).await?;
+        tokio::time::timeout(Duration::from_secs(10), entered.notified()).await?;
+        tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                if matches!(frames.recv().await?, yulius_app::hub::HubFrame::Exit { .. }) {
+                    return Ok::<_, tokio::sync::broadcast::error::RecvError>(());
+                }
+            }
+        })
+        .await??;
+        assert_eq!(
+            app.deps
+                .store
+                .attempt(&old.id)
+                .await?
+                .ok_or("lost run")?
+                .exit_reason
+                .as_deref(),
+            Some("lost")
+        );
+        let saved = Path::new(&old.run_dir).join("final-screen");
+        let original = std::fs::read(&saved)?;
+        assert!(String::from_utf8_lossy(&original).contains("Budget"));
+        let target = app.clone();
+        let first_caller = caller.clone();
+        let mut message = tokio::spawn(async move {
+            target
+                .tool_task_message(
+                    &first_caller,
+                    &json!({"number":1,"text":"Text for the second run only"}),
+                )
+                .await
+        });
+        let accepted = if before_finalization {
+            let accepted = (&mut message).await??;
+            wait_for(
+                "the second run's answer",
+                Duration::from_secs(10),
+                || async { screen(&app, &id).contains("Text for the second run only") },
+            )
+            .await?;
+            finish.notify_one();
+            accepted
+        } else {
+            // The losing exit reader is still using the old session. A bounded
+            // conflict leaves the request pending and a subsequent message resumes it.
+            let response = (&mut message).await?;
+            finish.notify_one();
+            assert!(
+                matches!(response, Err(yulius_app::error::AppError::Conflict(_))),
+                "a new turn started while the losing exit reader held the old run"
+            );
+            tokio::time::timeout(Duration::from_secs(10), finished.notified()).await?;
+            app.tool_task_message(
+                &caller,
+                &json!({"number":1, "text":"Text for the second run only"}),
+            )
+            .await?
+        };
+        assert_eq!(accepted["delivered"], "resumed");
+        if before_finalization {
+            tokio::time::timeout(Duration::from_secs(10), finished.notified()).await?;
+            assert_eq!(
+                std::fs::read(&saved)?,
+                original,
+                "the stale exit reader rewrote the lost run's saved screen"
+            );
+        }
+        app.stop_task_now(&id).await?;
+        Ok::<_, Error>(())
+    });
+    rt.shutdown_timeout(Duration::from_secs(5));
+    result
+}
+
 /// PRK-005: `task_message` to a parked task resumes it in the same provider session with the
 /// message as its first prompt, and ends the request it had open.
 #[test]
@@ -3615,12 +3729,16 @@ fn pause_watch_or_queue(
     point: Point,
     id: &TaskId,
 ) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
+    pause_at_key(point, id.as_str())
+}
+
+fn pause_at_key(point: Point, key: &str) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
     let entered = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
     let signal = Arc::clone(&entered);
     let gate = Arc::clone(&release);
     let handle = tokio::runtime::Handle::current();
-    yulius_app::race::on(point, Path::new(id.as_str()), move || {
+    yulius_app::race::on(point, Path::new(key), move || {
         signal.notify_one();
         let released = tokio::task::block_in_place(|| {
             handle.block_on(tokio::time::timeout(

@@ -2097,7 +2097,7 @@ If the server restarted between writing the attempt’s ID and writing its sessi
 resume path recovers the ID from the parked attempt. If capacity holds a resume, an unreadable
 rollout history leaves its pause and prompt in place for the next capacity round.
 
-Each parked task read includes the latest attempt ID from the same SQLite snapshot. A resume carries that ID through permission and account checks, then waits outside the launch lock for the old reader to publish the saved grid and terminal exit. Successor PR checks run independently of this wait. Under the lock it checks that the same attempt is still parked before restoring Codex lineage, starting a process or queueing its prompt. The stop escalation interval bounds the wait.
+Each parked task read includes the latest attempt ID from the same SQLite snapshot. A resume carries that ID through permission and account checks, then waits outside the launch lock for the old reader to publish the saved grid and terminal exit. The observer which records the attempt’s exit or loss owns its final screen write. A delayed exit for an attempt already settled leaves the next session intact. Successor PR checks run independently of this wait. Under the lock it checks that the same attempt is still parked before restoring Codex lineage, starting a process or queueing its prompt. The stop escalation interval bounds the wait.
 
 `park_task_now` asks again under the launch lock, sets the run's end intent `Park` and ends the
 session as a close does (graceful shutdown, then the escalation). The run's end, by its exit or
