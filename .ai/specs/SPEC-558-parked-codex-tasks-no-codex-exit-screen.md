@@ -49,7 +49,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Restore resting tasks when terminal detail or the active list discovers Undo
 - [x] Publish terminal-discovered archive removal after Closed
 - [x] Publish verified parked task detail to Task Info
-- [ ] Restore ordinary CI coverage after a repeated integration configuration repair
+- [x] Restore ordinary CI coverage after a repeated integration configuration repair
 - [ ] Resolve shared ordinary CI for the original PR owner in the merge queue and wait
 - [ ] Record the singleton queue decision and its failing job for the original owner
 - [ ] Keep failed integration candidates with their original owner
@@ -83,6 +83,8 @@ The scheduler discards older completed verdicts for a head after a later run was
 The pending shared-head work addresses the following contract. Yulius CI schedules one run per commit even when two PRs publish the same head. The queue and `yulius wait` prefer the owner’s own ordinary run when one exists. Otherwise they use the run that covers that commit under the scheduler’s rule. A cancellation of a different reference cannot lend a verdict. GitHub still enforces its required commit status when the queue submits the merge.
 
 ## Evidence
+
+- Independent review approved scheduler recovery at `28b031c73`. All 422 scoped Rust tests passed. The reviewer ran the three new regressions and verified migration 0081 on populated SQLite tables. The query used the sandbox admission index without a temporary sort. Repository contracts, formatting, Clippy and spec validation passed. The mutation run reported `19 listed, 7 caught, 0 missed, 0 timed out, 12 unviable, 0 not reached` in 384 seconds. Vidoc was disabled.
 
 - A database regression put the most recently admitted refusal behind two older records in queue priority. A two-record priority window returned the old pass and an unrelated run. The admission window returns the refusal and the pass. Migration 0081 indexes existing sandbox CI rows for this read.
 
