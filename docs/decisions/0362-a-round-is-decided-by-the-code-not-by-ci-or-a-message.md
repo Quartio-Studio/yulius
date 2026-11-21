@@ -10,7 +10,8 @@ FST-003); task #488. Builds on [ADR-0342](0342-yulius-ci-runs-the-whole-gate-whi
 stays: findings in the change's own code are fixed before the merge. Amends
 [ADR-0347](0347-mutation-testing-runs-once-per-pull-request.md): beside the whole change's run,
 the lines of each later round's fix are mutation-tested where the project's command can take
-them (SPEC-506 pull request 2 rewords ADR-0347's own sentence).
+them (SPEC-506 pull request 2 rewords ADR-0347's own sentence). On 2026-11-21,
+[ADR-0439](0439-delivery-checks-mutations-by-hand-and-builds-on-disk.md) superseded the clause requiring a campaign between review rounds. Authors still prove each fix and check every finding against the new head.
 
 ## Context
 

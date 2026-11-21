@@ -92,10 +92,8 @@ Findings in the change's own code are fixed, never deferred
 3. The reviewer classifies each finding as own code or pre-existing, and the pull request
    answers every finding. Deferring an own-code finding makes the verdict request changes.
 
-Before asking for another round, answer each finding of the last report with the test that
-fails without its fix (or why no test can), check every finding of that report against the
-new head, and run the project's mutation command on the lines of the fix where it can take
-them. Here: `scripts/dev mutants --base <reviewed head>`.
+Before asking for another round, answer each finding of the last report with the test that fails
+without its fix (or why no test can) and check every finding of that report against the new head.
 
 Do not invent issues for balance. For changes to existing mechanisms, identify the
 old guarantee and test it under the new default configuration.
