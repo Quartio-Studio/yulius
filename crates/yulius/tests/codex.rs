@@ -455,6 +455,79 @@ fn retrying_a_failed_codex_restart_resumes_the_same_conversation() -> TestResult
 }
 
 #[test]
+fn moving_idle_working_and_held_codex_turns_selects_their_own_prompts() -> TestResult {
+    let (_dir, data) = temp()?;
+    runtime()?.block_on(async {
+        let (app, _, user, id, _) = restart_fixture(&data).await?;
+        let ctx = admin_ctx(&app, &user).await?;
+        let original = AccountId::parse("a-codex")?;
+        let alternate =
+            add_codex_account(&app, "alternate", &codex_auth("2026-11-01T10:00:00Z")).await?;
+        let move_to = async |account: &AccountId| -> Result<String, Box<dyn std::error::Error>> {
+            app.switch_task(
+                &ctx,
+                id.as_str(),
+                &yulius_contracts::api::tasks::ContinueTask {
+                    account_id: Some(account.to_string()),
+                    ..Default::default()
+                },
+            )
+            .await?;
+            let run = app.deps.store.live_attempt(&id).await?.ok_or("moved run")?;
+            Ok(std::fs::read_to_string(
+                Path::new(&run.run_dir).join("fake-launch.txt"),
+            )?)
+        };
+        let idle = async || {
+            task(&app, &id)
+                .await
+                .is_ok_and(|t| t.activity == Some(yulius_domain::task::Activity::Waiting))
+        };
+        wait_for("the idle Codex conversation", Duration::from_secs(30), idle).await?;
+        let reopened = move_to(&alternate).await?;
+        assert!(reopened.contains("prompt: None"), "{reopened}");
+        app.send_input(&id, b"/work 60000 Active turn\r").await?;
+        wait_for("the active Codex turn", Duration::from_secs(30), || async {
+            screen_contains(&app, &id, "WORKING").await
+                && task(&app, &id)
+                    .await
+                    .is_ok_and(|t| t.activity == Some(yulius_domain::task::Activity::Working))
+        })
+        .await?;
+        let continued = move_to(&original).await?;
+        assert!(
+            continued.contains("Continue the task exactly where you left off."),
+            "{continued}"
+        );
+        wait_for(
+            "the continued turn to finish",
+            Duration::from_secs(30),
+            idle,
+        )
+        .await?;
+
+        let record = task(&app, &id).await?;
+        let worktree = Path::new(record.worktree_path.as_deref().ok_or("worktree")?);
+        std::fs::write(worktree.join("feature.rs"), "pub fn feature() {}\n")?;
+        let staged = std::process::Command::new("git")
+            .current_dir(worktree)
+            .args(["add", "feature.rs"])
+            .status()?;
+        assert!(staged.success() && app.spec_required(&record).await?);
+        app.pause_task(
+            &id,
+            yulius_app::model::PauseKind::Turn,
+            Some(original),
+            None,
+        )
+        .await?;
+        let held = move_to(&alternate).await?;
+        assert!(held.contains("This task needs a spec"), "{held}");
+        support::stop_tasks(&app, &[&id]).await
+    })
+}
+
+#[test]
 fn moving_a_codex_restart_waiting_for_capacity_keeps_its_continuation() -> TestResult {
     let (_dir, data) = temp()?;
     runtime()?.block_on(async {
@@ -609,6 +682,72 @@ fn stop_during_capacity_restart(continue_again: bool) -> TestResult {
             assert!(matches!(current.status, TaskStatus::Stopped(_)));
         }
         Ok(())
+    })
+}
+
+#[test]
+fn stop_winning_the_capacity_launch_claim_preserves_the_next_continue() -> TestResult {
+    let (_dir, data) = temp()?;
+    runtime()?.block_on(async {
+        let (app, _, user, id, _) = restart_fixture(&data).await?;
+        let ctx = admin_ctx(&app, &user).await?;
+        support::stop_tasks(&app, &[&id]).await?;
+        let account = AccountId::parse("a-codex")?;
+        let limited = yulius_app::usage_json::to_json(&yulius_domain::usage::AccountUsage {
+            limit_reached: true,
+            limit_resets_at: Some(Timestamp(4_000_000_000_000)),
+            ..Default::default()
+        });
+        let available =
+            yulius_app::usage_json::to_json(&yulius_domain::usage::AccountUsage::default());
+        let store = &app.deps.store;
+        store
+            .set_account_state(
+                &account,
+                AccountStatus::Limited,
+                Some(&limited),
+                None,
+                app.now(),
+            )
+            .await?;
+        app.continue_task(&ctx, id.as_str(), &Default::default())
+            .await?;
+        store
+            .set_account_state(
+                &account,
+                AccountStatus::Ok,
+                Some(&available),
+                None,
+                app.now(),
+            )
+            .await?;
+        let (checked, claim) =
+            support::hold_point(yulius_app::race::Point::StartClaimReady, id.as_str());
+        let (released, finish) =
+            support::hold_point(yulius_app::race::Point::StartLockReleased, id.as_str());
+        let worker = Arc::clone(&app);
+        let round = tokio::spawn(async move { worker.resume_round().await });
+        support::point_reached(checked).await?;
+        support::stop_tasks(&app, &[&id]).await?;
+        claim.send(())?;
+        support::point_reached(released).await?;
+        store
+            .set_account_state(
+                &account,
+                AccountStatus::Limited,
+                Some(&limited),
+                None,
+                app.now(),
+            )
+            .await?;
+        app.continue_task(&ctx, id.as_str(), &Default::default())
+            .await?;
+        let replacement = store.open_pause(&id).await?.ok_or("replacement pause")?;
+        finish.send(())?;
+        tokio::time::timeout(Duration::from_secs(60), round).await??;
+        assert_eq!(store.open_pause(&id).await?, Some(replacement));
+        assert_eq!(store.attempts(&id).await?.len(), 1);
+        support::stop_tasks(&app, &[&id]).await
     })
 }
 

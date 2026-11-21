@@ -1317,6 +1317,22 @@ fn rollout_reading(
 mod tests {
     use super::*;
 
+    #[test]
+    fn persisted_pause_kinds_identify_which_pauses_hold_a_process() {
+        for (kind, holds_process) in [
+            (PauseKind::Start, false),
+            (PauseKind::FreshStart, false),
+            (PauseKind::Prompt, true),
+            (PauseKind::Turn, true),
+            (PauseKind::Limit, true),
+        ] {
+            assert_eq!(
+                PauseKind::parse(kind.as_str()).holds_process(),
+                holds_process
+            );
+        }
+    }
+
     /// SPEC-503 CDX-004: a Codex rollout's windows replace the stored ones only when they are not
     /// older than what is stored (a watch reads its rollout again from the start after a
     /// restart); a reached limit is recorded, one a reading does not carry stays until its

@@ -2043,6 +2043,10 @@ impl App {
             let result = self.launch_attempt(&task, start, account, rest).await;
             drop(launching);
             drop(guard);
+            crate::race::reached(
+                crate::race::Point::StartLockReleased,
+                Path::new(task.id.as_str()),
+            );
             if let Err(err) = &result {
                 // The launch failed: the task waits for nothing any more, whatever pause it
                 // was started from (one the launch would have ended with its subscription).
@@ -2134,6 +2138,10 @@ impl App {
             {
                 *intent = None;
             }
+            crate::race::reached(
+                crate::race::Point::StartClaimReady,
+                Path::new(task.id.as_str()),
+            );
             if !store
                 .transition_task(&task.id, Some(task.status), next, None, self.now())
                 .await?

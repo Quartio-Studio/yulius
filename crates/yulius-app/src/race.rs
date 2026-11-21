@@ -20,6 +20,10 @@ pub enum Point {
     CapacityPauseObserved,
     /// A capacity worker read an ended task and is about to clean up its observed pause.
     CapacityStaleCleanup,
+    /// A start is about to claim its observed task state. Keyed by task ID.
+    StartClaimReady,
+    /// The supervisor released the launch lock after the attempted claim. Keyed by task ID.
+    StartLockReleased,
     /// An idle running row reads its pending PR news. Keyed by task ID.
     LiveRowPrNews,
     /// The live watch has read an open PR, before returning its advice. Keyed by task ID.
