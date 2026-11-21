@@ -1,6 +1,6 @@
 ---
 yulius-task: 2bfb2cd1-d319-4db4-bbb7-e1467fffa1a0
-status: done
+status: in-progress
 ---
 
 # SPEC-593. The sandbox browser starts on a moved host: stale Chrome profile locks are cleared
@@ -63,6 +63,7 @@ browser; the move helper is `crates/yulius/src/instance/migrate`.
 - [x] Real Chrome starts on a profile carried from another host (opt-in test)
 - [x] Operations notes, architecture and changes updated
 - [x] Independent review in a fresh session, findings fixed test-first
+- [ ] Delta review of the round-2 fixes in a fresh session
 
 ## Acceptance criteria
 
