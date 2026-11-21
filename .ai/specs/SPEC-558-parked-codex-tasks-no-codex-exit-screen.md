@@ -94,6 +94,8 @@ The queue writes the accepted singleton to the owner’s completed merge wait be
 
 ## Evidence
 
+- The person-authenticated HTTP merge returned success on a green synthetic PR while its earlier failure was still current. The person's MCP tool had reconciled the request in its wrapper. Both entry points now use the same successful hosted merge path. The HTTP fixture checks the receipt and saved arm immediately after the response.
+
 - On the #1565 base, two public retry fixtures reproduced the earlier failure. During an outage the live retry discarded the saved replacement. A cold already-merged retry left the prior receipt current. All 400 scoped tests passed after reconciliation. Review then found that a newer unfinished wait could hide the last decision. The store regression returned the unfinished row. Removing reconciliation from the already-merged branch also failed the strengthened assertion before restart. Reads and retirement now share the completed-row selection used by the partial index.
 
 - PR #1565 passed quality, both Rust test shards and browser e2e at `8d7055ccc` in run `5f38f7c0-551e-4550-bc83-85a5454ca60f`. The dev landing is `9ef200520`. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/9ef2005209e7135212aa791b5106c20211c3ec86)

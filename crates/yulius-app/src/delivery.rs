@@ -4934,10 +4934,12 @@ impl App {
         let token = self
             .person_github_token(&ctx.user, "Merging a pull request")
             .await?;
-        self.dlv_merge(ctx, task, &token)
+        let merged = self
+            .dlv_merge(ctx, &task, &token)
             .await
-            .map(|merged| merged.view)
-            .map_err(MergeFailure::into_error)
+            .map_err(MergeFailure::into_error)?;
+        self.clear_armed(&task).await;
+        Ok(merged.view)
     }
 
     /// [`App::merge_task_pr`] for the task's agent (`delivery_merge`) under its owner's
@@ -4963,7 +4965,7 @@ impl App {
             )));
         }
         let token = self.task_github_token(&task, &sandbox).await?;
-        self.dlv_merge(ctx, task, &token).await
+        self.dlv_merge(ctx, &task, &token).await
     }
 
     /// The branch policy of `yulius.toml` at the tip of the integration branch in the sandbox
@@ -5119,13 +5121,13 @@ impl App {
     async fn dlv_merge(
         &self,
         ctx: &AuthContext,
-        task: TaskRecord,
+        task: &TaskRecord,
         token: &Secret,
     ) -> Result<MergedPull, MergeFailure> {
-        let sandbox = self.dlv_sandbox_of(&task).await?;
+        let sandbox = self.dlv_sandbox_of(task).await?;
         let profile = delivery_profile(&sandbox);
         let observed = self
-            .dlv_observe(&sandbox, &task, &profile, Some(token))
+            .dlv_observe(&sandbox, task, &profile, Some(token))
             .await?;
         dlv::apply(
             &observed.record.stage,
@@ -5140,7 +5142,7 @@ impl App {
             .clone()
             .ok_or_else(|| AppError::Conflict("the pull request cannot be read".into()))?;
         if let Some(title) = self
-            .dlv_merge_title(&sandbox, &profile, &task, &pull, token)
+            .dlv_merge_title(&sandbox, &profile, task, &pull, token)
             .await?
         {
             pull.title = title;

@@ -232,7 +232,6 @@ impl App {
         if merge_now {
             // The page's merge, which audits it under the person's name.
             let view = self.merge_task_pr(ctx, id).await?;
-            self.clear_armed(&task).await;
             return Ok(json!({
                 "merged": true,
                 "armed": false,

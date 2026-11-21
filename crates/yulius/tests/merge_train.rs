@@ -1729,6 +1729,66 @@ async fn a_merged_retry_keeps_the_replacement_until_its_retirement_is_writable()
     Box::pin(reused_singleton(SingletonChange::MergedRetryOffline)).await
 }
 
+#[tokio::test]
+async fn the_person_http_merge_reconciles_the_replacement_singleton_arm() -> TestResult {
+    use yulius_domain::stages::SubjectKind;
+
+    let f = fixture().await?;
+    let app = &f.h.app;
+    let tree = f.task(1, &[("a.txt", "owner change\n")]).await?;
+    let head = git(&tree, &["rev-parse", "HEAD"])?;
+    let id = TaskId::parse("t1")?;
+    let old = yulius_app::stages::NewSpan {
+        sandbox_id: f.sandbox.clone(), subject_kind: SubjectKind::Task, subject_id: id.as_str().into(),
+        key: "wait@1".into(), parent_key: None, kind: "wait".into(), name: "merge_armed".into(),
+        environment: None, job: None, started_at: Timestamp(1), ended_at: Some(Timestamp(2)),
+        outcome: Some("dropped".into()),
+        detail: Some(json!({"head":head,"message":"shard 2 failed","singleton":{"pr":1,
+            "base":git(&tree,&["rev-parse","origin/dev"])?,"tree":git(&tree,&["rev-parse","HEAD^{tree}"])?,
+            "run":"prior-train"}}).to_string()),
+    };
+    assert!(app.deps.store.insert_span(&old).await?);
+    f.h.store.execute_for_tests("CREATE TRIGGER refuse_retirement BEFORE UPDATE OF detail ON spans WHEN OLD.name='merge_armed' BEGIN SELECT RAISE(ABORT,'unavailable'); END").await?;
+    let ctx = app.agent_context("tok-t1").await?;
+    let args = json!({"reviewed_head":head,"review_summary":"approve"});
+    assert!(
+        Box::pin(app.tool_delivery_merge(&ctx, &args))
+            .await
+            .is_err()
+    );
+    assert!(saved_armed(app, 1)?.is_some());
+    f.h.store
+        .execute_for_tests("DROP TRIGGER refuse_retirement")
+        .await?;
+    f.record_passed(app, 1, &head).await?;
+    let result = call(
+        &f.h.router,
+        Method::POST,
+        "/api/tasks/t1/delivery/merge",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(result.status, StatusCode::OK, "{}", result.body);
+    assert!(f.merged(app, 1).await?);
+    let accepted = app
+        .deps
+        .store
+        .latest_merge_wait(&id)
+        .await?
+        .ok_or("singleton receipt")?;
+    let detail: Value = serde_json::from_str(accepted.detail.as_deref().ok_or("receipt")?)?;
+    assert!(
+        detail["superseded_at"].is_i64(),
+        "person's merged response left the previous decision current"
+    );
+    assert!(
+        saved_armed(app, 1)?.is_none(),
+        "person's merged response left its saved arm"
+    );
+    Ok(())
+}
+
 enum SingletonChange {
     MergedRetryOffline,
     MergedRetry,
