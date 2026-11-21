@@ -52,6 +52,8 @@ Use the queue’s owner-preferred ordinary CI result at the armed head. A shared
 - **A database table for told events**: a migration for a small, per-process cache; the JSON file
   follows `armed-merges.json` and `merge-trains.json`.
 
+A recorded, still-current singleton failure belongs to the same task across parking and restart. Task reads use the decision for status only. The automatic wake verifies its inputs and human decisions and uses the same outcome key as live delivery.
+
 ## Consequences
 
 - An idle task with an open pull request can get a turn every 45 minutes (a check-in that usually

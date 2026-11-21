@@ -193,7 +193,7 @@ export function statusInfo(task) {
       if (shells) return stillWorking(shells, task.background_shells_since);
       // Its merge is armed: Yulius merges it and tells the agent, an achieved goal's too
       // (SPEC-487 CHN-001).
-      return task.merge_armed === true ? { ...WAITING_ON_YULIUS } : { ...DONE };
+      return task.merge_armed === true || task.candidate_pending === true ? { ...WAITING_ON_YULIUS } : { ...DONE };
     }
     if (activity === 'waiting') {
       // Background shells keep the agent going: it wakes by itself when they report, so the next
@@ -479,7 +479,7 @@ function taskInfoOf(task, actionRequests, pr) {
     const done = { ...info, ...DONE, label: pr.state === 'merged' ? `Done · PR #${pr.number} merged` : `Done · PR #${pr.number}`, pr };
     // An achieved goal is done whatever the checks are still doing (TSK-014), unless its merge
     // is armed (SPEC-487 CHN-001).
-    if (task.activity === 'done' && task.merge_armed !== true) return done;
+    if (task.activity === 'done' && task.merge_armed !== true && task.candidate_pending !== true) return done;
     // Its agent waits for its checks or the merge it armed: not done before that (SPEC-130 DMD-003).
     if (task.yulius_wait === true) return { ...info, pr };
     // Tested means it would merge as it is: known green (or no required checks) and no conflict

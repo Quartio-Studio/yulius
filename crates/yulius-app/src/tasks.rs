@@ -234,7 +234,7 @@ impl App {
                 &owned_requested
             }
         };
-        let facts = self.task_attention_facts(task, requested).await?;
+        let (facts, candidate_pending) = self.verified_attention_facts(task, requested).await?;
         let needs_you_notice = self.resolve_needs_you_notice(task, &facts).await;
         if sync_wait {
             self.sync_wait_message(task, needs_you_notice.as_ref())
@@ -248,6 +248,7 @@ impl App {
                 && !facts.goal_unfinished
                 && self.pr_ci_progressing(task).await);
         Ok(TaskSummary {
+            candidate_pending,
             parked_pr: None,
             parked_needs_you: None,
             id: task.id.to_string(),

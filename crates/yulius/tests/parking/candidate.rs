@@ -13,6 +13,125 @@ use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::ids::{AttemptId, TaskId};
 
 #[test]
+fn a_recorded_candidate_keeps_the_idle_original_owner_out_of_done_and_park() -> TestResult {
+    candidate_owner_status(false)
+}
+
+#[test]
+fn an_already_parked_owner_shows_the_recorded_candidate_and_resumes_for_its_reason() -> TestResult {
+    candidate_owner_status(true)
+}
+
+fn candidate_owner_status(already_parked: bool) -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    let case = ColdCandidate::Backdated;
+    let (id, head, original) = rt.block_on(Box::pin(seed_candidate(&data, &case)))?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    let rt = runtime()?;
+    let (app, remote) =
+        rt.block_on(Box::pin(restore_owner(&data, &case, &id, &head, &original)))?;
+    rt.block_on(async {
+        let task = app.deps.store.task(&id).await?.ok_or("owner")?;
+        if already_parked {
+            let db = rusqlite::Connection::open(data.join("yulius.db"))?;
+            db.execute("UPDATE spans SET outcome='pending' WHERE key='wait@15'", [])?;
+            super::parked(&app, &id).await?;
+            db.execute("UPDATE spans SET outcome='dropped' WHERE key='wait@15'", [])?;
+            let ctx = yulius_app::auth::AuthContext {
+                user: app.deps.store.user(&task.owner).await?.ok_or("user")?,
+                csrf_token: None,
+                session_hash: None,
+                token: None,
+            };
+            let detail = app.task_detail(&ctx, id.as_str()).await?;
+            assert_eq!(
+                detail.summary.parked_needs_you,
+                Some(true),
+                "red candidate on green PR"
+            );
+            ask(&app, &id).await?;
+            assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
+            app.deps
+                .store
+                .set_task_needs_you(&id, None, app.now())
+                .await?;
+            let (entered, release) =
+                super::pause_watch_or_queue(super::Point::ArmedNoticePublicationRead, &id);
+            let watcher = app.clone();
+            let pass =
+                tokio::spawn(async move { watcher.watch_prs(&WatchBounds::default()).await });
+            tokio::time::timeout(Duration::from_secs(10), entered.notified()).await?;
+            ask(&app, &id).await?;
+            release.notify_one();
+            assert!(
+                tokio::time::timeout(Duration::from_secs(10), pass)
+                    .await??
+                    .is_empty()
+            );
+            app.deps
+                .store
+                .set_task_needs_you(&id, None, app.now())
+                .await?;
+            let wake = app.watch_prs(&WatchBounds::default()).await;
+            assert_eq!(wake.len(), 1, "{wake:?}");
+            assert!(
+                wake[0].1.contains("292.1 ms") && !wake[0].1.contains("no merge is armed"),
+                "{wake:?}"
+            );
+            assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
+        } else {
+            assert!(
+                app.task_summary(&task).await?.yulius_wait,
+                "failed integration requires owner work"
+            );
+            super::past_the_grace(&app, &id).await?;
+            assert_eq!(app.park_idle_sessions_now().await, 0);
+            // An obsolete receipt and a subsequently published decision straddle
+            // the final host probe. Only the latter can block this checkout.
+            let span = app
+                .deps
+                .store
+                .latest_merge_wait(&id)
+                .await?
+                .ok_or("decision")?;
+            assert!(
+                app.deps
+                    .store
+                    .retire_singleton(&id, &span, app.now())
+                    .await?
+            );
+            assert!(!app.task_summary(&task).await?.candidate_pending);
+            let path = data.join("yulius.db");
+            let detail = span.detail.ok_or("queue decision detail")?;
+            yulius_app::race::on(
+                super::Point::ParkPrepared,
+                Path::new(id.as_str()),
+                move || {
+                    let updated = rusqlite::Connection::open(&path).and_then(|db| {
+                        db.execute("UPDATE spans SET detail=?1 WHERE key='wait@15'", [&detail])
+                    });
+                    assert!(matches!(updated, Ok(1)));
+                },
+            );
+            assert_eq!(
+                app.park_idle_sessions_now().await,
+                0,
+                "decision arrived during park"
+            );
+            let saved = remote.remote.lock().map_err(|_| "remote")?.take();
+            remote.pulls.lock().map_err(|_| "PR")?[0].base_sha = "next-base".into();
+            assert!(!app.task_summary(&task).await?.candidate_pending);
+            *remote.remote.lock().map_err(|_| "remote")? = saved;
+        }
+        app.stop_task_now(&id).await?;
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+#[test]
 fn an_ordinary_drop_after_rearm_cannot_revive_a_historical_bisection() -> TestResult {
     cold_candidate_case(ColdCandidate::OrdinaryDropAfterRearm)
 }

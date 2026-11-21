@@ -455,6 +455,46 @@ impl App {
         task: &TaskRecord,
         requested: &HashSet<String>,
     ) -> AppResult<AttentionFacts> {
+        Ok(self.verified_attention_facts(task, requested).await?.0)
+    }
+
+    pub(crate) async fn verified_attention_facts(
+        &self,
+        task: &TaskRecord,
+        requested: &HashSet<String>,
+    ) -> AppResult<(AttentionFacts, bool)> {
+        let mut facts = self.local_attention_facts(task, requested).await?;
+        let candidate_pending = task.status == TaskStatus::Running
+            && task
+                .activity
+                .is_some_and(yulius_domain::task::Activity::is_idle)
+            && match self
+                .deps
+                .store
+                .delivery(&task.id)
+                .await?
+                .filter(|r| r.stage == yulius_domain::delivery::DeliveryStage::PrOpen)
+                .and_then(|r| r.pr_number)
+            {
+                Some(pr) => self
+                    .current_candidate_blocks(task, pr)
+                    .await
+                    .unwrap_or(true),
+                None => false,
+            };
+        if candidate_pending {
+            facts.pull = Some(PullSignal::Failing);
+            facts.yulius_wait = true;
+        }
+        Ok((facts, candidate_pending))
+    }
+
+    /// The parking supervisor verifies hosted inputs separately before taking its launch lock.
+    pub(crate) async fn local_attention_facts(
+        &self,
+        task: &TaskRecord,
+        requested: &HashSet<String>,
+    ) -> AppResult<AttentionFacts> {
         let store = &self.deps.store;
         if task.status.is_resting() || task.status == TaskStatus::Stopping {
             let mut facts = AttentionFacts::new(task.status, task.activity);

@@ -152,7 +152,7 @@ impl ParkedPullRead {
 pub(crate) struct ParkingPrs {
     checkout: Option<String>,
     watched: Option<u64>,
-    pulls: Vec<(u64, String)>,
+    pulls: Vec<GhPull>,
 }
 
 /// The persisted delivery stage of one task.
@@ -782,6 +782,7 @@ fn same_open_pull(before: &GhPull, after: &GhPull) -> bool {
         && before.head == after.head
         && before.from_fork == after.from_fork
         && before.base == after.base
+        && before.base_sha == after.base_sha
         && before.mergeable == after.mergeable
         && before.behind == after.behind
 }
@@ -3963,12 +3964,20 @@ impl App {
         task: &TaskRecord,
         facts: &ParkingPrs,
     ) -> AppResult<Option<(u64, PullSignal)>> {
-        for (number, head) in &facts.pulls {
+        for pull in &facts.pulls {
+            if !pull.merged
+                && let Some(decision) = self.recorded_candidate(task, pull.number).await?
+            {
+                let sandbox = self.dlv_sandbox_of(task).await?;
+                if let Some(signal) = self.candidate_pull_signal(task, &sandbox, &decision, pull) {
+                    return Ok(Some((pull.number, signal)));
+                }
+            }
             if let Some(signal) = self
-                .parking_ci_signal(task, *number, head, facts.watched)
+                .parking_ci_signal(task, pull.number, &pull.head_sha, facts.watched)
                 .await?
             {
-                return Ok(Some((*number, signal)));
+                return Ok(Some((pull.number, signal)));
             }
         }
         Ok(None)
@@ -4320,7 +4329,7 @@ impl App {
                 verified = false;
                 break;
             }
-            pulls.push((number, pull.head_sha));
+            pulls.push(pull);
         }
         if !verified && purpose != PrVerification::Display {
             return Ok(None);
@@ -4360,7 +4369,7 @@ impl App {
                 // failure on a still-current, directly verified head takes priority.
                 facts
                     .pulls
-                    .retain(|(number, sha)| survives(*number, Some(sha)));
+                    .retain(|pull| survives(pull.number, Some(&pull.head_sha)));
                 if let Some((number, signal)) = self.parking_ci_blocker(task, &facts).await? {
                     observed.signal = Some(signal);
                     observed.pr =
@@ -4390,9 +4399,9 @@ impl App {
         }
         // A branch list can lag a direct get_pull confirmation of a merge.
         // Among successful reads only a PR confirmed open can replace it.
-        if verified && let Some((number, _)) = facts.pulls.last() {
+        if verified && let Some(pull) = facts.pulls.last() {
             observed.pr = Some(yulius_contracts::api::tasks::ParkedPr {
-                number: *number,
+                number: pull.number,
                 open: true,
             });
         }
@@ -4673,12 +4682,19 @@ impl App {
         if self.merge_is_armed(&task.id) {
             return false;
         }
-        if task.activity == Some(Activity::Done) {
-            return true;
-        }
         // One reading of its delivery for the whole decision: a merge recorded between two
         // readings would be "no news due" by the first and "merged" by the second.
         let record = self.deps.store.delivery(&task.id).await.ok().flatten();
+        if task.activity == Some(Activity::Done) {
+            if let Some(pr) = record
+                .as_ref()
+                .filter(|r| r.stage == DeliveryStage::PrOpen)
+                .and_then(|r| r.pr_number)
+            {
+                return matches!(self.recorded_candidate(task, pr).await, Ok(None));
+            }
+            return true;
+        }
         if self.pr_news_due_of(task, record.as_ref(), false).await {
             return false;
         }
@@ -4723,14 +4739,27 @@ impl App {
         if parked {
             return self.parked_predecessor_done(task).await.unwrap_or(false);
         }
-        if running && task.activity == Some(Activity::Done) {
-            return true;
-        }
+
         // One reading of its delivery for the whole decision: a merge recorded between two
         // readings would be "no news due" by the first and "merged" by the second.
         let Ok(record) = self.deps.store.delivery(&task.id).await else {
             return false;
         };
+        if running
+            && let Some(pr) = record
+                .as_ref()
+                .filter(|r| r.stage == DeliveryStage::PrOpen)
+                .and_then(|r| r.pr_number)
+            && self
+                .current_candidate_blocks(task, pr)
+                .await
+                .unwrap_or(true)
+        {
+            return false;
+        }
+        if running && task.activity == Some(Activity::Done) {
+            return true;
+        }
         // Yulius still has news of its pull request for its agent (an armed merge, a merge not
         // said yet): it goes on by itself, so it is not Done (SPEC-487 CHN-001, CHN-002).
         if self.pr_news_due_of(task, record.as_ref(), false).await {

@@ -103,7 +103,13 @@ A live PR notice that finds the terminal writer busy leaves its event unheard. T
 
 The live watcher resolves ordinary CI for the owner at the armed head and reads the active train’s recorded membership. Before delivering advice, it verifies the published head, the current queue request, its CI observations and the original recipient. A human decision or unverifiable observation leaves the event pending.
 
+The parking decision and parked status use the queue decision saved for the original task and verify that its PR still has the tested head and integration base. A failed CI run from a larger candidate alone cannot assign work to a member. The parked watcher uses the same outcome identity as the live watcher. Reads of a task page never resume it.
+
 ## Evidence
+
+- At dev `742c2a230`, two restart regressions failed. With four completed steps and passing ordinary checks, the live summary had no pending work, and the parked detail returned `parked_needs_you: false`. The Chromium achieved-goal fixture also showed Done with an unresolved integration candidate, both before and after reading an ordinary green PR.
+
+- PR #1580 landed on `dev` at `742c2a230` from head `655393c1d`. Train run `27629732-7623-4e71-9eb5-2722c4dc1f8d` passed quality, both Rust shards and browser E2E. PR run `193bef34-3c84-482a-abc9-b1c145036270` and dev run `dd1b40cc-3b2f-4fc2-a60f-6b2108924d1b` cover the same tree. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/742c2a230864b016c2502c2f718a74286937dc00)
 
 - Independent review approved `12b1ea674`. All 420 scoped parking, delivery, train, message and PR-watch tests passed on that head with the default stack. Clippy passed for the app and integration targets with warnings denied. The #331 fixture delivers the accepted shard failure once to the reattached author. It preserves a pending human decision and excludes an obsolete candidate. The historical instance was not exercised. A live check needs a disposable task on an instance running the fix.
 

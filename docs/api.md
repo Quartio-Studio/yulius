@@ -523,7 +523,7 @@ session limit the resume waits `queued` with its prompt. Archive and close make 
 session"). Each park is audited `task.parked` by `yulius`.
 
 A parked task in the sandbox task list or the task detail includes `parked_needs_you`, the server’s classification from its
-local work, owner decisions and current ordinary PR checks. When a PR is known, `parked_pr`
+local work, owner decisions, current ordinary PR checks and the original task’s verified integration candidate. A live idle task carries `candidate_pending: true` while its recorded integration failure blocks completion or its inputs need verification. When a PR is known, `parked_pr`
 gives its `number` and whether it is `open`. A branch lookup can identify a replacement
 for an older recorded delivery. With outstanding local work, the detail keeps an owner-observed open PR
 or the recorded delivery identity. Unfinished work and unreadable checks keep the task under Needs you.

@@ -1874,7 +1874,7 @@ impl App {
         account: Option<AccountId>,
     ) -> BoxFuture<'a, AppResult<()>> {
         Box::pin(async move {
-            self.start_run_if(task_id, start, account, None, None)
+            self.start_run_if(task_id, start, account, None, None, None)
                 .await
                 .map(|_| ())
         })
@@ -1890,6 +1890,7 @@ impl App {
         account: Option<AccountId>,
         only: Option<TaskStatus>,
         rest: Option<IdleRest>,
+        notice: Option<&'a crate::pr_watch::ParkedNotice>,
     ) -> BoxFuture<'a, AppResult<bool>> {
         Box::pin(async move {
             self.settle_resting_run(task_id).await?;
@@ -1905,6 +1906,11 @@ impl App {
                         let _ = self.deps.harness.provide_antigravity(true).await;
                     }
                     Harness::ClaudeCode => {}
+                }
+                if let Some(notice) = notice
+                    && !self.parked_notice_inputs(&task, notice).await
+                {
+                    return Ok(false);
                 }
             }
             let guard = self.supervisor.launch.lock().await;
@@ -1940,6 +1946,11 @@ impl App {
             // While an update pauses the tasks, starts queue like at the session limit and run
             // once it is over (SPEC-002 ADR-18).
             let full = held || live >= self.max_live_sessions() || self.update_holds_starts();
+            if let Some(notice) = notice
+                && !self.parked_notice_current(&task, notice).await
+            {
+                return Ok(false);
+            }
             if full && task.status != TaskStatus::Switching {
                 let queued = self
                     .deps
@@ -4650,7 +4661,7 @@ impl App {
             // Only while it is still queued, checked under the launch lock: a task stopped or
             // started meanwhile is not resumed here.
             if let Err(err) = self
-                .start_run_if(&task.id, start, None, Some(TaskStatus::Queued), None)
+                .start_run_if(&task.id, start, None, Some(TaskStatus::Queued), None, None)
                 .await
             {
                 tracing::warn!(error = %err, task = %task.id, "queued task failed to start");
@@ -4836,6 +4847,15 @@ impl App {
         task_id: &TaskId,
         prompt: Option<String>,
     ) -> AppResult<bool> {
+        self.resume_parked_with_notice(task_id, prompt, None).await
+    }
+
+    pub(crate) async fn resume_parked_with_notice(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        prompt: Option<String>,
+        notice: Option<&crate::pr_watch::ParkedNotice>,
+    ) -> AppResult<bool> {
         let task = self
             .deps
             .store
@@ -4905,6 +4925,7 @@ impl App {
             None,
             Some(TaskStatus::Parked),
             rest,
+            notice,
         )
         .await
     }
@@ -5525,7 +5546,7 @@ impl App {
                 activity,
                 goal_unfinished: runtime.goal_unfinished.load(Ordering::SeqCst),
             });
-        let started = self.start_run_if(task_id, start, account, Some(from), rest);
+        let started = self.start_run_if(task_id, start, account, Some(from), rest, None);
         match started.await {
             // Another start (the capacity loop's) ran the paused task first: it won, the switch
             // is made.

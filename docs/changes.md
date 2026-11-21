@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- An idle task with a current failed integration candidate stays live and out of Done even when its ordinary checks are green. An already parked owner resumes once for the recorded failure after any human decision clears (SPEC-558).
+
 - After a restart, a failed single-PR merge train reports its recorded job failure once to the original task. The watcher checks for repairs, reruns and human decisions before sending it (SPEC-558).
 
 - The staging line in `delivery_status` names the fix's revision as due after a failed request, and carries each request's next step. Reading the merge-first target fetches the clone only when it lacks the verified head. [SPEC-575](../.ai/specs/SPEC-575-make-task-local-testing-and-one-staging.md)
