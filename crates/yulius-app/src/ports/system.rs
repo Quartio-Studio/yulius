@@ -26,10 +26,24 @@ pub struct SystemSnapshot {
     pub uptime_s: Option<u64>,
 }
 
+/// Allocated blocks in a bounded directory traversal.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TreeAllocation {
+    /// All allocated bytes in the tree, counting each inode once.
+    pub allocated: u64,
+    /// Allocated bytes excluding files with multiple hard links. Removing those files' names
+    /// inside a cache can leave their blocks allocated elsewhere.
+    pub unshared: u64,
+}
+
 /// Reads machine metrics.
 pub trait SystemProbe: Send + Sync {
     /// Current metrics; disk figures describe the volume that holds `data_dir`.
     fn snapshot(&self, data_dir: &Path) -> SystemSnapshot;
+
+    /// Allocated bytes beneath a held directory, measured through directory handles. Hard links
+    /// count once and traversal has entry and depth bounds. A truncated measurement is a lower bound.
+    fn tree_allocation(&self, directory: &Path) -> TreeAllocation;
 
     /// Total and used bytes of the volume that holds `data_dir` (SPEC-276), read every minute by
     /// the disk upkeep: only the disk, so the CPU reading of the status panel is left alone.

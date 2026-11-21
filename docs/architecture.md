@@ -85,6 +85,8 @@ flowchart LR
   SUP2 -->|"a genuine refresh"| ACC
 ```
 
+The capacity estimator reads the model and four token classes stored per attempt. It uses Standard GPT-6 prices for Codex and reports a weekly Ultrafast scenario for eligible models. The attempt totals lack per-response speed settings and cover the task session. [Decision 0440](decisions/0440-estimate-codex-work-at-standard-and-ultrafast-api-prices.md)
+
 A Codex subscription signs in with `codex login --device-auth` in the login terminal (the
 provided CLI, its `CODEX_HOME` in the sign-in's own folder with credentials kept in a file),
 takes an OpenAI API key, or takes the `auth.json` of a ChatGPT sign-in made elsewhere; each is
@@ -1264,8 +1266,11 @@ loopback `/internal/leftovers*` with the key in `<data>/leftovers-cli.key`; the 
 **Build caches and disk pressure** ([SPEC-276](../.ai/specs/SPEC-276-reclaim-disk-automatically-ask-on-sandbo.md),
 [decision 0205](decisions/0205-build-caches-are-swept-under-cargo-s-lock-and-a-removed-sandbox-s-files-go-on-request.md)).
 For this repository, Cargo writes targets per checkout and mbx stores compiled artifacts in
-`<sandbox>/rust-compile-cache`. Each build owns its mbx session. The project's 16 GiB collection
-budget and the planned instance-upkeep integration are defined in [ADR-0434](decisions/0434-keep-a-local-compiler-cache-in-each-project-sandbox.md).
+`<sandbox>/rust-compile-cache`. Each build owns its mbx session. mbx collects at 16 GiB.
+Instance upkeep can reclaim a stamped, idle store above 20 GiB or under remaining disk pressure.
+A shared lock protects active builds. Upkeep moves the opened store’s ownership stamp to a pending name
+before clearing its contents. Builds use ordinary Cargo until upkeep restores the ready name. A later
+round resumes an interrupted eviction even on a healthy disk. [ADR-0434](decisions/0434-keep-a-local-compiler-cache-in-each-project-sandbox.md).
 
 The disk upkeep (`yulius-app::disk`) reads the data disk every minute through
 `SystemProbe::disk`; `yulius-domain::sweep` turns it into a level (low from 85 %, critical from

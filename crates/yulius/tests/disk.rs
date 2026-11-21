@@ -1605,3 +1605,276 @@ async fn a_low_disk_starts_the_leftovers_round_at_most_every_ten_minutes() -> Bo
     );
     Ok(())
 }
+
+/// RCC-002: pressure reclaims the sandbox's shared compiler store only between builds.
+#[tokio::test]
+async fn pressure_reclaims_the_compiler_cache_only_without_build_readers() -> BoxResult<()> {
+    let w = world().await?;
+    let cache = w.root.join("rust-compile-cache");
+    std::fs::create_dir(&cache)?;
+    std::fs::write(cache.join("artifact"), vec![0u8; BIG])?;
+    w.h.app.disk_upkeep_needing(&w.sandbox, true, 1).await?;
+    assert!(
+        cache.join("artifact").is_file(),
+        "another owner's directory"
+    );
+    std::fs::write(cache.join(".yulius-mbx-v1"), "mbx-v1\n")?;
+    w.h.app.disk_upkeep(&w.sandbox, false).await?;
+    assert!(cache.exists());
+    let active = std::fs::File::open(&w.root)?;
+    active.lock_shared()?;
+    w.h.app.disk_upkeep_needing(&w.sandbox, true, 1).await?;
+    assert!(
+        cache.join("artifact").is_file(),
+        "the build holds its lease"
+    );
+    drop(active);
+    let report = w.h.app.disk_upkeep_needing(&w.sandbox, true, 1).await?;
+    assert!(!cache.join("artifact").exists());
+    assert_eq!(std::fs::read(cache.join(".yulius-mbx-v1"))?, b"mbx-v1\n");
+    assert_eq!(report.caches, 1, "exactly the shared store was reclaimed");
+    assert!(report.freed >= BIG as u64);
+    std::fs::remove_file(cache.join(".yulius-mbx-v1"))?;
+    std::fs::remove_dir(&cache)?;
+    std::os::unix::fs::symlink(&w.repo, &cache)?;
+    w.h.app.disk_upkeep_needing(&w.sandbox, true, 1).await?;
+    assert!(w.repo.join("Cargo.toml").is_file());
+    assert!(cache.is_symlink());
+    Ok(())
+}
+
+/// Upkeep operates on the marked store it opened, even if the directory entry is replaced.
+#[tokio::test]
+async fn compiler_upkeep_preserves_an_unmarked_replacement() -> BoxResult<()> {
+    let w = world().await?;
+    let cache = w.root.join("rust-compile-cache");
+    std::fs::create_dir(&cache)?;
+    std::fs::write(cache.join(".yulius-mbx-v1"), "mbx-v1\n")?;
+    std::fs::write(cache.join("old"), b"compiled")?;
+    let name = cache.clone();
+    let moved = w.root.join("previous-store");
+    yulius_app::race::on(yulius_app::race::Point::CachePrune, &cache, move || {
+        assert!(
+            std::fs::rename(&name, moved).is_ok(),
+            "swap out the inspected store"
+        );
+        assert!(
+            std::fs::create_dir(&name).is_ok(),
+            "install an unowned directory"
+        );
+        assert!(
+            std::fs::write(name.join("keep"), b"unrelated").is_ok(),
+            "write replacement contents"
+        );
+    });
+    w.h.app.disk_upkeep_needing(&w.sandbox, true, 1).await?;
+    assert_eq!(std::fs::read(cache.join("keep"))?, b"unrelated");
+    Ok(())
+}
+
+/// An interrupted eviction keeps the stamp and resumes on the next healthy-disk round.
+#[tokio::test]
+async fn compiler_upkeep_recovers_after_partial_removal() -> BoxResult<()> {
+    use std::sync::atomic::AtomicUsize;
+    let w = world().await?;
+    let cache = w.root.join("rust-compile-cache");
+    std::fs::create_dir(&cache)?;
+    std::fs::write(cache.join(".yulius-mbx-v1"), "mbx-v1\n")?;
+    let visited = Arc::new(AtomicUsize::new(0));
+    for name in ["actions", "shims"] {
+        let child = cache.join(name);
+        std::fs::create_dir(&child)?;
+        std::fs::write(child.join("blob"), b"cached output")?;
+        let count = visited.clone();
+        yulius_app::race::on(yulius_app::race::Point::CachePrune, &child, move || {
+            assert_eq!(
+                count.fetch_add(1, Ordering::SeqCst),
+                0,
+                "cut off the worker after one removal"
+            );
+        });
+    }
+    w.h.app.disk_upkeep_needing(&w.sandbox, true, 1).await?;
+    assert_eq!(visited.load(Ordering::SeqCst), 2);
+    assert!(
+        !cache.join(".yulius-mbx-v1").exists(),
+        "even an older launcher must use Cargo"
+    );
+    assert_eq!(
+        std::fs::read(cache.join(".yulius-mbx-pruning"))?,
+        b"mbx-v1\n"
+    );
+    assert_ne!(cache.join("actions").exists(), cache.join("shims").exists());
+    w.h.app.disk_upkeep(&w.sandbox, false).await?;
+    assert_eq!(std::fs::read_dir(&cache)?.count(), 1);
+    assert_eq!(std::fs::read(cache.join(".yulius-mbx-v1"))?, b"mbx-v1\n");
+    Ok(())
+}
+
+/// The 20 GiB threshold applies to allocated blocks even when many names refer to one inode.
+#[tokio::test]
+async fn compiler_upkeep_counts_a_hardlinked_artifact_once() -> BoxResult<()> {
+    let w = world().await?;
+    let cache = w.root.join("rust-compile-cache");
+    std::fs::create_dir(&cache)?;
+    std::fs::write(cache.join(".yulius-mbx-v1"), "mbx-v1\n")?;
+    let blob = cache.join("blob");
+    std::fs::write(&blob, vec![1u8; 32 << 20])?;
+    for index in 0..640 {
+        std::fs::hard_link(&blob, cache.join(index.to_string()))?;
+    }
+    let report = w.h.app.disk_upkeep(&w.sandbox, false).await?;
+    assert!(blob.exists(), "the store occupies about 32 MiB");
+    assert_eq!(report.caches, 0);
+    Ok(())
+}
+
+/// Removing the cache's name for a file another directory still links releases no artifact blocks.
+#[tokio::test]
+async fn compiler_upkeep_credits_only_unshared_blocks_when_relief_is_needed() -> BoxResult<()> {
+    let w = world().await?;
+    let cache = w.root.join("rust-compile-cache");
+    std::fs::create_dir(&cache)?;
+    std::fs::write(cache.join(".yulius-mbx-v1"), "mbx-v1\n")?;
+    let original = cache.join("artifact");
+    std::fs::write(&original, vec![5u8; BIG])?;
+    let retained = w.root.join("retained");
+    std::fs::hard_link(&original, &retained)?;
+    let report = w.h.app.disk_upkeep_needing(&w.sandbox, true, 1).await?;
+    assert_eq!(report.caches, 1);
+    assert!(!original.exists());
+    assert_eq!(std::fs::metadata(retained)?.len(), BIG as u64);
+    assert!(
+        report.freed < BIG as u64,
+        "the linked artifact is still allocated: {report:?}"
+    );
+    let empty = w.h.app.disk_upkeep_needing(&w.sandbox, true, 1).await?;
+    assert_eq!(
+        empty.caches, 0,
+        "the empty stamped directory was already cleared"
+    );
+    Ok(())
+}
+
+/// A zero estimate for a multi-linked artifact still requires a fresh quota reading on admission.
+#[tokio::test]
+async fn compiler_upkeep_remeasures_quota_before_retrying_a_refused_task() -> BoxResult<()> {
+    struct LinkedQuota {
+        cache: PathBuf,
+        outside: PathBuf,
+        used: AtomicU64,
+        attempts: AtomicU64,
+        measurements: AtomicU64,
+    }
+    #[async_trait::async_trait]
+    impl SandboxIsolation for LinkedQuota {
+        async fn prepare(&self, _: &SandboxRef) -> AppResult<Option<SandboxJoin>> {
+            self.attempts.fetch_add(1, Ordering::SeqCst);
+            if self.used.load(Ordering::SeqCst) > BIG as u64 / 2 {
+                return Err(yulius_app::error::AppError::Conflict("over quota".into()));
+            }
+            Ok(None)
+        }
+        async fn disk(&self, _: &SandboxRef) -> Option<DiskUsage> {
+            Some(DiskUsage {
+                used: self.used.load(Ordering::SeqCst),
+                limit: BIG as u64 / 2,
+            })
+        }
+        async fn measure_disk(&self, r: &SandboxRef) -> Option<DiskUsage> {
+            self.measurements.fetch_add(1, Ordering::SeqCst);
+            let usage =
+                yulius_sandbox::usage::measure(&[(&self.cache, None), (&self.outside, None)]);
+            self.used.store(usage.bytes, Ordering::SeqCst);
+            self.disk(r).await
+        }
+        fn release(&self, _: &SandboxId) {}
+    }
+
+    for (interrupted, external) in [(false, false), (false, true), (true, false)] {
+        let w = world().await?;
+        let task = seed_task(&w.h, "t-quota", "s1", "u-alice", TaskStatus::Running, None).await?;
+        let cache = w.root.join("rust-compile-cache");
+        let outside = w.root.join("retained");
+        std::fs::create_dir(&cache)?;
+        std::fs::create_dir(&outside)?;
+        let ready = cache.join(".yulius-mbx-v1");
+        let artifact = cache.join("artifact");
+        let second = if external { &outside } else { &cache }.join("second-name");
+        if interrupted {
+            // An earlier upkeep cleared the final payload before it could publish the ready stamp.
+            std::fs::write(cache.join(".yulius-mbx-pruning"), b"mbx-v1\n")?;
+        } else {
+            std::fs::write(&ready, b"mbx-v1\n")?;
+            std::fs::write(&artifact, vec![3u8; BIG])?;
+            std::fs::hard_link(&artifact, &second)?;
+        }
+        let quota = Arc::new(LinkedQuota {
+            cache,
+            outside,
+            used: AtomicU64::new(BIG as u64),
+            attempts: AtomicU64::new(0),
+            measurements: AtomicU64::new(0),
+        });
+        assert!(w.h.app.set_isolation(quota.clone()));
+        let admission = w.h.app.preflight_start(&task, None).await;
+        assert_eq!(std::fs::read(ready)?, b"mbx-v1\n");
+        assert!(!artifact.exists());
+        assert_eq!(second.exists(), external);
+        assert_eq!(
+            quota.measurements.load(Ordering::SeqCst),
+            1,
+            "refresh after cleanup"
+        );
+        assert_eq!(
+            quota.attempts.load(Ordering::SeqCst),
+            2,
+            "at most one retry"
+        );
+        if external {
+            assert!(matches!(
+                admission,
+                Err(yulius_app::error::AppError::Conflict(_))
+            ));
+        } else {
+            admission?;
+        }
+    }
+    Ok(())
+}
+
+/// A different preparation failure at exactly the quota must preserve the idle compiler store.
+#[tokio::test]
+async fn compiler_upkeep_preserves_the_cache_after_an_unrelated_refusal_at_quota() -> BoxResult<()>
+{
+    struct AtLimit;
+    #[async_trait::async_trait]
+    impl SandboxIsolation for AtLimit {
+        async fn prepare(&self, _: &SandboxRef) -> AppResult<Option<SandboxJoin>> {
+            Err(yulius_app::error::AppError::Conflict(
+                "holder unavailable".into(),
+            ))
+        }
+        async fn disk(&self, _: &SandboxRef) -> Option<DiskUsage> {
+            Some(DiskUsage {
+                used: BIG as u64,
+                limit: BIG as u64,
+            })
+        }
+        fn release(&self, _: &SandboxId) {}
+    }
+    let w = world().await?;
+    let task = seed_task(&w.h, "t-limit", "s1", "u-alice", TaskStatus::Running, None).await?;
+    let cache = w.root.join("rust-compile-cache");
+    std::fs::create_dir(&cache)?;
+    std::fs::write(cache.join(".yulius-mbx-v1"), b"mbx-v1\n")?;
+    let artifact = cache.join("artifact");
+    std::fs::write(&artifact, b"keep")?;
+    assert!(w.h.app.set_isolation(Arc::new(AtLimit)));
+    assert!(matches!(
+        w.h.app.preflight_start(&task, None).await,
+        Err(yulius_app::error::AppError::Conflict(_))
+    ));
+    assert_eq!(std::fs::read(artifact)?, b"keep");
+    Ok(())
+}

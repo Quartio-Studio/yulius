@@ -1023,6 +1023,16 @@ pub fn cookie_header(session: &str) -> String {
 pub struct FixedSystem;
 
 impl yulius_app::ports::system::SystemProbe for FixedSystem {
+    fn tree_allocation(
+        &self,
+        directory: &std::path::Path,
+    ) -> yulius_app::ports::system::TreeAllocation {
+        yulius_app::ports::system::SystemProbe::tree_allocation(
+            &yulius::wiring::system::SysinfoProbe::new(),
+            directory,
+        )
+    }
+
     fn snapshot(&self, _: &std::path::Path) -> yulius_app::ports::system::SystemSnapshot {
         yulius_app::ports::system::SystemSnapshot {
             cpu_percent: Some(12.5),
@@ -1074,6 +1084,13 @@ impl SettableSystem {
 }
 
 impl yulius_app::ports::system::SystemProbe for SettableSystem {
+    fn tree_allocation(
+        &self,
+        directory: &std::path::Path,
+    ) -> yulius_app::ports::system::TreeAllocation {
+        yulius_app::ports::system::SystemProbe::tree_allocation(&FixedSystem, directory)
+    }
+
     fn cpu_ticks(&self) -> Option<(u64, u64)> {
         *self
             .ticks
