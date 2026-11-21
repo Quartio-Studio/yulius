@@ -520,6 +520,10 @@ pub trait UpdateStore: Send + Sync {
 /// Yulius-run CI (SPEC-001 DLV-006, SPEC-002 ADR-21, tables `ci_runs` and `ci_jobs`).
 #[async_trait]
 pub trait CiStore: Send + Sync {
+    /// PRs occupying this sandbox's CI places, in admission order, including shared commits.
+    async fn ci_admitted_pulls(&self, sandbox: &SandboxId) -> AppResult<Vec<u64>>;
+    /// Atomically replaces that bounded window.
+    async fn set_ci_admitted_pulls(&self, sandbox: &SandboxId, numbers: &[u64]) -> AppResult<()>;
     /// Inserts a run with its jobs atomically.
     async fn insert_ci_run(
         &self,

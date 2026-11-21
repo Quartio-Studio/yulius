@@ -407,6 +407,14 @@ async fn manifest_flow_builds_manifest_and_converts_code() -> TestResult {
     let (fake, client) = setup().await?;
     let public = Url::parse("https://yulius.example.com/")?;
     let manifest = client.app_manifest(&public, "acme", OwnerKind::Organization)?;
+    assert_eq!(
+        manifest["default_events"],
+        serde_json::json!(["pull_request"])
+    );
+    assert_eq!(
+        manifest["hook_attributes"]["url"],
+        "https://yulius.example.com/api/github/webhook"
+    );
     let permissions = &manifest["default_permissions"];
     for (name, level) in [
         ("contents", "write"),

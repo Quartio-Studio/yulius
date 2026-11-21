@@ -70,6 +70,7 @@ impl GitHubAdapter {
             client_secret: GhSecret::new(app.client_secret.clone()),
             private_key_pem: GhSecret::new(app.private_key_pem.clone()),
             slug: app.slug.clone(),
+            webhook_secret: None,
         });
         let client = Arc::new(
             GitHubClient::metered(
@@ -478,6 +479,7 @@ impl GitHubPort for GitHubAdapter {
             client_id: c.client_id,
             client_secret: c.client_secret.expose().to_owned(),
             private_key_pem: c.private_key_pem.expose().to_owned(),
+            webhook_secret: c.webhook_secret.map(|s| s.expose().to_owned()),
         })
     }
 

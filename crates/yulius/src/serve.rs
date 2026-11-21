@@ -150,6 +150,9 @@ pub struct ServeArgs {
     /// Unset or unusable: per-client limits key on the TCP peer.
     #[arg(long, env = "YULIUS_PROXY_SECRET_FILE")]
     pub proxy_secret_file: Option<PathBuf>,
+    /// Owner-only file holding the webhook signing secret for an existing GitHub App.
+    #[arg(long, env = "YULIUS_GITHUB_WEBHOOK_SECRET_FILE")]
+    pub github_webhook_secret_file: Option<PathBuf>,
     /// File holding a token that may read Quartio-Studio/yulius (owner-only, mode 0600), for
     /// update checks and the helper's fetch when the GitHub App cannot read that repository
     /// (SPEC-002 ADR-18).
@@ -545,6 +548,21 @@ pub fn build_app(
     };
     config.own_ports = vec![args.bind.port(), args.internal_bind.port()];
     config.proxy_secret = crate::wiring::proxy::load(args.proxy_secret_file.as_deref());
+    config.github_webhook_secret = args
+        .github_webhook_secret_file
+        .as_deref()
+        .map(|path| {
+            let text = crate::wiring::jev::read_owner_only_file(path)?;
+            let key = text.trim();
+            if !(32..=4096).contains(&key.len()) || !key.bytes().all(|b| b.is_ascii_graphic()) {
+                return Err(
+                    "the GitHub webhook secret must be 32–4096 printable characters without spaces"
+                        .to_owned(),
+                );
+            }
+            Ok(yulius_app::model::Secret(key.to_owned()))
+        })
+        .transpose()?;
     config.preview = preview_config(&args.public_url, args.preview_domain.as_deref())?;
     config
         .contained_readonly

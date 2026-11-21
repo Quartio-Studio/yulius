@@ -131,6 +131,8 @@ pub struct AppConfig {
     /// request carrying it is keyed on the client address the proxy passes; `None` keys every
     /// request on its TCP peer. Formatting never shows it.
     pub proxy_secret: Option<crate::model::Secret>,
+    /// Webhook signing key set by the owner of an existing GitHub App.
+    pub github_webhook_secret: Option<crate::model::Secret>,
 }
 
 impl AppConfig {
@@ -204,6 +206,7 @@ impl AppConfig {
             upload_max_bytes: crate::uploads::DEFAULT_UPLOAD_MAX_BYTES,
             ci: crate::ci::CiSettings::default(),
             proxy_secret: None,
+            github_webhook_secret: None,
         }
     }
 }
@@ -257,6 +260,8 @@ pub struct App {
     pub(crate) remote_calls: Mutex<HashMap<String, Vec<i64>>>,
     /// Remote file changes being committed at once (SPEC-247 RMT-025).
     pub(crate) change_slots: tokio::sync::Semaphore,
+    /// At most 16 webhook scheduling attempts, including waits for a sandbox sync.
+    pub(crate) webhook_slots: Arc<tokio::sync::Semaphore>,
     /// Notepad presence updates per person and notepad (rate limiting, SPEC-112 NOT-019).
     pub(crate) note_presence: Mutex<HashMap<String, Vec<i64>>>,
     /// Ids held by browser proxies and their connections while they can reach a cached port range.
@@ -409,6 +414,7 @@ impl App {
             github_starts: Mutex::new(HashMap::new()),
             guest_attempts: Mutex::new(HashMap::new()),
             remote_calls: Mutex::new(HashMap::new()),
+            webhook_slots: Arc::new(tokio::sync::Semaphore::new(16)),
             change_slots: tokio::sync::Semaphore::new(crate::remote_files::MAX_CONCURRENT_CHANGES),
             note_presence: Mutex::new(HashMap::new()),
             browser_port_leases: Mutex::new(HashMap::new()),

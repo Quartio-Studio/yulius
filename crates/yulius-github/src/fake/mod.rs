@@ -414,6 +414,7 @@ impl FakeGitHub {
             client_secret: Secret::new(FAKE_CLIENT_SECRET),
             private_key_pem: Secret::new(FAKE_APP_KEY_PEM),
             slug: FAKE_APP_SLUG.to_owned(),
+            webhook_secret: Some(Secret::new("synthetic webhook secret")),
         }
     }
 
@@ -1152,7 +1153,7 @@ async fn handle(
                     "slug": FAKE_APP_SLUG,
                     "client_id": FAKE_CLIENT_ID,
                     "client_secret": FAKE_CLIENT_SECRET,
-                    "webhook_secret": Value::Null,
+                    "webhook_secret": "synthetic webhook secret",
                     "pem": FAKE_APP_KEY_PEM,
                     "owner": {"login": "fake-owner", "type": "Organization"},
                 }),

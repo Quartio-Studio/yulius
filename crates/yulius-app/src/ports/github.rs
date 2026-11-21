@@ -48,6 +48,8 @@ pub struct GitHubAppConfig {
     pub client_secret: String,
     /// PEM private key for App JWTs.
     pub private_key_pem: String,
+    /// HMAC key from manifest conversion, absent for older Apps.
+    pub webhook_secret: Option<String>,
 }
 
 impl std::fmt::Debug for GitHubAppConfig {

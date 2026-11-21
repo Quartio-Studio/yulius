@@ -246,7 +246,7 @@ impl GitHubClient {
     /// write, checks, metadata and members read (the full list
     /// and what each is for: `docs/operations.md`, "GitHub App permissions"); user-to-server
     /// OAuth whose callback is [`AUTH_CALLBACK_PATH`] and whose manifest redirect is
-    /// [`MANIFEST_CALLBACK_PATH`] under `public_url`. No webhook is registered. New Apps use
+    /// [`MANIFEST_CALLBACK_PATH`] under `public_url`. The webhook subscribes to pull requests. New Apps use
     /// expiring user tokens by default; [`GitHubClient::refresh_user_token`] handles them.
     ///
     /// # Errors
@@ -298,7 +298,8 @@ impl GitHubClient {
                 "metadata": "read",
                 "members": "read"
             },
-            "default_events": []
+            "hook_attributes": {"url": path_url("/api/github/webhook")?, "active": true},
+            "default_events": ["pull_request"]
         }))
     }
 
@@ -372,6 +373,7 @@ impl GitHubClient {
             client_secret: Secret::new(wire.client_secret),
             private_key_pem: Secret::new(wire.pem),
             slug: wire.slug,
+            webhook_secret: wire.webhook_secret.map(Secret::new),
         })
     }
 
