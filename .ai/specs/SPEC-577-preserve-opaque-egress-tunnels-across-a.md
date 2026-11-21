@@ -58,7 +58,7 @@ new request after the old sockets reach EOF. The issue requires the original con
 - [x] Obtain independent approval for the proxy restart slice
 - [x] Hand established opaque connections and matching relay sockets to the restarted server
 - [x] Verify same-socket continuity, admission limits and intercepted traffic through restart
-- [ ] Quiesce outbound relay admissions without recording a capacity refusal
+- [x] Quiesce outbound relay admissions without recording a capacity refusal
 - [ ] Obtain independent approval for the holder relay lifecycle slice
 - [ ] Restore matched proxy and relay pairs on the delivered holder lifecycle
 - [ ] Independent review in a fresh session, findings fixed test-first
@@ -471,6 +471,12 @@ without adoption support or a remote peer that times out can end a tunnel.
   `02535bf9-dbcc-449b-961b-3ef0e68a2452` passed quality, both test shards and e2e.
   The security scan was disabled.
   [Dev verification](https://yulius.quartio.ai/api/tasks/35adb14d-65fe-4a9f-b9fa-370d776d4139/delivery/evidence/49009e85931be97c15fdd40873f9ec95b26ce54b?run_id=02535bf9-dbcc-449b-961b-3ef0e68a2452)
+### Holder integration rehearsal and separated deliveries
+
+The following results cover the assembled holder and proxy candidate. The holder relay
+registers and captures original connections in the first delivery. The successor's
+matched relay and proxy restoration has its own review and CI.
+
 - On the direct-only implementation, the real holder's retained client read EOF after
   the successor became ready. The frozen-client regression failed again with BrokenPipe
   in 0.38 seconds before integrating the holder change. The destination listener accepts
@@ -553,3 +559,15 @@ without adoption support or a remote peer that times out can end a tunnel.
   Admission now distinguishes a stopped table from a full table under the same lock.
   The regression passed with a zero delta and quiet stderr. The live relay capture
   and the successor's matched restore are separate deliveries.
+
+
+### Holder admission and capture slice
+
+- With a synthetic HTTP response held open and the old public listener closed after
+  SIGTERM, dev `49009e859` accepted a fresh connection on the real holder's `out.sock`.
+  Its peer timed out waiting for EOF. The stopping server now closes the late Unix
+  connection immediately. The same isolated real-server fixture observed quiet stderr.
+- Three holder relay fixtures captured the original Unix and TCP sockets once, preserved
+  the final internal receive queue after both FINs, and exercised replacement and late
+  registration against an empty stopping table. The process-wide capacity count stayed
+  unchanged. The successor's joined relay and proxy restoration has a separate delivery.

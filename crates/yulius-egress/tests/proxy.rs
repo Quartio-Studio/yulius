@@ -1136,42 +1136,6 @@ mod handoff {
     }
 
     #[tokio::test]
-    async fn a_proxy_captured_after_half_close_recognizes_the_terminal_internal_connection()
-    -> TestResult {
-        use std::os::fd::AsFd as _;
-        tokio::time::timeout(Duration::from_secs(5), async {
-            let old = setup_with(Duration::from_secs(300), 1).await?;
-            let next = setup_with(Duration::from_secs(300), 1).await?;
-            let now = monotonic_ms();
-            let (mut client, mut origin, pair) = record(now, now + 5_000).await?;
-            let link = yulius_sandbox::relay::handoff::TcpLink::at_proxy(&pair.sockets[0])?;
-            old.service.restore_opaque_tunnel(pair)?;
-            origin.shutdown().await?;
-            assert_eq!(client.read(&mut [0]).await?, 0);
-            let pair = old
-                .service
-                .take_opaque_tunnels()
-                .await?
-                .pop()
-                .ok_or("missing original opaque tunnel")?;
-            client.write_all(b"last").await?;
-            client.shutdown().await?;
-            let retained = std::net::TcpStream::from(pair.sockets[0].as_fd().try_clone_to_owned()?);
-            while retained.peer_addr().is_ok() {
-                tokio::task::yield_now().await;
-            }
-            let (sandbox, original) = yulius_egress::EgressProxy::relay_link(&pair)?;
-            assert_eq!(sandbox, "s1");
-            assert!(original == link);
-            next.service.restore_opaque_tunnel(pair)?;
-            assert_eq!(origin.read_u32().await?.to_be_bytes(), *b"last");
-            assert_eq!(origin.read(&mut [0]).await?, 0);
-            Ok(())
-        })
-        .await?
-    }
-
-    #[tokio::test]
     async fn restored_activity_and_absolute_expiry_bind_the_replacement_proxy() -> TestResult {
         tokio::time::timeout(Duration::from_secs(5), async {
             let next = setup_with(Duration::from_secs(300), 1).await?;

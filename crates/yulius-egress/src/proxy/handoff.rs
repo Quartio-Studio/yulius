@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use yulius_sandbox::relay::custodian::{Established, Pair, collect, monotonic_ms};
-use yulius_sandbox::relay::handoff::{CopyCancellation, TcpLink};
 
 use super::{
     Arc, Bytes, CONNECTION_MAX, CopyState, EgressProxy, PoisonError, Slot, SocketAddr, TcpStream,
@@ -15,8 +14,6 @@ pub(super) type Capture = oneshot::Sender<oneshot::Sender<Pair>>;
 
 #[derive(Serialize, Deserialize)]
 struct Ownership {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    link: Option<TcpLink>,
     sandbox: String,
     run: String,
     last: u64,
@@ -24,12 +21,6 @@ struct Ownership {
 
 fn invalid() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "invalid opaque tunnel handoff")
-}
-
-fn tunnel_state(pair: &Pair) -> io::Result<(Ownership, &[u8])> {
-    let bytes = pair.state.strip_prefix(b"OP1\n").ok_or_else(invalid)?;
-    let at = bytes.iter().position(|b| *b == b'\n').ok_or_else(invalid)?;
-    Ok((serde_json::from_slice(&bytes[..at])?, &bytes[at + 1..]))
 }
 
 fn remaining(last: u64, expires: u64, now: u64) -> io::Result<Duration> {
@@ -65,7 +56,6 @@ fn register(slot: &Slot) -> Option<oneshot::Receiver<oneshot::Sender<Pair>>> {
 }
 
 struct Tunnel {
-    link: Option<TcpLink>,
     client: TcpStream,
     upstream: TcpStream,
     copy: CopyState,
@@ -88,7 +78,6 @@ impl Tunnel {
             reply = request => match reply { Ok(reply) => reply, Err(_) => return Ok(()) },
         };
         let owner = Ownership {
-            link: self.link,
             sandbox: slot.sandbox.clone(),
             run: self.run,
             last: slot.activity.last(),
@@ -145,7 +134,6 @@ pub(super) async fn agent_tunnel(
     };
     let established = Established::connected(&client, &upstream).ok();
     let tunnel = Tunnel {
-        link: TcpLink::at_proxy(&client).ok(),
         established,
         client,
         upstream,
@@ -184,41 +172,18 @@ impl EgressProxy {
         tokio::time::timeout(Duration::from_secs(5), collect(replies)).await?
     }
 
-    /// Identify the authenticated sandbox and original accepted TCP leg of a captured tunnel.
-    ///
-    /// # Errors
-    /// The record no longer represents a live opaque tunnel.
-    pub fn relay_link(pair: &Pair) -> io::Result<(String, TcpLink)> {
-        let (owner, _) = tunnel_state(pair)?;
-        let link = match owner.link {
-            Some(link) => link.verify_proxy(pair)?,
-            None => TcpLink::at_proxy(&pair.sockets[0])?,
-        };
-        Ok((owner.sandbox, link))
-    }
-
     /// Reattach one established TCP copy before opening the replacement's HTTP listeners.
     /// Uses the existing connected sockets and original idle and lifetime clocks.
     ///
     /// # Errors
     /// Invalid, expired or over-capacity records release their sockets and consume no place.
     pub fn restore_opaque_tunnel(&self, pair: Pair) -> io::Result<()> {
-        self.restore_with_cancellation(pair, CopyCancellation::default())
-    }
-
-    /// Restore an opaque copy with the administrative cancellation of its matching holder relay.
-    ///
-    /// # Errors
-    /// Invalid records, elapsed lifetimes and unavailable admission places reject the copy.
-    pub fn restore_with_cancellation(
-        &self,
-        pair: Pair,
-        cancellation: CopyCancellation,
-    ) -> io::Result<()> {
-        let (owner, copy_state) = tunnel_state(&pair)?;
+        let state = pair.state.strip_prefix(b"OP1\n").ok_or_else(invalid)?;
+        let at = state.iter().position(|b| *b == b'\n').ok_or_else(invalid)?;
+        let owner: Ownership = serde_json::from_slice(&state[..at])?;
         let expires = pair.expires.ok_or_else(invalid)?;
         remaining(owner.last, expires, monotonic_ms())?;
-        let copy = CopyState::decode(copy_state)?;
+        let copy = CopyState::decode(&state[at + 1..])?;
         if !pair.resumable()? {
             return Err(io::ErrorKind::NotConnected.into());
         }
@@ -266,7 +231,6 @@ impl EgressProxy {
             sandbox: owner.sandbox,
         };
         let tunnel = Tunnel {
-            link: owner.link.or_else(|| TcpLink::at_proxy(&client).ok()),
             established,
             client,
             upstream,
@@ -275,9 +239,7 @@ impl EgressProxy {
             expires,
         };
         tokio::spawn(async move {
-            cancellation
-                .run(ended, tunnel.transfer(slot, request))
-                .await;
+            tokio::select! { _ = tunnel.transfer(slot, request) => {}, _ = ended => {} }
         });
         Ok(())
     }

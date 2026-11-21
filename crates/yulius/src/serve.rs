@@ -704,11 +704,13 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     let egress =
         crate::wiring::egress::egress_proxy(&app, yulius_egress::EgressConfig::default()).await?;
     #[cfg(target_os = "linux")]
-    let handoff_directory = args.data_dir.join("tunnel-handoff");
+    let direct_handoff = isolation
+        .is_none()
+        .then(|| args.data_dir.join("tunnel-handoff"));
     #[cfg(target_os = "linux")]
-    let outbound_relays = isolation.as_ref().map(|m| m.outbound_relays.as_ref());
-    #[cfg(target_os = "linux")]
-    crate::wiring::tunnel_handoff::restore(&egress, &handoff_directory, outbound_relays).await;
+    if let Some(directory) = &direct_handoff {
+        crate::wiring::tunnel_handoff::restore(&egress, directory).await;
+    }
     browser_network.bind(&app, &egress);
     // Shells left running by the previous server process are adopted before serving.
     let workspace_reaper = app.start_workspace_services().await;
@@ -722,7 +724,17 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
         &app.config.internal_url,
     )
     .into_make_service_with_connect_info::<SocketAddr>();
-    let shutdown = futures::FutureExt::shared(shutdown_signal());
+    #[cfg(target_os = "linux")]
+    let outbound_relays = isolation
+        .as_ref()
+        .map(|manager| Arc::clone(&manager.outbound_relays));
+    let shutdown = futures::FutureExt::shared(async move {
+        shutdown_signal().await;
+        #[cfg(target_os = "linux")]
+        if let Some(relays) = outbound_relays {
+            relays.stop_admissions();
+        }
+    });
     let public_task = axum::serve(public.tap_io(no_delay), public_router)
         .with_graceful_shutdown(shutdown.clone());
     #[cfg(target_os = "linux")]
@@ -736,17 +748,16 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
         public.and(internal)
     };
     #[cfg(target_os = "linux")]
-    let result = drain_with_handoff(
-        http,
-        shutdown,
-        crate::wiring::tunnel_handoff::deposit(
-            &egress,
-            &handoff_directory,
-            &app.config.yulius_exe,
-            outbound_relays,
-        ),
-    )
-    .await;
+    let result = if let Some(directory) = &direct_handoff {
+        drain_with_handoff(
+            http,
+            shutdown,
+            crate::wiring::tunnel_handoff::deposit(&egress, directory, &app.config.yulius_exe),
+        )
+        .await
+    } else {
+        http.await
+    };
     #[cfg(not(target_os = "linux"))]
     let result = http.await;
     // Browsers do not outlive the server; shells and agent sessions keep running detached.

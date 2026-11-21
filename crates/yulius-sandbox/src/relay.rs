@@ -784,8 +784,7 @@ async fn outbound_connection(
             stream.write_u8(RELAY_OK).await?;
             #[cfg(target_os = "linux")]
             if let Some(holder) = holder {
-                return handoff::transfer(stream, upstream, CopyState::default(), &holder, None)
-                    .await;
+                return handoff::transfer(stream, upstream, &holder).await;
             }
             CopyState::default()
                 .transfer(&mut stream, &mut upstream)
