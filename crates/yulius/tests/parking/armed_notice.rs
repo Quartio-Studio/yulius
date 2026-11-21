@@ -45,7 +45,19 @@ fn an_ordinary_notice_from_a_previous_sha_waits_for_the_armed_heads_result() -> 
     armed_owner_case(OwnerCase::PreviousCiHead)
 }
 
+#[test]
+fn a_turn_beginning_during_the_hosted_read_suppresses_an_idle_check_in() -> TestResult {
+    armed_owner_case(OwnerCase::WorkingDuringCheckIn)
+}
+
+#[test]
+fn a_turn_beginning_during_the_hosted_read_suppresses_a_stall() -> TestResult {
+    armed_owner_case(OwnerCase::WorkingDuringStall)
+}
+
 enum OwnerCase {
+    WorkingDuringCheckIn,
+    WorkingDuringStall,
     PreviousCiHead,
     ExternalRepair,
     HeldHumanDecision,
@@ -93,7 +105,14 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
             &caller.sandbox,
             "ordinary-red",
             sha,
-            RunState::Failed,
+            if matches!(
+                case,
+                OwnerCase::WorkingDuringCheckIn | OwnerCase::WorkingDuringStall
+            ) {
+                RunState::Cancelled
+            } else {
+                RunState::Failed
+            },
             None,
             31,
         );
@@ -136,6 +155,61 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
             original
         );
         let bounds = WatchBounds::default();
+        if matches!(
+            case,
+            OwnerCase::WorkingDuringCheckIn | OwnerCase::WorkingDuringStall
+        ) {
+            let due = WatchBounds {
+                check_in_after_ms: 0,
+                stall_after_ms: if matches!(case, OwnerCase::WorkingDuringStall) {
+                    0
+                } else {
+                    i64::MAX
+                },
+                stall_quiet_ms: 0,
+            };
+            let release = Arc::new(tokio::sync::Notify::new());
+            *remote.pull_read_hold.lock().map_err(|_| "fixture host")? = Some(release.clone());
+            let watcher = cold.clone();
+            let pass = tokio::spawn(async move { watcher.watch_prs(&due).await });
+            tokio::time::timeout(Duration::from_secs(10), remote.pull_read_entered.notified())
+                .await?;
+            // Exercise the real turn hook with a synthetic bearer owned by this fixture attempt.
+            let token = "fixture-owner-turn";
+            rusqlite::Connection::open(data.join("yulius.db"))?.execute(
+                "UPDATE attempts SET token_hash = ?1 WHERE id = ?2",
+                rusqlite::params![
+                    cold.deps.crypto.sha256_hex(token.as_bytes()),
+                    original.as_str()
+                ],
+            )?;
+            cold.hook_event(
+                token,
+                "claude",
+                "UserPromptSubmit",
+                &yulius_contracts::hooks::HookInput {
+                    prompt: Some("Continue the review".into()),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await?;
+            *remote.pull_read_hold.lock().map_err(|_| "fixture host")? = None;
+            release.notify_one();
+            let news = pass.await?;
+            assert!(news.is_empty(), "idle advice after turn began: {news:?}");
+            let task = cold.deps.store.task(id).await?.ok_or("owner")?;
+            let (mut run, job) = crate::pr_watch::run(
+                &task.sandbox_id,
+                "ordinary-red-current",
+                &head,
+                RunState::Failed,
+                None,
+                32,
+            );
+            run.reference = CiRef::PullRequest(1481);
+            cold.deps.store.insert_ci_run(&run, &[job]).await?;
+        }
         if matches!(case, OwnerCase::PreviousCiHead) {
             let previous = cold.watch_prs(&bounds).await;
             assert!(
@@ -418,6 +492,90 @@ fn an_armed_pr_without_an_ordinary_run_checks_conflicts_at_its_published_head() 
         let news = app.watch_prs(&WatchBounds::default()).await;
         app.stop_task_now(&id).await?;
         assert!(news.is_empty(), "obsolete checkout conflict: {news:?}");
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+#[test]
+fn a_decision_during_draft_readiness_keeps_the_armed_notice_unheard() -> TestResult {
+    use crate::first_message::ShiftedClock;
+    use crate::pr_watch::git;
+    use std::sync::atomic::{AtomicI64, Ordering};
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let fake = yulius_ptyhost::test_support::locate_fake_agent().ok_or("fake agent")?;
+        let clock = Arc::new(ShiftedClock(AtomicI64::new(-13 * 60_000)));
+        let (app, _, github) = crate::first_message::start_hosted_with_github(
+            &data,
+            &fake,
+            crate::task_message::full_screen(),
+            (0, Arc::new(super::ScriptedUsage::default()), clock.clone()),
+            None,
+            |_| {},
+        )
+        .await?;
+        let (id, caller) = answered(&app, &data).await?;
+        let task = app.deps.store.task(&id).await?.ok_or("owner")?;
+        let tree = Path::new(task.worktree_path.as_deref().ok_or("checkout")?);
+        let head = git(tree, &["rev-parse", "HEAD"])?;
+        open_pull_at(&app, &github, &id, 1481, &head).await?;
+        app.deps
+            .store
+            .transition_delivery(
+                &DeliveryStage::None,
+                &DeliveryRecord {
+                    task_id: id.clone(),
+                    stage: DeliveryStage::PrOpen,
+                    pr_number: Some(1481),
+                    updated_at: app.now(),
+                },
+            )
+            .await?;
+        let (mut run, job) = crate::pr_watch::run(
+            &task.sandbox_id,
+            "guarded-red",
+            &head,
+            RunState::Failed,
+            None,
+            31,
+        );
+        run.reference = CiRef::PullRequest(1481);
+        app.deps.store.insert_ci_run(&run, &[job]).await?;
+        std::fs::write(
+            data.join(yulius_app::agent_wait::ARMED_MERGES_FILE),
+            serde_json::to_vec(
+                &json!([{"task":id.as_str(),"head":head,"summary":"reviewed","armed_at":30}]),
+            )?,
+        )?;
+        app.restore_armed_merges().await;
+        let (ctx, attach) = crate::task_message::full_screen_terminal(&app, &caller, &id).await?;
+        app.terminal_input(&ctx, &attach, b"\x7f", false).await?;
+        clock.0.store(-11 * 60_000, Ordering::SeqCst);
+        let (entered, release) = super::pause_watch_or_queue(super::Point::BoxSeenEmpty, &id);
+        let watcher = app.clone();
+        let pass = tokio::spawn(async move { watcher.watch_prs(&WatchBounds::default()).await });
+        tokio::time::timeout(Duration::from_secs(10), entered.notified()).await?;
+        ask(&app, &id).await?;
+        release.notify_one();
+        let superseded = pass.await?;
+        assert!(
+            superseded.is_empty(),
+            "CI pasted past the owner's decision: {superseded:?}"
+        );
+        assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
+        app.deps
+            .store
+            .set_task_needs_you(&id, None, app.now())
+            .await?;
+        let news = app.watch_prs(&WatchBounds::default()).await;
+        assert_eq!(news.len(), 1, "{news:?}");
+        assert!(news[0].1.contains("guarded-red"));
+        assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
+        app.terminal_leave(&attach).await;
+        app.stop_task_now(&id).await?;
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

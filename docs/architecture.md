@@ -1628,7 +1628,7 @@ person must act first (a prompt on screen, `needs_you`) or may have a draft in t
 
 The watch remembers an open PR when it first observes its number. While the live queue decides the merge, or if its activation changes during a read, the watch defers advice and keeps that observation for the eventual merge notice.
 
-When a notice for an armed PR is due, the watcher gives the hosted PR read five seconds to confirm the open PR, branch and armed head. Another clone can advance the branch before the task checkout sees it. Conflict advice uses the armed SHA even when its ordinary CI has no run. Before typing, the watcher checks the delivery record, the instance update hold and any decision reserved for the person. If verification fails, the next pass can still deliver the notice.
+When a notice for an armed PR is due, the watcher gives the hosted PR read five seconds to confirm the open PR, branch and armed head. Another clone can advance the branch before the task checkout sees it. Conflict advice uses the armed SHA even when its ordinary CI has no run. At paste admission, after the empty-draft lookup, the watcher checks the delivery record, update hold and any decision reserved for the person. It checks the turn state again for idle reminders and stalls. A busy draft lock defers the paste. If verification fails, the next pass can still deliver the notice.
 
 Each event has a key, typed once and kept in `<data>/pr-notices.json`. A session idle for 45
 minutes with nothing typed gets a check-in with the pull request's state; a pull request with no

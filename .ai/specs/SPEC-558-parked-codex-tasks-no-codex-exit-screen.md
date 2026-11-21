@@ -101,6 +101,8 @@ When the watcher sees an open PR during an active queue decision or its slot cha
 
 ## Evidence
 
+- Isolated head `ded44eb4b` passed 417 scoped tests and Clippy. Three review tests then failed at paste admission. A human decision made while the typist read an empty draft was bypassed. A turn starting during the hosted read received an idle check-in or stall. The corrected admission follows the draft lookup, rechecks the owner and slot, and samples the current turn before stamping the notice. A busy draft lock leaves the notice unheard.
+
 - The isolated published-head and recipient tests failed 9/9 against landed dev `ec580fc3a`. They observed stale typing after a push from the same or another clone, a missing hosted PR, an older ordinary CI SHA, a local conflict already repaired externally, a recorded merge, a held prompt, a decision for a person and an instance restart hold. The tests attach to the restored original attempt and verify delivery once when the relevant hold clears.
 
 - The combined watcher passed 432 scoped tests after the second review. Its third review found that an already-reported ordinary infrastructure error could hide a later multi-PR candidate failure. The new regression observed no candidate message on `8e4e2563d`. The corrected combined prototype passed all 24 candidate integration tests. The review limit separated dispatch eligibility from CI and train-event selection. The published-head and owner guard is the first delivery. The next delivery keeps the ordinary error first and checks the holding candidate after the error has been heard.

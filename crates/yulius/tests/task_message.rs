@@ -1253,7 +1253,7 @@ fn a_message_of_yulius_waits_for_a_persons_draft_and_tells_them() -> TestResult 
 /// A fake agent that draws full screen as Claude Code does: its prompt box (a row `❯` between
 /// two rules) with the cursor in it. The PTY echoes what a person types into that row, so a
 /// draft shows in the box, and `Ctrl+U` erases it there.
-fn full_screen() -> FakeAgentOptions {
+pub(super) fn full_screen() -> FakeAgentOptions {
     FakeAgentOptions {
         tui: true,
         ..fake_agent()
@@ -1294,7 +1294,7 @@ fn fixture_box_empty(app: &App, id: &TaskId) -> bool {
 }
 
 /// Wait for the fake agent's SIGWINCH redraw before sending PTY-echoed draft text.
-async fn full_screen_terminal(
+pub(super) async fn full_screen_terminal(
     app: &Arc<App>,
     caller: &ProjectCaller,
     id: &TaskId,

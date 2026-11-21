@@ -701,6 +701,20 @@ impl App {
         what: Typed,
         from: Sender,
     ) -> AppResult<()> {
+        self.type_into_session_if(task, paste, what, from, None::<std::future::Ready<bool>>)
+            .await
+    }
+
+    /// An armed notice verifies its owner after draft lookup. It defers if the draft lock
+    /// is busy, so neither a hosted read under the lock nor a later wait can stale that decision.
+    pub(crate) async fn type_into_session_if(
+        &self,
+        task: &TaskRecord,
+        paste: &[u8],
+        what: Typed,
+        from: Sender,
+        admit: Option<impl std::future::Future<Output = bool>>,
+    ) -> AppResult<()> {
         let runtime = self.existing_runtime(&task.id).ok_or_else(|| {
             AppError::Conflict(format!("task #{} has no live session", task.number))
         })?;
@@ -737,7 +751,19 @@ impl App {
         // For a screen-based release, serialize the final decision, paste, Enter and mark
         // cleanup with viewer keys and submit hooks (SPEC-537). A key arriving during
         // the lookup above participates in this decision.
-        let mut mark = if attempt.is_some() {
+        let guarded = admit.is_some();
+        if let Some(admit) = admit
+            && !admit.await
+        {
+            return Err(AppError::Conflict(
+                "the armed PR notice is no longer due".into(),
+            ));
+        }
+        let mut mark = if attempt.is_some() && guarded {
+            Some(runtime.draft_mark.try_lock().map_err(|_| {
+                AppError::Conflict("the prompt box changed during PR notice verification".into())
+            })?)
+        } else if attempt.is_some() {
             Some(runtime.draft_mark.lock().await)
         } else {
             None

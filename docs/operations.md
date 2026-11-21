@@ -192,7 +192,8 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # The PR watcher delivers actionable failures once and waits for a pending human decision.
 # An armed notice checks the published PR head before typing. If another clone has pushed
 # a repair, the author hears no advice for the old head. A pending scope decision or instance
-# restart holds the notice until the owner can receive it.
+# restart holds the notice until the owner can receive it. If the owner starts a turn during
+# verification, the idle reminder waits. An actionable CI failure can still reach that turn.
 # When PRs share a head, their tasks can wait on the same ordinary CI run. An explicit
 # rerun for the owner takes precedence in yulius wait and in its merge queue decision.
 # If a later run finds the integration CI configuration invalid, earlier completed runs
