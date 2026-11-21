@@ -7,8 +7,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-21
 
 - Codex tasks start with the rate-limit model switch reminder hidden. If an existing session shows it, Yulius holds automated input so a message cannot confirm the switch. [SPEC-603](../.ai/specs/SPEC-603-codex-s-rate-limit-prompt-must-not-switc.md)
+- `scripts/cargo --scratch-target` supports Clippy and nextest alongside built-in commands. Eligible builds reuse the sandbox compiler cache, and the command removes the private disk target after its workers stop. [SPEC-600](../.ai/specs/SPEC-600-mutation-testing-sized-to-the-change-wit.md)
+- Codex reviewers now contribute their reviewed head, timestamps, answering model and verdict
+  to task delivery and Pipeline review numbers. [SPEC-605](../.ai/specs/SPEC-605-record-the-review-rounds-of-codex-tasks.md)
 - Antigravity conversations reopened without a prompt show Waiting and can release their session slots while the Gemini announcement is visible. [SPEC-604](../.ai/specs/SPEC-604-an-idle-antigravity-session-under-the-ge.md)
-- Codex tasks inherit High effort on new and resumed processes for every model. GPT-6.2 Astra and Sol offer explicit Extra high and Max. [SPEC-607](../.ai/specs/SPEC-607-codex-tasks-run-at-high-effort-unless-th.md)
+- Codex tasks inherit High effort on new and resumed processes for every model. GPT-6.2 Astra and Sol offer explicit Extra high and Max. The UI contract checks Antigravity’s inherited High against the shared mock default. [SPEC-607](../.ai/specs/SPEC-607-codex-tasks-run-at-high-effort-unless-th.md)
 - `scripts/cargo --scratch-target` gives an ad-hoc build a private disk target and removes it when its workers stop. [SPEC-600](../.ai/specs/SPEC-600-mutation-testing-sized-to-the-change-wit.md)
 
 - Agent and CI attempts receive private disk scratch for build trees. The process host caps each session’s memory-backed `/tmp` at 1 GiB. Named mutation campaigns reclaim their disk copies when workers exit. [SPEC-600](../.ai/specs/SPEC-600-mutation-testing-sized-to-the-change-wit.md)

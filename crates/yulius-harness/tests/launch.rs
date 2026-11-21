@@ -1416,6 +1416,8 @@ fn codex_new_session_argv_snapshot_and_files() -> TestResult {
         ("UserPromptSubmit", 694_800),
         ("Stop", 694_800),
         ("SessionEnd", 3),
+        ("SubagentStart", 15),
+        ("SubagentStop", 15),
     ] {
         assert_eq!(
             hooks["hooks"][event],

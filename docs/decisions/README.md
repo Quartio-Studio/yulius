@@ -491,6 +491,7 @@ If a reservation skips past all available slots, land an empty extension first w
 - [0440](0440-estimate-codex-work-at-standard-and-ultrafast-api-prices.md). Recorded GPT-6 work enters the standard API estimate and the pool shows the cost of using Ultrafast for eligible runs.
 <!-- ADR 0440 -->
 <!-- ADR 0441 -->
+- [0442](0442-identify-codex-reviewers-by-their-child-rollout.md): identify Codex reviewers by their child rollout.
 <!-- ADR 0442 -->
 - [0443](0443-hold-codex-input-at-the-rate-limit-model-picker.md). Codex starts with the model reminder hidden and a visible reminder holds automated terminal input.
 <!-- ADR 0443 -->
