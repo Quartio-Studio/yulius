@@ -77,7 +77,7 @@ Capture a separate screen at the park decision because exiting can clear the ent
 
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
-Yulius CI schedules one run per commit even when two PRs publish the same head. The queue and `yulius wait` prefer the owner’s own ordinary run when one exists. Otherwise they use the run that covers that commit under the scheduler’s rule. A cancellation of a different reference cannot lend a verdict.
+Yulius CI schedules one run per commit even when two PRs publish the same head. The queue and `yulius wait` prefer the owner’s own ordinary run when one exists. Otherwise they use the run that covers that commit under the scheduler’s rule. A cancellation of a different reference cannot lend a verdict. GitHub still enforces its required commit status when the queue submits the merge.
 
 ## Evidence
 

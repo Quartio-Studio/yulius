@@ -1233,7 +1233,16 @@ async fn the_shared_head_fallback_skips_private_runs_and_cancelled_peers() -> Te
 
 /// The final merge checks must agree with the queue when the base has not moved.
 #[tokio::test]
-async fn a_green_shared_head_owner_merges_despite_a_red_peer() -> TestResult {
+async fn a_green_shared_head_owner_merges_with_its_published_green_status() -> TestResult {
+    shared_protected_merge(true).await
+}
+
+#[tokio::test]
+async fn the_host_can_refuse_a_green_owner_when_the_shared_status_is_red() -> TestResult {
+    shared_protected_merge(false).await
+}
+
+async fn shared_protected_merge(owner_publishes_last: bool) -> TestResult {
     let f = fixture().await?;
     let app = &f.h.app;
     let (one, _two, head) = shared_pull_heads(&f).await?;
@@ -1241,9 +1250,27 @@ async fn a_green_shared_head_owner_merges_despite_a_red_peer() -> TestResult {
     f.record_run(app, 1, &head, RunState::Passed).await?;
     f.h.clock.0.fetch_add(1, Ordering::SeqCst);
     f.record_run(app, 2, &head, RunState::Failed).await?;
+    if owner_publishes_last {
+        // A status publication retry can reach GitHub after the newer peer’s status.
+        let green =
+            f.h.github
+                .statuses()
+                .into_iter()
+                .find(|(sha, status)| sha == &head && status.state == "success")
+                .ok_or("owner's published green status")?;
+        f.h.github.statuses.lock().map_err(|_| "lock")?.push(green);
+    }
     app.merge_armed(&f.sandbox).await;
     let wait = f.wait(1, &one).await?;
-    assert!(f.merged(app, 1).await?, "{wait}");
+    assert_eq!(f.merged(app, 1).await?, owner_publishes_last, "{wait}");
+    if !owner_publishes_last {
+        assert!(
+            wait["merge_outcome"]
+                .as_str()
+                .is_some_and(|s| s.contains("Required status check")),
+            "{wait}"
+        );
+    }
     assert_eq!(wait["checks"], "passed", "{wait}");
     Ok(())
 }
