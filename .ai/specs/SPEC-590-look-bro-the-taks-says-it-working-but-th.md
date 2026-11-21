@@ -1,6 +1,6 @@
 ---
 yulius-task: 2b0ce1c0-efb5-419f-94ab-2b216f995635
-status: in-progress
+status: done
 ---
 
 # SPEC-590. Continue a stopped Codex task in its saved conversation
@@ -29,9 +29,10 @@ The page's Continue action and the Superagent's `task_restart` share `continue_t
 - [x] Prove the interruption and resume behavior with regression tests
 - [x] Keep task activity and resumed work in sync with Codex
 - [x] Recover missing history and cancel an overtaken capacity worker
-- [ ] Preserve the replacement continuation when Stop overtakes an account move
-- [ ] Verify and independently review the fix
-- [ ] Record verification evidence for the merge queue
+- [x] Preserve the replacement continuation when Stop overtakes an account move
+- [x] Verify and independently review the fix
+- [x] Check the final account move correction with mutation testing
+- [x] Record verification evidence for the merge queue
 
 ## Acceptance criteria
 
@@ -67,3 +68,19 @@ The third review found the capacity worker could select a continuation, then lau
 The fourth review identified a fresh host spawn failure after attempt insertion and an old capacity worker cleaning up a replacement pause. In run `133056e4-c38f-44f1-b7b1-7896c1cd3b43`, the previous two cancellation regressions passed. The new regressions returned a conflict on retry and lost the replacement pause. A fresh attempt that failed to spawn retries its original request. Stale cleanup closes only the observed pause and subscription request.
 
 All 93 selected Codex, account move, pool supervision, parking, persistence and native harness checks passed in run `e9bd4abf-2d88-4aca-a9ad-eaba8edf9a07`. The fifth review found another interleaving. Stop can win after a worker checks the pause and before it claims the status. In run `aa9dfb6d-8a27-403d-bbde-baa4196aa681`, that worker erased the replacement pause. A worker that loses the claim now reports that it started nothing. A genuine launch failure settles its own state while the launch lock still protects it.
+
+The next review confirmed the worker correction and found a manual Move could take a later Continue's pause. On the reviewed product, run `a69556d6-1bdd-4b9a-8df9-8cf557b14f64` passed 98 of 99 tests. The failing Move erased the new native resume. Run `f5314de7-fbd1-4580-9ef0-74b58c0de42d` also found that a Move started a session while the only slot was already occupied. Move now submits the saved start through the same pause and slot checks as capacity recovery, retains the manually chosen account when queued and records the switch outcome.
+
+The bounded full-diff mutation run listed 110, caught 25, missed 18, timed out on 0, found 60 unviable and did not reach 7 in 30 minutes. A wider preliminary filter had exceeded the unmutated baseline time limit. The cancellation correction's scoped run listed 61, caught 2, missed 0, timed out on 0, found 59 unviable and reached all 61. Four mutations in pause handling were caught in a focused rerun with the machinery-start and persisted-pause cases.
+
+Focused cargo-mutants reruns caught all 18 initially missed variants. The pause run caught 4. Account moves caught 7 including a previously caught control. The launch and history runs caught 7 and 1. These cases distinguish an idle move, an interrupted working turn, a held turn, a reviewer continuation, a different provider's history and a legacy Codex conversation without a local attempt. The spawn and stale-cleanup correction's scoped run listed 36, caught 6, missed 0, timed out on 0, found 30 unviable and reached all 36.
+
+The launch claim correction's scoped run listed 29, caught 0, missed 0, timed out on 0, found 29 unviable and reached all 29. All 29 replacements failed Rust type checking. The deterministic lost-claim test supplies the behavioral evidence for that branch.
+
+The final 100 Codex, pool, account Move, parked wake, persistence and native harness checks passed in run `c88d84e6-f843-40f4-8227-01a0c3402c4c`. Independent review approved `fc640ee92fc07de17cd97e421f9cc37bf50bcf4f` and reran the overtaken Move and session cap regressions against the approved code.
+
+Four account-move controls passed in run `e84d9581-55d4-4776-9867-62cdcda21dbc`, including a replacement that is already running and a held operator prompt. The application and store libraries and the product integration test target passed Clippy with warnings denied.
+
+On the final account Move correction, the last counts available before the session restarted were 69 listed, 7 caught, 1 missed, 0 timed out and 54 unviable. The final outcome of the other 7 was unavailable after restart. The missed variant dropped a held operator prompt. A focused repeat with the held-prompt and replacement-run controls caught all 7 prompt and switch-outcome variants, including that one.
+
+After resuming the verification session, a focused run on the three remaining switch conditions passed its seven unmutated regression checks, caught two variants and found the third unviable. All observed missed variants have failing regression coverage.
