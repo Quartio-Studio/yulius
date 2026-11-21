@@ -74,6 +74,28 @@ pub(crate) struct ObservedPull {
 }
 
 impl ObservedPull {
+    /// Resolve missing GitHub facts against the preceding observation in request order.
+    pub(crate) fn fallback(
+        prior: Option<Self>,
+        read: Option<&Self>,
+        complete: bool,
+        unavailable: Option<u64>,
+    ) -> Option<Self> {
+        let prior = prior?;
+        let keep = match read {
+            None => !complete || unavailable == Some(prior.number),
+            Some(pr) if pr.open => {
+                unavailable == Some(pr.number)
+                    && prior.open
+                    && prior.number == pr.number
+                    && pr.head.is_some()
+                    && pr.head == prior.head
+            }
+            Some(pr) => !complete && prior.open && pr.number != prior.number,
+        };
+        keep.then_some(prior)
+    }
+
     /// A branch listing confirms identity. Keep the checks already observed on that open PR.
     fn after_branch_read(self, prior: Option<Self>) -> Self {
         prior
@@ -96,20 +118,19 @@ type PullRows = HashMap<TaskId, Option<ObservedPull>>;
 struct Overview {
     complete: bool,
     rows: PullRows,
+    unavailable: HashMap<TaskId, u64>,
 }
 
 impl Overview {
     fn reading(&self, task: &TaskId, prior: Option<ObservedPull>) -> Option<ObservedPull> {
         let read = self.rows.get(task)?.clone();
-        if !self.complete
-            && let Some(open) = prior.filter(|pr| pr.open)
-            && read
-                .as_ref()
-                .is_none_or(|pr| !pr.open && pr.number != open.number)
-        {
-            return Some(open);
-        }
-        read
+        ObservedPull::fallback(
+            prior,
+            read.as_ref(),
+            self.complete,
+            self.unavailable.get(task).copied(),
+        )
+        .or(read)
     }
 }
 
@@ -216,8 +237,22 @@ pub(crate) struct OverviewRead {
 }
 
 impl OverviewRead {
-    pub(crate) fn record(self, complete: bool, rows: PullRows) {
-        self.publish(PullObservation::Sandbox(Overview { complete, rows }));
+    #[cfg(test)]
+    fn record(self, complete: bool, rows: PullRows) {
+        self.record_overview(complete, rows, HashMap::new());
+    }
+
+    pub(crate) fn record_overview(
+        self,
+        complete: bool,
+        rows: PullRows,
+        unavailable: HashMap<TaskId, u64>,
+    ) {
+        self.publish(PullObservation::Sandbox(Overview {
+            complete,
+            rows,
+            unavailable,
+        }));
     }
 
     pub(crate) fn record_branch(self, task: &TaskId, merged: u64, replacement: Option<u64>) {
@@ -669,6 +704,12 @@ impl App {
             let record = store.delivery(&task.id).await?;
             let observed = self.known_parked_pull(task, record.as_ref());
             let mut pull = self.last_pull_signal(task, &observed);
+            if let Some(pr) = observed.pr.filter(|pr| pr.open)
+                && let Some(head) = observed.head.as_deref()
+                && let Some(signal) = self.parking_ci_signal(task, pr.number, head, None).await?
+            {
+                pull = Some(signal);
+            }
             // A newer Yulius CI run already queued or running supersedes a stale failing
             // pull-request observation on a live task (SPEC-578).
             if live && pull == Some(PullSignal::Failing) && self.pr_ci_progressing(task).await {

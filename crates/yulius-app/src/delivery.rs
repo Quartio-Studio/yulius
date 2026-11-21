@@ -2354,7 +2354,7 @@ impl App {
                 );
             }
         }
-        view.review_rounds = self.review_round_views(&task.id).await;
+        view.review_rounds = self.review_round_views(&observed.record).await;
         Ok(view)
     }
 
@@ -2484,6 +2484,7 @@ impl App {
         }
         let mut tasks = Vec::new();
         let mut observed = std::collections::HashMap::new();
+        let mut unavailable = std::collections::HashMap::new();
         let mut git_failed = false;
         for task in self.deps.store.tasks(&sandbox.id, false).await? {
             let Some(branch) = task.branch.clone() else {
@@ -2624,69 +2625,77 @@ impl App {
                     conflicts: false,
                 });
             }
-            let mut preserved = None;
-            if let Some(known) = self
-                .observed_pulls
-                .known_pull(&sandbox.id, &task.id)
-                .flatten()
-            {
-                let missing = (!overview_complete || unread_recorded == Some(known.number))
-                    && view.pr.as_ref().is_none_or(|pr| {
-                        pr.state == "merged" && known.open && pr.number != known.number
-                    });
-                let unread_checks = view.pr.as_ref().is_some_and(|pr| {
-                    pr.number == known.number
-                        && pr.state == "open"
-                        && (pr.checks == "unknown" || partial_checks.contains(&pr.number))
-                        && known.open
-                        && head.is_some()
-                        && head == known.head
-                });
-                if missing || unread_checks {
-                    // Behind and an open head with no observed check have no exact wire word.
-                    if matches!(known.signal, None | Some(PullSignal::Behind)) {
-                        preserved = Some(known.signal);
-                    }
-                    head = known.head.clone();
-                    let pr = view.pr.get_or_insert_with(|| PullView {
-                        number: known.number,
-                        url: String::new(),
-                        title: task.title.clone(),
-                        base: profile.integration_branch.clone(),
-                        head: branch.clone(),
-                        state: String::new(),
-                        checks: String::new(),
-                        conflicts: false,
-                    });
-                    pr.number = known.number;
-                    pr.url = format!("https://github.com/{owner}/{name}/pull/{}", pr.number);
-                    let (state, checks) = match known.signal {
-                        Some(PullSignal::Merged) => ("merged", "none"),
-                        Some(PullSignal::Tested | PullSignal::Conflicting) => ("open", "success"),
-                        Some(PullSignal::Errored) => ("open", "error"),
-                        Some(PullSignal::Failing) => ("open", "failure"),
-                        Some(PullSignal::InReview | PullSignal::Behind) => ("open", "pending"),
-                        None if known.open => ("open", "unknown"),
-                        None => ("closed", "none"),
-                    };
-                    pr.state = state.into();
-                    pr.checks = checks.into();
-                    pr.conflicts |= known.signal == Some(PullSignal::Conflicting);
-                    if let Some(listed) = pulls.iter_mut().find(|listed| listed.number == pr.number)
-                    {
-                        listed.checks.clone_from(&pr.checks);
-                        listed.conflicts = pr.conflicts;
-                    }
-                }
-            }
-            let pull = view.pr.as_ref().map(|pr| crate::sandboxes::ObservedPull {
+            // Publish only facts from this request. A displayed fallback must still be
+            // resolved in request order when another overview is in flight.
+            let fresh = view.pr.as_ref().map(|pr| crate::sandboxes::ObservedPull {
                 head,
                 open: pr.state == "open",
                 number: pr.number,
-                signal: preserved
-                    .unwrap_or_else(|| PullSignal::from_wire(&pr.state, &pr.checks, pr.conflicts)),
+                signal: PullSignal::from_wire(&pr.state, &pr.checks, pr.conflicts),
             });
-            observed.insert(task.id.clone(), pull);
+            let gap = unread_recorded.or_else(|| {
+                view.pr
+                    .as_ref()
+                    .filter(|pr| pr.checks == "unknown" || partial_checks.contains(&pr.number))
+                    .map(|pr| pr.number)
+            });
+            if let Some(number) = gap {
+                unavailable.insert(task.id.clone(), number);
+            }
+            if let Some(mut known) = crate::sandboxes::ObservedPull::fallback(
+                self.observed_pulls
+                    .known_pull(&sandbox.id, &task.id)
+                    .flatten(),
+                fresh.as_ref(),
+                overview_complete,
+                gap,
+            ) {
+                if known.open
+                    && let Some(sha) = known.head.as_deref()
+                {
+                    known.signal = self
+                        .parking_ci_signal(&task, known.number, sha, None)
+                        .await?
+                        .or(known.signal);
+                }
+                let pr = view.pr.get_or_insert_with(|| PullView {
+                    number: known.number,
+                    url: String::new(),
+                    title: task.title.clone(),
+                    base: profile.integration_branch.clone(),
+                    head: branch.clone(),
+                    state: String::new(),
+                    checks: String::new(),
+                    conflicts: false,
+                });
+                pr.number = known.number;
+                pr.url = format!("https://github.com/{owner}/{name}/pull/{}", pr.number);
+                let (state, checks) = if known.open {
+                    (
+                        "open",
+                        match known.signal {
+                            Some(PullSignal::Tested | PullSignal::Conflicting) => "success",
+                            Some(PullSignal::Errored) => "error",
+                            Some(PullSignal::Failing) => "failure",
+                            Some(PullSignal::Behind | PullSignal::InReview) => "pending",
+                            _ => "unknown",
+                        },
+                    )
+                } else {
+                    (
+                        if known.signal == Some(PullSignal::Merged) {
+                            "merged"
+                        } else {
+                            "closed"
+                        },
+                        "none",
+                    )
+                };
+                pr.state = state.into();
+                pr.checks = checks.into();
+                pr.conflicts |= known.signal == Some(PullSignal::Conflicting);
+            }
+            observed.insert(task.id.clone(), fresh);
             tasks.push(view);
         }
 
@@ -2718,7 +2727,7 @@ impl App {
         }
         // Only a completed overview publishes. Cancellation during the final Git
         // log drops the guard and frees its slot for the next request.
-        observation.record(overview_complete, observed);
+        observation.record_overview(overview_complete, observed, unavailable);
         Ok(GitOverview {
             integration_branch: profile.integration_branch.clone(),
             production_branch: profile.production_branch.clone(),
