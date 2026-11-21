@@ -1,6 +1,6 @@
 """Regression cases for the pre-merge file-reader job."""
 from pathlib import Path
-from fnmatch import fnmatchcase
+import os
 import subprocess
 import tempfile
 import tomllib
@@ -14,6 +14,8 @@ class RepositoryTests(unittest.TestCase):
         jobs = {job["name"]: job for job in tomllib.loads((ROOT / "yulius.toml").read_text())["ci"]["jobs"]}
         job = jobs["file-contracts"]
         self.assertFalse(job.get("after_merge"))
+        self.assertTrue(all("*" not in pattern or pattern.endswith("/**") for pattern in job["paths"]),
+                        "use literal names and directory prefixes so the coverage check matches CI")
         self.assertIn("scripts/repository_tests.py", job["command"])
         for path in ("crates/**", "catalog/**", "docs/**"):
             self.assertIn(path, job["paths"])
@@ -33,7 +35,8 @@ class RepositoryTests(unittest.TestCase):
                 tracked.update(str(parent) for parent in path.parents)
         inputs = {dep for reader in inventory(ROOT) for dep in reader.inputs}
         missing = {dep for dep in inputs & tracked if not any(
-            fnmatchcase(dep, pattern) or pattern == dep + "/**" for pattern in patterns)}
+            dep == pattern or (pattern.endswith("/**") and
+                               (dep == pattern[:-3] or dep.startswith(pattern[:-2]))) for pattern in patterns)}
         self.assertEqual(missing, set())
 
     def test_selects_all_web_contracts_and_other_text_readers(self):
@@ -52,6 +55,8 @@ class RepositoryTests(unittest.TestCase):
             self.assertIn("every_place_states_one_rule_for_local_checks", names(path))
         self.assertIn("default_workflows_follow_the_discipline", names("catalog/workflows/fix.md"))
         self.assertIn("the_repositorys_own_cd_is_defined", names("yulius.toml"))
+        self.assertIn("agents_manage_automations_through_mcp_tools", names("catalog/workflows/fix.md"))
+        self.assertIn("ready_made_automations_are_enabled_in_one_call", names("catalog/automations/docs-up-to-date.md"))
         self.assertFalse(names("some-unrelated-file.txt"))
 
     def test_a_new_reader_and_a_shared_helper_need_no_registration(self):
@@ -123,6 +128,55 @@ fn reads_a_config() {
                 'pub const GUIDE: &str = include_str!("../../../../docs/guide.md");')
             with self.assertRaisesRegex(ValueError, "tests/support/data.rs"):
                 inventory(root)
+
+    def test_indirect_runtime_paths_and_concatenated_include_literals(self):
+        from repository_tests import inventory, select
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            crate = root / "crates/sample"
+            (crate / "src").mkdir(parents=True)
+            (crate / "Cargo.toml").write_text('[package]\nname = "sample"\n')
+            for body in ('let path = "../../docs/guide.md"; std::fs::read_to_string(path).unwrap();',
+                         'let guide = include_str!(concat!("../../../", "docs/guide.md"));'):
+                with self.subTest(body=body):
+                    (crate / "src/lib.rs").write_text(f'#[test]\nfn pins_a_guide() {{\n    {body}\n}}\n')
+                    self.assertEqual([r.name for r in select(inventory(root), ["docs/guide.md"])], ["pins_a_guide"])
+            (crate / "src/lib.rs").write_text(
+                '#[test]\nfn pins_a_fixture() {\n let path = "test-data"; std::fs::read(&path).unwrap();\n}\n')
+            self.assertEqual([r.name for r in select(inventory(root), ["crates/sample/test-data"])], ["pins_a_fixture"])
+
+    def test_an_older_pr_executes_the_protected_selector_on_its_own_checkout(self):
+        jobs = tomllib.loads((ROOT / "yulius.toml").read_text())["ci"]["jobs"]
+        command = next(job["command"] for job in jobs if job["name"] == "file-contracts")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            def git(*args):
+                subprocess.run(["git", "-C", root, "-c", "user.name=CI", "-c", "user.email=ci@example.com",
+                                *args], check=True, capture_output=True)
+            git("init", "-q")
+            for directory in ("scripts", "docs", "crates/legacy/src"):
+                (root / directory).mkdir(parents=True)
+            (root / "crates/legacy/Cargo.toml").write_text('[package]\nname = "legacy"\n')
+            (root / "crates/legacy/src/lib.rs").write_text(
+                '#[test]\nfn pins_guide() {\n    assert!(include_str!("../../../docs/guide.md").contains("old"));\n}\n')
+            (root / "docs/guide.md").write_text("old")
+            cargo = root / "scripts/cargo"
+            cargo.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\nexit 42\n')
+            cargo.chmod(0o755)
+            git("add", ".")
+            git("commit", "-qm", "legacy")
+            git("branch", "old-pr")
+            (root / "scripts/repository_tests.py").write_bytes((ROOT / "scripts/repository_tests.py").read_bytes())
+            git("add", ".")
+            git("commit", "-qm", "gate rollout")
+            git("update-ref", "refs/remotes/origin/dev", "HEAD")
+            git("checkout", "-q", "old-pr")
+            (root / "docs/guide.md").write_text("new")
+            git("commit", "-qam", "edit guide on older head")
+            env = dict(os.environ, YULIUS_CI="0", YULIUS_CI_REF="pr/1", YULIUS_INTEGRATION_BRANCH="dev")
+            result = subprocess.run(["sh", "-c", command], cwd=root, env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 42, result.stderr)
+            self.assertIn("pins_guide", result.stdout)
 
     def test_diff_includes_deletions_and_both_sides_of_a_rename(self):
         from repository_tests import changed_paths

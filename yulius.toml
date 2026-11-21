@@ -62,8 +62,9 @@ command = 'python3 scripts/bootstrap.py --install-rustup && echo "::yulius-stage
 # File-reading Rust contracts run on the head and the merge train (SPEC-610).
 [[ci.jobs]]
 name = "file-contracts"
-paths = ["crates/**", "tools/**", "catalog/**", "docs/**", ".apm/**", ".agents/skills/**", ".claude/skills/**", ".ai/**", ".config/**", "deploy/**", "scripts/**", "*.md", "LICENSE", "yulius.toml"]
-command = "python3 scripts/repository_tests.py"
+paths = ["crates/**", "tools/**", "catalog/**", "docs/**", ".apm/**", ".agents/skills/**", ".claude/skills/**", ".ai/**", ".config/**", "deploy/**", "scripts/**", "AGENTS.md", "README.md", "LICENSE", "yulius.toml"]
+# An older PR may predate this script. Use the protected copy to inspect that PR's checkout.
+command = """if test -f scripts/repository_tests.py; then python3 scripts/repository_tests.py; else python3 -c 'import subprocess; __file__ = "scripts/repository_tests.py"; exec(subprocess.check_output(["git", "show", "refs/remotes/origin/dev:" + __file__]))'; fi"""
 
 # The full suite (SPEC-591, ADR-0436): both test shards and e2e run on the merged revision, once,
 # not on pull requests; `[cd.dev]`, the merge-first staging target, changes only to a revision

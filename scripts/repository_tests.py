@@ -14,7 +14,12 @@ TEST = re.compile(
     r"(?m)^(?P<indent>[ \t]*)#\[(?:\w+::)?test(?:\([^\]]*\))?\]\s*"
     r"(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+(?P<name>\w+)"
 )
-DIRECT_READ = re.compile(r'\b(?:read_to_string|fs::read|read_dir|File::open)\s*\(\s*(?:r#*)?"([^"\\]+)"')
+READ_FUNCTION = r"\b(?:read_to_string|fs::read|read_dir|File::open)\s*\(\s*"
+BOUND_READ = re.compile(READ_FUNCTION + r"&?(\w+)\s*\)")
+LITERAL_BINDING = re.compile(r'\blet\s+(?:mut\s+)?(\w+)\s*=\s*(?:r#*)?"([^"\\]+)"')
+READ_CALL = re.compile(READ_FUNCTION)
+LITERAL_CONCAT = re.compile(r'\bconcat!\s*\(\s*((?:"[^"\\]*"\s*,\s*)*"[^"\\]*"\s*,?)\s*\)')
+DIRECT_READ = re.compile(READ_FUNCTION + r'(?:r#*)?"([^"\\]+)"')
 INCLUDE = re.compile(r'\binclude_(?:str|bytes)!\s*\(\s*(?:r#*)?"([^"\\]+)"')
 MANIFEST = re.compile(r'env!\s*\(\s*"CARGO_MANIFEST_DIR"\s*\)\s*\)')
 CONCAT_MANIFEST = re.compile(r'concat!\s*\(\s*env!\s*\(\s*"CARGO_MANIFEST_DIR"\s*\)\s*,\s*"/([^"\\]+)"')
@@ -23,6 +28,8 @@ JOIN = re.compile(r'\s*\.join\(\s*"([\w./-]+)"\s*\)')
 # These accessors read the catalogs embedded by yulius-app's build script.
 EMBEDDED = {
     "catalog::default_workflow(": "catalog/workflows",
+    "catalog::defaults(": "catalog/workflows",
+    "/automation-templates": "catalog/automations",
     "templates::template(": "catalog/automations",
     "pack::PACKS": "catalog/skills",
 }
@@ -45,6 +52,18 @@ def inputs_for(root, crate, path, text, caller_text=None):
         if absolute.is_relative_to(root) and absolute != root:
             inputs.add(absolute.relative_to(root).as_posix())
 
+    # Rust concatenates these literals before resolving an include or a read.
+    text = LITERAL_CONCAT.sub(lambda m: '"' + "".join(re.findall(r'"([^"]*)"', m[1])) + '"', text)
+    if READ_CALL.search(text):
+        # Also cover a path passed via a local binding. The crate directory is
+        # Cargo's working directory for the test.
+        variables = set(BOUND_READ.findall(text))
+        for variable, literal in LITERAL_BINDING.findall(caller_text or text):
+            if variable in variables:
+                add(crate, literal)
+        for literal in PATH_LITERAL.findall(caller_text or text):
+            if literal.startswith("../"):
+                add(crate, literal)
     for literal in DIRECT_READ.findall(text):
         add(crate, literal)
     for literal in INCLUDE.findall(text):
@@ -128,7 +147,7 @@ def inventory(root):
             for path in sorted((crate / folder).rglob("*.rs")):
                 text = path.read_text()
                 anchors = ("include_str!", "include_bytes!", "CARGO_MANIFEST_DIR", *EMBEDDED)
-                if not any(key in text for key in anchors) and not DIRECT_READ.search(text):
+                if not any(key in text for key in anchors) and not READ_CALL.search(text):
                     continue
                 if not TEST.search(text):
                     if "tests" in path.relative_to(crate).parts and inputs_for(root, crate, path, text):
