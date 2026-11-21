@@ -1,6 +1,6 @@
 ---
 yulius-task: 390479b9-2747-4388-b326-779981ff5f47
-status: in-progress
+status: done
 ---
 
 # SPEC-605: Record the review rounds of Codex tasks
@@ -56,9 +56,9 @@ no observable role to distinguish a reviewer from other Codex subagents.
 - [x] Preserve Claude Code delivery behavior after a merge
 - [x] Verify Codex and Claude Code delivery together
 - [x] Approve the staging fix for delivery
-- [ ] Restore the shared view of delivered review rounds
-- [ ] Exercise parking decisions with attached idle runs
-- [ ] Verify and approve the combined staging fix
+- [x] Restore the shared view of delivered review rounds
+- [x] Exercise parking decisions with attached idle runs
+- [x] Verify and approve the combined staging fix
 
 ## Acceptance criteria
 
@@ -153,3 +153,18 @@ session host port and the app's restart attachment path to model the live run th
   completed Claude Code round and observed zero. The parking cases expected one park
   after clearing their blockers and observed zero. [Delivery evidence](https://yulius.quartio.ai/api/tasks/390479b9-2747-4388-b326-779981ff5f47/delivery/evidence/d643f02626ac4bfad5376cd532a0a912011c120c)
 - All 18 Pipeline Chromium tests passed again on the combined fix.
+- The focused run passed 59 integration tests. Two parking cases outside the name
+  selector also passed. Together they cover every failure in the second staging run.
+- The full integration, application, store and contract binaries ran 3,465 tests on the
+  fix at base `792913c65`. They passed 3,463 and failed two parked-status assertions also
+  reproduced on `dev` in staging CI run `6f7921e2-c888-4098-a3e0-90b5008634e7`.
+  Task #592 is correcting those two assertions. Nextest reported 24 skipped tests.
+- Independent review approved `7c49b5015` and independently passed 11 gated-delivery,
+  Codex review and parking integration tests. `scripts/dev quick` and `spec_check` passed.
+  The project disables Vidoc, so the security command sent nothing for scanning.
+- Task #592 tested both fixes together on `c007db55d`. All 17 cases from the failing
+  staging runs and all 258 tests in the `agent_hooks` and `delivery` modules passed.
+- After merging `c007db55d` into the task branch, Nextest run
+  `da09c463-fc41-4109-8ab7-4915adf0f00d` passed all 974 scheduled tests. The selector
+  included the review and parking cases plus the complete application, store and contract
+  packages.
