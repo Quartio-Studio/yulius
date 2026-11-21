@@ -174,8 +174,8 @@ pub(crate) struct DraftMark {
     /// Recovery observed the durable first-key time but cannot date the latest key.
     pub(crate) recovered_at: Option<i64>,
     pub(crate) written: bool,
-    /// The submit's wall time and the viewer input sequence at its first request.
-    pub(crate) submit: (i64, u64),
+    /// Wall time, viewer key sequence and owner attribution at the first submit request.
+    pub(crate) submit: (i64, u64, bool),
 }
 
 /// Runtime state of one task with a hub that outlives individual runs.
@@ -950,9 +950,10 @@ const LIVE_WITH_A_RUN: [TaskStatus; 4] = [
 /// Supervisor-owned per-process state.
 #[derive(Default)]
 pub struct SupervisorState {
-    /// Viewer input order across runs. A hook reads it before looking up its run, so a key
-    /// arriving during that lookup wins a tie in the wall clock (SPEC-537).
-    pub(crate) input_seq: AtomicU64,
+    /// Latest viewer key per task. A submit keeps an immutable snapshot through its token
+    /// lookup. A later key goes into the next snapshot and still belongs to the next draft.
+    viewer_keys: Mutex<Arc<HashMap<TaskId, (i64, u64)>>>,
+    input_seq: AtomicU64,
     runtimes: Mutex<HashMap<TaskId, Arc<TaskRuntime>>>,
     /// Shared, so an install on the blocking pool can own its guard (SPEC-507 SKR-005).
     launch: Arc<tokio::sync::Mutex<()>>,
@@ -1542,8 +1543,37 @@ impl App {
         self.capacity_changed();
     }
 
+    pub(crate) fn record_viewer_key(&self, task: &TaskId, at: i64) -> u64 {
+        let mut keys = self
+            .supervisor
+            .viewer_keys
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let seq = self.supervisor.input_seq.fetch_add(1, Ordering::SeqCst) + 1;
+        Arc::make_mut(&mut keys).insert(task.clone(), (at, seq));
+        seq
+    }
+
+    pub(crate) fn viewer_keys_at_submit(&self) -> Arc<HashMap<TaskId, (i64, u64)>> {
+        self.supervisor
+            .viewer_keys
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn clear_viewer_key(&self, task: &TaskId) {
+        let mut keys = self
+            .supervisor
+            .viewer_keys
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Arc::make_mut(&mut keys).remove(task);
+    }
+
     /// Drops a deleted task's runtime state.
     pub(crate) fn forget_runtime(&self, task: &TaskId) {
+        self.clear_viewer_key(task);
         if let Ok(mut map) = self.supervisor.runtimes.lock() {
             map.remove(task);
         }
@@ -2750,6 +2780,7 @@ impl App {
         // Typing from now on, once viewers can write to this run, is a person's draft in it
         // (SPEC-068): its prompt box starts empty (SPEC-468 CCF-010).
         let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
+        self.clear_viewer_key(&task.id);
         runtime.run_starts(self.now().0).await;
         self.attach_run(&task.id, &attempt, &host_token).await?;
         runtime.hub.state_changed();

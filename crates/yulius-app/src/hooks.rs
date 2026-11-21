@@ -217,7 +217,7 @@ impl App {
             return Err(AppError::NotFound);
         };
         // Capture the ordering boundary before the token lookup yields to a viewer key.
-        let input_seq = self.supervisor.input_seq.load(Ordering::SeqCst);
+        let keys = (event == events::USER_PROMPT_SUBMIT).then(|| self.viewer_keys_at_submit());
         // Never later than now: the client's clock is the host's (loopback only), and a time
         // from the future would order nothing. One not after the epoch is none (SPEC-346 LPH-001).
         let now = self.now().0;
@@ -225,6 +225,9 @@ impl App {
             .filter(|sent| *sent > 0)
             .map_or(now, |sent| sent.min(now));
         let ctx = self.agent_context(token).await?;
+        let key = keys
+            .and_then(|keys| keys.get(&ctx.task.id).copied())
+            .unwrap_or_default();
         if ctx.attempt.harness != harness {
             return Err(AppError::Unauthenticated);
         }
@@ -252,7 +255,7 @@ impl App {
             None
         };
         if event != events::STOP {
-            return self.answer_hook(&ctx, event, input, sent, input_seq).await;
+            return self.answer_hook(&ctx, event, input, sent, key).await;
         }
         // The agent sent this Stop after every prompt of its turn (SPEC-346 LPH-002).
         {
@@ -274,11 +277,11 @@ impl App {
         let reply = STOP_BROWSER_DEADLINE
             .scope(deadline, async {
                 if ctx.task.mode != TaskMode::Goal {
-                    return self.answer_hook(&ctx, event, input, sent, input_seq).await;
+                    return self.answer_hook(&ctx, event, input, sent, key).await;
                 }
                 self.publish_after_updates(
                     &ctx.task,
-                    self.answer_hook(&ctx, event, input, sent, input_seq),
+                    self.answer_hook(&ctx, event, input, sent, key),
                 )
                 .await
             })
@@ -389,7 +392,7 @@ impl App {
         event: &str,
         input: &HookInput,
         sent: i64,
-        input_seq: u64,
+        key: (i64, u64),
     ) -> AppResult<HookReply> {
         if event != events::USER_PROMPT_SUBMIT {
             return self
@@ -415,20 +418,19 @@ impl App {
         let submitted = if from_box {
             let mut mark = runtime.draft_mark.lock().await;
             if !sent_again {
-                mark.submit = (sent, input_seq);
+                let (typed, seq) = key;
+                let emptied = runtime.box_emptied_ms.load(Ordering::SeqCst);
+                let viewer_input = seq != 0
+                    && typed <= sent
+                    && (typed > emptied
+                        || (typed == emptied && seq > runtime.emptied_seq.load(Ordering::SeqCst)));
+                mark.submit = (sent, seq, viewer_input);
             }
             Some(mark.submit)
         } else {
             None
         };
-        // A key observed after Enter belongs to the next prompt. Yulius's own launch
-        // instructions and restored native goals have no viewer keys in this prompt.
-        let viewer_input = submitted.is_some_and(|(at, seq)| {
-            let typed = runtime.typed_at_ms.load(Ordering::SeqCst);
-            typed > runtime.empty_time_for_typing()
-                && typed <= at
-                && runtime.typed_seq.load(Ordering::SeqCst) <= seq
-        });
+        let viewer_input = submitted.is_some_and(|(_, _, owner)| owner);
         let reply = self
             .answer_event(ctx, event, input, sent, origin, viewer_input)
             .await;
@@ -449,7 +451,7 @@ impl App {
             // What was submitted is back in the box: nothing was sent past a draft.
             runtime.sent_past_draft.store(false, Ordering::SeqCst);
         }
-        if let Some((emptied, keys)) = submitted
+        if let Some((emptied, keys, _)) = submitted
             && !held
             && !blocked
         {
@@ -1008,6 +1010,15 @@ impl App {
             let current = ctx.attempt.account_id.clone();
             let pool = self.rotation_input(&ctx.task, current.clone()).await?;
             if let (Decision::Wait { .. }, _) = rotation::decide(&pool, Trigger::Proactive) {
+                // A replacement process carries the accepted prompt and has no viewer keys
+                // of its own. Record new work before the pause becomes eligible to resume.
+                if ctx.task.mode == TaskMode::Goal && viewer_input && typed {
+                    let runtime = self.runtime(&ctx.task.id);
+                    let _order = runtime.turn_order.lock().await;
+                    if sent >= runtime.turn_end_ms.load(Ordering::SeqCst) {
+                        self.reset_stop_budget(&ctx.task).await?;
+                    }
+                }
                 self.pause_task(
                     &ctx.task.id,
                     PauseKind::Prompt,
@@ -1049,12 +1060,8 @@ impl App {
         }
         // As it is now: a Stop of the turn before may have settled it since it was read.
         let task = store.task(&ctx.task.id).await?.ok_or(AppError::NotFound)?;
-        if task.gate_blocks != 0 && (task.mode == TaskMode::Prompt || viewer_input) {
-            let update = TaskFieldUpdate {
-                gate_blocks: Some(0),
-                ..TaskFieldUpdate::default()
-            };
-            store.update_task(&task.id, &update, self.now()).await?;
+        if task.mode == TaskMode::Prompt || viewer_input {
+            self.reset_stop_budget(&task).await?;
         }
         runtime.resumed_turn.store(false, Ordering::SeqCst);
         runtime.background_agents.store(0, Ordering::SeqCst);
@@ -1092,6 +1099,20 @@ impl App {
             )));
         }
         Ok(HookReply::Output(HookOutput::default()))
+    }
+
+    async fn reset_stop_budget(&self, task: &TaskRecord) -> AppResult<()> {
+        if task.gate_blocks != 0 {
+            let update = TaskFieldUpdate {
+                gate_blocks: Some(0),
+                ..Default::default()
+            };
+            self.deps
+                .store
+                .update_task(&task.id, &update, self.now())
+                .await?;
+        }
+        Ok(())
     }
 
     /// A clean goal turn continues declared work unless another actor already owns the next action.
@@ -1395,8 +1416,9 @@ impl App {
         let version = if matches!(decision.0, Decision::Stay)
             && move_reviewer.is_none()
             && !self.keeps_own_goal(task)
-            && (matches!(gate, StopGate::Continue(_) | StopGate::Declared)
-                || self.goal_is_open(&task.id))
+            && ((matches!(gate, StopGate::Continue(_) | StopGate::Declared)
+                && (task.mode == TaskMode::Goal || task.gate_blocks < MAX_GATE_BLOCKS))
+                || (task.mode == TaskMode::Goal && self.goal_is_open(&task.id)))
         {
             self.claude_code_move_due(&task.id, &ctx.attempt.id).await
         } else {
@@ -1607,6 +1629,9 @@ impl App {
             ..TaskFieldUpdate::default()
         };
         store.update_task(&task.id, &update, self.now()).await?;
+        if task.mode == TaskMode::Prompt {
+            self.publish_task(&task.id).await;
+        }
         // A previously missed submit or an older capacity release can leave the row idle.
         // Only recover that same idle state; a permission raised meanwhile keeps its flag.
         if task.mode == TaskMode::Goal

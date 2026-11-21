@@ -249,8 +249,9 @@ impl App {
     /// theirs, TSK-013).
     pub fn record_typing(&self, task: &TaskId, user: &UserId) {
         let runtime = self.runtime(task);
-        runtime.typed_at_ms.store(self.now().0, Ordering::SeqCst);
-        let seq = self.supervisor.input_seq.fetch_add(1, Ordering::SeqCst) + 1;
+        let at = self.now().0;
+        let seq = self.record_viewer_key(task, at);
+        runtime.typed_at_ms.store(at, Ordering::SeqCst);
         runtime.typed_seq.fetch_max(seq, Ordering::SeqCst);
         if let Ok(mut who) = runtime.typed_by.lock() {
             *who = Some(user.clone());
