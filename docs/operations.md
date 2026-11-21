@@ -188,7 +188,8 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # cannot verify a known open PR, the row stays under Needs you until verification succeeds.
 # The parked terminal updates its step count and clears resolved owner notices when the list refreshes.
 # A terminal that discovers a missed park updates the active task list with the verified work.
-# A later resume event, archive or deletion takes precedence.
+# Opening a parked terminal also corrects a missed resume or archive in the sidebar.
+# An archived row disappears from the active list, and a later Undo can restore it.
 # Opening the parked terminal also refreshes its sidebar row. An unavailable refresh keeps a known
 # open PR under Needs you until verification succeeds. The Git chip shows the last overview.
 # Use task_get for the current parked wait reason or tasks_list with scope needs_you

@@ -2248,17 +2248,17 @@ test('a terminal first discovering a parked recovery shows Done beside its older
   await expect(screen.getByRole('region', 'Done').getByRole('link', /checks failing.*Fresh parked detail/)).toBeVisible();
 });
 
-test('an older empty list cannot drop a missed park or restore an unchanged parked row', async ({ app, browser }) => {
+test('an older empty list cannot drop a missed park or resume that detail has published', async ({ app, browser }) => {
   await app.open(mock('/s/studio'));
   const seen = await browser.evaluate(async () => {
     const module = '/assets/store.js';
     const { createStore } = await import(module);
     const results = [];
-    for (const [listFirst, removal] of [
-      [true, 'none'], [false, 'none'],
-      [true, 'archive'], [true, 'delete'], [true, 'newer list'], [true, 'still parked'], [false, 'still parked'],
+    for (const [status, listFirst, removal] of [
+      ['parked', true, 'none'], ['parked', false, 'none'], ['running', true, 'none'], ['running', false, 'none'],
+      ['parked', true, 'archive'], ['parked', true, 'delete'], ['parked', true, 'newer list'], ['parked', true, 'still parked'], ['parked', false, 'still parked'],
     ] as const) {
-      const before = { id: 'p', sandbox_id: 's', status: removal === 'still parked' ? 'parked' : 'running', title: 'Before' };
+      const before = { id: 'p', sandbox_id: 's', status: status === 'parked' && removal !== 'still parked' ? 'running' : 'parked', title: 'Before' };
       const held = Promise.withResolvers<void>();
       let reads = 0;
       const store = createStore({ get: async () => {
@@ -2269,7 +2269,7 @@ test('an older empty list cannot drop a missed park or restore an unchanged park
       await store.loadTasks('s');
       const stale = store.loadTasks('s', true);
       const publish = store.beginParkedDetail(before);
-      const detail = { ...before, status: 'parked', title: 'After', account_id: 'second', request: 'private' };
+      const detail = { ...before, status, title: 'After', account_id: 'second', request: 'private' };
       if (!listFirst) publish(detail);
       held.resolve();
       await stale;
@@ -2282,9 +2282,9 @@ test('an older empty list cannot drop a missed park or restore an unchanged park
     }
     return results;
   });
-  const park = ['parked', 'After', 'second', false];
+  const park = ['parked', 'After', 'second', false], resume = ['running', 'After', 'second', false];
   const removed = [null, null, null, false];
-  expect(seen).toEqual([park, park, removed, removed, removed, removed, removed]);
+  expect(seen).toEqual([park, park, resume, resume, removed, removed, removed, removed, removed]);
 });
 
 test('a missed park keeps the PR discovered by an older list across a newer failed watch', async ({ app, browser }) => {
@@ -2464,3 +2464,292 @@ test('an observed archive outranks a pre-park list and terminal detail while a g
   const absent = [null, null], restored = ['closed', null];
   expect(seen).toEqual([absent, absent, restored, restored, absent, absent, restored, restored]);
 });
+
+test('a missed resume from task detail preserves live work across an older parked list', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const gate = Promise.withResolvers<void>();
+    const old = { id: 'p', sandbox_id: 's', status: 'parked', activity: 'done', background_shells: 0, parked_needs_you: false };
+    let reads = 0;
+    const store = createStore({ get: async () => {
+      if (++reads > 1) await gate.promise;
+      return [{ ...old }];
+    } });
+    await store.loadTasks('s');
+    const pending = store.loadTasks('s', true);
+    store.upsertTask({ ...old, title: 'Renamed' });
+    const live = { ...old, status: 'running', background_shells: 1, parked_needs_you: undefined, account_email: 'private@example.invalid' };
+    store.beginParkedDetail()(live);
+    gate.resolve();
+    await pending;
+    const row = store.findTask('p');
+    return [row.status, row.background_shells, row.parked_needs_you ?? null, Object.hasOwn(row, 'account_email')];
+  });
+  expect(seen).toEqual(['running', 1, null, false]);
+});
+
+test('a held capacity snapshot cannot reverse a later detail that saw the parked session running', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const parked = { id: 'p', sandbox_id: 's', status: 'parked', activity: 'done', background_shells: 0 };
+    const results = [];
+    for (const staleStatus of ['waiting_capacity', 'running']) {
+      const gate = Promise.withResolvers<void>();
+      let reads = 0;
+      const store = createStore({ get: async () => {
+        if (++reads === 1) return [parked];
+        await gate.promise;
+        return [{ ...parked, status: staleStatus, activity: 'waiting' }];
+      } });
+      await store.loadTasks('s');
+      const held = store.loadTasks('s', true);
+      const seenStatus: string[] = [];
+      store.on('task', (row: { status: string }) => seenStatus.push(row.status));
+      store.beginParkedDetail()({ ...parked, status: 'running', activity: 'working', background_shells: 1 });
+      gate.resolve();
+      await held;
+      const row = store.findTask('p');
+      results.push([row.status, row.activity, row.background_shells, seenStatus, reads]);
+    }
+    return results;
+  });
+  expect(seen).toEqual([['running', 'working', 1, ['running'], 2], ['running', 'working', 1, ['running'], 2]]);
+});
+
+test('a detail after an earlier live list publishes the completed resume and its public subscription ID', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const parked = { id: 'p', sandbox_id: 's', status: 'parked', activity: 'done', background_shells: 0 };
+    const results = [];
+    for (const intermediate of ['waiting_capacity', 'running']) {
+      let reads = 0;
+      const gate = Promise.withResolvers<void>();
+      const store = createStore({ get: async () => {
+        if (++reads === 1) return [parked];
+        await gate.promise;
+        return [{ ...parked, status: intermediate, activity: 'waiting' }];
+      } });
+      await store.loadTasks('s');
+      const list = store.loadTasks('s', true);
+      const publish = store.beginParkedDetail(store.findTask('p'));
+      gate.resolve();
+      await list;
+      const live = { ...parked, status: 'running', activity: 'working', background_shells: 1, account_id: 'new-account', account_email: 'private@example.invalid' };
+      publish(live);
+      store.beginParkedDetail()(live);
+      const reached = store.findTask('p');
+      store.beginParkedDetail()(parked);
+      const back = store.findTask('p');
+      results.push([reached.status, reached.activity, reached.background_shells, reached.account_id ?? null, Object.hasOwn(reached, 'account_email'), back.account_id ?? null]);
+    }
+    return results;
+  });
+  expect(seen).toEqual([['running', 'working', 1, 'new-account', false, null], ['running', 'working', 1, 'new-account', false, null]]);
+});
+
+test('a live update after a missed resume survives an older explicit list and failed confirmation', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const parked = { id: 'p', sandbox_id: 's', status: 'parked', activity: 'done' };
+    const running = { ...parked, status: 'running', activity: 'working' };
+    const held = Promise.withResolvers<void>();
+    let reads = 0;
+    const store = createStore({ get: async () => {
+      if (++reads === 1) return [parked];
+      if (reads === 2) { await held.promise; return [{ ...running, activity: 'waiting' }]; }
+      throw new Error('confirmation unavailable');
+    } });
+    await store.loadTasks('s');
+    const stale = store.loadTasks('s');
+    store.beginParkedDetail(parked)(running);
+    store.upsertTask({ ...running, title: 'Owner renamed the resumed task' });
+    held.resolve();
+    await stale;
+    const row = store.findTask('p');
+    return [row.title, row.activity];
+  });
+  expect(seen).toEqual(['Owner renamed the resumed task', 'working']);
+});
+
+test('a newer watched list notifies the terminal when it supersedes a detail-discovered resume', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const results = [];
+    for (const [listFirst, rename] of [[false, false], [true, false], [false, true], [true, true]]) {
+      const parked = { id: 'p', sandbox_id: 's', status: 'parked', activity: 'done' };
+      const running = { ...parked, status: 'running', activity: 'working' };
+      const waiting = { ...parked, status: 'waiting_capacity', activity: 'waiting' };
+      const held = Promise.withResolvers<void>();
+      let reads = 0, terminal = parked;
+      const store = createStore({ get: async () => {
+        if (++reads === 1) return [parked];
+        await held.promise;
+        return [waiting];
+      } });
+      await store.loadTasks('s');
+      store.on('task', (row: typeof parked) => { terminal = row; });
+      const publish = store.beginParkedDetail(parked);
+      if (rename && !listFirst) terminal = publish(running, terminal);
+      if (rename) store.upsertTask({ ...running, title: 'Renamed' });
+      const newerList = store.loadTasks('s', true);
+      if (!rename && !listFirst) terminal = publish(running, terminal);
+      held.resolve(); await newerList;
+      if (listFirst) terminal = publish(running, terminal);
+      const row = store.findTask('p');
+      results.push([row.status, row.activity, terminal.status, terminal.activity]);
+    }
+    return results;
+  });
+  const waiting = ['waiting_capacity', 'waiting', 'waiting_capacity', 'waiting'];
+  expect(seen).toEqual([waiting, waiting, waiting, waiting]);
+});
+
+test('a detail discovering an archive removes the parked row through older lists and later Undo', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const initial = { id: 'p', sandbox_id: 's', status: 'parked', archived: false, parked_needs_you: true };
+    const results = [];
+    for (const undo of [false, true]) {
+      let reads = 0;
+      const held = Promise.withResolvers<void>();
+      const store = createStore({ get: async () => {
+        if (++reads === 1) return [initial];
+        if (reads === 2) { await held.promise; return [initial]; }
+        return undo ? [initial] : [];
+      } });
+      await store.loadTasks('s');
+      const pending = store.loadTasks('s', true);
+      store.beginParkedDetail()({ ...initial, status: 'closed', archived: true });
+      const removed = store.tasksOf('s').length === 0;
+      if (undo) store.upsertTask(initial);
+      held.resolve();
+      await pending;
+      results.push([removed, store.tasksOf('s').length, store.findTask('p')?.archived ?? null]);
+    }
+    return results;
+  });
+  expect(seen).toEqual([[true, 0, null], [true, 1, false]]);
+});
+
+test('a failed parked watch preserves PR discovery, resume and archive from an earlier detail', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const results = [];
+    for (const transition of ['discovery', 'resume', 'archive']) {
+      const row = { id: 'p', sandbox_id: 's', status: 'parked', archived: false, parked_needs_you: false };
+      let calls = 0;
+      const store = createStore({ get: async () => {
+        if (++calls > 1) throw new Error('watch unavailable');
+        return [row];
+      } });
+      await store.loadTasks('s');
+      const publish = store.beginParkedDetail();
+      await store.loadTasks('s', true);
+      const facts = publish(transition === 'discovery' ? { ...row, parked_pr: { number: 42, open: true } }
+        : { ...row, status: transition === 'resume' ? 'running' : 'closed', archived: transition === 'archive' });
+      const current = store.findTask('p');
+      results.push([facts.status, current?.status ?? null, current?.parked_pr?.number ?? null, current?.parked_needs_you ?? null]);
+    }
+    return results;
+  });
+  expect(seen).toEqual([['parked', 'parked', 42, true], ['running', 'running', null, false], ['closed', null, null, null]]);
+});
+
+test('a failed confirmation cannot replay an earlier rename over a newly discovered archive', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const results = [];
+    for (const undo of [false, true]) {
+      const initial = { id: 'p', sandbox_id: 's', status: 'parked', archived: false, title: 'Before', parked_needs_you: false };
+      const first = Promise.withResolvers<void>(), confirming = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+      let reads = 0;
+      const store = createStore({ get: async () => {
+        if (++reads === 1) return [initial];
+        if (reads === 2) { await first.promise; return [initial]; }
+        confirming.resolve();
+        await finish.promise;
+        throw new Error('confirmation unavailable');
+      } });
+      await store.loadTasks('s');
+      const refresh = store.loadTasks('s');
+      store.upsertTask({ ...initial, title: 'Earlier rename' });
+      first.resolve();
+      await confirming.promise;
+      store.beginParkedDetail(initial)({ ...initial, status: 'closed', archived: true });
+      const removed = !store.findTask('p');
+      if (undo) store.upsertTask({ ...initial, title: 'Restored' });
+      finish.resolve();
+      await refresh;
+      results.push([removed, store.findTask('p')?.title ?? null]);
+    }
+    return results;
+  });
+  expect(seen).toEqual([[true, null], [true, 'Restored']]);
+});
+
+test('overlapping terminal reads preserve the later archive or Undo in both reply orders', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const results = [];
+    for (const undoLast of [false, true]) {
+      for (const laterFirst of [false, true]) {
+        const parked = { id: 'p', sandbox_id: 's', status: 'parked', archived: false };
+        const closed = { ...parked, status: 'closed' };
+        const archived = { ...closed, archived: true };
+        const store = createStore({ get: async () => [parked] });
+        await store.loadTasks('s');
+        const first = store.beginParkedDetail(parked);
+        const later = store.beginParkedDetail(parked);
+        const old = undoLast ? archived : closed, fresh = undoLast ? closed : archived;
+        if (laterFirst) { later(fresh); first(old); }
+        else { first(old); later(fresh); }
+        results.push(store.findTask('p')?.status ?? null);
+      }
+    }
+    return results;
+  });
+  expect(seen).toEqual([null, null, 'closed', 'closed']);
+});
+
+for (const archived of [false, true]) {
+  test(`opening a parked terminal discovers its missed ${archived ? 'archive' : 'resume'} in the sidebar`, async ({ app, browser, screen }) => {
+    await app.open(mock('/s/studio', '&ambient=0&pullgap=0&pullclock=manual'));
+    type Fixture = { __yuliusMock: { tasks: { id: string }[]; holdGitReads: boolean; touchTask(s: string, n: number, fields: object): void } };
+    await browser.evaluate(() => {
+      const db = (window as unknown as Fixture).__yuliusMock;
+      db.touchTask('sb_studio', 13, { status: 'parked', activity: 'waiting', parked_needs_you: true });
+    });
+    await expect(screen.getByRole('region', 'Needs you').getByRole('link', /Improve the code/)).toBeVisible();
+    await browser.evaluate((archived) => {
+      const db = (window as unknown as Fixture).__yuliusMock;
+      db.holdGitReads = true;
+      Object.assign(db.tasks.find(t => t.id === 'tsk_studio_13')!, {
+        status: archived ? 'closed' : 'running', archived, activity: archived ? 'done' : 'working', parked_needs_you: undefined,
+        title: 'Verified terminal detail',
+      });
+      location.hash = '/s/studio/t/13';
+    }, archived);
+    await expect(browser.locator('.step-task')).toHaveText(/Verified terminal detail/);
+    await expect(screen.getByRole('region', 'Needs you').getByRole('link', /Improve the code|Verified terminal detail/)).toBeHidden();
+    if (!archived) await expect(screen.getByRole('region', 'Working').getByRole('link', /Verified terminal detail/)).toBeVisible();
+    else await expect(browser.locator('.task-row').getByText('Verified terminal detail')).toBeHidden();
+  });
+}
