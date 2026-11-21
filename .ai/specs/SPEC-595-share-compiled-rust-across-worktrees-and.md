@@ -24,7 +24,7 @@ On November 21 the operator measured about 195 seconds compiling and 151 seconds
 
 - [x] Specify cache ownership and capture the uncached CI baseline
 - [x] Enable a bounded local compiler cache across project builds
-- [ ] Verify concurrent reuse, path correctness and recovery
+- [x] Verify concurrent reuse, path correctness and recovery
 - [ ] Measure fresh-worktree test and quality builds and document the choice
 - [ ] Approve the cache implementation for delivery
 - [ ] Record the observed CI lane reuse and before/after run times
@@ -52,3 +52,7 @@ Before the change, Yulius CI run `cf1c465e-1711-4e70-9b2e-929e1dab55c4` (PR #160
 The release-integrity and launcher suite (`python3 -m unittest discover -s scripts -p test_compile_cache.py`) passed eight tests. The real compiler fixture built a path-independent library and a path-sensitive executable in task and CI layouts with distinct homes. The second checkout served a library hit and printed its own manifest directory. A same-length damaged cached executable rebuilt correctly. Simultaneous builds of different source revisions printed their own values. The launcher preserved an explicit Cargo failure, recovered from cache startup failure, and used plain Cargo during eviction. A fresh task found the pinned binary installed by another task.
 
 The pressure integration test first failed at `assert!(!cache.exists())` with the original upkeep. Three existing xtask command-order, failure and concurrency tests passed with the original explicit Cargo override. A trial that wrapped the override produced extra discovery calls. The launcher now routes only the pinned Cargo from scripts/dev through the cache.
+
+A controlled CI lane-layout replay at `7b8db254e` used two real Git worktrees under an isolated `ci/jobs/test.0` and `ci/jobs/test.0@1`, the same CI home, separate empty target directories and a store with no other writers. Both ran `scripts/cargo check --locked --offline -p yulius-domain --lib` with two Cargo jobs. Lane 0 took 8.76 s with 15 initially unconsulted compilations. Lane 1 took 1.74 s with 14 hits and one miss (93.3% of lookups). Each reported seven bypasses. The store was local ext4. This replay isolates the source of each hit. Scheduled CI job durations and their observed counters are a separate measurement.
+
+Both Rust upkeep scenarios passed with nextest, including the original failing assertion. The tests cover an active reader, a pressured idle store, an unowned directory, a linked store and the healthy-disk size boundary. The release-integrity suite and the cross-checkout fixture passed with mbx installed. `scripts/dev quick` and `spec_check` passed. `scripts/dev security` reported Vidoc disabled.
