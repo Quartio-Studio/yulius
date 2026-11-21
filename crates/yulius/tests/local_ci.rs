@@ -8002,3 +8002,71 @@ async fn outside_opening_bounds_body_readers_and_recovers_after_timeout() -> Tes
     );
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn outside_opening_cannot_commit_after_sandbox_removal() -> TestResult {
+    let mut outcomes = Vec::new();
+    for previously_admitted in [false, true] {
+        let f = opening_fixture().await?;
+        let before: &[u64] = if previously_admitted { &[1] } else { &[] };
+        f.h.store
+            .set_ci_admitted_pulls(&f.sandbox.id, before)
+            .await?;
+        f.h.github.set_perm("alice", "acme/app", perms("admin"));
+        let router = f.h.router.clone();
+        let admin = f.alice.clone();
+        let (finished, removed) = tokio::sync::oneshot::channel();
+        yulius_app::race::on(
+            yulius_app::race::Point::CiSyncPlanned,
+            &f.data.join("sandboxes/s1/repo"),
+            move || {
+                let answer = tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(call(
+                        &router,
+                        Method::DELETE,
+                        "/api/sandboxes/s1",
+                        None,
+                        &admin,
+                    ))
+                });
+                let _ = finished.send(
+                    answer
+                        .map(|reply| reply.status)
+                        .map_err(|err| err.to_string()),
+                );
+            },
+        );
+        let event = opening_event(&f)?;
+        let status = github_opening(&f, &event, OPENING_KEY).await?;
+        assert_eq!(
+            tokio::time::timeout(WAIT, removed).await???,
+            StatusCode::NO_CONTENT
+        );
+        // A delivery can continue after its HTTP acknowledgement. Regaining every permit
+        // proves its scheduling attempt and any resulting status write have ended.
+        tokio::time::timeout(WAIT, async {
+            let mut permits = Vec::new();
+            while permits.len() < 16 {
+                match f.h.app.ci_webhook_permit() {
+                    Ok(permit) => permits.push(permit),
+                    Err(_) => tokio::task::yield_now().await,
+                }
+            }
+        })
+        .await?;
+        outcomes.push((
+            f.h.store.ci_admitted_pulls(&f.sandbox.id).await?,
+            f.h.store.ci_runs(&f.sandbox.id, 10).await?.len(),
+            f.h.github.statuses.lock().map_err(|_| "statuses")?.len(),
+            status,
+        ));
+    }
+    assert_eq!(
+        outcomes,
+        vec![
+            (vec![], 0, 0, StatusCode::ACCEPTED),
+            (vec![1], 0, 0, StatusCode::ACCEPTED),
+        ]
+    );
+    Ok(())
+}

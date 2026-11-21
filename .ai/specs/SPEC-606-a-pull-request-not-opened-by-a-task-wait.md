@@ -26,12 +26,13 @@ In the checked-out revision before this change, the periodic loop defaulted to 6
 - [x] Account for the opening-to-queue delay
 - [x] Discover outside PR heads within one minute
 - [x] Prove queue timing, deduplication and request cost
+- [ ] Prevent CI admission after sandbox removal
 - [ ] Approve the verified change for delivery to dev
 
 ## Acceptance criteria
 
 - **AC-1** A signed opening queues the ordinary PR run and publishes its pending status before any periodic sync, even when listing PRs fails. A stalled list or outstanding status write for the same sandbox leaves the webhook free to queue. The stale list cannot cancel the new run, and a later fresh list can reconcile a closure.
-- **AC-2** Repeating the delivery and reconciling the sandbox creates one run. Invalid signatures, forks, other bases and stale heads produce no runs.
+- **AC-2** Repeating the delivery and reconciling the sandbox creates one run. Invalid signatures, forks, other bases and stale heads produce no runs. Sandbox removal that wins during discovery prevents a new admission, run and pending status.
 - **AC-3** The App manifest subscribes to PR events and its conversion secret stays sealed. An existing installation can enable the endpoint. A missed delivery remains discoverable by the regular sync. Slow request bodies time out and release admission capacity. The 31st eligible PR enters the next inventory with a vacancy, at its original head if unchanged.
 - **AC-4** Independent review, green PR-head CI, merge into dev and one staging request are recorded by Yulius.
 
@@ -55,3 +56,4 @@ A signed push supplies the missing trigger and repository identity without charg
 - Review round one found three cases on the first commit. All three regression tests failed there. With an inventory status POST held, the signed opening reached its test deadline without publishing. With 30 admitted PRs, the 31st still queued. With 16 slow bodies, the route processed another request and returned 401.
 - After moving publication outside the scheduling lock, the held-status fixture queued the PR while the POST was outstanding (1.67 seconds including setup). After sharing admission between inventory and openings, PR 31 waited through a reordered inventory and entered unchanged after a closure. After moving the permit before body extraction, the saturated route returned 429, all 16 readers timed out with 408 and a subsequent valid opening received 202. All five webhook tests passed together. The incident is tracked in [Yulius issue 1647](https://github.com/Quartio-Studio/yulius/issues/1647).
 - Review round two identified lost PR membership after restart when 30 PRs shared a SHA. Recreating the app against the same store reproduced immediate admission of PR 31 on the previous head. Persisting all 30 PR numbers kept it out until a place opened; the restart added zero PR discovery calls. The populated database upgrade test failed with a missing admission column before the migration, then passed with both active PRs retained in queue order. All 16 scheduler and store regressions passed together. The manifest test passed separately. Scoped Clippy passed and the project security command reported Vidoc disabled.
+- The removal regression completes an admin’s sandbox deletion after Git discovery and before durable CI writes. Before the guard, both a new PR and an already admitted PR created one run and sent one pending status after deletion. The new PR also claimed a place. The guarded SQLite writes use the sandbox’s removal state within the statement or transaction that mutates CI.

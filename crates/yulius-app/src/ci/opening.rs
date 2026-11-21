@@ -119,7 +119,11 @@ impl App {
         let app = Arc::clone(self);
         let worker = tokio::spawn(async move {
             let _permit = permit;
-            let result = app.ci_queue_opening(&sandbox, &opening).await;
+            let result = match app.ci_queue_opening(&sandbox, &opening).await {
+                // The store rejects a write when sandbox removal won during discovery.
+                Err(AppError::NotFound) => Ok(()),
+                other => other,
+            };
             if let Err(err) = &result {
                 tracing::warn!(sandbox = %sandbox.slug, pr = opening.number, error = %err, "CI webhook scheduling failed");
             }
@@ -185,6 +189,7 @@ impl App {
             .ci_planning_runs(&sandbox.id, PLAN_RUNS)
             .await?;
         let facts = ordinary_run_facts(&runs, view.problem.is_none());
+        crate::race::reached(crate::race::Point::CiSyncPlanned, &repo);
         if new_pr {
             admitted.push(opening.number);
             store.set_ci_admitted_pulls(&sandbox.id, &admitted).await?;
