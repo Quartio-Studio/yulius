@@ -141,7 +141,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   async function loadTasks(sandboxId, watching = false) {
     const atStart = state.tasks.get(sandboxId);
     const order = ++nextListRead;
-    const read = { sandboxId, order, changes: new Map(), parked: new Set(), deleted: new Set(), unavailable: false };
+    const read = { sandboxId, order, changes: new Map(), parked: new Set(), deleted: new Set(), failedWatchOrder: 0 };
     let confirming = false;
     const path = `/api/sandboxes/${enc(sandboxId)}/tasks?archived=false`;
     activeLists.add(read);
@@ -154,13 +154,13 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       if ([...read.changes].some(([id, task]) => read.parked.has(id) && (!watching || task.archived || task.status !== 'parked'))) {
         const before = read.changes;
         read.changes = new Map();
-        const unavailable = read.unavailable;
-        read.unavailable = false;
+        const failedWatchOrder = read.failedWatchOrder;
+        read.failedWatchOrder = 0;
         confirming = true;
         try { list = await api.get(path); }
         catch {
           read.changes = new Map([...before, ...read.changes]);
-          read.unavailable ||= unavailable;
+          read.failedWatchOrder = Math.max(read.failedWatchOrder, failedWatchOrder);
         }
       }
       const current = state.tasks.get(sandboxId);
@@ -169,7 +169,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       for (const task of Array.isArray(list) ? list : []) {
         if (task.archived) continue;
         unverified.delete(task);
-        map.set(task.id, read.unavailable && task.status === 'parked' ? awaitingVerification(task) : task);
+        map.set(task.id, read.failedWatchOrder && task.status === 'parked' ? awaitingVerification(task, read.failedWatchOrder) : task);
       }
       for (const [id, task] of read.changes) {
         if (!watching && !confirming && !read.parked.has(id) && map.get(id)?.status !== 'parked') continue;
@@ -196,12 +196,12 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       if (listOrder.get(current) > order) return current;
       if (watching) {
         for (const older of activeLists) {
-          if (older.sandboxId === sandboxId && older.order < order) older.unavailable = true;
+          if (older.sandboxId === sandboxId && older.order < order) older.failedWatchOrder = Math.max(older.failedWatchOrder, order);
         }
         let changed = false;
         for (const [id, task] of current || []) {
           if (task.status !== 'parked' || read.changes.has(id)) continue;
-          const updated = awaitingVerification(task);
+          const updated = awaitingVerification(task, order);
           if (updated !== task) {
             current.set(id, updated);
             emit('task', updated);
@@ -230,7 +230,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       if (detail.status !== 'parked') return {};
       const map = state.tasks.get(detail.sandbox_id);
       const row = map?.get(detail.id);
-      const source = row && listOrder.get(map) > order ? row : detail;
+      const source = row && (listOrder.get(map) > order || unverified.get(row) > order) ? row : detail;
       const facts = {
         activity: source.activity, steps: source.steps, spec_unfinished: source.spec_unfinished,
         goal_unfinished: source.goal_unfinished, held_prompt: source.held_prompt,
@@ -272,7 +272,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     if (recheck) {
       const openPr = knownOpenPr(prior, task.sandbox_id, task.id);
       if (openPr) task = { ...task, parked_pr: openPr, parked_needs_you: true };
-      unverified.add(task);
+      unverified.set(task, ++nextListRead);
     }
     for (const read of pending) {
       if (task.status === 'parked' || prior?.status === 'parked') read.parked.add(task.id);
@@ -409,7 +409,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   const sources = [refreshParkedGroups, loadGitOverview];
   const inFlight = new Map(sources.map(source => [source, new Map()]));
   // A failed read may need a conservative display when Git later discovers an open PR.
-  const unverified = new WeakSet();
+  const unverified = new WeakMap();
   const pollPaused = () => document.hidden || navigator.onLine === false;
   // The overview takes seconds (GitHub and Git for every task), so this browser keeps what the
   // last read said, per user, and a page load shows it at once until its own read replaces it
@@ -446,11 +446,11 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     if (tasks && [...tasks.values()].some(task => task.status === 'parked')) await loadTasks(sandboxId, true);
   }
 
-  function awaitingVerification(task) {
+  function awaitingVerification(task, order) {
     const pr = knownOpenPr(task, task.sandbox_id, task.id);
     const alreadyWaiting = task.parked_needs_you && task.parked_pr?.number === pr?.number;
     const updated = pr && !alreadyWaiting ? { ...task, parked_needs_you: true, parked_pr: pr } : task;
-    unverified.add(updated);
+    unverified.set(updated, order);
     return updated;
   }
 
@@ -467,8 +467,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
         const prior = tasks?.get(id);
         if (pr.state !== 'open' || !unverified.has(prior) || prior.parked_needs_you) continue;
         const updated = { ...prior, parked_needs_you: true, parked_pr: { number: pr.number, open: true } };
-        unverified.delete(prior);
-        unverified.add(updated);
+        unverified.set(updated, unverified.get(prior));
         tasks.set(id, updated);
         emit('task', updated);
         changed = true;

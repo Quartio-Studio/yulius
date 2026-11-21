@@ -1249,3 +1249,30 @@ test('Task Info clears a stale PR identity when the new parked detail omits it',
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText(/Detail read completed/);
   await expect(browser.locator('.gt-state')).toHaveText(/PR #520.*checks failing.*parked/);
 });
+
+test('an older healthy detail cannot clear an unchanged Needs you after a newer parked watch fails', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const facts = await browser.evaluate(async () => {
+    const url = '/assets/store.js';
+    const { createStore } = await import(url);
+    const task = { id: 'p', sandbox_id: 's', status: 'parked', parked_pr: { number: 42, open: true }, parked_needs_you: true };
+    let reads = 0;
+    const store = createStore({ get: async (path: string) => {
+      if (path.endsWith('/git')) return { tasks: [] };
+      if (++reads > 1) throw new Error('verification unavailable');
+      return [task];
+    } });
+    await store.loadTasks('s');
+    const older = store.beginParkedDetail();
+    const stop = store.watchPulls('s');
+    await new Promise<void>(resolve => {
+      const channel = new MessageChannel();
+      channel.port1.onmessage = () => { channel.port1.close(); channel.port2.close(); resolve(); };
+      channel.port2.postMessage(null);
+    });
+    const accepted = older({ ...task, parked_needs_you: false });
+    stop();
+    return [accepted.parked_needs_you, store.findTask('p').parked_needs_you];
+  });
+  expect(facts).toEqual([true, true]);
+});
