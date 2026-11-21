@@ -1710,6 +1710,119 @@ fn a_key_before_a_restart_that_left_nothing_holds_no_message() -> TestResult {
     Ok(())
 }
 
+async fn open_pull_for_news(
+    app: &App,
+    data: &Path,
+    task: &yulius_app::model::TaskRecord,
+) -> Result<String, Error> {
+    use crate::pr_watch::git;
+    use yulius_app::delivery::DeliveryRecord;
+    use yulius_domain::delivery::DeliveryStage;
+    let seed_dir = data.join("seed");
+    git(&seed_dir, &["push", "-q", "origin", "main:dev"])?;
+    let repo = data
+        .join("sandboxes")
+        .join(task.sandbox_id.as_str())
+        .join("repo");
+    git(&repo, &["fetch", "-q", "origin"])?;
+    let worktree = task.worktree_path.clone().ok_or("no worktree")?;
+    let worktree = Path::new(&worktree);
+    std::fs::write(worktree.join("README.md"), "# the task's line\n")?;
+    git(worktree, &["commit", "-q", "-am", "task"])?;
+    let head = git(worktree, &["rev-parse", "HEAD"])?;
+    let open = DeliveryRecord {
+        task_id: task.id.clone(),
+        stage: DeliveryStage::PrOpen,
+        pr_number: Some(7),
+        updated_at: app.now(),
+    };
+    app.deps
+        .store
+        .transition_delivery(&DeliveryStage::None, &open)
+        .await?;
+    Ok(head)
+}
+
+/// Replay the pinned Codex composer's empty repaint into the PTY grid. The viewer's
+/// draft and erase, the PR watch and the message read by the fake agent are live.
+#[test]
+fn clearing_a_codex_draft_releases_pr_news_and_its_warning() -> TestResult {
+    use yulius_app::pr_watch::WatchBounds;
+    use yulius_domain::ci::RunState;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, clock) = app_behind(&data, 13 * MINUTE).await?;
+        let (sandbox, user) = seed(&app, &data, &[]).await?;
+        crate::codex::add_codex_account(&app, "a-codex", r#"{"OPENAI_API_KEY":"synthetic"}"#)
+            .await?;
+        let id = crate::codex::new_codex_task(&app, &sandbox, &user, "Codex PR news").await?;
+        let caller = superagent(&sandbox, &user, "admin");
+        wait_for("first Codex answer", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("ECHO: Codex PR news")
+                && activity(&app, &id).await.is_some_and(Activity::is_idle)
+        })
+        .await?;
+        let task = app.deps.store.task(&id).await?.ok_or("task")?;
+        let head = open_pull_for_news(&app, &data, &task).await?;
+        let bounds = WatchBounds::default();
+        assert!(app.watch_prs(&bounds).await.is_empty());
+        let (ctx, attach) = terminal(&app, &caller, &id).await?;
+        app.terminal_input(&ctx, &attach, b"draft to erase", false)
+            .await?;
+        wait_for("draft echoed", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("draft to erase")
+        })
+        .await?;
+        let (red, job) = crate::pr_watch::run(&sandbox, "r1", &head, RunState::Failed, None, 1);
+        app.deps.store.insert_ci_run(&red, &[job]).await?;
+        clock.0.store(-2 * MINUTE, Ordering::SeqCst);
+        assert!(app.watch_prs(&bounds).await.is_empty());
+        assert_eq!(
+            support::attention(&app, id.as_str()).await?,
+            held_message_flag()
+        );
+
+        app.terminal_input(&ctx, &attach, b"\x15", false).await?;
+        wait_for("PTY erased draft", Duration::from_secs(30), || async {
+            !screen(&app, &id).contains("draft to erase")
+        })
+        .await?;
+        let runtime = app.runtime(&id);
+        let repaint = concat!(
+            "\x1b[?1049h\x1b[1;1H\x1b[J",
+            "\x1b[34;1H\x1b[1m›\x1b[22m \x1b[2mAsk Codex to do anything\x1b[0m",
+            "\x1b[36;1H  GPT-6.2-Sol default · project",
+            "\x1b[40;1H  \x1b[1m←\x1b[22m for agents · \x1b[1m?\x1b[22m for shortcuts",
+            "\x1b[34;3H\x1b[?25h",
+        );
+        runtime
+            .hub
+            .output(runtime.hub.output_seq() + 1, repaint.as_bytes());
+        clock.0.store(-2 * MINUTE + 30_000, Ordering::SeqCst);
+        assert!(app.watch_prs(&bounds).await.is_empty());
+        let mark = draft_mark(&app, &id).await?;
+        assert!(mark.exists());
+
+        clock.0.store(-MINUTE + 1_000, Ordering::SeqCst);
+        let news = app.watch_prs(&bounds).await;
+        let [(recipient, notice)] = news.as_slice() else {
+            return Err(format!("expected one Codex PR notice, got {news:?}").into());
+        };
+        assert_eq!(recipient, &id);
+        assert!(notice.contains("pull request #7"), "{notice}");
+        wait_for("PR news read alone", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("ECHO: Yulius, about your pull request #7")
+        })
+        .await?;
+        assert!(!mark.exists());
+        assert_eq!(support::attention(&app, id.as_str()).await?, Value::Null);
+        assert!(app.watch_prs(&bounds).await.is_empty());
+        app.terminal_leave(&attach).await;
+        stop(&app, &id).await
+    })
+}
+
 /// SPEC-572 AC2, with a pull request's news: text left in the prompt box holds the
 /// news of a red run, and eleven minutes later the task is flagged for it. The pull-request
 /// watch types nothing into a task whose person must act; a flag that only says a message
@@ -1718,39 +1831,16 @@ fn a_key_before_a_restart_that_left_nothing_holds_no_message() -> TestResult {
 /// used to stand, with the news untyped, until a prompt was sent.
 #[test]
 fn a_flag_of_a_held_message_does_not_stop_the_pull_request_watch() -> TestResult {
-    use crate::pr_watch::{git, run};
-    use yulius_app::delivery::DeliveryRecord;
+    use crate::pr_watch::run;
     use yulius_app::pr_watch::WatchBounds;
     use yulius_domain::ci::RunState;
-    use yulius_domain::delivery::DeliveryStage;
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
         let (app, clock, id, caller) = idle_full_screen(&data, 13 * MINUTE).await?;
         // The task's pull request #7 is open at its head, and the head's run failed.
         let task = app.deps.store.task(&id).await?.ok_or("task")?;
-        let seed_dir = data.join("seed");
-        git(&seed_dir, &["push", "-q", "origin", "main:dev"])?;
-        let repo = data
-            .join("sandboxes")
-            .join(task.sandbox_id.as_str())
-            .join("repo");
-        git(&repo, &["fetch", "-q", "origin"])?;
-        let worktree = task.worktree_path.clone().ok_or("no worktree")?;
-        let worktree = Path::new(&worktree);
-        std::fs::write(worktree.join("README.md"), "# the task's line\n")?;
-        git(worktree, &["commit", "-q", "-am", "task"])?;
-        let head = git(worktree, &["rev-parse", "HEAD"])?;
-        let open = DeliveryRecord {
-            task_id: id.clone(),
-            stage: DeliveryStage::PrOpen,
-            pr_number: Some(7),
-            updated_at: app.now(),
-        };
-        app.deps
-            .store
-            .transition_delivery(&DeliveryStage::None, &open)
-            .await?;
+        let head = open_pull_for_news(&app, &data, &task).await?;
         let bounds = WatchBounds::default();
         let watched = |app: Arc<App>, id: TaskId| async move {
             let typed = app.watch_prs(&WatchBounds::default()).await;

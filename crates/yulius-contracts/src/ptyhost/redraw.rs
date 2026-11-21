@@ -34,22 +34,24 @@ impl Redraw {
         self.rendered
     }
 
-    /// Feed live output into the screen, preserving the four-byte erase sequence across reads.
-    /// Inspect the grid only after a complete ED 2 in the alternate screen. Once confirmed,
+    /// Feed live output into the screen, preserving erase sequences across reads.
+    /// ED 2 clears the display from any position. Codex uses ED 0 from home. Once confirmed,
     /// ordinary output takes just the parser's usual pass.
     pub fn process(&mut self, parser: &mut vt100::Parser, mut bytes: &[u8]) {
         while !self.rendered {
             let Some(end) = bytes.iter().position(|byte| {
                 self.suffix.rotate_left(1);
                 self.suffix[3] = *byte;
-                self.suffix == *b"\x1b[2J"
+                self.suffix == *b"\x1b[2J" || self.suffix.ends_with(b"\x1b[J")
             }) else {
                 break;
             };
             let (through_erase, rest) = bytes.split_at(end + 1);
             parser.process(through_erase);
             let grid = parser.screen();
-            self.rendered = grid.alternate_screen()
+            let full_erase = self.suffix == *b"\x1b[2J" || grid.cursor_position() == (0, 0);
+            self.rendered = full_erase
+                && grid.alternate_screen()
                 && grid.rows(0, grid.size().1).all(|row| row.trim().is_empty());
             bytes = rest;
         }
@@ -60,6 +62,26 @@ impl Redraw {
 #[cfg(test)]
 mod tests {
     use super::Redraw;
+
+    #[test]
+    fn a_codex_erase_from_home_proves_a_repaint_across_read_boundaries() {
+        let full = b"\x1b[1;1H\x1b[J";
+        for split in 0..=full.len() {
+            let mut grid = vt100::Parser::new(6, 40, 0);
+            grid.process(b"\x1b[?1049h\x1b[1;31Hdraft");
+            grid.screen_mut().set_size(6, 20);
+            let mut redraw = Redraw::restored(false);
+            redraw.process(&mut grid, b"\x1b[2;1H\x1b[J");
+            assert!(!redraw.rendered(), "partial erase on an already blank crop");
+            redraw.process(&mut grid, &full[..split]);
+            redraw.process(&mut grid, &full[split..]);
+            assert!(redraw.rendered(), "split at {split}");
+        }
+        let mut primary = vt100::Parser::new(6, 40, 0);
+        let mut redraw = Redraw::restored(false);
+        redraw.process(&mut primary, full);
+        assert!(!redraw.rendered());
+    }
 
     #[test]
     fn clearing_the_primary_screen_cannot_certify_a_cropped_alternate_screen() {
