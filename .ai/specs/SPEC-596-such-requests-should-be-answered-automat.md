@@ -17,7 +17,7 @@ Task #586 shows a background reviewer resetting two scratch directories in a loo
 
 - **CLR-001** Answer a contained Claude Bash permission request for ordinary variable-path or root-level scratch removal locally and immediately, including removals inside a reviewer loop or conditional. Give the agent an in-place retry that preserves control flow, quotes each operand and requires nonempty variables. The agent continues its turn.
 - **CLR-002** Apply this policy only when Claude requests permission. Ordinary commands, other tools and uncontained runs keep their existing permission handling. Treat malformed or oversized events as unrecognized.
-- **CLR-003** The agent executes the retry in its run. The existing cleanup tool can remove a whole scratch directory and refuses shared paths. Preserve non-recursive removal by using a file-only operation for those requests. An expanded operand ending in a slash requires a directory. A trailing slash on a regular file preserves the file with the original forced or unforced status. A directory symlink used this way is refused. Without an explicit option terminator, an operand that expands to an option stops the entire retry before removal. Root-level operands retain their trailing slashes. A removal with a command-local redirection falls through to the existing handler so Bash keeps its prerequisites and effects. An unrelated action embedded in the original Bash command receives no automatic approval.
+- **CLR-003** The agent executes the retry in its run. The existing cleanup tool can remove a whole scratch directory and refuses shared paths. Preserve non-recursive removal by using a file-only operation for those requests. An expanded operand ending in a slash requires a directory. A trailing slash on a regular file preserves the file with the original forced or unforced status. A directory symlink used this way is refused. Without an explicit option terminator, an operand that expands to an option stops the entire retry before removal. Root-level operands retain their trailing slashes. A removal with a command-local redirection falls through to the existing handler so Bash keeps its prerequisites and effects. A retry only runs for the system removal command. Preserve shell functions and Bash combined output redirects. An unrelated action embedded in the original Bash command receives no automatic approval.
 
 ## Plan
 
@@ -29,6 +29,7 @@ Task #586 shows a background reviewer resetting two scratch directories in a loo
 - [x] Refuse ambiguous expanded options before removing any operand
 - [x] Recognize root-level scratch directories with trailing slashes
 - [x] Preserve command-local redirections during cleanup decisions
+- [x] Keep shell functions and asynchronous commands out of deletion retries
 - [ ] Independent review approves the verified change for delivery
 
 ## Acceptance criteria
@@ -62,3 +63,4 @@ Use Claude's structured PermissionRequest event. Its decision belongs to the pen
 - After the trailing-slash correction, all 51 hook and launch tests and all 13 removal tests passed.
 - The third review found that a variable expanding to `--help` could remove that filename and another operand. A binary fixture reproduced both deletions on the prior head while the original rm kept both markers. The checked retry now verifies all expanded arguments first. Original explicit option termination still permits that filename.
 - The third review also reproduced a prompt for a root-level directory ending in a slash, and a retry that dropped a required input redirect. Both new hook regressions failed on the old implementation. The hook recognizes root-level paths with trailing slashes and preserves their spelling. A redirect or environment assignment attached to the removal goes to the normal permission handler.
+- A further independent review reproduced two cases where a deletion retry could change Bash behavior. The hook tests failed before excluding shell jobs (including Bash combined redirects) and defined removal functions. A native Bash test executes the complete returned retry against a recording helper. It calls the helper only for the system executable and preserves the function and alias cases. An absolute system executable is still recognized in a script defining a bare rm function.

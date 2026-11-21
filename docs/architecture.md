@@ -1745,7 +1745,8 @@ as `rm -rf $S/$d` returns a checked retry directly to the calling agent, includi
 The local hook leaves the original script unexecuted. The agent retries it with the checked
 removal in place, preserving its conditions and loop bindings. File-only cleanup unlinks files
 and links and fails on directories. Cleanup without force reports missing targets as errors.
-A removal with its own redirections or environment assignments uses the usual permission handler.
+The hook excludes shell jobs and command-local redirections or environment assignments. The retry
+checks how Bash resolves the command and runs the helper only for the system rm executable.
 When the original removal omitted `--`, an option-like expanded operand stops the entire retry.
 On retry, a trailing slash on the expanded path requires a directory. A directory symlink
 spelled this way produces a refusal and preserves its target. [Decision 0435](decisions/0435-claude-returns-variable-path-cleanup-to-the-calling-agent.md)

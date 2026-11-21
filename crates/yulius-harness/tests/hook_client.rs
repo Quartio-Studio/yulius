@@ -1214,6 +1214,10 @@ cd $S/probe && python3 r2.py $S/r3p/scripts 2>&1 | tail -n 8"#,
             r#"yulius remove --preserve-trailing-slash --reject-option-operands -- "${S:?}/leaf""#,
         ),
         (
+            r#"rm() { return 0; }; /bin/rm -rf "$scratch""#,
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands -- "${scratch:?}""#,
+        ),
+        (
             "rm -rf $S/$d another-path",
             r#"yulius remove --preserve-trailing-slash --reject-option-operands -- "${S:?}/${d:?}" "another-path""#,
         ),
@@ -1309,6 +1313,11 @@ cd $S/probe && python3 r2.py $S/r3p/scripts 2>&1 | tail -n 8"#,
         r#"<required-marker rm -rf "$scratch""#,
         r#"rm -rf "$scratch" 2>result"#,
         r#"FLAG=1 rm -rf "$scratch""#,
+        r#"rm -rf "$scratch" &>result"#,
+        r#"rm -rf "$scratch" &>>result"#,
+        r#"rm -rf "$scratch" &"#,
+        r#"rm() { return 0; }; rm -rf "$scratch""#,
+        r#"if true; then function rm { echo dry-run; }; fi; rm -rf "$scratch""#,
         "rm - $S/$d",
         "rm -rf",
         "rm -rf '/a/b/c'",
@@ -1336,6 +1345,20 @@ cd $S/probe && python3 r2.py $S/r3p/scripts 2>&1 | tail -n 8"#,
         let mut event = request("rm -rf $S/$d");
         event[key] = value;
         assert!(answer(&serde_json::to_vec(&event)?).is_empty(), "{key}");
+    }
+    let reply: Value =
+        serde_json::from_slice(&answer(&serde_json::to_vec(&request("rm -rf $scratch"))?))?;
+    let retry = reply["hookSpecificOutput"]["decision"]["message"]
+        .as_str()
+        .and_then(|message| message.split('`').nth(1))
+        .ok_or("missing complete retry")?;
+    for (setup, external) in [("", true), ("rm() { :; }", false), ("alias rm=true", false)] {
+        let run = std::process::Command::new("bash")
+            .env_clear().env("PATH", "/usr/bin:/bin")
+            .args(["-c", r#"shopt -s expand_aliases; eval "$1"; scratch=fixture; yulius() { printf called; }; eval "$2""#, "fixture", setup, retry])
+            .output()?;
+        assert_eq!(run.status.success(), external, "{setup}");
+        assert_eq!(run.stdout == b"called", external, "{setup}");
     }
     let mut at_limit = serde_json::to_vec(&request("rm -rf $S/$d"))?;
     at_limit.resize(MAX_INPUT_BYTES, b' ');
