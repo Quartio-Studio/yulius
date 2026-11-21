@@ -1281,6 +1281,9 @@ impl SpecCheck {
 
 /// The refreshed delivery view and the receipt for the protected merge that produced it.
 pub(crate) struct MergedPull {
+    /// Pull request and head accepted by GitHub's guarded merge request.
+    pub number: u64,
+    pub head: String,
     /// State after the merge for existing delivery callers.
     pub view: Delivery,
     /// The accepted PR head, returned commit and, when confirmed, its base branch.
@@ -4928,7 +4931,8 @@ impl App {
     pub async fn merge_task_pr(&self, ctx: &AuthContext, task_id: &str) -> AppResult<Delivery> {
         let task = self.load_task(ctx, task_id, Action::Work).await?;
         // A playground merges here, with no GitHub identity needed (SPEC-099), on green (SPEC-163).
-        if self.dlv_sandbox_of(&task).await?.is_playground() {
+        let sandbox = self.dlv_sandbox_of(&task).await?;
+        if sandbox.is_playground() {
             return self.playground_merge_now(&ctx.user, &task).await;
         }
         let token = self
@@ -4938,7 +4942,10 @@ impl App {
             .dlv_merge(ctx, &task, &token)
             .await
             .map_err(MergeFailure::into_error)?;
-        self.clear_armed(&task).await;
+        if self.merge_is_armed(&task.id) {
+            let note = self.merged_note(&task, &sandbox, merged.number, true).await;
+            self.settle_armed(&task, Some((&merged.head, note))).await;
+        }
         Ok(merged.view)
     }
 
@@ -5261,7 +5268,12 @@ impl App {
             .ok_or(AppError::NotFound)?;
         let mut view = self.delivery_view(&task, Some(&ctx.user)).await?;
         view.notes.extend(notes);
-        Ok(MergedPull { view, receipt })
+        Ok(MergedPull {
+            number: pull.number,
+            head: pull.head_sha,
+            view,
+            receipt,
+        })
     }
 
     // ---------------------------------------------------------------- promotion

@@ -6377,6 +6377,15 @@ async fn an_armed_merge_ends_with_its_tasks_run() -> TestResult {
         .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
         .await?;
     assert_eq!(by_hand.status, StatusCode::OK, "{}", by_hand.body);
+    let confirmed = t.wait(Value::Null).await?;
+    assert_eq!(confirmed["merge_armed"], false, "{confirmed}");
+    assert_eq!(confirmed["merge_outcome_head"], t.head, "{confirmed}");
+    assert!(
+        confirmed["merge_outcome"]
+            .as_str()
+            .is_some_and(|text| text.contains("merged")),
+        "{confirmed}"
+    );
     commit_file(&t.wt, "landing.txt", "v3", "After the merge")?;
     becomes(TaskStatus::Closed).await?;
     f.h.app.merge_armed(&sandbox).await;
@@ -6385,6 +6394,26 @@ async fn an_armed_merge_ends_with_its_tasks_run() -> TestResult {
         outcome.contains("merged") && !outcome.contains("dropped"),
         "{outcome}"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_person_http_merge_of_another_head_leaves_the_original_arm_to_the_queue() -> TestResult {
+    let t = ArmedTask::new().await?;
+    t.arm().await?;
+    commit_file(&t.wt, "landing.txt", "v2", "Owner's later change")?;
+    git(&t.wt, &["push", "origin", "HEAD"])?;
+    let newer = git(&t.wt, &["rev-parse", "HEAD"])?;
+    assert_ne!(t.head, newer);
+    edit_pull(&t.f, 1, |pull| pull.head_sha = newer.clone());
+    t.f.h.github.set_checks(&newer, ChecksState::Success);
+    let by_hand =
+        t.f.req(Method::POST, "/api/tasks/t1/delivery/merge", None, &t.f.bob)
+            .await?;
+    assert_eq!(by_hand.status, StatusCode::OK, "{}", by_hand.body);
+    let waiting = t.wait(Value::Null).await?;
+    assert_eq!(waiting["merge_armed"], true, "{waiting}");
+    assert!(waiting["merge_outcome"].is_null(), "{waiting}");
     Ok(())
 }
 

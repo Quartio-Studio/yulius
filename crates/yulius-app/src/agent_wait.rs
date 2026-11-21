@@ -456,11 +456,31 @@ impl App {
 
     /// Nothing is armed for `task` any more: `delivery_merge` merged it at once.
     pub(crate) async fn clear_armed(&self, task: &TaskRecord) {
+        self.settle_armed(task, None).await;
+    }
+
+    /// A person's hosted merge completes the wait for the head GitHub accepted.
+    /// An independent arm or decision still in progress stays with its queue pass.
+    pub(crate) async fn settle_armed(&self, task: &TaskRecord, landed: Option<(&str, String)>) {
         self.restore_task_arm_if_needed(&task.id).await;
         let runtime = self.runtime(&task.id);
         let _writer = runtime.arm_writer.lock().await;
         if let Err(err) = self.reconcile_arm_change(&task.id, &runtime).await {
             tracing::warn!(task = %task.id, error = %err, "retaining the saved merge arm until its decision can be reconciled");
+            return;
+        }
+        if let Some((head, note)) = landed {
+            let deciding = {
+                let mut slot = lock_slot(&runtime);
+                if slot.merge.as_ref().is_none_or(|arm| arm.head != head) {
+                    return;
+                }
+                slot.take()
+            };
+            if let Some(deciding) = deciding {
+                self.finish_armed(&task.id, &deciding, Verdict::Decided(note))
+                    .await;
+            }
             return;
         }
         let mut slot = lock_slot(&runtime);
@@ -1828,6 +1848,16 @@ fn short(sha: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_missing_arm_registry_reads_as_empty() -> std::io::Result<()> {
+        let data = tempfile::tempdir()?;
+        let registry = data.path().join(ARMED_MERGES_FILE);
+        assert!(load_armed(&registry)?.is_empty());
+        std::fs::create_dir(&registry)?;
+        assert!(load_armed(&registry).is_err());
+        Ok(())
+    }
 
     fn merge(head: &str) -> ArmedMerge {
         ArmedMerge {
