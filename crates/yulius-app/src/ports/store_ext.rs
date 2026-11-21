@@ -129,6 +129,18 @@ pub trait McpStore: Send + Sync {
     async fn delete_mcp_server(&self, id: &str) -> AppResult<bool>;
 }
 
+/// One task in the bounded background scan of GitHub observations.
+pub struct PullDiscovery {
+    /// Task owning the source branch.
+    pub task: TaskId,
+    /// The task's current source branch.
+    pub branch: String,
+    /// Open follow-up identity if known, otherwise the most recent terminal PR.
+    pub observation: super::github::GhPull,
+    /// A merged PR whose landing still needs confirmation, independent of the open identity.
+    pub pending_landing: Option<u64>,
+}
+
 /// Delivery and environment-run persistence (CP8). Records live in [`crate::delivery`].
 #[async_trait]
 pub trait DeliveryStore: Send + Sync {
@@ -143,7 +155,7 @@ pub trait DeliveryStore: Send + Sync {
         sandbox: &yulius_domain::ids::SandboxId,
         after: Option<&TaskId>,
         limit: u32,
-    ) -> crate::error::AppResult<Vec<(TaskId, String, super::github::GhPull)>>;
+    ) -> crate::error::AppResult<Vec<PullDiscovery>>;
     /// Last directly observed terminal PR of the task, optionally by number.
     async fn terminal_pull(
         &self,

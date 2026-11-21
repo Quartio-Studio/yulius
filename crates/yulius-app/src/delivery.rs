@@ -4729,18 +4729,24 @@ impl App {
         if let Some(read) = discovery.as_mut() {
             read.listed(&branch, &closed);
         }
-        if purpose != PrVerification::Display
-            || tracked.is_none()
-            || observed.pr.map(|pr| pr.number) != tracked
-        {
+        // The numbered PR can be current while a cached or paginated branch list omits it.
+        let known_open = observed
+            .pr
+            .filter(|pr| purpose == PrVerification::Display && pr.open)
+            .map(|pr| pr.number);
+        if known_open.is_none() {
             *observed = ParkedPullRead::recorded(record);
         }
         observed.note_open_branch(&branch);
         if branch.len() > MAX_PULLS {
             return Ok(None);
         }
-        let numbers: std::collections::BTreeSet<_> =
-            branch.iter().map(|p| p.number).chain(tracked).collect();
+        let numbers: std::collections::BTreeSet<_> = branch
+            .iter()
+            .map(|p| p.number)
+            .chain(tracked)
+            .chain(known_open)
+            .collect();
         if numbers.is_empty() {
             return Ok(Some(ParkingPrs::default()));
         }
@@ -4753,8 +4759,15 @@ impl App {
             } else {
                 purpose
             };
+            // Recorded deliveries may originate on a different branch. An independent
+            // follow-up identified only by its number must still belong to this task.
+            let source = task.branch.as_deref().filter(|_| {
+                known_open == Some(number)
+                    && tracked != Some(number)
+                    && branch.iter().all(|pr| pr.number != number)
+            });
             let pull = self
-                .pull_allows_parking(task, &sandbox, &token, number, checks, observed)
+                .pull_allows_parking(task, &sandbox, &token, (number, source), checks, observed)
                 .await?;
             if observed
                 .pr
@@ -4813,6 +4826,16 @@ impl App {
         };
         if let Some(read) = discovery {
             read.listed(&current, &closed);
+            if let Some(number) = known_open
+                && observed.fresh_head
+                && !observed.unavailable
+                && observed.pr.is_some_and(|pr| pr.open && pr.number == number)
+                && branch.iter().all(|pr| pr.number != number)
+                && let Some(open) = &mut read.open
+                && !open.contains(&number)
+            {
+                open.push(number);
+            }
         }
         if purpose != PrVerification::Display {
             return Ok((current == branch).then_some(facts));
@@ -4830,7 +4853,8 @@ impl App {
                 if let Some(pr) = current.iter().find(|pr| pr.number == number) {
                     unchanged(pr) && head.is_none_or(|sha| sha == pr.head_sha)
                 } else {
-                    tracked == Some(number) && branch.iter().all(|pr| pr.number != number)
+                    (tracked == Some(number) || known_open == Some(number))
+                        && branch.iter().all(|pr| pr.number != number)
                 }
             };
             let blocker_survived = !verified
@@ -4926,7 +4950,7 @@ impl App {
         task: &TaskRecord,
         sandbox: &SandboxRecord,
         token: &Secret,
-        number: u64,
+        (number, source): (u64, Option<&str>),
         purpose: PrVerification,
         observed: &mut ParkedPullRead,
     ) -> AppResult<Option<GhPull>> {
@@ -4948,7 +4972,15 @@ impl App {
                 .github
                 .get_pull(token, &sandbox.repo_owner, &sandbox.repo_name, number)
                 .await?;
-            if !is_open(&pull) && pull.number == number {
+            if pull.number != number
+                || (is_open(&pull)
+                    && source.is_some_and(|branch| pull.from_fork || branch != pull.head))
+            {
+                return Err(AppError::Upstream(
+                    "GitHub returned a different pull request or source branch".into(),
+                ));
+            }
+            if !is_open(&pull) {
                 self.deps
                     .store
                     .remember_pull_observation(&task.id, &pull)
@@ -5467,7 +5499,7 @@ impl App {
             if candidates.len() == PAGE as usize
                 && let Some(last) = candidates.last()
             {
-                cursors.insert(sandbox.id.clone(), last.0.clone());
+                cursors.insert(sandbox.id.clone(), last.task.clone());
             } else {
                 cursors.remove(&sandbox.id);
             }
@@ -5477,44 +5509,48 @@ impl App {
         }
         let reads: Vec<_> = candidates
             .into_iter()
-            .filter_map(|(task, branch, terminal)| {
-                let read = self.observed_pulls.begin_branch(&sandbox.id, &task).ok()?;
+            .filter_map(|candidate| {
+                let task = &candidate.task;
+                let read = self.observed_pulls.begin_branch(&sandbox.id, task).ok()?;
                 let known = self
                     .observed_pulls
-                    .known_pull(&sandbox.id, &task)
+                    .known_pull(&sandbox.id, task)
                     .flatten()
                     .filter(|p| p.open)
                     .map(|p| p.number)
-                    .or_else(|| is_open(&terminal).then_some(terminal.number));
-                Some((task, branch, terminal, read, known))
+                    .or_else(|| {
+                        is_open(&candidate.observation).then_some(candidate.observation.number)
+                    });
+                Some((candidate, read, known))
             })
             .collect();
         let token = self.dlv_installation_token(sandbox).await?;
         let (owner, repo) = (&sandbox.repo_owner, &sandbox.repo_name);
         let github = &self.deps.github;
-        for (task, _, terminal, _, _) in &reads {
-            if terminal.merged
-                && !terminal.from_fork
-                && evidence::Landing::closed_pull(terminal).is_none()
-            {
+        for (candidate, _, _) in &reads {
+            if let Some(number) = candidate.pending_landing {
                 let refreshed = crate::ports::github::for_purpose(
                     crate::ports::github::GitHubPurpose::Merges,
-                    github.get_pull(&token, owner, repo, terminal.number),
+                    github.get_pull(&token, owner, repo, number),
                 )
                 .await;
                 if let Ok(pull) = refreshed
-                    && pull.number == terminal.number
+                    && pull.number == number
                     && let Some(landing) = evidence::Landing::closed_pull(&pull)
                 {
-                    store.remember_pull_observation(task, &pull).await?;
                     store
-                        .landed_sha(task, Some(pull.number), Some(&landing))
+                        .remember_pull_observation(&candidate.task, &pull)
+                        .await?;
+                    store
+                        .landed_sha(&candidate.task, Some(pull.number), Some(&landing))
                         .await?;
                 }
             }
         }
         let pulls = github.list_pulls(&token, owner, repo, None).await?;
-        for (task, branch, terminal, read, known) in reads {
+        for (candidate, read, known) in reads {
+            let (task, branch, terminal) =
+                (candidate.task, candidate.branch, candidate.observation);
             let newest = pulls
                 .iter()
                 .filter(|p| !p.from_fork && p.head == branch && is_open(p))

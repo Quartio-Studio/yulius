@@ -5,6 +5,7 @@ CREATE TABLE task_pull_observations (
     needs_confirmation INTEGER NOT NULL,
     PRIMARY KEY (task_id, pr_number)
 );
+CREATE INDEX pending_pull_landings ON task_pull_observations(task_id, pr_number) WHERE needs_confirmation;
 -- A recorded merge establishes the number even when landing evidence was unavailable.
 -- Historical rows have no PR title or source branch. Only a bound landing supplies SHAs.
 INSERT INTO task_pull_observations

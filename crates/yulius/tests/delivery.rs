@@ -10952,6 +10952,20 @@ async fn reconciliation_enriches_a_terminal_pull_missing_its_merge_commit() -> T
     f.h.app.reconcile_deliveries().await;
     assert_eq!(f.delivery("t1").await?["stage"], "merged_integration");
     assert!(f.delivery("t1").await?["evidence"].is_null());
+    // A later follow-up can open and close before the primary's merge SHA becomes available.
+    {
+        let mut pulls = f.h.github.pulls.lock().map_err(|_| "pull fixture")?;
+        let followup = yulius_app::ports::github::GhPull {
+            number: 2,
+            state: "open".into(),
+            merged: false,
+            ..pulls[0].clone()
+        };
+        pulls.push(followup);
+    }
+    f.h.app.reconcile_deliveries().await;
+    edit_pull(&f, 2, |p| p.state = "closed".into());
+    f.h.app.reconcile_deliveries().await;
     let landed = f.origin_sha("dev")?;
     edit_pull(&f, 1, |p| p.merge_commit_sha = Some(landed.clone()));
     f.h.app.reconcile_deliveries().await;
@@ -10964,6 +10978,7 @@ async fn reconciliation_enriches_a_terminal_pull_missing_its_merge_commit() -> T
 #[tokio::test]
 async fn a_reopened_followup_survives_restart_without_replacing_the_merged_delivery() -> TestResult
 {
+    use std::sync::atomic::Ordering;
     let (f, wt, head) =
         merged_task_with(Box::new(|config| config.parked_pr_read_ms = 10_000)).await?;
     std::fs::write(wt.join(SPEC_PATH), finished_spec("t1"))?;
@@ -11000,6 +11015,9 @@ async fn a_reopened_followup_survives_restart_without_replacing_the_merged_deliv
     edit_pull(&f, 2, |p| p.state = "open".into());
     f.h.github.set_checks(&head, ChecksState::Failure);
     f.h.app.reconcile_deliveries().await;
+    // The numbered endpoint still serves #2 while GitHub's listing omits it.
+    *f.h.github.omit_listed_pull.lock().map_err(|_| "PR list")? = Some(2);
+    let before = f.h.github.pull_get_count.load(Ordering::SeqCst);
     let cold = yulius_app::context::App::new(f.h.app.config.clone(), f.h.app.deps.clone());
     let rows = cold.list_tasks(&owner, "s1", false).await?;
     let task = rows
@@ -11009,6 +11027,10 @@ async fn a_reopened_followup_survives_restart_without_replacing_the_merged_deliv
     let identity = task.parked_pr.as_ref().ok_or("follow-up")?;
     assert_eq!((identity.number, identity.open), (2, true));
     assert_eq!(task.parked_needs_you, Some(true));
+    assert!(
+        f.h.github.pull_get_count.load(Ordering::SeqCst) > before,
+        "cold display verifies the omitted open PR by number"
+    );
     let primary = f.h.store.delivery(&id).await?.ok_or("merged delivery")?;
     assert_eq!(primary.stage.encode(), "merged_integration");
     assert_eq!(primary.pr_number, Some(1));

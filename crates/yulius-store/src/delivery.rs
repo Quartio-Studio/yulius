@@ -7,7 +7,7 @@ use yulius_app::delivery::{
     DeliveryRecord, EnvironmentRunKind, EnvironmentRunRecord, EnvironmentRunState,
 };
 use yulius_app::error::AppResult;
-use yulius_app::ports::store_ext::DeliveryStore;
+use yulius_app::ports::store_ext::{DeliveryStore, PullDiscovery};
 use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::time::Timestamp;
@@ -91,27 +91,33 @@ impl DeliveryStore for SqliteStore {
         sandbox: &SandboxId,
         after: Option<&TaskId>,
         limit: u32,
-    ) -> AppResult<Vec<(TaskId, String, yulius_app::ports::github::GhPull)>> {
+    ) -> AppResult<Vec<PullDiscovery>> {
         let sandbox = sandbox.to_string();
         let after = after.map(ToString::to_string).unwrap_or_default();
         self.call(move |c| {
             let mut statement = c.prepare(
-                "SELECT t.id, coalesce(t.branch, ''), p.snapshot FROM tasks t
+                "SELECT t.id, coalesce(t.branch, ''), p.snapshot, landing.pr_number FROM tasks t
                  LEFT JOIN delivery d ON d.task_id=t.id JOIN task_pull_observations p ON p.task_id=t.id
+                 LEFT JOIN task_pull_observations landing ON landing.task_id=t.id AND landing.pr_number=coalesce(
+                     (SELECT pr_number FROM task_pull_observations WHERE task_id=t.id AND pr_number=d.pr_number AND needs_confirmation),
+                     (SELECT min(pr_number) FROM task_pull_observations WHERE task_id=t.id AND needs_confirmation))
                  WHERE t.sandbox_id=?1 AND t.archived_at IS NULL AND t.id>?2
                  AND coalesce(d.stage,'none')!='pr_open' AND p.pr_number=(SELECT pr_number FROM task_pull_observations WHERE task_id=t.id
                      ORDER BY json_extract(snapshot,'$.state')='open' DESC, pr_number DESC LIMIT 1)
                  AND (t.status='parked' OR coalesce(d.stage,'none')='none' OR
-                     json_extract(p.snapshot,'$.state')='open' OR p.needs_confirmation)
+                     json_extract(p.snapshot,'$.state')='open' OR landing.pr_number IS NOT NULL)
                  ORDER BY t.id LIMIT ?3"
             ).map_err(db)?;
             let rows = statement.query_map(params![sandbox, after, limit], |r| {
-                Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?))
+                Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?, r.get::<_,Option<i64>>(3)?))
             }).map_err(db)?;
             rows.map(|r| {
-                let (id, branch, json) = r.map_err(db)?;
-                Ok((TaskId::parse(&id).map_err(yulius_app::error::AppError::internal)?, branch,
-                    serde_json::from_str(&json).map_err(yulius_app::error::AppError::internal)?))
+                let (id, branch, json, pending) = r.map_err(db)?;
+                Ok(PullDiscovery {
+                    task: TaskId::parse(&id).map_err(yulius_app::error::AppError::internal)?,
+                    branch, observation: serde_json::from_str(&json).map_err(yulius_app::error::AppError::internal)?,
+                    pending_landing: pending.map(to_u64),
+                })
             }).collect()
         }).await
     }
@@ -652,15 +658,15 @@ mod tests {
             .terminal_branches_for_discovery(&sandbox, None, 1)
             .await?;
         assert_eq!(first.len(), 1);
-        assert_eq!(first[0].0.as_str(), "t1");
+        assert_eq!(first[0].task.as_str(), "t1");
         let second = store
-            .terminal_branches_for_discovery(&sandbox, Some(&first[0].0), 1)
+            .terminal_branches_for_discovery(&sandbox, Some(&first[0].task), 1)
             .await?;
         assert_eq!(second.len(), 1);
-        assert_eq!(second[0].0.as_str(), "t2");
+        assert_eq!(second[0].task.as_str(), "t2");
         assert!(
             store
-                .terminal_branches_for_discovery(&sandbox, Some(&second[0].0), 1)
+                .terminal_branches_for_discovery(&sandbox, Some(&second[0].task), 1)
                 .await?
                 .is_empty()
         );

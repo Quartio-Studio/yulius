@@ -63,6 +63,8 @@ pub struct FakeGitHub {
     pub callback_entered: tokio::sync::Notify,
     pub pull_get_count: std::sync::atomic::AtomicUsize,
     pub pull_list_count: std::sync::atomic::AtomicUsize,
+    /// A lagging open-PR list can omit a PR its numbered endpoint still serves.
+    pub omit_listed_pull: Mutex<Option<u64>>,
     /// Pull requests (delivery tests).
     pub pulls: Mutex<Vec<GhPull>>,
     /// REST calls to get or list PRs for discovery.
@@ -593,12 +595,15 @@ impl GitHubPort for FakeGitHub {
         {
             *pull = replacement;
         }
+        let omitted = *self.omit_listed_pull.lock().map_err(AppError::internal)?;
         Ok(self
             .pulls
             .lock()
             .map_err(AppError::internal)?
             .iter()
-            .filter(|p| p.state == "open" && head.is_none_or(|h| p.head == h))
+            .filter(|p| {
+                Some(p.number) != omitted && p.state == "open" && head.is_none_or(|h| p.head == h)
+            })
             .cloned()
             .collect())
     }
