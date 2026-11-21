@@ -29,7 +29,7 @@ On 2026-11-21 the owner measured 105 minutes waiting for mutation tests in 22 Co
 - [x] Preserve Cargo cancellation and inherited jobserver tokens
 - [x] Reclaim attempt scratch after forced host termination
 - [x] Deliver the by-hand mutation policy and bootstrap
-- [ ] Deliver disk build scratch, the tmpfs cap and on-request campaign cleanup
+- [x] Deliver disk build scratch, the tmpfs cap and on-request campaign cleanup
 - [ ] Deliver disposable Cargo targets and request staging
 
 ## Acceptance criteria
@@ -113,3 +113,5 @@ On the disk runtime branch, an ordinary child that started a second POSIX sessio
 The restored Linux process fixture checked both normal exit and cancellation with a worker in a separate session. All five supervisor tests passed. An ordinary command inherited its jobserver descriptor, and cancellation recorded before launch prevented a command from starting. The scoped runtime run passed 56 contract tests, 62 host unit tests, 16 supervision tests and both integration tests for contained delivery and the CD agent join. Both containment harness entry points passed with the nested namespace limitation recorded above. Clippy passed for the four affected crates on Linux and the aarch64-apple-darwin target.
 
 Independent review at e2d183d1b reproduced a detached child on the portable supervisor. Its original session was empty even though a worker still held the socket. The portable supervisor now checks that every remaining process group has a surviving process identity from before the command. Unknown groups retain the build and produce an unconfirmed-shutdown error. The ordinary detached-worker test failed with the earlier command's exit status 7. Undoing the group comparison by hand reproduced the same failure. After restoration, all six process checks passed on Linux, including the portable path for normal leader exit and cancellation. macOS uses the kernel's process unique identifier. An unrelated new group can conservatively retain local scratch. [XNU process identity API](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/proc_info_private.h)
+
+Independent review approved the disk runtime at 917559091. The reviewer independently passed six supervisor tests and two filesystem tests and verified that both forms of detached-worker shutdown retain scratch on the portable path. Exact-head CI and merge are recorded in the task’s delivery evidence.
