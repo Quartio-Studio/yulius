@@ -468,6 +468,7 @@ If a reservation skips past all available slots, land an empty extension first w
 - [0429](0429-continue-stopped-codex-work-in-its-saved-session.md) resumes stopped Codex work in its saved conversation and shows a bare resume as idle.
 <!-- ADR 0429 -->
 <!-- ADR 0430 -->
+- [0431](0431-the-move-restarts-caddy-and-asks-its-own-port-443.md): An instance move always restarts the new host's Caddy with the carried configuration and asks that host's own port 443 before the proxy counts as done.
 <!-- ADR 0431 -->
 <!-- ADR 0432 -->
 <!-- ADR 0433 -->
