@@ -256,14 +256,36 @@ async fn wait_until_ready(
     }
 }
 
-async fn prepare_profile(profile_dir: &Path) -> Result<(), BrowserError> {
+/// Chrome handed over to, or waited for, `holder`, which still holds the profile: say so.
+fn blame_holder(error: BrowserError, holder: Option<u32>) -> BrowserError {
+    match (error, holder) {
+        (
+            error @ (BrowserError::ExitedEarly { .. } | BrowserError::StartupTimeout { .. }),
+            Some(pid),
+        ) => BrowserError::ProfileInUse {
+            pid,
+            error: Box::new(error),
+        },
+        (error, _) => error,
+    }
+}
+
+/// Creates the profile (mode 0700) and removes Chrome's locks no running browser holds
+/// (SPEC-593); returns this host's name and the pid of a running process of it whose lock was
+/// kept.
+async fn prepare_profile(profile_dir: &Path) -> Result<Option<(Vec<u8>, u32)>, BrowserError> {
     use std::os::unix::fs::PermissionsExt;
     tokio::fs::create_dir_all(profile_dir)
         .await
         .map_err(BrowserError::Profile)?;
     tokio::fs::set_permissions(profile_dir, std::fs::Permissions::from_mode(0o700))
         .await
-        .map_err(BrowserError::Profile)
+        .map_err(BrowserError::Profile)?;
+    let host = crate::profile::host_name()?;
+    let held =
+        crate::profile::clear_stale_locks(profile_dir, &host, crate::profile::process_running)
+            .await?;
+    Ok(held.map(|pid| (host, pid)))
 }
 
 impl BrowserManager {
@@ -388,7 +410,18 @@ impl BrowserManager {
         profile_dir: &Path,
     ) -> Result<Arc<BrowserInstance>, BrowserError> {
         let exe = resolve_executable(&self.config.chromium_exe)?;
-        prepare_profile(profile_dir).await?;
+        let held = prepare_profile(profile_dir).await?;
+        self.start(state, sandbox, profile_dir, &exe, held).await
+    }
+
+    async fn start(
+        &self,
+        state: &mut BrowserState,
+        sandbox: &SandboxId,
+        profile_dir: &Path,
+        exe: &Path,
+        held: Option<(Vec<u8>, u32)>,
+    ) -> Result<Arc<BrowserInstance>, BrowserError> {
         // Its way out first: a browser that cannot have it is not started (ADR-0321). A start
         // that fails below drops the lease, which closes it.
         let network = match &self.config.network {
@@ -413,14 +446,22 @@ impl BrowserManager {
             env.extend(display.env());
         }
         let (process, pipe) =
-            Supervised::spawn_with_devtools_pipe(&exe, &args, &env).map_err(BrowserError::Spawn)?;
+            Supervised::spawn_with_devtools_pipe(exe, &args, &env).map_err(BrowserError::Spawn)?;
         let process = Arc::new(process);
         *state = BrowserState::Starting {
             display: display.clone(),
             process: Some(Arc::clone(&process)),
         };
         let cdp = CdpClient::over_pipe(pipe.from_child, pipe.to_child, self.config.cdp);
-        wait_until_ready(&cdp, &process, self.config.startup_timeout).await?;
+        if let Err(error) = wait_until_ready(&cdp, &process, self.config.startup_timeout).await {
+            let holder = match held {
+                Some((host, pid)) if crate::profile::still_held(profile_dir, &host, pid).await => {
+                    Some(pid)
+                }
+                _ => None,
+            };
+            return Err(blame_holder(error, holder));
+        }
         let display_name = display.as_deref().map(VirtualDisplay::name);
         let secrets = lock(&self.secrets)
             .entry(sandbox.clone())
@@ -552,6 +593,41 @@ mod tests {
             .now_or_never();
         assert!(matches!(result, Some(Err(e)) if e.viewer_code() == ViewerErrorCode::Capacity));
         Ok(())
+    }
+
+    /// SPEC-593 SPL-003 (review round 1): only Chrome's own give-ups (it exited, or never
+    /// answered) are blamed on the process that still holds the profile.
+    #[test]
+    fn a_failed_start_names_the_holder_only_when_chrome_gave_up_on_it() {
+        let exited = || BrowserError::ExitedEarly {
+            status: "exit status: 0".into(),
+            stderr: "Opening in existing browser session.".into(),
+        };
+        let timeout = || BrowserError::StartupTimeout {
+            timeout: Duration::from_secs(30),
+        };
+        for error in [exited(), timeout()] {
+            let blamed = blame_holder(error, Some(77));
+            assert!(
+                matches!(&blamed, BrowserError::ProfileInUse { pid: 77, .. }),
+                "{blamed:?}"
+            );
+            assert!(blamed.to_string().contains("process 77"), "{blamed}");
+        }
+        assert!(matches!(
+            blame_holder(exited(), None),
+            BrowserError::ExitedEarly { .. }
+        ));
+        for other in [
+            BrowserError::Cdp(CdpError::Closed),
+            BrowserError::Display("no Xvfb".into()),
+        ] {
+            let kept = blame_holder(other, Some(77));
+            assert!(
+                !matches!(kept, BrowserError::ProfileInUse { .. }),
+                "{kept:?}"
+            );
+        }
     }
 
     #[test]
