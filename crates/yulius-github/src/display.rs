@@ -1,7 +1,7 @@
 //! Credential-scoped display GETs with one in-flight refresh per URL.
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use reqwest::header::ETAG;
 use tokio::sync::Mutex as AsyncMutex;
@@ -17,6 +17,7 @@ const BODY_BUDGET: usize = 64 * 1024 * 1024;
 #[derive(Default)]
 struct Refresh {
     at: i64,
+    validated_from: Option<Instant>,
     reply: Option<Reply>,
     failure: Option<(i64, GitHubError)>,
 }
@@ -65,8 +66,18 @@ impl DisplayCache {
 
     pub(crate) async fn read(
         &self,
+        call: Call<'_>,
+        transport: &Transport,
+    ) -> Result<Reply, GitHubError> {
+        self.read_after(call, transport, None).await
+    }
+
+    /// A contradictory terminal observation requires a request started after it was seen.
+    pub(crate) async fn read_after(
+        &self,
         mut call: Call<'_>,
         transport: &Transport,
+        after: Option<Instant>,
     ) -> Result<Reply, GitHubError> {
         let key = (
             call.url.to_string(),
@@ -90,11 +101,15 @@ impl DisplayCache {
             return Err(error.clone());
         }
         if let Some(previous) = &state.reply {
-            if (0..FRESH_MS).contains(&now.saturating_sub(state.at)) {
+            if (0..FRESH_MS).contains(&now.saturating_sub(state.at))
+                && after
+                    .is_none_or(|after| state.validated_from.is_some_and(|start| start >= after))
+            {
                 return Ok(previous.clone());
             }
             call.etag = previous.headers.get(ETAG).cloned();
         }
+        let started = Instant::now();
         let response = transport.send(&call).await.and_then(|reply| {
             if reply.is_success() || (reply.status == 304 && call.etag.is_some()) {
                 Ok(reply)
@@ -112,6 +127,7 @@ impl DisplayCache {
             }
         };
         state.at = transport.now().0;
+        state.validated_from = Some(started);
         state.failure = None;
         if reply.status == 304
             && let Some(previous) = &state.reply

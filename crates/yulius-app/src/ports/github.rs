@@ -505,6 +505,16 @@ pub trait GitHubPort: Send + Sync {
         repo: &str,
         number: u64,
     ) -> AppResult<GhPull>;
+    /// Confirms a contradictory display observation without accepting a previous cached GET.
+    async fn confirm_pull(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> AppResult<GhPull> {
+        self.get_pull(token, owner, repo, number).await
+    }
     /// Sets the title of a pull request (SPEC-069 BPL-008).
     ///
     /// # Errors

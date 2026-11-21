@@ -1918,16 +1918,14 @@ impl App {
         task: &TaskRecord,
         record: Option<&DeliveryRecord>,
     ) -> AppResult<Option<GhPull>> {
-        let number = record.and_then(|r| r.pr_number);
-        let terminal = self.deps.store.terminal_pull(&task.id, number).await?;
-        Ok(terminal.filter(|p| {
-            number.is_some()
-                || (self
-                    .observed_pulls
-                    .known_pull(&task.sandbox_id, &task.id)
-                    .flatten()
-                    .is_none_or(|known| !known.open() || known.number == p.number))
-        }))
+        let number = record.and_then(|r| r.pr_number).or_else(|| {
+            self.observed_pulls
+                .known_pull(&task.sandbox_id, &task.id)
+                .flatten()
+                .filter(|pull| pull.open())
+                .map(|pull| pull.number)
+        });
+        self.deps.store.terminal_pull(&task.id, number).await
     }
 
     /// Gathers the facts of one task and reconciles its stage with GitHub (a pull request
@@ -2530,7 +2528,7 @@ impl App {
                 && let Ok(direct) = self
                     .deps
                     .github
-                    .get_pull(token, owner, name, listed.number)
+                    .confirm_pull(token, owner, name, listed.number)
                     .await
                 && direct.number == listed.number
                 && is_open(&direct)
@@ -5279,15 +5277,25 @@ impl App {
                 continue;
             }
             // A listing can be truncated or lag a merge. Confirm identity changes by number.
-            let reopen = !terminal.merged && newest.is_some_and(|p| p.number == terminal.number);
-            let number = if reopen {
-                terminal.number
-            } else if let Some(open) = known {
-                open.number
-            } else {
+            let reopening = match newest {
+                Some(pull) if pull.number == terminal.number && !terminal.merged => {
+                    Some(pull.number)
+                }
+                Some(pull)
+                    if pull.number < terminal.number
+                        && store
+                            .terminal_pull(&task, Some(pull.number))
+                            .await?
+                            .is_some_and(|prior| !prior.merged) =>
+                {
+                    Some(pull.number)
+                }
+                _ => None,
+            };
+            let Some(number) = reopening.or_else(|| known.map(|p| p.number)) else {
                 continue;
             };
-            let Ok(pull) = github.get_pull(&token, owner, repo, number).await else {
+            let Ok(pull) = github.confirm_pull(&token, owner, repo, number).await else {
                 continue;
             };
             if pull.number != number {

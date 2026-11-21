@@ -10883,6 +10883,12 @@ async fn reading_a_closed_unmerged_parked_task_spends_no_pull_requests() -> Test
         assert_eq!(f.delivery("t1").await?["stage"], "none");
     }
     assert_eq!(f.h.github.pull_list_count.load(Ordering::SeqCst), 0);
+    // GitHub can reopen either closed number, including an older one on the branch.
+    edit_pull(&f, 1, |p| p.state = "open".into());
+    f.h.app.reconcile_deliveries().await;
+    assert_eq!(f.delivery("t1").await?["pr"]["number"], 1);
+    edit_pull(&f, 1, |p| p.state = "closed".into());
+    f.h.app.reconcile_deliveries().await;
     edit_pull(&f, 2, |p| p.state = "open".into());
     f.h.app.reconcile_deliveries().await;
     assert_eq!(f.delivery("t1").await?["pr"]["number"], 2);

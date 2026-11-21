@@ -568,6 +568,21 @@ impl GitHubPort for GitHubAdapter {
         ))
     }
 
+    async fn confirm_pull(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo_name: &str,
+        number: u64,
+    ) -> AppResult<GhPull> {
+        Ok(pull(
+            self.plain
+                .confirm_pull(&gh(token), owner, repo_name, number)
+                .await
+                .map_err(map_err)?,
+        ))
+    }
+
     async fn update_pull_title(
         &self,
         token: &Secret,
