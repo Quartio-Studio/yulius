@@ -2966,6 +2966,72 @@ fn a_key_during_submit_context_lookup_keeps_its_mark() -> TestResult {
         })
 }
 
+/// The phone Send key may be pressed on an empty box. Multiline input can also
+/// deliver Enter without submitting anything to the agent.
+#[tokio::test]
+async fn goal_stop_rejects_empty_and_multiline_enters_as_owner_replies() -> TestResult {
+    for frames in [
+        vec![b"\r".as_slice()],
+        vec![b"line one\\", b"\r"],
+        vec![b"\x1b[200~line one", b"\r", b"line two\x1b[201~"],
+    ] {
+        let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify dev").await?;
+        let reason = stop_of(&f, Agent::Codex).await?["reason"]
+            .as_str()
+            .ok_or("continuation")?
+            .to_owned();
+        let owner = UserId::parse("u1")?;
+        for frame in frames {
+            f.h.app.record_terminal_frame(&f.task, &owner, frame);
+        }
+        let submit = |prompt: &str| yulius_contracts::hooks::HookInput {
+            prompt: Some(prompt.to_owned()),
+            ..Default::default()
+        };
+        f.h.app
+            .hook_event(TOKEN, "codex", "UserPromptSubmit", &submit(&reason), None)
+            .await?;
+        assert_eq!(
+            f.h.app
+                .deps
+                .store
+                .task(&f.task)
+                .await?
+                .ok_or("task")?
+                .gate_blocks,
+            1,
+            "a keystroke that submitted nothing cannot claim this automatic prompt"
+        );
+        f.h.app
+            .record_terminal_frame(&f.task, &owner, b"Verify dev");
+        f.h.app.record_terminal_frame(&f.task, &owner, b"\r");
+        f.h.app
+            .hook_event(
+                TOKEN,
+                "codex",
+                "UserPromptSubmit",
+                &submit("Verify dev"),
+                None,
+            )
+            .await?;
+        assert!(
+            !f.h.app.has_draft(&f.task),
+            "the owner's actual Enter emptied the box"
+        );
+        assert_eq!(
+            f.h.app
+                .deps
+                .store
+                .task(&f.task)
+                .await?
+                .ok_or("task")?
+                .gate_blocks,
+            0
+        );
+    }
+    Ok(())
+}
+
 /// The client has already sent Enter when the next draft reaches Yulius. The HTTP
 /// callback arrives later, carrying the client's send time.
 #[tokio::test]
