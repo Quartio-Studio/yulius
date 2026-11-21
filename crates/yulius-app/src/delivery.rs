@@ -2183,11 +2183,26 @@ impl App {
             )
             .await;
         // `pull_view` leaves `conflicts = false` so callers decide per task via `pull_conflicts`
-        // (SPEC-491, SPEC-580 AWM-003). Populate it here for open pull requests.
+        // (SPEC-491, SPEC-580 AWM-003). Parked tasks use the bounded display Git pool and deadline
+        // so overlapping detail reads cannot hang or exceed `PARKED_READS` when local Git stalls.
         if let Some(pull) = observed.pr.as_ref().filter(|p| is_open(p))
             && let Some(pr) = view.pr.as_mut()
         {
-            pr.conflicts = self.pull_conflicts(task, &sandbox, pull).await;
+            pr.conflicts = if task.status == yulius_domain::task::TaskStatus::Parked {
+                let (task, sandbox, pull_owned) = (task.clone(), sandbox.clone(), pull.clone());
+                tokio::time::timeout_at(
+                    self.status_deadline(),
+                    self.verification_git(PrVerification::Display, move |app| async move {
+                        Ok(app.pull_conflicts(&task, &sandbox, &pull_owned).await)
+                    }),
+                )
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or(pull.mergeable == Some(false))
+            } else {
+                self.pull_conflicts(task, &sandbox, pull).await
+            };
         }
         if past_merge(&observed.record.stage) {
             let known = observed
