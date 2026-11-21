@@ -1383,6 +1383,15 @@ cd $S/probe && python3 r2.py $S/r3p/scripts 2>&1 | tail -n 8"#,
         event[key] = value;
         assert!(answer(&serde_json::to_vec(&event)?).is_empty(), "{key}");
     }
+    let payload = serde_json::to_vec(&request("rm -rf $scratch"))?;
+    for (harness, event) in [("codex", "PermissionRequest"), ("claude", "SessionStart")] {
+        let mut out = Vec::new();
+        assert_eq!(
+            run_hook(harness, event, &mut payload.as_slice(), &mut out, &|_| None),
+            0
+        );
+        assert!(out.is_empty(), "{harness} {event}");
+    }
     let reply: Value =
         serde_json::from_slice(&answer(&serde_json::to_vec(&request("rm -rf $scratch"))?))?;
     let retry = reply["hookSpecificOutput"]["decision"]["message"]
