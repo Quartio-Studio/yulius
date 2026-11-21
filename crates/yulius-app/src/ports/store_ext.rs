@@ -500,12 +500,12 @@ pub trait CiStore: Send + Sync {
         sandbox: &SandboxId,
         limit: u32,
     ) -> AppResult<Vec<crate::ci::CiRunRecord>>;
-    /// Last passing integration branch revision other than the head that is currently checking.
+    /// The first commit in the caller's history order whose latest branch run passed.
     async fn previous_green_branch_sha(
         &self,
         sandbox: &SandboxId,
         branch: &str,
-        head: &str,
+        commits: &[String],
     ) -> AppResult<Option<String>>;
     /// Bounded scheduler history, most recently admitted first. A new run may
     /// inherit an older queue position from the head it superseded.

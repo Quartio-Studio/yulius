@@ -5554,6 +5554,12 @@ impl App {
         let contained = production_sha.as_deref() == Some(integration_sha.as_str())
             || relation.is_some_and(|(ahead, _)| ahead == 0);
         if contained {
+            if candidates.is_empty() && matches!(source, PromotionSource::Verified { .. }) {
+                return Ok(PromoteResult {
+                    result: "already_promoted".into(),
+                    sha: production_sha,
+                });
+            }
             if candidates.is_empty() {
                 return Err(AppError::Conflict(format!(
                     "nothing to promote: '{}' already contains '{}'",

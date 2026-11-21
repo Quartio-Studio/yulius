@@ -1147,6 +1147,8 @@ the sandbox's agent secrets (an id that held one is ignored). `drill` must name 
 production-stage deploy whose table has a `deploy` is refused (`conflict`, audited
 `cd.refused`) until the table has `rollback` and the newest drill of its `drill` environment passed
 at a commit with the tree being deployed (with `promote`: the integration commit promoted).
+While a different dev commit is drilling, the latest completed drill can supply that proof if it
+passed for the confirmed tree. [ADR-0425](decisions/0425-pin-a-production-deploy-to-verified-dev.md)
 A person's production deploy refused only for that (the newest drill is missing or ran at another
 tree, none runs, the drill environment has `deploy` and `rollback` at the integration head, whose
 tree is the one production deploys, and its newest deploy is of another commit) deploys the drill

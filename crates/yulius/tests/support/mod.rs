@@ -76,6 +76,8 @@ pub struct FakeGitHub {
     pub retarget_on_merge: Mutex<Option<String>>,
     /// A concurrent GitHub write to the base immediately before merging a pull request.
     pub advance_base_on_merge: Mutex<Option<String>>,
+    /// Refuse one production head read following a pinned release merge.
+    pub fail_pinned_merge_read: std::sync::atomic::AtomicBool,
     /// GitHub accepted the merge, but reading the closed PR fails until it recovers.
     pub fail_merged_reads: std::sync::atomic::AtomicBool,
     /// Metadata confirms a merge while the branch listing still has the open PR.
@@ -765,6 +767,21 @@ impl GitHubPort for FakeGitHub {
         _: &str,
         branch: &str,
     ) -> AppResult<Option<String>> {
+        if self.fail_pinned_merge_read.load(Ordering::SeqCst)
+            && self
+                .pulls
+                .lock()
+                .map_err(AppError::internal)?
+                .iter()
+                .any(|pull| {
+                    pull.merged && pull.base == branch && pull.head.starts_with("yulius/release/")
+                })
+            && self.fail_pinned_merge_read.swap(false, Ordering::SeqCst)
+        {
+            return Err(AppError::Upstream(
+                "production head temporarily unavailable".into(),
+            ));
+        }
         Ok(self.remote().and_then(|r| r.branch_sha(branch)))
     }
 }

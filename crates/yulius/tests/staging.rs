@@ -656,6 +656,15 @@ async fn production_is_promoted_only_from_the_verified_staging_revision() -> Tes
     assert_eq!(crate::cd::git(&f.origin, &["rev-parse", &pin])?, r2);
     assert!(!git_contains(&f, "main", &r1)?);
     crate::cd::git(&f.origin, &["update-ref", "-d", &pin, &r2])?;
+    // GitHub lands the release, then reading its resulting commit fails. A retry must
+    // reconcile the landed tasks after confirming the tree, without another merge.
+    f.h.github
+        .fail_pinned_merge_read
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let uncertain = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert!(!uncertain.status.is_success(), "{}", uncertain.body);
+    assert!(git_contains(&f, "main", &r1)?);
+
     let deploy = f.deploy(&f.bob, "prod", Some("app")).await?;
     assert!(deploy.status.is_success(), "{}", deploy.body);
     let run = f
@@ -739,7 +748,7 @@ async fn running_dev_ci_releases_only_the_preceding_green_revision() -> TestResu
     );
     gate(&f, &a, RunState::Passed).await?;
     // Dev moves once more before the CI scheduler admits C. B is still verifying.
-    f.push("dev", &[("newest.txt", Some("awaiting CI admission"))])?;
+    let c = f.push("dev", &[("newest.txt", Some("awaiting CI admission"))])?;
     let deployed = f.deploy(&f.bob, "prod", Some("app")).await?;
     assert!(deployed.status.is_success(), "{}", deployed.body);
     assert_eq!(f.head("main")?, a);
@@ -747,6 +756,58 @@ async fn running_dev_ci_releases_only_the_preceding_green_revision() -> TestResu
         f.h.store.ci_run(&active).await?.ok_or("active")?.state,
         RunState::Running
     );
+    // A green rerun of older A must not displace C when the next revision checks.
+    gate(&f, &c, RunState::Passed).await?;
+    let mut rerun =
+        f.h.store
+            .ci_run(&format!("ci-{}", &a[..12]))
+            .await?
+            .ok_or("A")?;
+    rerun.id = "green-rerun-A".into();
+    f.h.store.insert_ci_run(&rerun, &[]).await?;
+    // Cross a complete batch of first-parent history without any intervening verdict.
+    let mut d = f.push("dev", &[("d.txt", Some("checking"))])?;
+    let tree = crate::cd::git(&f.work, &["rev-parse", "HEAD^{tree}"])?;
+    for _ in 0..128 {
+        d = crate::cd::git(&f.work, &["commit-tree", &tree, "-p", &d, "-m", "pending"])?;
+    }
+    crate::cd::git(
+        &f.work,
+        &["push", "-q", "origin", &format!("{d}:refs/heads/dev")],
+    )?;
+    gate(&f, &d, RunState::Running).await?;
+    let newest = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert!(newest.status.is_success(), "{}", newest.body);
+    assert_eq!(f.head("main")?, c);
+    Ok(())
+}
+
+/// Removing staging in a newer commit cannot release a candidate whose own staging never passed.
+#[tokio::test]
+async fn the_release_keeps_its_own_staging_requirement() -> TestResult {
+    let f = fixture(&promoting_toml()).await?;
+    let a = f.push("dev", &[("a.txt", Some("branch CI only"))])?;
+    gate(&f, &a, RunState::Passed).await?;
+    let config = "[[ci.jobs]]\nname = \"checks\"\ncommand = \"true\"\n[cd.prod]\npromote = true\n";
+    let b = f.push("dev", &[("yulius.toml", Some(config))])?;
+    gate(&f, &b, RunState::Running).await?;
+    let production = f.head("main")?;
+    let refused = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(
+        refused.status,
+        axum::http::StatusCode::CONFLICT,
+        "{}",
+        refused.body
+    );
+    assert_eq!(f.head("main")?, production);
+    let overview = f.get("/api/sandboxes/s1/cd").await?;
+    let prod = overview["environments"]
+        .as_array()
+        .ok_or("environments")?
+        .iter()
+        .find(|env| env["name"] == "prod")
+        .ok_or("prod")?;
+    assert!(prod["promotes_from"].is_null(), "{prod}");
     Ok(())
 }
 

@@ -23,7 +23,7 @@ SPEC-575 records what the shared staging environment verified. Production CD cur
 
 - [x] Read the product context and related work, then write and validate the spec
 - [x] Select and show the verified dev revision during a newer verification
-- [ ] Promote exactly the selected revision and its included deliveries
+- [x] Promote exactly the selected revision and its included deliveries
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
@@ -47,3 +47,5 @@ A person's production deployment carries an exact source revision. The staging q
 - With pinned promotion, the real-Git staging fixture released A, left B's delivery on integration, refused a mismatched release ref, and subsequently released B after it passed. The ordinary dev deployment and rollback drill fixtures both released A's tree while B was running.
 - The GitHub client test confirmed the release-ref POST carries the selected SHA and propagates a 422 refusal. Repository contracts and formatting passed with `scripts/dev quick`.
 - Four regressions failed at the first review head, `d29ca70ee`. Production selected an untested push while its predecessor was checking, rejected the newest successful multipart deploy, rejected a proven commit while another commit with the same tree was drilling, and marked a task released after a simultaneous production write changed the merge tree.
+- At `ff2f7409c`, all 67 `cd`, `cd_rollback` and `staging` integration tests passed, including those four regressions. `scripts/dev security` reported that Vidoc was disabled for this project.
+- At the same head, 107 delivery tests passed. Three additional regressions reproduced a release missing its own staging proof, a task left on dev after a successful retry and an old green rerun displacing a newer verified commit.

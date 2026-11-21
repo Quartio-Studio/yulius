@@ -512,6 +512,7 @@ impl App {
         head: &str,
         config: &CdConfig,
         prod: &CdTarget,
+        repo: &Path,
     ) -> AppResult<String> {
         let store = &self.deps.store;
         let drill_env = prod.drill_env();
@@ -610,14 +611,34 @@ impl App {
             verdict,
             yulius_domain::ci::GateResult::Run(None | Some(RunState::Queued | RunState::Running))
         ) {
-            return store
-                .previous_green_branch_sha(&sandbox.id, branch, head)
-                .await?
-                .ok_or_else(|| {
+            let mut cursor = head.to_owned();
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+            // Each bounded batch advances towards the root of this fixed Git history.
+            // A rerun changes the verdict of its commit, never its release order.
+            loop {
+                let commits = tokio::time::timeout_at(
+                    deadline,
+                    self.deps.git.preceding_commits(repo, &cursor),
+                )
+                .await
+                .map_err(|_| {
                     AppError::Conflict(format!(
-                        "nothing ran: {branch} is checking and has no preceding verified revision"
+                        "nothing ran: verification history lookup for {branch} timed out"
                     ))
-                });
+                })??;
+                let Some(oldest) = commits.last() else {
+                    return Err(AppError::Conflict(format!(
+                        "nothing ran: {branch} is checking and has no preceding verified revision"
+                    )));
+                };
+                if let Some(sha) = store
+                    .previous_green_branch_sha(&sandbox.id, branch, &commits)
+                    .await?
+                {
+                    return Ok(sha);
+                }
+                cursor.clone_from(oldest);
+            }
         }
         Ok(head.to_owned())
     }
@@ -634,7 +655,7 @@ impl App {
         repo: &Path,
     ) -> AppResult<(String, CdConfig)> {
         let sha = self
-            .cd_promotion_revision(sandbox, branch, head, config, prod)
+            .cd_promotion_revision(sandbox, branch, head, config, prod, repo)
             .await?;
         if sha == head {
             return Ok((sha, config.clone()));
@@ -656,14 +677,24 @@ impl App {
             .cd_config_at(repo, &sha)
             .await
             .map_err(AppError::Conflict)?;
-        if !config
+        let target = config
             .target_of(&prod.name, CdStage::Prod)
-            .is_some_and(|target| target.promote)
+            .filter(|target| target.promote)
+            .ok_or_else(|| {
+                AppError::Conflict(format!(
+                    "nothing ran: the verified revision does not configure a promotion for {}",
+                    prod.name
+                ))
+            })?;
+        if config.merge_first().is_some()
+            && self
+                .cd_promotion_revision(sandbox, branch, head, &config, target, repo)
+                .await?
+                != sha
         {
-            return Err(AppError::Conflict(format!(
-                "nothing ran: the verified revision does not configure a promotion for {}",
-                prod.name
-            )));
+            return Err(AppError::Conflict(
+                "nothing ran: the release revision lacks its own staging verification".into(),
+            ));
         }
         Ok((sha, config))
     }
@@ -1564,7 +1595,7 @@ impl App {
             None
         };
         let mut promoted = None;
-        let note = if contained {
+        let note = if contained && pinned_tree.is_none() {
             format!(
                 "'{}' already contains '{}': nothing to promote",
                 profile.production_branch, profile.integration_branch

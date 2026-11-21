@@ -270,21 +270,18 @@ impl CiStore for SqliteStore {
         &self,
         sandbox: &SandboxId,
         branch: &str,
-        head: &str,
+        commits: &[String],
     ) -> AppResult<Option<String>> {
-        let (sandbox, reference, head) = (
-            sandbox.to_string(),
-            CiRef::Branch(branch.into()).key(),
-            head.to_owned(),
-        );
+        let sandbox = sandbox.to_string();
+        let reference = CiRef::Branch(branch.into()).key();
+        let commits = serde_json::to_string(commits).map_err(AppError::internal)?;
         self.call(move |c| {
             c.query_row(
-                "SELECT r.sha FROM ci_runs r WHERE r.sandbox_id = ?1 AND r.reference = ?2
-             AND r.sha != ?3 AND r.state = 'passed' AND NOT EXISTS (
-                 SELECT 1 FROM ci_runs newer WHERE newer.sandbox_id = r.sandbox_id
-                 AND newer.reference = r.reference AND newer.sha = r.sha AND newer.rowid > r.rowid)
-             ORDER BY r.rowid DESC LIMIT 1",
-                params![sandbox, reference, head],
+                "SELECT value FROM json_each(?3) AS history WHERE (
+                    SELECT state FROM ci_runs WHERE sandbox_id = ?1 AND reference = ?2
+                    AND sha = history.value ORDER BY rowid DESC LIMIT 1
+                 ) = 'passed' ORDER BY history.key LIMIT 1",
+                params![sandbox, reference, commits],
                 |row| row.get(0),
             )
             .optional()

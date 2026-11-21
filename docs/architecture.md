@@ -3268,8 +3268,9 @@ branch's verified head. Which release is previous, kept or behind a barrier is
 `yulius_domain::rollback::History`. When a dev-stage deploy passes, its execution starts the drill
 (`App::cd_start_drill`; back to the previous release and forward, `drill_steps`), and a
 production-stage deploy asks `App::cd_rollback_gate` (`yulius_domain::rollback::production_gate`)
-before any secret or promotion: rollback configured, and the newest drill passed at the tree it
-deploys. A person's production deploy refused only for that proof, where the drill environment can
+before it obtains secrets or promotes a revision. Rollback must be configured and the drill must
+have passed for the deployed tree. While another dev commit is drilling, the last completed drill
+can prove that tree. A person's production deploy refused only for that proof, where the drill environment can
 deploy the same tree (`yulius_domain::rollback::dev_can_prove`, `App::cd_dev_proof`), deploys that
 environment instead as the same person (`App::cd_start_or_prove`,
 `crates/yulius-app/src/ci/prove.rs`;

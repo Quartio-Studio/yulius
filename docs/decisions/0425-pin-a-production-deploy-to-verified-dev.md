@@ -12,6 +12,8 @@ Dev can receive another merge before a person releases the revision that passed 
 
 A production deploy can select an earlier verified revision from the protected integration branch's first-parent history. Its SHA identifies the confirmation, promotion source and rollback evidence. A merge-commit profile opens its release pull request from a revision-specific ref when the branch has advanced. Fast-forward uses the selected SHA directly. The resulting production tree must match the selected tree for a pinned release.
 
+Branch CI supplies the nearest first-parent predecessor whose latest branch run passed. Rerunning an older commit changes that commit’s verdict. A release that required merge-first staging still needs its staging evidence after dev changes the configuration.
+
 ## Alternatives
 
 Waiting for the current head prevents a release while newer work is being checked. Deploying an arbitrary commit would lose the connection with protected dev verification.
@@ -19,5 +21,7 @@ Waiting for the current head prevents a release while newer work is being checke
 ## Consequences
 
 Newer tasks keep their integration state and continue verification. A confirmed release can be retried against the same ref. Production access, release checks and the person's confirmation still apply.
+
+If GitHub landed the release before a read failed, a retry verifies the existing production tree and finishes recording the included tasks.
 
 GitHub's pull-request merge accepts an expected head SHA. Yulius also checks the production base immediately before merging and verifies the resulting commit and tree before recording a release. An outside writer can still move the base during GitHub's merge call. If the result differs from the confirmed tree, CD returns a conflict, leaves the tasks on dev and starts no deployment scripts. [GitHub merge API](https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request)
