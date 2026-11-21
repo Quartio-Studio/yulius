@@ -1314,7 +1314,7 @@ async fn a_shared_head_infrastructure_error_retries_the_owner_once() -> TestResu
 async fn a_new_shared_run_replaces_a_refusal_for_the_old_integration_configuration() -> TestResult {
     let f = fixture().await?;
     let app = &f.h.app;
-    let (one, _, head) = shared_pull_heads(&f).await?;
+    let (one, two, head) = shared_pull_heads(&f).await?;
     f.record_run(app, 1, &head, RunState::Running).await?;
     let owner = app
         .deps
@@ -1375,9 +1375,12 @@ async fn a_new_shared_run_replaces_a_refusal_for_the_old_integration_configurati
         .transition_ci_run(&newer.id, &[RunState::Running], RunState::Failed, &refused)
         .await?;
     assert_eq!(f.wait(1, &one).await?["checks"], "failed");
+    // PR 2 had a real pass before PR 3 encountered the configuration refusal.
+    // That pass is obsolete for both owners once CI admits a replacement.
     let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("sandbox")?;
     app.ci_sync_sandbox(&sandbox).await?;
     assert_eq!(f.wait(1, &one).await?["checks"], "queued");
+    assert_eq!(f.wait(2, &two).await?["checks"], "queued");
     app.ci_sync_sandbox(&sandbox).await?;
     // Past refusals are synthetic. Dispatch and wait for the real replacement.
     let pending = app
@@ -1396,6 +1399,55 @@ async fn a_new_shared_run_replaces_a_refusal_for_the_old_integration_configurati
         RunState::Passed
     );
     assert_eq!(f.wait(1, &one).await?["checks"], "passed");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_failed_shared_repair_reaches_the_owner_of_an_invalidated_pass() -> TestResult {
+    let f = fixture().await?;
+    let app = &f.h.app;
+    let (one, _, head) = shared_pull_heads(&f).await?;
+    f.arm(1, &one).await?;
+    f.record_passed(app, 1, &head).await?;
+    f.record_run(app, 2, &head, RunState::Running).await?;
+    let runs = app.deps.store.ci_runs_for_sha(&f.sandbox, &head).await?;
+    let refusal = runs
+        .iter()
+        .find(|r| r.reference == CiRef::PullRequest(2))
+        .ok_or("peer run")?;
+    let failed = yulius_app::ci::CiRunUpdate {
+        reason: Some("yulius.toml is invalid on dev".into()),
+        ..Default::default()
+    };
+    app.deps
+        .store
+        .transition_ci_run(&refusal.id, &[RunState::Running], RunState::Failed, &failed)
+        .await?;
+    f.record_run(app, 3, &head, RunState::Queued).await?;
+    let runs = app.deps.store.ci_runs_for_sha(&f.sandbox, &head).await?;
+    let replacement = runs
+        .iter()
+        .find(|r| r.reference == CiRef::PullRequest(3))
+        .ok_or("repair run")?;
+    assert_eq!(f.wait(1, &one).await?["checks"], "queued");
+    let reason = "the repaired configuration ran quality and quality failed";
+    app.deps
+        .store
+        .transition_ci_run(
+            &replacement.id,
+            &[RunState::Queued],
+            RunState::Failed,
+            &yulius_app::ci::CiRunUpdate {
+                reason: Some(reason.into()),
+                ..Default::default()
+            },
+        )
+        .await?;
+    app.merge_armed(&f.sandbox).await;
+    let wait = f.wait(1, &one).await?;
+    assert_eq!(wait["checks"], "failed", "{wait}");
+    assert_eq!(wait["checks_detail"], reason, "{wait}");
+    assert_eq!(wait["merge_armed"], false, "{wait}");
     Ok(())
 }
 

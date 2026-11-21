@@ -246,8 +246,13 @@ fn integration_config_refusal(run: &CiRunRecord) -> bool {
         .is_some_and(|why| why.starts_with(DEV_INVALID_PREFIX))
 }
 
-/// Select the ordinary verdict from one commit’s runs, newest first. The owner’s
-/// run wins, except for a refusal that a later run replaced after CI was repaired.
+/// Active work and a reference’s explicit cancellation survive a configuration refusal.
+fn survives_config_refusal(state: RunState) -> bool {
+    state.is_active() || state == RunState::Cancelled
+}
+
+/// Select the ordinary verdict from one commit’s runs, newest admission first.
+/// A configuration refusal invalidates earlier completed verdicts at this commit.
 pub(crate) fn run_for_pull_head(runs: &[CiRunRecord], pr: u64) -> Option<&CiRunRecord> {
     let shared = |r: &&CiRunRecord| {
         ordinary_scheduler_ref(&r.reference) && yulius_domain::ci::covers_shared_commit(r.state)
@@ -257,9 +262,13 @@ pub(crate) fn run_for_pull_head(runs: &[CiRunRecord], pr: u64) -> Option<&CiRunR
         .position(|r| r.reference == CiRef::PullRequest(pr))
     {
         let owner = &runs[index];
-        if integration_config_refusal(owner)
-            && let Some(replacement) = runs[..index].iter().find(shared)
-        {
+        let newer = &runs[..index];
+        let invalidated = !survives_config_refusal(owner.state)
+            && (integration_config_refusal(owner)
+                || newer.iter().any(|run| {
+                    ordinary_scheduler_ref(&run.reference) && integration_config_refusal(run)
+                }));
+        if invalidated && let Some(replacement) = newer.iter().find(shared) {
             return Some(replacement);
         }
         Some(owner)
@@ -540,9 +549,7 @@ fn ordinary_run_facts(runs: &[CiRunRecord], dev_valid: bool) -> Vec<RunFacts> {
                 invalidated.insert(run.sha.as_str());
                 return false;
             }
-            !invalidated.contains(run.sha.as_str())
-                || run.state.is_active()
-                || run.state == RunState::Cancelled
+            !invalidated.contains(run.sha.as_str()) || survives_config_refusal(run.state)
         })
         .map(|run| RunFacts {
             id: run.id.clone(),
@@ -2460,13 +2467,17 @@ impl App {
 mod planning_tests {
     use super::*;
 
-    #[test]
-    fn a_repaired_configuration_preserves_active_runs_and_human_cancellations()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let sandbox_id = SandboxId::parse("s1")?;
-        let run = |id: &str, sha: &str, reference, state, reason| CiRunRecord {
+    fn run(
+        sandbox: &SandboxId,
+        id: &str,
+        sha: &str,
+        reference: CiRef,
+        state: RunState,
+        reason: Option<String>,
+    ) -> CiRunRecord {
+        CiRunRecord {
             id: id.into(),
-            sandbox_id: sandbox_id.clone(),
+            sandbox_id: sandbox.clone(),
             reference,
             sha: sha.into(),
             source: dom::GateSource::ProjectConfig,
@@ -2479,29 +2490,110 @@ mod planning_tests {
             queued_at: Timestamp(0),
             started_at: None,
             ended_at: None,
-        };
+        }
+    }
+
+    #[test]
+    fn a_shared_config_repair_invalidates_an_older_owner_verdict()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let sandbox = SandboxId::parse("s1")?;
+        let replacement = run(
+            &sandbox,
+            "repair",
+            "a",
+            CiRef::PullRequest(3),
+            RunState::Queued,
+            None,
+        );
+        let refusal = run(
+            &sandbox,
+            "refused",
+            "a",
+            CiRef::PullRequest(2),
+            RunState::Failed,
+            Some(format!("{DEV_INVALID_PREFIX}dev")),
+        );
+        for (state, expected) in [
+            (RunState::Passed, "repair"),
+            (RunState::Failed, "repair"),
+            (RunState::Running, "owner"),
+            (RunState::Cancelled, "owner"),
+        ] {
+            let owner = run(&sandbox, "owner", "a", CiRef::PullRequest(1), state, None);
+            let records = [replacement.clone(), refusal.clone(), owner];
+            assert_eq!(
+                run_for_pull_head(&records, 1).map(|r| r.id.as_str()),
+                Some(expected),
+                "{state:?}"
+            );
+        }
+        let mut private_refusal = refusal;
+        private_refusal.reference = CiRef::Train(vec![2]);
+        let owner = run(
+            &sandbox,
+            "owner",
+            "a",
+            CiRef::PullRequest(1),
+            RunState::Passed,
+            None,
+        );
+        let records = [replacement, private_refusal, owner];
+        assert_eq!(
+            run_for_pull_head(&records, 1).map(|r| r.id.as_str()),
+            Some("owner")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_repaired_configuration_preserves_active_runs_and_human_cancellations()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let sandbox = SandboxId::parse("s1")?;
         let pr = CiRef::PullRequest(1);
         let refusal = Some(format!("{DEV_INVALID_PREFIX}dev"));
         let records = [
-            run("replacement", "a", pr.clone(), RunState::Passed, None),
             run(
+                &sandbox,
+                "replacement",
+                "a",
+                pr.clone(),
+                RunState::Passed,
+                None,
+            ),
+            run(
+                &sandbox,
                 "refusal",
                 "a",
                 pr.clone(),
                 RunState::Failed,
                 refusal.clone(),
             ),
-            run("obsolete", "a", pr.clone(), RunState::Failed, None),
-            run("queued", "a", pr.clone(), RunState::Queued, None),
-            run("cancel", "a", pr.clone(), RunState::Cancelled, None),
             run(
+                &sandbox,
+                "obsolete",
+                "a",
+                pr.clone(),
+                RunState::Failed,
+                None,
+            ),
+            run(&sandbox, "queued", "a", pr.clone(), RunState::Queued, None),
+            run(
+                &sandbox,
+                "cancel",
+                "a",
+                pr.clone(),
+                RunState::Cancelled,
+                None,
+            ),
+            run(
+                &sandbox,
                 "private",
                 "b",
                 CiRef::Train(vec![1]),
                 RunState::Failed,
                 refusal,
             ),
-            run("other", "b", pr, RunState::Passed, None),
+            run(&sandbox, "other", "b", pr, RunState::Passed, None),
         ];
         let ids = |valid| {
             ordinary_run_facts(&records, valid)
