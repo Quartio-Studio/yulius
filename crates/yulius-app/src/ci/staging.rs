@@ -26,6 +26,7 @@
 //! never deploys a request twice.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use yulius_domain::cd::{CdStage, CdTarget, Requester};
 use yulius_domain::ci::{CiRef, RunState};
@@ -48,6 +49,8 @@ use crate::task_message::{Sender, Typed};
 
 /// Most requests a queue reads at once (the requests still on their way).
 const MAX_PENDING: usize = 200;
+/// A task view or browser handoff that is busy yields to the staging queue.
+const TASK_VIEW_BUDGET: Duration = Duration::from_millis(750);
 /// How a staging deploy's run note starts: the queue knows its own runs by it.
 const DEPLOY_NOTE: &str = "merge-first staging: request";
 /// How a restore's run note starts, before the part's label.
@@ -410,7 +413,7 @@ impl App {
         let Some(deploy) = pick
             .deploy
             .as_ref()
-            .and_then(|id| pending.iter().find(|r| &r.id == id))
+            .and_then(|id| pending.into_iter().find(|r| &r.id == id))
         else {
             return Ok(());
         };
@@ -622,31 +625,29 @@ impl App {
         self: &Arc<Self>,
         sandbox: &SandboxRecord,
         env: &str,
-        request: &StagingRequestRecord,
+        mut request: StagingRequestRecord,
     ) -> AppResult<()> {
-        let store = &self.deps.store;
         // Another run of the environment (a rollback, its drill) runs, or an update holds new
         // deploys: the deploy waits, costing no attempt (review round 1).
         if self.staging_must_wait(sandbox, env).await? {
             return Ok(());
         }
-        let moved = store
-            .move_staging_request(
-                &request.id,
-                StagingState::Ready,
+        let moved = self
+            .staging_move(
+                &request,
                 StagingState::Deploying,
-                &StagingChange {
+                StagingChange {
                     note: Some(format!("deploying revision {}", short(&request.revision))),
                     clear_cd_run: true,
                     ..StagingChange::default()
                 },
-                self.now(),
             )
             .await?;
         if !moved {
             return Ok(());
         }
-        let person = self.staging_person(request).await?;
+        request.state = StagingState::Deploying;
+        let person = self.staging_person(&request).await?;
         let started = match &person {
             Some(person) => {
                 let note = format!(
@@ -676,44 +677,37 @@ impl App {
                 "its task's owner is no longer active or lost write access: nobody can deploy for it".into(),
             )),
         };
-        let now = self.now();
         match started {
             Ok(run) => {
-                store
-                    .move_staging_request(
-                        &request.id,
-                        StagingState::Deploying,
-                        StagingState::Deploying,
-                        &StagingChange {
-                            cd_run_id: Some(run.id.clone()),
-                            note: Some(format!(
-                                "deploying revision {}: run {}",
-                                short(&request.revision),
-                                run.id
-                            )),
-                            ..StagingChange::default()
-                        },
-                        now,
-                    )
-                    .await?;
+                self.staging_move(
+                    &request,
+                    StagingState::Deploying,
+                    StagingChange {
+                        cd_run_id: Some(run.id.clone()),
+                        note: Some(format!(
+                            "deploying revision {}: run {}",
+                            short(&request.revision),
+                            run.id
+                        )),
+                        ..StagingChange::default()
+                    },
+                )
+                .await?;
             }
             // What started meanwhile (a rollback between the look and the start, an update
             // closing the gate) is waited for, costing no attempt.
             Err(AppError::Conflict(_)) if self.staging_must_wait(sandbox, env).await? => {
-                store
-                    .move_staging_request(
-                        &request.id,
-                        StagingState::Deploying,
-                        StagingState::Ready,
-                        &StagingChange {
-                            note: Some(
-                                "waiting for another run of the environment or an update".into(),
-                            ),
-                            ..StagingChange::default()
-                        },
-                        now,
-                    )
-                    .await?;
+                self.staging_move(
+                    &request,
+                    StagingState::Ready,
+                    StagingChange {
+                        note: Some(
+                            "waiting for another run of the environment or an update".into(),
+                        ),
+                        ..StagingChange::default()
+                    },
+                )
+                .await?;
             }
             Err(err) => {
                 let attempts = request.attempts.saturating_add(1);
@@ -722,22 +716,19 @@ impl App {
                     AppError::Forbidden(_) => StagingState::DeployFailed,
                     _ => stg::after_deploy(DeployEnd::Lost, attempts),
                 };
-                store
-                    .move_staging_request(
-                        &request.id,
-                        StagingState::Deploying,
-                        next,
-                        &StagingChange {
-                            attempts: Some(attempts),
-                            note: Some(format!(
-                                "the deploy could not start: {}",
-                                err.public_message()
-                            )),
-                            ..StagingChange::default()
-                        },
-                        now,
-                    )
-                    .await?;
+                self.staging_move(
+                    &request,
+                    next,
+                    StagingChange {
+                        attempts: Some(attempts),
+                        note: Some(format!(
+                            "the deploy could not start: {}",
+                            err.public_message()
+                        )),
+                        ..StagingChange::default()
+                    },
+                )
+                .await?;
             }
         }
         Ok(())
@@ -1165,7 +1156,7 @@ impl App {
             // Chromium startup can hold the browser slot. Leave the outcome for another tick
             // if its handoffs cannot be checked, and read the recipient after this slow lookup.
             let browser = tokio::time::timeout(
-                std::time::Duration::from_millis(750),
+                TASK_VIEW_BUDGET,
                 self.browser_tab_requests(&request.sandbox_id),
             )
             .await;
@@ -1204,11 +1195,23 @@ impl App {
                 _ => false,
             };
             if delivered && store.mark_staging_told(&request.id).await.unwrap_or(false) {
-                self.publish_task(&task.id).await;
+                self.publish_staging_task(&request).await;
                 told += 1;
             }
         }
         told
+    }
+
+    /// Update the task view within a bounded wait. A busy summary asks the sandbox's
+    /// viewers to refetch, so checkout or browser work cannot strand a staging receipt.
+    pub(super) async fn publish_staging_task(&self, request: &StagingRequestRecord) {
+        if let Some(task) = &request.task_id
+            && tokio::time::timeout(TASK_VIEW_BUDGET, self.publish_task(task))
+                .await
+                .is_err()
+        {
+            self.publish_resync(Some(request.sandbox_id.clone()));
+        }
     }
 
     /// Moves `request` from the state it was read in; a request another round moved meanwhile
@@ -1225,9 +1228,7 @@ impl App {
             .move_staging_request(&request.id, request.state, to, &change, self.now())
             .await?;
         if moved && to != request.state {
-            if let Some(task) = &request.task_id {
-                self.publish_task(task).await;
-            }
+            self.publish_staging_task(request).await;
             tracing::info!(request = %request.id, from = request.state.as_str(), to = to.as_str(), revision = %short(&request.revision), "staging request moved");
         }
         Ok(moved)

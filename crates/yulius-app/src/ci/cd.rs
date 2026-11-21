@@ -2792,7 +2792,7 @@ impl App {
             && target.name == env
         {
             let request = self.staging_request(&sandbox, &env, ctx, &head).await?;
-            self.publish_task(&ctx.task.id).await;
+            self.publish_staging_task(&request).await;
             let text = if request.state.is_pending() {
                 format!(
                     "Staging request {} for revision {} of {}: {}. {}. The request is recorded. End this turn. If your final step requires the verdict, leave it in progress. Yulius wakes the task with the outcome. cd_status shows the run ids.",

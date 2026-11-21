@@ -3237,7 +3237,8 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
   verified once (`CdRequest::Restore`, a rollback run).
 - **Told and shown.**
   - An idle task with an untold staging request shows which part of delivery it awaits. The
-    staging queue wakes a running or parked agent when that request is decided.
+    staging queue wakes a running or parked agent when that request is decided. Each stage change
+    updates the task view. If the summary exceeds its budget, sandbox viewers receive a resync.
     [ADR-0437](decisions/0437-the-staging-request-keeps-its-task-waiting-until-the-outcome-is-delivered.md)
   - `tell_staging_outcomes` types each task's outcome into its session once.
   - `delivery_status` tells a merged task its request is due, then where it stands

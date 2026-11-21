@@ -1964,6 +1964,61 @@ async fn the_final_request_never_stages_an_earlier_slice_while_the_current_landi
 }
 
 #[tokio::test]
+async fn a_busy_task_view_cannot_hold_the_staging_queue() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "t1").await?;
+    f.h.store
+        .execute_for_tests("UPDATE tasks SET activity = 'waiting' WHERE id = 't1'")
+        .await?;
+    let sha = land(&f, "t1", "one.txt").await?;
+    let run = gate(&f, &sha, RunState::Failed).await?;
+    let sandbox = sandbox(&f).await?;
+    let staged = StagingRequestRecord {
+        id: "sr_held_view".into(),
+        sandbox_id: sandbox.id.clone(),
+        environment: "staging".into(),
+        task_id: Some(TaskId::parse("t1")?),
+        revision: sha,
+        state: StagingState::Testing,
+        ci_run_id: Some(run),
+        cd_run_id: None,
+        attempts: 0,
+        note: None,
+        requested_by: "task:1".into(),
+        told: false,
+        created_at: f.h.app.now(),
+        updated_at: f.h.app.now(),
+    };
+    assert!(f.h.store.insert_staging_request(&staged).await?);
+    let browser = std::sync::Arc::new(crate::delivery::HeldBrowserLookup::for_publication());
+    let mut deps = f.h.app.deps.clone();
+    deps.browser = browser.clone();
+    let app = yulius_app::context::App::new(f.h.app.config.clone(), deps);
+    let mut events = app.events.subscribe();
+    let (start, started) = tokio::sync::oneshot::channel();
+    let advance = tokio::spawn(async move {
+        started.await.expect("start the queue");
+        app.staging_advance(&sandbox, "staging").await
+    });
+    let (entered, _release) = browser.hold_lookup_for(advance.id());
+    start.send(()).expect("queue is live");
+    tokio::time::timeout(WAIT, entered.notified()).await?;
+    tokio::time::timeout(Duration::from_secs(5), advance)
+        .await??
+        .map_err(|e| e.to_string())?;
+    assert_eq!(
+        request(&f, &staged.id).await?.state,
+        StagingState::GateFailed
+    );
+    let mut resync = false;
+    while let Ok(event) = events.try_recv() {
+        resync |= matches!(event.event, yulius_contracts::events::UiEvent::Resync);
+    }
+    assert!(resync, "a view that missed the update must refetch");
+    Ok(())
+}
+
+#[tokio::test]
 async fn the_final_step_waits_for_staging_until_its_answer_is_delivered() -> TestResult {
     let f = fixture(&staging_toml()).await?;
     agent(&f, "t1").await?;
@@ -2065,12 +2120,31 @@ async fn delivery_status_asks_a_merged_task_for_its_staging_request() -> TestRes
         )),
         "{asks}"
     );
+    f.h.store
+        .execute_for_tests("UPDATE tasks SET activity = 'waiting' WHERE id = 't1'")
+        .await?;
+    let mut updates = f.h.app.events.subscribe();
     let ci = gate(&f, &r1, RunState::Passed).await?;
     let asked = ask(&f, "t1").await?;
     settle(&f).await?;
     let id = asked["id"].as_str().ok_or("id")?;
     let done = request(&f, id).await?;
     assert_eq!(done.state, StagingState::Verified, "{done:?}");
+    let mut labels = Vec::new();
+    while let Ok(event) = updates.try_recv() {
+        if let yulius_contracts::events::UiEvent::TaskUpdated { task } = event.event
+            && task.id == "t1"
+            && let Some(label) = task.staging_wait
+        {
+            labels.push(label);
+        }
+    }
+    assert!(
+        labels
+            .iter()
+            .any(|label| label == StagingState::Deploying.task_wait_label()),
+        "the task's mounted view must see the deploy start: {labels:?}"
+    );
     let after = delivery_text(&f, "t1").await?;
     assert!(
         after.contains(&format!(
