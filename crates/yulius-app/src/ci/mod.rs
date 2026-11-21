@@ -479,6 +479,42 @@ pub const CONFIG_JOB: &str = "yulius.toml";
 /// (SPEC-504 CFG-003).
 const LAST_VALID_BACK: usize = 100;
 
+/// The ordinary scheduler’s view of bounded run history, newest admission first.
+fn ordinary_run_facts(runs: &[CiRunRecord], dev_valid: bool) -> Vec<RunFacts> {
+    // A merge train's run is the train's own (SPEC-084), a playground task's its delivery's
+    // (SPEC-163): they start and cancel them.
+    // A head refused only because the integration branch's file was invalid is tested again
+    // once it is valid (review round 1): its refusal is no verdict then.
+    let mut invalidated = HashSet::new();
+    runs.iter()
+        // A candidate run (SPEC-575) stays in the facts: it tests its commit once for the
+        // branch too, and `plan` never supersedes it.
+        .filter(|run| !matches!(run.reference, CiRef::Train(_) | CiRef::Task(_)))
+        .filter(|run| {
+            if dev_valid
+                && run
+                    .reason
+                    .as_deref()
+                    .is_some_and(|r| r.starts_with(DEV_INVALID_PREFIX))
+            {
+                // From this refusal back, completed verdicts at the SHA predate
+                // the configuration failure. A newer run already covers the repair.
+                invalidated.insert(run.sha.as_str());
+                return false;
+            }
+            !invalidated.contains(run.sha.as_str())
+                || run.state.is_active()
+                || run.state == RunState::Cancelled
+        })
+        .map(|run| RunFacts {
+            id: run.id.clone(),
+            reference: run.reference.clone(),
+            sha: run.sha.clone(),
+            state: run.state,
+        })
+        .collect()
+}
+
 /// Whether anything of `sandbox` is in `busy`: a lane (`<sandbox>/<n>`) or a claim.
 fn busy_in(busy: &HashSet<String>, sandbox: &str) -> bool {
     busy.iter().any(|key| {
@@ -1468,31 +1504,12 @@ impl App {
                 ));
             }
         }
-        let runs = self.deps.store.ci_runs(&sandbox.id, PLAN_RUNS).await?;
-        // A merge train's run is the train's own (SPEC-084), a playground task's its delivery's
-        // (SPEC-163): they start and cancel them.
-        // A head refused only because the integration branch's file was invalid is tested again
-        // once it is valid (review round 1): its refusal is no verdict then.
-        let dev_valid = view.problem.is_none();
-        let facts: Vec<RunFacts> = runs
-            .iter()
-            // A candidate run (SPEC-575) stays in the facts: it tests its commit once for the
-            // branch too, and `plan` never supersedes it.
-            .filter(|run| !matches!(run.reference, CiRef::Train(_) | CiRef::Task(_)))
-            .filter(|run| {
-                !(dev_valid
-                    && run
-                        .reason
-                        .as_deref()
-                        .is_some_and(|r| r.starts_with(DEV_INVALID_PREFIX)))
-            })
-            .map(|run| RunFacts {
-                id: run.id.clone(),
-                reference: run.reference.clone(),
-                sha: run.sha.clone(),
-                state: run.state,
-            })
-            .collect();
+        let runs = self
+            .deps
+            .store
+            .ci_planning_runs(&sandbox.id, PLAN_RUNS)
+            .await?;
+        let facts = ordinary_run_facts(&runs, view.problem.is_none());
         let only_targets: Vec<Target> = targets.iter().map(|(t, _)| t.clone()).collect();
         let plan = dom::plan(&only_targets, &facts);
         crate::race::reached(
@@ -2362,6 +2379,75 @@ impl App {
         let (sandbox, _) = self.ci_sandbox(ctx, sandbox_id, Action::Work).await?;
         self.ci_sync_sandbox(&sandbox).await?;
         self.ci_overview(ctx, sandbox_id).await
+    }
+}
+
+#[cfg(test)]
+mod planning_tests {
+    use super::*;
+
+    #[test]
+    fn a_repaired_configuration_preserves_active_runs_and_human_cancellations()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let sandbox_id = SandboxId::parse("s1")?;
+        let run = |id: &str, sha: &str, reference, state, reason| CiRunRecord {
+            id: id.into(),
+            sandbox_id: sandbox_id.clone(),
+            reference,
+            sha: sha.into(),
+            source: dom::GateSource::ProjectConfig,
+            state,
+            reason,
+            requested_by: "yulius".into(),
+            status_for: None,
+            status_note: None,
+            status_attempts: 0,
+            queued_at: Timestamp(0),
+            started_at: None,
+            ended_at: None,
+        };
+        let pr = CiRef::PullRequest(1);
+        let refusal = Some(format!("{DEV_INVALID_PREFIX}dev"));
+        let records = [
+            run("replacement", "a", pr.clone(), RunState::Passed, None),
+            run(
+                "refusal",
+                "a",
+                pr.clone(),
+                RunState::Failed,
+                refusal.clone(),
+            ),
+            run("obsolete", "a", pr.clone(), RunState::Failed, None),
+            run("queued", "a", pr.clone(), RunState::Queued, None),
+            run("cancel", "a", pr.clone(), RunState::Cancelled, None),
+            run(
+                "private",
+                "b",
+                CiRef::Train(vec![1]),
+                RunState::Failed,
+                refusal,
+            ),
+            run("other", "b", pr, RunState::Passed, None),
+        ];
+        let ids = |valid| {
+            ordinary_run_facts(&records, valid)
+                .into_iter()
+                .map(|r| r.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(true), ["replacement", "queued", "cancel", "other"]);
+        assert_eq!(
+            ids(false),
+            [
+                "replacement",
+                "refusal",
+                "obsolete",
+                "queued",
+                "cancel",
+                "other"
+            ]
+        );
+        Ok(())
     }
 }
 

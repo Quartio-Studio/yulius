@@ -49,7 +49,11 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Restore resting tasks when terminal detail or the active list discovers Undo
 - [x] Publish terminal-discovered archive removal after Closed
 - [x] Publish verified parked task detail to Task Info
+- [x] Restore ordinary CI coverage after a repeated integration configuration repair
+- [ ] Resolve shared ordinary CI for the original PR owner in the merge queue and wait
+- [ ] Record the singleton queue decision and its failing job for the original owner
 - [ ] Keep failed integration candidates with their original owner
+- [ ] Verify candidate status before parking, showing Done or resuming a parked owner
 - [ ] Deliver bounded Codex goal continuation to dev
 - [ ] Recover screens from tasks parked before the upgrade
 
@@ -74,7 +78,31 @@ Capture a separate screen at the park decision because exiting can clear the ent
 
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
+The scheduler discards older completed verdicts for a head after a later run was refused because the integration configuration was invalid and that configuration has since been repaired. A fresh queued run covers the repair. The scheduler reads the 200 most recently admitted records through a sandbox index so a superseded queue position cannot reverse the history.
+
+The pending shared-head work addresses the following contract. Yulius CI schedules one run per commit even when two PRs publish the same head. The queue and `yulius wait` prefer the owner’s own ordinary run when one exists. Otherwise they use the run that covers that commit under the scheduler’s rule. A cancellation of a different reference cannot lend a verdict. GitHub still enforces its required commit status when the queue submits the merge.
+
 ## Evidence
+
+- PR #1561 CI run `031a2785-9e3f-4963-9133-641cab097cc3` passed quality and both Rust shards. Chromium failed before the first Take control click because a detail refresh had already rendered Request control. A forced refresh reproduced the missing button. The fixture now opens the confirmation before changing the mock owner’s policy, then checks the refusal toast and the Request control action. All 17 ownership tests passed alone and in the nine-worker full suite. That suite reported 1,295 passes, one skip and one failure in the separately tracked startup fixture. [Ownership fixture #1558](https://github.com/Quartio-Studio/yulius/issues/1558) · [Startup fixture #1551](https://github.com/Quartio-Studio/yulius/issues/1551)
+
+- Independent review approved scheduler recovery at `28b031c73`. All 422 scoped Rust tests passed. The reviewer ran the three new regressions and verified migration 0081 on populated SQLite tables. The query used the sandbox admission index without a temporary sort. Repository contracts, formatting, Clippy and spec validation passed. The mutation run reported `19 listed, 7 caught, 0 missed, 0 timed out, 12 unviable, 0 not reached` in 384 seconds. Vidoc was disabled.
+
+- A database regression put the most recently admitted refusal behind two older records in queue priority. A two-record priority window returned the old pass and an unrelated run. The admission window returns the refusal and the pass. Migration 0081 indexes existing sandbox CI rows for this read.
+
+- On dev `437188043`, a real ordinary head passed, a rerun was refused for the broken integration configuration, and restoring valid CI left the latest run `failed` when the next scheduler sync should have admitted one replacement. The fixture checks that repeated syncs keep a single replacement and that its job passes.
+
+- At the shared-head prototype, a peer PR that moved onto the owner’s refused SHA inherited an older queue position. At `4a3fc966a`, the wait endpoint still reported the earlier refusal after the replacement passed. The prototype at `6665e593e` compared admission order at a single commit and passed 354 scoped tests. Its independent review identified the scheduler recovery case and a SHA-256 abbreviation. Shared-owner selection remains open. The dispatcher continues to use queue position.
+
+- Five regressions failed at `bb554d9ff`. They cover an external merge followed by a red peer, a peer verdict during a train’s pushed-head confirmation, recovery after the integration CI configuration is repaired, the infrastructure retry budget for the owner, and a short SHA with more than 50 intervening runs. The prefix read checks for a unique commit in the sandbox’s indexed history.
+
+- On dev `437188043`, two shared-head regressions inverted the owner’s CI result in `yulius wait`. On the initial queue-only fix, the final merge refused the green owner because the peer had failed, and a private train could lend a failure. The fixtures exercise the hosted merge, the production commit scheduler, the local CI store and the agent wait endpoint.
+
+- The strict lookup prototype at `1b6c68298` reported `none` for the second open PR while the production scheduler’s single run for their shared head was queued. Its singleton decision work is awaiting the shared lookup and remains open.
+
+- At dev `437188043` the cold #331 fixture reattached the existing attempt, with all four steps complete, ordinary CI green and a failed singleton train in SQLite. Its only message said the ordinary head passed and no merge was armed. It omitted the candidate run, shard and latency failure.
+
+- PR #1560 delivered verified Task Info status on head `ac8af8742`. Yulius CI run `fc3e4030-9f6f-446f-b038-c7eca700cb93` passed quality, both Rust shards and E2E. Security was disabled. [Delivery evidence for the landed dev tree](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/437188043065d1d781952d07f889ab67536c7c34)
 
 - Independent review approved Task Info publication at `8d71ce520`. All 16 author-run mounted Chromium cases and all 13 reviewer-run cases passed. The resolved owner instruction stayed cleared after a failing PR rerun. With overlapping reads, the running task’s Plan reached 7/7 and the parked header displayed the second title. Quick checks and spec validation passed. No changed Rust lines were eligible for mutation. Vidoc was disabled.
 
@@ -301,7 +329,7 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Delivery slices
 
-PRs #1492 and #1493 delivered native Codex resume and the pre-stop screen for new parks. PR #1505 kept sessions with local unfinished work live. PR #1510 verified current ordinary PR checks and unpublished work before parking. PR #1524 delivered the parked predecessor gate. PR #1527 preserved known PR observations across overlapping Git overviews. PR #1533 verified the blocking ordinary PR on individual HTTP detail reads. PR #1539 shared that verification across parked HTTP task-list rows and Home. This slice filters and explains parked MCP rows. Remaining deliveries cover page refresh, persisted integration failures, bounded Codex goals and pre-upgrade screens.
+PRs #1492 and #1493 delivered native Codex resume and the pre-stop screen for new parks. PR #1505 kept sessions with local unfinished work live. PR #1510 verified current ordinary PR checks and unpublished work before parking. PR #1524 delivered the parked predecessor gate. PR #1527 preserved known PR observations across overlapping Git overviews. PR #1533 verified the blocking ordinary PR on individual HTTP detail reads. PR #1539 shared that verification across parked HTTP task-list rows and Home. PR #1542 delivered verified MCP rows. Subsequent deliveries through PR #1560 updated the page, sidebar, terminal and Task Info. Remaining work covers shared-head CI, failed integration candidates, bounded Codex goals and pre-upgrade screens.
 
 The native-resume regression checks the rollout in the native launch and reads the first and second user prompts from its on-disk history. It also exercises absent IDs and an older lineage entry. No paid provider is involved.
 

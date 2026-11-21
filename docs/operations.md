@@ -1525,6 +1525,8 @@ and nothing is changed at GitHub.
 
 ### CI on this machine
 
+If a PR rerun failed because the integration branch’s CI configuration was invalid, repairing the configuration schedules another run at the same head. An earlier pass on that head predates the refusal.
+
 Yulius is the projects' only CI (SPEC-002 ADR-21). No GitHub Actions or paid GitHub feature is
 involved.
 

@@ -4064,6 +4064,7 @@ outcome recorded")]
 `yulius.toml` is read with a TOML 1.1 parser (`spec_format::config`, the `toml` crate's spanned
 document): any valid layout parses, and invalid TOML is refused with the parser's message at its
 line.
+After the integration configuration is repaired, the scheduler reads its bounded run history in admission order. For a refused head, completed verdicts admitted before the refusal cannot cover the repair. A later active run covers it, and a cancellation retains its reference-specific effect.
 
 - **The gate in force** (`App::ci_configured_gate`) comes from the integration branch's head.
   While that file is invalid, the gate comes from the newest first-parent commit (at most 100
