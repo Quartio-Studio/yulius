@@ -39,6 +39,15 @@ async fn app_with_pulls(
     slots: u32,
     park_after_ms: u64,
 ) -> Result<(Arc<App>, Arc<crate::support::FakeGitHub>), Error> {
+    configured_app_with_pulls(data, slots, park_after_ms, |_| {}).await
+}
+
+async fn configured_app_with_pulls(
+    data: &Path,
+    slots: u32,
+    park_after_ms: u64,
+    configure: impl FnOnce(&mut yulius_app::context::AppConfig),
+) -> Result<(Arc<App>, Arc<crate::support::FakeGitHub>), Error> {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let agent = FakeAgentOptions {
         answers_first_message: true,
@@ -59,6 +68,7 @@ async fn app_with_pulls(
         |config| {
             config.max_live_sessions = slots;
             config.park_after_ms = park_after_ms;
+            configure(config);
         },
     )
     .await?;

@@ -1175,6 +1175,9 @@ impl App {
         pr: u64,
         sha: &str,
     ) -> AppResult<Option<CiRunRecord>> {
+        if !self.config.ci.enabled {
+            return Ok(None);
+        }
         let runs = self
             .deps
             .store

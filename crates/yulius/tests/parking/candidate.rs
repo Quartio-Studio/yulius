@@ -92,7 +92,14 @@ fn a_free_arm_kept_with_a_new_queue_reason_defers_the_prepared_check_in() -> Tes
     cold_candidate_case(ColdCandidate::FreeNoteChanges)
 }
 
+#[test]
+fn an_instance_with_ci_disabled_does_not_send_an_older_shared_failure_to_an_armed_owner()
+-> TestResult {
+    cold_candidate_case(ColdCandidate::DisabledSharedFailure)
+}
+
 enum ColdCandidate {
+    DisabledSharedFailure,
     FreeNoteChanges,
     TrainFailsDuringRead,
     SharedWhileRunning,
@@ -187,11 +194,25 @@ async fn seed_candidate(
     green.reference = CiRef::PullRequest(1481);
     if matches!(
         case,
-        ColdCandidate::SharedOrdinaryFailure | ColdCandidate::SharedWhileRunning
+        ColdCandidate::SharedOrdinaryFailure
+            | ColdCandidate::SharedWhileRunning
+            | ColdCandidate::DisabledSharedFailure
     ) {
         green.sha = "previous-head".into();
     }
     app.deps.store.insert_ci_run(&green, &[job]).await?;
+    if matches!(case, ColdCandidate::DisabledSharedFailure) {
+        let (mut historical, job) = crate::pr_watch::run(
+            &caller.sandbox,
+            "shared-before-disable",
+            &head,
+            RunState::Failed,
+            None,
+            31,
+        );
+        historical.reference = CiRef::PullRequest(99);
+        app.deps.store.insert_ci_run(&historical, &[job]).await?;
+    }
     let failures = concat!(
         "FAIL [0.292s] (1/1) search latency\n",
         "  stderr ───\n",
@@ -318,7 +339,12 @@ async fn check_after_restart(
     head: &str,
     original: &AttemptId,
 ) -> TestResult {
-    let (cold, remote) = app_with_pulls(data, 8, 1).await?;
+    let (cold, remote) = super::configured_app_with_pulls(data, 8, 1, |config| {
+        if matches!(case, ColdCandidate::DisabledSharedFailure) {
+            config.ci.enabled = false;
+        }
+    })
+    .await?;
     let origin = data.join("origin.git");
     remote.set_remote(Arc::new(crate::delivery::BareRemote {
         origin: origin.clone(),
@@ -347,6 +373,7 @@ async fn check_after_restart(
         ColdCandidate::FreeArmTaken
             | ColdCandidate::LeftOut
             | ColdCandidate::TrainFailsDuringRead
+            | ColdCandidate::DisabledSharedFailure
             | ColdCandidate::FreeNoteChanges
             | ColdCandidate::FreeHumanDecision
             | ColdCandidate::SharedWhileRunning
@@ -365,6 +392,15 @@ async fn check_after_restart(
         )?;
         cold.restore_armed_merges().await;
         let sandbox = cold.deps.store.task(id).await?.ok_or("owner")?.sandbox_id;
+        if matches!(case, ColdCandidate::DisabledSharedFailure) {
+            let news = cold.watch_prs(&bounds).await;
+            cold.stop_task_now(id).await?;
+            assert!(
+                news.is_empty(),
+                "disabled CI supplied historical ordinary advice: {news:?}"
+            );
+            return Ok(());
+        }
         if matches!(case, ColdCandidate::LeftOut) {
             let path = data.join(yulius_app::merge_train::MERGE_TRAINS_FILE);
             let mut state = json!({sandbox.as_str(): {"train":{"run":"candidate-red","commit":"merge","base":"base","base_tree":"tree","members":[{"task":"other","pr":90,"head":"other","armed_at":25,"tree":"tree"}],"left_out":[{"task":id.as_str(),"pr":99,"files":["old.rs"]},{"task":"another-owner","pr":1481,"files":["another.rs"]}]}}});
@@ -517,7 +553,9 @@ async fn check_after_restart(
             assert!(obsolete.is_empty(), "outdated train status: {obsolete:?}");
             assert_eq!(news.len(), 1, "{news:?}");
             assert!(
-                news[0].1.contains("candidate-red") && news[0].1.contains("which holds it, failed"),
+                news[0].1.contains(
+                    "Merge candidate #1481, #99 (run candidate-red), which holds it, failed"
+                ),
                 "{news:?}"
             );
             assert!(repeated.is_empty(), "{repeated:?}");
