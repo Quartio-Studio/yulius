@@ -455,7 +455,16 @@ impl App {
             let _guard = ARMED_FILE_LOCK
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            read_armed(&path)
+            load_armed(&path)
+        };
+        let saved = match saved {
+            Ok(entries) => entries,
+            Err(err) => {
+                tracing::warn!(error = %err, "could not read saved arms for restoration");
+                self.armed_restored
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                return;
+            }
         };
         let mut complete = true;
         for entry in saved {
@@ -530,9 +539,11 @@ impl App {
         let _guard = ARMED_FILE_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        read_armed(&self.config.data_dir.join(ARMED_MERGES_FILE))
-            .iter()
-            .any(|entry| entry.task == task.as_str())
+        // An unreadable file cannot prove this owner was unarmed when the process stopped.
+        match load_armed(&self.config.data_dir.join(ARMED_MERGES_FILE)) {
+            Ok(saved) => saved.iter().any(|entry| entry.task == task.as_str()),
+            Err(_) => true,
+        }
     }
 
     /// At a start: puts back the armed merges (DLV-205), then tries them once, as the delivery
@@ -547,12 +558,6 @@ impl App {
     /// or a move to GitHub, which can push for minutes) is merged by whoever holds it, or on the
     /// next round: the other sandboxes never wait for it.
     pub(crate) async fn merge_armed_everywhere(self: &Arc<Self>) {
-        if !self
-            .armed_restored
-            .load(std::sync::atomic::Ordering::SeqCst)
-        {
-            self.restore_armed_merges().await;
-        }
         let Ok(sandboxes) = self.deps.store.sandboxes().await else {
             return;
         };
@@ -846,6 +851,12 @@ impl App {
         // armed merge was dropped.
         let pass = self.armed_pass(sandbox);
         let _pass = pass.lock().await;
+        if !self
+            .armed_restored
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            self.restore_armed_merges().await;
+        }
         self.run_merge_train(sandbox).await;
         let Ok(mut tasks) = self.deps.store.tasks(sandbox, false).await else {
             return;
@@ -1728,11 +1739,7 @@ fn lock_slot(runtime: &crate::supervisor::TaskRuntime) -> std::sync::MutexGuard<
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// The saved armed merges; none when the file is missing or unreadable.
-fn read_armed(path: &std::path::Path) -> Vec<SavedArmed> {
-    load_armed(path).unwrap_or_default()
-}
-
+/// Absence is an empty arm registry. Malformed or inaccessible history is still unknown.
 fn load_armed(path: &std::path::Path) -> std::io::Result<Vec<SavedArmed>> {
     match std::fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(std::io::Error::other),

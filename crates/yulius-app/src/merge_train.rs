@@ -314,9 +314,8 @@ impl SingletonDecision {
 }
 
 /// Result of observing a singleton's hosted inputs and ordinary CI at its exact head.
-pub(crate) enum SingletonObservation {
-    /// Hosted inputs changed. An open delivery on the integration branch supplies its current head.
-    Changed(Option<String>),
+enum SingletonObservation {
+    Changed,
     Current(Option<(RunState, String)>),
 }
 
@@ -448,18 +447,13 @@ impl App {
 
     /// How a merge train holds `task`'s armed merge (SPEC-084 TRN-004).
     pub(crate) fn train_hold(&self, task: &TaskRecord) -> Hold {
-        self.train_hold_and_run(task).0
-    }
-
-    /// The same train snapshot provides both its hold and the run allowed to issue hands-off guidance.
-    pub(crate) fn train_hold_and_run(&self, task: &TaskRecord) -> (Hold, Option<String>) {
+        // No CI on this instance: no train advances, so none may hold anything.
         if !self.config.ci.enabled {
-            return (Hold::Free, None);
+            return Hold::Free;
         }
-        let train = self.read_trains(&task.sandbox_id).train;
-        (
-            hold_of(train.as_ref(), task.id.as_str()),
-            train.map(|train| train.run),
+        hold_of(
+            self.read_trains(&task.sandbox_id).train.as_ref(),
+            task.id.as_str(),
         )
     }
 
@@ -841,7 +835,7 @@ impl App {
             )
             .await
         {
-            Some(SingletonObservation::Changed(_)) => {
+            Some(SingletonObservation::Changed) => {
                 self.dissolve(sandbox, &train, "its tested head or base changed")
                     .await;
                 return None;
@@ -991,7 +985,7 @@ impl App {
 
     /// Before dropping an arm, confirm the PR still has the inputs the singleton tested.
     /// A changed input invalidates the attribution. An unavailable read leaves it undecided.
-    pub(crate) async fn singleton_observation(
+    async fn singleton_observation(
         &self,
         sandbox: &SandboxRecord,
         task: &TaskId,
@@ -1019,9 +1013,7 @@ impl App {
                 return None;
             }
             if !current || pull.head_sha != head || pull.base_sha != base {
-                return Some(SingletonObservation::Changed(
-                    current.then_some(pull.head_sha),
-                ));
+                return Some(SingletonObservation::Changed);
             }
             // A failed read cannot establish that the owner's earlier running check ended.
             let runs = self

@@ -1699,7 +1699,13 @@ async fn a_singleton_keeps_its_train_until_the_saved_owner_can_be_restored() -> 
     Box::pin(reused_singleton(SingletonChange::HistoryRead)).await
 }
 
+#[tokio::test]
+async fn an_unreadable_arm_file_keeps_the_singleton_until_the_file_recovers() -> TestResult {
+    Box::pin(reused_singleton(SingletonChange::ArmFileRead)).await
+}
+
 enum SingletonChange {
+    ArmFileRead,
     HistoryRead,
     HistoryWrite,
     ReplacementPr,
@@ -1808,7 +1814,7 @@ async fn check_recovered_singleton_arm(
 
 async fn check_singleton_history(
     f: &Fixture,
-    unreadable: bool,
+    change: &SingletonChange,
     head: &str,
     base: &str,
     tree: &str,
@@ -1829,13 +1835,28 @@ async fn check_singleton_history(
     f.h.store
         .execute_for_tests("DROP TRIGGER refuse_merge_span")
         .await?;
-    if unreadable {
+    if matches!(change, SingletonChange::HistoryRead) {
         f.h.store.execute_for_tests(
                 "INSERT INTO spans(sandbox_id,subject_kind,subject_id,key,kind,name,started_at,detail) VALUES ('s1','task','t1','wait@1','wait','merge_armed',1,x'FF')",
             ).await?;
     }
+    if matches!(change, SingletonChange::ArmFileRead) {
+        std::fs::write(&arms, b"[")?;
+    }
     let cold = restart(app).await;
-    if unreadable {
+    if matches!(change, SingletonChange::ArmFileRead) {
+        let expected = f.trains_file(app);
+        Box::pin(cold.merge_decidable_everywhere()).await;
+        cold.merge_armed(&f.sandbox).await;
+        assert_eq!(
+            f.trains_file(&cold),
+            expected,
+            "arm read failure dissolved the original singleton"
+        );
+        std::fs::write(&arms, &original_arms)?;
+        cold.merge_armed(&f.sandbox).await;
+    }
+    if matches!(change, SingletonChange::HistoryRead) {
         let expected = f.trains_file(app);
         Box::pin(cold.merge_decidable_everywhere()).await;
         cold.merge_armed(&f.sandbox).await;
@@ -1877,7 +1898,7 @@ async fn check_singleton_history(
     );
     Box::pin(check_recovered_singleton_arm(
         f,
-        unreadable,
+        matches!(change, SingletonChange::HistoryRead),
         &cold,
         &arms,
         &original_arms,
@@ -1975,16 +1996,10 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
     app.merge_armed(&f.sandbox).await;
     if matches!(
         change,
-        SingletonChange::HistoryWrite | SingletonChange::HistoryRead
+        SingletonChange::HistoryWrite | SingletonChange::HistoryRead | SingletonChange::ArmFileRead
     ) {
         return Box::pin(check_singleton_history(
-            &f,
-            matches!(change, SingletonChange::HistoryRead),
-            &head,
-            &base,
-            &tree,
-            run_id,
-            secret,
+            &f, &change, &head, &base, &tree, run_id, secret,
         ))
         .await;
     }
@@ -2384,6 +2399,7 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
             }
             SingletonChange::HistoryWrite
             | SingletonChange::HistoryRead
+            | SingletonChange::ArmFileRead
             | SingletonChange::Rearmed
             | SingletonChange::Pruned
             | SingletonChange::JobRead

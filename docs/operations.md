@@ -177,8 +177,9 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # the queue keeps the candidate for up to 15 minutes.
 # After a continuous outage, its arm can proceed one by one.
 # An accepted singleton failure is saved with the original PR, head, base, tree and source run
-# before clearing its arm. After restart the live owner gets the recorded cause once, provided
-# those inputs still apply and no newer arm or person’s decision takes precedence.
+# before clearing its arm. Restart resumes an interrupted decision and preserves a later arm
+# of the same head. An unreadable saved-arm file holds the candidate until a queue pass can
+# restore it. The merge wait records the ordinary run if it outlasted its deadline.
 # The PR watcher delivers actionable failures once and waits for a pending human decision.
 # When PRs share a head, their tasks can wait on the same ordinary CI run. An explicit
 # rerun for the owner takes precedence in yulius wait and in its merge queue decision.

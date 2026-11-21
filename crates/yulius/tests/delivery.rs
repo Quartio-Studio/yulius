@@ -608,8 +608,8 @@ impl GitPort for RealGit {
 
 /// The fake GitHub's repository: merges and fast-forwards happen directly in the bare origin
 /// (`merge-tree` + `commit-tree` + `update-ref`, no working tree).
-pub(crate) struct BareRemote {
-    pub(crate) origin: PathBuf,
+struct BareRemote {
+    origin: PathBuf,
 }
 
 impl FakeRemote for BareRemote {
