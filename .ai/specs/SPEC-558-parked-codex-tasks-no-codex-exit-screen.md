@@ -60,7 +60,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Defer live PR notices while the session writer is busy
 - [x] Verify restored arms and deliver current ordinary CI and train notices to the owner
 - [x] Report the active singleton and replay its recorded failure for the original owner
-- [ ] Verify candidate status before parking, showing Done or resuming a parked owner
+- [x] Verify candidate status before parking, showing Done or resuming a parked owner
 - [ ] Render verified live integration status in the terminal, sidebar and Task Info
 - [ ] Deliver bounded Codex goal continuation to dev
 - [ ] Recover screens from tasks parked before the upgrade
@@ -109,6 +109,13 @@ The parking decision and parked status use the queue decision saved for the orig
 A capacity wait leaves the candidate failure unheard and the owner parked. Launch-lock contention also defers the notice to the next pass. Once a session and a subscription are available, the PR watch checks the decision again before delivering it. A published repair on a different head can produce its own ordinary green notice. Stop hooks, list rows and Home use the last locally available status for live candidates. A detail read or the periodic watch can refresh it, including when the PR has closed or changed branches. Capacity accounting shares the last hosted observation that disproved the exact recorded decision for two PR-watch intervals. A new decision, an expired observation or a restart requires verification again. Before releasing a successor, the verifier rereads the live owner and its merge request. The last attempt that actually ran supplies the parked goal marker, terminal and rollout after any interrupted resume.
 
 ## Evidence
+
+- Replaying all four survivors from the server review fixes with the strengthened fixtures reported `4 mutants tested in 9m: 4 caught`. The tests distinguish a replacement arm from its later clearance, a new candidate failure during an ordinary PR read, an unreadable historical goal marker from a missing marker, and a closed PR from one still eligible for a verification wait.
+
+- The server review-fix campaign reported `mutants: 70 listed, 17 caught, 4 missed, 0 timed out, 49 unviable, 0 not reached (bound 30 min, took 673 s)`. The notice-provenance campaign reported `mutants: 40 listed, 3 caught, 2 missed, 0 timed out, 35 unviable, 0 not reached (bound 30 min, took 796 s)`. The two notice survivors both discard the identity of the recorded PR before a hosted read. The existing `parked_lists_share_one_budget_for_unreadable_pr_heads` regression checks the recorded identity even when local unfinished steps settle the row before the hosted read. Replaying both changes with that test reported `2 mutants tested in 3m: 2 caught`.
+
+- Independent review approved the server implementation at `4e16a29a1`. The HTTP task detail and MCP `task_get` fixture both name integration run `candidate-red` and link to its CI page. The saved wait history includes the 292.1 ms search diagnostic. An explicit request to choose a colour takes precedence, and clearing it permits one wake for the candidate. The successor also stays Chained when a new candidate failure is recorded during its ordinary green PR read. Scoped Clippy passed with warnings denied. Live verification of the historical Quartio instance requires a release containing this change.
+
 
 - Server-only review of `5c10e2c22` reproduced an incorrect wait-history message on the #1481 fixture. The ordinary checks passed, but reading the parked detail said those checks had failed. The assertion on the returned notice failed there. Candidate verification now carries the selected integration run and diagnostic through the HTTP and MCP read paths and their saved wait history. An explicit human decision keeps precedence. All 490 parking, delivery, Done, PR-watch and merge-train tests passed with the corrected provenance.
 
