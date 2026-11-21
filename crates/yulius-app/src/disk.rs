@@ -47,6 +47,9 @@ pub const ENDED_GRACE_MS: i64 = 10 * 60 * 1000;
 const MAX_ENTRIES: u64 = 4_000_000;
 /// Longest `yulius.toml` read for declared caches.
 const MAX_TOML_BYTES: u64 = 64 * 1024;
+/// The project's collector targets 16 GiB. Upkeep recovers an idle store left above 20 GiB
+/// if a CI job ended before its collector ran, including the store's bookkeeping.
+const COMPILE_CACHE_LIMIT: u64 = 20 * 1024 * 1024 * 1024;
 /// A directory under `worktrees/` that belongs to no task (an agent's own `git worktree add`)
 /// untouched this long is treated as ended (F 2026-10-12: `wt-206` kept 2.7 GB).
 const ORPHAN_AFTER_MS: i64 = 24 * 60 * 60 * 1000;
@@ -150,6 +153,33 @@ fn remove_cache(root: &Path, path: &Path) -> std::io::Result<()> {
             "caches are removed through directory handles on Linux only",
         ))
     }
+}
+
+/// Reclaim the project compiler store under pressure. Repository builds acquire a shared
+/// flock on the sandbox root. The root survives eviction, so the next reader takes the same
+/// lock even when it has to recreate the store. Only the launcher's marked cache is ours.
+fn prune_compile_cache(root: &Path, limit: u64) -> std::io::Result<u64> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let cache = root.join("rust-compile-cache");
+    if !cfg!(target_os = "linux") || !real_dir_from(root, &cache) {
+        return Ok(0);
+    }
+    let flags = nix::fcntl::OFlag::O_DIRECTORY.union(nix::fcntl::OFlag::O_NOFOLLOW);
+    let lease = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(flags.bits())
+        .open(root)?;
+    if lease.try_lock().is_err()
+        || read_small_file(&cache.join(".yulius-mbx-v1"), 7).as_deref() != Some("mbx-v1\n")
+    {
+        return Ok(0);
+    }
+    let bytes = dir_size(&cache);
+    if bytes <= limit {
+        return Ok(0);
+    }
+    remove_cache(root, &cache)?;
+    Ok(bytes)
 }
 
 fn root_entries(worktree: &Path) -> Vec<String> {
@@ -309,6 +339,28 @@ impl App {
             .collect();
         let chosen = plan_prune(&candidates, need, need > 0);
         let mut report = self.prune(sandbox, &scan, &chosen).await;
+        let limit = if report.freed < need {
+            0
+        } else {
+            COMPILE_CACHE_LIMIT
+        };
+        let root = self.sandbox_dir(&sandbox.id);
+        match tokio::task::spawn_blocking(move || prune_compile_cache(&root, limit)).await {
+            Ok(Ok(0)) => {}
+            Ok(Ok(bytes)) => {
+                report.caches += 1;
+                report.freed = report.freed.saturating_add(bytes);
+                self.dlv_audit(
+                    "yulius",
+                    "disk.prune",
+                    &sandbox.slug,
+                    &format!("shared Rust compile cache: {}", human(bytes)),
+                )
+                .await;
+            }
+            Ok(Err(err)) => tracing::warn!(error = %err, "could not prune compiler cache"),
+            Err(err) => tracing::warn!(error = %err, "compiler cache upkeep interrupted"),
+        }
         report.freed = report.freed.saturating_add(engine_freed);
         if (report.freed > 0 || report.worktrees > 0)
             && let Some(isolation) = isolation
@@ -753,6 +805,46 @@ mod tests {
     }
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// RCC-002: a completed build can exceed its budget before its collector gets CPU time.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn upkeep_reclaims_an_over_budget_compiler_store_even_on_a_healthy_disk() -> TestResult {
+        assert_eq!(
+            COMPILE_CACHE_LIMIT,
+            20_u64 << 30,
+            "the documented idle-store budget"
+        );
+        let root = tempfile::tempdir()?;
+        let cache = root.path().join("rust-compile-cache");
+        std::fs::create_dir(&cache)?;
+        std::fs::write(cache.join(".yulius-mbx-v1"), "mbx-v1\n")?;
+        let bytes = dir_size(&cache);
+        assert_eq!(prune_compile_cache(root.path(), bytes)?, 0);
+        assert_eq!(prune_compile_cache(root.path(), bytes - 1)?, bytes);
+        assert!(!cache.exists());
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn compiler_upkeep_refuses_linked_roots_and_skips_linked_stores() -> TestResult {
+        let parent = tempfile::tempdir()?;
+        let root = parent.path().join("sandbox");
+        let link = parent.path().join("linked-sandbox");
+        let cache = root.join("rust-compile-cache");
+        assert_eq!(prune_compile_cache(&root, 0)?, 0, "sandbox not on disk");
+        std::fs::create_dir_all(&cache)?;
+        std::fs::write(cache.join(".yulius-mbx-v1"), "mbx-v1\n")?;
+        std::os::unix::fs::symlink(&root, &link)?;
+        assert!(prune_compile_cache(&link, COMPILE_CACHE_LIMIT).is_err());
+        let original = root.join("original");
+        std::fs::rename(&cache, &original)?;
+        std::os::unix::fs::symlink(&original, &cache)?;
+        assert_eq!(prune_compile_cache(&root, 0)?, 0);
+        assert!(original.join(".yulius-mbx-v1").is_file());
+        Ok(())
+    }
 
     /// `declared_caches(worktree)` on its own thread, or `None` when it has not answered within
     /// `bound` (it is blocked; the thread is left behind).
