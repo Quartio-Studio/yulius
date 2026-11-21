@@ -2661,3 +2661,36 @@ test('opening a parked terminal discovers its missed resume in the sidebar', asy
   await expect(screen.getByRole('region', 'Needs you').getByRole('link', /Improve the code|Verified terminal detail/)).toBeHidden();
   await expect(screen.getByRole('region', 'Working').getByRole('link', /Verified terminal detail/)).toBeVisible();
 });
+
+test('the resumed terminal clears its former subscription when it later waits without one', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&ambient=0&pullgap=0&pullclock=manual'));
+  type Fixture = { __yuliusMock: { tasks: { id: string; account_id?: string }[]; holdGitReads: boolean; resync(): void; touchTask(s: string, n: number, fields: object): void } };
+  await browser.evaluate(() => {
+    const db = (window as unknown as Fixture).__yuliusMock;
+    db.touchTask('sb_studio', 13, { status: 'parked', activity: 'waiting', parked_needs_you: true, account_label: null });
+  });
+  await expect(screen.getByRole('region', 'Needs you').getByRole('link', /Improve the code/)).toBeVisible();
+  await browser.evaluate(() => {
+    const db = (window as unknown as Fixture).__yuliusMock;
+    db.holdGitReads = true;
+    Object.assign(db.tasks.find(t => t.id === 'tsk_studio_13')!, {
+      status: 'running', activity: 'working', parked_needs_you: undefined, account_label: 'Claude #4', account_id: 'acc_x1',
+    });
+    location.hash = '/s/studio/t/13';
+  });
+  const chip = browser.locator('.taskview .stepstrip-main button.account-chip');
+  await expect(chip).toHaveText('Claude #4');
+  await chip.click();
+  await expect(screen.getByRole('menuitem', /^Claude #4\s*Runs on it now/)).toBeVisible();
+  await browser.keyboard.press('Escape');
+  await browser.evaluate(() => {
+    const db = (window as unknown as Fixture).__yuliusMock;
+    const task = db.tasks.find(t => t.id === 'tsk_studio_13')!;
+    Object.assign(task, { status: 'waiting_capacity', activity: 'waiting', account_label: null });
+    delete task.account_id;
+    db.resync();
+  });
+  await expect(chip).toHaveText('No subscription');
+  await chip.click();
+  await expect(screen.getByRole('menuitem', /^Claude #4\s*5 h 12% · week 33%/)).toBeVisible();
+});

@@ -544,6 +544,7 @@ function summary(task) {
     // Why it reads needs_attention (SPEC-472): the flag's reason, only while it reads that flag.
     attention: task.status === 'running' && task.activity === 'needs_attention' && task.attention ? { ...task.attention } : null,
     steps: stepsSummary(task), archived: task.archived, account_label: task.account_label,
+    ...(task.account_id ? { account_id: task.account_id } : {}),
     resumes_at: task.status === 'waiting_capacity' ? task.resumes_at || null : null,
     // No account of its provider usable (SPEC-246, SPEC-503): it waits for one, not for capacity.
     waits_for_account: task.status === 'waiting_capacity' && Boolean(seededDb) && !usableOf(seededDb, providerOfTask(task)),
