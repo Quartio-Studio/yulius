@@ -2425,3 +2425,42 @@ test('a live event and a stale parked detail preserve the list confirmation of a
   const resumed = [3, 'running', null];
   expect(seen).toEqual([owner, owner, resumed, resumed]);
 });
+
+test('an observed archive outranks a pre-park list and terminal detail while a genuine Undo can restore the row', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const results = [];
+    for (const localArchive of [false, true]) {
+      for (const undo of [false, true]) {
+        for (const listFirst of [false, true]) {
+          const live = { id: 'p', sandbox_id: 's', status: localArchive ? 'running' : 'closed', activity: 'done' };
+          const detail = { ...live, status: 'parked', parked_needs_you: true, needs_you: { action: 'Previously requested' } };
+          const closed = { ...live, status: 'closed', archived: false };
+          const held = Promise.withResolvers<void>();
+          let reads = 0;
+          const store = createStore({ get: async () => {
+            if (++reads === 1) return [live];
+            if (reads === 2) { await held.promise; return [live]; }
+            throw new Error('confirmation unavailable');
+          } });
+          await store.loadTasks('s');
+          const list = store.loadTasks('s');
+          const publish = store.beginParkedDetail(live);
+          if (localArchive) store.removeTask('p', { archived: true });
+          else store.upsertTask({ ...closed, archived: true });
+          if (undo) store.upsertTask(closed);
+          if (!listFirst) publish(detail);
+          held.resolve(); await list;
+          if (listFirst) publish(detail);
+          const row = store.findTask('p');
+          results.push([row?.status ?? null, row?.needs_you?.action ?? null]);
+        }
+      }
+    }
+    return results;
+  });
+  const absent = [null, null], restored = ['closed', null];
+  expect(seen).toEqual([absent, absent, restored, restored, absent, absent, restored, restored]);
+});

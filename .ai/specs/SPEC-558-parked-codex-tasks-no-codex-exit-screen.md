@@ -74,6 +74,8 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- At `84b230ebe`, a Closed/archived event invalidated a terminal detail while an older active list was outstanding. With the list replying first, detail restored an obsolete parked owner request. With detail replying first, the list restored the old active row. The Chromium regression also exercises local archive and a genuine Undo. The list now retains an archive as a membership change through confirmation and the terminal drops a detail invalidated by that archive.
+
 - At `30d325a62`, a live event arrived while both an explicit task list and terminal detail held earlier parked snapshots. When detail answered first, the list skipped confirmation and hid the current owner request. Chromium reproduced two reads and a Running row in that order, versus three reads and “Review the delivery” in the other. The regression requires one confirmation in both orders, preserves its owner request on success, and keeps the live event if confirmation is unavailable.
 
 - Review of the combined park/resume implementation at `fb7429ded` reproduced a still-parked detail recreating an omitted row despite no lifecycle change, and a live rename dropping a resume notification. Both regressions passed on the corrected combined checkpoint `a4c532c82`. The current delivery publishes missed parks only and preserves a later resume event while processing an older parked detail. Publishing a resume or archive first observed by detail remains the following delivery.

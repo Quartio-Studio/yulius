@@ -152,7 +152,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   async function loadTasks(sandboxId, watching = false) {
     const atStart = state.tasks.get(sandboxId);
     const order = ++nextListRead;
-    const read = { sandboxId, order, changes: new Map(), beforeConfirmation: null, transitions: new Map(), parked: new Set(), deleted: new Set(), failedWatchOrder: 0 };
+    const read = { sandboxId, order, changes: new Map(), beforeConfirmation: null, transitions: new Map(), lifecycle: new Set(), deleted: new Set(), failedWatchOrder: 0 };
     let snapshotOrder = order;
     let confirming = false;
     const path = `/api/sandboxes/${enc(sandboxId)}/tasks?archived=false`;
@@ -160,9 +160,9 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     try {
       let list = await api.get(path);
       for (const task of Array.isArray(list) ? list : []) {
-        if (task.status === 'parked' && read.changes.has(task.id)) read.parked.add(task.id);
+        if (task.status === 'parked' && read.changes.has(task.id)) read.lifecycle.add(task.id);
       }
-      if ([...read.changes].some(([id, task]) => read.parked.has(id) && (!watching || task.archived || task.status !== 'parked'))) {
+      if ([...read.changes].some(([id, task]) => read.lifecycle.has(id) && (!watching || task.archived || task.status !== 'parked'))) {
         read.beforeConfirmation = read.changes;
         read.changes = new Map();
         confirming = true;
@@ -189,7 +189,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       }
       for (const [id, task] of read.changes) {
         const listed = map.get(id);
-        if (!watching && !confirming && !read.parked.has(id) && !read.transitions.has(id) && listed && listed.status !== 'parked') continue;
+        if (!watching && !confirming && !read.lifecycle.has(id) && !read.transitions.has(id) && listed && listed.status !== 'parked') continue;
         if (task.archived) {
           map.delete(id);
           continue;
@@ -362,7 +362,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
         if (rowOrder.get(events.get(row.id)) === order) events.set(row.id, row);
         else events.delete(row.id);
       }
-      if (row.status === 'parked') read.parked.add(row.id);
+      if (row.status === 'parked') read.lifecycle.add(row.id);
       read.transitions.set(row.id, row);
     }
   }
@@ -375,7 +375,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     const publish = (detail, view = {}) => {
       release();
       const map = state.tasks.get(detail.sandbox_id);
-      if (!map || detail.status !== 'parked' || detail.archived) return view;
+      if (!map || read.row === null || detail.status !== 'parked' || detail.archived) return view;
       // Only a row actually visible at request start can survive omission by
       // an older list. Archive/delete invalidates that reference synchronously.
       const retained = read.row?.id === detail.id ? read.row : null;
@@ -447,7 +447,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     // the task crossed a park. Keep that event with the outstanding read.
     for (const read of activeDetails) if (read.row?.id === task.id) read.row = task;
     for (const read of pending) {
-      if (task.status === 'parked' || prior?.status === 'parked') read.parked.add(task.id);
+      if (task.archived || task.status === 'parked' || prior?.status === 'parked') read.lifecycle.add(task.id);
       read.changes.set(task.id, task);
     }
     if (map) {
@@ -465,7 +465,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     for (const read of activeLists) {
       if (!archived) read.deleted.add(taskId);
       else if (state.tasks.get(read.sandboxId)?.has(taskId)) {
-        if (state.tasks.get(read.sandboxId).get(taskId).status === 'parked') read.parked.add(taskId);
+        read.lifecycle.add(taskId);
         read.changes.set(taskId, { archived: true });
       }
     }
