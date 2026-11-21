@@ -62,7 +62,7 @@ new request after the old sockets reach EOF. The issue requires the original con
 - [x] Obtain independent approval for the holder relay lifecycle slice
 - [x] Restore matched proxy and relay pairs on the delivered holder lifecycle
 - [x] Bind the original relay at CONNECT and retain final bytes until both copies drain
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
@@ -658,3 +658,25 @@ matched relay and proxy restoration has its own review and CI.
   on each copy after the sender-close fix. Both transfers now propagate cancellation
   when either side of the checkpoint is gone. The fixtures observe EOF with the external
   write halves open and verify that the relay place can be admitted again.
+- A fresh reviewer approved `d9e7f9e3d` against `ec580fc3a` and independently
+  passed 11 relay handoff, three proxy handoff and six service wiring tests. The author
+  passed 942 domain, sandbox and egress tests, with two environment-dependent skips,
+  and all 11 real-server cases. The isolated fixtures also passed the four successive
+  replacements, the distinct-binary TLS/HTTP2 upgrade and intercepted-host checks.
+  Scoped Clippy and quick checks passed. The Vidoc scan was disabled in Yulius.
+- `scripts/dev mutants --base 4e6095745` reached all 71 mutations on the first
+  successor candidate in 17 minutes. It caught 55 and found 16 unviable, with zero
+  misses or timeouts. On the corrected head the relay fixture also caught all six
+  mutations of the endpoint and uniqueness predicates in `OutboundRelays::enroll`.
+- `scripts/dev mutants --base 71879bf4d` reached all 72 review-fix mutations in
+  19 minutes. It caught 45, found 24 unviable and missed three, with zero timeouts.
+  The missed changes removed the live manager binding, returned a constant socket
+  cookie and allowed duplicate enrollment candidates. The real-server fixture below
+  caught the binding change. The final two-place fixture caught both constant-cookie
+  mutations, and the six enrollment predicate checks caught the duplicate-candidate change.
+- The opt-in real-server holder fixture passed with the normal manager binding.
+  `cargo mutants` then removed only `bind_holder_relays`. The original client received
+  EOF while reading the downtime marker in 0.54 seconds. The fixture caught that mutation.
+- The final review corrections (`scripts/dev mutants --base 077006a7c`) reached all
+  eight mutations in nine minutes. Seven were caught and one was unviable. None were
+  missed or timed out.
