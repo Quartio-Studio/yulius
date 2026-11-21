@@ -434,7 +434,7 @@ fn totals_view(tokens: Option<&crate::model::AccountTokens>) -> TokenTotalsView 
     })
 }
 
-/// What the runs started on `account` since `since` would cost at Claude API list prices
+/// What the runs started on `account` since `since` would cost at standard API list prices
 /// (SPEC-110 TUS-004): the runs that reported usage and whose model has a price; `None` when
 /// none did.
 fn account_cost(
@@ -2633,6 +2633,8 @@ mod tests {
         );
         let unpriced = vec![run("a", 100, "mystery-model", Some(5))?];
         assert_eq!(account_cost(&unpriced, &a, Timestamp(60)), None);
+        let codex = vec![run("a", 100, "gpt-6.2-astra", Some(1_000_000))?];
+        assert_eq!(account_cost(&codex, &a, Timestamp(60)), Some(48.0));
         Ok(())
     }
 

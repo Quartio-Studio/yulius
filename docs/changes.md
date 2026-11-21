@@ -8,6 +8,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - CI gives each quality pass its own budget and verdict. Both Rust test partitions use one build. [SPEC-598](../.ai/specs/SPEC-598-shorten-a-yulius-ci-run-parallel-quality.md)
 
+- The seven-day API estimate includes recorded GPT-6 Codex runs at Standard prices and shows what the pool would cost if eligible runs used Ultrafast. [SPEC-602](../.ai/specs/SPEC-602-it-doesnt-seem-real-verify-i-think-it-s.md)
+
+- Load-sensitive browser and merge-train tests wait for observable progress under contention.
+  The Docker smoke fixture holds its first result until the browser displays it.
+  [SPEC-597](../.ai/specs/SPEC-597-tests-that-hold-under-a-loaded-host-and.md)
 - Goal tasks continue unfinished plan and spec work, including verification after merge, without asking their owner to type “continue”. [SPEC-589](../.ai/specs/SPEC-589-it-shouldnt-ask-for-things-like-that-fix.md)
 - Resuming a parked task waits for its old screen to finish saving. If that takes too long, Yulius asks the sender to retry and keeps the outstanding question open. [SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
 
