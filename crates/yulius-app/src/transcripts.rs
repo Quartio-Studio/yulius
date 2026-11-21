@@ -1189,6 +1189,47 @@ pub fn unreadable(err: &io::Error) -> bool {
     )
 }
 
+/// Validates a pinned Codex CLI review child's first rollout record (SPEC-605).
+pub(crate) struct CodexReviewStart {
+    pub(crate) head: Option<String>,
+    pub(crate) started_at: yulius_domain::time::Timestamp,
+}
+
+pub(crate) fn codex_review_start(
+    file: File,
+    parent: &str,
+    child: &str,
+) -> Option<CodexReviewStart> {
+    let mut line = Vec::new();
+    let mut reader = BufReader::new(file.take(4 << 20));
+    reader.read_until(b'\n', &mut line).ok()?;
+    if !line.ends_with(b"\n") {
+        return None;
+    }
+    let row: Value = serde_json::from_slice(&line).ok()?;
+    if str_field(&row, "type") != Some("session_meta") {
+        return None;
+    }
+    let meta = &row["payload"];
+    let spawn = &meta["source"]["subagent"]["thread_spawn"];
+    let suffix = str_field(spawn, "agent_path")?.strip_prefix("/root/yulius_review_")?;
+    if str_field(meta, "id") != Some(child)
+        || str_field(spawn, "parent_thread_id") != Some(parent)
+        || spawn["depth"].as_u64() != Some(1)
+        || !suffix.bytes().all(|byte| byte.is_ascii_digit())
+        || suffix.parse::<u32>().ok()? == 0
+    {
+        return None;
+    }
+    let head = str_field(&meta["git"], "commit_hash")
+        .filter(|sha| matches!(sha.len(), 40 | 64) && sha.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(str::to_owned);
+    let started_at = str_field(meta, "timestamp")
+        .or_else(|| str_field(&row, "timestamp"))
+        .and_then(yulius_domain::time::parse_rfc3339)?;
+    Some(CodexReviewStart { head, started_at })
+}
+
 /// Where a read of a transcript can go on without reading what came before (SPEC-483 slice 36):
 /// the line number, the byte offset of its start, and the dotenv calls seen on the lines before
 /// it, so a dotenv file read earlier is still redacted after it. Kept by the server, never sent
