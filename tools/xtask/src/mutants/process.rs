@@ -11,17 +11,25 @@ use nix::unistd::Pid;
 #[cfg(any(not(target_os = "linux"), test))]
 use nix::unistd::getsid;
 
+#[cfg(target_os = "linux")]
 pub(super) fn command(cargo: &str) -> Command {
-    // cargo-mutants creates separate process groups for its workers. A session
-    // contains all those groups. The launcher execs Cargo, retaining its PID.
     let mut command = Command::new("python3");
-    #[cfg(target_os = "linux")]
     command.args([
         "-c",
         include_str!("../../../../scripts/build_subreaper.py"),
         cargo,
     ]);
-    #[cfg(not(target_os = "linux"))]
+    command
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(super) use portable_command as command;
+#[cfg(not(target_os = "linux"))]
+pub(super) use run_portable as run;
+
+#[cfg(any(not(target_os = "linux"), test))]
+pub(super) fn portable_command(cargo: &str) -> Command {
+    let mut command = Command::new("python3");
     command.args([
         "-c",
         "import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])",
@@ -92,7 +100,7 @@ fn process_listing(command: &mut Command, limit: Duration) -> io::Result<String>
     Ok(listing)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(not(target_os = "linux"), test))]
 fn stop_workers(child: &mut std::process::Child, pid: Pid, graceful: bool) -> io::Result<()> {
     if graceful {
         let _ = kill(pid, Signal::SIGTERM);
@@ -227,16 +235,35 @@ pub(super) fn run(
     }
 }
 
+#[cfg(any(not(target_os = "linux"), test))]
+type Groups = std::collections::HashMap<u32, std::collections::HashSet<String>>;
+
+#[cfg(any(not(target_os = "linux"), test))]
+fn group_snapshot() -> io::Result<Groups> {
+    let listing = process_listing(
+        Command::new("python3").args(["-c", include_str!("../../../../scripts/build_groups.py")]),
+        Duration::from_secs(3),
+    )?;
+    serde_json::from_str(&listing).map_err(io::Error::other)
+}
+
 /// Returns None if the clock expires. Cancellation is an error even when the
 /// command exits cleanly during shutdown. Reap the child before releasing scratch.
-#[cfg(not(target_os = "linux"))]
-pub(super) fn run(
+#[cfg(any(not(target_os = "linux"), test))]
+pub(super) fn run_portable(
     command: &mut Command,
     deadline: Instant,
     stop: &AtomicBool,
 ) -> Result<Option<ExitStatus>, RunError> {
     use rustix::process::{WaitId, WaitIdOptions, waitid};
     let interrupted = || io::Error::new(io::ErrorKind::Interrupted, "mutation run interrupted");
+    if stop.load(Ordering::Relaxed) {
+        return Err(interrupted().into());
+    }
+    if Instant::now() >= deadline {
+        return Ok(None);
+    }
+    let before = group_snapshot()?;
     if stop.load(Ordering::Relaxed) {
         return Err(interrupted().into());
     }
@@ -266,6 +293,19 @@ pub(super) fn run(
     }
     let status = wait_within(&mut child, Duration::from_secs(3)).map_err(RunError::Unreaped)?;
     shutdown.map_err(RunError::Unreaped)?;
+    // A detached worker cannot join a group in a pre-existing POSIX session.
+    // Require a surviving pre-launch process identity in every current group.
+    // An unrelated new group can also make ownership uncertain; never signal it.
+    let after = group_snapshot().map_err(RunError::Unreaped)?;
+    if after.iter().any(|(group, members)| {
+        before
+            .get(group)
+            .is_none_or(|prior| prior.is_disjoint(members))
+    }) {
+        return Err(RunError::Unreaped(io::Error::other(
+            "a new or unidentifiable process group remains; worker shutdown is unconfirmed",
+        )));
+    }
     if stop.load(Ordering::Relaxed) {
         Err(interrupted().into())
     } else {
@@ -348,18 +388,27 @@ while Path(f'/proc/{worker}/stat').read_text().rsplit(')', 1)[1].split()[0] != '
     #[cfg(target_os = "linux")]
     #[test]
     fn command_waits_for_workers_that_start_another_session() -> io::Result<()> {
-        check_detached_worker(false)?;
-        check_detached_worker(true)
+        check_detached_worker(false, false)?;
+        check_detached_worker(true, false)
     }
 
-    #[cfg(target_os = "linux")]
-    fn check_detached_worker(cancel: bool) -> io::Result<()> {
+    #[test]
+    fn portable_shutdown_preserves_scratch_for_detached_workers() -> io::Result<()> {
+        check_detached_worker(false, true)?;
+        check_detached_worker(true, true)
+    }
+
+    fn check_detached_worker(cancel: bool, portable: bool) -> io::Result<()> {
         use std::os::unix::net::UnixListener;
         let temp = tempfile::tempdir()?;
         let address = temp.path().join("worker.sock");
         let listener = UnixListener::bind(&address)?;
         let pid_file = temp.path().join("worker.pid");
-        let mut child = command("python3");
+        let mut child = if portable {
+            portable_command("python3")
+        } else {
+            command("python3")
+        };
         child
             .args([
                 "-c",
@@ -397,7 +446,11 @@ sys.exit(7)
                     stop.store(true, Ordering::Relaxed);
                 });
             }
-            run(&mut child, deadline, &stop)
+            if portable {
+                run_portable(&mut child, deadline, &stop)
+            } else {
+                run(&mut child, deadline, &stop)
+            }
         });
         listener.set_nonblocking(true)?;
         let (mut connection, _) = listener.accept()?;
@@ -408,6 +461,13 @@ sys.exit(7)
                 .parse()
                 .map_err(io::Error::other)?;
             let _ = kill(Pid::from_raw(pid), Signal::SIGKILL);
+        }
+        if portable {
+            assert!(
+                !closed && matches!(result, Err(RunError::Unreaped(_))),
+                "unconfirmed detached worker must retain scratch: {result:?}"
+            );
+            return Ok(());
         }
         assert!(
             closed,
