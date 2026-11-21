@@ -43,7 +43,8 @@ Two places could build it:
 - **The migration is measured before anything stops.** The new binary migrates a consistent copy
   of the live store (SQLite's backup, with a hidden `yulius store-migrate --db <copy>` that applies
   the release's own migrations and never creates a store). No table may vanish, and none may lose
-  rows but those a migration deletes from by design (`DELETE FROM` in the tree's migrations). A
+  rows but those a migration this deploy applies deletes from by design (its own `DELETE FROM`,
+  not a trigger's, read by `scripts/cd/migration_deletes.py` with its schema). A
   failed check refuses the deploy with nothing changed. The result is kept beside the release for
   verify.
 - **The install is CD's own and follows the helper's contract.**

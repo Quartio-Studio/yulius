@@ -1781,8 +1781,8 @@ erased.
    key pinned in `scripts/cd/known_hosts`.
 3. It uploads the binary to `/var/lib/yulius-releases/<commit>/yulius`, checked by SHA-256.
 4. Before anything stops, the new binary migrates a copy of the live store (`yulius store-migrate`).
-   No table may vanish or lose rows, but those a migration deletes from by design (`DELETE FROM`
-   in its migrations). Otherwise the deploy fails with nothing changed.
+   No table may vanish or lose rows, but those a migration this deploy applies deletes from by
+   design (its own `DELETE FROM`, not a trigger's; `scripts/cd/migration_deletes.py`). Otherwise the deploy fails with nothing changed.
 5. It stops **only** `yulius.service`. Sessions live in `yulius-sandboxes.service`.
 6. It keeps the replaced binary and the store it left (`yulius.db` with its WAL) in
    `/var/lib/yulius-releases/<old commit>/`.

@@ -7,11 +7,11 @@
 #   receive <release> <sha256>
 #                            the uploaded .incoming-<release> checked and kept as
 #                            /var/lib/yulius-releases/<release>/yulius (root's)
-#   activate <release> <tables|->
+#   activate <release> <deletes|->
 #                            before anything stops: the release's migrations run on a consistent
 #                            copy of the live store (`yulius store-migrate`), and no table may lose
-#                            rows but those a migration deletes from by design (<tables>, comma
-#                            separated); then yulius.service stopped, the replaced release's
+#                            rows but those a migration it applies deletes from by design
+#                            (<deletes>: <schema>:<table>, comma separated); then yulius.service stopped, the replaced release's
 #                            binary and the store it left kept under it, the release installed and
 #                            started (it migrates the store), put back with that store when it does
 #                            not report its commit; recorded current; the last 10 releases kept
@@ -31,8 +31,8 @@
 # script from its standard input before any command could read from it.
 set -eu
 
-# YULIUS_CD_ROOT and YULIUS_CD_START_WAIT are for scripts/test_cd.py's fake root; SSH passes
-# neither to the VM.
+# YULIUS_CD_ROOT, YULIUS_CD_START_WAIT and YULIUS_CD_LOCK_WAIT are for scripts/test_cd.py's fake
+# root; SSH passes none of them to the VM.
 root="${YULIUS_CD_ROOT:-}"
 releases="$root/var/lib/yulius-releases"
 bin="$root/usr/local/bin/yulius"
@@ -40,6 +40,7 @@ service=yulius.service
 helper=yulius-update.service
 keep=10
 start_wait="${YULIUS_CD_START_WAIT:-120}"
+lock_wait="${YULIUS_CD_LOCK_WAIT:-600}"
 # Scratch space for store copies: beside the releases (a disk), never /tmp (often RAM).
 scratch="$releases/.scratch"
 
@@ -152,9 +153,10 @@ EOF
 
 schema_of() { sed -n 's/.*"schema": *\([0-9]*\).*/\1/p' "$1"; }
 
-# migration_check <release> <tables|->: the release migrates a consistent copy of the live store
+# migration_check <release> <deletes|->: the release migrates a consistent copy of the live store
 # (taken while it runs, so nothing has stopped yet); no table may vanish, and none may lose rows
-# but those a migration deletes from by design. The result is kept as <release>/migration.json.
+# but those a migration it applies deletes from by design. The result is kept as
+# <release>/migration.json.
 migration_check() {
   [ -f "$store/yulius.db" ] || die "no store at $store/yulius.db"
   rm -rf "$scratch/check"
@@ -175,7 +177,12 @@ EOF
   py "$scratch/check/before.json" "$scratch/check/after.json" "$2" "$releases/$1/migration.json" <<'EOF'
 import json, sys
 before, after = (json.load(open(p)) for p in sys.argv[1:3])
-deletes = set() if sys.argv[3] == "-" else set(sys.argv[3].split(","))
+# Only the migrations this deploy applies (above the copy's schema, up to the release's).
+deletes = set()
+for pair in [] if sys.argv[3] == "-" else sys.argv[3].split(","):
+    at, table = pair.split(":", 1)
+    if before["schema"] < int(at) <= after["schema"]:
+        deletes.add(table)
 problems = []
 for name, rows in sorted(before["tables"].items()):
     now = after["tables"].get(name)
@@ -187,7 +194,7 @@ result = {"from": before["schema"], "to": after["schema"], "tables": len(after["
           "problems": problems}
 if problems:
     sys.exit("vm: its migration loses data, so nothing changed: " + "; ".join(problems)
-             + " (a migration that deletes rows by design names the table in DELETE FROM)")
+             + " (a migration that deletes rows by design says DELETE FROM <table> itself)")
 json.dump(result, open(sys.argv[4], "w"), sort_keys=True)
 print("vm: release migrates a copy of the live store from schema %d to %d, %d tables, no rows lost"
       % (result["from"], result["to"], result["tables"]))
@@ -225,10 +232,8 @@ restore() {
 }
 
 install_bin() {
-  cp "$releases/$1/yulius" "$bin.new"
-  chown root:root "$bin.new"
-  chmod 0755 "$bin.new"
-  mv -f "$bin.new" "$bin"
+  cp "$releases/$1/yulius" "$bin.new" && chown root:root "$bin.new" && chmod 0755 "$bin.new" &&
+    mv -f "$bin.new" "$bin"
 }
 
 # note <release>: in the history, unless it is its last line. The replaced release is noted before
@@ -321,7 +326,7 @@ record() {
   find "$releases" -mindepth 1 -maxdepth 1 -type d | while read -r dir; do
     name="$(basename "$dir")"
     valid_release "$name" || continue
-    # Only a release the history names is pruned: an upload never deployed stays until it is.
+    # Only a release the history names is pruned (uploads are named when they arrive).
     grep -q -x -- "$name" "$releases/history" || continue
     if ! printf '%s\n' "$wanted" "$1" | grep -q -x -- "$name"; then
       rm -rf "${releases:?}/$name"
@@ -357,6 +362,8 @@ receive() {
   mkdir -p -m 0700 "$releases/$1"
   chmod 0700 "$releases"
   mv "$incoming" "$releases/$1/yulius"
+  # In the history from its upload, so an upload whose deploy is refused is pruned in its turn.
+  note "$1"
   say "kept release $1 as $releases/$1/yulius"
 }
 
@@ -397,6 +404,8 @@ rollback() {
   prev="$cur"
   stop_server
   snapshot "$cur"
+  # From here the live store may change: an exit puts $prev's binary and store back.
+  phase=installed
   live_schema="$(schema_of "$releases/$cur/store/counts.json")"
   own="$releases/$1/store/counts.json"
   if [ -f "$own" ] && [ "$(schema_of "$own")" != "$live_schema" ]; then
@@ -442,7 +451,7 @@ verify() {
   if [ "$2" != - ]; then
     [ "$live_schema" = "$2" ] || die "the store has schema $live_schema, not $2 (the release's migrations)"
     check="$releases/$current/migration.json"
-    [ -f "$check" ] || die "no migration check of release $current is kept ($check): deploy it again"
+    [ -f "$check" ] || die "no migration check of release $current is kept ($check): it was not installed by this CD's deploy; deploy another release, then this one"
     say "the store has schema $live_schema; the release's migration check: $(cat "$check")"
   elif [ -f "$releases/$current/store/counts.json" ]; then
     own="$(schema_of "$releases/$current/store/counts.json")"
@@ -467,11 +476,11 @@ verify() {
   say "release $current verified"
 }
 
-# lock: one CD step at a time on this VM (a run by hand beside a CD run waits for it, 10 minutes).
+# lock: one CD step at a time on this VM (a run by hand beside a CD run waits up to 10 minutes).
 lock() {
   mkdir -p -m 0700 "$releases"
   exec 9>"$releases/.lock"
-  flock -w 600 9 || die "another CD step holds $releases/.lock"
+  flock -w "$lock_wait" 9 || die "another CD step holds $releases/.lock (waited ${lock_wait}s)"
 }
 
 main() {
@@ -495,8 +504,8 @@ main() {
       tables=-
       if [ "$command" = activate ]; then
         tables="${3:-}"
-        case "$tables" in - | [a-z]*) ;; *) die "not a table list: $tables" ;; esac
-        case "$tables" in *[!a-z0-9_,-]*) die "not a table list: $tables" ;; esac
+        case "$tables" in - | [0-9]*:[a-z]*) ;; *) die "not a list of <schema>:<table>: $tables" ;; esac
+        case "$tables" in -) ;; *[!a-z0-9_:,]*) die "not a list of <schema>:<table>: $tables" ;; esac
       fi
       # A lost connection does not stop a switch half way.
       trap '' HUP PIPE

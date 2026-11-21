@@ -41,11 +41,11 @@ if kept_on_vm "$release"; then
 else
   upload "$release" "$binary"
 fi
-# Tables a migration deletes rows from by design (DELETE FROM in crates/yulius-store's migrations):
-# the migration check lets only those lose rows.
-deletes="$(grep -ohE 'DELETE FROM +[a-z_0-9]+' "$repo/crates/yulius-store/src/migrations"/*.sql 2>/dev/null |
-  awk '{ print $3 }' | sort -u | paste -sd , -)"
-remote activate "$release" "${deletes:--}"
+# The tables each migration deletes rows from by design, as <schema>:<table> (its own DELETE FROM,
+# triggers aside): the migration check lets only those lose rows, and only when the deploy applies
+# that migration.
+deletes="$(python3 -I "$cd_dir/migration_deletes.py" "$repo")" || die "cannot read the store's migrations"
+remote activate "$release" "$deletes"
 echo "::yulius-release $release"
 
 # The last 10 builds used stay in the cache (the VM keeps its own copies); never fails the deploy.

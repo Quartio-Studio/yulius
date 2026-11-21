@@ -92,7 +92,7 @@ command = "python3 scripts/vidoc_scan.py --ci"
 # the migration checked on a copy before the stop (no rows lost), and the sandbox Docker smoke test. Swapping the VM: docs/operations.md,
 # "Yulius's own staging VM".
 [cd.dev]
-about = "Yulius's own staging VM (a fresh instance no person relies on): the exact build of a dev revision, its store migrated from the previous staging release; verify: commit, HTTPS, contained doctor, no lost rows, Docker smoke"
+about = "Yulius's own staging VM (a fresh instance no person relies on): the exact build of a dev revision, its store migrated from the previous staging release; its migration checked on a copy first (no rows lost); verify: commit, HTTPS, contained doctor, schema, Docker smoke"
 deploy = "scripts/cd/deploy.sh dev"
 verify = "scripts/cd/verify.sh dev"
 rollback = "scripts/cd/rollback.sh dev"

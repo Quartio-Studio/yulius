@@ -141,15 +141,21 @@ was verified there.
   - A rollback across a schema change restores the release's snapshot, and one without keeps
     the live rows.
   - The drill's forward step restores the store the newer release left.
-- **AC-3 (STG-004):** On a fake root, verify fails in each of these cases:
-  - a wrong recorded release;
-  - a binary that is not the release;
-  - another commit at `/internal/version`;
-  - a failing doctor;
-  - a live table with fewer rows than the snapshot;
-  - a dropped table;
-  - a schema other than the tree's.
-  It passes otherwise. The smoke runs on a deploy's verify only when the doctor offers Docker.
+- **AC-3 (STG-004):** On a fake root:
+  - A deploy whose migration loses rows or drops a table is refused before anything stops, but
+    rows of a table that a migration the deploy applies deletes from by design may go.
+  - Verify fails in each of these cases:
+    - a wrong recorded release;
+    - a binary that is not the release;
+    - another commit at `/internal/version`;
+    - a failing doctor;
+    - HTTPS down;
+    - a failing smoke;
+    - a schema other than the tree's after a deploy, or other than the one the release left
+      after a rollback;
+    - no kept migration check.
+  - Verify passes otherwise, also after rows were deleted since the start.
+  - The smoke runs on a deploy's verify only when the doctor offers Docker.
 - **AC-4 (STG-002, real):** A CD run of `[cd.dev]` deploys dev's head to the staging VM. Its
   output has the build, `::yulius-release <sha>` and verify's lines, and
   `/internal/version` on the VM reports that commit. A later deploy's rollback drill passes (back
@@ -195,7 +201,8 @@ was verified there.
   - The new binary migrates a copy of the live store (SQLite's backup) with
     `yulius store-migrate`, so nothing the server does after its start (retention, a person's
     delete) reads as loss, and a lossy migration refuses the deploy before staging changes.
-  - Tables a migration deletes from by design (`DELETE FROM` in the tree's migrations) may shrink.
+  - Only tables that a migration the deploy applies deletes from by design may shrink (its own
+    `DELETE FROM`, not a trigger's; `scripts/cd/migration_deletes.py`, review round 2).
   - It names the table that lost rows or vanished.
   - On a fresh instance it proves little until a person uses staging. That is reported, not
     hidden.

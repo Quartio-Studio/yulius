@@ -24,6 +24,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 CD = REPO / "scripts" / "cd"
 SCRIPTS = ("lib.sh", "deploy.sh", "verify.sh", "rollback.sh", "remote.sh", "build.sh")
+DELETES = CD / "migration_deletes.py"
 
 OLD = "3fc0e5976ae2ce2da68a81c400866e2669316f66"
 NEW = "86eb47202aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -85,6 +86,33 @@ class CdFilesTest(unittest.TestCase):
         files = list((REPO / "crates" / "yulius-store" / "src" / "migrations").glob("*.sql"))
         self.assertEqual(len(entries), len(files))
 
+    def test_the_migrations_that_delete_rows_are_named_by_their_schema(self) -> None:
+        """Their position in MIGRATIONS, not their file number; 0077's trigger deletes nothing."""
+        out = subprocess.run(["python3", "-I", str(DELETES), str(REPO)], capture_output=True, text=True, check=True)
+        self.assertEqual(out.stdout.strip(), "69:session_chunks,72:session_chunks")
+
+    def test_comments_and_trigger_bodies_are_no_deletion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "crates" / "yulius-store" / "src"
+            (src / "migrations").mkdir(parents=True)
+            (src / "migrations" / "0001_a.sql").write_text("CREATE TABLE a (x);\n")
+            (src / "migrations" / "0002_b.sql").write_text(
+                "-- DELETE FROM a\nCREATE TRIGGER t AFTER INSERT ON a BEGIN\n  DELETE FROM b;\nEND;\n"
+                "delete from Notes WHERE 1;\n"
+            )
+            (src / "migrations" / "0003_c.sql").write_text("")
+            (src / "lib.rs").write_text(
+                'const LATER: &str = include_str!("migrations/0003_c.sql");\n'
+                "const MIGRATIONS: &[&str] = &[\n"
+                '    include_str!("migrations/0001_a.sql"),\n'
+                "    // Schema version 2.\n"
+                '    include_str!("migrations/0002_b.sql"),\n'
+                "    LATER,\n"
+                "];\n"
+            )
+            out = subprocess.run(["python3", "-I", str(DELETES), tmp], capture_output=True, text=True, check=True)
+            self.assertEqual(out.stdout.strip(), "2:notes")
+
 
 class CdScriptsTest(unittest.TestCase):
     """The scripts against a fake VM."""
@@ -117,8 +145,13 @@ class CdScriptsTest(unittest.TestCase):
         shutil.copy2(REPO / "rust-toolchain.toml", self.repo / "rust-toolchain.toml")
         self.migrations = self.repo / "crates" / "yulius-store" / "src" / "migrations"
         self.migrations.mkdir(parents=True)
+        entries = []
         for n in range(1, 6):
             (self.migrations / f"{n:04}_m.sql").write_text("")
+            entries.append(f'    include_str!("migrations/{n:04}_m.sql"),')
+        (self.migrations.parent / "lib.rs").write_text(
+            "const MIGRATIONS: &[&str] = &[\n" + "\n".join(entries) + "\n];\n"
+        )
         self.root = self.tmp / "root"
         self.run_dir = self.root / "run"
         self.run_dir.mkdir(parents=True)
@@ -230,9 +263,13 @@ class CdScriptsTest(unittest.TestCase):
             self.bin / "cp",
             f"""\
             #!/bin/sh
-            # A snapshot that fails (a full disk) when {run}/fail-snapshot exists.
+            # A snapshot that fails (a full disk) when {run}/fail-snapshot exists, and a copy from a
+            # path holding the text of {run}/fail-cp-from.
             if [ -e {run}/fail-snapshot ]; then
               case "$*" in *store.new*) echo "cp: no space left on device" >&2; exit 1 ;; esac
+            fi
+            if [ -e {run}/fail-cp-from ]; then
+              case "$1" in *"$(cat {run}/fail-cp-from)"*) echo "cp: input/output error" >&2; exit 1 ;; esac
             fi
             exec {real_cp} "$@"
             """,
@@ -418,13 +455,13 @@ class CdScriptsTest(unittest.TestCase):
     def rollback(self, sha: str) -> str:
         return self.ok("rollback.sh", "dev", YULIUS_CD_RELEASE=sha, YULIUS_CD_KIND="rollback")
 
-    def remote(self, *args: str, pipe: str = "") -> subprocess.CompletedProcess[str]:
+    def remote(self, *args: str, pipe: str = "", **extra: str) -> subprocess.CompletedProcess[str]:
         """remote.sh run here on the fake root, as SSH runs it there (optionally piped)."""
         script = self.repo / "scripts" / "cd" / "remote.sh"
         command = f"sh {script} {' '.join(args)}{pipe}"
         return subprocess.run(
             ["sh", "-c", command],
-            env={**self.env(), "YULIUS_CD_ROOT": str(self.root), "YULIUS_CD_START_WAIT": "3"},
+            env={**self.env(), "YULIUS_CD_ROOT": str(self.root), "YULIUS_CD_START_WAIT": "3", **extra},
             capture_output=True,
             text=True,
             timeout=120,
@@ -551,6 +588,31 @@ class CdScriptsTest(unittest.TestCase):
         self.assertEqual(self.running(), NEW)
         self.verified(NEW)
 
+    def test_a_deletion_counts_only_in_a_migration_the_deploy_applies_and_not_in_a_trigger(self) -> None:
+        for name, sql in (
+            ("0003_m.sql", "DELETE FROM tasks;\n"),  # schema 3: the store is at 4 already
+            ("0005_m.sql", "CREATE TRIGGER t AFTER INSERT ON notes BEGIN DELETE FROM tasks; END;\n"),
+        ):
+            with self.subTest(name):
+                self.setUp()
+                (self.migrations / name).write_text(sql)
+                self.release(NEW, schema=5, mode="lossy")
+                out = self.deploy_fails(NEW)
+                self.assertIn("tasks: 3 rows before, 2 now", out)
+                self.assertEqual(self.running(), OLD)
+
+    def test_the_vm_refuses_a_deletion_list_that_is_not_schema_and_table(self) -> None:
+        self.releases.mkdir(parents=True)
+        (self.releases / NEW).mkdir()
+        shutil.copy2(self.release(NEW, schema=5), self.releases / NEW / "yulius")
+        for bad in ("tasks", "5:Tasks", "5:ta-sks", "x:tasks"):
+            with self.subTest(bad):
+                out = self.remote("activate", NEW, bad)
+                self.assertNotEqual(out.returncode, 0)
+                self.assertIn("not a list of <schema>:<table>", out.stderr)
+        self.assertEqual(self.running(), OLD)
+        self.assertEqual(self.systemctl_log(), ["start yulius.service"])
+
     def test_rows_deleted_after_the_start_do_not_fail_verify(self) -> None:
         """Retention at the server's start or a person's delete is no migration loss."""
         self.release(NEW, schema=5)
@@ -594,7 +656,11 @@ class CdScriptsTest(unittest.TestCase):
         self.assertIn("names another commit", out.stderr)
         self.assertFalse((self.releases / NEW).exists())
 
-    def test_the_last_ten_releases_are_kept(self) -> None:
+    def test_the_last_ten_releases_are_kept_also_after_a_refused_upload(self) -> None:
+        refused = "e" * 40
+        self.release(refused, schema=5, mode="lossy")
+        self.deploy_fails(refused)
+        self.assertTrue((self.releases / refused / "yulius").is_file())
         shas = [f"{n:x}" * 40 for n in range(1, 13)]
         for sha in shas:
             self.release(sha, schema=5)
@@ -603,6 +669,7 @@ class CdScriptsTest(unittest.TestCase):
         self.assertEqual(len(kept), 10, kept)
         self.assertIn(shas[-1], kept)
         self.assertNotIn(OLD, kept)
+        self.assertNotIn(refused, kept)
 
     # --- interruptions ------------------------------------------------------------------
 
@@ -622,6 +689,31 @@ class CdScriptsTest(unittest.TestCase):
         self.assertIn("interrupted before anything changed", out)
         self.assertEqual(self.running(), OLD)
         self.assertEqual(self.systemctl_log()[-2:], ["stop yulius.service", "start yulius.service"])
+
+    def test_one_cd_step_at_a_time(self) -> None:
+        self.deployed()
+        holder = subprocess.Popen(["flock", str(self.releases / ".lock"), "sleep", "30"])
+        self.addCleanup(holder.kill)
+        deadline = __import__("time").monotonic() + 10
+        while subprocess.run(["flock", "-n", str(self.releases / ".lock"), "true"]).returncode == 0:
+            self.assertLess(__import__("time").monotonic(), deadline, "the holder never took the lock")
+        out = self.remote("verify", NEW, "5", "0", YULIUS_CD_LOCK_WAIT="1")
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("another CD step holds", out.stderr)
+        holder.kill()
+        holder.wait()
+        self.assertEqual(self.remote("verify", NEW, "5", "0").returncode, 0)
+
+    def test_a_rollback_whose_store_restore_fails_keeps_the_release_and_store_it_had(self) -> None:
+        self.release(NEW, schema=5)
+        self.deploy(NEW)
+        self.write("INSERT INTO tasks VALUES ('written by new')")
+        before = dump(self.data / "yulius.db")
+        (self.run_dir / "fail-cp-from").write_text(f"/{OLD}/store/")
+        out = self.fails("rollback.sh", "dev", YULIUS_CD_RELEASE=OLD, YULIUS_CD_KIND="rollback")
+        self.assertIn(f"putting back release {NEW} and its store", out)
+        self.assertEqual(self.running(), NEW)
+        self.assertEqual(dump(self.data / "yulius.db"), before)
 
     def test_a_killed_switch_and_a_redeploy_keep_the_release_to_go_back_to(self) -> None:
         self.release(NEW, schema=5)
@@ -680,7 +772,9 @@ class CdScriptsTest(unittest.TestCase):
             "answers 000, not 200, over HTTPS": then(lambda: (self.run_dir / "https-down").touch()),
             "smoke test failed": then(lambda: (self.run_dir / "smoke-rc").write_text("1")),
             "schema 5, not 6": then(lambda: migration.write_text("")),
-            "no migration check": then(lambda: (self.releases / NEW / "migration.json").rename(self.tmp / "m.json")),
+            "no migration check of release": then(
+                lambda: (self.releases / NEW / "migration.json").rename(self.tmp / "m.json")
+            ),
             f"reports {NEWER}, not release {NEW}": then(
                 lambda: (self.run_dir / "version").write_text(json.dumps({"commit": NEWER}))
             ),
@@ -717,6 +811,15 @@ class CdScriptsTest(unittest.TestCase):
         self.assertEqual(self.live("PRAGMA user_version"), 5)
         self.assertEqual(self.live("SELECT count(*) FROM tasks"), 4)
         self.verified(NEW, kind="drill")
+
+    def test_verify_after_a_rollback_wants_the_schema_the_release_left(self) -> None:
+        self.release(NEW, schema=5)
+        self.deploy(NEW)
+        self.rollback(OLD)
+        self.write("PRAGMA user_version = 6")
+        out = self.verify(OLD, kind="rollback")
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn(f"the store has schema 6, not the 4 release {OLD} left", out.stderr)
 
     def test_a_rollback_without_a_schema_change_keeps_the_live_store(self) -> None:
         self.release(NEW, schema=4)
