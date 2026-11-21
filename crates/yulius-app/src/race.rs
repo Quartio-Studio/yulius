@@ -16,8 +16,6 @@ pub enum Point {
     QueuedRowCapacity,
     /// An idle running row reads its pending PR news. Keyed by task ID.
     LiveRowPrNews,
-    /// The live PR watch has read its facts, before it verifies the activation again.
-    LivePrFactsRead,
     /// A free arm has been taken by the queue, before its merge is decided.
     FreeArmTaken,
     /// A review starts reading its Git head. Keyed by worktree path.

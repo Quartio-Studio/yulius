@@ -223,13 +223,6 @@ pub(crate) enum Hold {
     Held,
 }
 
-/// The queue instructions and, for an included member, the run that holds its activation.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct WatchedTrain {
-    pub note: QueueNote,
-    pub candidate: Option<(String, Vec<u64>)>,
-}
-
 /// What one step of a passed train did.
 enum Step {
     /// The member merged; go on with the next.
@@ -493,37 +486,6 @@ impl App {
             self.read_trains(&task.sandbox_id).train.as_ref(),
             task.id.as_str(),
         )
-    }
-
-    /// Which run and member list belong to this PR's currently armed activation.
-    /// A reusable CI run can have been admitted for a different set of members.
-    pub(crate) fn watched_train(&self, task: &TaskRecord, pr: u64) -> Option<WatchedTrain> {
-        if !self.config.ci.enabled {
-            return None;
-        }
-        let crate::agent_wait::ArmedNow::Armed(arm) = self.armed_now(&task.id) else {
-            return None;
-        };
-        let train = self.read_trains(&task.sandbox_id).train?;
-        let note = note_of(&train, task.id.as_str())?;
-        let candidate =
-            if let Some(member) = train.members.iter().find(|m| m.task == task.id.as_str()) {
-                if member.pr != pr || member.head != arm.head || member.armed_at != arm.armed_at {
-                    return None;
-                }
-                Some((train.run, numbers(&train.members)))
-            } else {
-                // Left-out PRs wait behind the train without sharing its failure.
-                if !train
-                    .left_out
-                    .iter()
-                    .any(|left| left.task == task.id.as_str() && left.pr == pr)
-                {
-                    return None;
-                }
-                None
-            };
-        Some(WatchedTrain { note, candidate })
     }
 
     /// Whether `task` is a member of its sandbox's live merge train, merged or not: the train

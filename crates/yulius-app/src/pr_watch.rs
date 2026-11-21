@@ -25,11 +25,11 @@ use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::ids::TaskId;
 use yulius_domain::task::TaskStatus;
 
-use crate::agent_wait::{ArmedNow, QueueNote};
+use crate::agent_wait::QueueNote;
 use crate::ci::{CiJobRecord, CiRunRecord};
 use crate::context::App;
 use crate::delivery::{delivery_profile, past_merge};
-use crate::error::{AppError, AppResult};
+use crate::error::AppError;
 use crate::merge_train::Hold;
 use crate::model::{SandboxRecord, TaskRecord};
 use crate::task_message::{Sender, Typed};
@@ -986,7 +986,6 @@ impl App {
     ) -> Option<PrFacts> {
         // The slot before the delivery: a merge decided in between then reads as merged, never
         // as "no merge armed" on an open pull request (review minor 8).
-        let activation = self.armed_now(&task.id);
         let (armed, outcome) = self.armed_view(&task.id);
         // Also before a restarted server put the armed merges back: never "no merge is armed"
         // for one that is (SPEC-487, review round 2).
@@ -1030,45 +1029,45 @@ impl App {
         if record.stage != DeliveryStage::PrOpen {
             return None;
         }
-        // During restoration or a queue decision an arm can be known without a
-        // verified activation. Even a due check-in must wait for that decision.
-        let arm_head = match &activation {
-            ArmedNow::Armed(arm) => Some(arm.head.as_str()),
-            _ if armed => return None,
-            _ => None,
-        };
+        if armed
+            && !matches!(
+                self.armed_now(&task.id),
+                crate::agent_wait::ArmedNow::Armed(_)
+            )
+        {
+            // Record the open PR even when its saved arm is unreadable or the queue
+            // is deciding it. A merge before the next pass still belongs to this owner.
+            return Some(PrFacts {
+                pr,
+                now_ms,
+                ..PrFacts::default()
+            });
+        }
         let integration = delivery_profile(&sandbox).integration_branch;
-        let mut own = if let Some(head) = arm_head {
-            // Every armed owner follows the queue's ordinary run at that head, including
-            // a run shared by the scheduler or one outside the recent sandbox window.
-            self.ordinary_pull_run(&sandbox, pr, head).await.ok()?
-        } else {
-            if !runs.contains_key(sandbox.id.as_str()) {
-                let read = self
-                    .deps
-                    .store
-                    .ci_runs(&sandbox.id, RUNS_READ)
-                    .await
-                    .unwrap_or_default();
-                runs.insert(sandbox.id.as_str().to_owned(), read);
-            }
-            let sandbox_runs = runs.get(sandbox.id.as_str()).map_or(&[][..], Vec::as_slice);
-            let mut recent = sandbox_runs
-                .iter()
-                .find(|run| run.reference == CiRef::PullRequest(pr))
-                .cloned();
-            if recent.is_none() && !told.head.is_empty() {
-                recent = self
-                    .deps
-                    .store
-                    .ci_runs_for_sha(&sandbox.id, &told.head)
-                    .await
-                    .unwrap_or_default()
-                    .into_iter()
-                    .find(|run| run.reference == CiRef::PullRequest(pr));
-            }
-            recent
-        };
+        if !runs.contains_key(sandbox.id.as_str()) {
+            let read = self
+                .deps
+                .store
+                .ci_runs(&sandbox.id, RUNS_READ)
+                .await
+                .unwrap_or_default();
+            runs.insert(sandbox.id.as_str().to_owned(), read);
+        }
+        let sandbox_runs = runs.get(sandbox.id.as_str()).map_or(&[][..], Vec::as_slice);
+        let mut own = sandbox_runs
+            .iter()
+            .find(|run| run.reference == CiRef::PullRequest(pr))
+            .cloned();
+        if own.is_none() && !told.head.is_empty() {
+            own = self
+                .deps
+                .store
+                .ci_runs_for_sha(&sandbox.id, &told.head)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .find(|run| run.reference == CiRef::PullRequest(pr));
+        }
         // SPEC-553 REP-004: recover an idle task whose clean committed CI repair on a failing
         // open PR missed turn-end publication (for example across a server restart). Reads only
         // local HEAD unless it differs from the failing PR run's SHA.
@@ -1094,26 +1093,20 @@ impl App {
                 .find(|run| run.reference == CiRef::PullRequest(pr))
                 .cloned();
         }
-        let train = self.watched_train(task, pr);
-        let holding = train.as_ref().and_then(|train| train.candidate.as_ref());
-        let candidate_id = holding.map(|(id, _)| id.as_str());
-        let candidate = self.holding_run(&sandbox, candidate_id).await.ok()?;
-        let candidate = candidate.as_ref();
         if let Some(run) = own.as_ref()
             && run.state == RunState::Failed
             && self.run_superseded_by_pushed_head(task, &run.sha).await
         {
-            if arm_head.is_some() {
-                return None;
-            }
             own = None;
         }
+        let sandbox_runs = runs.get(sandbox.id.as_str()).map_or(&[][..], Vec::as_slice);
         let own = own.as_ref();
-        let hold = if train.is_some() {
-            Hold::Held
-        } else {
-            Hold::Free
-        };
+        // A candidate older than the pull request's own newest run is about an earlier head.
+        let candidate = sandbox_runs
+            .iter()
+            .find(|run| matches!(&run.reference, CiRef::Train(members) if members.contains(&pr)))
+            .filter(|run| own.is_none_or(|own| run.queued_at >= own.queued_at));
+        let hold = self.train_hold(task);
         let mut events = Vec::new();
         let told_key = |kind: &str, key: &str| told.keys.get(kind).is_some_and(|k| k == key);
         if let Some(run) = own {
@@ -1139,21 +1132,10 @@ impl App {
                 _ => {}
             }
         }
-        // A disappearing train, or one awaiting its singleton decision, has no
-        // instructions for its member. An untold ordinary failure still takes priority.
-        if events.is_empty()
-            && holding.is_some_and(|(_, members)| match candidate.map(|run| run.state) {
-                Some(RunState::Queued | RunState::Running | RunState::Passed) => false,
-                Some(RunState::Failed) => members.len() == 1,
-                Some(RunState::Error | RunState::Cancelled | RunState::Skipped) | None => true,
-            })
-        {
-            return None;
-        }
-        if let (Some(run), Some((_, members))) = (candidate, holding)
-            && members.len() > 1
+        if let Some(run) = candidate
+            && let CiRef::Train(members) = &run.reference
             && run.state == RunState::Failed
-            && !own.is_some_and(|run| run.state == RunState::Failed)
+            && members.len() > 1
             && !told_key("candidate", &run.id)
         {
             let jobs = self
@@ -1215,15 +1197,9 @@ impl App {
         }
         let green =
             own.is_some_and(|run| matches!(run.state, RunState::Passed | RunState::Skipped));
-        let arm_note = self.arm_queue_note(&task.id);
-        let queue_note = train
-            .as_ref()
-            .map(|train| &train.note)
-            .or(arm_note.as_ref());
-        if let (true, Some(head)) = (green, &head)
-            && candidate.is_none_or(|run| run.state != RunState::Failed)
-        {
-            let said = green_said(head, armed, hold, queue_note, &integration);
+        let queue_note = self.merge_queue_note(task);
+        if let (true, Some(head)) = (green, &head) {
+            let said = green_said(head, armed, hold, queue_note.as_ref(), &integration);
             if let Some((class, text)) = said {
                 events.push(Event {
                     kind: "green",
@@ -1252,7 +1228,7 @@ impl App {
         let has_ci = self.config.ci.enabled
             && (own.is_some() || self.ci_gate(&sandbox).await.gate.is_some());
         let status = if has_ci {
-            status_text(own, armed, hold, queue_note, &integration)
+            status_text(own, armed, hold, queue_note.as_ref(), &integration)
         } else {
             no_ci_status(armed)
         };
@@ -1263,7 +1239,7 @@ impl App {
             .load(Ordering::SeqCst)
             .max(runtime.spawned_ms.load(Ordering::SeqCst));
         let check_ins = !runtime.goal_achieved.load(Ordering::SeqCst) && !needs_you;
-        let facts = PrFacts {
+        Some(PrFacts {
             now_ms,
             pr,
             events,
@@ -1277,80 +1253,7 @@ impl App {
             working: runtime.turn_in_progress(),
             has_ci,
             head: own.map(|run| run.sha.clone()).unwrap_or_default(),
-        };
-        crate::race::reached(
-            crate::race::Point::LivePrFactsRead,
-            std::path::Path::new(task.id.as_str()),
-        );
-        if let Some(head) = arm_head
-            && !person_must_act
-        {
-            self.confirm_armed_news(task, &sandbox, pr, head, own, (candidate_id, candidate))
-                .await?;
-        }
-        if self.armed_now(&task.id) != activation
-            || self.merge_is_armed(&task.id) != armed
-            || (armed && self.watched_train(task, pr) != train)
-            || (armed && train.is_none() && self.arm_queue_note(&task.id) != arm_note)
-        {
-            return None;
-        }
-        Some(facts)
-    }
-
-    /// Read the CI run named by the holding train. A PR left out of it has no candidate run.
-    async fn holding_run(
-        &self,
-        sandbox: &SandboxRecord,
-        id: Option<&str>,
-    ) -> AppResult<Option<CiRunRecord>> {
-        let Some(id) = id else { return Ok(None) };
-        Ok(self
-            .deps
-            .store
-            .ci_run(id)
-            .await?
-            .filter(|run| run.sandbox_id == sandbox.id))
-    }
-
-    /// Recheck the armed PR owner and the ordinary CI used by the queue.
-    /// A change during verification leaves the notice unheard for the next pass.
-    async fn confirm_armed_news(
-        &self,
-        task: &TaskRecord,
-        sandbox: &SandboxRecord,
-        pr: u64,
-        head: &str,
-        ordinary: Option<&CiRunRecord>,
-        (candidate_id, candidate): (Option<&str>, Option<&CiRunRecord>),
-    ) -> Option<()> {
-        let fresh = self.deps.store.task(&task.id).await.ok()??;
-        if fresh.status != TaskStatus::Running
-            || fresh.archived_at.is_some()
-            || self
-                .deps
-                .store
-                .task_needs_you(&task.id)
-                .await
-                .ok()?
-                .is_some()
-            || self.deps.store.open_pause(&task.id).await.ok()?.is_some()
-            || self
-                .browser_tab_request_for(&task.sandbox_id, &task.id)
-                .await
-                .is_some()
-            || fresh.activity == Some(yulius_domain::task::Activity::NeedsAttention)
-                && !self.held_message_flag_outlived(&fresh).await
-        {
-            return None;
-        }
-        let (latest_ordinary, latest_candidate) = tokio::try_join!(
-            self.ordinary_pull_run(sandbox, pr, head),
-            self.holding_run(sandbox, candidate_id),
-        )
-        .ok()?;
-        (latest_ordinary.as_ref() == ordinary && latest_candidate.as_ref() == candidate)
-            .then_some(())
+        })
     }
 
     /// The merge notice of `task`'s pull request `pr` (`merged_text`), read from GitHub once and

@@ -39,15 +39,6 @@ async fn app_with_pulls(
     slots: u32,
     park_after_ms: u64,
 ) -> Result<(Arc<App>, Arc<crate::support::FakeGitHub>), Error> {
-    configured_app_with_pulls(data, slots, park_after_ms, |_| {}).await
-}
-
-async fn configured_app_with_pulls(
-    data: &Path,
-    slots: u32,
-    park_after_ms: u64,
-    configure: impl FnOnce(&mut yulius_app::context::AppConfig),
-) -> Result<(Arc<App>, Arc<crate::support::FakeGitHub>), Error> {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let agent = FakeAgentOptions {
         answers_first_message: true,
@@ -68,7 +59,6 @@ async fn configured_app_with_pulls(
         |config| {
             config.max_live_sessions = slots;
             config.park_after_ms = park_after_ms;
-            configure(config);
         },
     )
     .await?;
@@ -3028,4 +3018,99 @@ fn a_cold_parked_summary_reads_historical_spec_and_goal_evidence() -> TestResult
     Ok(())
 }
 
-mod candidate;
+#[test]
+fn a_first_pr_watch_during_arm_restoration_remembers_the_merge() -> TestResult {
+    first_watch_during_queue_decision(false)
+}
+
+#[test]
+fn a_first_pr_watch_during_an_active_queue_decision_remembers_the_merge() -> TestResult {
+    first_watch_during_queue_decision(true)
+}
+
+fn first_watch_during_queue_decision(active: bool) -> TestResult {
+    use yulius_app::delivery::DeliveryRecord;
+    use yulius_app::pr_watch::WatchBounds;
+    use yulius_domain::delivery::DeliveryStage;
+
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let (app, github) = app_with_pulls(&data, 8, 1).await?;
+        let (id, caller) = answered(&app, &data).await?;
+        open_pull_at(&app, &github, &id, 1481, "head").await?;
+        let open = DeliveryRecord {
+            task_id: id.clone(),
+            stage: DeliveryStage::PrOpen,
+            pr_number: Some(1481),
+            updated_at: app.now(),
+        };
+        app.deps
+            .store
+            .transition_delivery(&DeliveryStage::None, &open)
+            .await?;
+        let due = WatchBounds {
+            check_in_after_ms: 0,
+            stall_quiet_ms: 0,
+            stall_after_ms: 0,
+        };
+        let arms = data.join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+        if active {
+            std::fs::write(
+                &arms,
+                serde_json::to_vec(
+                    &json!([{"task":id.as_str(),"head":"head","summary":"reviewed","armed_at":30}]),
+                )?,
+            )?;
+            app.restore_armed_merges().await;
+            let watch = Arc::clone(&app);
+            let handle = tokio::runtime::Handle::current();
+            let seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let seen_in_hook = Arc::clone(&seen);
+            yulius_app::race::on(Point::FreeArmTaken, Path::new(id.as_str()), move || {
+                let news = tokio::task::block_in_place(|| handle.block_on(watch.watch_prs(&due)));
+                assert!(
+                    news.is_empty(),
+                    "first watch interrupted the decision: {news:?}"
+                );
+                seen_in_hook.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+            app.merge_armed(&caller.sandbox).await;
+            assert!(
+                seen.load(std::sync::atomic::Ordering::SeqCst),
+                "queue took the arm"
+            );
+        } else {
+            std::fs::write(&arms, b"[")?;
+            app.restore_armed_merges().await;
+            let first = app.watch_prs(&due).await;
+            assert!(
+                first.is_empty(),
+                "first watch during restoration: {first:?}"
+            );
+        }
+        // The integration merge is recorded between watch passes, before GitHub's PR read catches up.
+        let merged = DeliveryRecord {
+            stage: DeliveryStage::MergedIntegration,
+            ..open
+        };
+        app.deps
+            .store
+            .transition_delivery(&DeliveryStage::PrOpen, &merged)
+            .await?;
+        let news = app.watch_prs(&WatchBounds::default()).await;
+        let repeat = app.watch_prs(&WatchBounds::default()).await;
+        app.stop_task_now(&id).await?;
+        assert_eq!(
+            news.len(),
+            1,
+            "merge after the first deferred watch: {news:?}"
+        );
+        assert_eq!(news[0].0, id);
+        assert!(
+            news[0].1.contains("Pull request #1481 is merged"),
+            "{news:?}"
+        );
+        assert!(repeat.is_empty(), "{repeat:?}");
+        Ok(())
+    })
+}
