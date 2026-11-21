@@ -7417,7 +7417,11 @@ impl App {
                 self.turn_interrupted(task_id, at).await;
             }
             Observation::Goal(outcome, at) => {
-                self.goal_observed(task_id, &attempt.id, outcome, at).await
+                self.goal_observed(task_id, &attempt.id, outcome, at).await;
+                crate::race::reached(
+                    crate::race::Point::NativeVerdictChecked,
+                    Path::new(attempt.id.as_str()),
+                );
             }
             Observation::TurnEnded {
                 background_agents,

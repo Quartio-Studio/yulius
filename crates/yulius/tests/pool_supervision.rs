@@ -872,42 +872,14 @@ fn check_replaced_goal_stop(point: yulius_app::race::Point) -> TestResult {
             FakeAgentOptions::default(),
         )?;
         let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
-        let id = app
-            .create_task_internal(NewTask {
-                sandbox,
-                created_by: user,
-                prompt: "Check delivery".into(),
-                harness: Harness::ClaudeCode,
-                title: Some("Verify checkout".into()),
-                workflow_id: None,
-                steps: vec!["Verify dev".into()],
-                model: None,
-                effort: None,
-                origin: TaskOrigin::Ui,
-                automation_run: None,
-                start: true,
-                mode: yulius_app::model::TaskMode::Goal,
-                supertask: false,
-            })
-            .await?
-            .id;
+        let id = start_verification_goal(&app, sandbox, user).await?;
         let limit = Duration::from_secs(30);
         wait_for("the first goal run", limit, || async {
             screen(&app, &id).contains("FAKE-AGENT READY")
         })
         .await?;
-        let bind_token = |attempt: &yulius_domain::ids::AttemptId, token: &str| -> TestResult {
-            rusqlite::Connection::open(data.join("yulius.db"))?.execute(
-                "UPDATE attempts SET token_hash = ?1 WHERE id = ?2",
-                rusqlite::params![
-                    app.deps.crypto.sha256_hex(token.as_bytes()),
-                    attempt.as_str()
-                ],
-            )?;
-            Ok(())
-        };
         let first = app.deps.store.live_attempt(&id).await?.ok_or("first run")?;
-        bind_token(&first.id, "test-old-goal-stop")?;
+        bind_goal_hook(&app, &data, &first.id, "test-old-goal-stop")?;
         let (arrived, parked) = tokio::sync::oneshot::channel();
         let (release, blocked) = std::sync::mpsc::channel();
         yulius_app::race::on(point, Path::new(id.as_str()), move || {
@@ -945,7 +917,7 @@ fn check_replaced_goal_stop(point: yulius_app::race::Point) -> TestResult {
             .await?
             .ok_or("replacement run")?;
         assert_ne!(first.id, replacement.id);
-        bind_token(&replacement.id, "test-replacement-submit")?;
+        bind_goal_hook(&app, &data, &replacement.id, "test-replacement-submit")?;
         app.hook_event(
             "test-replacement-submit",
             "claude",
@@ -978,6 +950,219 @@ fn check_replaced_goal_stop(point: yulius_app::race::Point) -> TestResult {
         );
         assert_eq!(current.activity, Some(Activity::Working));
         assert_eq!(current.gate_blocks, 1);
+        stop(&app, &id).await
+    }))?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+async fn start_verification_goal(
+    app: &Arc<App>,
+    sandbox: SandboxId,
+    user: UserId,
+) -> Result<TaskId, Box<dyn std::error::Error>> {
+    Ok(app
+        .create_task_internal(NewTask {
+            sandbox,
+            created_by: user,
+            prompt: "Check delivery".into(),
+            harness: Harness::ClaudeCode,
+            title: Some("Verify checkout".into()),
+            workflow_id: None,
+            steps: vec!["Verify dev".into()],
+            model: None,
+            effort: None,
+            origin: TaskOrigin::Ui,
+            automation_run: None,
+            start: true,
+            mode: yulius_app::model::TaskMode::Goal,
+            supertask: false,
+        })
+        .await?
+        .id)
+}
+
+fn bind_goal_hook(
+    app: &App,
+    data: &Path,
+    attempt: &yulius_domain::ids::AttemptId,
+    token: &str,
+) -> TestResult {
+    rusqlite::Connection::open(data.join("yulius.db"))?.execute(
+        "UPDATE attempts SET token_hash = ?1 WHERE id = ?2",
+        rusqlite::params![
+            app.deps.crypto.sha256_hex(token.as_bytes()),
+            attempt.as_str()
+        ],
+    )?;
+    Ok(())
+}
+
+async fn write_native_goal(
+    app: &Arc<App>,
+    data: &Path,
+    id: &TaskId,
+    attempt: &yulius_app::model::AttemptRecord,
+    met: bool,
+) -> TestResult {
+    use std::io::Write;
+    let task = task(app, id).await?;
+    let path = app.deps.harness.claude_transcript(
+        &data
+            .join("sandboxes")
+            .join(task.sandbox_id.as_str())
+            .join("home"),
+        Path::new(&task.worktree_path.ok_or("worktree")?),
+        attempt.provider_session_id.as_deref().ok_or("session")?,
+    );
+    std::fs::create_dir_all(path.parent().ok_or("transcript directory")?)?;
+    let mut transcript = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(path)?;
+    writeln!(
+        transcript,
+        "{}",
+        serde_json::json!({"type":"attachment","attachment":{"type":"goal_status","met":met,"sentinel":!met,"condition":"Verify dev"}})
+    )?;
+    Ok(())
+}
+
+#[test]
+fn a_delayed_native_met_cannot_complete_a_replacement_goal() -> TestResult {
+    check_delayed_native_met(true)
+}
+
+#[test]
+fn a_native_met_after_its_verdict_timeout_completes_the_goal() -> TestResult {
+    check_delayed_native_met(false)
+}
+
+fn check_delayed_native_met(replace: bool) -> TestResult {
+    use yulius_app::race::{self, Point};
+    use yulius_domain::task::Activity;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(Box::pin(async {
+        let app = build_with(
+            &data,
+            &fake,
+            Arc::new(ScriptedUsage::default()),
+            FakeAgentOptions::default(),
+        )?;
+        let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
+        let id = start_verification_goal(&app, sandbox, user).await?;
+        let limit = Duration::from_secs(35);
+        wait_for("first run", limit, || async {
+            screen(&app, &id).contains("FAKE-AGENT READY")
+        })
+        .await?;
+        let first = app.deps.store.live_attempt(&id).await?.ok_or("first run")?;
+        bind_goal_hook(&app, &data, &first.id, "test-first-stop")?;
+        app.hook_event(
+            "test-first-stop",
+            "claude",
+            "Stop",
+            &Default::default(),
+            None,
+        )
+        .await?;
+        let (arrived, parked) = tokio::sync::oneshot::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let (applied, finished) = tokio::sync::oneshot::channel();
+        race::on(
+            Point::NativeVerdictRead,
+            Path::new(first.id.as_str()),
+            move || {
+                let _ = arrived.send(());
+                let _ = tokio::task::block_in_place(|| blocked.recv_timeout(limit));
+            },
+        );
+        race::on(
+            Point::NativeVerdictChecked,
+            Path::new(first.id.as_str()),
+            move || {
+                let _ = applied.send(());
+            },
+        );
+        write_native_goal(&app, &data, &id, &first, true).await?;
+        tokio::time::timeout(Duration::from_secs(12), parked).await??;
+        if replace {
+            let prompt = "Continue the authorized goal. Verify dev";
+            app.switch_with(
+                &id,
+                Some(AccountId::parse("b-second")?),
+                "Capacity",
+                yulius_app::supervisor::RunStart::GoalFresh {
+                    prompt: prompt.into(),
+                },
+            )
+            .await?;
+            let second = app
+                .deps
+                .store
+                .live_attempt(&id)
+                .await?
+                .ok_or("replacement run")?;
+            assert_ne!(first.id, second.id);
+            assert_ne!(first.provider_session_id, second.provider_session_id);
+            bind_goal_hook(&app, &data, &second.id, "test-replacement-stop")?;
+            app.hook_event(
+                "test-replacement-stop",
+                "claude",
+                "UserPromptSubmit",
+                &yulius_contracts::hooks::HookInput {
+                    prompt: Some(prompt.into()),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await?;
+            app.hook_event(
+                "test-replacement-stop",
+                "claude",
+                "Stop",
+                &Default::default(),
+                None,
+            )
+            .await?;
+            write_native_goal(&app, &data, &id, &second, false).await?;
+            wait_for("replacement's own open goal", limit, || async {
+                app.goal_is_open(&id)
+            })
+            .await?;
+        } else {
+            wait_for("timeout settlement", limit, || async {
+                task(&app, &id)
+                    .await
+                    .is_ok_and(|task| task.activity == Some(Activity::Waiting))
+            })
+            .await?;
+        }
+        release.send(())?;
+        tokio::time::timeout(limit, finished).await??;
+        if replace {
+            app.hook_event(
+                "test-replacement-stop",
+                "claude",
+                "Stop",
+                &Default::default(),
+                None,
+            )
+            .await?;
+            assert_eq!(
+                task(&app, &id).await?.activity,
+                Some(Activity::Working),
+                "the replacement is still evaluating its own goal"
+            );
+        } else {
+            assert_eq!(
+                task(&app, &id).await?.activity,
+                Some(Activity::Done),
+                "the live goal's Met must settle it after the timeout"
+            );
+        }
         stop(&app, &id).await
     }))?;
     rt.shutdown_timeout(Duration::from_secs(5));

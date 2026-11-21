@@ -43,6 +43,7 @@ Earlier user requests establish the ownership rule. Task #534 concerned automate
 - [x] Preserve the native evaluator on a goal’s first Stop
 - [x] Carry the opening verification turn across a capacity move before its native goal starts
 - [ ] Keep a delayed native-goal Stop and its verdict with their originating attempt
+- [ ] Keep transcript goal verdicts with their run and order them with timeout settlement
 
 ## Acceptance criteria
 

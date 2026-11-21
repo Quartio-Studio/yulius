@@ -1063,6 +1063,10 @@ impl App {
             runtime.turn_end_ms.fetch_max(recorded, Ordering::SeqCst);
         }
         let waiting = runtime.verdict_stop_ms.pending(attempt);
+        crate::race::reached(
+            crate::race::Point::NativeVerdictRead,
+            std::path::Path::new(attempt.as_str()),
+        );
         if outcome == GoalOutcome::NotMet && runtime.verdict_stop_ms.take(attempt, None) {
             // The agent goes on, and the task never read idle.
             runtime.resumed_turn.store(true, Ordering::SeqCst);

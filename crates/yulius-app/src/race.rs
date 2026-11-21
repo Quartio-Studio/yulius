@@ -195,6 +195,10 @@ pub enum Point {
     StopClean,
     /// A verdict or timeout found its Stop and is about to claim the turn for settlement.
     GoalVerdictReady,
+    /// The watcher read a native goal record. The path identifies its attempt.
+    NativeVerdictRead,
+    /// The watcher finished applying a native goal record for this attempt.
+    NativeVerdictChecked,
     /// `validate_checkout` (SPEC-394): the checkout's root was resolved and the file's path
     /// worked out; the file is not opened yet. The path is the file's.
     CheckoutRead,
