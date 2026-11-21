@@ -12,14 +12,13 @@ root = Path(__file__).resolve().parent.parent
 args = sys.argv[1:]
 os.environ["PATH"] = str(root / ".tools/bin") + os.pathsep + os.environ.get("PATH", "")
 
-def validate_scratch_args(cargo, args):
+def validate_scratch_args(args):
     import tomllib
     # Cargo expands configured aliases after parsing its options. Use a named
     # build command whose output arguments can be inspected before dispatch.
     builtins = {"bench", "build", "check", "clean", "doc", "fix", "run", "rustc", "rustdoc", "test"}
-    if not args or args[0].startswith(("-", "+")):
-        sys.exit("--scratch-target needs an explicit Cargo build subcommand; expand aliases before using it")
-    config_args = []
+    if not args or args[0] not in builtins:
+        sys.exit("--scratch-target needs a built-in Cargo build subcommand; expand any alias")
     cargo_args = iter(args)
     for arg in cargo_args:
         key, separator, value = arg.partition("=")
@@ -30,7 +29,6 @@ def validate_scratch_args(cargo, args):
         if key == "--config":
             if not separator:
                 value = next(cargo_args, "")
-            config_args.extend(["--config", value])
             try:
                 config = tomllib.loads(value)
             except tomllib.TOMLDecodeError:
@@ -44,23 +42,6 @@ def validate_scratch_args(cargo, args):
             build = config.get("build", {})
             if isinstance(build, dict) and {"target-dir", "build-dir"} & build.keys():
                 sys.exit("--scratch-target owns Cargo's output directories; remove the --config output override")
-
-    if args[0] not in builtins:
-        # A configured alias can shadow an external subcommand. Ask this Cargo
-        # with the caller's configuration before starting an external build.
-        import subprocess
-        with tempfile.TemporaryFile() as listing:
-            subprocess.run([cargo, *config_args, "--list"], stdout=listing, check=True, timeout=10)
-            if listing.tell() > 1024 * 1024:
-                sys.exit("Cargo's command listing exceeded 1 MiB")
-            listing.seek(0)
-            for line in listing:
-                words = line.split(None, 1)
-                if len(words) == 2 and words[0] == args[0].encode():
-                    if words[1].startswith(b"alias:"):
-                        sys.exit("--scratch-target needs an explicit Cargo subcommand; expand the configured alias")
-                    return
-            sys.exit(f"--scratch-target could not verify Cargo subcommand {args[0]!r}")
 
 
 scratch_target = args[:1] == ["--scratch-target"]
@@ -130,7 +111,7 @@ if Path(cargo).resolve() == launcher:
     else:
         sys.exit("The project Cargo launcher needs a Cargo executable on PATH")
 if scratch_target:
-    validate_scratch_args(cargo, args)
+    validate_scratch_args(args)
     plain(cargo)
 
 # Yulius CI keeps the runner's session for cancellation and redirects all three streams.

@@ -30,8 +30,8 @@ On 2026-11-21 the owner measured 105 minutes waiting for mutation tests in 22 Co
 - [x] Reclaim attempt scratch after forced host termination
 - [x] Deliver the by-hand mutation policy and bootstrap
 - [x] Deliver disk build scratch, the tmpfs cap and on-request campaign cleanup
-- [ ] Deliver disposable targets through direct Cargo
-- [ ] Reuse the compiler cache for eligible disposable builds and request staging
+- [ ] Deliver disposable targets for built-in Cargo commands
+- [ ] Deliver external Cargo commands and cache reuse, then request staging
 
 ## Acceptance criteria
 
@@ -49,7 +49,7 @@ ADR-0439 replaces the delivery default of ADR-0347 with the owner's by-hand rule
 
 ## Evidence
 
-Delivery is split into four pull requests. The first carries the by-hand policy and bootstrap. The second carries the session limit and disk-backed campaign scratch. The third carries the direct disposable Cargo target launcher. The fourth enables eligible compiler-cache builds to use disposable targets. Runtime observations below were collected on the implementation branch. The task requests staging once after all four merge.
+Delivery is split into four pull requests. The first carries the by-hand policy and bootstrap. The second carries the session limit and disk-backed campaign scratch. The third carries the direct disposable target launcher for built-in Cargo commands. The fourth handles external commands and enables cache reuse for eligible disposable builds. Runtime observations below were collected on the implementation branch. The task requests staging once after all four merge.
 
 The original containment argument tests failed when required to show a size on /tmp. All 46 process-host unit tests passed after the mount change. The ownership test passed for both agent and CI launches. A disposable Linux container reported exactly 1,073,741,824 bytes and returned ENOSPC to a 1,073,741,825-byte allocation. Nested bubblewrap was denied by this session, so the live contained-agent test skipped its mount assertions.
 
@@ -134,3 +134,5 @@ Review of ab4d63bd7 found that a terminal interrupt could be delivered twice and
 By-hand removal of the signal-origin check delivered SIGINT twice and interrupted graceful handling. Disabling the final process-identity comparison released the synchronized worker’s live target. Restoration passed both tests. The Bash regression now waits for the kernel to report the new foreground group before typing Ctrl-Z, because Bash prints the job name before completing the handoff. The six shared campaign-supervisor process tests exercised the process-list helper without executing a campaign.
 
 Review of 65b5e60e7 confirmed the preceding fixes and found that a user-sent group SIGINT looked like a signal sent to the launcher alone. The portable fallback also substituted TERM for a launcher-only SIGINT. Ambiguous signals now give Cargo three seconds to finish handling a signal already delivered to its job. If it remains live, the supervisor forwards the originally requested signal and gives it three more seconds before escalation. An offline Cargo alias also supplied an output directory after validation. The launcher now checks the effective Cargo command listing for commands outside its known built-ins and requests the expanded command when it finds an alias. The offline alias no longer builds an executable outside scratch. By-hand reversals reproduced the alias write, two handler invocations on a group SIGINT, and absence of the original launcher-only interrupt on the portable path.
+
+Review of 5cc77565e confirmed the signal fixes and exposed two external-command dispatch cases. Cargo listed nextest without a description, and an environment clippy alias overrode the listed plugin and wrote artifacts outside scratch. External dispatch moves to the final PR alongside compiler-cache integration. The direct built-in command delivery has no plugin or alias-resolution path.
