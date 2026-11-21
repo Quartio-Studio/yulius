@@ -143,7 +143,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   // during an explicit list read once, then preserve any changes during confirmation.
   const activeLists = new Set();
   const activeDetails = new Set();
-  const detailResumes = new WeakSet();
+  const terminalLifecycleRows = new WeakSet();
 
   function forgetDetailRow(taskId) {
     for (const read of activeDetails) if (read.row?.id === taskId) read.row = null;
@@ -219,11 +219,11 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       if (current) {
         for (const task of map.values()) {
           const prior = current.get(task.id);
-          // A newer list can supersede the resume event retained while a
-          // terminal was reading an earlier parked state.
-          const resumed = detailResumes.has(prior);
-          if (task.status !== 'parked' && prior?.status !== 'parked' && !resumed) continue;
-          if (resumed && task.status !== 'parked') detailResumes.add(task);
+          // Notify the terminal when a newer list supersedes its lifecycle
+          // observation or restores a row that disappeared in an archive.
+          const tracked = terminalLifecycleRows.has(prior);
+          if (prior && task.status !== 'parked' && prior.status !== 'parked' && !tracked) continue;
+          if (tracked && task.status !== 'parked') terminalLifecycleRows.add(task);
           if (!prior || JSON.stringify(task) !== JSON.stringify(prior) || pullForStatus(task) !== pullForStatus(prior)) {
             emit('task', task);
             changed = true;
@@ -351,7 +351,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   }
 
   function rememberTransition(row, discovered = false) {
-    if (row.status !== 'parked') detailResumes.add(row);
+    if (row.status !== 'parked') terminalLifecycleRows.add(row);
     const order = rowOrder.get(row);
     for (const read of activeLists) {
       if (read.sandboxId !== row.sandbox_id || read.order >= order) continue;
@@ -367,26 +367,39 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     }
   }
 
+  // Resting tasks can move into and out of the archive without changing
+  // process status (TaskStatus::is_resting). Their detail verifies membership.
+  function restingStatus(status) {
+    return status === 'closed' || status?.startsWith('stopped_') || status?.startsWith('failed_');
+  }
+
   function beginParkedDetail(startingRow) {
     const order = ++nextListRead;
-    const read = { row: state.tasks.get(startingRow?.sandbox_id)?.get(startingRow?.id) };
+    // A mounted archived task is outside the active list. Its next detail
+    // can establish that Undo restored it while the terminal was open.
+    const read = { row: state.tasks.get(startingRow?.sandbox_id)?.get(startingRow?.id) ??
+      (startingRow?.archived || restingStatus(startingRow?.status) ? startingRow : undefined) };
     if (read.row) activeDetails.add(read);
     const release = () => activeDetails.delete(read);
     const publish = (detail, view = {}) => {
       release();
       const map = state.tasks.get(detail.sandbox_id);
       if (!map || read.row === null || detail.archived) return view;
-      // Only a row actually visible at request start can survive omission by
-      // an older list. Archive/delete invalidates that reference synchronously.
+      // Retain the observed task across an older list omission. A removal
+      // event invalidates the reference before any pending detail can publish.
       const retained = read.row?.id === detail.id ? read.row : null;
       const listed = map.get(detail.id);
       const listVersion = listOrder.get(map) ?? 0;
       const laterEvent = rowOrder.get(retained) > Math.max(listVersion, rowOrder.get(listed) ?? 0);
       const crossedPark = startingRow && startingRow.status !== detail.status &&
         (startingRow.status === 'parked' || detail.status === 'parked');
-      const row = laterEvent ? retained : listed ?? (crossedPark && listVersion < order ? retained : null);
-      if (!row || (row.status !== 'parked' && detail.status !== 'parked' && startingRow?.status !== 'parked')) return view;
-      const transition = row.status !== detail.status || crossedPark;
+      const verifiesMembership = startingRow?.archived ||
+        restingStatus(detail.status) || restingStatus(startingRow?.status);
+      const retainOmitted = (crossedPark || verifiesMembership) && listVersion < order;
+      const row = laterEvent ? retained : listed ?? (retainOmitted ? retained : null);
+      if (!row) return startingRow?.archived ? { ...view, ...lifecycleSummary(startingRow, startingRow) } : view;
+      if (!verifiesMembership && detail.status !== 'parked' && row.status !== 'parked' && startingRow?.status !== 'parked') return view;
+      const transition = verifiesMembership || crossedPark || row.status !== detail.status;
       recordVerification(detail, order);
       if (rowOrder.get(row) > order) {
         // Preserve the newer event's work and decisions. An older detail may
@@ -444,7 +457,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     recordVerification(task, order);
     if (recheck) task = awaitingVerification(task, prior, order);
     rowOrder.set(task, order);
-    if (task.status !== 'parked' && detailResumes.has(prior)) detailResumes.add(task);
+    if (task.status !== 'parked' && terminalLifecycleRows.has(prior)) terminalLifecycleRows.add(task);
     // A live list can replace a newer live event before a detail reveals that
     // the task crossed a park. Keep that event with the outstanding read.
     for (const read of activeDetails) if (read.row?.id === task.id) read.row = task;

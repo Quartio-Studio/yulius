@@ -2694,3 +2694,102 @@ test('the resumed terminal clears its former subscription when it later waits wi
   await chip.click();
   await expect(screen.getByRole('menuitem', /^Claude #4\s*5 h 12% · week 33%/)).toBeVisible();
 });
+
+test('a newer unarchived detail restores the task across an intermediate empty list in every reply order', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const results = [];
+    for (const status of ['closed', 'stopped_cancelled', 'failed_spawn_error']) {
+      for (const schedule of ['ALU', 'AUL', 'LAU', 'LUA', 'UAL', 'ULA']) {
+        const initial = { id: 'p', sandbox_id: 's', status, archived: false, title: 'Before' };
+        const held = Promise.withResolvers<void>();
+        let reads = 0;
+        const store = createStore({ get: async () => {
+          if (++reads === 1) return [initial];
+          await held.promise;
+          return [];
+        } });
+        await store.loadTasks('s');
+        const archive = store.beginParkedDetail(initial);
+        const list = store.loadTasks('s', true);
+        const undo = store.beginParkedDetail(initial);
+        for (const reply of schedule) {
+          if (reply === 'A') {
+            // The mounted terminal drops an older reply after applying a newer detail.
+            if (schedule.indexOf('U') < schedule.indexOf('A')) archive.release();
+            else archive({ ...initial, archived: true });
+          }
+          if (reply === 'L') { held.resolve(); await list; }
+          if (reply === 'U') undo({ ...initial, archived: false, title: 'Restored' });
+        }
+        results.push(store.findTask('p')?.title ?? null);
+      }
+    }
+    return results;
+  });
+  expect(seen).toEqual(Array(18).fill('Restored'));
+});
+
+test('a mounted resting task can verify Undo after a list already omitted its row', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const results = [];
+    for (const status of ['closed', 'stopped_cancelled', 'failed_spawn_error']) {
+      for (const removal of ['none', 'delete', 'newer empty list']) {
+        const visible = { id: 'p', sandbox_id: 's', status, archived: false, title: 'Before' };
+        let reads = 0;
+        const store = createStore({ get: async () => ++reads === 1 ? [visible] : [] });
+        await store.loadTasks('s');
+        const oldArchive = store.beginParkedDetail(visible);
+        await store.loadTasks('s', true);
+        const undo = store.beginParkedDetail({ ...visible });
+        if (removal === 'delete') store.removeTask('p');
+        if (removal === 'newer empty list') await store.loadTasks('s', true);
+        undo({ ...visible, title: 'Restored' });
+        oldArchive.release();
+        results.push(store.findTask('p')?.title ?? null);
+      }
+    }
+    return results;
+  });
+  expect(seen).toEqual(['Restored', null, null, 'Restored', null, null, 'Restored', null, null]);
+});
+
+for (const source of ['detail', 'list']) {
+  test(`a mounted stopped task returns to Tasks when the ${source} discovers Undo`, async ({ app, browser, screen }) => {
+    await app.open(mock('/s/studio', '&ambient=0&pullgap=0&pullclock=manual'));
+    type Fixture = { __yuliusMock: { tasks: { id: string }[]; eventSockets: Set<{ push(data: string): void }>;
+      touchTask(s: string, n: number, fields: object): void; changePull(s: string, n: number, fields: object): void } };
+    await browser.evaluate(() => {
+      const db = (window as unknown as Fixture).__yuliusMock;
+      db.touchTask('sb_studio', 12, { status: 'parked', parked_needs_you: false });
+      db.touchTask('sb_studio', 13, { status: 'stopped_cancelled', archived: false, title: 'Stopped before archive' });
+    });
+    const stopped = screen.getByRole('region', 'Stopped');
+    await expect(stopped.getByRole('link', /Stopped before archive/)).toBeVisible();
+    await browser.evaluate(() => {
+      const db = (window as unknown as Fixture).__yuliusMock;
+      Object.assign(db.tasks.find(t => t.id === 'tsk_studio_13')!, { title: 'Mounted detail' });
+      location.hash = '/s/studio/t/13';
+    });
+    const title = browser.locator('.step-task');
+    await expect(title).toHaveText(/Mounted detail/);
+    await browser.evaluate(() => {
+      (window as unknown as Fixture).__yuliusMock.touchTask('sb_studio', 13, { archived: true, title: 'Observed archive' });
+    });
+    await expect(title).toHaveText(/Observed archive/);
+    await expect(stopped.getByRole('link', /Mounted detail|Stopped before archive|Observed archive/)).toBeHidden();
+    await browser.evaluate((source) => {
+      const db = (window as unknown as Fixture).__yuliusMock;
+      Object.assign(db.tasks.find(t => t.id === 'tsk_studio_13')!, { archived: false, title: 'Restored after Undo' });
+      if (source === 'list') db.changePull('sb_studio', 520, { checks: 'success' });
+      else for (const socket of db.eventSockets) socket.push(JSON.stringify({ type: 'steps.updated', task_id: 'tsk_studio_13' }));
+    }, source);
+    await expect(stopped.getByRole('link', /Restored after Undo/)).toBeVisible();
+    await expect(title).toHaveText(/Restored after Undo/);
+  });
+}
