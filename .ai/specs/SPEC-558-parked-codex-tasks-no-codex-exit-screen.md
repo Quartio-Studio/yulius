@@ -100,6 +100,10 @@ When the watcher sees an open PR during an active queue decision or its slot cha
 
 ## Evidence
 
+- On landed dev `ec580fc3a`, 12 of 39 scoped owner-watch tests failed. Three strengthened race and identity regressions also failed. The watcher typed the old ordinary CI failure after a repair was pushed to the fixture’s bare Git remote. The fixtures reopen the SQLite database, restore the arm and run the owner’s watcher through a PTY. Changing the train’s members while it verifies the same red run leaves the prior observation unheard.
+
+- PR #1574 landed at dev `ec580fc3a`. Train run `8b6bf3ef-7a83-4490-9166-a988cf4aa5b6` passed quality, both Rust shards and browser E2E. PR run `6ce66313-3813-436a-b18e-8b2a2b20a606` and dev run `88ff2f78-4e23-4bbe-8b8d-4625c3fea241` reused the verified tree. Vidoc was disabled. The restored-position mutation campaign finished with 24 listed, 19 caught and five unviable. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/ec580fc3aaf5e25c81f6f385551285050b1e90a9)
+
 - Independent review approved `64116f9f69c26b216db2625e92175062082a8c7a` for restored merge requests and train positions. All 284 scoped parking, delivery, PR-watch and queue tests passed. The reviewer independently ran the real retitle-502 regression. Scoped Clippy, repository contracts, formatting and spec validation passed. Vidoc was disabled. The 24-target mutation campaign passed its unmutated baseline and was running at approval. The last review fix changed tests and documentation and had no Rust product mutations.
 
 - The train’s second wait occurs after GitHub shows the pushed head but returns HTTP 502 for a necessary PR title update. With only that return reverted to a plain wait, the real queue fixture received the 502 and found a null verified head. The fixture retains the arm, reads its verified train position and releases the upstream failure before completing the merge.

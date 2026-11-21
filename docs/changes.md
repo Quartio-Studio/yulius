@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- An armed PR’s owner now hears its current ordinary CI failure once, including a run shared at the same head. A train notice identifies the current members and waits if a repair is published or a person takes the decision during the read (SPEC-558).
 - A saved merge request holds its owner’s PR check-in during startup. A passed train keeps the verified member head while GitHub catches up, and `yulius wait` names conflicting files only for the excluded request that produced them (SPEC-558).
 - During orderly Linux server shutdown, live sandbox outbound relays stop accepting new connections without reporting a capacity warning. An admitted copy can return its original sockets, pending bytes and write-half state for restart. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
 

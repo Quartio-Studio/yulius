@@ -194,7 +194,10 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
         .await?;
         assert!(watch(&app, &bounds, &id).await?.is_none(), "told once");
 
-        // A different failed run stopped its sibling before it recorded any test failure.
+        // The next head's run supersedes the previously reported head and stopped its
+        // sibling before it recorded any test failure.
+        git(worktree, &["commit", "-q", "--allow-empty", "-m", "Retry repair"])?;
+        let head = git(worktree, &["rev-parse", "HEAD"])?;
         let (ordinary, primary) = run(&sandbox, "ordinary", &head, RunState::Failed, None, 2);
         let empty = CiJobRecord {
             id: "ordinary-onboarding".into(),
@@ -228,21 +231,20 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
         git(&repo, &["fetch", "-q", "origin"])?;
         let (green, job) = run(&sandbox, "r2", &head, RunState::Passed, None, 3);
         app.deps.store.insert_ci_run(&green, &[job]).await?;
+        // The owner's rerun is outside the recent sandbox window. Another PR also
+        // tested this SHA, so the remembered-head lookup must still select PR #7.
+        for queued in 4..=104 {
+            let sha = if queued == 104 { &head } else { "other-head" };
+            let (mut other, job) =
+                run(&sandbox, &format!("other-{queued}"), sha, RunState::Failed, None, queued);
+            other.reference = CiRef::PullRequest(99);
+            app.deps.store.insert_ci_run(&other, &[job]).await?;
+        }
         // A permission prompt or question waits for a person: nothing is typed over it, though
         // the session takes input (it was just typed into).
-        let activity = app.deps.store.task(&id).await?.ok_or("task")?.activity;
-        app.deps
-            .store
-            .set_activity(&id, Some(Activity::NeedsAttention), app.now())
-            .await?;
-        assert!(
-            watch(&app, &bounds, &id).await?.is_none(),
-            "a person must act first"
-        );
-        app.deps
-            .store
-            .set_activity(&id, activity, app.now())
-            .await?;
+        crate::parking::ask(&app, &id).await?;
+        assert!(watch(&app, &bounds, &id).await?.is_none(), "a person must act first");
+        app.deps.store.set_task_needs_you(&id, None, app.now()).await?;
         let typed = typed_within(&app, &bounds, &id)
             .await?
             .ok_or("the conflict was not typed")?;
@@ -301,6 +303,7 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
             .transition_delivery(&DeliveryStage::PrOpen, &merged)
             .await?;
         // Not over a prompt that waits for a person either (review round 2).
+        let activity = app.deps.store.task(&id).await?.ok_or("task")?.activity;
         app.deps
             .store
             .set_activity(&id, Some(Activity::NeedsAttention), app.now())
