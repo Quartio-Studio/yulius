@@ -126,7 +126,12 @@ shell keeps the sandbox's `HOME`); an uncontained one sets `HOME` to the run's A
 `yulius hook antigravity <event>` translates its hooks (SessionStart, the first model call of a
 turn, Stop, `run_command`) to Yulius's; its transcript gives prompts, tokens and limits, and
 a turn its model API failed ends with a Stop Yulius settles without a gate. A successful Stop
-with `fullyIdle: false` keeps the task Working while its command runs. A first invocation
+with `fullyIdle: false` probes live background processes (including PTY-hosted commands) and active
+`yulius wait` calls: when only `yulius wait` is running, Yulius settles the turn to Waiting with
+`yulius_wait = true` so the merge queue proceeds; when non-wait background work runs, Yulius
+settles `activity = Waiting` while tracking `background_shells >= 1` so SPEC-528 does not show
+Needs You and the merge queue holds until that work ends ([ADR-0419](decisions/0419-antigravity-stop-settles-turn-and-armed-green-prs-have-a-stall-bound.md),
+[SPEC-580](../.ai/specs/SPEC-580-an-armed-green-pr-merges-when-its-agent.md)). A first invocation
 following a system message signals activity without submitting a prompt ([SPEC-528](../.ai/specs/SPEC-528-antigravity-tasks-show-needs-its-person.md)). When its run ends, a
 token file the CLI refreshed replaces the stored sign-in and is removed.
 
@@ -2391,7 +2396,7 @@ possible draft leaves `person-typed` in the run folder, removed when a prompt is
 the box and read by `reconcile` for a reattached run). Claude’s scheduled hand-over preserves that mark even when its submit hook
 carries plain text (SPEC-541, [ADR-0388](decisions/0388-claude-scheduled-submits-use-the-transcript-hand-over.md)).
 After the typing minute, the exact empty conversation box can also end the key's hold,
-its recovery mark and its held-message flag. [ADR-0405](decisions/0405-a-confirmed-empty-claude-prompt-releases-a-held-message.md)
+its recovery mark and its held-message flag. Codex's reader recognizes its focused, dim conversation placeholder and empty-composer footer on a fully rendered grid. [ADR-0420](decisions/0420-recognize-the-empty-codex-composer.md) · [ADR-0405](decisions/0405-a-confirmed-empty-claude-prompt-releases-a-held-message.md)
 Before a paste, visible input in
 Claude Code’s conversation box also holds a message. This catches restores that generated no
 key. An automatic message flags the task immediately in this case

@@ -570,15 +570,16 @@ pub async fn serve_forward_at(
     out_sock: PathBuf,
     loopback_v6: bool,
 ) -> io::Result<JoinHandle<()>> {
-    forward_within(
-        address,
+    let listener = TcpListener::bind((address, port)).await?;
+    Ok(forward_within(
+        listener,
         port,
         out_sock,
         loopback_v6,
         MAX_CONNECTIONS,
         IDLE_FLOOR,
     )
-    .await
+    .await)
 }
 
 /// Connections the relays of this process dropped at their limit (SPEC-353 LAP-002).
@@ -593,21 +594,20 @@ fn dropped_connections() -> u64 {
 /// [`serve_forward_at`] with `max` connections at once, idle ones giving way after `floor`
 /// (tests use small ones).
 async fn forward_within(
-    address: Ipv4Addr,
+    v4: TcpListener,
     port: u16,
     out_sock: PathBuf,
     loopback_v6: bool,
     max: usize,
     floor: Duration,
-) -> io::Result<JoinHandle<()>> {
-    let v4 = TcpListener::bind((address, port)).await?;
+) -> JoinHandle<()> {
     let v6 = if loopback_v6 {
         TcpListener::bind((Ipv6Addr::LOCALHOST, port)).await.ok()
     } else {
         None
     };
     let places = Places::new(max, floor);
-    Ok(tokio::spawn(async move {
+    tokio::spawn(async move {
         let mut warned = None;
         let mut gave_way = None;
         loop {
@@ -641,7 +641,7 @@ async fn forward_within(
                 }
             });
         }
-    }))
+    })
 }
 
 async fn forward_connection<S>(stream: S, port: u16, out_sock: &Path) -> io::Result<()>
@@ -1136,11 +1136,9 @@ mod tests {
                 }
             }
         });
-        let free = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
-        let port = free.local_addr()?.port();
-        drop(free);
-        let forward =
-            forward_within(Ipv4Addr::LOCALHOST, port, out_sock, false, 2, IDLE_FLOOR).await?;
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let port = listener.local_addr()?.port();
+        let forward = forward_within(listener, port, out_sock, false, 2, IDLE_FLOOR).await;
         let mut clients = Vec::new();
         for _ in 0..2 {
             clients.push(TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await?);
@@ -1358,20 +1356,20 @@ mod tests {
     -> TestResult {
         let dir = tempfile::tempdir()?;
         let out_sock = dir.path().join("out.sock");
-        let free = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
-        let port = free.local_addr()?.port();
-        drop(free);
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let port = listener.local_addr()?.port();
+        assert_eq!(
+            TcpListener::bind((Ipv4Addr::LOCALHOST, port))
+                .await
+                .err()
+                .map(|error| error.kind()),
+            Some(io::ErrorKind::AddrInUse),
+            "another listener must not claim the forward's port during setup"
+        );
         let server = ServerProcess::start(out_sock.clone(), port)?;
         // Idle at once: the test's leftovers are idle for as long as the floor.
-        let forward = forward_within(
-            Ipv4Addr::LOCALHOST,
-            port,
-            out_sock.clone(),
-            false,
-            4,
-            Duration::ZERO,
-        )
-        .await?;
+        let forward =
+            forward_within(listener, port, out_sock.clone(), false, 4, Duration::ZERO).await;
         // Leftover processes: each made a call and keeps its connection, idle, for good.
         let mut leftovers = Vec::new();
         for _ in 0..4 {
@@ -1556,19 +1554,10 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let out_sock = dir.path().join("out.sock");
         let in_sock = dir.path().join("in.sock");
-        let free = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
-        let port = free.local_addr()?.port();
-        drop(free);
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let port = listener.local_addr()?.port();
         let server = ServerProcess::start(out_sock.clone(), port)?;
-        let forward = forward_within(
-            Ipv4Addr::LOCALHOST,
-            port,
-            out_sock.clone(),
-            false,
-            2,
-            IDLE_FLOOR,
-        )
-        .await?;
+        let forward = forward_within(listener, port, out_sock.clone(), false, 2, IDLE_FLOOR).await;
         let holder = tokio::spawn(serve_inbound_forwarding(
             UnixListener::bind(&in_sock)?,
             1,
