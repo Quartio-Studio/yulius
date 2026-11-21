@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- Task lists retain observed pull request state during a GitHub outage. The Status panel and task lists report when the GitHub App’s request budget resets. [SPEC-608](../.ai/specs/SPEC-608-a-github-rate-limit-must-not-show-finish.md)
 - Claude Code task delivery shows current review rounds. Codex task delivery also keeps the
   just-merged PR's review visible. [SPEC-605](../.ai/specs/SPEC-605-record-the-review-rounds-of-codex-tasks.md)
 - An idle task stays live while its merge request is being armed. If parking wins, Yulius asks the owner to resume before arming the merge. [SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
