@@ -62,7 +62,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Report the active singleton and replay its recorded failure for the original owner
 - [x] Reproduce candidate status across restart on the live and parked PR owner
 - [x] Verify the failed integration candidate before parking its original owner
-- [ ] Bind a parked message to the attempt its caller observed
+- [x] Bind a parked message to the attempt its caller observed
 - [ ] Resume only the parked run whose screen finished saving
 - [ ] Preserve a continuation while its previous parked run settles
 - [ ] Order parking and replacement merge requests through run settlement
@@ -116,6 +116,13 @@ The final parking check compares the owner’s saved singleton decision with the
 The SQLite query returning a parked task includes the latest attempt ID in the same snapshot. Admission checks that ID under the launch lock after caller preflight. A message can wait while another turn resumes and parks, so task status alone cannot identify the session the sender observed. Only a matching parked attempt can restore Codex lineage or accept the prompt. Bulk messages, Telegram replies and remote restarts carry the attempt from their first task lookup through dispatch. They check the caller’s current access before acting.
 
 ## Evidence
+
+- The dispatch fix’s mutation run listed 46 changes, caught 10, and found 36 unviable. None were missed, timed out or left untested at the 30-minute bound. Its unmutated baseline passed all 3,370 selected tests.
+- For the following screen-saving step, isolated run `4e5541b2-94cb-4c3b-bf7a-56b1d029c3cc` reproduced three failures on the approved dispatch code. A wake succeeded while the old screen was still being published, another started while an exit reader still held the old run, and a late exit reader overwrote the old run’s saved screen after resume. The successor’s held PR lookup allowed the owner to resume as expected.
+
+- The final test-hook change listed 4 mutations. All 4 were unviable because their generated replacements could not construct `AppResult<TaskSummary>`. Its unmutated baseline passed all 3,364 selected tests.
+
+- Independent review approved `f5fa3bda47763275e51e7d9dd82d85765e8927b5` against dev `e19ea9f18`. Integrated nextest run `7e90b82a-bf36-4581-9996-eb98d886b7df` passed all 280 selected Rust tests. All five dispatch regressions also passed together in one threaded test process. The integrated base’s 40 local CD-script tests passed, as did repository contracts and Rust formatting. Vidoc was disabled.
 
 - With the two parked-attempt checks removed only for the reproduction, run `6c0b82ed-75ae-4457-9067-9a1467084e04` failed both named-teammate regressions. The browser returned HTTP 200 and cleared the replacement question. Bulk reported the replacement question as answered. Both requests omitted the optional question timestamp and the same teammate was named on both turns.
 
