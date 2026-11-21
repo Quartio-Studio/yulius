@@ -29,7 +29,7 @@ SPEC-575 already has a durable staging queue, explicit admission through `cd_dep
 - [x] Keep the merged task waiting for its gate and staging decision
 - [x] Approve the browser and merge-train test fixes for delivery
 - [x] Direct a superseding final staging request to the newer landing
-- [ ] Deliver staging receipts that identify a completed check or its fix-forward action
+- [x] Deliver staging receipts that identify a completed check or its fix-forward action
 - [ ] Preserve a retried deployment’s outcome when delivery overlaps a previous failure
 - [ ] Prove the staging failure and recovery paths and approve their delivery after the CI test merge
 - [ ] Package the reviewed staging change with its verification evidence
@@ -103,3 +103,5 @@ The merged load-test revision passed the full dev gate, including both Rust shar
 With the terminal receipt changes removed, the repeated failed-gate and no-run gate regressions both failed. The second fixture drove the queue with CI unavailable and repeated the same request after restoring CI. Both passed with the receipt fixes restored, along with all 35 staging cases.
 
 The multi-task fixture deployed revision B, then repeated A’s verified request. Before the fix its receipt said staging still served A. Successful receipts now report what the recorded deployment verified or included and name the available run IDs.
+
+All 35 CI-profile staging scenarios passed with the historical receipt fix. Independent review approved `0b7400556`. The repository contract and format checks passed. Vidoc was disabled.
