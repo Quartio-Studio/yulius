@@ -1109,14 +1109,6 @@ impl App {
             own = None;
         }
         let own = own.as_ref();
-        // The queue still verifies a single failing member before deciding its arm.
-        // Keep earlier green advice and check-ins quiet while that decision is pending.
-        if holding.is_some_and(|(_, members)| members.len() == 1)
-            && candidate.is_some_and(|run| run.state == RunState::Failed)
-            && own.is_none_or(|run| !matches!(run.state, RunState::Failed | RunState::Error))
-        {
-            return None;
-        }
         let hold = if train.is_some() {
             Hold::Held
         } else {
@@ -1146,6 +1138,17 @@ impl App {
                 }),
                 _ => {}
             }
+        }
+        // A disappearing train, or one awaiting its singleton decision, has no
+        // instructions for its member. An untold ordinary failure still takes priority.
+        if events.is_empty()
+            && holding.is_some_and(|(_, members)| match candidate.map(|run| run.state) {
+                Some(RunState::Queued | RunState::Running | RunState::Passed) => false,
+                Some(RunState::Failed) => members.len() == 1,
+                Some(RunState::Error | RunState::Cancelled | RunState::Skipped) | None => true,
+            })
+        {
+            return None;
         }
         if let (Some(run), Some((_, members))) = (candidate, holding)
             && members.len() > 1

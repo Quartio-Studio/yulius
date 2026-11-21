@@ -727,6 +727,42 @@ async fn check_after_restart(
                     "stale member {field}: {news:?}"
                 );
             }
+            let due = WatchBounds {
+                check_in_after_ms: 0,
+                stall_quiet_ms: 0,
+                stall_after_ms: 0,
+            };
+            let mut obsolete_news = Vec::new();
+            for (run_id, verdict) in [
+                ("gone", None),
+                ("cancelled", Some(RunState::Cancelled)),
+                ("errored", Some(RunState::Error)),
+            ] {
+                if let Some(verdict) = verdict {
+                    let (mut run, job) =
+                        crate::pr_watch::run(&task.sandbox_id, run_id, "merge", verdict, None, 31);
+                    run.reference = CiRef::Train(vec![1481]);
+                    cold.deps.store.insert_ci_run(&run, &[job]).await?;
+                }
+                let mut ending = current.clone();
+                ending[task.sandbox_id.as_str()]["train"]["run"] = json!(run_id);
+                std::fs::write(&path, serde_json::to_vec(&ending)?)?;
+                obsolete_news.extend(cold.watch_prs(&due).await);
+            }
+            assert!(
+                obsolete_news.is_empty(),
+                "train due to dissolve: {obsolete_news:?}"
+            );
+            let (mut run, job) = crate::pr_watch::run(
+                &task.sandbox_id,
+                "later-train",
+                "merge",
+                RunState::Running,
+                None,
+                32,
+            );
+            run.reference = CiRef::Train(vec![1481]);
+            cold.deps.store.insert_ci_run(&run, &[job]).await?;
             std::fs::write(&path, serde_json::to_vec(&current)?)?;
         }
         let seen = cold.watch_prs(&bounds).await;
@@ -736,16 +772,44 @@ async fn check_after_restart(
             "resolved bisection after rearm: {seen:?}"
         );
         if matches!(case, ColdCandidate::RearmedInTrain) {
+            assert_eq!(seen.len(), 1, "active replacement train: {seen:?}");
+            assert!(
+                seen[0].1.contains("later-train") && seen[0].1.contains("Hands off"),
+                "{seen:?}"
+            );
             let task = cold.deps.store.task(id).await?.ok_or("owner")?;
             let path = data.join(yulius_app::merge_train::MERGE_TRAINS_FILE);
             let mut current: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
             current[task.sandbox_id.as_str()]["train"]["run"] = json!("earlier-bisection");
-            std::fs::write(path, serde_json::to_vec(&current)?)?;
+            std::fs::write(&path, serde_json::to_vec(&current)?)?;
             let held = cold.watch_prs(&bounds).await;
             assert!(
                 held.is_empty(),
                 "the queue is verifying its sole member: {held:?}"
             );
+            current[task.sandbox_id.as_str()]["train"]["run"] = json!("gone");
+            std::fs::write(path, serde_json::to_vec(&current)?)?;
+            let (mut run, job) = crate::pr_watch::run(
+                &task.sandbox_id,
+                "ordinary-red",
+                head,
+                RunState::Failed,
+                None,
+                33,
+            );
+            run.reference = CiRef::PullRequest(1481);
+            cold.deps.store.insert_ci_run(&run, &[job]).await?;
+            let news = cold.watch_prs(&bounds).await;
+            assert_eq!(
+                news.len(),
+                1,
+                "ordinary failure with missing candidate: {news:?}"
+            );
+            assert!(
+                news[0].1.contains("ordinary-red") && !news[0].1.contains("Hands off"),
+                "{news:?}"
+            );
+            assert!(cold.watch_prs(&bounds).await.is_empty());
         }
         cold.stop_task_now(id).await?;
         return Ok(());

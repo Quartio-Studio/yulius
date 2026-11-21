@@ -183,6 +183,8 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # A running owner hears about the train that holds its current request. If ordinary CI fails,
 # it gets that failure once. A pending human decision or a merge being decided holds the notice.
 # A red single-PR candidate with green ordinary CI waits for the queue to verify its failure.
+# If its candidate run disappears, errors or is cancelled, the owner waits for the queue to
+# dissolve the train. Its own new CI failure still reaches it during that interval.
 # Hourly history cleanup retains the latest merge wait of each existing task, even when
 # its activation began more than 180 days ago. Removing the task releases this history.
 # The PR watcher delivers actionable failures once and waits for a pending human decision.
