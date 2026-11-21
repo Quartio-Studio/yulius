@@ -240,3 +240,42 @@ Slice 1 (the CD scripts and `[cd.dev]`):
   - The schema-change branch of the rollback and the undo of a release that does not start were
     exercised on the fake root only: no migration lies between 3fc0e5976 and this branch.
 - Vidoc: turned off for this project in Yulius (disabled, not passed).
+
+Review round 1 (Fable 5.2, head c4848a999): request changes, four major findings in this change's
+own code, answered at a7242b669:
+
+- **The helper refusal.** It never fired: a running oneshot is `activating`, and `is-active`
+  exits 3. It now reads the state word.
+- **The no-loss check.** It failed healthy releases: retention at the start and a redeploy's
+  stale baseline counted as loss. It now measures the migration itself, before anything stops.
+  The new binary migrates a consistent copy of the live store with the new hidden
+  `yulius store-migrate` (`yulius_store::migrate_file`). Only tables a migration deletes from by
+  design may shrink.
+- **The undo test** could not fail for the store restore. The new `halfway` fake migrates and
+  writes, then fails to report its commit.
+- **An interrupted switch** left the service stopped, and a redeploy could prune the operator's
+  release. Now HUP and PIPE are ignored and an EXIT trap recovers. The replaced release is in the
+  history before the stop. Checks run before the stop, and one CD step runs at a time (flock).
+
+Evidence of the round:
+
+- **The new test file** run against c4848a999's scripts: 11 failures and errors, one per finding.
+  With the fixes, 33 pass. The reviewer's mutation (`restore "$prev"` made a no-op) is caught by 2
+  tests.
+- **`store_migrate::`** in `crates/yulius`: 2 passed. Before the command existed, `yulius
+  store-migrate` was an unknown subcommand.
+- **Gates:** `cargo clippy -p yulius-store -p yulius --all-targets --all-features -D warnings`
+  clean; `scripts/dev quick` passed.
+- **CI's red run** 96b74ed0 at c4848a999 failed on
+  `task_done::a_switch_whose_old_run_cannot_be_ended_starts_no_new_run`, which this change does
+  not touch. That test passed 40/40 with `--stress-count 40` alone. Filed as #1611, outside this
+  change.
+- **By hand against the staging VM** with a7242b669's scripts and a real build (6 min 5 s, the
+  cache warm, host load about 166):
+  - **Deploy:** "release migrates a copy of the live store from schema 82 to 82, 83 tables, no
+    rows lost".
+  - **Verify:** the commit, HTTPS 200, the contained doctor, schema 82 with the kept migration
+    check, and the Docker smoke test.
+  - **Drill:** back to 3fc0e5976 (live store kept, same schema), verify, forward, verify.
+  - **Redeploy:** "installed already", nothing stopped.
+  - **Rollback to 3fc0e5976, verify:** every step exit 0. Staging runs 3fc0e5976 again.
