@@ -125,6 +125,9 @@ export function createStreamView(ctx, sandbox, hooks) {
     h('button', { type: 'button', class: 'btn btn-sm', onClick: () => { sentViewport = null; sendViewport(true); } }, 'Fit my panel'));
   const overlay = h('div', { class: 'bp-overlay' }, 'Connecting to the sandbox Chrome…');
   const el = h('div', { class: 'bp-view bp-stream' }, surface, keys, agentCursor, agentPill, copied, sharedSize, overlay);
+  const lockReason = h('span', { class: 'banner-text', role: 'status' });
+  const restartButton = h('button', { type: 'button', class: 'btn btn-sm', onClick: restartBrowser }, 'Restart browser');
+  const restartNotice = h('div', { class: 'banner banner-warn bp-attn small', hidden: true }, lockReason, restartButton);
   const viewBadge = h('span', { class: 'chip bp-viewchip', hidden: true });
   const keyboardButton = h('button', { type: 'button', class: 'btn btn-sm bp-keyboard', title: 'Show the keyboard', onClick: () => keys.focus() }, 'Keyboard');
 
@@ -679,11 +682,17 @@ export function createStreamView(ctx, sandbox, hooks) {
       case 'action_requested':
         if (hooks.onActionRequested) hooks.onActionRequested(message);
         break;
+      case 'action_cleared':
+        if (hooks.onActionCleared) hooks.onActionCleared(message);
+        break;
       case 'error':
-        // Clicks and keys are off until the host's browser policy is in force (ADR-0318): every
-        // refused click and key is answered, the viewer is told once a minute at most, and at
-        // once when the reason changed (until a restart, SPEC-493 fix 10b).
+        if (message.code === 'input_locked_until_restart') {
+          if (lockReason.textContent !== message.message) lockReason.textContent = message.message;
+          restartNotice.hidden = false;
+          break;
+        }
         if (message.code === 'input_locked') {
+          restartNotice.hidden = true;
           if (Date.now() - inputLockedToldAt > 60000 || (message.message || '') !== inputLockedTold) {
             inputLockedToldAt = Date.now();
             inputLockedTold = message.message || '';
@@ -701,6 +710,27 @@ export function createStreamView(ctx, sandbox, hooks) {
     }
   }
 
+  async function restartBrowser() {
+    const viewer = socket;
+    if (!viewer || restartButton.disabled) return;
+    restartButton.disabled = true;
+    try {
+      await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/browser/restart`);
+    } catch (error) {
+      if (error.code !== 'timeout' && error.code !== 'network') {
+        if (viewer === socket) toast(error.message || 'Chrome could not restart.', { kind: 'error' });
+        return;
+      }
+      // The POST may have succeeded after its reply was lost. Reconnect to the current slot.
+    } finally {
+      restartButton.disabled = false;
+    }
+    if (socket) {
+      lastError = null;
+      socket.retry();
+    }
+  }
+
   function showFailure(textContent) {
     showOverlay(h('div', { class: 'stack overlay-message' },
       h('p', null, textContent),
@@ -713,6 +743,7 @@ export function createStreamView(ctx, sandbox, hooks) {
       transport: ctx.transport,
       path: `/api/sandboxes/${enc(sandbox.id)}/browser`,
       onOpen: () => {
+        restartNotice.hidden = true;
         sentViewport = null;
         hasPicture = false;
         streamMode = null;
@@ -731,6 +762,7 @@ export function createStreamView(ctx, sandbox, hooks) {
       },
       onMessage,
       onStatus: (status, detail = {}) => {
+        if (status !== 'open') restartNotice.hidden = true;
         if (status === 'reconnecting' && detail.code === CLOSE_SERVER_ERROR) {
           // The browser failed to start or stopped (e.g. Chromium missing): do not hammer it.
           const reason = lastError && lastError.message ? lastError.message : 'The sandbox Chrome stopped.';
@@ -749,6 +781,7 @@ export function createStreamView(ctx, sandbox, hooks) {
   return {
     el,
     viewBadge,
+    restartNotice,
     keyboardButton,
     get tabs() { return tabs; },
     get watched() { return watched; },
@@ -777,6 +810,7 @@ export function createStreamView(ctx, sandbox, hooks) {
     history(tabId, delta) { send({ type: 'history', tab_id: tabId, delta }); },
     reload(tabId) { send({ type: 'reload', tab_id: tabId }); },
     close(tabId) { send({ type: 'close', tab_id: tabId }); },
+    clearAction(tabId) { send({ type: 'clear_action', tab_id: tabId }); },
     focus() { keys.focus({ preventScroll: true }); },
     layout,
     start() { connect(); setTimeout(() => { sendViewport(); layout(); }, 0); },

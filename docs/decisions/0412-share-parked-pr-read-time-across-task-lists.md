@@ -1,0 +1,23 @@
+# 0412. Share parked PR read time across task lists
+
+## Status
+
+Accepted for [SPEC-558](../../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md).
+
+## Context
+
+Home and the sandbox task list can show tasks before anyone opens the sandbox Git overview. A recorded merge can precede a replacement PR on the same branch. Checking the head and its CI can take longer than rendering the rest of the list.
+
+## Decision
+
+Use the same recorded and branch PR verification as parked dependencies. Give a list 750 ms for PR reads. Verify up to eight parked rows concurrently and reserve a share of the remaining time for each later batch. Complete that pass before rendering other rows in their original order. Home includes parked rows from every visible project in the pass. Limit local Git operations from status reads to eight workers per application. A dispatched worker owns its permit until Git returns. Keep incomplete evidence under Needs you. Status reads do not send prompts or release a dependency.
+
+An owner can see an external PR through their GitHub token even when the instance lacks a working installation. A failed or truncated overview retains that known open PR. A complete list can establish absence, and a current branch or recorded-PR read can confirm its status.
+
+## Alternatives
+
+Reading rows sequentially lets a single stalled PR use the entire deadline. Starting all rows together lets concurrent list requests exhaust the host. An overview-only lookup can miss an externally opened replacement and loses its observations on restart.
+
+## Consequences
+
+The browser keeps a verified Needs you row under Needs you even when its Git chip is green. It also checks the plan, spec and goal in a parked summary before displaying Done. A completed row can show Done even when an earlier PR cannot be read. A timeout leaves its row awaiting verification on the next read. A slow local Git process can retain a worker after the requesting client disconnects.

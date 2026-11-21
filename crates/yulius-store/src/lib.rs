@@ -29,6 +29,7 @@ mod session_docs;
 mod sessions;
 mod skills;
 mod spans;
+mod staging;
 mod tasks;
 mod telegram;
 mod updates;
@@ -209,6 +210,14 @@ const MIGRATIONS: &[&str] = &[
     // Schema version 76 (SPEC-512 HOF-001); 0076 is the reserved file number.
     include_str!("migrations/0076_task_handoffs.sql"),
     include_str!("migrations/0077_task_merge_evidence.sql"),
+    // Schema version 78 (SPEC-575 MFS-005).
+    include_str!("migrations/0078_staging_requests.sql"),
+    // Schema version 79 (SPEC-575 MFS-012).
+    include_str!("migrations/0079_bootstrap_upgrades.sql"),
+    // Schema version 80 (SPEC-578); 0080 is the reserved file number.
+    include_str!("migrations/0080_task_wait_messages.sql"),
+    include_str!("migrations/0081_ci_run_admission.sql"),
+    include_str!("migrations/0082_task_merge_wait.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -515,6 +524,11 @@ mod tests {
             (75, include_str!("migrations/0073_telegram_intake.sql")),
             (76, include_str!("migrations/0076_task_handoffs.sql")),
             (77, include_str!("migrations/0077_task_merge_evidence.sql")),
+            (78, include_str!("migrations/0078_staging_requests.sql")),
+            (79, include_str!("migrations/0079_bootstrap_upgrades.sql")),
+            (80, include_str!("migrations/0080_task_wait_messages.sql")),
+            (81, include_str!("migrations/0081_ci_run_admission.sql")),
+            (82, include_str!("migrations/0082_task_merge_wait.sql")),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -523,7 +537,55 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 77, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 82, "a new migration is pinned here too");
+    }
+
+    /// SPEC-575 (a person's integration finding on PR #1541): a populated database at the
+    /// schema before the bootstrap record (78, with staging requests) upgrades to the latest one
+    /// with its records kept, and the new table takes its rows. A parallel migration that lands
+    /// first takes version 79 and this one moves after it; this test then runs from there.
+    #[test]
+    fn a_populated_staging_database_upgrades_to_the_bootstrap_record()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let at = MIGRATIONS
+            .iter()
+            .position(|sql| sql.contains("CREATE TABLE bootstrap_upgrades"))
+            .ok_or("the bootstrap migration")?;
+        let mut conn = Connection::open_in_memory()?;
+        for sql in &MIGRATIONS[..at] {
+            conn.execute_batch(sql)?;
+        }
+        conn.pragma_update(None, "user_version", i64::try_from(at)?)?;
+        conn.execute_batch(
+            "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at)
+             VALUES ('u', 'User', 0, 0, 1);
+             INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile,
+                 port_base, port_count, created_by, onboarding_state, created_at)
+             VALUES ('s', 'shop', 'org', 'shop', 'dev', '{}', 20000, 20, 'u', 'ready', 1);
+             INSERT INTO staging_requests (id, sandbox_id, environment, task_id, revision, state,
+                 attempts, requested_by, told, created_at, updated_at)
+             VALUES ('r', 's', 'staging', NULL, 'abc', 'verified', 1, 'task:1', 1, 2, 2);",
+        )?;
+        prepare(&mut conn)?;
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        assert_eq!(version, i64::try_from(MIGRATIONS.len())?);
+        let kept: String = conn.query_row(
+            "SELECT state FROM staging_requests WHERE id = 'r'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(kept, "verified");
+        conn.execute_batch(
+            "INSERT INTO bootstrap_upgrades (sandbox_id, revision, state, task_id, updated_at)
+             VALUES ('s', 1, 'claimed', NULL, 3);",
+        )?;
+        let state: String = conn.query_row(
+            "SELECT state FROM bootstrap_upgrades WHERE sandbox_id = 's'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(state, "claimed");
+        Ok(())
     }
 
     #[test]

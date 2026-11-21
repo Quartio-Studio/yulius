@@ -101,6 +101,7 @@ async fn open_pull_at(
             state: "open".into(),
             merged: false,
             base: "dev".into(),
+            base_sha: String::new(),
             head: branch,
             head_sha: head.into(),
             mergeable: Some(true),
@@ -561,6 +562,25 @@ fn a_task_chained_after_a_parked_done_task_starts() -> TestResult {
             },
         )
         .await?;
+        ask(&app, &id).await?;
+        let db = rusqlite::Connection::open(data.join("yulius.db"))?;
+        db.execute_batch("ALTER TABLE tasks RENAME COLUMN needs_you TO temporarily_unreadable")?;
+        app.advance_chains(&id).await;
+        assert_eq!(
+            status_of(&app, &waiting.id).await.0,
+            Some(TaskStatus::Chained),
+            "unreadable owner decisions must hold the successor"
+        );
+        db.execute_batch("ALTER TABLE tasks RENAME COLUMN temporarily_unreadable TO needs_you")?;
+        app.advance_chains(&id).await;
+        assert_eq!(
+            status_of(&app, &waiting.id).await.0,
+            Some(TaskStatus::Chained)
+        );
+        app.deps
+            .store
+            .set_task_needs_you(&id, None, app.now())
+            .await?;
         app.advance_all_chains().await;
         wait_for(
             "the chained task to leave its chain",
@@ -2748,6 +2768,80 @@ fn the_digest_parks_a_quiet_task_that_asks_nobody_and_lists_its_last_message() -
             screen(&app, &id).contains("Go on: answer with an echo")
         })
         .await?;
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-575 MFS-007, with real processes: a task's staging outcome (here its candidate's failed
+/// gate) is typed into its live session once, with the run to read and the next step, and not
+/// while its person must answer a prompt there first.
+#[test]
+fn a_staging_outcome_reaches_its_task_once() -> TestResult {
+    use yulius_app::ports::store_ext::StagingRequestRecord;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 8, 0).await?;
+        let (id, _) = answered(&app, &data).await?;
+        let task = TaskStore::task(app.deps.store.as_ref(), &id)
+            .await?
+            .ok_or("task")?;
+        let revision = "0123456789abcdef0123456789abcdef01234567";
+        assert!(
+            app.deps
+                .store
+                .insert_staging_request(&StagingRequestRecord {
+                    id: "sr_1".into(),
+                    sandbox_id: task.sandbox_id.clone(),
+                    environment: "staging".into(),
+                    task_id: Some(task.id.clone()),
+                    revision: revision.into(),
+                    state: yulius_domain::staging::StagingState::GateFailed,
+                    ci_run_id: Some("ci-run-9".into()),
+                    cd_run_id: None,
+                    attempts: 0,
+                    note: Some("the full gate failed on revision 0123456789ab: run ci-run-9 (full); staging did not change".into()),
+                    requested_by: "task:1".into(),
+                    told: false,
+                    created_at: app.now(),
+                    updated_at: app.now(),
+                })
+                .await?
+        );
+        TaskStore::transition_task(
+            app.deps.store.as_ref(),
+            &id,
+            None,
+            TaskStatus::Running,
+            Some(Activity::NeedsAttention),
+            app.now(),
+        )
+        .await?;
+        assert_eq!(app.tell_staging_outcomes().await, 0);
+        assert!(!screen(&app, &id).contains("staging request sr_1"));
+        TaskStore::transition_task(
+            app.deps.store.as_ref(),
+            &id,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Waiting),
+            app.now(),
+        )
+        .await?;
+        wait_for("the outcome told", Duration::from_secs(30), || async {
+            app.tell_staging_outcomes().await;
+            let shown = screen(&app, &id);
+            shown.contains("staging request sr_1 for revision 0123456789ab")
+                && shown.contains("gate_failed")
+                && shown.contains("ci-run-9")
+        })
+        .await?;
+        assert!(
+            app.deps.store.untold_staging_requests().await?.is_empty(),
+            "told once"
+        );
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

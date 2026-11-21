@@ -366,6 +366,11 @@ pub enum ViewerClientMsg {
     /// The viewer's decoder needs a keyframe (it failed or fell too far behind). Rate-limited by
     /// the server.
     Keyframe,
+    /// Mark a tab's pending user-action handoff done/cleared (SPEC-578).
+    ClearAction {
+        /// The tab whose pending action request is cleared.
+        tab_id: TabId,
+    },
 }
 
 /// How a viewer receives pages (SPEC-001 BRW-005, SPEC-002 ADR-15).
@@ -395,6 +400,8 @@ pub enum ViewerErrorCode {
     /// Clicks and keys are off: the host's browser policy is not in force (ADR-0318). Said
     /// once by the page, not at every key.
     InputLocked,
+    /// The policy is in force, but the display may still have a chooser from before it.
+    InputLockedUntilRestart,
     /// The browser failed or did not answer.
     Upstream,
     /// Unexpected server failure.
@@ -418,6 +425,11 @@ pub enum ViewerServerMsg {
         reason: String,
         /// Requesting task, if any.
         task_id: Option<String>,
+    },
+    /// A tab's pending user-action request was cleared (SPEC-578).
+    ActionCleared {
+        /// Tab whose request was cleared.
+        tab_id: TabId,
     },
     /// A request failed.
     Error {

@@ -66,16 +66,39 @@ function needsYouText(asked) {
     ['Problem', asked.problem],
     [asked.decision ? 'Decide' : 'To do', asked.action],
   ].filter(([, text]) => text);
+  const when = asked.at ? relLong(asked.at) : '';
   // The list scrolls when long (a phone), its to-do held in view at its foot (`fitNeedsYou`).
   return h('div', { class: 'attention-text needs-you-text' },
-    h('strong', { class: 'needs-you-head' }, asked.decision ? 'Needs your decision' : 'Needs you'),
+    h('div', { class: 'needs-you-title' },
+      h('strong', { class: 'needs-you-head' }, asked.decision ? 'Needs your decision' : 'Needs you'),
+      when ? h('span', { class: 'needs-you-time muted xs', title: dateTime(asked.at) }, ` · ${when}`) : null),
     h('dl', { class: 'needs-you-parts' }, parts.map(([label, text], i) =>
       h('div', { class: i === parts.length - 1 ? 'needs-you-todo' : null }, h('dt', null, label), h('dd', null, withCode(text))))));
 }
 
 /** Where a request or a flag's reason is answered: a page of this Yulius opens in place. */
-function openLink(link) {
-  return h('a', { class: 'btn btn-sm', href: link, target: link.startsWith(location.origin) ? null : '_blank', rel: 'noopener' }, 'Open');
+function openLink(link, label = 'Open') {
+  const local = typeof link === 'string' && link.startsWith(location.origin);
+  let route = null;
+  if (local) {
+    try {
+      const parsed = new URL(link);
+      route = `${parsed.pathname}${parsed.search}`;
+    } catch { route = null; }
+  }
+  return h('a', { class: 'btn btn-sm', href: link, target: local ? null : '_blank', rel: 'noopener', dataset: route ? { route } : null }, label);
+}
+
+/** Whether `link` points to a different page than the task page currently shown. */
+function isExternalTarget(link, sandbox, task) {
+  if (!link) return false;
+  const selfPath = `/s/${encodeURIComponent(sandbox.slug)}/t/${task.number}`;
+  try {
+    const parsed = new URL(link, location.origin);
+    return parsed.origin !== location.origin || parsed.pathname !== selfPath || Boolean(parsed.search);
+  } catch {
+    return true;
+  }
 }
 
 /** Words as a sentence of their own: a full stop unless they end one themselves. */
@@ -513,7 +536,7 @@ export function mountTaskView(ctx, sandbox, task) {
     if (pressed) { attentionStale = true; return; }
     attentionStale = false;
     const pr = ctx.store.pullsOf(current.sandbox_id).get(current.id);
-    const info = taskInfo(current, ctx.store.state.actionRequests, pr);
+    const info = taskInfo(current, ctx.store.state.actionRequests, ctx.store.pullForStatus(current));
     // Failed checks already have their PR action in the strip.
     const waitingForReply = current.status === 'running' && current.activity === 'waiting' && info.group === 'needs' && !info.pr;
     const parkedWaiting = current.status === 'parked' && current.activity === 'waiting' && info.group === 'needs';
@@ -591,7 +614,10 @@ export function mountTaskView(ctx, sandbox, task) {
       const asked = info.needsYou;
       // The request stays while the agent asks something in the terminal (a permission menu): text
       // typed there would pick the menu's options unseen, so Reply goes to the terminal then.
-      const asksInTerminal = current.activity === 'needs_attention';
+      // A live browser handoff also sets `activity = needs_attention` via a Yulius flag and still
+      // accepts an inline Reply unless a terminal prompt took over (SPEC-578).
+      const isBrowserAttention = Boolean(asked.browser_tab && (!current.attention || current.attention.kind !== 'terminal'));
+      const asksInTerminal = current.activity === 'needs_attention' && !isBrowserAttention;
       // Someone else's task: anyone who may work there but a guest answers it without taking
       // control (SPEC-516), while it runs and unless the agent asks in its terminal.
       // A request that names people is theirs and its owner's (SPEC-512 ANS-002).
@@ -607,7 +633,9 @@ export function mountTaskView(ctx, sandbox, task) {
       const asks = who.length ? h('div', { class: 'needs-you-who small' }, `Asks ${who.map((login) => `@${login}`).join(', ')}`,
         owner() ? null : who.map((login) => h('button', { type: 'button', class: 'btn btn-sm btn-ghost', 'aria-label': `Withdraw @${login}`, title: `@${login} no longer answers this question`, onClick: () => withdrawNeedsYou(ctx, current, login) }, `Withdraw @${login}`))) : null;
       content = [icon('st-attention', { size: 16 }), needsYouText(asked), asks,
-        asked.link ? openLink(asked.link) : null,
+        asked.browser_tab && ctx.openBrowserTab
+          ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => ctx.openBrowserTab(sandbox, asked.browser_tab) }, 'Open browser tab')
+          : (asked.link ? openLink(asked.link) : null),
         !answers ? null : asksInTerminal ? terminalReply : replying ? null : replyButton];
     } else if (info.request) {
       content = [icon('globe', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'Action needed in the browser: '), info.request.reason || 'the agent asked you to do something there.'),
@@ -633,6 +661,27 @@ export function mountTaskView(ctx, sandbox, task) {
             asks ? 'Its question is in the terminal below.' : 'Look at its terminal below.']),
           owner() ? null : terminalReply];
       }
+    } else if (info.group === 'needs' && current.needs_you_notice) {
+      // Every Needs You state — including stopped open-step tasks, parked tasks, and failing PR
+      // checks — shows what happened, what to do, and where to do it (SPEC-578).
+      const notice = current.needs_you_notice;
+      asksPerson = true;
+      const canParkedAct = current.status === 'parked' && !owner() && can.continue;
+      const canLiveReply = current.status === 'running' && !owner();
+      textAnswer = canParkedAct || canLiveReply;
+      replyButton.title = '';
+      const targetBtn = notice.browser_tab && ctx.openBrowserTab
+        ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => ctx.openBrowserTab(sandbox, notice.browser_tab) }, 'Open browser tab')
+        : isExternalTarget(notice.link, sandbox, current)
+          ? openLink(notice.link, notice.link.includes('/ci?run=') ? 'Inspect CI' : 'Open')
+          : null;
+      content = [
+        icon(current.status === 'parked' ? 'st-paused' : 'st-attention', { size: 16 }),
+        needsYouText(notice),
+        targetBtn,
+        canParkedAct ? h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => continueTask(ctx, current) }, 'Resume') : null,
+        textAnswer ? (replying ? null : replyButton) : null,
+      ];
     } else if (waitingForReply) {
       content = [icon('st-input', { size: 16 }), h('span', { class: 'attention-text' }, owner()
         ? h('strong', null, `The agent is waiting for @${owner()}'s reply.`)
@@ -951,14 +1000,18 @@ export function mountTaskView(ctx, sandbox, task) {
     renderQueue();
     const steps = current.steps || { done: 0, total: 0, current: null };
     // The session's state as the sidebar says it (pull request, browser request, usage limit).
-    const info = taskInfo(current, ctx.store.state.actionRequests, ctx.store.pullsOf(current.sandbox_id).get(current.id));
+    const info = taskInfo(current, ctx.store.state.actionRequests, ctx.store.pullForStatus(current));
     const total = steps.total || 0;
     const done = steps.done || 0;
     let n = total ? Math.min(total, done + (steps.current ? 1 : 0)) : 0;
     if (detail && Array.isArray(detail.steps_list)) {
       const ordered = [...detail.steps_list].sort((a, b) => a.ordinal - b.ordinal);
       const index = ordered.findIndex((s) => s.status === 'in_progress');
-      if (index >= 0) n = index + 1;
+      // On a parked task the list can observe completion while detail still has the old active step.
+      if (index >= 0) {
+        const matchesActive = steps.current && ordered[index].title.toLowerCase() === steps.current.toLowerCase();
+        if (current.status !== 'parked' || (index < total && matchesActive)) n = index + 1;
+      }
     }
     // A plan that grew since its first step was finished says what it had then (SPEC-484): the
     // server sends `first_total` only for such a plan.
@@ -981,10 +1034,13 @@ export function mountTaskView(ctx, sandbox, task) {
     statusEl.dataset.tone = info.tone;
     // Waiting for an account of its agent to be connected has no reset to wait for (SPEC-246).
     const reset = current.status !== 'waiting_capacity' ? '' : current.waits_for_account ? `waits for ${aName(agentOfHarness(current.harness))} account` : resetAround(current.resumes_at);
-    statusEl.title = [info.label, reset, info.detail].filter(Boolean).join(' · ');
+    const notice = info.group === 'needs' ? current.needs_you_notice : null;
+    const needsBrief = notice && !info.needsYou ? (notice.happened || notice.action) : null;
+    statusEl.title = [info.label, reset, notice && notice.happened, notice && notice.action, info.detail].filter(Boolean).join(' · ');
     setChildren(statusEl,
       statusMark(info),
       h('span', { class: 'strip-state' }, info.label, reset ? h('span', { class: 'strip-reset' }, ` · ${reset}`) : null,
+        needsBrief ? h('span', { class: 'strip-reset strip-needs-reason' }, ` · ${needsBrief.replaceAll('`', '')}`) : null,
         info.shells ? h('span', { class: 'strip-reset' }, ` · ${shellsLine(info.shells, info.shellsSince)}`) : null,
         current.status === 'queued' && current.queue_reason ? h('span', { class: 'strip-reset' }, ` · ${current.queue_reason}`) : null));
     // The chain shows on both tasks (TSK-012): what this task runs after, what runs after it.
@@ -1026,8 +1082,20 @@ export function mountTaskView(ctx, sandbox, task) {
     if (!stripOpen) return;
     if (!detail) { setChildren(stepList, skeleton('Loading steps…', 3)); return; }
     const steps = Array.isArray(detail.steps_list) ? [...detail.steps_list].sort((a, b) => a.ordinal - b.ordinal) : [];
+    const waitHistory = Array.isArray(detail.wait_history) ? detail.wait_history : [];
+    const historyEl = waitHistory.length
+      ? h('div', { class: 'steplist-history', role: 'region', 'aria-label': 'Needs you history' },
+        h('div', { class: 'steplist-history-title muted xs' }, 'Needs you history'),
+        h('ul', { class: 'steplist-history-list' }, waitHistory.map((entry) => h('li', { class: ['steplist-history-item', entry.resolved_at && 'resolved'] },
+          h('span', { class: 'steplist-history-meta muted xs', title: dateTime(entry.at) },
+            `${entry.source} · ${relLong(entry.at)}`,
+            entry.resolved_at ? ` · resolved ${relLong(entry.resolved_at)}` : ' · open'),
+          h('div', { class: 'steplist-history-body small' }, withCode(entry.happened), entry.action ? [' ', h('span', { class: 'muted' }, `To do: ${entry.action.replaceAll('`', '')}`)] : null)))))
+      : null;
     if (steps.length === 0) {
-      setChildren(stepList, h('div', { class: 'muted small steplist-note' }, 'The agent has not written a plan yet. Steps appear here as soon as the task spec has a Plan checklist.'));
+      setChildren(stepList,
+        h('div', { class: 'muted small steplist-note' }, 'The agent has not written a plan yet. Steps appear here as soon as the task spec has a Plan checklist.'),
+        historyEl);
       return;
     }
     setChildren(stepList,
@@ -1036,7 +1104,8 @@ export function mountTaskView(ctx, sandbox, task) {
         h('span', { class: 'step-title' }, step.title),
         h('span', { class: 'step-audit', title: dateTime(step.updated_at) }, [step.updated_by, step.updated_at ? relLong(step.updated_at) : null].filter(Boolean).join(' · ')),
         step.note ? h('span', { class: 'step-note' }, step.note) : null)),
-      detail.spec_path ? h('div', { class: 'muted xs steplist-spec' }, 'Spec: ', h('code', null, detail.spec_path)) : null);
+      detail.spec_path ? h('div', { class: 'muted xs steplist-spec' }, 'Spec: ', h('code', null, detail.spec_path)) : null,
+      historyEl);
   }
 
   let alive = true;
@@ -1057,13 +1126,16 @@ export function mountTaskView(ctx, sandbox, task) {
   async function loadDetail() {
     const read = ++detailRead;
     const heardBefore = changesHeard;
+    const publishParked = ctx.store.beginParkedDetail(current);
     try {
       const fresh = await ctx.api.get(`/api/tasks/${enc(current.id)}`, { signal: reads.signal });
       if (!alive || read < appliedRead) return; // the view was left, or a newer answer was applied
       appliedRead = read;
       detail = fresh;
       if (detail && detail.id === current.id) {
-        if (read === detailRead && changesHeard === heardBefore) current = { ...current, ...pickSummary(detail) };
+        const unchanged = read === detailRead && changesHeard === heardBefore;
+        const summary = unchanged ? { ...current, ...pickSummary(detail) } : current;
+        current = publishParked(detail, summary);
         heldKey = '';
         renderStrip();
         // The end banner may name the limit the last run met (SPEC-268), known only from here.
@@ -1071,6 +1143,8 @@ export function mountTaskView(ctx, sandbox, task) {
       }
     } catch (error) {
       if (alive && read === detailRead && error.status !== 404) errorToast(error, 'Couldn’t load task details');
+    } finally {
+      publishParked.release();
     }
     if (alive) renderStepList();
   }
@@ -1114,7 +1188,8 @@ export function mountTaskView(ctx, sandbox, task) {
       const previousStatus = current.status;
       const previousUpdate = current.updated_at;
       const previousOwner = owner();
-      current = { ...current, ...next };
+      current = { ...current, ...next, account_id: next.account_id, needs_you_notice: next.needs_you_notice,
+        parked_needs_you: next.parked_needs_you, parked_pr: next.parked_pr };
       // Whether the task started is the detail's: a status with a run means it has, and any status
       // change reads the detail again (a start that found no capacity has not). A message someone
       // else queued changes the request: read it again too.
@@ -1154,7 +1229,8 @@ export function mountTaskView(ctx, sandbox, task) {
 
 function pickSummary(detail) {
   const keys = ['status', 'activity', 'title', 'steps', 'account_label', 'account_email', 'harness', 'branch', 'updated_at', 'archived', 'mode', 'after', 'next', 'held_prompt', 'auto', 'owner', 'control_request', 'control_from'];
-  const out = {};
+  // The server omits the subscription ID when a task is no longer attached.
+  const out = { account_id: detail.account_id };
   for (const key of keys) if (key in detail) out[key] = detail[key];
   return out;
 }

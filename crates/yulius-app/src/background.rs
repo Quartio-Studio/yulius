@@ -94,6 +94,14 @@ impl App {
             // Tasks hear once that their sandbox's Docker is full, and when it no longer is
             // (SPEC-494 DFJ-007).
             app.start_docker_watch();
+            // Onboarded sandboxes take the current Infra bootstrap revision (SPEC-575 MFS-012).
+            // On its own task: GitHub access checks must not hold the queue (review round 1).
+            if app.config.bootstrap_upgrades {
+                let upgrades = Arc::clone(&app);
+                tokio::spawn(async move {
+                    upgrades.create_bootstrap_upgrades().await;
+                });
+            }
             // A handoff a stopped server left mid-creation is settled (SPEC-512 HOF-004).
             if let Err(err) = app.deps.store.settle_creating_handoffs(app.now()).await {
                 tracing::warn!(error = %err, "handoffs left creating could not be settled");
@@ -112,6 +120,12 @@ impl App {
                 app.drain_queue().await;
                 // Chained tasks start once their predecessor is Done (TSK-012).
                 app.advance_all_chains().await;
+                // Merge-first staging queues move on (SPEC-575 MFS-003 to MFS-008), on their own
+                // task: GitHub and Git reads must not hold the tick.
+                let staging = Arc::clone(&app);
+                tokio::spawn(async move {
+                    staging.staging_tick().await;
+                });
                 // Prepared tasks start at their time (SPEC-105 PRP-003).
                 app.release_due_prepared().await;
                 // Idle sessions past their grace period are parked (SPEC-512 PRK-002), once the

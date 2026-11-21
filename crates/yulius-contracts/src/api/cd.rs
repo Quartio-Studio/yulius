@@ -76,6 +76,45 @@ pub struct CdEnvironment {
     /// Its rollback (SPEC-415).
     #[serde(default)]
     pub rollback: CdRollback,
+    /// The merge-first staging target's queue (SPEC-575); `None` for every other environment.
+    #[serde(default)]
+    pub staging: Option<CdStaging>,
+}
+
+/// A merge-first staging target's queue (SPEC-575, ADR-0411).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CdStaging {
+    /// The revision staging last deployed and verified, if any.
+    #[serde(default)]
+    pub verified: Option<String>,
+    /// The newest requests, newest first.
+    pub requests: Vec<CdStagingRequest>,
+}
+
+/// One staging request (SPEC-575 MFS-004 to MFS-008).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CdStagingRequest {
+    /// Its id.
+    pub id: String,
+    /// The task it delivers, by number.
+    #[serde(default)]
+    pub task_number: Option<u32>,
+    /// The integration branch's commit it deploys.
+    pub revision: String,
+    /// `testing`, `ready`, `deploying`, `verified`, `included`, `gate_failed`, `deploy_failed` or
+    /// `superseded`.
+    pub state: String,
+    /// The full gate's run that judged its revision.
+    #[serde(default)]
+    pub ci_run_id: Option<String>,
+    /// The CD run that deployed it, or the verified one that includes it.
+    #[serde(default)]
+    pub cd_run_id: Option<String>,
+    /// What its state means.
+    #[serde(default)]
+    pub note: Option<String>,
+    /// Its last change (RFC 3339).
+    pub updated_at: String,
 }
 
 /// An environment's rollback (SPEC-415, ADR-0263).

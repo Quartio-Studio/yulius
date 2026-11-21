@@ -69,6 +69,7 @@ echo \"proxy:${HTTPS_PROXY:-none}\"\n\
 echo \"no-proxy:${NO_PROXY:-none}\"\n\
 echo \"ca:${SSL_CERT_FILE:-none}\"\n\
 echo \"placeholder:${APIFY_KEY:-none}\"\n\
+echo \"interpreter:${JDK_JAVA_OPTIONS:-none}\"\n\
 echo \"config:$CLAUDE_CONFIG_DIR\"\n\
 echo \"cwd:$(pwd)\"\n\
 echo \"ready\"\n\
@@ -8282,5 +8283,71 @@ async fn the_instance_counts_docker_restarts_give_ways_and_needs_you_per_week() 
         "{seen:?}"
     );
     assert_eq!(seen.weeks.len(), 1, "{seen:?}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn interpreter_value_requests_only_rotate_existing_secrets_of_the_requested_scope()
+-> TestResult {
+    use yulius_app::ports::vault::VaultStore as _;
+    let f = fixture().await?;
+    let created = call(
+        &f.h.router,
+        Method::POST,
+        &format!("/api/sandboxes/{}/agent-secrets", sid()),
+        Some(json!({"name":"OLD_KEY","scope":"personal","value":"synthetic-value-123"})),
+        &f.alice,
+    )
+    .await?;
+    let secret_id = created.body["id"]
+        .as_str()
+        .ok_or("created personal secret")?;
+    let record = f.h.store.vault_get(secret_id).await?.ok_or("old row")?;
+    let mut old = record.clone();
+    old.name = "JDK_JAVA_OPTIONS".into();
+    assert!(f.h.store.vault_update(&old, &record).await?);
+    let served = serve(f.h.router.clone()).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    assert_eq!(
+        printed(&screen, "interpreter")?,
+        "yulius-secret-JDK_JAVA_OPTIONS"
+    );
+    let alice = yulius_domain::ids::UserId::parse("u-alice")?;
+    let token = f.h.app.cockpit_mcp_token(&alice, &sid()).ok_or("token")?;
+    let request = |scope| {
+        cockpit_tool(
+            &f,
+            &token,
+            "secret_request_value",
+            json!({"name":"JDK_JAVA_OPTIONS","scope":scope}),
+        )
+    };
+    let (refused, is_error) = tokio::time::timeout(WAIT, request("sandbox")).await??;
+    assert!(is_error && refused.to_string().contains("APP_JDK_JAVA_OPTIONS"));
+    assert_eq!(waiting_requests(&f).await?, 0);
+    let rotate = request("personal");
+    tokio::pin!(rotate);
+    tokio::select! {
+        result = &mut rotate => return Err(format!("rotation ended before the person answered: {result:?}").into()),
+        seen = wait_for_count(&f, 1) => seen?,
+    }
+    let path = format!("/api/sandboxes/{}/superagent/requests", sid());
+    let list = call(&f.h.router, Method::GET, &path, None, &f.alice).await?;
+    assert_eq!(list.body[0]["replaces"], true);
+    let id = list.body[0]["id"].as_str().ok_or("request")?;
+    let browser = crate::secrets::browser_session(&f.h, "u-alice").await?;
+    let answer = call(
+        &f.h.router,
+        Method::POST,
+        &format!("{path}/{id}"),
+        Some(json!({"approve":true, "value":"synthetic-rotated-value"})),
+        &browser,
+    )
+    .await?;
+    assert_eq!(answer.body["stored"], "updated", "{}", answer.body);
+    assert!(!tokio::time::timeout(WAIT, rotate).await??.1);
     Ok(())
 }

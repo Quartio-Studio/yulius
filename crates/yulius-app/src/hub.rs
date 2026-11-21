@@ -59,7 +59,10 @@ pub enum HubFrame {
 
 #[derive(Clone, Copy)]
 pub(crate) enum ScreenUpdate {
-    Host,
+    /// Host snapshot attested at the dimensions used to restore it.
+    Host {
+        rendered: bool,
+    },
     Park,
     /// Read from disk before any host attached or any other viewer restored the grid.
     Cold {
@@ -70,6 +73,9 @@ pub(crate) enum ScreenUpdate {
 struct Screen {
     initialized: bool,
     parked: bool,
+    /// Resizing can crop a hint or a draft. A host snapshot can already contain that
+    /// crop. Only fresh PTY output can reestablish an empty-box proof.
+    redraw: yulius_contracts::ptyhost::Redraw,
     parser: vt100::Parser,
     seq: u64,
 }
@@ -107,6 +113,7 @@ impl Hub {
             screen: Mutex::new(Screen {
                 initialized: false,
                 parked: false,
+                redraw: Default::default(),
                 parser: vt100::Parser::new(rows.max(1), cols.max(1), 0),
                 seq: 0,
             }),
@@ -125,7 +132,8 @@ impl Hub {
             return;
         }
         screen.initialized = true;
-        screen.parser.process(bytes);
+        let Screen { redraw, parser, .. } = &mut *screen;
+        redraw.process(parser, bytes);
         screen.seq = seq;
         for chunk in bytes.chunks(MAX_FRAME_BYTES) {
             let _ = self.tx.send(HubFrame::Output {
@@ -137,7 +145,13 @@ impl Hub {
 
     /// Replaces the screen with a host snapshot (attach/reattach) and tells viewers to redraw.
     pub fn reset(&self, seq: u64, snapshot: &[u8], cols: u16, rows: u16) {
-        self.restore(seq, snapshot, cols, rows, ScreenUpdate::Host);
+        self.restore(
+            seq,
+            snapshot,
+            cols,
+            rows,
+            ScreenUpdate::Host { rendered: false },
+        );
     }
 
     /// Replace the visible grid and announce a change between a parked capture and a host
@@ -154,7 +168,7 @@ impl Hub {
             return;
         };
         let parked = match update {
-            ScreenUpdate::Host => false,
+            ScreenUpdate::Host { .. } => false,
             ScreenUpdate::Park => true,
             ScreenUpdate::Cold { .. } if screen.initialized => return,
             ScreenUpdate::Cold { parked } => parked,
@@ -162,6 +176,10 @@ impl Hub {
         let announce = parked || screen.parked;
         screen.initialized = true;
         screen.parked = parked;
+        screen.redraw = yulius_contracts::ptyhost::Redraw::restored(matches!(
+            update,
+            ScreenUpdate::Host { rendered: true }
+        ));
         screen.parser = vt100::Parser::new(rows.max(1), cols.max(1), 0);
         screen.parser.process(snapshot);
         screen.seq = seq;
@@ -182,6 +200,7 @@ impl Hub {
             if screen.parked || screen.parser.screen().size() == (rows, cols) {
                 return;
             }
+            screen.redraw.invalidate();
             screen.parser.screen_mut().set_size(rows, cols);
         }
         let _ = self.tx.send(HubFrame::State);
@@ -231,6 +250,13 @@ impl Hub {
     #[must_use]
     pub fn has_output(&self) -> bool {
         self.screen.lock().map(|s| s.seq > 0).unwrap_or(false)
+    }
+
+    /// Positive evidence from live renderer output at the current terminal geometry.
+    pub(crate) fn prompt_box_shown_empty(&self) -> bool {
+        self.screen
+            .lock()
+            .is_ok_and(|s| s.redraw.rendered() && crate::prompt_box::shown_empty(s.parser.screen()))
     }
 
     /// Whether the live VT screen shows text in Claude Code's conversation input.
@@ -492,6 +518,129 @@ mod tests {
         assert!(hub.leave(b).moved);
         assert!(!hub.leave(b).moved, "leaving twice is harmless");
         assert_eq!(hub.controller(), 0);
+    }
+
+    #[test]
+    fn a_resize_cannot_crop_a_stash_into_proof_of_emptiness() {
+        let hub = Hub::new(40, 12);
+        let frame = |cols: usize| {
+            let rule = "─".repeat(cols);
+            format!("\x1b[?1049h\x1b[H\x1b[2J\x1b[8;1H{rule}\x1b[9;1H❯ \x1b[10;1H{rule}\x1b[9;3H")
+        };
+        let mut stashed = frame(40);
+        stashed.push_str("\x1b[7;31H› stashed\x1b[9;3H");
+        hub.output(1, stashed.as_bytes());
+        assert!(!hub.prompt_box_shown_empty());
+        hub.resize(20, 12);
+        assert!(
+            !hub.prompt_box_shown_empty(),
+            "a local crop is not a redraw"
+        );
+        let recovered = Hub::new(20, 12);
+        recovered.reset(1, &hub.subscribe().snapshot, 20, 12);
+        assert!(
+            !recovered.prompt_box_shown_empty(),
+            "a host snapshot can carry the same crop"
+        );
+        recovered.output(2, b"\x1b]0;title\x1b[2J\x07");
+        assert!(
+            !recovered.prompt_box_shown_empty(),
+            "a title cannot certify a redraw"
+        );
+        hub.output(2, b"\x1b[11;1Hstatus\x1b[9;3H");
+        assert!(
+            !hub.prompt_box_shown_empty(),
+            "a status update leaves the crop unproven"
+        );
+        hub.output(
+            3,
+            format!("{}\x1b[7;10H› stashed\x1b[9;3H", frame(20)).as_bytes(),
+        );
+        assert!(!hub.prompt_box_shown_empty());
+        hub.output(4, frame(20).as_bytes());
+        assert!(hub.prompt_box_shown_empty(), "Claude redrew an empty box");
+    }
+
+    #[test]
+    fn a_genuine_repaint_is_recognized_in_every_pty_partition() {
+        let rule = "─".repeat(20);
+        let frame = format!("\x1b[?1049h\x1b[2J\x1b[2;1H{rule}\x1b[3;1H❯ \x1b[4;1H{rule}\x1b[3;3H");
+        for prefix in ["J", "\x1b]0;title[2J\x07"] {
+            let output = format!("{prefix}{frame}");
+            for cut in 0..=output.len() {
+                let hub = Hub::new(20, 6);
+                hub.reset(1, frame.as_bytes(), 20, 6);
+                hub.output(2, &output.as_bytes()[..cut]);
+                hub.output(3, &output.as_bytes()[cut..]);
+                assert!(
+                    hub.prompt_box_shown_empty(),
+                    "partition {cut} of {prefix:?}"
+                );
+            }
+        }
+    }
+
+    /// SPEC-572 AC3: a hub rebuilt from a snapshot (a reattached run, as after a restart of the
+    /// server) still reads the prompt box: empty, a dim suggestion, and a draft.
+    #[test]
+    fn a_snapshot_requires_a_live_redraw_before_releasing_typing() -> Result<(), std::io::Error> {
+        let rule = "─".repeat(20);
+        let framed = |row: &str| {
+            format!(
+                "\x1b[?1049h\x1b[H\x1b[2J\x1b[2;1H{rule}\x1b[3;1H{row}\x1b[0m\x1b[4;1H{rule}\x1b[5;1H  status\x1b[3;3H"
+            )
+        };
+        for (row, empty) in [
+            ("❯ ", true),
+            ("❯ \x1b[7mr\x1b[0m\x1b[2mun the tests", true),
+            ("❯ \x1b[2mrun the tests", true),
+            ("❯ \x1b[7mh\x1b[0malf a thought", false),
+            ("❯ half", false),
+        ] {
+            let hub = Hub::new(20, 6);
+            hub.output(1, framed(row).as_bytes());
+            assert_eq!(hub.prompt_box_shown_empty(), empty, "{row:?}");
+            let snapshot = hub
+                .screen
+                .lock()
+                .map(|s| viewer_snapshot(s.parser.screen()))
+                .unwrap_or_default();
+            let again = Hub::new(20, 6);
+            again.restore(1, &snapshot, 20, 6, super::ScreenUpdate::Park);
+            assert!(
+                !again.prompt_box_shown_empty(),
+                "a parked snapshot cannot release typing"
+            );
+            again.reset(2, &snapshot, 20, 6);
+            assert!(
+                !again.prompt_box_shown_empty(),
+                "a snapshot may contain a host-side crop"
+            );
+            let repaint = framed(row);
+            let (before_clear, after_clear) = repaint
+                .split_once("2J")
+                .ok_or_else(|| std::io::Error::other("fixture lacks ED 2"))?;
+            again.output(3, before_clear.as_bytes());
+            again.output(4, format!("2J{after_clear}").as_bytes());
+            assert_eq!(
+                again.prompt_box_shown_empty(),
+                empty,
+                "after a renderer repaint: {row:?}"
+            );
+            again.restore(
+                5,
+                &snapshot,
+                20,
+                6,
+                super::ScreenUpdate::Host { rendered: true },
+            );
+            assert_eq!(
+                again.prompt_box_shown_empty(),
+                empty,
+                "rendered host: {row:?}"
+            );
+        }
+        Ok(())
     }
 
     /// #78: a viewer who opens or reloads the task while a full-screen app runs gets the

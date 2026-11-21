@@ -28,10 +28,11 @@ fn failure(error: BrowserError) -> BrowserFailure {
         BrowserError::ExecutableNotFound { .. } => BrowserFailureKind::NotInstalled,
         BrowserError::UrlRefused(_) => BrowserFailureKind::UrlRefused,
         BrowserError::TabNotFound(_) => BrowserFailureKind::NotFound,
-        BrowserError::TooManyTabs(_) | BrowserError::InputBacklog => BrowserFailureKind::Capacity,
-        BrowserError::InputLocked | BrowserError::InputLockedUntilRestart => {
-            BrowserFailureKind::InputLocked
+        BrowserError::TooManyTabs(_) | BrowserError::InputBacklog | BrowserError::BrowserBusy => {
+            BrowserFailureKind::Capacity
         }
+        BrowserError::InputLocked => BrowserFailureKind::InputLocked,
+        BrowserError::InputLockedUntilRestart => BrowserFailureKind::InputLockedUntilRestart,
         BrowserError::SecretPageRefused(_)
         | BrowserError::SecretPageLeaving(_)
         | BrowserError::SecretFrameRefused(_) => BrowserFailureKind::SecretPageRefused,
@@ -88,6 +89,19 @@ impl BrowserPort for ChromiumBrowsers {
         let instance = self
             .manager
             .ensure(sandbox, profile_dir)
+            .await
+            .map_err(failure)?;
+        Ok(Arc::new(Session(instance)))
+    }
+
+    async fn restart(
+        &self,
+        sandbox: &SandboxId,
+        profile_dir: &Path,
+    ) -> Result<Arc<dyn BrowserSession>, BrowserFailure> {
+        let instance = self
+            .manager
+            .restart(sandbox, profile_dir)
             .await
             .map_err(failure)?;
         Ok(Arc::new(Session(instance)))
@@ -368,6 +382,10 @@ impl BrowserSession for Session {
             .request_user_action(tab, reason, task)
             .map_err(failure)
     }
+
+    fn clear_action(&self, tab: &TabId) -> bool {
+        self.0.clear_action(tab)
+    }
 }
 
 /// Placeholder when no browser is configured: every call fails with a clear message.
@@ -383,6 +401,14 @@ fn unavailable() -> BrowserFailure {
 #[async_trait]
 impl BrowserPort for UnavailableBrowser {
     async fn ensure(
+        &self,
+        _: &SandboxId,
+        _: &Path,
+    ) -> Result<Arc<dyn BrowserSession>, BrowserFailure> {
+        Err(unavailable())
+    }
+
+    async fn restart(
         &self,
         _: &SandboxId,
         _: &Path,

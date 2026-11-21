@@ -3315,6 +3315,7 @@ dependencies = [
  "async-trait",
  "base64 0.23.1",
  "flate2",
+ "futures",
  "nix 0.31.3",
  "reqwest",
  "rustix",
@@ -3362,6 +3363,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "vt100",
 ]
 
 [[package]]
@@ -3393,6 +3395,7 @@ dependencies = [
  "tracing-subscriber",
  "yulius-app",
  "yulius-domain",
+ "yulius-sandbox",
 ]
 
 [[package]]

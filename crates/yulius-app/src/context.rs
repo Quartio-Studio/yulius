@@ -28,11 +28,16 @@ pub struct AppConfig {
     pub yulius_exe: PathBuf,
     /// Whether sandboxes run in OS containment.
     pub contained: bool,
+    /// Whether a server start brings onboarded sandboxes to the current Infra bootstrap revision
+    /// with an upgrade task each (SPEC-575 MFS-012); the server's own setting, off in tests.
+    pub bootstrap_upgrades: bool,
     /// Maximum concurrently live sessions.
     pub max_live_sessions: u32,
     /// How long a task whose turn ended and that waits for a person keeps its idle session
     /// before it is parked (SPEC-512 PRK-002, `YULIUS_PARK_AFTER_MINUTES`); 0: never.
     pub park_after_ms: u64,
+    /// Budget for one parked task's PR status read.
+    pub parked_pr_read_ms: u64,
     /// Maximum queued tasks.
     pub queue_max: u32,
     /// Web session lifetime.
@@ -185,8 +190,10 @@ impl AppConfig {
             internal_url: internal_url.trim_end_matches('/').to_owned(),
             yulius_exe,
             contained: false,
+            bootstrap_upgrades: false,
             max_live_sessions: 8,
             park_after_ms: crate::parking::DEFAULT_PARK_AFTER_MS,
+            parked_pr_read_ms: 750,
             queue_max: 32,
             session_ttl_ms: 30 * 24 * 3600 * 1000,
             permission_ttl_ms: 5 * 60 * 1000,
@@ -319,6 +326,10 @@ pub struct App {
     pub(crate) agent_cli: OnceLock<crate::claude_code::AgentCliServices>,
     /// Pull requests the Git overview last observed, for the "needs you" counts (#147).
     pub(crate) observed_pulls: crate::sandboxes::ObservedPulls,
+    /// Local Git checks can outlive the page read that requested them.
+    pub(crate) parked_git: Arc<tokio::sync::Semaphore>,
+    /// A parked Git worker owns the application until its dispatched work finishes.
+    pub(crate) parked_git_app: std::sync::Weak<Self>,
     /// What the pull request watch told each task, as its file has it (SPEC-444 PRN-007); read
     /// from the file on first use.
     pub(crate) pr_told: crate::pr_watch::ToldCache,
@@ -355,6 +366,21 @@ pub struct App {
     /// The overlaps a holding task was told of (or is being told), by holder, claimer and paths:
     /// one message each (SPEC-493 SCO-001).
     pub(crate) scope_told: std::sync::Mutex<std::collections::BTreeSet<String>>,
+    /// Per-sandbox browser session notice watchers `(watcher_id, AbortHandle)` so
+    /// `ActionCleared` / `Disconnected` run once per sandbox regardless of connected viewer count
+    /// or `BrowserPort::ensure` wrapper allocations (SPEC-578).
+    pub(crate) browser_watchers:
+        Mutex<HashMap<yulius_domain::ids::SandboxId, (u64, tokio::task::AbortHandle)>>,
+    /// Monotonic id generator for [`Self::browser_watchers`] entries.
+    pub(crate) next_browser_watcher_id: std::sync::atomic::AtomicU64,
+    /// Counts of `(sandbox, tab_id)` browser action clears already persisted and broadcast by
+    /// `App` before `session.clear_action` emitted `BrowserNotice::ActionCleared`, so the sandbox
+    /// watcher skips duplicate DB scans and duplicate `UiEvent::BrowserActionCleared` (SPEC-578).
+    pub(crate) handled_browser_clears:
+        Mutex<HashMap<(yulius_domain::ids::SandboxId, String), usize>>,
+    /// True once server shutdown begins (`stop_workspace_services`), so persisted browser
+    /// handoffs survive orderly restarts instead of being cleared on browser disconnect (SPEC-578).
+    pub(crate) shutting_down: std::sync::atomic::AtomicBool,
 }
 
 impl App {
@@ -368,7 +394,7 @@ impl App {
         let events = EventBus::new(1024);
         let connection_health = crate::connection_health::connection_health(events.clone());
         let limits = crate::limits::LimitState::new(&config);
-        Arc::new(Self {
+        Arc::new_cyclic(|app| Self {
             instance_tag,
             limits,
             config,
@@ -411,6 +437,8 @@ impl App {
             isolation: OnceLock::new(),
             agent_cli: OnceLock::new(),
             observed_pulls: crate::sandboxes::ObservedPulls::default(),
+            parked_git: Arc::new(tokio::sync::Semaphore::new(crate::sandboxes::PARKED_READS)),
+            parked_git_app: app.clone(),
             pr_told: crate::pr_watch::ToldCache::default(),
             armed_restored: std::sync::atomic::AtomicBool::new(false),
             tool_tasks: crate::manage::ToolTaskWindow::default(),
@@ -427,6 +455,10 @@ impl App {
             github_callback: crate::github_callback::CallbackKept::default(),
             docker_told: crate::docker_trouble::DockerTold::default(),
             scope_told: std::sync::Mutex::default(),
+            browser_watchers: Mutex::default(),
+            next_browser_watcher_id: std::sync::atomic::AtomicU64::new(1),
+            handled_browser_clears: Mutex::default(),
+            shutting_down: std::sync::atomic::AtomicBool::new(false),
         })
     }
 

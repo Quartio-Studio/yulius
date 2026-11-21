@@ -3007,3 +3007,45 @@ fn reading_no_grafts_prints_no_hint() -> TestResult {
     assert!(!stderr.contains("grafts"), "{stderr}");
     Ok(())
 }
+
+/// SPEC-575 MFS-006: a revision's place on a branch's first-parent history orders staging
+/// deploys: its count of first-parent commits when the branch's first-parent walk passes it,
+/// `None` for a commit only a merged side branch (or nothing) holds, and an error for an unknown
+/// revision.
+#[test]
+fn first_parent_position_orders_a_branchs_own_commits() -> TestResult {
+    let fx = Fixture::new()?;
+    let repo = fx.path("repo");
+    fs::create_dir(&repo)?;
+    plain_git(&repo, &["init", "-q", "-b", "dev"])?;
+    let commit = |name: &str| -> Result<String, Box<dyn Error>> {
+        fs::write(repo.join(name), name)?;
+        plain_git(&repo, &["add", name])?;
+        plain_git(&repo, &["commit", "-q", "-m", name])?;
+        plain_git(&repo, &["rev-parse", "HEAD"])
+    };
+    let one = commit("one")?;
+    let two = commit("two")?;
+    plain_git(&repo, &["checkout", "-q", "-b", "side", &one])?;
+    let side = commit("side")?;
+    plain_git(&repo, &["checkout", "-q", "dev"])?;
+    plain_git(
+        &repo,
+        &["merge", "-q", "--no-ff", "-m", "merge side", "side"],
+    )?;
+    let merge = plain_git(&repo, &["rev-parse", "HEAD"])?;
+    let three = commit("three")?;
+    let at = |sha: &str| fx.git.first_parent_position(&repo, "dev", sha);
+    assert_eq!(at(&one)?, Some(1));
+    assert_eq!(at(&two)?, Some(2));
+    assert_eq!(at(&merge)?, Some(3));
+    assert_eq!(at(&three)?, Some(4));
+    assert_eq!(at(&side)?, None, "only the merged side branch has it");
+    assert_eq!(
+        fx.git.first_parent_position(&repo, &two, &three)?,
+        None,
+        "not yet on that head"
+    );
+    assert!(at("0123456789abcdef0123456789abcdef01234567").is_err());
+    Ok(())
+}

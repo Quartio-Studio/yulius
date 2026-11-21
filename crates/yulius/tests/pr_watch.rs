@@ -20,7 +20,7 @@ use crate::pool_supervision::{build_tuned, new_task, runtime, screen, seed, stop
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-fn git(dir: &Path, args: &[&str]) -> Result<String, Box<dyn std::error::Error>> {
+pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, Box<dyn std::error::Error>> {
     let out = Command::new("git")
         .args(args)
         .current_dir(dir)
@@ -36,7 +36,7 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, Box<dyn std::error::Error>> 
 }
 
 /// A run of pull request 7 at `head` that ended in `state`, with one job.
-fn run(
+pub(crate) fn run(
     sandbox: &SandboxId,
     id: &str,
     head: &str,
@@ -290,7 +290,7 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
         echoed(&app, &id, "It has made no progress").await?;
         assert!(watch(&app, &stalling, &id).await?.is_none(), "told once");
 
-        // Merged (by anyone): said once, then the watch is over.
+        // The stored delivery says it merged. Without a closed PR read, only that fact is known.
         let merged = DeliveryRecord {
             stage: DeliveryStage::MergedIntegration,
             updated_at: app.now(),
@@ -323,7 +323,7 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
             .ok_or("the merge was not typed")?;
         assert!(
             typed.starts_with(
-                "Yulius, about your pull request #7: Pull request #7 is merged into `dev`"
+                "Yulius, about your pull request #7: Pull request #7 is merged. Yulius could not read its merged head"
             ),
             "{typed}"
         );
@@ -563,16 +563,16 @@ fn failed_publication_and_superseded_repair_notices_in_pr_watch() -> TestResult 
             .transition_delivery(&DeliveryStage::None, &open)
             .await?;
         github.set_checks(&pr_head, ChecksState::Failure);
-        let steps = ["done", "in_progress"]
-            .iter()
+        let steps = [("Fix", "done"), ("Verify", "in_progress")]
+            .into_iter()
             .enumerate()
-            .map(|(i, status)| -> Result<_, Box<dyn std::error::Error>> {
+            .map(|(i, (title, status))| -> Result<_, Box<dyn std::error::Error>> {
                 Ok(yulius_app::model::StepRecord {
                     id: yulius_domain::ids::StepId::parse(&format!("s-pw-{i}"))?,
                     task_id: id.clone(),
                     ordinal: u32::try_from(i)?,
-                    title: format!("Step {i}"),
-                    status: (*status).to_owned(),
+                    title: title.to_owned(),
+                    status: status.to_owned(),
                     note: None,
                     updated_by: None,
                     updated_at: None,
@@ -692,6 +692,19 @@ fn failed_publication_and_superseded_repair_notices_in_pr_watch() -> TestResult 
             red_typed.contains("failed"),
             "expected current-head failure notice: {red_typed}"
         );
+
+        // A later pass at repair2 is green. The delivery is recorded as merged before
+        // GitHub's PR read catches up. The watcher still knows the plan for the next slice.
+        let (green, job) = run(&sandbox, "r-green", &repair2, RunState::Passed, None, 30);
+        let green = CiRunRecord { reference: CiRef::PullRequest(pull.number), ..green };
+        app.deps.store.insert_ci_run(&green, &[job]).await?;
+        assert!(!github.pull(pull.number).ok_or("open PR")?.merged);
+        let merged = DeliveryRecord { stage: DeliveryStage::MergedIntegration, ..open };
+        app.deps.store.transition_delivery(&DeliveryStage::PrOpen, &merged).await?;
+        let notice = typed_within(&app, &bounds, &id).await?.ok_or("merge notice")?;
+        assert!(notice.contains("could not read its merged head"), "{notice}");
+        assert!(!notice.contains("into `dev`") && !notice.contains(&repair2[..9]), "{notice}");
+        assert!(notice.contains("1 step(s) of your plan are still ahead (next: \"Verify\")"), "{notice}");
 
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())

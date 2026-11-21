@@ -140,6 +140,9 @@ pub struct JobDef {
     /// The files it tests (`paths`, SPEC-493 CJP-001): scope-claim globs, normalized. Empty:
     /// every change.
     pub paths: Vec<String>,
+    /// Part of the full suite (`after_merge`, SPEC-575 MFS-002): with a merge-first environment
+    /// it runs on the merged revision, not on pull request heads.
+    pub after_merge: bool,
 }
 
 /// One job of a run, after matrix expansion.
@@ -163,6 +166,9 @@ pub struct Job {
     pub exclusive: bool,
     /// Its definition's `paths` (SPEC-493 CJP-001).
     pub paths: Vec<String>,
+    /// Its definition's `after_merge`, in force only while the integration head has a
+    /// merge-first environment that deploys ([`after_merge_in_force`], SPEC-575 MFS-002).
+    pub after_merge: bool,
 }
 
 /// An invalid CI job configuration.
@@ -289,6 +295,57 @@ pub fn parse_paths(job: &str, items: &[String]) -> Result<Vec<String>, CiConfigE
     Ok(out)
 }
 
+/// What a skipped job of the full suite says (SPEC-575 MFS-002); a verdict copied from such a
+/// job keeps it, so a branch's run can tell a source that never ran the job.
+pub const AFTER_MERGE_SKIP_REASON: &str =
+    "part of the full suite: it runs on the merged revision (merge-first)";
+
+/// The jobs with `after_merge` kept only when the integration head has a merge-first
+/// environment that deploys (`merge_first`); without one each job runs on every commit, so a
+/// project without a shared staging target keeps its full suite on the pull request (SPEC-575
+/// MFS-002).
+#[must_use]
+pub fn after_merge_in_force(mut jobs: Vec<Job>, merge_first: bool) -> Vec<Job> {
+    if !merge_first {
+        for job in &mut jobs {
+            job.after_merge = false;
+        }
+    }
+    jobs
+}
+
+/// Why a job of the full suite is skipped for a run of `reference`, or `None` when it runs: a
+/// pull request head, a merge train and a playground task skip it; the integration and
+/// production branches' runs (the merged revision) run it (SPEC-575 MFS-002).
+#[must_use]
+pub fn after_merge_skip(job: &Job, reference: &CiRef) -> Option<String> {
+    let off_the_merge = matches!(
+        reference,
+        CiRef::PullRequest(_) | CiRef::Train(_) | CiRef::Task(_)
+    );
+    (job.after_merge && off_the_merge).then(|| AFTER_MERGE_SKIP_REASON.to_owned())
+}
+
+/// The reason a copy of a job's verdict records (a tree reused, a merge train's verdict):
+/// `note`, after the full suite's reason when the source job was skipped as part of it, so the
+/// copy still says it never ran the job (SPEC-575 MFS-002, review round 1).
+#[must_use]
+pub fn copied_job_reason(source: Option<&str>, note: &str) -> String {
+    match source {
+        Some(reason) if reason.starts_with(AFTER_MERGE_SKIP_REASON) => {
+            format!("{AFTER_MERGE_SKIP_REASON}; {note}")
+        }
+        _ => note.to_owned(),
+    }
+}
+
+/// Whether a job of a run was skipped as part of the full suite there (its own skip, or a copy
+/// of one): such a run never ran it (SPEC-575 MFS-002).
+#[must_use]
+pub fn skipped_after_merge(state: RunState, reason: Option<&str>) -> bool {
+    state == RunState::Skipped && reason.is_some_and(|r| r.starts_with(AFTER_MERGE_SKIP_REASON))
+}
+
 /// Why a job with `paths` is skipped for a change of `changed` files (SPEC-493 CJP-002,
 /// CJP-003), or `None` when it runs: a job without `paths`, an unknown change (`None`), a change
 /// to [`JOBS_FILE`] and a change touching one of its paths all run it.
@@ -360,6 +417,7 @@ pub fn expand_jobs(defs: &[JobDef]) -> Result<Vec<Job>, CiConfigError> {
                 timeout_minutes: def.timeout_minutes,
                 exclusive: def.exclusive,
                 paths: def.paths.clone(),
+                after_merge: def.after_merge,
             });
         } else {
             for value in &def.matrix {
@@ -373,6 +431,7 @@ pub fn expand_jobs(defs: &[JobDef]) -> Result<Vec<Job>, CiConfigError> {
                     timeout_minutes: def.timeout_minutes,
                     exclusive: def.exclusive,
                     paths: def.paths.clone(),
+                    after_merge: def.after_merge,
                 });
             }
         }
@@ -413,6 +472,7 @@ fn single_job(command: &str) -> Result<Job, GateError> {
         timeout_minutes: None,
         exclusive: false,
         paths: Vec::new(),
+        after_merge: false,
     })
 }
 
@@ -467,6 +527,7 @@ fn built_in_security_job() -> Job {
         timeout_minutes: None,
         exclusive: false,
         paths: Vec::new(),
+        after_merge: false,
     }
 }
 
@@ -526,6 +587,19 @@ pub fn with_changed_jobs(mut gate: Gate, own: Vec<Job>, at_base: Option<&[Job]>)
     }
     // Equal in everything that decides how it runs (command, matrix, budget, time limit,
     // `exclusive`, secrets, `paths`): a change to any of it is the change's (review round 3).
+    // Moving a job into or out of the full suite (`after_merge`, SPEC-575) is not how it runs,
+    // and a job a change adds or changes runs before it merges (ADR-0360): the change's own jobs
+    // and what they are compared with are read without the flag.
+    let flagless = |jobs: &[Job]| -> Vec<Job> {
+        jobs.iter()
+            .map(|job| Job {
+                after_merge: false,
+                ..job.clone()
+            })
+            .collect()
+    };
+    let (kept, at_base) = (flagless(&gate.jobs), at_base.map(flagless));
+    let own = flagless(&own);
     let same = |a: &Job, b: &Job| a == b;
     let scanning: Vec<String> = gate
         .jobs
@@ -535,8 +609,12 @@ pub fn with_changed_jobs(mut gate: Gate, own: Vec<Job>, at_base: Option<&[Job]>)
         .collect();
     let changed: Vec<Job> = own
         .into_iter()
-        .filter(|job| !gate.jobs.iter().any(|kept| same(kept, job)))
-        .filter(|job| !at_base.is_some_and(|base| base.iter().any(|old| same(old, job))))
+        .filter(|job| !kept.iter().any(|k| same(k, job)))
+        .filter(|job| {
+            !at_base
+                .as_ref()
+                .is_some_and(|base| base.iter().any(|old| same(old, job)))
+        })
         .filter(|job| !scanning.contains(&job.key))
         .map(|job| Job {
             name: format!("{}{CHANGE_SUFFIX}", job.name),
@@ -674,6 +752,10 @@ pub enum CiRef {
     /// A playground task's head merged into the integration branch (SPEC-163): a commit that
     /// exists only in Yulius's clone, tested when its agent calls `delivery_merge`.
     Task(u64),
+    /// A merged revision of the integration branch (its full SHA) that a merge-first staging
+    /// request waits on (SPEC-575 MFS-003): the full gate on exactly that commit, started and
+    /// kept by the staging queue, never superseded by the branch moving on.
+    Candidate(String),
 }
 
 impl CiRef {
@@ -685,6 +767,7 @@ impl CiRef {
             Self::Branch(name) => format!("branch/{name}"),
             Self::Train(numbers) => format!("train/{}", joined(numbers, "+", "")),
             Self::Task(number) => format!("task/{number}"),
+            Self::Candidate(sha) => format!("candidate/{sha}"),
         }
     }
 
@@ -700,6 +783,11 @@ impl CiRef {
         }
         if let Some(number) = key.strip_prefix("task/") {
             return number.parse().ok().filter(|n| *n > 0).map(Self::Task);
+        }
+        if let Some(sha) = key.strip_prefix("candidate/") {
+            let hex =
+                !sha.is_empty() && sha.len() <= 64 && sha.bytes().all(|b| b.is_ascii_hexdigit());
+            return hex.then(|| Self::Candidate(sha.to_owned()));
         }
         if let Some(numbers) = key.strip_prefix("train/") {
             let parsed: Option<Vec<u64>> = numbers
@@ -721,6 +809,7 @@ impl CiRef {
             Self::Branch(name) => name.clone(),
             Self::Train(numbers) => format!("Merge train {}", joined(numbers, " + ", "#")),
             Self::Task(number) => format!("Task #{number}"),
+            Self::Candidate(sha) => format!("Candidate {}", sha.get(..9).unwrap_or(sha)),
         }
     }
 
@@ -730,7 +819,7 @@ impl CiRef {
         match self {
             Self::PullRequest(n) => *n == number,
             Self::Train(numbers) => numbers.contains(&number),
-            Self::Branch(_) | Self::Task(_) => false,
+            Self::Branch(_) | Self::Task(_) | Self::Candidate(_) => false,
         }
     }
 }
@@ -789,7 +878,7 @@ pub fn plan(targets: &[Target], runs: &[RunFacts]) -> Plan {
     for target in targets {
         let tested = runs
             .iter()
-            .any(|run| run.sha == target.sha && (run.state.is_active() || has_verdict(run.state)));
+            .any(|run| run.sha == target.sha && covers_shared_commit(run.state));
         let cancelled_here = runs.iter().any(|run| {
             run.sha == target.sha
                 && run.reference == target.reference
@@ -800,7 +889,12 @@ pub fn plan(targets: &[Target], runs: &[RunFacts]) -> Plan {
             out.queue.push(target.clone());
         }
     }
-    for run in runs.iter().filter(|run| run.state.is_active()) {
+    // A candidate run is the staging queue's: the branch moving on never supersedes it
+    // (SPEC-575 MFS-003), and it still counts as testing its commit above.
+    for run in runs
+        .iter()
+        .filter(|run| run.state.is_active() && !matches!(run.reference, CiRef::Candidate(_)))
+    {
         let current = targets.iter().find(|t| t.reference == run.reference);
         match current {
             Some(target) if target.sha == run.sha => {}
@@ -823,8 +917,10 @@ pub fn copied_job_verdict(source: Option<RunState>) -> (RunState, i32) {
     }
 }
 
-fn has_verdict(state: RunState) -> bool {
-    matches!(state, RunState::Passed | RunState::Failed | RunState::Error)
+/// Whether the scheduler can use a run to cover another reference at the same commit.
+#[must_use]
+pub fn covers_shared_commit(state: RunState) -> bool {
+    state.is_active() || matches!(state, RunState::Passed | RunState::Failed | RunState::Error)
 }
 
 /// A GitHub commit status state.
@@ -1210,6 +1306,106 @@ pub fn classify_worktree(owner: WorktreeOwner, prunable: bool) -> Option<StaleRe
 mod tests {
     use super::*;
 
+    fn plain(key: &str, after_merge: bool) -> Job {
+        Job {
+            name: key.to_owned(),
+            key: key.to_owned(),
+            command: format!("run {key}"),
+            matrix: None,
+            need: Need::default(),
+            secrets: Vec::new(),
+            timeout_minutes: None,
+            exclusive: false,
+            paths: Vec::new(),
+            after_merge,
+        }
+    }
+
+    /// SPEC-575 MFS-002: `after_merge` is in force only with a merge-first environment that
+    /// deploys; a project without a shared target keeps its full suite everywhere.
+    #[test]
+    fn after_merge_is_in_force_only_with_a_merge_first_target() {
+        let jobs = vec![plain("quick", false), plain("e2e", true)];
+        let off = after_merge_in_force(jobs.clone(), false);
+        assert!(off.iter().all(|job| !job.after_merge), "{off:?}");
+        assert_eq!(after_merge_in_force(jobs.clone(), true), jobs);
+    }
+
+    /// SPEC-575 MFS-002: a job of the full suite is skipped, with the reason, on a pull request
+    /// head, a merge train and a playground task; the branches' runs run it, and a job of the
+    /// quick checks runs everywhere.
+    #[test]
+    fn the_full_suite_is_skipped_off_the_merged_revision() {
+        let full = plain("e2e", true);
+        let quick = plain("quick", false);
+        for reference in [
+            CiRef::PullRequest(7),
+            CiRef::Train(vec![7, 8]),
+            CiRef::Task(3),
+        ] {
+            let why = after_merge_skip(&full, &reference).unwrap_or_default();
+            assert!(why.starts_with(AFTER_MERGE_SKIP_REASON), "{why}");
+            assert_eq!(after_merge_skip(&quick, &reference), None);
+        }
+        assert_eq!(after_merge_skip(&full, &CiRef::Branch("dev".into())), None);
+        assert_eq!(after_merge_skip(&full, &CiRef::Branch("main".into())), None);
+    }
+
+    /// SPEC-575 MFS-002 (review round 1): a copied verdict keeps saying the full suite was
+    /// skipped, and only such a skip counts as one.
+    #[test]
+    fn a_copied_verdict_keeps_the_full_suites_skip() {
+        let own = after_merge_skip(&plain("e2e", true), &CiRef::PullRequest(1));
+        let copied = copied_job_reason(own.as_deref(), "not run again: same tree");
+        assert!(
+            skipped_after_merge(RunState::Skipped, Some(&copied)),
+            "{copied}"
+        );
+        assert!(copied.ends_with("not run again: same tree"), "{copied}");
+        let twice = copied_job_reason(Some(&copied), "a train's verdict");
+        assert!(
+            skipped_after_merge(RunState::Skipped, Some(&twice)),
+            "{twice}"
+        );
+        assert_eq!(copied_job_reason(Some(PATHS_SKIP_REASON), "n"), "n");
+        assert_eq!(copied_job_reason(None, "n"), "n");
+        assert!(!skipped_after_merge(RunState::Passed, Some(&copied)));
+        assert!(!skipped_after_merge(
+            RunState::Skipped,
+            Some(PATHS_SKIP_REASON)
+        ));
+        assert!(!skipped_after_merge(RunState::Skipped, None));
+    }
+
+    /// SPEC-575 MFS-002: a change that only moves a job into or out of the full suite changes
+    /// nothing about how the job runs, so no twin of it runs beside the gate's; a job a change
+    /// adds or changes runs before it merges (ADR-0360), so its twin is never part of the full
+    /// suite.
+    #[test]
+    fn a_changes_own_jobs_never_leave_its_pull_request() {
+        let gate = Gate {
+            jobs: vec![plain("e2e", false), plain("slow", true)],
+            source: GateSource::ProjectConfig,
+        };
+        let moved = with_changed_jobs(
+            gate.clone(),
+            vec![plain("e2e", true), plain("slow", false)],
+            None,
+        );
+        assert_eq!(moved, gate);
+        let added = with_changed_jobs(gate.clone(), vec![plain("new", true)], None);
+        let twin = added
+            .jobs
+            .last()
+            .cloned()
+            .unwrap_or_else(|| plain("", true));
+        assert_eq!(
+            (twin.name.as_str(), twin.after_merge),
+            ("new (this change)", false)
+        );
+        assert_eq!(&added.jobs[..2], &gate.jobs[..], "the gate keeps its flags");
+    }
+
     /// SPEC-504 CFG-001: a change's own jobs run beside the gate's, never instead: changed and
     /// added ones, named apart and keeping their key; equal ones once; within [`MAX_JOBS`].
     #[test]
@@ -1224,6 +1420,7 @@ mod tests {
             timeout_minutes: None,
             exclusive: false,
             paths: Vec::new(),
+            after_merge: false,
         };
         let gate = Gate {
             jobs: vec![job("check", "make check"), job("lint", "make lint")],
@@ -1373,6 +1570,7 @@ mod tests {
             timeout_minutes: None,
             exclusive: false,
             paths: Vec::new(),
+            after_merge: false,
         };
         let gate = |defs: &[JobDef]| -> Result<Gate, CiConfigError> {
             Ok(Gate {
@@ -1412,6 +1610,7 @@ mod tests {
             timeout_minutes: None,
             exclusive: false,
             paths: Vec::new(),
+            after_merge: false,
         };
         let gate = |source: GateSource, defs: &[JobDef]| -> Result<Gate, CiConfigError> {
             Ok(Gate {
@@ -1507,6 +1706,7 @@ mod tests {
             timeout_minutes: None,
             exclusive: false,
             paths: Vec::new(),
+            after_merge: false,
         };
         let jobs = expand_jobs(&[
             def("lint", "cargo clippy", ""),
@@ -1547,6 +1747,7 @@ mod tests {
             timeout_minutes: None,
             exclusive: false,
             paths: Vec::new(),
+            after_merge: false,
         };
         let mut defs = vec![
             wide.clone(),
@@ -1621,6 +1822,7 @@ mod tests {
             CiRef::Branch("dev".into()),
             CiRef::Train(vec![12, 15, 3]),
             CiRef::Task(7),
+            CiRef::Candidate("0123456789abcdef0123456789abcdef01234567".into()),
         ] {
             assert_eq!(CiRef::parse(&reference.key()), Some(reference.clone()));
         }
@@ -1635,6 +1837,9 @@ mod tests {
             "task/",
             "task/0",
             "task/x",
+            "candidate/",
+            "candidate/xyz",
+            "candidate/../dev",
         ] {
             assert_eq!(CiRef::parse(bad), None, "{bad}");
         }
@@ -1647,6 +1852,11 @@ mod tests {
         assert_eq!(CiRef::Task(7).key(), "task/7");
         assert_eq!(CiRef::Task(7).label(), "Task #7");
         assert!(!CiRef::Task(9).covers(9));
+        // A merged revision's full gate before staging (SPEC-575 MFS-003).
+        let candidate = CiRef::Candidate("0123456789abcdef".into());
+        assert_eq!(candidate.label(), "Candidate 012345678");
+        assert!(!candidate.covers(9));
+        assert_eq!(after_merge_skip(&plain("e2e", true), &candidate), None);
         for state in [
             RunState::Queued,
             RunState::Running,
@@ -1658,6 +1868,29 @@ mod tests {
         ] {
             assert_eq!(RunState::parse(state.as_str()), Some(state));
         }
+    }
+
+    /// SPEC-575 MFS-003 (review round 1 of slice 2): a candidate run is never superseded (it
+    /// has no target of its own) and still counts as testing its commit, so the branch reaching
+    /// that commit queues no second full run of it.
+    #[test]
+    fn a_candidate_run_is_kept_and_counts_as_testing_its_commit() {
+        let dev = CiRef::Branch("dev".into());
+        let candidate = CiRef::Candidate("a1".into());
+        let both = plan(
+            &[target(dev.clone(), "a1")],
+            &[run("c1", candidate.clone(), "a1", RunState::Running)],
+        );
+        assert!(both.queue.is_empty(), "{both:?}");
+        assert!(both.supersede.is_empty(), "{both:?}");
+        let moved = plan(
+            &[target(dev, "b2")],
+            &[run("c1", candidate, "a1", RunState::Queued)],
+        );
+        assert!(
+            moved.supersede.is_empty(),
+            "the branch moving on keeps it: {moved:?}"
+        );
     }
 
     #[test]

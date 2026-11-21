@@ -45,6 +45,7 @@ pub(crate) mod playground;
 mod prove;
 mod rollback;
 mod slots;
+pub(crate) mod staging;
 mod tools;
 
 use std::collections::{HashMap, HashSet};
@@ -222,6 +223,58 @@ pub struct CiJobRecord {
     pub exclusive: bool,
     /// How long it waited before it started (SPEC-435 JTL-004); `None` until it started.
     pub waited_ms: Option<i64>,
+}
+
+/// A commit supplied by the host, or user input that may abbreviate one.
+#[derive(Debug, Clone, Copy)]
+pub enum PullHead<'a> {
+    /// Git or the hosting service supplied the full object name.
+    Exact(&'a str),
+    /// The wait endpoint accepts a full object name or a unique prefix.
+    WaitArgument(&'a str),
+}
+
+/// Train and playground runs belong to their private queues. Other references
+/// participate in the ordinary commit scheduler, including a staging candidate.
+fn ordinary_scheduler_ref(reference: &CiRef) -> bool {
+    !matches!(reference, CiRef::Train(_) | CiRef::Task(_))
+}
+
+fn integration_config_refusal(run: &CiRunRecord) -> bool {
+    run.reason
+        .as_deref()
+        .is_some_and(|why| why.starts_with(DEV_INVALID_PREFIX))
+}
+
+/// Active work and a reference’s explicit cancellation survive a configuration refusal.
+fn survives_config_refusal(state: RunState) -> bool {
+    state.is_active() || state == RunState::Cancelled
+}
+
+/// Select the ordinary verdict from one commit’s runs, newest admission first.
+/// A configuration refusal invalidates earlier completed verdicts at this commit.
+pub(crate) fn run_for_pull_head(runs: &[CiRunRecord], pr: u64) -> Option<&CiRunRecord> {
+    let shared = |r: &&CiRunRecord| {
+        ordinary_scheduler_ref(&r.reference) && yulius_domain::ci::covers_shared_commit(r.state)
+    };
+    if let Some(index) = runs
+        .iter()
+        .position(|r| r.reference == CiRef::PullRequest(pr))
+    {
+        let owner = &runs[index];
+        let newer = &runs[..index];
+        let invalidated = !survives_config_refusal(owner.state)
+            && (integration_config_refusal(owner)
+                || newer.iter().any(|run| {
+                    ordinary_scheduler_ref(&run.reference) && integration_config_refusal(run)
+                }));
+        if invalidated && let Some(replacement) = newer.iter().find(shared) {
+            return Some(replacement);
+        }
+        Some(owner)
+    } else {
+        runs.iter().find(shared)
+    }
 }
 
 /// Test names retained by a cancelled sibling of a failed job (SPEC-566).
@@ -478,6 +531,35 @@ pub const CONFIG_JOB: &str = "yulius.toml";
 /// (SPEC-504 CFG-003).
 const LAST_VALID_BACK: usize = 100;
 
+/// The ordinary scheduler’s view of bounded run history, newest admission first.
+fn ordinary_run_facts(runs: &[CiRunRecord], dev_valid: bool) -> Vec<RunFacts> {
+    // A merge train's run is the train's own (SPEC-084), a playground task's its delivery's
+    // (SPEC-163): they start and cancel them.
+    // A head refused only because the integration branch's file was invalid is tested again
+    // once it is valid (review round 1): its refusal is no verdict then.
+    let mut invalidated = HashSet::new();
+    runs.iter()
+        // A candidate run (SPEC-575) stays in the facts: it tests its commit once for the
+        // branch too, and `plan` never supersedes it.
+        .filter(|run| ordinary_scheduler_ref(&run.reference))
+        .filter(|run| {
+            if dev_valid && integration_config_refusal(run) {
+                // From this refusal back, completed verdicts at the SHA predate
+                // the configuration failure. A newer run already covers the repair.
+                invalidated.insert(run.sha.as_str());
+                return false;
+            }
+            !invalidated.contains(run.sha.as_str()) || survives_config_refusal(run.state)
+        })
+        .map(|run| RunFacts {
+            id: run.id.clone(),
+            reference: run.reference.clone(),
+            sha: run.sha.clone(),
+            state: run.state,
+        })
+        .collect()
+}
+
 /// Whether anything of `sandbox` is in `busy`: a lane (`<sandbox>/<n>`) or a claim.
 fn busy_in(busy: &HashSet<String>, sandbox: &str) -> bool {
     busy.iter().any(|key| {
@@ -579,7 +661,7 @@ fn preferred_lanes(reference: &CiRef, last: &[(u32, CiRef)]) -> Vec<u32> {
                 matches!(r, CiRef::Train(others) if others.iter().any(|o| members.contains(o)))
             }));
         }
-        CiRef::Branch(_) | CiRef::Task(_) => {}
+        CiRef::Branch(_) | CiRef::Task(_) | CiRef::Candidate(_) => {}
     }
     let mut seen = Vec::new();
     lanes.retain(|lane| {
@@ -646,7 +728,7 @@ pub fn run_view(run: &CiRunRecord, jobs: &[CiJobRecord], with_output: bool) -> C
         label: run.reference.label(),
         pr_number: match run.reference {
             CiRef::PullRequest(n) => Some(n),
-            CiRef::Branch(_) | CiRef::Train(_) | CiRef::Task(_) => None,
+            CiRef::Branch(_) | CiRef::Train(_) | CiRef::Task(_) | CiRef::Candidate(_) => None,
         },
         sha: run.sha.clone(),
         state: run.state.as_str().to_owned(),
@@ -841,7 +923,13 @@ impl App {
             return Err("yulius.toml is larger than 64 KiB".into());
         }
         let config = parse_yulius_toml(&text).map_err(|err| err.to_string())?;
-        dom::project_jobs(config.commands.gate.as_deref(), &config.ci).map_err(|e| e.to_string())
+        let jobs = dom::project_jobs(config.commands.gate.as_deref(), &config.ci)
+            .map_err(|e| e.to_string())?;
+        // The full suite leaves the pull request only beside a shared staging target (SPEC-575
+        // MFS-002); the whole file, its CD tables included, parsed above.
+        let merge_first = yulius_domain::spec_format::parse_yulius_toml_cd(&text)
+            .is_ok_and(|cd| cd.merge_first().is_some());
+        Ok(dom::after_merge_in_force(jobs, merge_first))
     }
 
     /// The sandbox's CI as configured now (cached for a minute per integration head), with the
@@ -1057,13 +1145,61 @@ impl App {
     /// is one, else pending when Yulius CI will test it, else not configured (also when CI is
     /// off on this instance).
     pub async fn ci_gate_result(&self, sandbox: &SandboxRecord, sha: &str) -> GateResult {
+        self.ci_gate_result_for_ref(sandbox, sha, None).await
+    }
+
+    /// An ordinary PR display uses its own run when several refs share a SHA.
+    pub(crate) async fn ci_gate_result_for_ref(
+        &self,
+        sandbox: &SandboxRecord,
+        sha: &str,
+        reference: Option<&CiRef>,
+    ) -> GateResult {
+        self.ci_gate_select(
+            sandbox,
+            sha,
+            self.deps.store.ci_runs_for_sha(&sandbox.id, sha),
+            |runs| {
+                runs.iter()
+                    .find(|run| reference.is_none_or(|r| *r == run.reference))
+                    .map(|run| run.state)
+            },
+        )
+        .await
+    }
+
+    /// The ordinary CI verdict for an armed PR, including its scheduler-shared run.
+    pub(crate) async fn ci_gate_for_pull(
+        &self,
+        sandbox: &SandboxRecord,
+        pr: u64,
+        sha: &str,
+    ) -> GateResult {
+        self.ci_gate_select(
+            sandbox,
+            sha,
+            self.deps
+                .store
+                .ci_runs_for_pull_head(&sandbox.id, PullHead::Exact(sha)),
+            |runs| run_for_pull_head(runs, pr).map(|r| r.state),
+        )
+        .await
+    }
+
+    async fn ci_gate_select(
+        &self,
+        sandbox: &SandboxRecord,
+        sha: &str,
+        records: impl Future<Output = AppResult<Vec<CiRunRecord>>>,
+        select: impl FnOnce(&[CiRunRecord]) -> Option<RunState>,
+    ) -> GateResult {
         if !self.config.ci.enabled {
             return GateResult::NotConfigured;
         }
-        if let Ok(runs) = self.deps.store.ci_runs_for_sha(&sandbox.id, sha).await
-            && let Some(latest) = runs.first()
+        if let Ok(runs) = records.await
+            && let Some(state) = select(&runs)
         {
-            return GateResult::Run(Some(latest.state));
+            return GateResult::Run(Some(state));
         }
         // No run yet: one will come when Yulius CI tests this commit, with the integration
         // branch's jobs or, for a commit that brings CI to a branch without any, with its own
@@ -1132,7 +1268,8 @@ impl App {
             .iter()
             .enumerate()
             .map(|(index, job)| {
-                let skip = yulius_domain::ci::paths_skip(&job.paths, changed.as_deref());
+                let skip = yulius_domain::ci::after_merge_skip(job, &run.reference)
+                    .or_else(|| yulius_domain::ci::paths_skip(&job.paths, changed.as_deref()));
                 CiJobRecord {
                     id: self.deps.crypto.new_id(),
                     run_id: run.id.clone(),
@@ -1176,7 +1313,18 @@ impl App {
         {
             CiRunRecord {
                 state: RunState::Passed,
-                reason: Some("every job was skipped: no file they test changed".to_owned()),
+                reason: Some(
+                    if jobs
+                        .iter()
+                        .any(|j| dom::skipped_after_merge(j.state, j.reason.as_deref()))
+                    {
+                        "every job was skipped: no file the quick checks test changed, and the \
+                         full suite runs on the merged revision"
+                    } else {
+                        "every job was skipped: no file they test changed"
+                    }
+                    .to_owned(),
+                ),
                 started_at: Some(self.now()),
                 ended_at: Some(self.now()),
                 ..run
@@ -1334,7 +1482,7 @@ impl App {
         reference: &CiRef,
         sha: &str,
     ) -> Option<Vec<String>> {
-        if matches!(reference, CiRef::Branch(_)) {
+        if matches!(reference, CiRef::Branch(_) | CiRef::Candidate(_)) {
             return None;
         }
         let integration = format!("origin/{}", delivery_profile(sandbox).integration_branch);
@@ -1437,29 +1585,12 @@ impl App {
                 ));
             }
         }
-        let runs = self.deps.store.ci_runs(&sandbox.id, PLAN_RUNS).await?;
-        // A merge train's run is the train's own (SPEC-084), a playground task's its delivery's
-        // (SPEC-163): they start and cancel them.
-        // A head refused only because the integration branch's file was invalid is tested again
-        // once it is valid (review round 1): its refusal is no verdict then.
-        let dev_valid = view.problem.is_none();
-        let facts: Vec<RunFacts> = runs
-            .iter()
-            .filter(|run| !matches!(run.reference, CiRef::Train(_) | CiRef::Task(_)))
-            .filter(|run| {
-                !(dev_valid
-                    && run
-                        .reason
-                        .as_deref()
-                        .is_some_and(|r| r.starts_with(DEV_INVALID_PREFIX)))
-            })
-            .map(|run| RunFacts {
-                id: run.id.clone(),
-                reference: run.reference.clone(),
-                sha: run.sha.clone(),
-                state: run.state,
-            })
-            .collect();
+        let runs = self
+            .deps
+            .store
+            .ci_planning_runs(&sandbox.id, PLAN_RUNS)
+            .await?;
+        let facts = ordinary_run_facts(&runs, view.problem.is_none());
         let only_targets: Vec<Target> = targets.iter().map(|(t, _)| t.clone()).collect();
         let plan = dom::plan(&only_targets, &facts);
         crate::race::reached(
@@ -1569,7 +1700,10 @@ impl App {
         // A branch's own run runs every job (SPEC-493 CJP-003): a source that skipped a job for
         // its `paths` never ran it, so it is no source there, and an earlier one may be. A merge
         // candidate's neither: the same tree on another base may change what `paths` decides.
-        let branch = matches!(target.reference, CiRef::Branch(_) | CiRef::Train(_));
+        let branch = matches!(
+            target.reference,
+            CiRef::Branch(_) | CiRef::Train(_) | CiRef::Candidate(_)
+        );
         let mut found = None;
         for run in runs.iter().filter(|r| reuse_source(r, target)) {
             if self.deps.git.tree_of(&repo, &run.sha).await?.as_deref() != Some(tree.as_str()) {
@@ -1582,7 +1716,14 @@ impl App {
                         t.key == job.key && t.matrix == job.matrix && t.state == RunState::Skipped
                     })
             });
-            if branch && skipped_a_paths_job {
+            // Likewise a source that skipped a job as part of the full suite (SPEC-575 MFS-002)
+            // never ran it, whatever the gate says of the job now (a change may have just turned
+            // the move off, review round 1): no source for a run of the merged revision.
+            let merged = matches!(target.reference, CiRef::Branch(_) | CiRef::Candidate(_));
+            let skipped_the_full_suite = jobs
+                .iter()
+                .any(|t| dom::skipped_after_merge(t.state, t.reason.as_deref()));
+            if branch && skipped_a_paths_job || merged && skipped_the_full_suite {
                 continue;
             }
             // Every job of the gate ran there as it is defined now: a pull request judged by the
@@ -1632,9 +1773,10 @@ impl App {
                 // The job that ran as this one is defined, which tells a job from a change's twin
                 // of it (SPEC-504 review rounds 2 and 4). A job the source did not have (the gate
                 // changed since) is passed, as before SPEC-162.
-                let (state, exit_code) = dom::copied_job_verdict(
-                    tested.iter().find(|t| ran_as(t, job)).map(|t| t.state),
-                );
+                let source = tested.iter().find(|t| ran_as(t, job));
+                let (state, exit_code) = dom::copied_job_verdict(source.map(|t| t.state));
+                let reason =
+                    dom::copied_job_reason(source.and_then(|t| t.reason.as_deref()), &note);
                 CiJobRecord {
                     id: self.deps.crypto.new_id(),
                     run_id: run.id.clone(),
@@ -1644,7 +1786,7 @@ impl App {
                     command: job.command.clone(),
                     matrix: job.matrix.clone(),
                     state,
-                    reason: Some(note.clone()),
+                    reason: Some(reason),
                     exit_code: Some(exit_code),
                     output: format!("{note}.\n"),
                     failures: None,
@@ -2213,8 +2355,10 @@ impl App {
         if view.fallback_unknown {
             return None;
         }
+        // With no gate in force the integration head has no merge-first target: a change that
+        // brings CI runs its whole suite (SPEC-575 MFS-002, review round 1).
         let jobs = match self.ci_jobs_at(&repo, head).await {
-            Ok(jobs) if !jobs.is_empty() => jobs,
+            Ok(jobs) if !jobs.is_empty() => dom::after_merge_in_force(jobs, false),
             _ => return None,
         };
         let scans = self.ci_scans(sandbox).await;
@@ -2258,7 +2402,7 @@ impl App {
         // branch's, a commit on its way there may have its own (`ci_gate_for_head`).
         // A branch's run takes the branch's gate; a commit on its way (a pull request's head,
         // a playground task's merge; a train's run never gets here) the scheduler's rule.
-        let on_its_way = !matches!(run.reference, CiRef::Branch(_));
+        let on_its_way = !matches!(run.reference, CiRef::Branch(_) | CiRef::Candidate(_));
         let gate = if on_its_way {
             self.ci_gate_for_head(sandbox, &view, &run.sha).await
         } else {
@@ -2320,6 +2464,160 @@ impl App {
 }
 
 #[cfg(test)]
+mod planning_tests {
+    use super::*;
+
+    fn run(
+        sandbox: &SandboxId,
+        id: &str,
+        sha: &str,
+        reference: CiRef,
+        state: RunState,
+        reason: Option<String>,
+    ) -> CiRunRecord {
+        CiRunRecord {
+            id: id.into(),
+            sandbox_id: sandbox.clone(),
+            reference,
+            sha: sha.into(),
+            source: dom::GateSource::ProjectConfig,
+            state,
+            reason,
+            requested_by: "yulius".into(),
+            status_for: None,
+            status_note: None,
+            status_attempts: 0,
+            queued_at: Timestamp(0),
+            started_at: None,
+            ended_at: None,
+        }
+    }
+
+    #[test]
+    fn a_shared_config_repair_invalidates_an_older_owner_verdict()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let sandbox = SandboxId::parse("s1")?;
+        let replacement = run(
+            &sandbox,
+            "repair",
+            "a",
+            CiRef::PullRequest(3),
+            RunState::Queued,
+            None,
+        );
+        let refusal = run(
+            &sandbox,
+            "refused",
+            "a",
+            CiRef::PullRequest(2),
+            RunState::Failed,
+            Some(format!("{DEV_INVALID_PREFIX}dev")),
+        );
+        for (state, expected) in [
+            (RunState::Passed, "repair"),
+            (RunState::Failed, "repair"),
+            (RunState::Running, "owner"),
+            (RunState::Cancelled, "owner"),
+        ] {
+            let owner = run(&sandbox, "owner", "a", CiRef::PullRequest(1), state, None);
+            let records = [replacement.clone(), refusal.clone(), owner];
+            assert_eq!(
+                run_for_pull_head(&records, 1).map(|r| r.id.as_str()),
+                Some(expected),
+                "{state:?}"
+            );
+        }
+        let mut private_refusal = refusal;
+        private_refusal.reference = CiRef::Train(vec![2]);
+        let owner = run(
+            &sandbox,
+            "owner",
+            "a",
+            CiRef::PullRequest(1),
+            RunState::Passed,
+            None,
+        );
+        let records = [replacement, private_refusal, owner];
+        assert_eq!(
+            run_for_pull_head(&records, 1).map(|r| r.id.as_str()),
+            Some("owner")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_repaired_configuration_preserves_active_runs_and_human_cancellations()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let sandbox = SandboxId::parse("s1")?;
+        let pr = CiRef::PullRequest(1);
+        let refusal = Some(format!("{DEV_INVALID_PREFIX}dev"));
+        let records = [
+            run(
+                &sandbox,
+                "replacement",
+                "a",
+                pr.clone(),
+                RunState::Passed,
+                None,
+            ),
+            run(
+                &sandbox,
+                "refusal",
+                "a",
+                pr.clone(),
+                RunState::Failed,
+                refusal.clone(),
+            ),
+            run(
+                &sandbox,
+                "obsolete",
+                "a",
+                pr.clone(),
+                RunState::Failed,
+                None,
+            ),
+            run(&sandbox, "queued", "a", pr.clone(), RunState::Queued, None),
+            run(
+                &sandbox,
+                "cancel",
+                "a",
+                pr.clone(),
+                RunState::Cancelled,
+                None,
+            ),
+            run(
+                &sandbox,
+                "private",
+                "b",
+                CiRef::Train(vec![1]),
+                RunState::Failed,
+                refusal,
+            ),
+            run(&sandbox, "other", "b", pr, RunState::Passed, None),
+        ];
+        let ids = |valid| {
+            ordinary_run_facts(&records, valid)
+                .into_iter()
+                .map(|r| r.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(true), ["replacement", "queued", "cancel", "other"]);
+        assert_eq!(
+            ids(false),
+            [
+                "replacement",
+                "refusal",
+                "obsolete",
+                "queued",
+                "cancel",
+                "other"
+            ]
+        );
+        Ok(())
+    }
+}
+
+#[cfg(test)]
 mod ran_as_tests {
     use super::{CiJobRecord, Job, RunState, ran_as};
     use yulius_domain::resources::Need;
@@ -2341,6 +2639,7 @@ mod ran_as_tests {
             timeout_minutes: Some(30),
             exclusive: true,
             paths: vec!["crates/**".into()],
+            after_merge: false,
         };
         let record = |job: &Job| CiJobRecord {
             id: "j".into(),

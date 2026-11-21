@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use base64::Engine as _;
 use futures::{SinkExt as _, StreamExt as _};
@@ -89,6 +89,18 @@ pub async fn browser(
     Ok(ws
         .max_message_size(MAX_CLIENT_MESSAGE)
         .on_upgrade(move |socket| run(app, ctx, grant, socket)))
+}
+
+pub async fn restart(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(sid): Path<String>,
+) -> ApiResult<StatusCode> {
+    // Finish the replacement and its sandbox removal check even if the HTTP client disconnects.
+    tokio::spawn(async move { app.restart_browser(&ctx, &sid).await })
+        .await
+        .map_err(yulius_app::error::AppError::internal)??;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -733,7 +745,11 @@ async fn pump(
                             return;
                         }
                     }
-                    Some(BrowserNotice::ActionCleared { .. }) => {}
+                    Some(BrowserNotice::ActionCleared { tab_id }) => {
+                        if !out.json(&ViewerServerMsg::ActionCleared { tab_id }).await {
+                            return;
+                        }
+                    }
                     Some(BrowserNotice::AgentActivity { tab_id, x, y, action, label }) => {
                         let message = ViewerServerMsg::AgentActivity { tab_id, x, y, action, label };
                         if !out.json(&message).await {
@@ -856,6 +872,11 @@ async fn pump(
                         } else {
                             Err((ViewerErrorCode::Invalid, "input arrives too fast; slow down".into()))
                         }
+                    }
+                    Ok(ViewerClientMsg::ClearAction { tab_id }) => {
+                        app.clear_browser_action_for_sandbox(&grant.sandbox_id, &tab_id)
+                            .await;
+                        Ok(())
                     }
                     Ok(message) => session.apply_viewer(message).await.map_err(|failure| {
                         (failure.viewer_code(), failure.message)

@@ -116,6 +116,18 @@ pub fn env_label(name: &str) -> &str {
     if name == "prod" { "production" } else { name }
 }
 
+/// The task-local deployment (`[local]`, SPEC-575 MFS-010): how a task builds, deploys and
+/// tests the project inside its own sandbox before it merges.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalDeploy {
+    /// Deploys into this sandbox (its ports, its own test data).
+    pub deploy: String,
+    /// Checks the local deployment from outside.
+    pub verify: Option<String>,
+    /// One line for people.
+    pub about: Option<String>,
+}
+
 /// One environment's table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CdTarget {
@@ -145,6 +157,8 @@ pub struct CdTarget {
     pub parts: Vec<String>,
     /// Production stage only: the dev-stage environment whose drill proves this rollback.
     pub drill: Option<String>,
+    /// Dev stage only: the shared staging target of merge-first delivery (SPEC-575 MFS-001).
+    pub merge_first: bool,
 }
 
 impl CdTarget {
@@ -165,6 +179,7 @@ impl CdTarget {
             migrations: None,
             parts: Vec::new(),
             drill: None,
+            merge_first: false,
         }
     }
 
@@ -264,6 +279,15 @@ impl CdConfig {
             .collect();
         names.sort_by_key(|name| name != stage.as_str());
         names
+    }
+
+    /// The shared staging target of merge-first delivery (SPEC-575 MFS-001): the dev-stage
+    /// table with `merge_first = true`, at most one.
+    #[must_use]
+    pub fn merge_first(&self) -> Option<&CdTarget> {
+        self.environments
+            .iter()
+            .find(|target| target.merge_first && target.stage == CdStage::Dev)
     }
 
     /// Whether CD is defined: an environment of each stage (empty counts, SPEC-257 CDN-005).

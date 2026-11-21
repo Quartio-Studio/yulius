@@ -17,7 +17,7 @@ been performed or verified** as part of the implementation work.
 | Codex CLI (`codex`; SPEC-503) | Codex tasks and Codex account sign-in | nothing to install: Yulius downloads the pinned release (0.170.0, its sha512 in the source) from `registry.npmjs.org` into `<data>/codex-cli/` on the first Codex use, or at start when Codex accounts exist (about 167 MB, 423 MB unpacked), and Codex runs start it by its path, binding its directory read-only into a contained run, and so do Codex sign-ins ([ADR-0355](decisions/0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md)). Without access to the registry it uses a host `codex` if there is one; otherwise a Codex start says why it could not install. A host move leaves `codex-cli/` behind: the new host installs its own. |
 | Claude Code (`claude`) | Claude tasks and Claude account login | installed with npm system-wide (`npm install -g @anthropic-ai/claude-code`; verified with 2.1.292 and 2.1.322). Isolated sandboxes then get newer releases by themselves, each checked for Yulius's default model first: see [Claude Code updates](#claude-code-updates). |
 | GitHub CLI (`gh`) ≥ 2.82.1 | `gh` in every sandbox, logged in as the person (their shells) or the task's creator (agents) | install it on the host from [GitHub's package repository](https://github.com/cli/cli/blob/trunk/docs/install_linux.md), not the distribution's package: Ubuntu 24.04 ships 2.45, and since GitHub retired Projects (classic) `gh pr edit` and `gh issue view --comments` fail with a GraphQL error before 2.82.1. Sandboxes copy the host system, so rebuild the base afterwards (`yulius sandbox-base build`). `yulius doctor` warns without it or below 2.82.1. |
-| Chrome's managed policy (`yulius.json` in `/etc/opt/chrome/policies/managed`, `/etc/chromium/policies/managed` and `/etc/chromium-browser/policies/managed`) | clicks and keys in the sandbox browsers on a virtual display | `yulius host setup` writes it and the update's host check keeps it current; without it the browsers show but take no clicks and keys (ADR-0318). A browser an agent clicked or typed in before it was written stays so until it restarts (after 30 minutes in which no page shows it and no agent uses it, or with the server), since a file dialog opened then may still be on its display. It applies to every Chrome on the host: no file dialogs, downloads, printing or extension installs, and only web addresses (no `file:` or `chrome:` pages, no links to other programs). |
+| Chrome's managed policy (`yulius.json` in `/etc/opt/chrome/policies/managed`, `/etc/chromium/policies/managed` and `/etc/chromium-browser/policies/managed`) | clicks and keys in the sandbox browsers on a virtual display | `yulius host setup` writes it and the update's host check keeps it current; without it the browsers show but take no clicks and keys (ADR-0318). If the panel says a file dialog may still be open after the policy takes effect, choose **Restart browser** beside the message. This restarts just that sandbox’s Chrome, keeps its profile and reopens its web tabs. If Chrome reports too many tabs, close excess tabs and retry. The managed policy applies to every Chrome on the host: no file dialogs, downloads, printing or extension installs, and only web addresses (no `file:` or `chrome:` pages, no links to other programs). |
 | bubblewrap (`bwrap`) | containment (`--contained`) | strongly recommended in production; without it runs are marked "not contained". `yulius host setup` installs it. |
 | An AppArmor rule that lets `/usr/bin/bwrap` create user namespaces | every sandbox, on Ubuntu 24.04 and later (`kernel.apparmor_restrict_unprivileged_userns = 1`) | `yulius host setup` writes `/etc/apparmor.d/yulius-bwrap` and, on Ubuntu 26.04, disables the shipped `bwrap-userns-restrict`; never write one by hand (see [Sandbox isolation](#sandbox-isolation)). Debian needs none. |
 | `uidmap` (`newuidmap`, `newgidmap`) and a subordinate id range for the service user | sandbox isolation (SPEC-002 ADR-22): `apt` in sandboxes, private networks | `/etc/subuid` and `/etc/subgid` lines of at least 65,536 ids (see [Sandbox isolation](#sandbox-isolation)); `yulius host setup` installs both. |
@@ -171,7 +171,43 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # While it waits for a subscription the message is retained and its last parked screen stays visible.
 # An open plan step, unfinished spec or unfinished goal keeps the agent live, including while it asks its owner.
 # A failing ordinary PR run, unreadable check or unpublished repair keeps its author live.
+# A failed single-PR merge candidate names its source run, failing job and a redacted
+# excerpt or its recorded configuration error. The queue verifies the current PR head and integration base.
+# If it cannot verify them, read ordinary CI at that head or safely read the failing job,
+# the queue keeps the candidate for up to 15 minutes.
+# After a continuous outage, its arm can proceed one by one.
+# Hourly history cleanup retains the latest merge wait of each existing task, even when
+# its activation began more than 180 days ago. Removing the task releases this history.
 # The PR watcher delivers actionable failures once and waits for a pending human decision.
+# When PRs share a head, their tasks can wait on the same ordinary CI run. An explicit
+# rerun for the owner takes precedence in yulius wait and in its merge queue decision.
+# If a later run finds the integration CI configuration invalid, earlier completed runs
+# at that head become obsolete. After repair, even an owner that passed can show queued.
+# A partial Git overview keeps a known failing PR under Needs you. A complete lookup
+# can clear it. Refreshing this display sends no message to the parked task.
+# A successor waiting for Done (after_task or #N done) stays chained while its parked predecessor
+# has unfinished work, an owner decision or failing or unreadable checks on a recorded or replacement PR.
+# An explicit #N merged rule follows the recorded merge.
+# The HTTP task detail names the ordinary PR blocking Done. Unreadable checks keep
+# the parked task under Needs you until a later read verifies its state.
+# Task lists and Home share the 750 ms PR lookup budget across their parked rows.
+# An unreadable PR counts toward Needs you while later healthy PRs can show Done.
+# If two task list requests overlap, the sidebar keeps the newest successful snapshot.
+# A task page that initially showed a list error opens when the other request succeeds.
+# A parked task with unfinished work in its summary stays under Needs you even if its Git chip is green.
+# A CI rerun refreshes the open sidebar while its Git overview is loading. If the task list
+# cannot verify a known open PR, the row stays under Needs you until verification succeeds.
+# The parked terminal updates its step count and clears resolved owner notices when the list refreshes.
+# A terminal that discovers a missed park updates the active task list with the verified work.
+# Opening a parked terminal also corrects a missed resume in the sidebar.
+# Undo restores a resting task to Tasks. An open terminal can discover the restoration through
+# task detail or a refreshed list. A newer removal takes precedence. When the terminal receives
+# Closed and then discovers the archive in detail, it removes the task from the active task list.
+# Opening the terminal or Task Info refreshes the parked sidebar row. Task Info uses the same
+# verified status in its header and Now tile. An unavailable refresh keeps a known
+# open PR under Needs you until verification succeeds. The Git chip shows the last overview.
+# Use task_get for the current parked wait reason or tasks_list with scope needs_you
+# for the ordered page of tasks that currently need attention.
 #Environment=YULIUS_PARK_AFTER_MINUTES=30
 # A server older than parking cannot read the status `parked`: before rolling back past it,
 # resume or archive the tasks marked "parked" in the task lists, with this set to 0 so no task
@@ -965,10 +1001,10 @@ silent. It types none of them while a person's draft may sit in the session's pr
 
 - **When a message waits.** Someone typed into the task's terminal since its prompt box was
   last empty (the session's start, or the last prompt sent from the box), however long ago.
-  Yulius sees keys and sent prompts, not the box, so every key counts until the next prompt is
-  sent: also an answer to one of Claude Code's dialogs, or Escape. Typed behind a draft, the
-  message and the unfinished text would be sent as one prompt. For a minute after any key
-  nothing is typed either.
+  A keystroke holds every message for one minute. After that, Yulius can release the hold
+  when Claude Code shows its empty conversation input, including its dim suggestion.
+  A stashed draft, a named input, a dialog or an unfamiliar layout keeps the hold.
+  Text that Claude restores after a submit also holds a message. [ADR-0405](decisions/0405-a-confirmed-empty-claude-prompt-releases-a-held-message.md)
 - **Who is told.** A message sent with `task_message` is refused with that reason at once, and
   the Superagent or the person's agent says so. A message of Yulius's own waits and is tried
   again (a pull request's news every 20 seconds; the wake after an outage until 10 minutes
@@ -976,10 +1012,10 @@ silent. It types none of them while a person's draft may sit in the session's pr
   reads **Needs your action** ("Yulius has a message for this session and does not type it…")
   and its terminal says the same in one line; a wake that is dropped says so at its last try,
   whatever the key's age. A flagged task is not idle, so a finished one does not count as done
-  for the tasks chained after it until its person sent a prompt.
-- **What ends it.** Send what you typed in the task's terminal, or clear it and send any
-  prompt (`continue` will do). Yulius types its message after the next prompt sent from there;
-  by itself it never sends or clears a person's text. The task's owner can also tell their
+  for the tasks chained after it until the hold ends.
+- **What ends it.** Send what you typed in the task's terminal, or clear it. After a
+  minute a watch can deliver to the recognized empty box. On other screens, send any prompt
+  (`continue` will do) to release the hold. The task's owner can also tell their
   Superagent (or their own agent) to send a message past it: `task_message` with
   `with_draft: true` types the message behind that text and both go to the agent as one
   prompt, once the last key is more than a minute old (SPEC-487). That ends the hold too,
@@ -987,8 +1023,9 @@ silent. It types none of them while a person's draft may sit in the session's pr
   prompt Yulius held for a decision is back in the box.
 - A restart of Yulius does not forget a draft: the key that begins one leaves `person-typed`
   (its time) in the run's folder (`<data>/runs/…`), removed when a prompt is sent from the
-  box, and a restarted server reads it when it reattaches the run. A draft it knows from
-  that file alone stays one until a prompt is sent after a key typed since the restart.
+  box or the box is confirmed empty. A restarted server reads the mark when it reattaches
+  the run. After a quiet minute, a snapshot the host confirms was rendered at the current size can release the hold. An older host needs a live repaint.
+  A window resize also requires a repaint because it can crop a draft or stash hint.
 
 ### Docker in sandboxes
 
@@ -1498,6 +1535,8 @@ a control question about one that cannot be registered: only when GitHub refuses
 and nothing is changed at GitHub.
 
 ### CI on this machine
+
+If a PR rerun failed because the integration branch’s CI configuration was invalid, repairing the configuration schedules another run at the same head. An earlier pass on that head predates the refusal.
 
 Yulius is the projects' only CI (SPEC-002 ADR-21). No GitHub Actions or paid GitHub feature is
 involved.
@@ -2521,7 +2560,9 @@ commits. Nothing updates by itself: a superadmin chooses **Update now** and conf
    longest a deploy can last (twice the CI job timeout or the job timeout plus 35 minutes of
    preparation, whichever is longer, plus 5 minutes: 70 minutes by default) cancels the update
    (SPEC-342). A crash or a manual restart still ends a running deploy as `error`.
-2. **Pause tasks**: every task's agent is frozen at once with the cgroup v2 freezer (its process
+2. **Pause tasks**: during the first 30 seconds of this phase a version install also gives a CI gate
+   with passed work and only its last job left time to finish. **Continue without waiting** skips the
+   CI wait. An interrupted gate goes back through normal startup recovery. During the pause every task's agent is frozen at once with the cgroup v2 freezer (its process
    tree moves into `…/sandboxes/<sandbox>/agents/run-<attempt>` and that group is frozen; the
    ptyhost, shells and browsers keep running) and new starts queue. The agents are told nothing.
    This needs the delegated cgroups of §3 (`Delegate=yes`, `DelegateSubgroup=server`, and the

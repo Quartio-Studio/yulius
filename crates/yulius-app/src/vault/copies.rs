@@ -56,6 +56,7 @@ impl App {
         let args: CopyArgs = serde_json::from_value(args.clone())
             .map_err(|e| AppError::Invalid(format!("invalid arguments: {e}")))?;
         let name = agent_made_name(&args.name)?;
+        name.check_assignment().map_err(invalid)?;
         let hosts: Vec<String> = parse_hosts(&args.hosts)
             .map_err(invalid)?
             .iter()
@@ -255,7 +256,7 @@ impl App {
                 sandbox: &sid,
                 scope: AgentScope::Project(sid.clone()),
                 meta: Meta {
-                    name: request.name.clone(),
+                    name: agent_made_name(&request.name)?,
                     hosts: request.hosts.clone(),
                     injection: Injection::parse(&record.injection, record.header_name.as_deref())
                         .unwrap_or(Injection::None),

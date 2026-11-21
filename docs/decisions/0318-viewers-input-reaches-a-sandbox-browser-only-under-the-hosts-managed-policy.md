@@ -95,8 +95,7 @@ browser with.
 - The policy closes no window that is open. A native file chooser an agent's click or typed
   Enter opened while the policy was not in force stays on the display, so such a browser does
   not take viewers' clicks and keys when the policy appears: they come back when it restarts
-  (a new browser after 30 minutes in which no page shows it and no agent uses it, or with the server), and the page says
-  so. Nothing tells Yulius that the chooser closed (DevTools sees only some of Chrome's
+  through **Restart browser** in the panel. [ADR-0404](0404-restart-one-sandbox-browser-through-its-viewer-grant.md) Nothing tells Yulius that the chooser closed (DevTools sees only some of Chrome's
   windows, above). A browser no agent drove meanwhile takes input at once (SPEC-493 DEF-002).
 - After the update that brings this, a host shows its sandbox browsers but takes no clicks and
   keys in them until `sudo yulius host setup` ran once: the update helper's unit is read-only

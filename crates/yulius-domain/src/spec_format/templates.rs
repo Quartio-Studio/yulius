@@ -366,7 +366,8 @@ fn agents_md(template: TemplateKind, names: &Names, commands: &Commands) -> Stri
          Every feature and fix takes the same autonomous path: spec, implementation slice by\n\
          slice, independent review in a fresh session, fixes, gates, a small pull request into\n\
          `dev`, merge on green, cleanup. There is no human acceptance step; the gates decide. A\n\
-         merge deploys nothing: deploy and verify `dev` only when the task asks. Production,\n\
+         merge deploys nothing by itself: deploy and verify `dev` only when the task asks (with a\n\
+         merge-first staging target, ask for it with `cd_deploy` once the delivery merged). Production,\n\
          with its promotion to `main`, is always a person's decision and action. Every CD\n\
          environment that deploys has a `rollback` and a `migrations` line in `yulius.toml`;\n\
          Yulius drills the rollback on dev, and production waits for that drill.\n\

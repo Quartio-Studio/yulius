@@ -4,8 +4,86 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-21
+
+- Hourly history cleanup preserves each existing task’s latest merge queue decision, even if the arm began before the telemetry cutoff (SPEC-558).
+
+- A failed single-PR merge candidate tells its original owner which job failed. It verifies the current PR head and integration base and retries unreadable diagnostics, including when a multi-PR run tested the same tree (SPEC-558).
+
+- When open PRs share a commit, the merge queue and `yulius wait` use the owner’s ordinary CI result. A PR without its own run can use the shared result for that commit (SPEC-558).
+
+- Repairing invalid integration CI schedules a fresh run for a refused PR head even when that head passed before the configuration broke (SPEC-558).
+
+- Task Info updates the sidebar when it verifies a parked task. Its header and Now tile follow the latest verified status while the PR chip shows the last Git overview (SPEC-558).
+
+- A task leaves the active task list when its terminal discovers an archive, including when the browser received Closed but missed the subsequent Archived update (SPEC-558).
+
+- After Undo, a mounted terminal can restore a resting task to the active task list. A refreshed list also updates the terminal when the task reappears (SPEC-558).
+
+- Opening a parked terminal now corrects a missed resume in the sidebar, including the active subscription and background work (SPEC-558).
+
+- A terminal that discovers a missed park updates the sidebar, even if an older task list omitted its row (SPEC-558).
+
+- Opening a parked terminal updates its sidebar row with the verified plan, PR and owner decision. A delayed read preserves a newer observation of the same PR closing (SPEC-558).
+
+- A parked terminal shows the completed step count when the sidebar observes the last step finish. A later CI failure no longer displays an owner action that was already resolved (SPEC-558).
+
+- Parked rows in the sidebar follow CI reruns while Git is loading. Overlapping task lists reconcile resumes, archives, Undo and permanent removals (SPEC-558).
+
+- Browser task rows keep verified unfinished parked work under Needs you, including when the Git overview shows healthy checks (SPEC-558).
+
 ## 2026-11-20
 
+- 2026-11-20 Browser task lists keep the newest successful snapshot when requests overlap. A task page can recover from its initial load error as soon as the sidebar receives the list.
+- Every task entering Needs You now carries a redacted, actionable notice explaining what happened, what a person needs to do, and where to do it—shown beside the task status (even when stopped or parked), in the attention bar, Needs You lists, notifications, and identically in `tasks_list` and `task_get`—alongside deduplicated timestamped wait-episode history (`task_wait_messages`). Browser handoffs persist across activity transitions, parking, and restarts and clear cleanly when answered, dismissed, superseded, closed, or marked done; untold agent-recoverable CI failures and progressing reruns stay in Working until human action is needed ([ADR-0414](decisions/0414-actionable-needs-you-notices-and-wait-history.md), [SPEC-578](../.ai/specs/SPEC-578-show-an-actionable-message-whenever-a-ta.md)).
+- With a merge-first staging target, the Delivery page's Promote and the automatic promotion
+  also take only the revision staging verified, read through the verified CD mirror; an
+  automatic promotion runs once the staging queue verified the head. Any project's promotion is
+  refused while its verified head or `[cd.*]` tables cannot be read ([ADR-0411](decisions/0411-staging-changes-through-a-queue-of-tested-merged-revisions.md)).
+- New projects with a shared staging target are bootstrapped merge-first, with a `[local]`
+  deployment inside each task's sandbox. Each onboarded sandbox gets one Infra bootstrap task
+  that adopts it, keeping the project's own commands, targets and grants, or records that the
+  project has no shared target ([ADR-0415](decisions/0415-merge-first-is-the-bootstrap-default-and-reaches-onboarded-projects-through-a-task.md)).
+- Browser tests can start after a burst of host network changes interrupts the initial mock page and its recovery reload. Recovery has one 30-second budget (SPEC-545).
+
+- MCP task reads explain which checks or local work keep a parked task under Needs you. Filtered pages use the plan they display and stop at the requested limit (SPEC-558).
+- The Linux tunnel custodian enforces each socket pair’s original lifetime during receipt, waiting and delivery. Expired TCP pairs release their peers while the successor receives the live remainder. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
+
+- Merge-first staging target: a task's `cd_deploy` now queues a staging request for the task's
+  merged revision instead of deploying the branch head.
+  - Yulius runs the full gate on exactly that commit, then deploys and verifies revisions in
+    first-parent order, once per task.
+  - A failing candidate leaves staging on its last verified release.
+  - A deploy lost to a restart is retried, and duplicate requests answer with the recorded one.
+  - A failed deploy restores staging and tells the task.
+  - The CD page and `cd_status` show the queue.
+  - A production deploy that promotes takes only the revision staging verified
+    ([ADR-0411](decisions/0411-staging-changes-through-a-queue-of-tested-merged-revisions.md),
+    [SPEC-575](../.ai/specs/SPEC-575-make-task-local-testing-and-one-staging.md)).
+- Task lists and Home check parked PRs in bounded batches. A stalled check leaves its task under Needs you and gives later tasks time to verify their own checks (SPEC-558).
+- Added the Linux tunnel handoff helper. It retains connected sockets and private copy state for one successor for up to two minutes. [ADR-0413](decisions/0413-a-bounded-helper-holds-connected-tunnel-sockets-between-servers.md)
+
+- Opaque proxy and host-side relay copies retain partial writes and half-closes when paused on the same sockets. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
+
+- Stopping a sandbox's outbound relay now closes the connections it owns and clears its occupied places. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
+
+- A parked task’s detail identifies the ordinary PR blocking Done, including when another PR on the same branch is green. Unfinished local work also keeps it under Needs you (SPEC-558).
+- A project with a shared staging target can mark it `merge_first = true` and its long jobs
+  `after_merge = true`. Pull requests then wait only for the quick checks, and the full suite
+  runs once on the merged revision instead of on every head. Projects without such a target keep
+  their full suite on pull requests. Staging deploys are not yet gated on that run; SPEC-575's
+  staging queue adds the gate ([ADR-0410](decisions/0410-the-full-suite-runs-on-the-merged-revision-beside-a-merge-first-staging-target.md), [SPEC-575](../.ai/specs/SPEC-575-make-task-local-testing-and-one-staging.md)).
+- Armed PRs get explicit guidance that Yulius handles base updates. Merge verdicts distinguish the landed commit from the checked PR head and name train peers only when present. [SPEC-576](../.ai/specs/SPEC-576-verify-queue-batching-and-guidance-when.md)
+
+- New agent secrets reserve interpreter settings. Managers can rename affected older secrets on the Secrets page. Host-bound GitHub token overrides remain available. [SPEC-574](../.ai/specs/SPEC-574-protect-interpreter-settings-while-prese.md)
+
+- Home and MCP retain a parked task’s known failing PR when another Git overview returns incomplete data. A newer confirmed closure clears it (SPEC-558).
+- Clearing Claude Code’s prompt box releases a waiting session message after the last key’s one-minute grace period. Restored drafts still block delivery. [SPEC-572](../.ai/specs/SPEC-572-deliver-the-empty-prompt-box-fix-from-th.md)
+- A planned install briefly waits for CI gates finishing their last job. The operator can proceed immediately, and interrupted runs still use full recovery. [SPEC-573](../.ai/specs/SPEC-573-reduce-repeated-ci-work-across-planned-y.md)
+
+- Successors wait for a parked predecessor’s plan, goal, owner decision and current PR checks, including a replacement PR opened after the recorded delivery merged (SPEC-558).
+- A sandbox writer can choose **Restart browser** when Chrome's input stays locked after host setup. The panel reconnects with the same sandbox profile and reopened web tabs. [SPEC-570](../.ai/specs/SPEC-570-restart-the-locked-browser-of-one-sandbo.md)
+- Yulius retained its Rust mutation runner after paired compiler-cache trials preserved every mutant verdict and showed mixed elapsed times under shared-host load. [SPEC-569](../.ai/specs/SPEC-569-shorten-yulius-mutation-verification-whi.md)
 - Parallel ADR additions keep their numeric order in author updates and protected merge trains (SPEC-568, #1515).
 
 - Sandbox browsers skip Chrome’s default apps. Older profiles can take the extension blocklist

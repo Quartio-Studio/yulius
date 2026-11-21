@@ -335,6 +335,11 @@ pub trait GitPort: Send + Sync {
         let _ = (repo, path, sha, owned_root);
         unsupported("CI checkouts")
     }
+    /// Whether this adapter keeps CD mirrors ([`GitPort::cd_mirror_fetch`]): without them no CD
+    /// runs, so no merge-first staging exists to gate a promotion on (SPEC-575 MFS-009).
+    fn has_cd_mirror(&self) -> bool {
+        false
+    }
     /// Fills the CD mirror (a bare repository only Yulius writes) with `refs/remotes/origin/<branch>`
     /// of the sandbox clone `from`, checking every object, and requires it to be `sha`
     /// (SPEC-134). Replacement refs are never fetched or honoured.
@@ -393,6 +398,17 @@ pub trait GitPort: Send + Sync {
     ) -> AppResult<Option<bool>> {
         let _ = (worktree, base, since, head);
         unsupported("comparing trees")
+    }
+    /// The place of `sha` on `head`'s first-parent history (its count of first-parent commits,
+    /// itself included), or `None` when that walk does not pass it (SPEC-575 MFS-006).
+    async fn first_parent_position(
+        &self,
+        repo: &Path,
+        head: &str,
+        sha: &str,
+    ) -> AppResult<Option<u64>> {
+        let _ = (repo, head, sha);
+        unsupported("ordering commits")
     }
     /// The parents of commit `rev`, in order.
     async fn parents(&self, repo: &Path, rev: &str) -> AppResult<Vec<String>> {

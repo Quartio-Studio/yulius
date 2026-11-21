@@ -86,10 +86,23 @@ impl PtyClient {
         token: &[u8; TOKEN_BYTES],
         want_snapshot: bool,
     ) -> Result<(Self, Welcome, Option<Snapshot>), ClientError> {
-        tokio::time::timeout(
-            CONNECT_TIMEOUT,
-            Self::handshake(run_dir, token, want_snapshot),
-        )
+        tokio::time::timeout(CONNECT_TIMEOUT, async {
+            match Self::handshake(run_dir, token, want_snapshot, PROTOCOL_VERSION).await {
+                Err(ClientError::Rejected {
+                    code: yulius_contracts::ptyhost::error_code::UNSUPPORTED_VERSION,
+                    ..
+                }) => {
+                    Self::handshake(
+                        run_dir,
+                        token,
+                        want_snapshot,
+                        yulius_contracts::ptyhost::LEGACY_PROTOCOL_VERSION,
+                    )
+                    .await
+                }
+                result => result,
+            }
+        })
         .await
         .map_err(|_| ClientError::Timeout)?
     }
@@ -98,6 +111,7 @@ impl PtyClient {
         run_dir: &Path,
         token: &[u8; TOKEN_BYTES],
         want_snapshot: bool,
+        version: u16,
     ) -> Result<(Self, Welcome, Option<Snapshot>), ClientError> {
         let stream = UnixStream::connect(run_dir.join(SOCKET_FILE))
             .await
@@ -113,7 +127,7 @@ impl PtyClient {
         };
         client
             .send(ClientFrame::Hello {
-                version: PROTOCOL_VERSION,
+                version,
                 token: *token,
                 want_snapshot,
             })
@@ -209,5 +223,70 @@ impl PtyWriter {
     /// Socket errors.
     pub async fn shutdown(&mut self) -> Result<(), ClientError> {
         self.stream.shutdown().await.map_err(ClientError::Io)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::net::UnixListener;
+    use yulius_contracts::ptyhost::{LEGACY_PROTOCOL_VERSION, encode_host, error_code};
+
+    #[tokio::test]
+    async fn an_old_host_reattaches_with_an_unconfirmed_snapshot()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let run = tempfile::tempdir()?;
+        let socket = UnixListener::bind(run.path().join(SOCKET_FILE))?;
+        let token = [3; TOKEN_BYTES];
+        let serve = async {
+            for version in [PROTOCOL_VERSION, LEGACY_PROTOCOL_VERSION] {
+                let (mut stream, _) = socket.accept().await?;
+                let hello = encode_client(&ClientFrame::Hello {
+                    version,
+                    token,
+                    want_snapshot: true,
+                });
+                let mut received = vec![0; hello.len()];
+                stream.read_exact(&mut received).await?;
+                assert_eq!(received, hello);
+                if version == PROTOCOL_VERSION {
+                    stream
+                        .write_all(&encode_host(&HostFrame::Error {
+                            code: error_code::UNSUPPORTED_VERSION,
+                            message: "v1 host".into(),
+                        }))
+                        .await?;
+                } else {
+                    stream
+                        .write_all(&encode_host(&HostFrame::Welcome(Welcome {
+                            attempt_id: "legacy".into(),
+                            child_pid: 23,
+                            seq: 1,
+                            cols: 80,
+                            rows: 24,
+                        })))
+                        .await?;
+                    stream
+                        .write_all(&encode_host(&HostFrame::Snapshot(Snapshot {
+                            seq: 1,
+                            bytes: b"screen".to_vec(),
+                            rendered: false,
+                        })))
+                        .await?;
+                }
+            }
+            Ok::<_, io::Error>(())
+        };
+        let (served, connected) = tokio::time::timeout(CONNECT_TIMEOUT, async {
+            tokio::join!(serve, PtyClient::connect(run.path(), &token, true))
+        })
+        .await?;
+        served?;
+        let (_, welcome, snapshot) = connected?;
+        assert_eq!(welcome.attempt_id, "legacy");
+        let snapshot = snapshot.ok_or("missing v1 snapshot")?;
+        assert!(!snapshot.rendered);
+        assert_eq!(snapshot.bytes, b"screen");
+        Ok(())
     }
 }

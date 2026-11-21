@@ -63,6 +63,7 @@ pub struct FakeGitHub {
     pub pulls: Mutex<Vec<GhPull>>,
     /// Simulates a failed repository-wide overview while individual PRs remain readable.
     pub fail_overview_pulls: std::sync::atomic::AtomicBool,
+    pub no_installation: std::sync::atomic::AtomicBool,
     /// The branch of every `branch_pulls` call, in order: one GitHub request each (the hygiene
     /// scan's `MAX_PULL_LOOKUPS` bound).
     pub branch_pull_lookups: Mutex<Vec<String>>,
@@ -75,6 +76,8 @@ pub struct FakeGitHub {
     pub retarget_on_merge: Mutex<Option<String>>,
     /// GitHub accepted the merge, but reading the closed PR fails until it recovers.
     pub fail_merged_reads: std::sync::atomic::AtomicBool,
+    /// Metadata confirms a merge while the branch listing still has the open PR.
+    pub merged_on_direct_read: Mutex<Option<u64>>,
     /// Simulate a stale closed-PR response naming a different PR.
     pub misnumber_merged_reads: std::sync::atomic::AtomicBool,
     /// Checks per commit SHA (default: `None`, every source read).
@@ -117,6 +120,7 @@ pub struct FakeGitHub {
     /// How many times `set_issue_state` was called.
     pub issue_state_calls: std::sync::atomic::AtomicUsize,
     /// When set, reading checks waits for it (a slow GitHub); `checks_entered` says a read began.
+    checks_hold_sha: Mutex<Option<String>>,
     pub checks_hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
     pub checks_entered: tokio::sync::Notify,
     /// When set, permission lookups wait for it (a slow GitHub); `access_entered` says one began.
@@ -126,8 +130,12 @@ pub struct FakeGitHub {
     /// `yulius/ci` status at success on the head and the base in the head (strict "up to date");
     /// a pull request whose head lacks its base reads `behind`.
     pub strict: std::sync::atomic::AtomicBool,
-    /// The next this many reads of pull requests show the heads as they were: GitHub has not
-    /// caught up with a push yet.
+    /// Hold metadata reads while a same-head CI rerun finishes.
+    pub pull_read_hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
+    pub pull_read_entered: tokio::sync::Notify,
+    /// A PR changes between its metadata response and the next branch list.
+    next_branch_change: Mutex<Option<(u64, GhPull)>>,
+    /// The next this many reads show the heads before a push.
     pub stale_reads: Mutex<u32>,
 }
 
@@ -254,7 +262,10 @@ impl GitHubPort for FakeGitHub {
         })
     }
     async fn find_installation(&self, _: &GitHubAppConfig, _: &str) -> AppResult<Option<u64>> {
-        Ok(Some(1))
+        Ok((!self
+            .no_installation
+            .load(std::sync::atomic::Ordering::SeqCst))
+        .then_some(1))
     }
     async fn installation_token(&self, _: &GitHubAppConfig, _: u64) -> AppResult<Secret> {
         Ok(Secret("inst".into()))
@@ -428,6 +439,7 @@ impl GitHubPort for FakeGitHub {
             state: "open".into(),
             merged: false,
             base: pull.base.clone(),
+            base_sha: String::new(),
             head: pull.head.clone(),
             head_sha,
             mergeable: None,
@@ -446,6 +458,15 @@ impl GitHubPort for FakeGitHub {
         Ok(created)
     }
     async fn get_pull(&self, _: &Secret, _: &str, _: &str, number: u64) -> AppResult<GhPull> {
+        let hold = self
+            .pull_read_hold
+            .lock()
+            .map_err(AppError::internal)?
+            .clone();
+        if let Some(hold) = hold {
+            self.pull_read_entered.notify_one();
+            hold.notified().await;
+        }
         self.refresh_heads();
         let mut pull = self
             .pulls
@@ -455,6 +476,15 @@ impl GitHubPort for FakeGitHub {
             .find(|p| p.number == number)
             .cloned()
             .ok_or(AppError::NotFound)?;
+        if *self
+            .merged_on_direct_read
+            .lock()
+            .map_err(AppError::internal)?
+            == Some(number)
+        {
+            pull.merged = true;
+            pull.state = "closed".into();
+        }
         if pull.merged && self.fail_merged_reads.load(Ordering::SeqCst) {
             return Err(AppError::Upstream("closed pull request unavailable".into()));
         }
@@ -502,6 +532,21 @@ impl GitHubPort for FakeGitHub {
             return Err(AppError::Upstream("partial overview".into()));
         }
         self.refresh_heads();
+        if head.is_some()
+            && let Some((number, replacement)) = self
+                .next_branch_change
+                .lock()
+                .map_err(AppError::internal)?
+                .take()
+            && let Some(pull) = self
+                .pulls
+                .lock()
+                .map_err(AppError::internal)?
+                .iter_mut()
+                .find(|pull| pull.number == number)
+        {
+            *pull = replacement;
+        }
         Ok(self
             .pulls
             .lock()
@@ -513,7 +558,14 @@ impl GitHubPort for FakeGitHub {
     }
     async fn checks(&self, _: &Secret, _: &str, _: &str, sha: &str) -> AppResult<ChecksReport> {
         let hold = self.checks_hold.lock().ok().and_then(|h| h.clone());
-        if let Some(hold) = hold {
+        if let Some(hold) = hold
+            && self
+                .checks_hold_sha
+                .lock()
+                .map_err(AppError::internal)?
+                .as_deref()
+                .is_none_or(|target| target == sha)
+        {
             self.checks_entered.notify_one();
             hold.notified().await;
         }
@@ -1294,8 +1346,11 @@ impl FakeGitHub {
                 if let Some(sha) = remote.branch_sha(&pull.head) {
                     pull.head_sha = sha;
                 }
-                if strict && let Some(base) = remote.branch_sha(&pull.base) {
-                    pull.behind = remote.contains(&base, &pull.head_sha) == Some(false);
+                if let Some(base) = remote.branch_sha(&pull.base) {
+                    if strict {
+                        pull.behind = remote.contains(&base, &pull.head_sha) == Some(false);
+                    }
+                    pull.base_sha = base;
                 }
             }
         }
@@ -1309,13 +1364,38 @@ impl FakeGitHub {
             m.insert(sha.into(), report);
         }
     }
-    /// Holds every checks read until the returned handle is released with [`Self::release_checks`].
+    /// Holds checks for this SHA until [`Self::release_checks`]. Other heads are readable.
+    pub fn hold_checks_for(&self, sha: &str) -> AppResult<Arc<tokio::sync::Notify>> {
+        *self.checks_hold_sha.lock().map_err(AppError::internal)? = Some(sha.into());
+        Ok(self.hold_checks())
+    }
+    /// Holds checks reads until the returned handle is released with [`Self::release_checks`].
     pub fn hold_checks(&self) -> Arc<tokio::sync::Notify> {
         let hold = Arc::new(tokio::sync::Notify::new());
         if let Ok(mut h) = self.checks_hold.lock() {
             *h = Some(Arc::clone(&hold));
         }
         hold
+    }
+    pub fn change_before_branch_list(
+        &self,
+        number: u64,
+        edit: impl FnOnce(&mut GhPull),
+    ) -> TestResult {
+        let mut update = self
+            .pulls
+            .lock()
+            .map_err(|_| "pulls")?
+            .iter()
+            .find(|pr| pr.number == number)
+            .cloned()
+            .ok_or("unknown pull")?;
+        edit(&mut update);
+        *self
+            .next_branch_change
+            .lock()
+            .map_err(|_| "branch change")? = Some((number, update));
+        Ok(())
     }
     /// Holds every permission lookup until [`FakeGitHub::release_access`].
     pub fn hold_access(&self) -> Arc<tokio::sync::Notify> {
@@ -1337,6 +1417,9 @@ impl FakeGitHub {
     pub fn release_checks(&self, hold: &tokio::sync::Notify) {
         if let Ok(mut h) = self.checks_hold.lock() {
             *h = None;
+        }
+        if let Ok(mut sha) = self.checks_hold_sha.lock() {
+            *sha = None;
         }
         hold.notify_waiters();
         hold.notify_one();

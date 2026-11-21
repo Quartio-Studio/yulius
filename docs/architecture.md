@@ -546,6 +546,8 @@ itself that the host's managed policy, which switches those windows off, is in f
 (`BrowserInstance::viewer_input_allowed`: a hidden tab is sent to the address the policy
 blocks; `yulius_browser::policy`, written by `yulius host setup`;
 [ADR-0318](decisions/0318-viewers-input-reaches-a-sandbox-browser-only-under-the-hosts-managed-policy.md)).
+A writer can restart this sandbox's browser through the same grant. The manager reaps its process and display, reuses the profile, and installs the address guard before reopening the tabs. [ADR-0404](decisions/0404-restart-one-sandbox-browser-through-its-viewer-grant.md)
+
 Sandbox browsers skip default app installation. On a virtual display they also leave profile
 extensions unloaded, so a later policy reload can take effect without a native administrator
 dialog. [ADR-0402](decisions/0402-sandbox-browsers-skip-chromes-default-apps.md)
@@ -594,6 +596,7 @@ flowchart LR
   S["Sandbox Superagent (ck_)"] -->|"browser_* on its sandbox"| Y
   G["Global Superagent (gs_)"] -->|"browser_* with project"| Y
   V["Viewer"] -->|"viewer WebSocket"| Y
+  V -->|"Restart with sandbox write grant"| Y
   Y -->|"fd 3: requests"| C["Sandbox Chromium"]
   Y -->|"after a fill: probe page text before a screenshot"| C
   C -->|"fd 4: responses, events"| Y
@@ -1541,6 +1544,7 @@ request as it is:
 
 - a pull request's own run (its pre-check) always finishes: until it passed, Yulius never merges
   the integration branch into it, so a moving base never supersedes it;
+- when open PRs share a commit, the scheduler tests it once. The merge queue and its owner’s `yulius wait` use that ordinary run until the PR has its own run at that head. A later admission after configuration repair replaces a refusal.
 - green and up to date: merged now;
 - green, or its own run still queued or running, and behind: into the next merge candidate
   (`merge_train.rs`), the integration branch with up to 8 such pull requests merged in, in arm
@@ -1570,6 +1574,9 @@ member_failed | bisected | base_moved | errored | too_long)`); `GET /api/analyti
 reads them per day with the minutes from arming to merge and the last ten dissolved with their
 reason (`merge_queue::queue_numbers`; the Pipeline tab's Merge queue card)
 ([decision 0357](decisions/0357-a-merge-candidate-is-decided-by-its-own-run.md)).
+
+The armed merge verdict uses the SHA returned by the protected merge and the head GitHub accepted.
+It names the base when the closed PR confirms it. A train also names the candidate commit whose run passed.
 
 Each kept decision leaves a sentence in the armed slot (`ArmedSlot::note`), which `yulius wait`
 (`merge_train`), `delivery_status` and the task page show. `delivery_merge` for an armed head
@@ -1612,6 +1619,7 @@ person must act first (a prompt on screen, `needs_you`) or may have a draft in t
   the kept failures, partial observations from siblings stopped by a failed job, and the exact
   `ci_status` run), or one that errored;
 - a red merge candidate of two or more holding it, with "do not re-arm, merge or push";
+- a failed single-PR candidate, with the source CI run, failing job and a bounded, redacted excerpt. The queue verifies the live PR head and integration base even when another candidate tested the same tree. Unavailable diagnostic or redaction data leaves the arm in place within the verification budget. A running ordinary check retains its original wait deadline. Hourly span cleanup preserves the task’s latest merge wait, ordered by activation time, for recovery across restart.
 - a conflict with the integration branch (checked in the task's worktree), once per head;
 - how its armed merge ended (the slot's outcome), and its merge (`merged_text`), after which the
   watch is over for it;
@@ -2092,6 +2100,32 @@ resume waits `queued` with its prompt. A queued task's summary carries `queue_re
 limit or an update), and `GET /api/capacity` counts working, idle, parked and queued sessions for
 the Capacity card.
 
+Home and MCP apply Git overview results to each task in read order. A failed or truncated list preserves a known open PR, including one reported through the owner’s token. A direct closure or complete list can clear it. Overlapping requests publish their observations under one lock. [ADR-0407](decisions/0407-keep-current-pr-observations-across-incomplete-overviews.md)
+
+When a successor waits for its predecessor to be Done (`after_task` or `#N done`), Yulius
+checks the parked predecessor’s declared work, goal and outstanding owner requests. It verifies
+the recorded PR and current open PRs on the task branch through the same lookup used
+for parking. A waiting successor requires settled checks.
+An externally opened replacement can hold the successor after the recorded delivery merged.
+Yulius rechecks local work, durable CI and the owner’s state after the remote reads.
+An explicit `#N merged` rule follows the recorded merge.
+
+The individual HTTP task detail verifies both recorded and branch PRs.
+A durable ordinary CI failure identifies its own PR and head even when a newer PR is
+green. Remote verification has a 750 ms deadline. Up to eight native Git operations
+run for these reads per application. Each keeps its permit until Git returns.
+[ADR-0409](decisions/0409-report-the-pr-that-blocks-a-parked-task.md)
+
+Task lists share one 750 ms PR verification budget. Each batch of up to eight parked rows receives a share of the remaining time. Home verifies parked rows across all visible projects before it counts live rows. A slow local Git read for a running task cannot spend the parked rows’ lookup time. The HTTP response uses the plan read by the verifier for both progress and detailed steps. [ADR-0412](decisions/0412-share-parked-pr-read-time-across-task-lists.md)
+
+The browser uses the parked summary’s verified Needs you group and its open steps, spec or goal when classifying a task. It retains the displayed reason for a human decision or failing PR. [ADR-0412](decisions/0412-share-parked-pr-read-time-across-task-lists.md)
+
+The sidebar watches the bounded task list and Git overview independently. It can update a parked group while the Git read is pending. The list reader confirms an overlapping parked lifecycle change once. The mounted terminal uses the refreshed row for plan progress and owner notices while a detail read is outstanding. Opening the terminal or Task Info verifies parked work and publishes its progress, owner decision and PR state to the existing parked row. The request order resolves overlapping answers from the list, detail and Git overview. A terminal detail can also update an existing task’s lifecycle when its park event was missed. An older outstanding list retains that transition, even if its snapshot omitted the task. A terminal that discovers a resume also publishes the active subscription and work state to the sidebar. A Closed, Stopped or Failed task can be restored after archive without changing its process status. Its unarchived terminal detail verifies membership in the active task list, even if an older list omitted the row. A newer list that restores a row also updates its mounted terminal. Archive detail removes the active row and notifies the terminal even when an empty list has already omitted it. Overlapping reads keep the archive observation until a newer Undo or removal resolves the task’s membership. [ADR-0417](decisions/0417-refresh-parked-task-status-alongside-the-git-overview.md)
+
+When browser list requests overlap, the newest successful snapshot supplies the task list. A failed cold task page recovers when an overlapping request supplies the list. [ADR-0418](decisions/0418-keep-the-newest-successful-task-list.md)
+
+MCP parked task reads use the verifier’s plan snapshot for progress and detailed steps. The Needs you filter uses the group rendered with the owner’s current decision. Each page shares one parked PR lookup budget. [ADR-0416](decisions/0416-parked-mcp-rows-use-the-verified-plan-and-pr.md)
+
 The end-of-day digest (`yulius-app/src/digest.rs`, SPEC-512 part 3,
 [decision 0380](decisions/0380-an-end-of-day-digest-built-from-task-state.md)) runs from the same
 tick: `digest_tick` reads `instance.digest`, and once today's time (UTC) passed takes the run with
@@ -2347,6 +2381,8 @@ and its terminal says so once the person's last key is ten minutes old; the key 
 possible draft leaves `person-typed` in the run folder, removed when a prompt is submitted from
 the box and read by `reconcile` for a reattached run). Claude’s scheduled hand-over preserves that mark even when its submit hook
 carries plain text (SPEC-541, [ADR-0388](decisions/0388-claude-scheduled-submits-use-the-transcript-hand-over.md)).
+After the typing minute, the exact empty conversation box can also end the key's hold,
+its recovery mark and its held-message flag. [ADR-0405](decisions/0405-a-confirmed-empty-claude-prompt-releases-a-held-message.md)
 Before a paste, visible input in
 Claude Code’s conversation box also holds a message. This catches restores that generated no
 key. An automatic message flags the task immediately in this case
@@ -2595,6 +2631,8 @@ A team secret keeps real line breaks: its value field, a password input too, car
 LF and CR as a private-use character that the form turns back on save, so the vault stores the
 value as pasted ([SPEC-299](../.ai/specs/SPEC-299-team-secret-value-field-keeps-pasted-lin.md),
 [decision 0214](decisions/0214-a-team-secret-value-carries-pasted-line-breaks-in-its-password-field.md)).
+
+New agent-secret names and renames reserve five interpreter settings. Stored names still resolve in run environments, proxy bindings and CI grants. Their managers see a rename notice in the existing vault metadata view. [ADR-0408](decisions/0408-interpreter-settings-are-reserved-for-new-agent-secret-names.md)
 
 Agents create agent secrets from a file with `secret_create_from_file` (`vault/create.rs`, for
 a task's agent or the Superagent as a `SecretUser`). The tool takes a path relative to the work
@@ -3120,6 +3158,84 @@ flowchart LR
   P["a person on the CD page, slug typed"] --> PROMO["promote dev into main"] --> PROD["prod stage: [cd.prod], [cd.platform] … at the main head"] --> RUN2["CD run"]
   AG["agent"] -.->|"refused"| P
 ```
+
+### Merge-first staging
+
+A project's shared staging target is the dev-stage `[cd.<name>]` with `merge_first = true` at
+the verified integration head ([decision 0410](decisions/0410-the-full-suite-runs-on-the-merged-revision-beside-a-merge-first-staging-target.md),
+[decision 0411](decisions/0411-staging-changes-through-a-queue-of-tested-merged-revisions.md),
+[SPEC-575](../.ai/specs/SPEC-575-make-task-local-testing-and-one-staging.md)). It changes only
+through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
+`yulius_domain::staging`, rows in `staging_requests`, migration 0078).
+
+- **Request.** A task's agent's `cd_deploy` of that environment records a request for the
+  task's newest landing (`task_merges`), under the owner's write access. A plain deploy of it is
+  refused in `cd_prepare`.
+- **Candidate gate.** The integration branch's run of that exact commit, or a
+  `candidate/<sha>` run queued for it, judges it. A run that skipped the full suite judges
+  nothing. `dom::plan` counts a candidate run as testing its commit and never supersedes it.
+- **Pick.**
+  - Revisions are ordered by their first-parent position on the verified head
+    (`Git::first_parent_position`, in the CD mirror).
+  - What staging serves is the current release of its kept history (rollbacks count).
+  - The newest ready one above what staging serves deploys, and none passes an older request
+    still testing.
+  - Requests staging already contains are `included`.
+- **Deploy.**
+  - `CdRequest::DeployRevision` deploys exactly that commit, as the task's owner.
+  - One deploy per environment (unique index). It waits, costing no attempt, while another
+    run of it goes on or an update holds deploys.
+  - A lost or errored run is retried up to 3 attempts, and a person's cancel stands.
+- **Failure.** A failed deploy is restored: each part's current kept release is redeployed and
+  verified once (`CdRequest::Restore`, a rollback run).
+- **Told and shown.**
+  - `tell_staging_outcomes` types each task's outcome into its session once.
+  - `cd_status` and the CD page (`CdEnvironment.staging`) list the queue with revisions and run
+    ids.
+  - Every promotion waits until staging serves the integration head, verified, read through the
+    CD mirror: `cd_prepare` for a production deploy, `staging_promotion_head` for the Delivery
+    page and the automatic one.
+    - A head that cannot be read is refused.
+    - The queue's verified deploy runs the automatic promotion that waited.
+  - A failed deploy that announced a rollback barrier is not restored.
+- **Idempotence.** Each move is a compare-and-set from the state it was read in. One live
+  request per requester and revision, and one success per task and environment. The background
+  tick and a request's kick advance each queue under its sandbox's lock.
+
+```mermaid
+stateDiagram-v2
+    [*] --> testing: cd_deploy (task's newest landing)
+    [*] --> included: staging already contains it
+    testing --> ready: full gate passed at the revision
+    testing --> gate_failed: full gate failed (staging unchanged)
+    ready --> deploying: newest ready revision above the verified one
+    ready --> included: a verified deploy contains it
+    deploying --> verified: deploy and verify passed
+    deploying --> deploy_failed: the scripts failed
+    deploying --> ready: run lost or errored (attempts below 3)
+    deploy_failed --> ready: asked again
+    testing --> superseded: a newer revision of the task
+    ready --> superseded: a newer revision of the task
+```
+
+### Merge-first as the bootstrap default
+
+[Decision 0415](decisions/0415-merge-first-is-the-bootstrap-default-and-reaches-onboarded-projects-through-a-task.md)
+(SPEC-575 MFS-010 to MFS-012).
+
+- **The default, taught.** The built-in `infra-bootstrap` skill, its workflow, the
+  `delivery-pipeline` skill, the onboarding prompt (`onboarding.rs` `CD_SETUP`) and the
+  new-project template make a shared staging target merge-first and add a `[local]` deployment.
+- **The briefing.**
+  - `Foundations.merge_first` replaces "merges deploy nothing" with how staging changes.
+  - `Foundations.local` names `[local]` beside the dev-server ports
+    (`spec_format::parse_yulius_toml_local`).
+- **The upgrade.** At a server start (`App::create_bootstrap_upgrades`, `bootstrap_upgrade.rs`),
+  each onboarded sandbox below `BOOTSTRAP_REVISION` gets one Infra bootstrap task.
+  - It is owned by the sandbox's creator, with an automation's origin.
+  - Its record in `bootstrap_upgrades` (migration 0079) is `laid` at creation or before
+    onboarding, `claimed` while the task is being made, and `linked` once it is made.
+  - Every start finishes a claim left unfinished: it adopts a task made since, else makes it.
 
 ### Rollback
 
@@ -3701,6 +3817,18 @@ connection (no byte for at least 5 minutes) for a new one instead of refusing it
 holding connections cannot cut a sandbox's agents off from Yulius, also after a server restart,
 which does not restart the holder
 ([decision 0241](decisions/0241-a-full-relay-closes-its-longest-idle-connection-and-the-superagent-restarts-in-place.md)).
+Stopping a holder's host-side `out.sock` relay cancels its accepted connections, closes both
+socket endpoints and releases their places.
+The host-side relay and the opaque CONNECT proxy each keep up to 8 KiB per direction in
+their copy state. Pausing preserves the first unwritten byte in each direction. After EOF
+the copy resumes any pending write-half shutdown before marking that half closed.
+[SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
+The Linux `sandbox-host hold-tunnels` helper holds a bounded batch of connected descriptors
+and private copy state for one successor. Its two-minute deadline includes the time spent
+receiving and returning the batch. Each timed pair also retains its original monotonic
+deadline. The helper releases expired pairs while a successor receives the remaining live
+records. The server integration is tracked in SPEC-577.
+[ADR-0413](decisions/0413-a-bounded-helper-holds-connected-tunnel-sockets-between-servers.md)
 The proxy also counts each connection's run (agent run, CI job, Superagent shell). When nothing was
 idle for 5 minutes, a full sandbox share takes the oldest connection of its busiest other run, and
 the full proxy that of the busiest sandbox, if it holds at least 2 more than the asker, so one busy
@@ -3801,9 +3929,18 @@ on, after a restart as before one. The same holds for a question that took a sec
 flag over.
 
 A live `yulius wait` under Codex counts as a wait whether Codex execs it directly or launches
-it through a shell. The process probe excludes waits adopted by the sandbox init. A failed PR
-check has its own action in the task strip. The terminal reply banner is for a person's turn
-or an explicit request ([SPEC-552](../.ai/specs/SPEC-552-on-codex-agent-keeps-calling-me-even-if.md)).
+it through a shell. The process probe excludes waits adopted by the sandbox init. Every task in
+Needs you carries a unified redacted `NeedsYouNoticeView` (`App::resolve_needs_you_notice`) naming
+what happened, what to do, and where to act—shown beside the task status (even when stopped or
+parked), in the attention bar, Needs you lists, notifications, and identically across `tasks_list`
+and `task_get`, with deduplicated timestamped episodes persisted in `task_wait_messages`. Browser
+handoffs (`browser_request_user_action`) persist on `tasks.needs_you` and clear across tab state,
+persisted requests, and legacy browser `tasks.attention` when answered, dismissed, superseded,
+closed, viewer-cleared (`clear_action`), or ended; untold failed Yulius CI runs on a live session
+and newer progressing CI runs keep the task in Working until human action is needed
+([SPEC-552](../.ai/specs/SPEC-552-on-codex-agent-keeps-calling-me-even-if.md),
+[SPEC-578](../.ai/specs/SPEC-578-show-an-actionable-message-whenever-a-ta.md),
+[ADR-0414](decisions/0414-actionable-needs-you-notices-and-wait-history.md)).
 
 Needs you means a person has to act. An idle agent that stopped reads "Your turn" under Needs you only
 while its work is visibly unfinished: plan steps open, or a goal that Claude Code last recorded as set,
@@ -3929,6 +4066,7 @@ outcome recorded")]
 `yulius.toml` is read with a TOML 1.1 parser (`spec_format::config`, the `toml` crate's spanned
 document): any valid layout parses, and invalid TOML is refused with the parser's message at its
 line.
+After the integration configuration is repaired, the scheduler reads its bounded run history in admission order. For a refused head, completed verdicts admitted before the refusal cannot cover the repair. A later active run covers it, and a cancellation retains its reference-specific effect.
 
 - **The gate in force** (`App::ci_configured_gate`) comes from the integration branch's head.
   While that file is invalid, the gate comes from the newest first-parent commit (at most 100
@@ -3945,6 +4083,17 @@ line.
   read it after the merge. That is the commit's own, except for a pull request that did not
   change it: then it is the integration branch's. An invalid one fails the run at once with a
   failed job `yulius.toml` and the other jobs skipped.
+- **The full suite after the merge** ([decision 0410](decisions/0410-the-full-suite-runs-on-the-merged-revision-beside-a-merge-first-staging-target.md),
+  [SPEC-575](../.ai/specs/SPEC-575-make-task-local-testing-and-one-staging.md) MFS-002). While the
+  integration head has a merge-first staging target (a dev-stage `[cd.<name>]` with
+  `merge_first = true` that deploys), its `after_merge` jobs end skipped, with their reason, on
+  pull request heads, merge trains and playground tasks (`dom::after_merge_skip`, applied in
+  `ci_queue_placed` before `paths`). They run on the integration and production branches' runs,
+  which never reuse a tree whose run skipped them (`dom::skipped_after_merge`, kept through
+  copied verdicts by `dom::copied_job_reason`), even after a change turned the move off. Without
+  such a target `App::ci_jobs_at` clears the flag (`dom::after_merge_in_force`), so every job
+  runs on every head, and a change's own "(this change)" jobs never carry it. Staging deploys
+  are not gated on that run yet (SPEC-575's staging queue).
 - **Episodes** in which a sandbox's CI has no gate because of its configuration are audited
   (`ci.config_blocked`, `ci.config_unblocked`) and counted as minutes by the merge-queue read.
 
@@ -3957,6 +4106,7 @@ flowchart TD
   C["a commit on its way: pull request, merge candidate, playground merge"] --> K{"its yulius.toml as read after the merge valid?"}
   K -->|no| F["run fails at once: job yulius.toml, the parser's message"]
   K -->|yes| R["run with the gate in force, its own changed jobs beside (never instead)"]
+  R -->|"merge-first target at the integration head"| Q["after_merge jobs skipped: they run on the merged revision"]
 ```
 
 ## CI job output
@@ -4288,6 +4438,12 @@ leaves a run `running` with no executor (SPEC-347, ADR-0233); an environment-run
 same (SPEC-348, ADR-0235). The wait (and the instance page's view of it) ends an environment run past
 its lost-run limit as `error` (`dlv_expire_lost_run`, as a read does) instead of waiting for it.
 
+During a planned install the old CI executor can finish a gate that has an executed pass, no queued jobs
+and at most one running job. The first 30 seconds of the task drain are available for this. CI keeps
+dispatching normally. The helper receives the install request once the qualifying runs finish, the
+window expires, or the operator proceeds, subject to the existing deploy guard.
+[ADR-0406](decisions/0406-a-planned-install-gives-ci-on-its-last-job-a-short-grace-period.md)
+
 A cancel removes the request file, and a new update replaces it: the helper checks every 500 ms
 while cargo builds and, once its request is withdrawn, kills cargo's process group (cargo and its
 compilers), so a cancelled build frees the host within about a second (SPEC-439, ADR-0283).
@@ -4304,7 +4460,8 @@ sequenceDiagram
   S->>H: freeze(run) for every live task
   H->>K: mkdir run-<attempt>, cgroup.freeze=1, move agent tree
   K-->>H: cgroup.events frozen 1
-  S->>R: install request (two passes all frozen)
+  S->>S: observe finishing CI gates during the first 30 s of the task drain
+  S->>R: install request (tasks ready or operator proceeds, no deploy running)
   R->>S: stop, back up, install, start, health check
   S->>H: thaw(run) one by one after releasing each task
   H->>K: cgroup.freeze=0

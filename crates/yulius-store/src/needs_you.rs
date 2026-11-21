@@ -2,11 +2,12 @@
 
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, params};
+use yulius_app::attention::AttentionRecord;
 use yulius_app::error::{AppError, AppResult};
 #[cfg(test)]
 use yulius_app::needs_you::Named;
 use yulius_app::needs_you::NeedsYouRecord;
-use yulius_app::ports::store_ext::NeedsYouStore;
+use yulius_app::ports::store_ext::{NeedsYouStore, WaitMessageRecord};
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::time::Timestamp;
 
@@ -143,6 +144,138 @@ impl NeedsYouStore for SqliteStore {
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(db)?;
             Ok(ids)
+        })
+        .await
+    }
+
+    async fn record_wait_message(&self, entry: &WaitMessageRecord) -> AppResult<bool> {
+        let entry = entry.clone();
+        self.call(move |c| {
+            let tx = c.transaction().map_err(db)?;
+            tx.execute(
+                "UPDATE task_wait_messages SET resolved_at = ?2 \
+                 WHERE task_id = ?1 AND episode != ?3 AND resolved_at IS NULL",
+                params![entry.task_id.as_str(), entry.created_at.0, entry.episode],
+            )
+            .map_err(db)?;
+            let inserted = tx
+                .execute(
+                    "INSERT OR IGNORE INTO task_wait_messages \
+                     (task_id, episode, source, happened, problem, action, link, decision, created_at, resolved_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    params![
+                        entry.task_id.as_str(),
+                        entry.episode,
+                        entry.source,
+                        entry.happened,
+                        entry.problem,
+                        entry.action,
+                        entry.link,
+                        i64::from(entry.decision),
+                        entry.created_at.0,
+                        entry.resolved_at.map(|t| t.0),
+                    ],
+                )
+                .map_err(db)?;
+            tx.commit().map_err(db)?;
+            Ok(inserted == 1)
+        })
+        .await
+    }
+
+    async fn resolve_wait_messages(&self, task: &TaskId, at: Timestamp) -> AppResult<bool> {
+        let task = task.as_str().to_owned();
+        self.call(move |c| {
+            let changed = c
+                .execute(
+                    "UPDATE task_wait_messages SET resolved_at = ?2 \
+                     WHERE task_id = ?1 AND resolved_at IS NULL",
+                    params![task, at.0],
+                )
+                .map_err(db)?;
+            Ok(changed > 0)
+        })
+        .await
+    }
+
+    async fn task_wait_messages(
+        &self,
+        task: &TaskId,
+        limit: u32,
+    ) -> AppResult<Vec<WaitMessageRecord>> {
+        let task = task.as_str().to_owned();
+        self.call(move |c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT task_id, episode, source, happened, problem, action, link, decision, \
+                     created_at, resolved_at \
+                     FROM task_wait_messages WHERE task_id = ?1 \
+                     ORDER BY created_at DESC, id DESC LIMIT ?2",
+                )
+                .map_err(db)?;
+            let rows = stmt
+                .query_map(params![task, i64::from(limit)], |row| {
+                    let task_id: String = row.get(0)?;
+                    let decision: i64 = row.get(7)?;
+                    Ok(WaitMessageRecord {
+                        task_id: TaskId::parse(&task_id)
+                            .map_err(|_| bad_column("task_id", &task_id))?,
+                        episode: row.get(1)?,
+                        source: row.get(2)?,
+                        happened: row.get(3)?,
+                        problem: row.get(4)?,
+                        action: row.get(5)?,
+                        link: row.get(6)?,
+                        decision: decision != 0,
+                        created_at: Timestamp(row.get(8)?),
+                        resolved_at: row.get::<_, Option<i64>>(9)?.map(Timestamp),
+                    })
+                })
+                .map_err(db)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db)?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    async fn stored_task_attention(
+        &self,
+        task: &TaskId,
+    ) -> AppResult<Option<(AttentionRecord, Timestamp)>> {
+        let task = task.as_str().to_owned();
+        let row: Option<(String, Option<i64>, i64)> = self
+            .call(move |c| {
+                c.query_row(
+                    "SELECT attention, \
+                       CASE WHEN json_valid(attention) THEN json_extract(attention, '$.at') END, \
+                       COALESCE(state_at, updated_at) \
+                     FROM tasks WHERE id = ?1 AND attention IS NOT NULL",
+                    [task],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()
+                .map_err(db)
+            })
+            .await?;
+        Ok(row.and_then(|(text, at, fallback)| {
+            Some((
+                serde_json::from_str(&text).ok()?,
+                Timestamp(at.unwrap_or(fallback)),
+            ))
+        }))
+    }
+
+    async fn clear_stored_task_attention(&self, task: &TaskId) -> AppResult<bool> {
+        let task = task.as_str().to_owned();
+        self.call(move |c| {
+            let changed = c
+                .execute(
+                    "UPDATE tasks SET attention = NULL WHERE id = ?1 AND attention IS NOT NULL",
+                    [task],
+                )
+                .map_err(db)?;
+            Ok(changed == 1)
         })
         .await
     }
@@ -371,6 +504,75 @@ mod tests {
             })
             .await?;
         assert!(!ended("Send a message", 700).await?);
+        Ok(())
+    }
+
+    /// SPEC-578: repeated polls of the same wait episode keep a single timestamped record, a
+    /// distinct later episode resolves the prior one and inserts a new row, and resolving clears
+    /// open episodes idempotently.
+    #[tokio::test]
+    async fn wait_messages_deduplicate_per_episode_and_record_distinct_waits() -> TestResult {
+        let store = SqliteStore::open_in_memory()?;
+        store
+            .call(|c| {
+                c.execute_batch(
+                    "INSERT INTO users (id, display_name, created_at) VALUES ('u1', 'U', 1);
+                     INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at)
+                       VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
+                     INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, origin, created_by, created_at, updated_at, owner_id)
+                       VALUES ('t1', 's1', 1, 'T', 'p', 'claude', 'running', 'ui', 'u1', 100, 100, 'u1');",
+                )
+                .map_err(db)
+            })
+            .await?;
+        let task = TaskId::parse("t1")?;
+        let ep1 = WaitMessageRecord {
+            task_id: task.clone(),
+            episode: "plan_open:5:1000".into(),
+            source: "system".into(),
+            happened: "Stopped with 5 open steps.".into(),
+            problem: None,
+            action: "Reply to continue.".into(),
+            link: "https://y.example/s/s/t/1".into(),
+            decision: false,
+            created_at: Timestamp(1000),
+            resolved_at: None,
+        };
+        assert!(store.record_wait_message(&ep1).await?);
+        // Repeated polls of the same episode do not create duplicates.
+        assert!(!store.record_wait_message(&ep1).await?);
+        assert!(!store.record_wait_message(&ep1).await?);
+        let rows = store.task_wait_messages(&task, 10).await?;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].episode, "plan_open:5:1000");
+        assert_eq!(rows[0].resolved_at, None);
+
+        // A distinct later episode resolves the previous open episode and inserts a new row.
+        let ep2 = WaitMessageRecord {
+            task_id: task.clone(),
+            episode: "browser:t1:2000".into(),
+            source: "browser".into(),
+            happened: "Sign in to Google Calendar.".into(),
+            problem: None,
+            action: "Open the browser tab.".into(),
+            link: "https://y.example/s/s/browser?tab=t1".into(),
+            decision: false,
+            created_at: Timestamp(2000),
+            resolved_at: None,
+        };
+        assert!(store.record_wait_message(&ep2).await?);
+        let rows = store.task_wait_messages(&task, 10).await?;
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].episode, "browser:t1:2000");
+        assert_eq!(rows[0].resolved_at, None);
+        assert_eq!(rows[1].episode, "plan_open:5:1000");
+        assert_eq!(rows[1].resolved_at, Some(Timestamp(2000)));
+
+        // Resolving stamps the open episode once and is idempotent on repeat calls.
+        assert!(store.resolve_wait_messages(&task, Timestamp(3000)).await?);
+        assert!(!store.resolve_wait_messages(&task, Timestamp(4000)).await?);
+        let rows = store.task_wait_messages(&task, 10).await?;
+        assert_eq!(rows[0].resolved_at, Some(Timestamp(3000)));
         Ok(())
     }
 }

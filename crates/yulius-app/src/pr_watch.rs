@@ -231,7 +231,7 @@ fn message(pr: u64, texts: &[&str]) -> String {
 }
 
 /// Terminal failures and tests observed before fail-fast stopped a sibling (SPEC-566).
-fn failed_jobs(jobs: &[CiJobRecord]) -> String {
+pub(crate) fn failed_jobs(jobs: &[CiJobRecord]) -> String {
     let said: Vec<String> = jobs
         .iter()
         .filter_map(|job| {
@@ -849,8 +849,23 @@ impl App {
         if task.status != TaskStatus::Running {
             return false;
         }
+        crate::race::reached(
+            crate::race::Point::LiveRowPrNews,
+            std::path::Path::new(task.id.as_str()),
+        );
         let record = self.deps.store.delivery(&task.id).await.ok().flatten();
         self.pr_news_due_of(task, record.as_ref(), false).await
+    }
+
+    /// Newest Yulius CI run for pull request `pr` in `sandbox`, if any (SPEC-578).
+    pub(crate) async fn latest_pr_ci_run(
+        &self,
+        sandbox: &yulius_domain::ids::SandboxId,
+        pr: u64,
+    ) -> Option<CiRunRecord> {
+        let runs = self.deps.store.ci_runs(sandbox, RUNS_READ).await.ok()?;
+        runs.into_iter()
+            .find(|run| run.reference == CiRef::PullRequest(pr))
     }
 
     /// [`Self::pr_news_due`] for a decision that already read the task's delivery `record`, so
@@ -890,20 +905,54 @@ impl App {
                 store.sandbox(&task.sandbox_id).await,
                 Ok(Some(sandbox)) if sandbox.is_playground()
             );
+        let paused = matches!(store.person_pause(&task.id).await, Ok(Some(_)));
         let facts = NewsFacts {
             armed: false,
             // A pause that cannot be read counts as none: the safe side for Done.
-            paused: matches!(store.person_pause(&task.id).await, Ok(Some(_))),
+            paused,
             pull,
             outcome,
             publish_problem,
             playground,
             ..typed
         };
-        self.with_pr_notices(|told| match told.get(task.id.as_str()) {
+        let due = self.with_pr_notices(|told| match told.get(task.id.as_str()) {
             Some(told) => news_due(&facts, told),
             None => news_due(&facts, &Told::default()),
-        })
+        });
+        if due {
+            return true;
+        }
+        // An untold failed/errored Yulius CI run on a live, unpaused, non-playground session
+        // with no open human request will be pasted into the agent by `watch_prs` so the agent
+        // can recover it without escalating to Needs You (SPEC-578). Check `store.live_attempt`
+        // (what `watch_prs` itself iterates) rather than `existing_runtime`, because `armed_view`
+        // above lazily allocates a `TaskRuntime`.
+        if !paused
+            && matches!(store.live_attempt(&task.id).await, Ok(Some(_)))
+            && let Some((pr, false)) = pull
+            && task.activity != Some(yulius_domain::task::Activity::NeedsAttention)
+            && matches!(store.task_needs_you(&task.id).await, Ok(None))
+            && self
+                .browser_tab_request_for(&task.sandbox_id, &task.id)
+                .await
+                .is_none()
+            && let Some(run) = self.latest_pr_ci_run(&task.sandbox_id, pr).await
+            && matches!(run.state, RunState::Failed | RunState::Error)
+            && !(run.state == RunState::Failed
+                && self.run_superseded_by_pushed_head(task, &run.sha).await)
+            && !matches!(
+                store.sandbox(&task.sandbox_id).await,
+                Ok(Some(sandbox)) if sandbox.is_playground()
+            )
+        {
+            return self.with_pr_notices(|told| {
+                told.get(task.id.as_str()).is_none_or(|t| {
+                    t.pr != pr || t.keys.get("run").map(String::as_str) != Some(run.id.as_str())
+                })
+            });
+        }
+        false
     }
 
     /// Writes what each task was told (whole, then renamed into place); failures are logged.
@@ -951,8 +1000,13 @@ impl App {
         // A person must act first (a prompt on screen, `needs_you`): nothing is typed, the merge
         // notice included (review M1, round 2).
         let needs_you = !matches!(self.deps.store.task_needs_you(&task.id).await, Ok(None));
+        let browser_req = self
+            .browser_tab_request_for(&task.sandbox_id, &task.id)
+            .await
+            .is_some();
+        let flagged = task.activity == Some(yulius_domain::task::Activity::NeedsAttention);
         let person_must_act =
-            needs_you || task.activity == Some(yulius_domain::task::Activity::NeedsAttention);
+            needs_you || browser_req || (flagged && !self.held_message_flag_outlived(task).await);
         if past_merge(&record.stage) {
             // Merged: said once, to a task the watch saw with it open (PRN-005, PRN-007).
             if !merge_untold(told, pr) {
@@ -1004,7 +1058,8 @@ impl App {
         // open PR missed turn-end publication (for example across a server restart). Reads only
         // local HEAD unless it differs from the failing PR run's SHA.
         if !armed
-            && !person_must_act
+            && !needs_you
+            && !flagged
             && let Some(failed_sha) = own
                 .as_ref()
                 .filter(|run| run.state == RunState::Failed)

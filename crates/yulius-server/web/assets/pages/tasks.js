@@ -201,7 +201,7 @@ export function mountTasksPage(ctx, sandbox) {
           ? tasks.filter((t) => matchesText(t, q)).sort((a, b) => score(a) - score(b) || String(b.updated_at).localeCompare(String(a.updated_at)))
           : [...tasks].sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
         return found.slice(0, 12).map((task) => {
-          const info = taskInfo(task, ctx.store.state.actionRequests, ctx.store.pullsOf(task.sandbox_id).get(task.id));
+          const info = taskInfo(task, ctx.store.state.actionRequests, ctx.store.pullForStatus(task));
           return {
             key: task.id,
             mark: statusMark(info, 16),
@@ -243,7 +243,7 @@ export function mountTasksPage(ctx, sandbox) {
     viewSwitch.querySelectorAll('input').forEach((input) => { input.checked = input.value === view; });
     if (!graph) graphHost.replaceChildren();
     if (graph) {
-      const infoOf = (task) => taskInfo(task, ctx.store.state.actionRequests, ctx.store.pullsOf(task.sandbox_id).get(task.id));
+      const infoOf = (task) => taskInfo(task, ctx.store.state.actionRequests, ctx.store.pullForStatus(task));
       // A live repaint keeps the focused card or row and the frame's scroll (the graph is rebuilt).
       const focused = graphHost.contains(document.activeElement) ? document.activeElement : null;
       const again = !focused ? null
@@ -262,7 +262,7 @@ export function mountTasksPage(ctx, sandbox) {
     }
     const me = myLogin();
     const q = searchQuery.toLowerCase();
-    const items = tasks.map((task) => { const info = taskInfo(task, ctx.store.state.actionRequests, ctx.store.pullsOf(task.sandbox_id).get(task.id)); return { task, info, group: groupOf(task, info) }; });
+    const items = tasks.map((task) => { const info = taskInfo(task, ctx.store.state.actionRequests, ctx.store.pullForStatus(task)); return { task, info, group: groupOf(task, info) }; });
 
     // Author and origin choices come from all tasks, so a choice never disappears while selected.
     const count = (key) => { const m = new Map(); for (const { task } of items) { const k = key(task); if (k) m.set(k, (m.get(k) || 0) + 1); } return m; };

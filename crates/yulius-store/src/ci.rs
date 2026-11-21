@@ -3,7 +3,8 @@
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params, params_from_iter};
 use yulius_app::ci::{
-    CiJobRecord, CiJobUpdate, CiMinutesRow, CiRunRecord, CiRunUpdate, FiledFinding, Quarantined,
+    CiJobRecord, CiJobUpdate, CiMinutesRow, CiRunRecord, CiRunUpdate, FiledFinding, PullHead,
+    Quarantined,
 };
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::ports::store_ext::CiStore;
@@ -265,6 +266,22 @@ impl CiStore for SqliteStore {
         .await
     }
 
+    async fn ci_planning_runs(
+        &self,
+        sandbox: &SandboxId,
+        limit: u32,
+    ) -> AppResult<Vec<CiRunRecord>> {
+        let sandbox = sandbox.as_str().to_owned();
+        self.call(move |c| {
+            select_runs(
+                c,
+                "sandbox_id = ?1 ORDER BY rowid DESC LIMIT ?2",
+                &[&sandbox, &i64::from(limit)],
+            )
+        })
+        .await
+    }
+
     async fn ci_runs_for_sha(&self, sandbox: &SandboxId, sha: &str) -> AppResult<Vec<CiRunRecord>> {
         let (sandbox, sha) = (sandbox.as_str().to_owned(), sha.to_owned());
         self.call(move |c| {
@@ -272,6 +289,43 @@ impl CiStore for SqliteStore {
                 c,
                 "sandbox_id = ?1 AND sha = ?2 ORDER BY queued_at DESC, rowid DESC",
                 &[&sandbox, &sha],
+            )
+        })
+        .await
+    }
+
+    async fn ci_runs_for_pull_head(
+        &self,
+        sandbox: &SandboxId,
+        head: PullHead<'_>,
+    ) -> AppResult<Vec<CiRunRecord>> {
+        let (head, exact_only) = match head {
+            PullHead::Exact(sha) => (sha.to_owned(), true),
+            PullHead::WaitArgument(input) => (input.to_owned(), input.len() == 64),
+        };
+        let sandbox = sandbox.as_str().to_owned();
+        // A hexadecimal range uses the (sandbox_id, sha) index. Two distinct
+        // commits suffice to rule out ambiguity, regardless of the sandbox’s age.
+        self.call(move |c| {
+            if exact_only || head.len() == 40 {
+                let exact = select_runs(
+                    c,
+                    "sandbox_id = ?1 AND sha = ?2 ORDER BY rowid DESC",
+                    &[&sandbox, &head],
+                )?;
+                if exact_only || !exact.is_empty() {
+                    return Ok(exact);
+                }
+            }
+            select_runs(
+                c,
+                "sandbox_id = ?1 AND sha = (
+                    SELECT MIN(sha) FROM (
+                        SELECT DISTINCT sha FROM ci_runs
+                        WHERE sandbox_id = ?1 AND sha >= ?2 AND sha < ?3 LIMIT 2
+                    ) HAVING COUNT(*) = 1
+                ) ORDER BY rowid DESC",
+                &[&sandbox, &head, &format!("{head}g")],
             )
         })
         .await
@@ -315,6 +369,26 @@ impl CiStore for SqliteStore {
                 "state IN ('queued', 'running') ORDER BY queued_at, rowid",
                 &[],
             )
+        })
+        .await
+    }
+
+    async fn has_finishing_ci_run(&self) -> AppResult<bool> {
+        self.call(|c| {
+            // The IN predicate selects the partial ci_runs_active index. Read only the indexed
+            // jobs of a running run, and stop at the first qualifying gate.
+            c.query_row(
+                "SELECT EXISTS (SELECT 1 FROM ci_runs r \
+                 WHERE r.state IN ('queued', 'running') AND r.state = 'running' AND EXISTS (\
+                   SELECT 1 FROM ci_jobs WHERE run_id = r.id GROUP BY run_id \
+                   HAVING COUNT(*) FILTER (WHERE state = 'passed' AND started_at IS NOT NULL \
+                                             AND exit_code = 0) > 0 \
+                      AND COUNT(*) FILTER (WHERE state = 'queued') = 0 \
+                      AND COUNT(*) FILTER (WHERE state = 'running') <= 1))",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(db)
         })
         .await
     }
@@ -1275,6 +1349,41 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn a_finishing_ci_run_has_an_executed_pass_and_no_queued_work() -> TestResult {
+        use RunState::{Failed, Passed, Queued, Running, Skipped};
+        for (run_state, states, eligible) in [
+            (Running, vec![Passed, Running], true),
+            (Running, vec![Passed, Failed], true), // the executor is committing the red verdict
+            (Running, vec![Passed, Running, Skipped], true),
+            (Running, vec![Passed, Running, Queued], false),
+            (Running, vec![Passed, Running, Running], false),
+            (Running, vec![Skipped, Running], false),
+            (Queued, vec![Passed, Running], false),
+            (Passed, vec![Passed], false),
+        ] {
+            let store = SqliteStore::open_in_memory()?;
+            let mut run = run("r1", "a", 1)?;
+            run.state = run_state;
+            let jobs = (0_u32..)
+                .zip(states.iter())
+                .map(|(n, &state)| CiJobRecord {
+                    state,
+                    started_at: Some(Timestamp(2)),
+                    exit_code: (state == Passed).then_some(0),
+                    ..job(&format!("j{n}"), &run.id, n)
+                })
+                .collect::<Vec<_>>();
+            store.insert_ci_run(&run, &jobs).await?;
+            assert_eq!(
+                store.has_finishing_ci_run().await?,
+                eligible,
+                "{run_state:?} {states:?}"
+            );
+        }
+        Ok(())
+    }
+
     /// SPEC-497 (review round 2): the jobs waiting to start are the queued jobs of running runs;
     /// a queued run's jobs and running jobs are not counted.
     #[tokio::test]
@@ -1595,6 +1704,21 @@ mod tests {
             store.claim_security_finding(&one, finding, at).await?,
             "a forgotten finding is claimed anew"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_scheduler_keeps_the_latest_admissions_even_when_they_inherit_an_old_place()
+    -> TestResult {
+        let store = SqliteStore::open_in_memory()?;
+        let sandbox = SandboxId::parse("s1")?;
+        for (id, place) in [("old", 20), ("pass", 30), ("refusal", 2)] {
+            store.insert_ci_run(&run(id, "head", place)?, &[]).await?;
+        }
+        let planning = store.ci_planning_runs(&sandbox, 2).await?;
+        let ids: Vec<_> = planning.iter().map(|run| run.id.as_str()).collect();
+        assert_eq!(ids, ["refusal", "pass"]);
+        assert_eq!(store.ci_runs(&sandbox, 1).await?[0].id, "pass");
         Ok(())
     }
 

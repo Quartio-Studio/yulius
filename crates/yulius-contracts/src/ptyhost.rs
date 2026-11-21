@@ -1,4 +1,4 @@
-//! ptyhost wire protocol and run-directory records, version 1 (SPEC-002 §7.1). Owned by work
+//! ptyhost wire protocol and run-directory records (SPEC-002 §7.1). Owned by work
 //! package A.
 //!
 //! # Binary framing
@@ -17,6 +17,7 @@
 //! | `0x06` | C→H | [`ClientFrame::Ping`] | `u64` nonce |
 //! | `0x81` | H→C | [`HostFrame::Welcome`] | `u16` id length, id UTF-8, `u32` child pid, `u64` seq, `u16` cols, `u16` rows |
 //! | `0x82` | H→C | [`HostFrame::Snapshot`] | `u64` seq, formatted screen bytes |
+//! | `0x87` | H→C | Rendered [`HostFrame::Snapshot`] (v2 only) | as `0x82`, with the alternate grid known current |
 //! | `0x83` | H→C | [`HostFrame::Output`] | `u64` seq, bytes (≤ [`MAX_OUTPUT_CHUNK`]) |
 //! | `0x84` | H→C | [`HostFrame::Exit`] | `u8` flags (bit 0 code, bit 1 signal), `i32` code, `i32` signal, `i64` ended_at_ms, `u8` reason, detail UTF-8 |
 //! | `0x85` | H→C | [`HostFrame::Pong`] | `u64` nonce |
@@ -34,13 +35,18 @@
 //! reject newer versions and ignore unknown fields. Files are replaced atomically (temporary file,
 //! fsync, rename, directory fsync).
 
+mod redraw;
+pub use redraw::Redraw;
+
 use std::collections::BTreeMap;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
 /// Wire protocol version sent in [`ClientFrame::Hello`].
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
+/// Original framing, spoken by detached hosts and clients from earlier builds.
+pub const LEGACY_PROTOCOL_VERSION: u16 = 1;
 /// Version of the JSON run-directory records ([`LaunchSpec`], [`StatusRecord`], [`ExitFile`]).
 pub const RECORD_VERSION: u32 = 1;
 /// Largest accepted value of the length prefix (type byte plus payload).
@@ -113,6 +119,7 @@ const T_OUTPUT: u8 = 0x83;
 const T_EXIT: u8 = 0x84;
 const T_PONG: u8 = 0x85;
 const T_ERROR: u8 = 0x86;
+const T_RENDERED_SNAPSHOT: u8 = 0x87;
 
 /// Signal requested by [`ClientFrame::Signal`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -249,6 +256,8 @@ pub struct Welcome {
 /// Full screen redraw: clear the terminal, then write `bytes`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
+    /// The host has witnessed the alternate grid rendered at the reported dimensions.
+    pub rendered: bool,
     /// Sequence of the last output chunk reflected in `bytes`.
     pub seq: u64,
     /// Escape sequences reproducing the visible screen, input modes and cursor.
@@ -939,10 +948,17 @@ pub fn encode_host(frame: &HostFrame) -> Vec<u8> {
                 .u16(w.rows)
                 .finish()
         }
-        HostFrame::Snapshot(s) => FrameWriter::new(T_SNAPSHOT, 8 + s.bytes.len())
-            .u64(s.seq)
-            .bytes(&s.bytes)
-            .finish(),
+        HostFrame::Snapshot(s) => FrameWriter::new(
+            if s.rendered {
+                T_RENDERED_SNAPSHOT
+            } else {
+                T_SNAPSHOT
+            },
+            8 + s.bytes.len(),
+        )
+        .u64(s.seq)
+        .bytes(&s.bytes)
+        .finish(),
         HostFrame::Output { seq, bytes } => FrameWriter::new(T_OUTPUT, 8 + bytes.len())
             .u64(*seq)
             .bytes(bytes)
@@ -1089,7 +1105,7 @@ fn decode_client(kind: u8, bytes: &[u8]) -> Result<ClientFrame, ProtocolError> {
 fn decode_host(kind: u8, bytes: &[u8]) -> Result<HostFrame, ProtocolError> {
     let frame = match kind {
         T_WELCOME => "Welcome",
-        T_SNAPSHOT => "Snapshot",
+        T_SNAPSHOT | T_RENDERED_SNAPSHOT => "Snapshot",
         T_OUTPUT => "Output",
         T_EXIT => "Exit",
         T_PONG => "Pong",
@@ -1111,9 +1127,10 @@ fn decode_host(kind: u8, bytes: &[u8]) -> Result<HostFrame, ProtocolError> {
                 rows: p.dimension()?,
             })
         }
-        T_SNAPSHOT => {
+        T_SNAPSHOT | T_RENDERED_SNAPSHOT => {
             let seq = p.u64()?;
             HostFrame::Snapshot(Snapshot {
+                rendered: kind == T_RENDERED_SNAPSHOT,
                 seq,
                 bytes: p.rest().to_vec(),
             })
@@ -1363,6 +1380,7 @@ mod tests {
                 rows: rng.dimension(),
             }),
             1 => HostFrame::Snapshot(Snapshot {
+                rendered: rng.below(2) == 1,
                 seq: rng.next(),
                 bytes: rng.bytes(4096),
             }),
@@ -1454,15 +1472,17 @@ mod tests {
 
     #[test]
     fn hello_layout_is_stable() {
-        let frame = ClientFrame::Hello {
-            version: PROTOCOL_VERSION,
-            token: [0xab; TOKEN_BYTES],
-            want_snapshot: true,
-        };
-        let bytes = encode_client(&frame);
-        assert_eq!(&bytes[..7], &[0, 0, 0, 36, T_HELLO, 0, 1]);
-        assert_eq!(bytes.len(), 40);
-        assert_eq!(bytes[39], 1);
+        for (version, wire_byte) in [(LEGACY_PROTOCOL_VERSION, 1), (PROTOCOL_VERSION, 2)] {
+            let frame = ClientFrame::Hello {
+                version,
+                token: [0xab; TOKEN_BYTES],
+                want_snapshot: true,
+            };
+            let bytes = encode_client(&frame);
+            assert_eq!(&bytes[..7], &[0, 0, 0, 36, T_HELLO, 0, wire_byte]);
+            assert_eq!(bytes.len(), 40);
+            assert_eq!(bytes[39], 1);
+        }
     }
 
     #[test]
@@ -1481,16 +1501,20 @@ mod tests {
 
     #[test]
     fn maximum_frame_length_is_accepted() -> TestResult {
-        let frame = HostFrame::Snapshot(Snapshot {
-            seq: 9,
-            bytes: vec![b'x'; MAX_SNAPSHOT_BYTES],
-        });
-        frame.validate()?;
-        let bytes = encode_host(&frame);
-        assert_eq!(bytes.len(), MAX_FRAME_BYTES + 4);
-        let mut decoder = FrameDecoder::new();
-        decoder.push(&bytes);
-        assert_eq!(decoder.next_host()?, Some(frame));
+        for rendered in [false, true] {
+            let frame = HostFrame::Snapshot(Snapshot {
+                rendered,
+                seq: 9,
+                bytes: vec![b'x'; MAX_SNAPSHOT_BYTES],
+            });
+            frame.validate()?;
+            let bytes = encode_host(&frame);
+            assert_eq!(bytes.len(), MAX_FRAME_BYTES + 4);
+            assert_eq!(bytes.capacity(), bytes.len(), "reserve one maximum frame");
+            let mut decoder = FrameDecoder::new();
+            decoder.push(&bytes);
+            assert_eq!(decoder.next_host()?, Some(frame));
+        }
         Ok(())
     }
 

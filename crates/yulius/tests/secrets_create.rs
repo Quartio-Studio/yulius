@@ -480,3 +480,22 @@ async fn a_created_secret_is_announced_to_open_secrets_pages() -> TestResult {
     assert_eq!(announced.take(), Vec::<Option<String>>::new());
     Ok(())
 }
+
+#[tokio::test]
+async fn interpreter_names_are_refused_before_consuming_a_file() -> TestResult {
+    let w = world().await?;
+    let before = names(&w).await?;
+    let source = w.worktree.join("synthetic-key.txt");
+    std::fs::write(&source, "synthetic-test-value")?;
+    let refused = create(
+        &w,
+        TOKEN,
+        json!({"name":"JAVA_TOOL_OPTIONS","file":"synthetic-key.txt","delete_file":true}),
+    )
+    .await?;
+    assert_eq!(refused["isError"], true);
+    assert!(refused.to_string().contains("APP_JAVA_TOOL_OPTIONS"));
+    assert_eq!(names(&w).await?, before);
+    assert!(source.exists());
+    Ok(())
+}

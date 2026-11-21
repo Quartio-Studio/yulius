@@ -29,9 +29,25 @@ pub struct StepProgress {
     pub first_total: Option<u32>,
 }
 
+/// The delivery whose checks affect a parked task's group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParkedPr {
+    /// The pull request number observed on the branch or recorded by delivery.
+    pub number: u64,
+    /// Open deliveries need another checks read when the overview refreshes.
+    pub open: bool,
+}
+
 /// A task in lists and events.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskSummary {
+    /// The server's group for a parked task (true for Needs you, false for Done).
+    /// Other tasks and summaries from earlier servers omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parked_needs_you: Option<bool>,
+    /// The current branch or recorded delivery, including PRs missing from the Git overview.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parked_pr: Option<ParkedPr>,
     /// Task id.
     pub id: String,
     /// Sandbox id.
@@ -151,6 +167,11 @@ pub struct TaskSummary {
     /// until someone writes to it or the agent resolves it.
     #[serde(default)]
     pub needs_you: Option<NeedsYouView>,
+    /// Actionable explanation of why the task is currently in Needs You (SPEC-578): what
+    /// happened, what a person needs to do, where to do it, and when the wait episode began.
+    /// Absent whenever the task is not in Needs You.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub needs_you_notice: Option<NeedsYouNoticeView>,
     /// Why the task reads `needs_attention` (SPEC-472): the reason of that flag, while the task
     /// reads it. Null in every other state, and for a flag raised without one.
     #[serde(default)]
@@ -305,6 +326,67 @@ pub struct NeedsYouView {
     /// and `who` answer it (ANS-002).
     #[serde(default)]
     pub named: bool,
+    /// Browser tab id when this request came from `browser_request_user_action` (SPEC-578).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_tab: Option<String>,
+}
+
+/// Actionable explanation of why a task is currently in Needs You (SPEC-578).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NeedsYouNoticeView {
+    /// Who/what raised this wait: `agent`, `browser`, `terminal`, or `system`.
+    pub source: String,
+    /// Stable wait-episode key for deduplication across repeated polls.
+    pub episode: String,
+    /// What happened, one bounded redacted line.
+    pub happened: String,
+    /// Optional problem or failure context line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+    /// Concrete next action for a person, one bounded redacted line.
+    pub action: String,
+    /// Relevant Yulius page URL where the person can act.
+    pub link: String,
+    /// Whether the person chooses rather than does.
+    #[serde(default)]
+    pub decision: bool,
+    /// Browser tab id when this wait is a browser handoff.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_tab: Option<String>,
+    /// When this wait episode began (RFC 3339).
+    pub at: String,
+    /// When this wait episode began (milliseconds).
+    #[serde(default)]
+    pub at_ms: i64,
+}
+
+/// One timestamped system or agent message recorded in a task's Needs You history (SPEC-578).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WaitHistoryEntry {
+    /// Stable wait-episode key.
+    pub episode: String,
+    /// `agent`, `browser`, `terminal`, or `system`.
+    pub source: String,
+    /// What happened.
+    pub happened: String,
+    /// Optional problem or failure context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+    /// Concrete next action.
+    pub action: String,
+    /// Relevant Yulius link.
+    pub link: String,
+    /// Whether the person was asked to decide.
+    #[serde(default)]
+    pub decision: bool,
+    /// When recorded (RFC 3339).
+    pub at: String,
+    /// When recorded (milliseconds).
+    #[serde(default)]
+    pub at_ms: i64,
+    /// When resolved (RFC 3339), or absent while open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_at: Option<String>,
 }
 
 /// Why a task was flagged `needs_attention` (SPEC-472, ADR-0306).
@@ -608,6 +690,10 @@ pub struct TaskDetail {
     /// this one gets it at its next start, not when its turn ends (SPEC-468 CCF-003).
     #[serde(default)]
     pub cli_moves_stopped: bool,
+    /// Timestamped system and agent Needs You messages recorded for this task (SPEC-578),
+    /// newest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wait_history: Vec<WaitHistoryEntry>,
 }
 
 /// `POST /api/tasks/{tid}/queued-messages` (SPEC-052 QMS-001).

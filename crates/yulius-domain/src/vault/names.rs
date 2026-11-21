@@ -125,6 +125,29 @@ impl SecretName {
         Ok(Self(text.to_owned()))
     }
 
+    /// Whether this name was accepted before ADR-0408 and configures an interpreter.
+    #[must_use]
+    pub fn is_interpreter_setting(&self) -> bool {
+        matches!(
+            self.as_str(),
+            "PYTHONPATH" | "PERL5LIB" | "RUBYOPT" | "JAVA_TOOL_OPTIONS" | "JDK_JAVA_OPTIONS"
+        )
+    }
+
+    /// Checks whether an agent secret may take this name on creation or rename.
+    /// Stored names still use their original placeholder until their manager renames them.
+    ///
+    /// # Errors
+    /// [`VaultError::Name`] for a name reserved since ADR-0408.
+    pub fn check_assignment(&self) -> Result<(), VaultError> {
+        if self.is_interpreter_setting() {
+            return Err(VaultError::Name(format!(
+                "{self} is reserved for an interpreter setting. Choose another name, such as APP_{self}"
+            )));
+        }
+        Ok(())
+    }
+
     /// The name.
     #[must_use]
     pub fn as_str(&self) -> &str {

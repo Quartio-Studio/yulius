@@ -1218,7 +1218,7 @@ button.notif-open:hover, button.notif-open:focus-visible { color: var(--text); }
 .attention-row:has(> .needs-you-text), .needs-you-text, .needs-you-parts { background: inherit; }
 :is(.attention-bar, .attention-row):has(> .needs-you-text) { align-items: flex-start; }
 :is(.attention-bar, .attention-row):has(> .needs-you-text) > .icon { margin-top: 2px; }
-.needs-you-head { display: block; margin-bottom: 4px; }
+.needs-you-title { display: flex; flex-wrap: wrap; align-items: baseline; margin-bottom: 4px; }
 /* Long context scrolls inside the list; the to-do stays at its foot, in view. */
 .needs-you-parts { display: flex; flex-direction: column; gap: 4px; margin: 0; max-height: min(20em, 45vh); overflow-y: auto; overscroll-behavior: contain; border-radius: var(--radius-sm); }
 .needs-you-parts:focus-visible { box-shadow: var(--focus); outline: none; }
@@ -1445,7 +1445,8 @@ button.account-chip:hover { background: var(--surface-3); color: var(--text); }
 .strip-delivery { display: inline-flex; align-items: center; gap: 8px; }
 .strip-delivery:empty { display: none; }
 button.strip-pr { background: transparent; font-family: inherit; cursor: pointer; }
-.strip-extras { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.strip-extras { flex: none; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+:is(button, a).strip-extra { height: var(--control-sm); }
 .strip-extras:empty { display: none; }
 /* Parts that gave way so the strip keeps within its edge (#348, fitStrip in taskview.js); while
    the chips decide, the state keeps its words, so chips go first. */
@@ -3173,3 +3174,17 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .handoff-request { display: flex; flex-direction: column; gap: 8px; border-left: 3px solid var(--warn); }
 .handoff-prompt { margin: 0; max-height: 30vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: var(--fs-xs); }
 .handoff-from { display: flex; align-items: center; gap: 6px; }
+
+/* Actionable Needs You reason beside status and wait-episode history (SPEC-578). */
+.strip-needs-reason { color: var(--warn-fg); font-weight: 500; }
+.steplist-history { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.steplist-history-title { margin-bottom: 4px; font-weight: 600; }
+.steplist-history-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.steplist-history-item { display: flex; flex-direction: column; gap: 2px; }
+.steplist-history-item.resolved { opacity: 0.78; }
+.ti-wait-history { display: flex; flex-direction: column; gap: 12px; }
+.ti-wait-item { display: flex; flex-direction: column; gap: 4px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.ti-wait-item:last-child { padding-bottom: 0; border-bottom: 0; }
+.ti-wait-item.resolved { opacity: 0.82; }
+.ti-wait-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ti-wait-link { margin-left: auto; }

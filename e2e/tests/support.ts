@@ -1,8 +1,9 @@
 // Shared helpers for the suites. Tests run the UI in mock mode: a static file server and
 // assets/mock.js stand in for `yulius serve`, so no server, account or model is needed.
+import { setTimeout as delay } from 'node:timers/promises';
 import { createRequire } from 'node:module';
 import { afterEach, beforeEach, type Browser, type Screen } from '@e2e-dev/web';
-import type { Request } from 'playwright-core';
+import type { Frame, Request } from 'playwright-core';
 import { expect, type App, type Locator, type TextMatch } from 'e2e';
 import { surface } from '../chromium.ts';
 
@@ -46,7 +47,7 @@ export async function instrument(browser: Browser): Promise<void> {
 function waitForTheMockOnEveryLoad(app: App, browser: Browser): void {
   // The app's own test for mock mode (app.js): `?mock=1`. Part of the page's first load, so it has
   // that budget (SPEC-412 FLD-002).
-  const ready = async (interrupted = () => false) => {
+  const ready = async (interrupted = () => false, timeout = FIRST_LOAD_MS) => {
     let installed = false;
     await expect.poll(async () => {
       // The poll owns the deadline. A nested runner step could still be recorded as pending
@@ -55,7 +56,7 @@ function waitForTheMockOnEveryLoad(app: App, browser: Browser): void {
         || Boolean((window as { __yuliusMock?: unknown }).__yuliusMock));
       return installed || interrupted();
     }, {
-      timeout: FIRST_LOAD_MS,
+      timeout,
       message: 'window.__yuliusMock was never installed (mock.js did not load or the app did not start)',
     }).toBe(true);
     return installed;
@@ -75,46 +76,82 @@ function waitForTheMockOnEveryLoad(app: App, browser: Browser): void {
     }
 
     const context = surface.context();
-    let documentInterrupted = false;
-    let scriptInterrupted = false;
-    const onFailure = (request: Request) => {
-      if (request.failure()?.errorText !== 'net::ERR_NETWORK_CHANGED' || request.serviceWorker()) return;
-      const url = new URL(request.url());
-      if (url.origin !== target.origin) return;
-      try {
-        if (request.frame() !== surface.page().mainFrame()) return;
-      } catch {
-        // Playwright can report a new tab's navigation before it has an associated frame.
-        return;
-      }
-      if (request.isNavigationRequest() && url.pathname === target.pathname && url.search === target.search) {
-        documentInterrupted = true;
-      }
-      if (request.resourceType() === 'script' && url.pathname.startsWith('/assets/') && url.pathname.endsWith('.js')) {
-        scriptInterrupted = true;
-      }
+    const errorUrl = 'chrome-error://chromewebdata/';
+    let recoveryDeadline: number | undefined;
+    let backoff = 250;
+    let navigate = (_timeout: number) => open(path);
+    const budgetExhausted = (cause?: unknown) => new Error('Mock startup budget exhausted after net::ERR_NETWORK_CHANGED.', { cause });
+    const remaining = () => {
+      if (recoveryDeadline === undefined) return FIRST_LOAD_MS;
+      const ms = Math.ceil(recoveryDeadline - performance.now());
+      if (ms <= 0) throw budgetExhausted();
+      return ms;
     };
-    context.on('requestfailed', onFailure);
-    try {
-      try {
-        await open(path);
-      } catch (error) {
-        if (!documentInterrupted) throw error;
-      }
-      if (!documentInterrupted && await ready(() => scriptInterrupted)) return;
-    } finally {
-      context.off('requestfailed', onFailure);
-    }
 
-    console.warn('[e2e] net::ERR_NETWORK_CHANGED interrupted the initial mock load. Retrying that load once.');
-    if (documentInterrupted) {
-      // Chromium rejects goto before committing its error page, which can cancel a new goto.
-      await browser.waitForURL('chrome-error://chromewebdata/', { timeout: FIRST_LOAD_MS });
-      await open(path);
-    } else {
-      await reload(); // A goto with the same hash can stay in the interrupted document.
+    for (;;) {
+      let documentInterrupted = false;
+      let scriptInterrupted = false;
+      let ordinaryFailure: string | undefined;
+      const onFailure = (request: Request) => {
+        if (request.serviceWorker()) return;
+        const url = new URL(request.url());
+        if (url.origin !== target.origin) return;
+        try {
+          if (request.frame() !== surface.page().mainFrame()) return;
+        } catch {
+          // A new tab's navigation may have no associated frame yet.
+          return;
+        }
+        const doc = request.isNavigationRequest() && url.pathname === target.pathname && url.search === target.search;
+        const script = request.resourceType() === 'script' && url.pathname.startsWith('/assets/') && url.pathname.endsWith('.js');
+        if (!doc && !script) return;
+        const code = request.failure()?.errorText;
+        if (code !== 'net::ERR_NETWORK_CHANGED') ordinaryFailure = code ?? 'request failed';
+        else if (doc) documentInterrupted = true;
+        else scriptInterrupted = true;
+      };
+
+      // Once a page exists, observe a fresh error-page commit even when the previous
+      // navigation already ended at the same chrome-error URL.
+      const page = recoveryDeadline === undefined ? undefined : surface.page();
+      const isErrorCommit = (frame: Frame) => frame === page?.mainFrame() && frame.url() === errorUrl;
+      let errorCommitted = false;
+      const onCommit = (frame: Frame) => { if (isErrorCommit(frame)) errorCommitted = true; };
+      page?.on('framenavigated', onCommit);
+      context.on('requestfailed', onFailure);
+      try {
+        try {
+          await navigate(remaining());
+        } catch (error) {
+          // A recovery navigation receives the remaining budget. Its timer can
+          // expire inside goto/reload, before the next call to remaining().
+          const cause = error instanceof Error ? error.cause : undefined;
+          if (recoveryDeadline !== undefined && !ordinaryFailure && cause instanceof Error &&
+              'code' in cause && cause.code === 'OPERATION_TIMEOUT') throw budgetExhausted(error);
+          if (!documentInterrupted || ordinaryFailure) throw error;
+        }
+        if (!documentInterrupted && await ready(() => scriptInterrupted || Boolean(ordinaryFailure), remaining())) return;
+        if (ordinaryFailure) throw new Error(`window.__yuliusMock was never installed: ${ordinaryFailure}`);
+        recoveryDeadline ??= performance.now() + FIRST_LOAD_MS;
+        if (documentInterrupted) {
+          if (!page) await browser.waitForURL(errorUrl, { timeout: remaining() });
+          else if (!errorCommitted) await page.waitForEvent('framenavigated', { predicate: isErrorCommit, timeout: remaining() });
+          navigate = (timeout) => browser.goto(target.href, { timeout });
+        } else {
+          // A goto with the same hash can stay in the interrupted document.
+          navigate = (timeout) => reload({ timeout });
+        }
+      } finally {
+        context.off('requestfailed', onFailure);
+        page?.off('framenavigated', onCommit);
+      }
+
+      // Network changes arrive in bursts. Pace only confirmed recovery navigations
+      // and charge every delay, navigation and mock-readiness check to the same deadline.
+      console.warn(`[e2e] net::ERR_NETWORK_CHANGED interrupted mock startup. Recovering after ${backoff} ms.`);
+      await delay(Math.min(backoff, remaining()));
+      backoff = Math.min(backoff * 2, 2000);
     }
-    await ready();
   } });
   Object.assign(browser, { reload: async (...args: Parameters<Browser['reload']>) => { await reload(...args); await ready(); } });
 }

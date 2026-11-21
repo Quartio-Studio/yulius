@@ -239,7 +239,13 @@ impl SpanStore for SqliteStore {
         self.call(move |c| {
             let deleted = c
                 .execute(
-                    "DELETE FROM spans WHERE started_at < ?1 AND (ended_at IS NOT NULL OR started_at < ?2)",
+                    // Recovery needs the last completed merge wait for each task.
+                    "DELETE FROM spans WHERE started_at < ?1 AND (ended_at IS NOT NULL OR started_at < ?2)
+                     AND NOT (ended_at IS NOT NULL AND subject_kind = 'task' AND kind = 'wait' AND name = 'merge_armed'
+                       AND EXISTS (SELECT 1 FROM tasks WHERE id = spans.subject_id)
+                       AND id = (SELECT w.id FROM spans w WHERE w.subject_kind = 'task'
+                         AND w.subject_id = spans.subject_id AND w.kind = 'wait' AND w.name = 'merge_armed'
+                         AND w.ended_at IS NOT NULL ORDER BY w.started_at DESC, w.id DESC LIMIT 1))",
                     params![before.0, before.0 - yulius_domain::stages::RETAIN_MS],
                 )
                 .map_err(db)?;
@@ -339,6 +345,99 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[tokio::test]
+    async fn pruning_preserves_the_latest_merge_wait_for_each_existing_task() -> TestResult {
+        let store = seeded().await?;
+        store.call(|c| {
+            c.execute_batch("INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, origin, created_by, created_at, updated_at, owner_id)
+                VALUES ('t2','s1',2,'Peer','p','codex','queued','ui','u1',100,100,'u1'),
+                       ('t3','s1',3,'Open','p','codex','queued','ui','u1',100,100,'u1')")
+                .map_err(db)
+        }).await?;
+        let wait = NewSpan {
+            sandbox_id: SandboxId::parse("s1")?,
+            subject_kind: SubjectKind::Task,
+            subject_id: "t1".into(),
+            key: "first".into(),
+            parent_key: None,
+            kind: "wait".into(),
+            name: "merge_armed".into(),
+            environment: None,
+            job: None,
+            started_at: Timestamp(10),
+            ended_at: Some(Timestamp(40)),
+            outcome: Some("dropped".into()),
+            detail: Some(r#"{"head":"a"}"#.into()),
+        };
+        for (owner, key, name, start) in [
+            ("t1", "first", "merge_armed", 10),
+            ("t1", "tie", "merge_armed", 20),
+            ("t1", "decided", "merge_armed", 20),
+            ("t1", "late-write", "merge_armed", 19),
+            ("t1", "unrelated", "other", 30),
+            ("t2", "peers-wait", "merge_armed", 11),
+            ("removed", "orphan", "merge_armed", 12),
+        ] {
+            assert!(
+                store
+                    .insert_span(&NewSpan {
+                        subject_id: owner.into(),
+                        key: key.into(),
+                        name: name.into(),
+                        started_at: Timestamp(start),
+                        ..wait.clone()
+                    })
+                    .await?
+            );
+        }
+        for owner in ["t1", "t3"] {
+            assert!(
+                store
+                    .insert_span(&NewSpan {
+                        subject_id: owner.into(),
+                        key: "unfinished".into(),
+                        started_at: Timestamp(30),
+                        ended_at: None,
+                        outcome: None,
+                        ..wait.clone()
+                    })
+                    .await?
+            );
+        }
+        let cutoff = Timestamp(yulius_domain::stages::RETAIN_MS + 100);
+        store.prune_spans(cutoff).await?;
+        for (owner, expected) in [
+            ("t1", vec!["decided"]),
+            ("t2", vec!["peers-wait"]),
+            ("t3", vec![]),
+            ("removed", vec![]),
+        ] {
+            let rows = spans(&store, SubjectKind::Task, owner).await?;
+            let keys: Vec<_> = rows
+                .iter()
+                .filter(|span| span.kind == "wait")
+                .map(|span| span.key.as_str())
+                .collect();
+            assert_eq!(keys, expected, "merge history for {owner}");
+        }
+        assert!(
+            store
+                .insert_span(&NewSpan {
+                    key: "later-verdict".into(),
+                    started_at: Timestamp(50),
+                    ended_at: Some(Timestamp(60)),
+                    ..wait
+                })
+                .await?
+        );
+        store.prune_spans(cutoff).await?;
+        let mut updated = spans(&store, SubjectKind::Task, "t1").await?;
+        updated.retain(|span| span.kind == "wait");
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].key, "later-verdict");
+        Ok(())
     }
 
     /// STG-101..103: a task's states, needs-you request, step (with the tokens its runs recorded

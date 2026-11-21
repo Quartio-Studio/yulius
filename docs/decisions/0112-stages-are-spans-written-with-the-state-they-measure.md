@@ -49,7 +49,7 @@ requeue were lost. Nothing split a CI job into its gates or a deploy into deploy
   CD runs, task runs with their figures, steps from their events, pauses, a live task's current
   state; marked `backfilled`. A reused CI result (an identical tree) is marked `reused` and never
   counted as a run.
-- **Retention**: spans older than 180 days go with the hourly CI and CD upkeep.
+- **Retention**: spans older than 180 days go with the hourly CI and CD upkeep. Each existing task keeps its latest merge wait because delivery recovery needs the last queue decision even when its activation began before the cutoff.
 - **Delivery figures** are computed on read: a merge into the integration branch is delivered by the
   first passed deployment of an environment that started after it (an environment deploys its
   branch head); the change failure rate is failed over finished deployments; a failure is restored

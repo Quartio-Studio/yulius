@@ -87,6 +87,7 @@ export function createBrowserPanel(ctx, sandbox) {
     onTabs,
     onAgent,
     onActionRequested: (message) => ctx.store.handleEvent({ ...message, type: 'browser.action_requested', sandbox_id: sandbox.id }),
+    onActionCleared: (message) => ctx.store.clearActionRequest(sandbox.id, message.tab_id),
     onCreated: (tabId) => select(tabId),
     onConnected: () => {
       const urls = pendingOpen;
@@ -114,7 +115,7 @@ export function createBrowserPanel(ctx, sandbox) {
   const attention = h('div', { class: 'banner banner-warn bp-attn small', hidden: true });
   const notice = h('div', { class: 'bp-notice', role: 'status', hidden: true });
   const stage = h('div', { class: 'bp-stages' }, stream.el, notice);
-  setChildren(el, tabStrip, bar, attention, stage);
+  setChildren(el, tabStrip, bar, attention, stream.restartNotice, stage);
 
   function current() {
     return tabs.find((tab) => tab.id === selected) || null;
@@ -258,7 +259,10 @@ export function createBrowserPanel(ctx, sandbox) {
     liveButton.hidden = !(tab && liveTarget(tab.url));
     if (tab && tab.action_requested) {
       attention.hidden = false;
-      setChildren(attention, icon('warn', { size: 14 }), h('span', { class: 'banner-text' }, `An agent asks for your action here: ${tab.action_requested.reason}`));
+      setChildren(attention,
+        icon('warn', { size: 14 }),
+        h('span', { class: 'banner-text' }, `An agent asks for your action here: ${tab.action_requested.reason}`),
+        h('button', { type: 'button', class: 'btn btn-sm', onClick: () => stream.clearAction(tab.id) }, 'Mark done'));
     } else {
       attention.hidden = true;
     }

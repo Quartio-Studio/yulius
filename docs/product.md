@@ -200,6 +200,7 @@ watching, steering and unblocking.
   they typed and did not send may still be in its prompt box (however old, SPEC-480: such a
   message is not typed behind a person's draft, and for a message of Yulius's own the task
   says so after ten minutes), or the task still asks a person whether to trust its folder (SPEC-230).
+  After that minute a confirmed empty Claude Code conversation input releases a waiting message.
   A draft visible in Claude Code’s input also holds the message, including one restored from
   a stash. The sender is told at once. An automatic message flags the session for its person
   ([SPEC-537](../.ai/specs/SPEC-537-preserve-restored-drafts-when-typing-int.md)). When a usage limit cuts its
@@ -554,7 +555,8 @@ watching, steering and unblocking.
   and kept 180 days (SPEC-137): a task's waits, states, steps (with their tokens), runs, pauses,
   pull request and merge waits; a CI run's queue (and why), jobs and the stages their output names
   (`::yulius-stage`, with test counts); a deploy's confirmation, promotion, deploy and verify; what a
-  CI job or deploy used (CPU time, peak memory, bytes written; SPEC-154). The Dashboard's Pipeline
+  CI job or deploy used (CPU time, peak memory, bytes written; SPEC-154). Each task keeps its
+  latest completed merge wait beyond the telemetry window (SPEC-558). The Dashboard's Pipeline
   (stages) tab (`?section=pipeline`; `/pipeline` still opens it) shows deployment frequency, lead
   time, change failure rate and time to restore for dev and production, any stage's daily p50 and
   p90 and the stage table (with CPU and memory p50 · p90) with CSV/JSON export; a CI run, a deploy
@@ -569,9 +571,22 @@ watching, steering and unblocking.
   exact commits GitHub reports for the protected branches, dev inside the sandbox and production
   outside it, with the agent secrets allowed for each (see the secrets vault below), and shows each run on the CD
   (deployment) page; a confirmed deploy shows its run's view at once, saying what it checks and
-  promotes, and that view becomes the run. A merge deploys nothing: a person or an agent
-  (`cd_deploy`) deploys dev when it is wanted, or the ready-made "Deploy dev every night"
-  automation deploys and tests it. Every environment that deploys also defines its rollback
+  promotes, and that view becomes the run. A merge deploys nothing by itself: a person or an
+  agent (`cd_deploy`) deploys dev when it is wanted, or the ready-made "Deploy dev every night"
+  automation deploys and tests it.
+  - **Merge-first staging** (SPEC-575) applies to a project whose shared staging target is
+    `merge_first = true`.
+    - Pull requests merge on the quick checks. The full suite (`after_merge` jobs) runs once on
+      the merged revision.
+    - A task asks for staging with `cd_deploy` once its delivery merged. Yulius deploys and
+      verifies that tested revision in revision order, once per task.
+    - A failing candidate leaves staging on its last verified release and tells the task.
+    - Production is promoted only from the revision staging verified.
+  - Each task tests locally first with the project's `[local]` deployment inside its own sandbox.
+  - New projects with such a target are bootstrapped this way, and onboarded ones get one task
+    that adopts it.
+
+  Every environment that deploys also defines its rollback
   (SPEC-415): a command that redeploys a release Yulius kept from an earlier deploy, never
   building, and a line saying how data changes stay compatible. The CD page lists each part's
   three newest releases (older ones fold), each with one action: "Roll back to previous" on the
@@ -605,6 +620,7 @@ watching, steering and unblocking.
 - **Browser panel**: the sandbox's real Chrome streamed as video so people can pass captchas
   and sign-ins for the agent. Their clicks and keys need the host's browser policy, which
   `yulius host setup` writes: without it the browser shows but takes none (ADR-0318).
+  If the policy arrives after an agent used the browser, the panel offers **Restart browser** to recover input while keeping that sandbox’s profile.
   New browser launches keep Chrome’s default extension prompts off the sandbox display,
   including for existing profiles (SPEC-567).
 - **Automations**: tasks on a schedule. Three ship with Yulius and head the Automations page as
@@ -651,6 +667,7 @@ watching, steering and unblocking.
 - **Secrets vault**: secrets are a title, a value and notes. Team secrets are for people; agent
   secrets are used by agents, who never see them. Reading a value needs your own two-factor code
   (set up once, mandatory); an administrator resets it for someone who lost their authenticator.
+  On the Secrets page, managers see which older names set interpreter options and can rename them. Host-bound GitHub tokens remain supported. [ADR-0408](decisions/0408-interpreter-settings-are-reserved-for-new-agent-secret-names.md)
   The people who manage an agent secret can read it too. Sending a value somewhere new reads
   it: for an agent secret allowed use by use, a new host, `.env` copies, production deploys and
   letting agents set it up ask for the same code, and an API token cannot do them (ADR-0317). What cannot be checked
@@ -701,7 +718,7 @@ watching, steering and unblocking.
   Once the new version is built, every task is frozen at once, mid-turn, and thawed after the
   restart; the agents don't notice (SPEC-160). A deploy (CD or environment run) running when the
   new version is built finishes first, and new deploys are refused until the update installed, so an
-  update never cuts a deploy (SPEC-342). **Restart…** on the Instance page restarts the server
+  update never cuts a deploy (SPEC-342). A planned install gives a CI gate with passed work and only its last job left up to 30 seconds from the start of the task pause. **Continue without waiting** skips this wait (SPEC-573). **Restart…** on the Instance page restarts the server
   the same way without installing anything (SPEC-432). Sessions live in a systemd unit of their
   own, so the restart keeps them on every systemd; on a host not set up for that, where the
   server could not start again while a session runs (systemd 258 and later), Restart and Update

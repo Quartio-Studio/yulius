@@ -522,6 +522,14 @@ session limit the resume waits `queued` with its prompt. Archive and close make 
 `stopped_cancelled`. A message while the park is ending the session is 409 ("is parking its idle
 session"). Each park is audited `task.parked` by `yulius`.
 
+A parked task in the sandbox task list or the task detail includes `parked_needs_you`, the server’s classification from its
+local work, owner decisions and current ordinary PR checks. When a PR is known, `parked_pr`
+gives its `number` and whether it is `open`. A branch lookup can identify a replacement
+for an older recorded delivery. With outstanding local work, the detail keeps an owner-observed open PR
+or the recorded delivery identity. Unfinished work and unreadable checks keep the task under Needs you.
+
+The MCP tools `task_get` and `tasks_list` use the verified parked group and include `parked_pr` when the verifier can identify the PR. A parked row’s `wait_reason` explains a current check failure, pending checks, an unreadable PR, a conflict, a required base update or unfinished local work. A stored owner decision or held prompt supplies its own fields. The `needs_you` scope keeps activity order and applies its limit after filtering. The `archived` scope reads archived tasks.
+
 A `queued` task not held by a supertask carries `queue_reason`, one line: "Waiting for a free
 session: N of M in use", "Waiting for the Yulius update to finish", or "Starting: a session is
 free" (the queue's next pass starts it) (SPEC-512 PRK-007); null otherwise, and in `tasks_list`
@@ -651,7 +659,7 @@ the agents' delivery workflow and other clients; no page of the web UI calls the
 
 | Method | Path | Level | Body → Response |
 | --- | --- | --- | --- |
-| GET | `/api/sandboxes/{sid}/git` | read | → `GitOverview` |
+| GET | `/api/sandboxes/{sid}/git` | read | → `GitOverview`. HTTP 429 when 30 overlapping reads already hold publication slots in this sandbox. Home and MCP task lists continue to read available PR observations. |
 | GET | `/api/tasks/{tid}/delivery` | read | → `Delivery`. In a playground the available action is the local squash (`merge`). Its local prerequisites appear in `blocked`, and a merged task has no further actions. |
 | GET | `/api/tasks/{tid}/delivery/evidence/{merged_sha}` | read | → `MergeEvidence`. Task, PR, branch, accepted head, landed SHA and up to 50 newest CI, CD and profile-command attempts with individual check states. When truncated, pass `?before=<next_before>` for the next page, including archived attempts. Add `?run_id=<id>` to pin one attempt. A missing task landing or requested attempt returns 404. Task agents use `delivery_status` with optional `merged_sha`, `before` or `run_id` to read the same evidence with their task credential. |
 | GET | `/api/tasks/{tid}/changes` | read | → `TaskChanges`: the task worktree (committed, uncommitted and untracked work; symlinks listed, never followed) against the merge base with `origin/<integration>`; 409 when the task has not started (no worktree yet) or its worktree is gone (the Git overview's `worktree`) |
@@ -745,7 +753,8 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
 - **Merge** uses the profile's merge method and passes the head that was checked as the
   expected head; a PR head that differs from the task worktree's head is refused as stale.
   With `auto_promote` (Studio), the integration branch is promoted right after a merge done
-  through Yulius once no integration environment is pending; the outcome is added to `notes`
+  through Yulius once no integration environment is pending (with a merge-first staging target:
+  once the staging queue verified the head, SPEC-575); the outcome is added to `notes`
   and audited. With `require_checks`, an automatic fast-forward does not wait for the
   integration head's own checks (they may not have reported yet), and is stopped by failing
   or unreadable ones ("Automatic promotion did not happen: …"). No other path merges,
@@ -835,6 +844,13 @@ paths = ["crates/web/**"]   # optional: 1-50 globs of the files it tests (scope-
                             #   base with the integration branch) gets it skipped with "no file this
                             #   job tests changed (paths: …)"; the branches' own runs, a change to
                             #   yulius.toml and an unknown change run it (ADR-0343)
+after_merge = true          # optional: part of the full suite. While the integration head has a
+                            #   merge-first [cd.<name>], pull request heads, merge trains and
+                            #   playground tasks skip it with "part of the full suite: it runs on
+                            #   the merged revision (merge-first)"; the branches' runs run it and
+                            #   never reuse a tree that skipped it. A change's own new or changed
+                            #   job runs on its pull request. At least one job must not set it
+                            #   (ADR-0410)
 # or, for one job: [commands] gate = "…"   (not both)
 # [commands] test, lint, build = "…": for agents to read; Yulius only reads whether test and
 #                            lint are set (the briefing says so when one is missing)
@@ -971,7 +987,53 @@ drill = "dev"                       # the dev-stage environment whose drill prov
 
 [cd.platform]                       # another environment: the same keys, and
 stage = "prod"                      # "dev" or "prod" (fixed for [cd.dev] and [cd.prod])
+
+[cd.staging]                        # a dev-stage environment may be the shared staging target:
+stage = "dev"
+merge_first = true                  # at most one; needs deploy, verify and rollback; moves the
+                                    #   after_merge jobs off pull requests (SPEC-575, ADR-0410)
 ```
+
+A task-local deployment (SPEC-575 MFS-010, ADR-0415) is one table:
+
+```toml
+[local]
+about = "the app and its database in docker compose, on this sandbox's ports"
+deploy = "scripts/cd/deploy.sh local"   # required; deploys into this sandbox only
+verify = "scripts/cd/verify.sh local"   # optional
+```
+
+The merge-first environment changes only through its staging queue (ADR-0411):
+
+- A task's agent's `cd_deploy` of it records a staging request for the task's newest landing on
+  the integration branch. It answers with the request: `id`, `revision`, `state`, `ci_run_id`,
+  `cd_run_id`, `note`.
+- The request moves through these states:
+  - `testing`: the full gate on exactly that commit;
+  - `ready`;
+  - `deploying`;
+  - `verified`, or `included` in a verified deploy that contains it;
+  - `gate_failed`, `deploy_failed` or `superseded`.
+- A repeated request answers with the same one.
+- The request needs the task's owner to have write access, a merged landing and no pending or
+  blocked step.
+- Its outcome is typed into the task's session once.
+- `GET …/cd` lists the queue as the environment's `staging` (`verified`: the revision it serves,
+  `requests`: the newest, each with `task_number`, `revision`, `state`, `ci_run_id`,
+  `cd_run_id`, `note`).
+- `cd_status` shows the same.
+- A person's `POST …/cd/{env}/deploy` of the environment is refused with a 409 naming the queue.
+  Rollbacks stay possible.
+- A failed deploy restores staging to its last verified release, as a rollback run.
+- The deploy scripts of a merge-first target must be idempotent: a run lost to a restart is
+  retried, up to three attempts.
+- A failed deploy that announced a rollback barrier is not restored; its request says so.
+- With a merge-first target, every promotion (a production deploy's, `POST …/delivery/promote`,
+  the profile's automatic one) is refused (409) until staging serves the integration head,
+  verified; the automatic promotion then runs once the staging queue verified it.
+- For every project, `POST …/delivery/promote` and the automatic promotion read the integration
+  head and its `[cd.*]` tables through the verified CD mirror first, and answer 409 when they
+  cannot be read: a fetch failure, or an invalid `yulius.toml` at the head.
 
 A run deploys the commit GitHub reports for the branch, taken into a mirror only Yulius writes
 (every object checked, replacement refs ignored). It writes the commit's files into the run's own
@@ -1100,7 +1162,7 @@ armed-merge waits and updates onto the integration branch; a CI run's queue (wit
 preparation, job-slot waits, jobs, checkouts and the stages its output names; a CD run's
 confirmation, checks, promotion, deploy, verify and the stages their output names. Spans recorded
 before migration 28 from older tables are `backfilled`; a CI result reused from an identical tree
-is `detail.reused` and not counted. Spans are kept 180 days. Nothing writes them through the API.
+is `detail.reused` and not counted. Spans are kept 180 days. Each existing task also keeps its latest completed merge wait for delivery recovery. Nothing writes them through the API.
 
 A CI job or CD script names its stages and figures with lines Yulius reads as it runs; Yulius
 times them by its own clock:
@@ -1282,6 +1344,9 @@ resolves to nothing, the run gets the server without that variable or token.
 
 ## Browser, editor, shell
 
+- `POST /api/sandboxes/{sid}/browser/restart` uses the browser viewer's write grant and the usual CSRF check for cookie sessions. It returns 204 when the sandbox's replacement browser is ready. The profile stays in place. The caller reconnects its viewer WebSocket to receive the new tab IDs. A read-only user receives 403 and an invisible sandbox returns 404. A sandbox browser already starting or stopping returns 429. If page-created tabs have taken it over the configured limit, the restart also returns 429 and leaves Chrome running so the user can close excess tabs and retry.
+- A refused viewer click or key carries `input_locked` while the host policy is missing. It carries `input_locked_until_restart` when the policy is in force and the old display may still hold a chooser.
+
 - `WS /api/sandboxes/{sid}/browser` (write): the sandbox's Chrome — the browser agents drive —
   streamed (SPEC-002 ADR-15). One browser per sandbox, started on first use; with a virtual
   display it runs headful on its own Xvfb and the connection receives its video and sends real
@@ -1322,7 +1387,7 @@ resolves to nothing, the run gets the server without that variable or token.
     `{"type":"agent_activity","tab_id","x","y","action":"click|type|open|navigate","label"}` (an
     agent acted; `x`/`y` in viewport CSS pixels or null), `{"type":"action_requested","tab_id",
     "reason","task_id"}`, `{"type":"error","code":"invalid|url_refused|not_found|capacity|
-    input_locked|upstream|internal","message"}`.
+    input_locked|input_locked_until_restart|upstream|internal","message"}`.
   - Bounds: an acknowledging viewer has at most its base round trip plus 120 ms of video
     unacknowledged; video that waited on the server 250 ms (or beyond 300 frames, 8 MiB) is
     dropped and the viewer resumes at a fresh keyframe, which the server asks the encoder for
@@ -1684,7 +1749,7 @@ resolves to nothing, the run gets the server without that variable or token.
 | POST | `/api/admin/update/check` | superadmin | reads `main` now (a check younger than 30 s is reused, also one that ended while this one waited for it) → `UpdateView` |
 | POST | `/api/admin/update` | superadmin | `{"commit","confirm":true}` → 202 `UpdateView`: installs exactly that commit, which must be the offered head of `main`; 422 without `confirm` or for a malformed commit, 409 without an installed helper, while an update runs, for any other commit, or where the server's unit would not start again while sessions run ("… would not start again: …; nothing was stopped", SPEC-458: nothing is built and no task pauses) |
 | POST | `/api/admin/update/cancel` | superadmin | while building or pausing tasks: the build stops (ADR-0283), nothing is installed, paused tasks go on → `UpdateView`; 409 otherwise |
-| POST | `/api/admin/update/proceed` | superadmin | while pausing tasks: restart without waiting for tasks still in a turn → `UpdateView`; 409 otherwise |
+| POST | `/api/admin/update/proceed` | superadmin | while pausing tasks: proceed past the task and planned-install CI waits once running deploys finish → `UpdateView`; 409 otherwise |
 | POST | `/api/admin/restart` | superadmin | `{"confirm":true}` → 202 `UpdateView`: restarts the server with the build it runs, as an update without building or installing: tasks pause (frozen), the helper's `restart` stops, starts and checks that build, tasks resume; its run has `"restart": true`; 422 without `confirm`, 409 without an installed helper or a known build, while a run is open (SPEC-432), or where the server's unit would not start again while sessions run (SPEC-458, as for an update) |
 | GET | `/api/admin/limits` | superadmin | → `LimitsView` `{"host": {"cpus", "memory_bytes", "disk_bytes"}, "limits": [LimitView]}` (SPEC-459): the six resource limits (`max_sessions`, `ci_max_jobs`, `ci_lanes`, `sandbox_memory_gb`, `sandbox_disk_gb`, `cd_run_disk_gb`). `LimitView` = `{"key", "label", "env", "suffix": ""\|"GiB"\|"GB", "value", "source": "default"\|"unit"\|"settings", "host_sized", "formula", "unit_value"\|null, "setting": {"value"\|null, "set_by", "set_at"}\|null, "configured_on": host\|null, "stale", "min", "max", "live", "restart_needed"}`: `stale` = the pinned number in force was configured on a host of another size and is not what this one would get; `setting.value: null` = host-sized saved here, overruling the unit. 409 before the server loaded its limits |
 | PUT | `/api/admin/limits/{key}` | superadmin | `{"value": n}` pins the limit (it wins over the unit's `YULIUS_*` variable); `{"value": null}` makes it host-sized whatever the unit says → `LimitsView`. In force at once (sessions: queued tasks start; CI jobs: running ones finish), the sandbox memory at the next restart (`restart_needed`). 422 outside `min`…`max` (the message names the range; sandbox memory at most the host's) and for a body without `value` or with anything but a whole number or `null`, 404 for an unknown key. Audited `limits.set`. Every change answers 409 when the saved limits could not be read at this start, or were no limits document (nothing is written over them; see operations.md, "Resource limits") |
@@ -1984,7 +2049,7 @@ after an unlock.
 
 | Method | Path | Body → Response |
 | --- | --- | --- |
-| GET | `/api/sandboxes/{sid}/agent-secrets` | (read) → `[AgentSecret]`: `{id, name, description, scope ("sandbox"\|"instance"\|"personal"), enabled, shadowed_by?, hosts, requested_hosts, requested_by, env_files ("no"\|"asked"\|"allowed"), env_requested_by, cd_prod, auto_allow, injection, header_name, injection_text, placeholder, has_username, has_totp, created_by, updated_at, value_updated_at, last_used_at, rotate_due, flattened, can_manage}` — the project's secrets, every global one and the caller's own personal ones (`enabled`: it reaches this project's runs; `shadowed_by`: the scope whose secret of the same name wins, project > personal > global, [ADR-0186](decisions/0186-agent-secrets-are-project-global-or-personal.md); `has_totp`: only older secrets; `flattened`: a key whose line breaks were lost before SPEC-193, to be pasted again, told only to people who manage it) |
+| GET | `/api/sandboxes/{sid}/agent-secrets` | (read) → `[AgentSecret]`: `{id, name, description, scope ("sandbox"\|"instance"\|"personal"), enabled, shadowed_by?, hosts, requested_hosts, requested_by, env_files ("no"\|"asked"\|"allowed"), env_requested_by, cd_prod, auto_allow, injection, header_name, injection_text, placeholder, has_username, has_totp, created_by, updated_at, value_updated_at, last_used_at, rotate_due, flattened, can_manage}` — the project's secrets, every global one and the caller's own personal ones (`enabled`: it reaches this project's runs; `shadowed_by`: the scope whose secret of the same name wins, project > personal > global, [ADR-0186](decisions/0186-agent-secrets-are-project-global-or-personal.md); `has_totp`: only older secrets; `flattened`: a key whose line breaks were lost before SPEC-193, to be pasted again, told only to people who manage it). `interpreter_name` is true for managers of a secret with a grandfathered interpreter name. New assignments of those names return 422. [ADR-0408](decisions/0408-interpreter-settings-are-reserved-for-new-agent-secret-names.md) |
 | POST | `/api/sandboxes/{sid}/agent-secrets` | `{scope?: "sandbox"\|"instance"\|"personal", name, description?, hosts?: [..], injection?: "none" (default)\|"bearer"\|"basic"\|"header", header_name?, username?, value, auto_allow?: true (default)\|false, env_files?: bool}` → 201. `auto_allow` (SPEC-216): agents bind the hosts they ask for at once and production CD runs get the value. `env_files: true` (SPEC-256): it starts allowed into `.env` files (`secret_copy_to_env` asks no one), audited `vault.agent.env_allow` "at creation"; 422 for a personal secret or with `auto_allow: false`. Sandbox scope: write access; instance (global): instance administrators; personal: the caller's own, which needs work access. A global or personal secret starts switched on for `{sid}`. `name` is `[A-Z][A-Z0-9_]*` (not a reserved environment name; under the reserved `ANTHROPIC_` only `ANTHROPIC_API_KEY_<NAME>` and `ANTHROPIC_AUTH_TOKEN_<NAME>`, ADR-0292); `hosts` 0–16 of `api.example.com`, `*.example.com`, optionally `:port`; `value` ≥ 8 characters without line breaks (a multi-line key holds literal `\n`; a key flattened onto one line, `-----BEGIN X-----` … `-----END Y-----` (any labels) with no `\n`, is refused with 422, SPEC-193); `username` only for (and required by) `basic`. 409 when the name exists in its scope; 429 past 200 secrets reaching the project |
 | PUT | `/api/sandboxes/{sid}/agent-secrets/{id}/enabled` | `{enabled: bool}` → `AgentSecret`: switches a global secret (instance administrators, 403 otherwise) or the caller's own personal one (needs work access on the project) on or off for the project; 422 for a project secret; 429 past 200 secrets reaching the project. Audited `vault.agent.enable` / `vault.agent.disable` |
 | PATCH | `/api/agent-secrets/{id}` | any of `name, description, hosts, injection, header_name, username, value, auto_allow`, and `expect_hosts` (the bound hosts the person saw: 409 unless they still are; required with `hosts` while `auto_allow` is on) → `AgentSecret` (`value` replaces it, with the create rules: 422 for a flattened key; `""` clears `username`). 409 when `auto_allow` is turned on for a production secret (`cd_prod`), and when its hosts, `auto_allow` or value changed since it was read (reload). For a secret allowed use by use (`auto_allow` off) a host it is not bound to, or `auto_allow: true`, sends its value somewhere new, which reads it (ADR-0317): 403 `reauth_required` with the reauth status until the caller's two-factor code is fresh, as for a reveal, and 403 `forbidden` for an API token; nothing changes. Audited `vault.agent.update`, and `vault.agent.auto_allow_on` / `_off` |

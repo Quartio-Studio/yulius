@@ -2589,3 +2589,42 @@ async fn what_waits_never_runs_as_the_chats_next_person() -> TestResult {
     assert_ne!(owners[0].1, "alice", "{owners:?}");
     Ok(())
 }
+
+/// SPEC-578 (round 1 finding #9): chat notifications redact generic credential shapes (such as
+/// `ghp_...`) in `needs_you` text in addition to sandbox vault values.
+#[tokio::test]
+async fn telegram_needs_you_notification_redacts_generic_credential_shapes() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    link(&w, &w.alice, 100).await?;
+    let alice = user_id(&w, "alice").await?;
+    seed_task(&w.h, "t1", "s1", &alice, TaskStatus::Running, None).await?;
+
+    let id = TaskId::parse("t1")?;
+    let fake_token = concat!("ghp_", "1234567890abcdef1234567890abcdef1234");
+    w.h.store
+        .set_task_needs_you(
+            &id,
+            Some(&yulius_app::needs_you::NeedsYouRecord {
+                action: format!("Rotate {fake_token} in Settings"),
+                happened: Some(format!("Auth rejected {fake_token}")),
+                problem: None,
+                decision: false,
+                link: None,
+                at: w.h.app.now().0,
+                cause: None,
+                named: yulius_app::needs_you::Named::default(),
+            }),
+            w.h.app.now(),
+        )
+        .await?;
+    w.h.app.publish_task(&id).await;
+    // `sent[0]` is the "Linked: ..." confirmation from `link(...)`; `sent[1]` is the Needs You notice.
+    let sent = w.fake.wait_sent(100, 2).await?;
+    let msg = &sent[1];
+    assert!(
+        msg.contains("Rotate") && !msg.contains(fake_token),
+        "generic credential token must be redacted in Telegram notification: {msg}"
+    );
+    Ok(())
+}

@@ -166,6 +166,8 @@ struct ActiveRun {
 /// The durable draft mark and the prompt submission whose hook may be retried.
 #[derive(Default)]
 pub(crate) struct DraftMark {
+    /// Recovery observed the durable first-key time but cannot date the latest key.
+    pub(crate) recovered_at: Option<i64>,
     pub(crate) written: bool,
     /// The submit's wall time and the viewer input sequence at its first request.
     pub(crate) submit: (i64, u64),
@@ -3832,7 +3834,15 @@ impl App {
             .hub
             .controller_size()
             .unwrap_or((welcome.cols, welcome.rows));
-        runtime.hub.reset(welcome.seq, &screen, cols, rows);
+        runtime.hub.restore(
+            welcome.seq,
+            &screen,
+            cols,
+            rows,
+            crate::hub::ScreenUpdate::Host {
+                rendered: welcome.rendered_at((cols, rows)),
+            },
+        );
         // The hub shows this run from now on (SPEC-301 LRS-001).
         if let Ok(mut shown) = runtime.screen_of.lock() {
             *shown = Some(attempt.id.clone());
@@ -3895,11 +3905,14 @@ impl App {
                                         attempt_id: aid.clone(),
                                         writer: again.writer,
                                     });
-                                    rt.hub.reset(
+                                    rt.hub.restore(
                                         again.welcome.seq,
                                         &screen,
                                         again.welcome.cols,
                                         again.welcome.rows,
+                                        crate::hub::ScreenUpdate::Host {
+                                            rendered: again.welcome.rendered,
+                                        },
                                     );
                                     reader = again.reader;
                                     continue;
@@ -4689,7 +4702,11 @@ impl App {
         // Neither a slow PR read nor the fresh process probe should hold up another launch.
         // Probe last so background work started during the PR read keeps its session.
         let Some(prs) = self
-            .verify_parking_prs(&candidate, delivery.as_ref())
+            .verify_parking_prs(
+                &candidate,
+                delivery.as_ref(),
+                crate::delivery::PrVerification::WatchPending,
+            )
             .await?
         else {
             return Ok(false);
@@ -5951,6 +5968,7 @@ impl App {
                 if drafted > 0 {
                     runtime.typed_at_ms.fetch_max(drafted, Ordering::SeqCst);
                     mark.written = true;
+                    mark.recovered_at = Some(self.now().0);
                 }
             }
             if let Some(task) = store.task(&attempt.task_id).await? {

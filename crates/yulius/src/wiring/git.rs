@@ -895,6 +895,10 @@ impl GitPort for GitAdapter {
         blocking(move || git.list_dir(&repo, &rev, &dir)).await
     }
 
+    fn has_cd_mirror(&self) -> bool {
+        true
+    }
+
     async fn cd_mirror_fetch(
         &self,
         mirror: &Path,
@@ -1006,6 +1010,21 @@ impl GitPort for GitAdapter {
             descendant.to_owned(),
         );
         blocking(move || git.is_ancestor(&repo, &a, &d)).await
+    }
+
+    async fn first_parent_position(
+        &self,
+        repo: &Path,
+        head: &str,
+        sha: &str,
+    ) -> AppResult<Option<u64>> {
+        let (git, repo, head, sha) = (
+            self.git(),
+            repo.to_path_buf(),
+            head.to_owned(),
+            sha.to_owned(),
+        );
+        blocking(move || git.first_parent_position(&repo, &head, &sha)).await
     }
 
     async fn parents(&self, repo: &Path, rev: &str) -> AppResult<Vec<String>> {

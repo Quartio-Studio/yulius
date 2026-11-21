@@ -523,6 +523,7 @@ function accountEmailOf(label) {
 }
 
 function summary(task) {
+  const idleRun = ['running', 'parked'].includes(task.status) && ['waiting', 'done'].includes(task.activity);
   return {
     id: task.id, sandbox_id: task.sandbox_id, number: task.number, title: task.title, harness: task.harness,
     harness_choice: task.harness_choice || 'chosen',
@@ -538,9 +539,12 @@ function summary(task) {
     owner_asks_first: Boolean(task.ownerAsksFirst),
     // What the agent asked a person to do (`needs_you`, SPEC-134).
     needs_you: task.needs_you ? { ...task.needs_you } : null,
+    ...(task.status === 'parked' && typeof task.parked_needs_you === 'boolean' ? { parked_needs_you: task.parked_needs_you, parked_pr: task.parked_pr } : {}),
+    ...(task.needs_you_notice ? { needs_you_notice: { ...task.needs_you_notice } } : {}),
     // Why it reads needs_attention (SPEC-472): the flag's reason, only while it reads that flag.
     attention: task.status === 'running' && task.activity === 'needs_attention' && task.attention ? { ...task.attention } : null,
     steps: stepsSummary(task), archived: task.archived, account_label: task.account_label,
+    ...(task.account_id ? { account_id: task.account_id } : {}),
     resumes_at: task.status === 'waiting_capacity' ? task.resumes_at || null : null,
     // No account of its provider usable (SPEC-246, SPEC-503): it waits for one, not for capacity.
     waits_for_account: task.status === 'waiting_capacity' && Boolean(seededDb) && !usableOf(seededDb, providerOfTask(task)),
@@ -565,9 +569,9 @@ function summary(task) {
     yulius_wait: task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done') && task.yulius_wait === true,
     merge_armed: task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done') && task.merge_armed === true,
     // Claude Code last recorded the goal as set, not met or failed (SPEC-429).
-    goal_unfinished: task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done') && task.goal_unfinished === true,
+    goal_unfinished: idleRun && task.goal_unfinished === true,
     // Its spec says its work is not finished (SPEC-491 DON-004).
-    spec_unfinished: task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done') && task.spec_unfinished === true,
+    spec_unfinished: idleRun && task.spec_unfinished === true,
     // A resting task that never ran, and the onboarding task a `pending` sandbox waits for (SPEC-153).
     not_started: task.status === 'closed' && task.neverRan === true,
     awaits_start_onboarding: task.status === 'closed' && task.neverRan === true && task.awaitsStart === true,
@@ -750,6 +754,7 @@ function detail(db, task) {
     ...(cli ? { cli_version: cli } : {}),
     ...(cli && live && cli !== db.claude.version ? { cli_moves_to: db.claude.version } : {}),
     cli_moves_stopped: Boolean(cli && live && cli !== db.claude.version && db.claude.movesStopped),
+    ...(Array.isArray(task.wait_history) && task.wait_history.length ? { wait_history: task.wait_history.map((e) => ({ ...e })) } : {}),
   };
 }
 
@@ -3354,7 +3359,7 @@ function agentShadow(db, s, sandbox) {
 function agentView(db, s, sandbox) {
   const admin = Boolean(db.me.user.is_instance_admin || db.me.user.is_superadmin);
   const manage = s.scope === 'instance' ? admin : s.scope === 'personal' ? s.owner === db.me.user.login : RANK[sandbox.access] >= RANK.write;
-  return { id: s.id, name: s.name, description: s.description, scope: s.scope, enabled: agentOn(s, sandbox), shadowed_by: agentShadow(db, s, sandbox), hosts: s.hosts, requested_hosts: s.requested_hosts, requested_by: s.requested_by, env_files: s.env_files || 'no', env_requested_by: s.env_requested_by || null, cd_prod: Boolean(s.cd_prod), auto_allow: Boolean(s.auto_allow), injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: false, created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, flattened: manage && flattenedKey(s.value), can_manage: manage, ...copyRequestOf(s, sandbox, manage) };
+  return { id: s.id, name: s.name, description: s.description, scope: s.scope, enabled: agentOn(s, sandbox), shadowed_by: agentShadow(db, s, sandbox), hosts: s.hosts, requested_hosts: s.requested_hosts, requested_by: s.requested_by, env_files: s.env_files || 'no', env_requested_by: s.env_requested_by || null, cd_prod: Boolean(s.cd_prod), auto_allow: Boolean(s.auto_allow), injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: false, created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, flattened: manage && flattenedKey(s.value), interpreter_name: manage && INTERPRETER_SETTINGS.has(s.name), can_manage: manage, ...copyRequestOf(s, sandbox, manage) };
 }
 
 /** The copy of a production secret an agent of `sandbox` asked for (SPEC-440), as the list shows it. */
@@ -3440,8 +3445,19 @@ function flattenedKey(value) {
   return Boolean(match) && !value.includes('\\n') && match[2].trim() !== '';
 }
 
-function validateAgent(body, creating) {
+const INTERPRETER_SETTINGS = new Set(['PYTHONPATH', 'PERL5LIB', 'RUBYOPT', 'JAVA_TOOL_OPTIONS', 'JDK_JAVA_OPTIONS']);
+
+function checkAgentAssignment(name) {
+  if (INTERPRETER_SETTINGS.has(name) || reservedVariable(name)) {
+    const alternative = `APP_${name}`;
+    const example = AGENT_NAME_RE.test(alternative) ? `, such as ${alternative}` : '';
+    fail(422, 'invalid', `${name} is reserved. Choose another name${example}`);
+  }
+}
+
+function validateAgent(body, creating, currentName) {
   if (body.name !== undefined && !AGENT_NAME_RE.test(body.name)) fail(422, 'invalid', `invalid name "${body.name}"`);
+  if (body.name !== undefined && body.name !== currentName) checkAgentAssignment(body.name);
   if (body.hosts !== undefined && (!Array.isArray(body.hosts) || body.hosts.length > 16)) fail(422, 'invalid', 'at most 16 hosts');
   if ((creating || body.value !== undefined) && [...(body.value || '')].length < 8) fail(422, 'invalid', 'an agent secret needs at least 8 characters');
   if (body.value !== undefined && flattenedKey(body.value)) fail(422, 'invalid', "this key's line breaks were lost (a one-line field turns them into spaces): paste it into the Secrets page's Value field, which keeps them as \\n, or write each line break as \\n");
@@ -3539,7 +3555,7 @@ route('PATCH', `/api/agent-secrets/${ID}`, ({ db, p, body }) => {
   const secret = agentSecret(db, p[0]);
   const sandbox = secret.sandbox ? sandboxOf(db, secret.sandbox) : db.sandboxes[0];
   if (secret.scope === 'sandbox') need(sandbox, 'write');
-  validateAgent(body, false);
+  validateAgent(body, false, secret.name);
   if (body.username && (body.injection || secret.injection) !== 'basic') fail(422, 'invalid', 'a user name is only for Basic credentials: put a login\'s user name in the notes');
   // A production secret is never set up by agents (SPEC-216 SSA-004).
   if (body.auto_allow === true && secret.cd_prod) fail(409, 'conflict', PRODUCTION_SECRET);
@@ -3606,6 +3622,7 @@ route('POST', `/api/sandboxes/${ID}/agent-secrets/${ID}/copy`, ({ db, p, body })
     if (refused) return refused;
     if (vaultOf(db).agent.some((s) => s.name === req.name && s.scope === 'sandbox' && s.sandbox === sandbox.id)) fail(409, 'conflict', `an agent secret named ${req.name} already exists in this project`);
     const now = new Date().toISOString();
+    checkAgentAssignment(req.name);
     const copy = { id: `as_${db.nextId++}`, sandbox: sandbox.id, scope: 'sandbox', name: req.name, description: `Copy of ${secret.name} for agents (asked by ${req.requested_by}${req.reason ? `: ${req.reason}` : ''})`, hosts: [...req.hosts], injection: secret.injection, header_name: secret.header_name, username: secret.username, value: secret.value, created_by: db.me.user.login, updated_at: now, value_updated_at: now, last_used_at: null, requested_hosts: [], requested_by: null, env_files: 'no', env_requested_by: null, auto_allow: false };
     vaultOf(db).agent.push(copy);
     audit(db, 'vault.agent.create', copy.id, `${copy.name} → ${copy.hosts.join(', ')}, copy of ${secret.name}`);
@@ -3786,6 +3803,21 @@ function shellFolder(db, shell) {
   return task ? `/srv/yulius/sandboxes/${slug}/worktrees/${task.number}` : `/srv/yulius/sandboxes/${slug}/repo`;
 }
 const shellDto = (shell) => ({ id: shell.id, name: shell.name, task_id: shell.task_id, folder: shell.folder, created_at: shell.created_at });
+route('POST', `/api/sandboxes/${ID}/browser/restart`, async ({ db, p }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  need(sandbox, 'write');
+  if (db.browserRestartFails) fail(502, 'upstream', 'Chrome could not restart.');
+  const previous = db.browsers.get(sandbox.id);
+  const next = new BrowserSession(db, sandbox);
+  if (previous) {
+    next.tabs = previous.tabs.map((tab) => ({ ...tab, action_requested: null }));
+    for (const ws of previous.viewers.keys()) ws.serverClose(1011, 'browser stopped');
+  }
+  if (db.browserLockMessage) next.inputLocked = false;
+  db.browsers.set(sandbox.id, next);
+  if (db.holdBrowserRestartReply) await db.holdBrowserRestartReply;
+  return json(204);
+});
 route('GET', `/api/sandboxes/${ID}/shells`, ({ db, p }) => {
   need(sandboxOf(db, p[0]), 'write');
   return [...db.shells.values()].filter((shell) => shell.sandbox_id === p[0] && !shell.cockpit).map(shellDto);
@@ -4781,6 +4813,12 @@ function moveUpdate(db, state, patch = {}) {
   emit(db, { type: 'update.updated', phase: UPDATE_STATES.includes(state) ? state : null });
 }
 
+function enterRestarting(db) {
+  moveUpdate(db, 'restarting', db.update.run.restart
+    ? { step: 'stopping', message: 'Stopping the server. Agent sessions keep running.' }
+    : { step: 'installing', message: 'Installing the new version.' });
+}
+
 /** Walks a started update through its phases, like the server and helper do. */
 function runUpdate(db, id) {
   const live = () => db.update.run && db.update.run.id === id && UPDATE_STATES.includes(db.update.run.state);
@@ -4820,7 +4858,7 @@ function runUpdate(db, id) {
   }, UPDATE_STEP_MS + 100 + wait);
   later(() => {
     if (!live()) return;
-    moveUpdate(db, 'restarting', { step: 'installing', message: 'Installing the new version.' });
+    enterRestarting(db);
   }, UPDATE_STEP_MS * 2 + wait);
   later(() => {
     if (!live()) return;
@@ -4887,7 +4925,7 @@ function runRestart(db, id) {
   const live = () => db.update.run && db.update.run.id === id && UPDATE_STATES.includes(db.update.run.state);
   later(() => {
     if (!live()) return;
-    moveUpdate(db, 'restarting', { step: 'stopping', message: 'Stopping the server. Agent sessions keep running.' });
+    enterRestarting(db);
   }, UPDATE_STEP_MS);
   later(() => {
     if (!live()) return;
@@ -4929,6 +4967,7 @@ route('POST', '/api/admin/update/cancel', ({ db }) => {
 route('POST', '/api/admin/update/proceed', ({ db }) => {
   if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'superadmin only');
   if (!db.update.run || db.update.run.state !== 'pausing') fail(409, 'conflict', 'the update is not pausing tasks');
+  if (db.update.run.can_proceed) enterRestarting(db);
   return updateView(db);
 });
 
@@ -7019,13 +7058,14 @@ class LoginSession {
  */
 /** What the server answers a click or a key while the host's browser policy is missing. */
 // The refusal with the reason a test may set (`browserLockMessage`, SPEC-493 fix 10b).
-const inputLocked = (db) => (db.browserLockMessage ? { ...INPUT_LOCKED, message: db.browserLockMessage } : INPUT_LOCKED);
+const inputLocked = (db) => (db.browserLockMessage ? { ...INPUT_LOCKED, code: 'input_locked_until_restart', message: db.browserLockMessage } : INPUT_LOCKED);
 const INPUT_LOCKED = { type: 'error', code: 'input_locked', message: "clicks and keys are off in this browser: the host's browser policy is not in force, so Chrome's own file dialogs and developer tools would reach the host's files. An administrator runs `sudo yulius host setup` on the host" };
 
 class BrowserSession {
   constructor(db, sandbox) {
     this.db = db;
     this.sandbox = sandbox;
+    this.inputLocked = db.browserLocked;
     this.viewers = new Map(); // ws → 'video' | 'pixels'
     this.size = { width: 1280, height: 800 };
     this.cursor = { x: 200, y: 200 };
@@ -7127,7 +7167,7 @@ class BrowserSession {
       case 'mouse': {
         const shown = this.tabs.find((t) => t.active);
         if (!shown || msg.event === 'wheel') break;
-        if (this.db.browserLocked && msg.event !== 'move') { ws.push(JSON.stringify(inputLocked(this.db))); break; }
+        if (this.inputLocked && msg.event !== 'move') { ws.push(JSON.stringify(inputLocked(this.db))); break; }
         this.cursor = { x: msg.x, y: msg.y };
         if (msg.event === 'down' && shown.id === 'tab-aws' && shown.action_requested && msg.x > 60 && msg.x < 360 && msg.y > 330 && msg.y < 380) {
           shown.action_requested = null;
@@ -7141,7 +7181,7 @@ class BrowserSession {
       case 'key': {
         const shown = this.tabs.find((t) => t.active);
         if (!shown) break;
-        if (this.db.browserLocked && msg.event !== 'up') { ws.push(JSON.stringify(inputLocked(this.db))); break; }
+        if (this.inputLocked && msg.event !== 'up') { ws.push(JSON.stringify(inputLocked(this.db))); break; }
         const typed = this.typed.get(shown.id) || '';
         if (msg.event === 'down' && msg.key === 'Backspace') this.typed.set(shown.id, typed.slice(0, -1));
         else if (msg.event === 'down' && typeof msg.key === 'string' && msg.key.length === 1) this.typed.set(shown.id, (typed + msg.key).slice(-80));
@@ -7562,6 +7602,10 @@ export function createMockTransport(params) {
     emit(db, { type: 'browser.action_requested', sandbox_id: 'sb_studio', tab_id: 'tab-aws', reason: 'Sign in to AWS so task #10 can deploy', task_id: 'tsk_studio_10' });
     return true;
   };
+  db.clearBrowserAction = (sandboxId, tabId, taskId = null) => {
+    emit(db, { type: 'browser.action_cleared', sandbox_id: sandboxId, tab_id: tabId, task_id: taskId });
+    return true;
+  };
   // The bot receives `text` from the person's chat (SPEC-498): `/start <code>` with the shown code
   // links it, once. Says whether it linked.
   db.telegramStart = (text) => {
@@ -7678,13 +7722,20 @@ export function createMockTransport(params) {
     movePollMs: params.has('movepoll') ? Number(params.get('movepoll')) : undefined,
     pullClock,
     // Like window.fetch, an aborted signal (a timeout, a view that went away) rejects the request.
-    fetch: (url, init = {}) => {
+    fetch: async (url, init = {}) => {
       if (init.keepalive) db.keepaliveRequests.push(url);
-      const work = handleFetch(db, url, init);
       const { signal } = init;
+      signal?.throwIfAborted();
+      const dispatch = () => handleFetch(db, url, init);
+      // Exercise dispatch order before simulated latency, with the normal abort handler.
+      const intercept = window.__yuliusTaskListReply;
+      const work = intercept && String(url).includes('/tasks?archived=')
+        ? Promise.resolve(intercept(url)).then(reply => { signal?.throwIfAborted(); return reply ?? dispatch(); })
+        : dispatch();
       if (!signal) return work;
       return new Promise((resolve, reject) => {
         const abort = () => reject(new DOMException('The operation was aborted.', 'AbortError'));
+        if (db.holdBrowserRestartReply && url.endsWith('/browser/restart')) db.expireRestart = abort;
         if (signal.aborted) { abort(); return; }
         signal.addEventListener('abort', abort, { once: true });
         work.then(resolve, reject);

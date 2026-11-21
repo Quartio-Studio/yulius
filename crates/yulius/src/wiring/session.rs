@@ -223,6 +223,7 @@ impl SessionHost for PtySessionHost {
                 seq: snapshot.as_ref().map_or(welcome.seq, |s| s.seq),
                 cols: welcome.cols,
                 rows: welcome.rows,
+                rendered: snapshot.as_ref().is_some_and(|s| s.rendered),
                 snapshot: snapshot.map(|s| s.bytes),
             },
             reader: Box::new(Reader(reader, run_dir.to_path_buf())),

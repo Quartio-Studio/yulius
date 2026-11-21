@@ -10,6 +10,12 @@ use std::path::Path;
 /// Where the server pauses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Point {
+    /// A parked read classified the task, before the response renders its plan. Keyed by task ID.
+    ParkedStatusRead,
+    /// A queued row reads session capacity to explain its wait. Keyed by task ID.
+    QueuedRowCapacity,
+    /// An idle running row reads its pending PR news. Keyed by task ID.
+    LiveRowPrNews,
     /// A review starts reading its Git head. Keyed by worktree path.
     ReviewHead,
     /// `file_read`: the path was resolved and checked, the file is not opened yet.
@@ -116,6 +122,8 @@ pub enum Point {
     /// A failed candidate has checked its members for failures and is deciding how to
     /// account for their runs. The path is the candidate run id.
     FailedTrainDeciding,
+    /// Dissolution is about to write its CI and audit records. The path is the run id.
+    TrainDissolving,
     /// Start onboarding (SPEC-256) read the sandbox `pending`; the start has not read it again
     /// yet. The path is the sandbox id.
     OnboardingApproved,
@@ -143,6 +151,9 @@ pub enum Point {
     /// A Stop hook (SPEC-346): the task was read; the Stop has not taken the turn lock yet. The
     /// path is the task id.
     StopTurnLock,
+    /// The screen showed an empty box during an old-key hold. The typist is about to
+    /// recheck under the draft lock before pasting. The path is the task id.
+    BoxSeenEmpty,
     /// A prompt hook (SPEC-346) passed its turn-end check under the turn lock; it has not set
     /// Working yet. The path is the task id.
     PromptTurnChecked,

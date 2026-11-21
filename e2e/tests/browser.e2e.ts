@@ -6,7 +6,7 @@ failOnPageErrors();
 
 type MockBrowser = { typed: Map<string, string>; acked: number };
 type WithMock = Window & { __yuliusMock: { browsers: Map<string, MockBrowser> } };
-type WithLock = Window & { __yuliusMock: { browserLockMessage?: string } };
+type WithLock = Window & { __yuliusMock: { browserLockMessage?: string; browserRestartFails?: boolean } };
 
 // The browser panel (SPEC-002 ADR-15): the sandbox Chrome — the agents' browser — streamed onto a
 // canvas (in mock mode a page drawn by assets/mock.js, sent as video where the browser's
@@ -96,6 +96,7 @@ test('a sandbox browser without the host policy says once that clicks and keys a
   const told = browser.locator('.toast:has-text("clicks and keys are off in this browser")');
   await expect(told).toBeVisible();
   await expect(told).toContainText('sudo yulius host setup');
+  await expect(screen.getByRole('button', 'Restart browser')).toBeHidden();
   expect(await axeViolations(browser)).toEqual([]);
   await browser.keyboard.type('mug');
   await browser.locator('.bp-surface').click({ position: { x: 200, y: 355 } });
@@ -107,7 +108,7 @@ test('a sandbox browser without the host policy says once that clicks and keys a
 // SPEC-493 fix 10b (review round 1): a browser that ran without the policy while an agent
 // clicked keeps clicks and keys off after host setup, until it restarts. That new reason is
 // shown at once, though the first notice was less than a minute ago; the same one is not.
-test('a new reason why clicks and keys are off is shown at once', async ({ app, browser, screen }) => {
+test('a locked browser offers restart when policy arrives and accepts input after a retry', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12', '&browser=locked'));
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('navigation', 'Tools').getByRole('button', /^Browser/).click();
@@ -121,10 +122,59 @@ test('a new reason why clicks and keys are off is shown at once', async ({ app, 
       'clicks and keys are still off in this browser: a file dialog may still be on its display. They come back once the browser restarts';
   });
   await browser.locator('.bp-surface').click({ position: { x: 200, y: 355 } });
-  const restart = browser.locator('.toast:has-text("once the browser restarts")');
+  const restart = screen.getByRole('button', 'Restart browser');
   await expect(restart).toBeVisible();
-  await browser.locator('.bp-surface').click({ position: { x: 220, y: 355 } });
-  expect(await browser.evaluate(() => [...document.querySelectorAll('.toast')].filter((t) => (t.textContent || '').includes('once the browser restarts')).length)).toBe(1);
+  await expect(screen.getByText(/a file dialog may still be on its display/)).toBeVisible();
+  await browser.evaluate(() => { (window as unknown as WithLock).__yuliusMock.browserRestartFails = true; });
+  await restart.click();
+  await expect(screen.getByText('Chrome could not restart.')).toBeVisible();
+  await expect(restart).toBeEnabled();
+  await browser.evaluate(() => { (window as unknown as WithLock).__yuliusMock.browserRestartFails = false; });
+  await restart.click();
+  await expect(restart).toBeHidden();
+  await expect(browser.locator('.bp-overlay')).toBeHidden();
+  await browser.locator('.bp-surface').click({ position: { x: 120, y: 270 } });
+  await browser.keyboard.type('recovered');
+  await expect.poll(() => browser.evaluate(() =>
+    (window as unknown as WithMock).__yuliusMock.browsers.get('sb_studio')?.typed.get('tab-app') ?? ''
+  )).toBe('recovered');
+});
+
+test('the panel reconnects when Chrome restarts but its HTTP reply times out', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&browser=locked'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', /^Browser/).click();
+  await expect(screen.getByRole('tab', /^Checkout/)).toHaveAttribute('aria-selected', 'true');
+  await expect(browser.locator('.bp-overlay')).toBeHidden();
+  await browser.evaluate(() => {
+    (window as unknown as WithLock).__yuliusMock.browserLockMessage = 'A file dialog may still be open.';
+  });
+  await browser.locator('.bp-surface').click({ position: { x: 120, y: 270 } });
+  const restart = screen.getByRole('button', 'Restart browser');
+  await expect(restart).toBeVisible();
+  // Capture the client's request deadline and fire it once the old socket has closed.
+  type DelayedReply = Window & { __yuliusMock: {
+    holdBrowserRestartReply: Promise<void>; finishRestartReply: () => void; expireRestart: () => void
+  } };
+  await browser.evaluate(() => {
+    const db = (window as unknown as DelayedReply).__yuliusMock;
+    db.holdBrowserRestartReply = new Promise<void>((resolve) => { db.finishRestartReply = resolve; });
+  });
+  await restart.click();
+  await expect(screen.getByRole('button', 'Retry')).toBeVisible();
+  await browser.evaluate(() => {
+    const db = (window as unknown as DelayedReply).__yuliusMock;
+    db.expireRestart();
+    db.finishRestartReply();
+  });
+  await expect(screen.getByRole('button', 'Retry')).toBeHidden();
+  // Retry disappears when reconnection starts. The overlay covers the page until its first frame.
+  await expect(browser.locator('.bp-overlay')).toBeHidden();
+  await browser.locator('.bp-surface').click({ position: { x: 120, y: 270 } });
+  await browser.keyboard.type('resumed');
+  await expect.poll(() => browser.evaluate(() =>
+    (window as unknown as WithMock).__yuliusMock.browsers.get('sb_studio')?.typed.get('tab-app') ?? ''
+  )).toBe('resumed');
 });
 
 test('browser tabs move by drag, keyboard and menu and stay so', async ({ app, browser, screen }) => {
