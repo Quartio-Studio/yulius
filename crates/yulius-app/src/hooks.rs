@@ -1224,8 +1224,12 @@ impl App {
         if self.turn_handoff_pending(task).await? {
             return Ok(StopGate::Handoff);
         }
+        // A held opening turn still owns its instruction. Claude gets its native goal
+        // after that turn ends, even if the goal marker already exists for recovery.
+        let runtime = self.runtime(&task.id);
         if task.follows_goal()
-            && !self.runtime(&task.id).goal_submitted.load(Ordering::SeqCst)
+            && !runtime.opening_turn.load(Ordering::SeqCst)
+            && !runtime.goal_submitted.load(Ordering::SeqCst)
             && let Some(run) = self.deps.store.live_attempt(&task.id).await?
             && crate::supervisor::native_goal_pending(Path::new(&run.run_dir))
         {

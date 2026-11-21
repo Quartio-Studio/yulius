@@ -1,6 +1,6 @@
 ---
 yulius-task: b2d041b9-f438-4630-8b8c-a686f9c0ef0d
-status: in-progress
+status: done
 ---
 
 # SPEC-589 Continue authorized work at the end of a goal turn
@@ -41,7 +41,7 @@ Earlier user requests establish the ownership rule. Task #534 concerned automate
 - [x] Preserve queued goal launch choices and the current Codex capacity pause
 - [x] Recover admitted goals across harnesses, stale moves and oversized diagnostics
 - [x] Preserve the native evaluator on a goal’s first Stop
-- [ ] Carry the opening verification turn across a capacity move before its native goal starts
+- [x] Carry the opening verification turn across a capacity move before its native goal starts
 
 ## Acceptance criteria
 
@@ -121,3 +121,5 @@ Make the continuation decision where the agent can act on it, at the shared Stop
 - Applying the two remaining Move mutations failed the ordinary Codex fresh restart and the live goal move. The first incorrectly resumed an old session and the second refused a valid live move. All four shared-recovery survivors now have demonstrated failing controls. Final all-feature Clippy and the repository quick gate passed.
 - Yulius CI run `6a2673be-f167-4230-85fb-2f73e9b3d4a3` failed the onboarding archive regression on `052a1a624`. The local subprocess reproduction remained Working after Claude recorded its achieved goal and spent one checklist continuation. The HTTP regression in `1d81fd1dd` showed the exact checklist instruction issued before the first native goal record reached Yulius. It covers both a newly launched and a restored goal, preserves two consumed attempts while Claude owns the Stop, and resumes the checklist once that ownership ends.
 - After the clean merge of dev `00ff06cbf`, the onboarding archive and sandbox-ready assertions passed in 1.7 seconds. All 563 selected tests passed across Stop hooks, native goal settlement, subscriptions, delivery, the merge train, CLI commands and the integrated harness changes. All-feature Clippy passed with warnings denied. The fixtures exercise real local hooks and subprocesses with synthetic provider sessions.
+- Run `5920d27b-f3b5-4e66-bf39-9df1b8ee03d0` failed the process-free capacity recovery test on `3a4ee812f`. The first launch received the verification instruction. Its native goal was scheduled to be typed after the opening turn. When the opening turn moved to another subscription, the replacement resumed with no prompt and the durable counter stayed at one. The stronger launch assertion in `e2f5ef0c9` reproduced the missing prompt before the fix. The same opening-turn state used by the native goal typist now preserves the verification instruction through the move.
+- After merging dev `77f285e08`, all 977 selected Rust tests passed, including the replacement’s exact work and attempt count, the pending native evaluator, and onboarding archive and readiness. The staging-script suite passed all 42 tests using its local fixture. All-feature Clippy passed with warnings denied.
