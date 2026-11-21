@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- Yulius's own `[cd.dev]` now deploys the exact build of a dev revision to its staging VM, the former production host. Each deploy keeps the store the replaced release left. Verify checks the commit, HTTPS, the contained doctor, lost rows and the Docker smoke test. Rollback restores a release with its own store. [ADR-0430](decisions/0430-yuliuss-staging-builds-in-cds-builder-and-installs-a-kept-release-with-its-store.md), [SPEC-591](../.ai/specs/SPEC-591-yulius-gets-its-own-staging-instance-and.md)
 - Agents now fix findings and obtain independent re-review through approval without asking the task owner to authorize another round. [SPEC-588](../.ai/specs/SPEC-588-it-shouldn-t-ask-me-for-this-agents-must.md)
 - The sandbox Browser panel now offers **Copy to my clipboard** after a webpage’s Copy button writes text on the virtual display. Accepting transfers the text to your device. [SPEC-584](../.ai/specs/SPEC-584-in-browser-i-clicked-copy-button-but-not.md)
 - New tasks in the browser default to Codex. Settings and the composer remember explicit model choices, including Random. [SPEC-587](../.ai/specs/SPEC-587-codex-should-be-default-for-example-bart.md)
