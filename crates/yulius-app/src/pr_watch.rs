@@ -1217,8 +1217,8 @@ impl App {
         // Without a run at its head (a project without Yulius CI) the branch's pushed head is
         // asked: a conflicting pull request is not tested (SPEC-491 DON-003), so its agent has
         // to hear of it there too.
-        let conflict_head = match &head {
-            Some(head) => Some(head.clone()),
+        let conflict_head = match arm_head.or(head.as_deref()) {
+            Some(head) => Some(head.to_owned()),
             None => self.branch_head(task).await,
         };
         // SPEC-553 REP-004: deliver an actionable failed publication once when `yulius wait` is
@@ -1330,7 +1330,8 @@ impl App {
         {
             return observed_only();
         }
-        if self.arm_observation(&task.id) != activation
+        if self.update_holds_starts()
+            || self.arm_observation(&task.id) != activation
             || self.armed_now(&task.id) != slot
             || self.merge_is_armed(&task.id) != armed
             || (armed && self.watched_train(task, pr) != train_read)

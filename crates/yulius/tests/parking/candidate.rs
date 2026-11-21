@@ -118,7 +118,13 @@ fn an_unverified_hosted_pull_keeps_its_ordinary_failure_unheard_until_recovery()
     cold_candidate_case(ColdCandidate::HostedPullUnavailable)
 }
 
+#[test]
+fn an_update_hold_arriving_before_armed_dispatch_keeps_the_notice_for_release() -> TestResult {
+    cold_candidate_case(ColdCandidate::UpdateHold)
+}
+
 enum ColdCandidate {
+    UpdateHold,
     HostedPullUnavailable,
     ExternalRepair,
     ScopeDecision,
@@ -411,6 +417,7 @@ async fn check_after_restart(
             | ColdCandidate::ExternalRepair
             | ColdCandidate::HostedPullUnavailable
             | ColdCandidate::ScopeDecision
+            | ColdCandidate::UpdateHold
             | ColdCandidate::HeldOrdinaryFailure
             | ColdCandidate::HeardOrdinaryFailure
             | ColdCandidate::SharedOrdinaryFailure
@@ -691,6 +698,49 @@ async fn check_after_restart(
             let unseen = cold.watch_prs(&bounds).await;
             assert!(unseen.is_empty(), "unavailable hosted PR: {unseen:?}");
             remote.pulls.lock().map_err(|_| "fixture pull")?.push(pull);
+        }
+        if matches!(case, ColdCandidate::UpdateHold) {
+            let (entered, release) = super::pause_watch_or_queue(super::Point::LivePrFactsRead, id);
+            let watcher = Arc::clone(&cold);
+            let pass = tokio::spawn(async move { watcher.watch_prs(&bounds).await });
+            tokio::time::timeout(Duration::from_secs(10), entered.notified()).await?;
+            let now = cold.now();
+            cold.deps
+                .store
+                .insert_update_run(&yulius_app::updates::UpdateRunRecord {
+                    id: "update-during-dispatch".into(),
+                    target_commit: "b".repeat(40),
+                    from_commit: None,
+                    summary: "Restart".into(),
+                    state: yulius_domain::update::RunState::Draining,
+                    outcome: None,
+                    error: None,
+                    requested_by: "u-admin".into(),
+                    created_at: now,
+                    state_since: now,
+                    finished_at: None,
+                })
+                .await?;
+            cold.restore_update_hold().await;
+            release.notify_one();
+            let obsolete = pass.await?;
+            let held = cold.watch_prs(&bounds).await;
+            assert!(
+                obsolete.is_empty() && held.is_empty(),
+                "update drain: {obsolete:?} {held:?}"
+            );
+            let ctx = yulius_app::auth::AuthContext {
+                user: cold
+                    .deps
+                    .store
+                    .user(&yulius_domain::ids::UserId::parse("u-admin")?)
+                    .await?
+                    .ok_or("fixture owner")?,
+                csrf_token: None,
+                session_hash: None,
+                token: None,
+            };
+            cold.cancel_update(&ctx).await?;
         }
         if matches!(case, ColdCandidate::ScopeDecision) {
             let (entered, release) = super::pause_watch_or_queue(super::Point::LivePrFactsRead, id);
@@ -1069,4 +1119,80 @@ async fn check_after_restart(
         return Ok(());
     }
     Err("the cold candidate case was not exercised".into())
+}
+
+#[test]
+fn an_armed_pr_without_an_ordinary_run_checks_conflicts_at_its_published_head() -> TestResult {
+    use crate::pr_watch::git;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, github) = app_with_pulls(&data, 8, 1).await?;
+        let (id, _) = answered(&app, &data).await?;
+        let task = app.deps.store.task(&id).await?.ok_or("owner")?;
+        let tree = Path::new(task.worktree_path.as_deref().ok_or("checkout")?);
+        let branch = task.branch.as_deref().ok_or("branch")?;
+        std::fs::write(tree.join("README.md"), "task change\n")?;
+        git(tree, &["commit", "-qam", "Original task change"])?;
+        git(
+            tree,
+            &["push", "-q", "origin", &format!("HEAD:refs/heads/{branch}")],
+        )?;
+        let stale = git(tree, &["rev-parse", "HEAD"])?;
+        let seed = data.join("seed");
+        std::fs::write(seed.join("README.md"), "integration change\n")?;
+        git(&seed, &["commit", "-qam", "Conflicting integration change"])?;
+        git(&seed, &["push", "-q", "origin", "HEAD:dev"])?;
+        git(tree, &["fetch", "-q", "origin"])?;
+        assert!(git(tree, &["merge-tree", "--write-tree", &stale, "origin/dev"]).is_err());
+        let clone = data.join("integration-repair");
+        let origin = data.join("origin.git");
+        git(
+            &data,
+            &[
+                "clone",
+                "-q",
+                "-b",
+                branch,
+                origin.to_str().ok_or("bare path")?,
+                clone.to_str().ok_or("repair path")?,
+            ],
+        )?;
+        git(
+            &clone,
+            &["merge", "-q", "-X", "theirs", "--no-edit", "origin/dev"],
+        )?;
+        git(&clone, &["push", "-q", "origin", branch])?;
+        let repaired = git(&clone, &["rev-parse", "HEAD"])?;
+        assert_eq!(
+            git(tree, &["rev-parse", &format!("origin/{branch}")])?,
+            stale
+        );
+        open_pull_at(&app, &github, &id, 1481, &repaired).await?;
+        app.deps
+            .store
+            .transition_delivery(
+                &DeliveryStage::None,
+                &DeliveryRecord {
+                    task_id: id.clone(),
+                    stage: DeliveryStage::PrOpen,
+                    pr_number: Some(1481),
+                    updated_at: app.now(),
+                },
+            )
+            .await?;
+        std::fs::write(
+            data.join(yulius_app::agent_wait::ARMED_MERGES_FILE),
+            serde_json::to_vec(
+                &json!([{"task":id.as_str(),"head":repaired,"summary":"reviewed","armed_at":30}]),
+            )?,
+        )?;
+        app.restore_armed_merges().await;
+        let news = app.watch_prs(&WatchBounds::default()).await;
+        app.stop_task_now(&id).await?;
+        assert!(news.is_empty(), "obsolete checkout conflict: {news:?}");
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
 }

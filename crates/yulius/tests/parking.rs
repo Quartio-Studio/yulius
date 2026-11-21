@@ -3125,7 +3125,7 @@ fn first_watch_during_queue_decision(case: QueueWatch, previously_seen: Option<u
         let task = app.deps.store.task(&id).await?.ok_or("owner")?;
         let worktree = Path::new(task.worktree_path.as_deref().ok_or("checkout")?);
         let head = crate::pr_watch::git(worktree, &["rev-parse", "HEAD"])?;
-        open_pull_at(&app, &github, &id, 1481, &head).await?;
+        open_pull_at(&app, &github, &id, previously_seen.unwrap_or(1481), &head).await?;
         let open = DeliveryRecord {
             task_id: id.clone(),
             stage: DeliveryStage::PrOpen,
@@ -3315,6 +3315,10 @@ fn first_watch_during_queue_decision(case: QueueWatch, previously_seen: Option<u
                         .transition_delivery(&DeliveryStage::PrOpen, &open)
                         .await?
                 );
+                if number != 1481 {
+                    github.pulls.lock().map_err(|_| "fixture pull")?.clear();
+                    open_pull_at(&app, &github, &id, 1481, &head).await?;
+                }
                 Some(saved[id.as_str()].clone())
             } else {
                 None

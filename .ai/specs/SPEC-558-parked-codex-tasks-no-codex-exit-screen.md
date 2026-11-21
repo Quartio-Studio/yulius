@@ -100,6 +100,8 @@ When the watcher sees an open PR during an active queue decision or its slot cha
 
 ## Evidence
 
+- All four first-review regressions passed on `b66007e4a`. Its wider run passed 429 of 430. The failing older fixture supplied a previous PR only in local delivery state, so the hosted confirmation correctly deferred its stall notice. The fixture now supplies that PR before replacing it. Two second-review regressions failed on the same head. One typed a conflict at an obsolete local tracking SHA when the hosted repaired head had no ordinary CI. The other typed into a session while a restart was draining the instance. Conflict advice now uses the armed SHA and the watcher rechecks the instance hold after verification.
+
 - The first owner-notice revision passed all 427 scoped Rust tests and Clippy. Review identified a durable scope decision, a push from another clone and a repeated check-in after candidate failure. All four review regressions failed on `46f228de8`, including an unavailable hosted PR. Armed advice now confirms the open hosted head within five seconds when a notice is due. A quiet watch uses local records. The second-clone fixture checks that the task’s tracking ref still names the failed head after the bare remote advances. No paid agent or live Quartio task is involved.
 
 - On landed dev `ec580fc3a`, 12 of 39 scoped owner-watch tests failed. Three strengthened race and identity regressions also failed. The watcher typed the old ordinary CI failure after a repair was pushed to the fixture’s bare Git remote. The fixtures reopen the SQLite database, restore the arm and run the owner’s watcher through a PTY. Changing the train’s members while it verifies the same red run leaves the prior observation unheard.
