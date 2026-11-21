@@ -355,3 +355,101 @@ test('text typed in a returned composer while an upload ends is kept with the fi
   await expect.poll(() => promptText(browser)).toBe('Words more typed');
   await expect.poll(() => attachmentNames(browser)).toEqual(['late.pdf']);
 });
+
+async function chooseDraft(screen: Screen, name: string) {
+  await screen.getByRole('button', 'Drafts').click();
+  await screen.getByRole('menuitemradio', name).click();
+}
+
+async function discardDraft(screen: Screen, confirm: boolean) {
+  await screen.getByRole('button', 'Drafts').click();
+  await screen.getByRole('menuitem', 'Discard current draft').click();
+  await screen.getByRole('dialog', 'Discard this draft?').getByRole('button', confirm ? 'Discard draft' : 'Cancel').click();
+}
+
+test('three unfinished drafts keep their own prompts, images and choices through reload and start', async ({ app, browser, screen }) => {
+  await browser.addInitScript(() => {
+    if (sessionStorage.getItem('seeded')) return;
+    sessionStorage.setItem('seeded', '1');
+    localStorage.setItem('yulius.draft.usr_1.sb_studio', JSON.stringify({ text: 'First request', mode: 'goal' }));
+  });
+  await app.open(mock('/s/studio', '&codex=1'));
+  const prompt = screen.getByRole('textbox', 'Task prompt');
+  await expect.poll(() => promptText(browser)).toBe('First request');
+  await dropImage(browser, 'design.png');
+  await expect.poll(() => storedThumbs(browser)).toBe(1);
+
+  const newDraft = screen.getByRole('button', 'New draft');
+  await newDraft.click();
+  await expect.poll(() => promptText(browser)).toBe('');
+  await expect.poll(() => attachmentNames(browser)).toEqual([]);
+  await expect(screen.getByRole('button', 'Mode: Auto mode')).toBeVisible();
+  await prompt.fill('Second request');
+  await newDraft.click();
+  await prompt.fill('Third request');
+  await leaveAndReturn(browser, screen);
+  await browser.reload();
+  await expect.poll(() => promptText(browser)).toBe('Third request');
+  await chooseDraft(screen, 'First request');
+  await expect.poll(() => promptText(browser)).toBe('First request[design.png]');
+  await expect.poll(() => attachmentNames(browser)).toEqual(['design.png']);
+  await expect(browser.locator('.composer-attachments img')).toHaveCount(1);
+  await expect(screen.getByRole('button', 'Mode: Goal')).toBeVisible();
+
+  await chooseDraft(screen, 'Third request');
+  await discardDraft(screen, false);
+  await expect.poll(() => promptText(browser)).toBe('Third request');
+  await discardDraft(screen, true);
+  await chooseDraft(screen, 'Second request');
+  await prompt.press('ControlOrMeta+Enter');
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText(/^#\d+ Second request$/);
+  await browser.locator('.btn-newtask').click();
+  await browser.reload();
+  await expect.poll(() => promptText(browser)).toBe('First request[design.png]');
+  expect(await storedDrafts(browser)).toHaveLength(1);
+});
+
+test('switching unfinished drafts keeps late uploads with their owner and discarding drops them', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  const hold = () => browser.evaluate(() => {
+    const w = window as unknown as Holding;
+    w.__yuliusMock.holdUpload = new Promise<void>((resolve) => { w.__release = resolve; });
+  });
+  const release = () => browser.evaluate(() => (window as unknown as Holding).__release!());
+  const prompt = screen.getByRole('textbox', 'Task prompt');
+  await prompt.fill('Owner');
+  await hold();
+  await drop(browser, [['late.pdf', 'pdf', 'application/pdf']]);
+  await screen.getByRole('button', 'New draft').click();
+  await prompt.fill('Another draft');
+  await release();
+  await expect.poll(() => storedDraft(browser)).toEqual({ text: 'Owner', files: ['late.pdf'] });
+  await expect.poll(() => attachmentNames(browser)).toEqual([]);
+
+  await hold();
+  await drop(browser, [['discarded.pdf', 'pdf', 'application/pdf']]);
+  await discardDraft(screen, true);
+  await release();
+  await expect.poll(() => promptText(browser)).toBe('Owner');
+  await expect.poll(() => attachmentNames(browser)).toEqual(['late.pdf']);
+  await browser.reload();
+  expect(await storedDrafts(browser)).toHaveLength(1);
+});
+
+test('a failed start preserves both unfinished drafts until sign-out', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&codex=1&failpost=/api/sandboxes/sb_studio/tasks'));
+  const prompt = screen.getByRole('textbox', 'Task prompt');
+  await prompt.fill('Other request');
+  await screen.getByRole('button', 'New draft').click();
+  await prompt.fill('Retry this request');
+  await prompt.press('ControlOrMeta+Enter');
+  await expect(screen.getByText(/^Couldn’t start the task/)).toBeVisible();
+  await chooseDraft(screen, 'Other request');
+  await chooseDraft(screen, 'Retry this request');
+  await expect.poll(() => promptText(browser)).toBe('Retry this request');
+  expect(await storedDrafts(browser)).toHaveLength(2);
+  await screen.getByRole('button', /account menu$/).click();
+  await screen.getByRole('menuitem', 'Sign out').click();
+  await expect(browser).toHaveURL(/#\/signin/);
+  expect(await storedDrafts(browser)).toEqual([]);
+});
