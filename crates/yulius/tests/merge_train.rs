@@ -1866,6 +1866,23 @@ async fn check_recovered_singleton_arm(
                 .execute_for_tests("DROP TRIGGER refuse_retirement")
                 .await?;
         }
+        if !offline {
+            let decision = live
+                .deps
+                .store
+                .latest_merge_wait(&owner)
+                .await?
+                .ok_or("decision after retry")?;
+            let detail: Value = serde_json::from_str(decision.detail.as_deref().ok_or("receipt")?)?;
+            assert!(
+                detail["superseded_at"].is_i64(),
+                "successful retry left the consumed decision current"
+            );
+            assert!(
+                saved_armed(&live, 1)?.is_none(),
+                "successful retry left its replacement on disk"
+            );
+        }
         let next = restart(&live).await;
         let decision = next
             .deps
@@ -1956,7 +1973,7 @@ async fn check_singleton_history(
         .await?;
     if matches!(change, SingletonChange::HistoryRead) {
         f.h.store.execute_for_tests(
-                "INSERT INTO spans(sandbox_id,subject_kind,subject_id,key,kind,name,started_at,detail) VALUES ('s1','task','t1','wait@1','wait','merge_armed',1,x'FF')",
+                "INSERT INTO spans(sandbox_id,subject_kind,subject_id,key,kind,name,started_at,ended_at,outcome,detail) VALUES ('s1','task','t1','wait@1','wait','merge_armed',1,2,'merged',x'FF')",
             ).await?;
     }
     if matches!(change, SingletonChange::ArmFileRead) {
