@@ -112,6 +112,9 @@ The final parking check compares the owner’s saved singleton decision with the
 
 ## Evidence
 
+- At `e740eb5db`, when the integration branch advanced during an ordinary failure read and GitHub changed the PR to behind with unknown mergeability, task detail said the PR could not be verified. The detail fixture changes those fields during both the direct read and the final branch listing. Separate parking fixtures change only the published head or only the current PR number while the candidate’s tested base stays fixed. Each repaired owner parks.
+- At `2738859c6`, the isolated merge-admission fixture returned `armed: true` after a committed park crossed into WaitingCapacity and then closed. An ordinary capacity pause accepted the same pending merge. These cases belong to the separate settlement step.
+
 - At `ee1f09933`, a person could arm a pending merge after parking won, a subscription switch set the task to Switching, and the run reader consumed the park intent. The regression received `armed: true`. A normal subscription switch accepted the same request. Both switch orders passed on the prototype at `4044de0c9`. Review identified an additional capacity pause before settlement. Merge admission through settlement has a separate plan item.
 
 - On `3eceb717f`, parking accepted a decision for a new base against the previous hosted observation. It also parked while the person's replacement merge request held the arm writer. In the opposite order the request returned `armed: true` after parking had committed its end intent. A separate parked-detail regression returned “could not be verified” for an unchanged ordinarily failing PR head after its base advanced. Each case failed before the fix. The request fixture uses a conventional PR title so it reaches merge admission.

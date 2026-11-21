@@ -24,7 +24,7 @@ fn a_replacement_arm_arriving_at_final_verification_keeps_the_original_owner_liv
 
 fn park_after_candidate(rearm: bool) -> TestResult {
     with_idle_candidate(async |data, app, remote, id, head| {
-        super::past_the_grace(&app, &id).await?;
+        super::past_the_grace(app, &id).await?;
         if rearm {
             let path = data.join(yulius_app::agent_wait::ARMED_MERGES_FILE);
             let db_path = data.join("yulius.db");
@@ -68,6 +68,51 @@ fn park_after_candidate(rearm: bool) -> TestResult {
             super::parked(app, &id).await?;
         }
         Ok(())
+    })
+}
+
+#[test]
+fn a_published_repair_on_the_same_base_releases_the_candidate_owner() -> TestResult {
+    with_idle_candidate(async |_, app, remote, id, _| {
+        let task = app.deps.store.task(&id).await?.ok_or("task")?;
+        let tree = Path::new(task.worktree_path.as_deref().ok_or("checkout")?);
+        crate::pr_watch::git(tree, &["commit", "--allow-empty", "-qm", "Repair latency"])?;
+        let head = crate::pr_watch::git(tree, &["rev-parse", "HEAD"])?;
+        let branch = task.branch.as_deref().ok_or("task branch")?;
+        crate::pr_watch::git(
+            tree,
+            &["push", "-q", "origin", &format!("HEAD:refs/heads/{branch}")],
+        )?;
+        set_pull_head(remote, 1481, &head)?;
+        remote.set_checks(&head, ChecksState::Success);
+        let (mut run, job) = crate::pr_watch::run(
+            &task.sandbox_id,
+            "repair-green",
+            &head,
+            RunState::Passed,
+            None,
+            app.now().0,
+        );
+        run.reference = CiRef::PullRequest(1481);
+        app.deps.store.insert_ci_run(&run, &[job]).await?;
+        super::parked(app, &id).await
+    })
+}
+
+#[test]
+fn a_new_pr_on_the_same_head_and_base_releases_the_candidate_owner() -> TestResult {
+    with_idle_candidate(async |_, app, remote, id, _| {
+        let mut current = app.deps.store.delivery(&id).await?.ok_or("delivery")?;
+        current.pr_number = Some(1482);
+        current.updated_at = app.now();
+        assert!(
+            app.deps
+                .store
+                .transition_delivery(&DeliveryStage::PrOpen, &current)
+                .await?
+        );
+        remote.pulls.lock().map_err(|_| "pulls")?[0].number = 1482;
+        super::parked(app, &id).await
     })
 }
 

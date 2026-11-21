@@ -115,6 +115,8 @@ impl PrVerification {
 /// Identity to show even when the checks are unfinished or unreadable.
 #[derive(Default)]
 pub(crate) struct ParkedPullRead {
+    /// The open PR whose failing ordinary checks were read, through the final branch lookup.
+    failed_pull: Option<GhPull>,
     pub(crate) signal: Option<PullSignal>,
     pub(crate) pr: Option<yulius_contracts::api::tasks::ParkedPr>,
 }
@@ -144,7 +146,10 @@ impl ParkedPullRead {
                 .filter(|_| open || past_merge(&r.stage))
                 .map(|number| yulius_contracts::api::tasks::ParkedPr { number, open })
         });
-        Self { pr, signal: None }
+        Self {
+            pr,
+            ..Self::default()
+        }
     }
 }
 
@@ -774,14 +779,19 @@ fn pull_facts(pull: &GhPull) -> PullFacts<'_> {
     }
 }
 
-/// The eligibility fields from two observations of the same open pull.
-fn same_open_pull(before: &GhPull, after: &GhPull) -> bool {
+/// The hosted identity to which ordinary commit checks belong.
+fn same_open_head(before: &GhPull, after: &GhPull) -> bool {
     is_open(after)
         && before.number == after.number
         && before.head_sha == after.head_sha
         && before.head == after.head
         && before.from_fork == after.from_fork
         && before.base == after.base
+}
+
+/// Mergeability and lag must also agree for eligibility decisions.
+fn same_open_pull(before: &GhPull, after: &GhPull) -> bool {
+    same_open_head(before, after)
         && before.mergeable == after.mergeable
         && before.behind == after.behind
 }
@@ -4389,6 +4399,15 @@ impl App {
         if purpose != PrVerification::Display {
             return Ok((current == branch).then_some(facts));
         }
+        if let Some(failed) = observed.failed_pull.take() {
+            let listed = current.iter().find(|pull| pull.number == failed.number);
+            let independent = tracked == Some(failed.number)
+                && branch.iter().all(|pull| pull.number != failed.number);
+            if listed.map_or(independent, |pull| same_open_head(&failed, pull)) {
+                return Ok(None);
+            }
+            observed.signal = None;
+        }
         // A title edit carries no eligibility evidence. Changes in membership,
         // head, base or mergeability do. Prefer a directly confirmed blocker
         // that still has the same facts over a newly listed, unchecked PR.
@@ -4570,7 +4589,7 @@ impl App {
             }
             let current = read().await?;
             observed.note_closed(&current);
-            if same_open_pull(&pull, &current) {
+            if current.number == number && same_open_head(&pull, &current) {
                 let own = self
                     .parking_ci_signal(task, number, &pull.head_sha, None)
                     .await?;
@@ -4580,11 +4599,19 @@ impl App {
                     _ if unreadable => Some(PullSignal::Errored),
                     _ => PullSignal::from_wire("open", checks, false),
                 };
-                observed.signal = if external == Some(PullSignal::Failing) {
+                let signal = if external == Some(PullSignal::Failing) {
                     external
                 } else {
                     own.or(external)
                 };
+                if signal == Some(PullSignal::Failing) {
+                    observed.signal = signal;
+                    observed.failed_pull = Some(current);
+                    return Ok(None);
+                }
+                if same_open_pull(&pull, &current) {
+                    observed.signal = signal;
+                }
             }
             return Ok(current.merged.then_some(current));
         }

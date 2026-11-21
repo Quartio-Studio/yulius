@@ -173,6 +173,7 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # A failing ordinary PR run, unreadable check or unpublished repair keeps its author live.
 # A failed integration candidate keeps the author live while its PR head and tested base match.
 # A change to the saved merge decision during verification also keeps the session live.
+# A parked PR still shows its failing ordinary checks if its head is unchanged as the base advances.
 # A failed single-PR merge candidate names its source run, failing job and a redacted
 # excerpt or its recorded configuration error. The queue verifies the current PR head and integration base.
 # If it cannot verify them, read ordinary CI at that head or safely read the failing job,
