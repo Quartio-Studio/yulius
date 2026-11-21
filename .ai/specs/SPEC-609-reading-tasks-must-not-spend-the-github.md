@@ -37,6 +37,7 @@ The hour ending at the warning and GitHub's quota window also differ. If the rep
 - [x] Attribute hourly requests and reserve capacity for delivery
 - [x] Serve budget evidence in instance status and the Status panel
 - [x] Persist confirmed reopenings across a restart before any display read
+- [ ] Keep fresh prerequisite verification when scheduling after all tasks
 - [ ] Verify the behavior, obtain independent review and deliver to dev
 
 ## Acceptance criteria

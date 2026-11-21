@@ -10975,14 +10975,13 @@ async fn reconciliation_enriches_a_terminal_pull_missing_its_merge_commit() -> T
     Ok(())
 }
 
-#[tokio::test]
-async fn a_reopened_followup_survives_restart_without_replacing_the_merged_delivery() -> TestResult
-{
-    use std::sync::atomic::Ordering;
+async fn parked_primary_with_external_followup()
+-> BoxResult<(Fixture, TaskId, yulius_app::auth::AuthContext, String)> {
     let (f, wt, head) =
         merged_task_with(Box::new(|config| config.parked_pr_read_ms = 10_000)).await?;
     std::fs::write(wt.join(SPEC_PATH), finished_spec("t1"))?;
     let id = TaskId::parse("t1")?;
+    f.h.store.set_spec_status(&id, Some("done")).await?;
     f.h.store
         .transition_task(
             &id,
@@ -10997,6 +10996,7 @@ async fn a_reopened_followup_survives_restart_without_replacing_the_merged_deliv
             .authenticate_bearer(f.bob.bearer.as_deref().ok_or("token")?)
             .await?
             .ok_or("owner")?;
+    assert!(f.h.store.terminal_pull(&id, Some(1)).await?.is_some());
     {
         let mut pulls = f.h.github.pulls.lock().map_err(|_| "pull fixture")?;
         let followup = yulius_app::ports::github::GhPull {
@@ -11008,6 +11008,14 @@ async fn a_reopened_followup_survives_restart_without_replacing_the_merged_deliv
         };
         pulls.push(followup);
     }
+    Ok((f, id, owner, head))
+}
+
+#[tokio::test]
+async fn a_reopened_followup_survives_restart_without_replacing_the_merged_delivery() -> TestResult
+{
+    use std::sync::atomic::Ordering;
+    let (f, id, owner, head) = parked_primary_with_external_followup().await?;
     f.h.app.reconcile_deliveries().await;
     edit_pull(&f, 2, |p| p.state = "closed".into());
     f.h.app.reconcile_deliveries().await;
@@ -11037,5 +11045,28 @@ async fn a_reopened_followup_survives_restart_without_replacing_the_merged_deliv
     edit_pull(&f, 2, |p| p.state = "closed".into());
     cold.reconcile_deliveries().await;
     assert!(f.h.store.terminal_pull(&id, Some(2)).await?.is_some());
+    Ok(())
+}
+
+#[tokio::test]
+async fn after_all_tasks_includes_a_new_failing_followup_before_discovery() -> TestResult {
+    let (f, task, owner, head) = parked_primary_with_external_followup().await?;
+    support::exhausted_subscription(&f.h).await?;
+    let predecessor = f.h.store.task(&task).await?.ok_or("predecessor")?;
+    let caller = crate::task_message::superagent(&predecessor.sandbox_id, &owner.user.id, "bob");
+    f.h.github.set_checks(&head, ChecksState::Failure);
+    let created =
+        f.h.app
+            .tool_task_create(
+                &caller,
+                &json!({
+                    "prompt":"Wait for the follow-up", "harness":"claude", "after_all_tasks":true
+                }),
+            )
+            .await?;
+    assert_eq!(
+        created["task"]["start_rule"],
+        format!("#{} done", predecessor.number)
+    );
     Ok(())
 }

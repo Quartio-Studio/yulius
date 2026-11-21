@@ -4730,10 +4730,19 @@ impl App {
             read.listed(&branch, &closed);
         }
         // The numbered PR can be current while a cached or paginated branch list omits it.
-        let known_open = observed
+        let known_open = match observed
             .pr
             .filter(|pr| purpose == PrVerification::Display && pr.open)
-            .map(|pr| pr.number);
+        {
+            Some(pr)
+                if Some(pr.number) == tracked
+                    || branch.iter().any(|p| p.number == pr.number)
+                    || self.deps.store.open_followup(&task.id).await? == Some(pr.number) =>
+            {
+                Some(pr.number)
+            }
+            _ => None,
+        };
         if known_open.is_none() {
             *observed = ParkedPullRead::recorded(record);
         }
