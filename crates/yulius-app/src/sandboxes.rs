@@ -373,7 +373,7 @@ impl App {
                 let requested = requests
                     .get_or_init(|| self.browser_requests(&task.sandbox_id))
                     .await;
-                self.task_group(task, requested).await?
+                self.task_attention_facts(task, requested).await?.group()
             };
             groups.push(group);
         }

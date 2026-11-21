@@ -1199,18 +1199,19 @@ impl App {
                 if person_must_act {
                     return observed_only();
                 }
-                let Some(pull) = self.hosted_owner_pull(task, &sandbox, pr).await else {
+                let Ok(pull) = self.read_notice_pull(&sandbox, pr).await else {
+                    self.cache_candidate_observation(task, span, true);
                     return observed_only();
                 };
-                if pull.base_sha.is_empty() {
-                    return observed_only();
-                }
                 self.cache_candidate_observation(
                     task,
                     span.clone(),
                     self.candidate_pull_signal(task, &sandbox, &decision, &pull)
                         .is_some(),
                 );
+                if !self.notice_pull_owned(task, &sandbox, pr, &pull) || pull.base_sha.is_empty() {
+                    return observed_only();
+                }
                 receipt = Some((span, decision, pull));
             }
         }

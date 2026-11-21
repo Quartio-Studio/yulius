@@ -721,6 +721,7 @@ impl App {
                     parked.remove(&task.id),
                     Some(&requested),
                     sync_wait,
+                    false,
                 )
                 .await?;
             out.push(summary);
@@ -738,6 +739,7 @@ impl App {
         mut status: Option<crate::sandboxes::ParkedStatus>,
         requested: Option<&std::collections::HashSet<String>>,
         sync_wait: bool,
+        verify_candidate: bool,
     ) -> AppResult<(TaskSummary, Vec<StepRecord>)> {
         let steps = match status.as_mut().and_then(|read| read.steps.take()) {
             Some(snapshot) => snapshot,
@@ -746,7 +748,7 @@ impl App {
         // Defer `sync_wait_message` until after `parked_needs_you` is settled so a parked task
         // whose PR is already green/merged does not record a phantom `parked:resume` history row.
         let mut summary = self
-            .task_summary_with(task, project, &steps, requested, false, true)
+            .task_summary_with(task, project, &steps, requested, false, verify_candidate)
             .await?;
         if let Some(read) = status {
             let mut effective = read.facts;
@@ -803,7 +805,7 @@ impl App {
             None
         };
         let (mut summary, steps) = self
-            .display_summary(&task, None, parked, None, true)
+            .display_summary(&task, None, parked, None, true, true)
             .await?;
         // Subscription emails are for administrators (UI-022, SPEC-244 SUB-005).
         let admin = ctx.user.is_superadmin || ctx.user.is_instance_admin;

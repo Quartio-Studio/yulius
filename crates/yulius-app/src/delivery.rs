@@ -4722,6 +4722,35 @@ impl App {
     /// DON-001), and Yulius has no news of that pull request left for its agent
     /// ([`App::pr_news_due`]). Anything unknown (no pull request, GitHub unreachable) is not Done.
     pub(crate) async fn task_is_done(&self, task: &TaskRecord) -> bool {
+        if !self.task_done_at_read(task).await {
+            return false;
+        }
+        if task.status != yulius_domain::task::TaskStatus::Running {
+            return true;
+        }
+        // Hosted checks can outlast a new turn, queue decision or merge request.
+        // Only a still-idle owner can release a successor on this observation.
+        let store = &self.deps.store;
+        if !matches!(store.task(&task.id).await, Ok(Some(now)) if
+            now.status == task.status && now.activity == task.activity &&
+            now.archived_at == task.archived_at && now.branch == task.branch && now.worktree_path == task.worktree_path)
+        {
+            return false;
+        }
+        let Ok(record) = store.delivery(&task.id).await else {
+            return false;
+        };
+        if let Some(pr) = record
+            .filter(|r| r.stage == DeliveryStage::PrOpen)
+            .and_then(|r| r.pr_number)
+            && self.local_candidate_blocks(task, pr).await.unwrap_or(true)
+        {
+            return false;
+        }
+        !self.merge_is_armed(&task.id)
+    }
+
+    async fn task_done_at_read(&self, task: &TaskRecord) -> bool {
         use yulius_domain::task::{Activity, TaskStatus};
         let running = task.status == TaskStatus::Running;
         // A parked task is an idle run whose session went to sleep (SPEC-512 PRK-004): nothing of

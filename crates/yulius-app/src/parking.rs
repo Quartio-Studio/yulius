@@ -412,16 +412,20 @@ impl App {
             return self.goal_unfinished(&task.id);
         }
         match self.deps.store.attempts(&task.id).await {
-            Ok(runs) => runs.last().is_some_and(|run| {
-                let dir = std::path::Path::new(&run.run_dir);
-                match std::fs::symlink_metadata(dir.join(GOAL_UNFINISHED_MARK)) {
-                    Ok(_) => true,
-                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                        !std::fs::metadata(dir).is_ok_and(|meta| meta.is_dir())
+            Ok(runs) => runs
+                .iter()
+                .rev()
+                .find(|run| !removed_before_spawn(run))
+                .is_some_and(|run| {
+                    let dir = std::path::Path::new(&run.run_dir);
+                    match std::fs::symlink_metadata(dir.join(GOAL_UNFINISHED_MARK)) {
+                        Ok(_) => true,
+                        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                            !std::fs::metadata(dir).is_ok_and(|meta| meta.is_dir())
+                        }
+                        Err(_) => true,
                     }
-                    Err(_) => true,
-                }
-            }),
+                }),
             Err(_) => true,
         }
     }

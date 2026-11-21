@@ -1916,7 +1916,17 @@ impl App {
                     return Ok(false);
                 }
             }
-            let guard = self.supervisor.launch.lock().await;
+            let candidate_wake = notice.is_some_and(crate::pr_watch::ParkedNotice::is_candidate);
+            let guard = if candidate_wake {
+                // A wait behind another launch can outlive the hosted observation.
+                // Defer the wake; the next pass will read the owner and PR again.
+                let Ok(guard) = self.supervisor.launch.try_lock() else {
+                    return Ok(false);
+                };
+                guard
+            } else {
+                self.supervisor.launch.lock().await
+            };
             let task = self
                 .deps
                 .store
@@ -1949,7 +1959,6 @@ impl App {
             // While an update pauses the tasks, starts queue like at the session limit and run
             // once it is over (SPEC-002 ADR-18).
             let full = held || live >= self.max_live_sessions() || self.update_holds_starts();
-            let candidate_wake = notice.is_some_and(crate::pr_watch::ParkedNotice::is_candidate);
             let placement = if candidate_wake {
                 if full {
                     return Ok(false);
