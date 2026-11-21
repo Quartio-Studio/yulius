@@ -417,7 +417,8 @@ pub fn pool_tokens(runs: &[TokenRun], now: Timestamp, days: usize) -> PoolTokens
         let premium = rates
             .and_then(|(_, tier)| tier)
             .zip(cost)
-            .map(|(tier, cost)| cost * (tier.multiplier(now) - 1.0));
+            .map(|(tier, cost)| cost * (tier.multiplier(now) - 1.0))
+            .filter(|premium| *premium > 0.0);
         if cost.is_none() {
             out.unpriced_runs = out.unpriced_runs.saturating_add(1);
         }
@@ -704,6 +705,16 @@ mod tests {
         assert!(close(pool.per_day[5].cost_usd, 0.4 * 24.2));
         assert_eq!(pool.per_day[3].cost(), Some(0.0));
         assert_eq!((pool.unknown_usage_runs, pool.unpriced_runs), (0, 0));
+    }
+
+    #[test]
+    fn an_eligible_run_with_zero_tokens_adds_no_ultrafast_scenario() {
+        let runs = [
+            token_run(-2, Some(-1), "gpt-6.2-astra", 0),
+            token_run(-2, Some(-1), "gpt-6-luna", 1_000_000),
+        ];
+        let pool = pool_tokens(&runs, NOW, 7);
+        assert_eq!(pool.ultrafast_premium_usd, None);
     }
 
     #[test]

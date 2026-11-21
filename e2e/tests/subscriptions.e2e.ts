@@ -919,6 +919,7 @@ test('an unknown cost reads as unknown, never as $0 (unit, in the page)', async 
   expect(text).toContain('last 24 h: —');
   expect(text).not.toContain('$0.00');
   expect(text).not.toContain('Ultrafast');
+  expect(text).toContain('Separate Codex subagent sessions excluded');
 });
 
 test('the weekly estimate identifies the Ultrafast scenario and omitted runs', async ({ app, browser }) => {
