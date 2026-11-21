@@ -1893,3 +1893,64 @@ test('a failed parked watch preserves PR discovery, resume and archive from an e
   });
   expect(seen).toEqual([['parked', 'parked', 42, true], ['running', 'running', null, false], ['closed', null, null, null]]);
 });
+
+test('a failed watch protects a newly discovered park when another parked task already used the watch', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const groups = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const live = { id: 'p', sandbox_id: 's', status: 'running', activity: 'done' };
+    const parked = { ...live, status: 'parked', parked_needs_you: false, parked_pr: { number: 42, open: true } };
+    const peer = { ...parked, id: 'peer' };
+    const seen = [];
+    for (const competingList of [false, true]) {
+      let fail = false, hold = false;
+      const gate = Promise.withResolvers<void>();
+      const store = createStore({ get: async () => {
+        if (fail) throw new Error('status unavailable');
+        if (hold) await gate.promise;
+        return [live, peer];
+      } });
+      await store.loadTasks('s');
+      hold = true;
+      const competing = competingList ? store.loadTasks('s') : Promise.resolve();
+      const olderDetail = store.beginParkedDetail();
+      fail = true;
+      await store.loadTasks('s', true);
+      gate.resolve();
+      await competing;
+      const conservative = olderDetail(parked);
+      const waiting = store.findTask('p');
+      const verified = store.beginParkedDetail()(parked);
+      seen.push([conservative.parked_needs_you, waiting.parked_needs_you, waiting.parked_pr?.number, verified.parked_needs_you]);
+    }
+    return seen;
+  });
+  expect(groups).toEqual([[true, true, 42, false], [true, true, 42, false]]);
+});
+
+test('an older parked update stays conservative after the watch and list confirmation both fail', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const states = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const row = { id: 'p', sandbox_id: 's', status: 'parked', activity: 'done', parked_needs_you: false, parked_pr: { number: 42, open: true } };
+    const gate = Promise.withResolvers<void>();
+    let reads = 0;
+    const store = createStore({ get: async () => {
+      if (++reads === 1) return [row];
+      if (reads === 2) { await gate.promise; return [row]; }
+      throw new Error('verification unavailable');
+    } });
+    await store.loadTasks('s');
+    const heldList = store.loadTasks('s');
+    store.upsertTask({ ...row, title: 'Renamed before the watch' });
+    await store.loadTasks('s', true);
+    const before = store.findTask('p').parked_needs_you;
+    gate.resolve();
+    await heldList;
+    const after = store.findTask('p');
+    return [before, after.parked_needs_you, after.title, reads];
+  });
+  expect(states).toEqual([true, true, 'Renamed before the watch', 4]);
+});

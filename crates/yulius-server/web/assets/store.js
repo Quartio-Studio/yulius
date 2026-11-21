@@ -133,6 +133,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   // snapshot even when the other request fails.
   let nextListRead = 0;
   const listOrder = new WeakMap();
+  const failedWatchOrder = new WeakMap();
   const rowOrder = new WeakMap();
   const overviewOrder = new WeakMap();
 
@@ -168,8 +169,10 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       const current = state.tasks.get(sandboxId);
       if (listOrder.get(current) > snapshotOrder) return current;
       const missedChange = pullWatch.get(sandboxId)?.changeBeforeParkedRows > snapshotOrder;
-      const failureOrder = Math.max(read.failedWatchOrder, pullWatch.get(sandboxId)?.changeBeforeParkedRows ?? 0);
+      const watchFailure = Math.max(read.failedWatchOrder, failedWatchOrder.get(current) ?? 0);
+      const failureOrder = Math.max(watchFailure, pullWatch.get(sandboxId)?.changeBeforeParkedRows ?? 0);
       const map = new Map();
+      if (watchFailure > snapshotOrder) failedWatchOrder.set(map, watchFailure);
       for (const task of Array.isArray(list) ? list : []) {
         if (task.archived) continue;
         map.set(task.id, orderedListRow(task, current?.get(task.id), snapshotOrder, failureOrder));
@@ -184,7 +187,9 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
         const prior = current?.get(id);
         // A detail can supersede an event after the list saved it for replay.
         const latest = rowOrder.get(prior) > Math.max(snapshotOrder, rowOrder.get(task) ?? 0) ? prior : task;
-        map.set(id, unverified.has(latest) ? awaitingVerification(latest, listed) : latest);
+        const fallbackOrder = Math.max(failureOrder, unverified.get(latest) ?? 0);
+        const uncertain = latest.status === 'parked' && fallbackOrder >= rowOrder.get(latest);
+        map.set(id, uncertain ? awaitingVerification(latest, listed ?? prior, fallbackOrder) : latest);
       }
       for (const id of read.deleted) map.delete(id);
       state.taskErrors.delete(sandboxId);
@@ -216,6 +221,9 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       const current = state.tasks.get(sandboxId);
       if (listOrder.get(current) > order) return current;
       if (watching) {
+        // The failed read covered the sandbox, including tasks whose park
+        // this tab has yet to discover through an outstanding detail.
+        if (current) failedWatchOrder.set(current, Math.max(order, failedWatchOrder.get(current) ?? 0));
         for (const older of activeLists) {
           if (older.sandboxId === sandboxId && older.order < order) older.failedWatchOrder = Math.max(older.failedWatchOrder, order);
         }
@@ -291,7 +299,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       const hintOrder = pullWatch.get(detail.sandbox_id)?.changeBeforeParkedRows ?? 0;
       const missedChange = updated.status === 'parked' && hintOrder > order;
       const verifyDiscovered = missedChange && !hasParkedRows(map);
-      const fallbackOrder = Math.max(hintOrder, unverified.get(row) ?? 0);
+      const fallbackOrder = Math.max(hintOrder, unverified.get(row) ?? 0, failedWatchOrder.get(map) ?? 0);
       // A failed watch has no lifecycle or PR facts. Use the detail, preserving
       // the later failure's conservative group for a task that is still parked.
       if (detail.status === 'parked' && (fallbackOrder > order || typeof detail.parked_needs_you !== 'boolean')) {
