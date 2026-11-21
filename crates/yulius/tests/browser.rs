@@ -1310,6 +1310,68 @@ async fn a_production_secret_is_never_typed_into_a_page() -> TestResult {
 }
 
 #[tokio::test]
+async fn goal_stop_observes_the_browser_action_for_its_own_task() -> TestResult {
+    with_fixture(|f| async move {
+        let mut task = f.h.store.task(&TaskId::parse("t1")?).await?.ok_or("task")?;
+        task.id = TaskId::parse("browser-goal")?;
+        task.mode = yulius_app::model::TaskMode::Goal;
+        task.activity = Some(Activity::Working);
+        let task = f.h.store.insert_task(&task).await?;
+        let token = "fixture-browser-goal";
+        seed_live_attempt(&f.h, task.id.as_str(), token).await?;
+        let ctx = f.h.app.agent_context(token).await?;
+        f.h.app
+            .tool_steps_set(
+                &ctx,
+                &json!({"steps":[{"title":"Verify dev","status":"in_progress"}]}),
+            )
+            .await?;
+        let opened = mcp_tool(
+            &f.h,
+            token,
+            "browser_open",
+            json!({"url":"https://fixture.test"}),
+        )
+        .await?;
+        assert_eq!(opened["isError"], false, "{opened}");
+        let browser =
+            f.h.app
+                .deps
+                .browser
+                .running(&task.sandbox_id)
+                .await
+                .ok_or("browser")?;
+        let tab = browser.tabs().first().ok_or("tab")?.id.clone();
+        // The live tab already owns a human action before the task activity has caught up.
+        browser.request_user_action(&tab, "Sign in to the test account", Some(&task.id))?;
+        let input = yulius_contracts::hooks::HookInput::default();
+        let stop = || f.h.app.hook_event(token, "claude", "Stop", &input, None);
+        let yulius_app::hooks::HookReply::Output(held) = stop().await? else {
+            return Err("capacity hold".into());
+        };
+        assert!(held.decision.is_none());
+        assert!(browser.clear_action(&tab));
+        browser.request_user_action(
+            &tab,
+            "Sign in for a different task",
+            Some(&TaskId::parse("t1")?),
+        )?;
+        let yulius_app::hooks::HookReply::Output(resumed) = stop().await? else {
+            return Err("capacity hold".into());
+        };
+        assert_eq!(resumed.decision.as_deref(), Some("block"));
+        assert!(
+            resumed
+                .reason
+                .as_deref()
+                .is_some_and(|r| r.contains("Verify dev"))
+        );
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
 async fn user_action_requests_mark_the_task_notify_viewers_and_return_a_link() -> TestResult {
     with_fixture(|f| async move {
         let served = serve(f.h.router.clone()).await?;

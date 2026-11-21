@@ -573,7 +573,7 @@ impl App {
     }
 
     pub(crate) async fn publish_steps(&self, task: &TaskRecord) {
-        if crate::hooks::defer_stop_update(&task.id, true) {
+        if crate::hooks::defer_task_update(&task.id, true) {
             return;
         }
         self.events.publish(

@@ -10,7 +10,7 @@ An owner who gave an agent a goal had to type “continue” when it reached pos
 
 ## Decision
 
-The shared Stop hook returns a continuation to a goal task with actionable declared work. It names the open step, or directs the agent to finish its unfinished spec. An explicit human handoff, native goal evaluation, background work and a delivery wake keep their existing turn ownership. Only pending or in-progress steps are actionable. A blocked-only plan shows the recorded dependency. The durable gate counter follows the work across capacity holds and subscription moves. Completing an open step restores the budget. After live observations finish, Stop reads the plan and retry count under the plan writers’ lock. Viewers receive the resulting activity once the continuation decision is recorded. The agent records verification and completes the step through the normal task tools.
+The shared Stop hook returns a continuation to a goal task with actionable declared work. It names the open step, or directs the agent to finish its unfinished spec. An explicit human handoff, native goal evaluation, background work and a delivery wake keep their existing turn ownership. Only pending or in-progress steps are actionable. A blocked-only plan shows the recorded dependency. The durable gate counter follows the work across capacity holds and subscription moves. Completing an open step restores the budget. After live observations finish, Stop reads the plan and retry count under the plan writers’ lock. Plan writers release the lock before publishing to viewers. Viewers receive the resulting activity once the continuation decision is recorded. The agent records verification and completes the step through the normal task tools.
 
 ## Alternatives
 

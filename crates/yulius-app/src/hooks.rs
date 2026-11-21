@@ -36,19 +36,19 @@ tokio::task_local! {
     pub(crate) static STOP_BROWSER_DEADLINE: tokio::time::Instant;
 }
 
-struct StopUpdates {
+struct TaskUpdates {
     task: yulius_domain::ids::TaskId,
     changed: std::cell::Cell<bool>,
     steps_changed: std::cell::Cell<bool>,
 }
 
 tokio::task_local! {
-    /// Task and plan updates from a Stop are published after it has recorded who acts next.
-    static STOP_UPDATE: StopUpdates;
+    /// Task and plan updates are published together after their writer releases the plan lock.
+    static TASK_UPDATES: TaskUpdates;
 }
 
-pub(crate) fn defer_stop_update(task: &yulius_domain::ids::TaskId, steps: bool) -> bool {
-    STOP_UPDATE
+pub(crate) fn defer_task_update(task: &yulius_domain::ids::TaskId, steps: bool) -> bool {
+    TASK_UPDATES
         .try_with(|update| {
             if &update.task != task {
                 return false;
@@ -276,27 +276,11 @@ impl App {
                 if ctx.task.mode != TaskMode::Goal {
                     return self.answer_hook(&ctx, event, input, sent, input_seq).await;
                 }
-                let (reply, changed, steps_changed) = STOP_UPDATE
-                    .scope(
-                        StopUpdates {
-                            task: ctx.task.id.clone(),
-                            changed: Default::default(),
-                            steps_changed: Default::default(),
-                        },
-                        async {
-                            let reply = self.answer_hook(&ctx, event, input, sent, input_seq).await;
-                            STOP_UPDATE.with(|update| {
-                                (reply, update.changed.get(), update.steps_changed.get())
-                            })
-                        },
-                    )
-                    .await;
-                if steps_changed {
-                    self.publish_steps(&ctx.task).await;
-                } else if changed {
-                    self.publish_task(&ctx.task.id).await;
-                }
-                reply
+                self.publish_after_updates(
+                    &ctx.task,
+                    self.answer_hook(&ctx, event, input, sent, input_seq),
+                )
+                .await
             })
             .await;
         // Only the live run's answers count: a late one of a run a switch ended is not this
@@ -324,6 +308,37 @@ impl App {
             self.settle_unanswered_turn(&ctx.task.id, record_ms).await;
         }
         reply
+    }
+
+    /// Gather same-task updates until the operation finishes. A spec watcher releases
+    /// its plan lock before building the task view, including its live browser lookup.
+    /// When Stop owns the outer operation it publishes the final continuation decision.
+    async fn publish_after_updates<T>(
+        &self,
+        task: &TaskRecord,
+        work: impl std::future::Future<Output = T>,
+    ) -> T {
+        let (result, changed, steps_changed) = TASK_UPDATES
+            .scope(
+                TaskUpdates {
+                    task: task.id.clone(),
+                    changed: Default::default(),
+                    steps_changed: Default::default(),
+                },
+                async {
+                    let result = work.await;
+                    TASK_UPDATES.with(|updates| {
+                        (result, updates.changed.get(), updates.steps_changed.get())
+                    })
+                },
+            )
+            .await;
+        if steps_changed {
+            self.publish_steps(task).await;
+        } else if changed {
+            self.publish_task(&task.id).await;
+        }
+        result
     }
 
     async fn submit_origin(
@@ -1021,10 +1036,10 @@ impl App {
         let task = store.task(&ctx.task.id).await?.ok_or(AppError::NotFound)?;
         if task.gate_blocks != 0
             && !(task.mode == TaskMode::Goal
-                && input
-                    .prompt
-                    .as_deref()
-                    .is_some_and(|prompt| prompt.starts_with(GOAL_CONTINUATION)))
+                && input.prompt.as_deref().is_some_and(|prompt| {
+                    prompt.starts_with(GOAL_CONTINUATION)
+                        || prompt == crate::moves::RESUME_WORKING_TURN
+                }))
         {
             let update = TaskFieldUpdate {
                 gate_blocks: Some(0),
@@ -1829,6 +1844,11 @@ impl App {
     /// # Errors
     /// Store failures.
     pub async fn sync_steps_from_spec(&self, task: &TaskRecord) -> AppResult<bool> {
+        self.publish_after_updates(task, self.sync_spec_plan(task))
+            .await
+    }
+
+    async fn sync_spec_plan(&self, task: &TaskRecord) -> AppResult<bool> {
         let (Some(worktree), Some(spec_path)) =
             (task.worktree_path.as_ref(), task.spec_path.as_ref())
         else {
