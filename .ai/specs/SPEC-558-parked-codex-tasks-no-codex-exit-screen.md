@@ -99,6 +99,8 @@ When the watcher sees an open PR during an unresolved arm decision, it supplies 
 
 ## Evidence
 
+- On the dev baseline `e8759b018`, both first-watch cases sent an immediate check-in. Review of `e19864e43` found that deferring an already observed PR discarded its progress fingerprint. The retry regression reproduced a disappearing stall and a reset deadline with the same arm and CI run. The replacement-PR control verifies that its new clock and progress belong to the new PR.
+
 - On the reviewed queue prototype `1b2442c29`, both new regressions reproduced a lost merge. The first watch ran while arm restoration was incomplete or while the queue held the arm for a decision. It typed nothing and forgot the open PR. The regressions require one notice at the original task when the delivery record advances to merged between passes. The broader ordinary-CI and train-status changes remain in the next plan item.
 - PR #1566 landed on dev at `1d97b363c`. Its exact head `d5e330a97` passed Yulius CI `69ec975a-f1ec-4f47-adb4-a24d56a29607` including quality, both Rust shards and browser e2e. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/1d97b363cf2012a58af48c780093f85caf498688)
 - The two final #1566 mutation runs each listed eight mutations. The ordinary HTTP repair caught three with five unviable (341 s). The guarded receipt repair caught four with four unviable (370 s). Neither missed or timed out. Separate application of the remaining earlier mutations made the person’s retry and the replacement’s completed wait regressions fail.

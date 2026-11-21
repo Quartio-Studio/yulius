@@ -1040,6 +1040,11 @@ impl App {
             return Some(PrFacts {
                 pr,
                 now_ms,
+                progress: if told.pr == pr {
+                    told.progress.clone()
+                } else {
+                    String::new()
+                },
                 ..PrFacts::default()
             });
         }

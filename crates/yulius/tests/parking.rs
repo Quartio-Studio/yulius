@@ -3020,15 +3020,25 @@ fn a_cold_parked_summary_reads_historical_spec_and_goal_evidence() -> TestResult
 
 #[test]
 fn a_first_pr_watch_during_arm_restoration_remembers_the_merge() -> TestResult {
-    first_watch_during_queue_decision(false)
+    first_watch_during_queue_decision(false, None)
 }
 
 #[test]
 fn a_first_pr_watch_during_an_active_queue_decision_remembers_the_merge() -> TestResult {
-    first_watch_during_queue_decision(true)
+    first_watch_during_queue_decision(true, None)
 }
 
-fn first_watch_during_queue_decision(active: bool) -> TestResult {
+#[test]
+fn a_queue_retry_keeps_the_already_observed_prs_stall_deadline() -> TestResult {
+    first_watch_during_queue_decision(true, Some(1481))
+}
+
+#[test]
+fn a_first_deferred_watch_of_a_replacement_pr_clears_the_previous_stall() -> TestResult {
+    first_watch_during_queue_decision(true, Some(1480))
+}
+
+fn first_watch_during_queue_decision(active: bool, previously_seen: Option<u64>) -> TestResult {
     use yulius_app::delivery::DeliveryRecord;
     use yulius_app::pr_watch::WatchBounds;
     use yulius_domain::delivery::DeliveryStage;
@@ -3054,6 +3064,7 @@ fn first_watch_during_queue_decision(active: bool) -> TestResult {
             stall_after_ms: 0,
         };
         let arms = data.join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+        let notices = data.join(yulius_app::pr_watch::PR_NOTICES_FILE);
         if active {
             std::fs::write(
                 &arms,
@@ -3062,6 +3073,43 @@ fn first_watch_during_queue_decision(active: bool) -> TestResult {
                 )?,
             )?;
             app.restore_armed_merges().await;
+            let prior = if let Some(number) = previously_seen {
+                let old = DeliveryRecord {
+                    pr_number: Some(number),
+                    ..open.clone()
+                };
+                assert!(
+                    app.deps
+                        .store
+                        .transition_delivery(&DeliveryStage::PrOpen, &old)
+                        .await?
+                );
+                let (mut run, job) = crate::pr_watch::run(
+                    &caller.sandbox,
+                    "old",
+                    "head",
+                    yulius_domain::ci::RunState::Cancelled,
+                    None,
+                    1,
+                );
+                run.reference = yulius_domain::ci::CiRef::PullRequest(number);
+                app.deps.store.insert_ci_run(&run, &[job]).await?;
+                let news = app.watch_prs(&due).await;
+                assert!(
+                    app.pr_stalled(&id).is_some(),
+                    "expected an existing stall: {news:?}"
+                );
+                let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&notices)?)?;
+                assert!(
+                    app.deps
+                        .store
+                        .transition_delivery(&DeliveryStage::PrOpen, &open)
+                        .await?
+                );
+                Some(saved[id.as_str()].clone())
+            } else {
+                None
+            };
             let watch = Arc::clone(&app);
             let handle = tokio::runtime::Handle::current();
             let seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -3075,6 +3123,22 @@ fn first_watch_during_queue_decision(active: bool) -> TestResult {
                 seen_in_hook.store(true, std::sync::atomic::Ordering::SeqCst);
             });
             app.merge_armed(&caller.sandbox).await;
+            if let Some(prior) = prior {
+                let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&notices)?)?;
+                let current = &saved[id.as_str()];
+                if previously_seen == Some(1481) {
+                    assert_eq!(current, &prior, "queue retry changed progress or the stall");
+                    assert!(app.pr_stalled(&id).is_some());
+                } else {
+                    assert_eq!(current["pr"], 1481);
+                    assert_eq!(current["progress"], "");
+                    assert!(
+                        current["progress_ms"].as_i64().ok_or("new PR clock")?
+                            >= prior["progress_ms"].as_i64().ok_or("previous PR clock")?
+                    );
+                    assert!(app.pr_stalled(&id).is_none());
+                }
+            }
             assert!(
                 seen.load(std::sync::atomic::Ordering::SeqCst),
                 "queue took the arm"
@@ -3086,6 +3150,16 @@ fn first_watch_during_queue_decision(active: bool) -> TestResult {
             assert!(
                 first.is_empty(),
                 "first watch during restoration: {first:?}"
+            );
+        }
+        if previously_seen.is_none() {
+            let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&notices)?)?;
+            let first_seen = saved[id.as_str()]["progress_ms"]
+                .as_i64()
+                .ok_or("first watch clock")?;
+            assert!(
+                (open.updated_at.0..=app.now().0).contains(&first_seen),
+                "{first_seen}"
             );
         }
         // The integration merge is recorded between watch passes, before GitHub's PR read catches up.
