@@ -147,7 +147,13 @@ fn host_matches(status: &StatusRecord) -> Option<Pid> {
 }
 
 fn child_matches(status: &StatusRecord) -> Option<Pid> {
-    process::pid(status.child_pid).filter(|pid| matches_record(*pid, status.started_at_ms, false))
+    process::pid(status.child_pid).filter(|pid| {
+        matches_record(*pid, status.started_at_ms, false)
+            && status
+                .child_birth
+                .as_ref()
+                .is_none_or(|birth| process::birth_identity(*pid).as_ref() == Some(birth))
+    })
 }
 
 /// Failure to terminate a recorded run.
@@ -185,9 +191,7 @@ pub fn terminate_run_dir(run_dir: &Path) -> Result<(), TerminateError> {
         .map_err(|error| TerminateError::Status(error.to_string()))?
     {
         terminate_recorded(&status)?;
-        if current_boot_id().is_some() {
-            crate::build_scratch::reclaim_recorded(run_dir, &status)?;
-        }
+        crate::build_scratch::reclaim_recorded(run_dir, &status)?;
     }
     Ok(())
 }
@@ -230,13 +234,19 @@ impl BuildOwner {
         if let Some(status) = self.status {
             let boot = current_boot_id()
                 .ok_or_else(|| TerminateError::Status("unknown boot identity".into()))?;
-            if boot == status.boot_id
-                && let Some(child) = child_matches(&status)
-                && wait_gone(&[child], TERMINATE_WAIT).is_some()
+            let deadline = std::time::Instant::now() + TERMINATE_WAIT;
+            while boot == status.boot_id
+                && !crate::build_scratch::child_session_gone(
+                    status.child_pid,
+                    status.child_birth.as_deref(),
+                )
             {
-                return Err(TerminateError::StillAlive {
-                    pid: status.child_pid,
-                });
+                if std::time::Instant::now() >= deadline {
+                    return Err(TerminateError::StillAlive {
+                        pid: status.child_pid,
+                    });
+                }
+                std::thread::sleep(Duration::from_millis(50));
             }
         }
         self.tree.clear_registered()?;

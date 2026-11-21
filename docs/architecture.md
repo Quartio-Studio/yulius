@@ -12,7 +12,7 @@ or an imported `auth.json`. The detailed contracts are in
 [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md); crate layering rules are in
 [engineering/architecture.md](engineering/architecture.md).
 
-Contained agent and CI processes have a 1 GiB `/tmp`. The process host creates a run-owned directory inside the sandbox disk quota for disposable builds. Commands receive a build subdirectory. The ownership marker lives in its parent. The host pins the parent directory, and the server retains its launch ownership at readiness or reclaims a stopped host's builds before returning a startup error. Cleanup walks the opened build tree and keeps its small receipt with the protected run metadata. [Decision 0439](decisions/0439-delivery-checks-mutations-by-hand-and-builds-on-disk.md)
+Contained agent and CI processes have a 1 GiB `/tmp`. The process host creates a run-owned directory inside the sandbox disk quota for disposable builds. Commands receive a build subdirectory. The ownership marker lives in its parent. The host pins the parent directory, and the server retains its launch ownership at readiness or reclaims a stopped host's builds before returning a startup error. Cleanup walks the opened build tree and keeps its versioned receipt with the protected run metadata. Same-boot recovery checks host and child process identities before removing the tree. [Decision 0439](decisions/0439-delivery-checks-mutations-by-hand-and-builds-on-disk.md)
 
 The supervisor terminates a disconnected run using the identities recorded by its host. On Linux it checks exit of the entire process before recording a forced loss. [Decision 0390](decisions/0390-linux-host-exit-is-observed-for-the-whole-process.md)
 

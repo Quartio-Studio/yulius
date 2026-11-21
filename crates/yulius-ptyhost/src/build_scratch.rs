@@ -193,9 +193,42 @@ pub(crate) fn reclaim_recorded(run_dir: &Path, status: &StatusRecord) -> io::Res
     if let Some(receipt) = read(run_dir)?
         && receipt.matches_status(status)
     {
+        let boot = crate::current_boot_id()
+            .ok_or_else(|| io::Error::other("unconfirmed boot identity"))?;
+        if boot == status.boot_id
+            && (!receipt.host_is_gone()
+                || !child_session_gone(status.child_pid, status.child_birth.as_deref()))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "host or child exit remains unconfirmed; retaining build scratch",
+            ));
+        }
         receipt.reclaim()?;
     }
     Ok(())
+}
+
+/// A child that may still lead the recorded session keeps its build. Wall-clock
+/// timestamps cannot prove exit after a clock adjustment.
+pub(crate) fn child_session_gone(raw_pid: u32, captured_birth: Option<&str>) -> bool {
+    if raw_pid == 0 {
+        return true;
+    }
+    let Some(pid) = crate::process::pid(raw_pid) else {
+        return false;
+    };
+    match nix::unistd::getsid(Some(pid)) {
+        Err(Errno::ESRCH) => true,
+        Err(_) => false,
+        Ok(session) if session != pid => true,
+        Ok(_) => {
+            crate::process::is_zombie(pid)
+                || captured_birth
+                    .zip(crate::process::birth_identity(pid))
+                    .is_some_and(|(recorded, current)| recorded != current)
+        }
+    }
 }
 
 /// A host may die before publishing status.json. A possibly live owner retains its tree.
@@ -287,6 +320,112 @@ mod tests {
             "a reused pid retained the former host's build"
         );
         assert!(recorded_birth.is_string());
+        Ok(())
+    }
+
+    #[test]
+    fn recorded_cleanup_retains_live_hosts_and_children_across_clock_changes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::{BufRead, BufReader};
+        use std::os::unix::process::CommandExt;
+        use std::process::{Command, Stdio};
+        use yulius_contracts::ptyhost::STATUS_FILE;
+        let run = tempfile::tempdir()?;
+        let sandbox = tempfile::tempdir()?;
+        let mut host = Command::new("sleep").arg("60").process_group(0).spawn()?;
+        let mut child = Command::new("python3")
+            .args([
+                "-c",
+                "import os, signal; os.setsid(); print('ready', flush=True); signal.pause()",
+            ])
+            .stdout(Stdio::piped())
+            .spawn()?;
+        let mut ready = String::new();
+        BufReader::new(child.stdout.take().ok_or("missing child output")?).read_line(&mut ready)?;
+        assert_eq!(ready.trim(), "ready");
+        let guard = own(
+            &File::open(run.path())?,
+            tempfile::tempdir_in(sandbox.path())?,
+            host.id(),
+            "clock",
+        )?;
+        let artifact = guard.payload().join("build");
+        fs::write(&artifact, b"owned")?;
+        let status = StatusRecord {
+            version: RECORD_VERSION,
+            attempt_id: "clock".into(),
+            token_sha256: "clock".into(),
+            ptyhost_pid: host.id(),
+            child_pid: child.id(),
+            child_birth: None, // A status from before child birth was recorded.
+            started_at_ms: crate::files::now_ms() - 60_000,
+            boot_id: crate::current_boot_id().ok_or("boot id")?,
+        };
+        atomic_write(
+            run.path(),
+            STATUS_FILE,
+            &serde_json::to_vec(&status)?,
+            0o600,
+        )?;
+        let owner =
+            crate::reconcile::BuildOwner::capture(run.path(), host.id(), "clock", Some(status))?
+                .ok_or("missing owner")?;
+        let _ = crate::inspect_run_dir(run.path());
+        let retained_after_inspect = artifact.exists();
+        let refused_termination = crate::terminate_run_dir(run.path()).is_err();
+        let retained_after_terminate = artifact.exists();
+        host.kill()?;
+        host.wait()?;
+        let _ = crate::inspect_run_dir(run.path());
+        let retained_for_child = artifact.exists();
+        let refused_live_child = owner.reclaim().is_err();
+        let mut changed: serde_json::Value =
+            serde_json::from_slice(&fs::read(run.path().join(STATUS_FILE))?)?;
+        changed["child_birth"] = "previous occupant".into();
+        changed["started_at_ms"] = crate::files::now_ms().into();
+        atomic_write(
+            run.path(),
+            STATUS_FILE,
+            &serde_json::to_vec(&changed)?,
+            0o600,
+        )?;
+        let _ = crate::inspect_run_dir(run.path());
+        let reused_child_was_reclaimed = !artifact.exists();
+        crate::terminate_run_dir(run.path())?;
+        let replacement_survived = child.try_wait()?.is_none();
+        if replacement_survived {
+            child.kill()?;
+        }
+        child.wait()?;
+        let _ = crate::inspect_run_dir(run.path());
+        assert!(
+            replacement_survived,
+            "termination signalled the replacement child"
+        );
+        assert!(
+            refused_termination,
+            "termination reported success while ownership was live"
+        );
+        assert!(
+            retained_after_inspect,
+            "inspection removed the live host's build"
+        );
+        assert!(
+            retained_after_terminate,
+            "unconfirmed termination removed the live host's build"
+        );
+        assert!(
+            retained_for_child && refused_live_child,
+            "clock change hid a live child"
+        );
+        assert!(
+            reused_child_was_reclaimed,
+            "a reused child pid kept the former build"
+        );
+        assert!(
+            !artifact.exists(),
+            "confirmed exits should release the build"
+        );
         Ok(())
     }
 
@@ -439,6 +578,7 @@ mod tests {
             attempt_id: "new".into(),
             ptyhost_pid: host.id(),
             child_pid: 0,
+            child_birth: None,
             started_at_ms: crate::files::now_ms(),
             boot_id: crate::current_boot_id().ok_or("boot id")?,
             token_sha256: "new-token".into(),
