@@ -64,7 +64,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Verify the failed integration candidate before parking its original owner
 - [x] Bind a parked message to the attempt its caller observed
 - [x] Resume only the parked run whose screen finished saving
-- [ ] Preserve a continuation while its previous parked run settles
+- [x] Preserve a continuation while its previous parked run settles
 - [ ] Verify the current model and subscription before accepting a named Continue
 - [ ] Order parking and replacement merge requests through run settlement
 - [ ] Deliver the recorded integration failure once to an already parked owner
@@ -119,6 +119,9 @@ The final parking check compares the owner’s saved singleton decision with the
 The SQLite query returning a parked task includes the latest attempt ID in the same snapshot. Admission checks that ID under the launch lock after caller preflight. A message can wait while another turn resumes and parks, so task status alone cannot identify the session the sender observed. Only a matching parked attempt can restore Codex lineage or accept the prompt. Bulk messages, Telegram replies and remote restarts carry the attempt from their first task lookup through dispatch. They check the caller’s current access before acting.
 
 ## Evidence
+
+- In the hand check, undoing the reader wait, selection checks, named placement prototype and answer timestamp made 13 regressions fail in `21b03c1d-a422-44a3-b537-8631b04579de`. Undoing the direct selection guard and clearing a held owner's question early failed both checks in `bd0b1557-3c74-4662-96b8-a9919225d2a7`. The source was restored to the reviewed commit.
+- Independent review approved the terminal-settlement delivery at `1cd4a5d826ebac1a698255fe1727dfe2427fcbc0` against dev `612f787b3` and independently ran 13 focused regressions. Run `da13b65f-349d-4995-b14d-978f4fdb2c5f` passed all 270 scoped tests. The fixtures used real PTYs and a fake agent. Repository quick checks and spec validation passed. Vidoc was disabled.
 
 - Run `5952686a-6987-4a5d-ad9a-fc2ca08a659c` reproduced a direct resume finishing preflight for an earlier closed run and then entering capacity while the replacement’s reader was held. The regression checks the refusal and that a subsequent resume retains its capacity pause after terminal exit.
 
