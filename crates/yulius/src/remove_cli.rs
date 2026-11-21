@@ -721,6 +721,19 @@ mod tests {
     }
 
     #[test]
+    fn original_run_entry_point_reports_usage_and_missing_targets() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let mut out = Vec::new();
+        assert_eq!(run(&mut out, &[], &|_| None), 2);
+        assert!(String::from_utf8(out)?.contains("usage: yulius remove"));
+        let mut out = Vec::new();
+        let missing = dir.path().join("absent");
+        assert_eq!(run(&mut out, &[missing], &|_| None), 0);
+        assert!(String::from_utf8(out)?.contains("already gone"));
+        Ok(())
+    }
+
+    #[test]
     fn file_only_cleanup_preserves_directories_and_checks_missing_files() -> TestResult {
         let dir = worktree()?;
         let root = std::fs::canonicalize(dir.path())?;
