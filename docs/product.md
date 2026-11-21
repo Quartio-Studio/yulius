@@ -60,6 +60,8 @@ Goal tasks continue their remaining plan steps, including post-merge verificatio
 The authoritative product brief is [SPEC-001](../.ai/specs/SPEC-001-yulius-product.md); this
 page is the short version for anyone who must know the whole product before building.
 
+Yulius's own Rust builds share compiled artifacts across task worktrees and CI lanes on the project sandbox's disk. [ADR-0434](decisions/0434-keep-a-local-compiler-cache-in-each-project-sandbox.md)
+
 ## Who it is for
 
 A small team (2-5 people; the founders are superadmins) that works with several Claude
