@@ -272,6 +272,13 @@ impl Hub {
             .is_ok_and(|s| crate::visible_draft::shown(s.parser.screen()))
     }
 
+    /// Whether the current grid shows Codex's rate-limit model picker.
+    pub(crate) fn codex_rate_limit_picker_shown(&self) -> bool {
+        self.screen.lock().map_or(true, |screen| {
+            crate::prompt_box::codex_rate_limit_picker_shown(screen.parser.screen())
+        })
+    }
+
     /// Visible screen text (for previews and tests).
     #[must_use]
     pub fn screen_text(&self) -> String {

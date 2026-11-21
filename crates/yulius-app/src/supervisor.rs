@@ -165,6 +165,9 @@ pub(crate) enum PrNoticeInput<'a> {
 
 struct ActiveRun {
     attempt_id: AttemptId,
+    harness: Harness,
+    /// The picker blocked an Enter. The preceding paste may still be in the composer.
+    codex_submit_held: bool,
     writer: Box<dyn RunWriter>,
 }
 
@@ -571,6 +574,46 @@ impl TaskRuntime {
             .ok_or_else(|| {
                 AppError::Conflict("the observed session is no longer attached".into())
             })?;
+        self.write_automatic_input(run, now, bytes).await
+    }
+
+    /// Check with the writer acquired, both before a paste and before its separate Enter.
+    async fn write_automatic_input(
+        &self,
+        run: &mut ActiveRun,
+        now: Timestamp,
+        bytes: &[u8],
+    ) -> AppResult<()> {
+        if run.harness == Harness::Codex {
+            if self.screen_withheld()
+                || !self
+                    .screen_of
+                    .lock()
+                    .is_ok_and(|shown| shown.as_ref() == Some(&run.attempt_id))
+            {
+                return Err(AppError::Conflict(
+                    "the live Codex screen is unavailable".into(),
+                ));
+            }
+            if self.hub.codex_rate_limit_picker_shown() {
+                run.codex_submit_held |= bytes == b"\r";
+                return Err(AppError::Conflict(
+                    "Codex's rate-limit model picker is open. Choose Keep current model \
+                     or dismiss the picker in the terminal."
+                        .into(),
+                ));
+            }
+            if run.codex_submit_held {
+                if !self.hub.prompt_box_shown_empty(Harness::Codex) {
+                    return Err(AppError::Conflict(
+                        "Codex may still have text pasted before the model picker opened. \
+                         Inspect the composer before clearing any unsent paste and retrying."
+                            .into(),
+                    ));
+                }
+                run.codex_submit_held = false;
+            }
+        }
         self.last_input_ms.store(now.0, Ordering::SeqCst);
         run.writer.input(bytes).await
     }
@@ -3619,7 +3662,7 @@ impl App {
                 return;
             }
             let before = runtime.hub.output_seq();
-            if let Err(err) = self.send_input(task_id, &paste).await {
+            if let Err(err) = self.send_automatic_input(task_id, &paste).await {
                 tracing::warn!(task = %task_id, error = %err, "could not type the first message");
                 return;
             }
@@ -3647,7 +3690,7 @@ impl App {
         if !self.attempt_live(task_id, attempt_id).await {
             return;
         }
-        if let Err(err) = self.send_input(task_id, b"\r").await {
+        if let Err(err) = self.send_automatic_input(task_id, b"\r").await {
             tracing::warn!(task = %task_id, error = %err, "could not submit the first message");
         }
     }
@@ -3847,7 +3890,7 @@ impl App {
                 return true;
             }
             if !input.is_empty()
-                && let Err(err) = app.send_input(task_id, &input).await
+                && let Err(err) = app.send_automatic_input(task_id, &input).await
             {
                 tracing::warn!(task = %task_id, error = %err, "could not set the task goal");
                 return false;
@@ -3856,7 +3899,7 @@ impl App {
             // A separate Enter, so the TUI sees typed text first and then a submit.
             tokio::time::sleep(Duration::from_millis(300)).await;
             app.note_issued_prompt(task_id, command.as_bytes());
-            if let Err(err) = app.send_input(task_id, b"\r").await {
+            if let Err(err) = app.send_automatic_input(task_id, b"\r").await {
                 tracing::warn!(task = %task_id, error = %err, "could not submit the task goal");
                 return false;
             }
@@ -4362,6 +4405,8 @@ impl App {
         // running" on a fast machine).
         *runtime.run.lock().await = Some(ActiveRun {
             attempt_id: attempt.id.clone(),
+            harness: attempt.harness,
+            codex_submit_held: false,
             writer: attached.writer,
         });
         crate::race::reached(crate::race::Point::RunAttached, Path::new(task_id.as_str()));
@@ -4411,6 +4456,7 @@ impl App {
         let app = self.clone();
         let tid = task_id.clone();
         let aid = attempt.id.clone();
+        let harness = attempt.harness;
         let token = *host_token;
         let mut reader = attached.reader;
         tokio::spawn(async move {
@@ -4465,8 +4511,14 @@ impl App {
                                         )
                                         .await;
                                     let rt = app.runtime(&tid);
-                                    *rt.run.lock().await = Some(ActiveRun {
+                                    let mut run = rt.run.lock().await;
+                                    let codex_submit_held = run.as_ref().is_some_and(|run| {
+                                        run.attempt_id == aid && run.codex_submit_held
+                                    });
+                                    *run = Some(ActiveRun {
                                         attempt_id: aid.clone(),
+                                        harness,
+                                        codex_submit_held,
                                         writer: again.writer,
                                     });
                                     rt.hub.restore(
@@ -6607,15 +6659,40 @@ impl App {
     /// # Errors
     /// `Conflict` when no run is attached.
     pub async fn send_input(&self, task_id: &TaskId, bytes: &[u8]) -> AppResult<()> {
+        self.write_session_input(task_id, bytes, false).await
+    }
+
+    /// Writes automated input after checking that a Codex picker cannot consume it.
+    pub(crate) async fn send_automatic_input(
+        &self,
+        task_id: &TaskId,
+        bytes: &[u8],
+    ) -> AppResult<()> {
+        self.write_session_input(task_id, bytes, true).await
+    }
+
+    async fn write_session_input(
+        &self,
+        task_id: &TaskId,
+        bytes: &[u8],
+        automatic: bool,
+    ) -> AppResult<()> {
         let runtime = self
             .existing_runtime(task_id)
             .ok_or_else(|| AppError::Conflict("the task is not running".into()))?;
-        runtime.last_input_ms.store(self.now().0, Ordering::SeqCst);
+        let now = self.now();
+        if !automatic {
+            runtime.last_input_ms.store(now.0, Ordering::SeqCst);
+        }
         let mut run = runtime.run.lock().await;
         let run = run
             .as_mut()
             .ok_or_else(|| AppError::Conflict("the task is not running".into()))?;
-        run.writer.input(bytes).await
+        if automatic {
+            runtime.write_automatic_input(run, now, bytes).await
+        } else {
+            run.writer.input(bytes).await
+        }
     }
 
     /// Resizes the run's PTY.

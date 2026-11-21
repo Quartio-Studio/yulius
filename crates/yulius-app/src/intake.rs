@@ -650,7 +650,7 @@ impl App {
                 Some(d.hold.class.as_str()),
             )
             .await?;
-        Ok(match self.send_input(&d.task.id, b"\r").await {
+        Ok(match self.send_automatic_input(&d.task.id, b"\r").await {
             Ok(()) => "Sent to the agent unchanged.".to_owned(),
             Err(_) => "Recorded: press Enter in the terminal to send it unchanged.".to_owned(),
         })

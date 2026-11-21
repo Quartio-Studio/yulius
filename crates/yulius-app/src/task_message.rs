@@ -935,7 +935,7 @@ impl App {
                     .write_pr_notice(attempt, self.now(), PrNoticeInput::Paste(paste))
                     .await
             }
-            Typed::Prompt | Typed::Command => self.send_input(&task.id, paste).await,
+            Typed::Prompt | Typed::Command => self.send_automatic_input(&task.id, paste).await,
         };
         if let Err(err) = pasted {
             runtime.message_typed_ms.store(before, Ordering::SeqCst);
@@ -971,7 +971,7 @@ impl App {
                     .write_pr_notice(attempt, self.now(), PrNoticeInput::Submit)
                     .await
             }
-            Typed::Prompt | Typed::Command => self.send_input(&task.id, b"\r").await,
+            Typed::Prompt | Typed::Command => self.send_automatic_input(&task.id, b"\r").await,
         };
         submitted.map_err(|err| {
             if past_draft {

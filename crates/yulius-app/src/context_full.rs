@@ -696,7 +696,7 @@ impl App {
                 *behind_draft = true;
             }
         }
-        if let Err(err) = self.send_input(task_id, line.as_bytes()).await {
+        if let Err(err) = self.send_automatic_input(task_id, line.as_bytes()).await {
             tracing::warn!(task = %task_id, error = %err, "could not type into a full session");
             return false;
         }
@@ -709,7 +709,7 @@ impl App {
         if !self.attempt_live(task_id, attempt).await {
             return false;
         }
-        if let Err(err) = self.send_input(task_id, b"\r").await {
+        if let Err(err) = self.send_automatic_input(task_id, b"\r").await {
             tracing::warn!(task = %task_id, error = %err, "could not submit into a full session");
             return false;
         }

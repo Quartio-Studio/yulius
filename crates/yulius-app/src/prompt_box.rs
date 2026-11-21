@@ -131,6 +131,27 @@ pub(super) fn codex_shown_empty(screen: &vt100::Screen) -> bool {
             .all(|c| screen.cell(row, c).is_some_and(vt100::Cell::dim))
 }
 
+/// Codex 0.170.0's rate-limit model picker uses a list with no input cursor.
+/// Its proposed model varies, and a short terminal may omit the lower rows.
+pub(super) fn codex_rate_limit_picker_shown(screen: &vt100::Screen) -> bool {
+    if !screen.hide_cursor() {
+        return false;
+    }
+    let (_, cols) = screen.size();
+    let mut heading = false;
+    for row in screen.rows(0, cols) {
+        let row = row.trim();
+        if row.is_empty() {
+            continue;
+        }
+        if heading && (row.starts_with("Switch to ") || row.starts_with("› 1. Switch to ")) {
+            return true;
+        }
+        heading = row == "Approaching rate limits";
+    }
+    false
+}
+
 /// Whether the hint row's text `hint` says nothing about the prompt box: it is blank, or it
 /// is, whole, Claude Code's notice of a nearly full context ("88% context used"), which stays
 /// there for as long as the context does. Anything else is no proof of an empty box: a stash

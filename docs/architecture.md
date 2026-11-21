@@ -76,6 +76,11 @@ file by session ID and the next index refresh saves its path on the same documen
 
 For an explicit restart of stopped Codex work, the supervisor carries a continuation prompt through admission and into the native resume. It derives initial activity from the launch mode and observes subsequent turns in the rollout. [Decision 0429](decisions/0429-continue-stopped-codex-work-in-its-saved-session.md)
 
+The generated Codex configuration hides the rate-limit model switch reminder. If a live terminal
+shows the picker, the terminal writer holds automated pastes and submits. The PR watch can deliver
+its pending notice after the picker closes. If the picker intercepted a submit, a confirmed empty
+composer releases the hold. [Decision 0443](decisions/0443-hold-codex-input-at-the-rate-limit-model-picker.md)
+
 ```mermaid
 flowchart LR
   ACC["openai account (vault: auth.json)"] -->|"written before each run"| HOME["sandbox/codex/account: auth.json, config.toml, hooks.json"]
@@ -83,7 +88,8 @@ flowchart LR
   CX["codex TUI (ptyhost)"] -->|"CODEX_HOME"| HOME
   CX -->|"rollout JSONL"| SESS
   CX -->|"yulius hook codex, yulius mcp"| INT2["Internal listener"]
-  SESS -->|"turns, tokens, rate limits, limit"| SUP2["Supervisor"]
+  CX -->|"rendered picker holds automated input"| SUP2["Supervisor"]
+  SESS -->|"turns, tokens, rate limits, limit"| SUP2
   SUP2 -->|"a genuine refresh"| ACC
 ```
 

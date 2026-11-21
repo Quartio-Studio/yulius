@@ -12,6 +12,10 @@ inherit high effort. A task's explicit effort takes precedence.
 
 Continue resumes a stopped Codex task in its saved conversation. Reopening a closed Codex conversation shows Waiting until its next turn. [SPEC-590](../.ai/specs/SPEC-590-look-bro-the-taks-says-it-working-but-th.md)
 
+Codex tasks keep their selected model when Yulius sends a message near a subscription limit.
+New and resumed sessions hide the rate-limit model switch reminder. A visible reminder holds
+automated messages until the picker is dismissed. [SPEC-603](../.ai/specs/SPEC-603-codex-s-rate-limit-prompt-must-not-switc.md)
+
 Tasks created by the CLI or either Superagent default to Codex when harness and model are omitted.
 A task created with a `gpt-*` model and no explicit agent selects Codex.
 A task keeps its agent for life, and a Codex task moves only between Codex subscriptions. On ChatGPT Pro 500,
