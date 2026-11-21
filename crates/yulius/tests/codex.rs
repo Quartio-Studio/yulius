@@ -539,7 +539,18 @@ fn restart_before_rollout(restart: CapacityRestart) -> TestResult {
                 )
                 .await?;
             release.send(())?;
-            let _ = tokio::time::timeout(Duration::from_secs(60), moving).await??;
+            let moved = tokio::time::timeout(Duration::from_secs(60), moving).await??;
+            assert!(matches!(
+                moved,
+                Err(yulius_app::error::AppError::Conflict(_))
+            ));
+            assert!(
+                store
+                    .switches(&id)
+                    .await?
+                    .iter()
+                    .any(|switch| switch.reason == "manual" && switch.outcome == "cancelled")
+            );
             assert_eq!(
                 store.open_pause(&id).await?,
                 Some(next),
@@ -726,6 +737,14 @@ fn move_waiting_restart(queue: bool) -> TestResult {
             .await?;
         if let Some(blocker) = &blocker {
             assert_eq!(moved.status, "queued");
+            assert!(
+                app.deps
+                    .store
+                    .switches(&id)
+                    .await?
+                    .iter()
+                    .any(|switch| switch.reason == "manual" && switch.outcome == "waiting")
+            );
             let queued = app
                 .deps
                 .store
@@ -741,6 +760,14 @@ fn move_waiting_restart(queue: bool) -> TestResult {
             .await?;
         } else {
             assert_eq!(moved.status, "running");
+            assert!(
+                app.deps
+                    .store
+                    .switches(&id)
+                    .await?
+                    .iter()
+                    .any(|switch| switch.reason == "manual" && switch.outcome == "completed")
+            );
         }
         let run = app.deps.store.live_attempt(&id).await?.ok_or("moved run")?;
         assert_eq!(run.account_id, Some(replacement));

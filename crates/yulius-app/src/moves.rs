@@ -177,6 +177,28 @@ impl App {
     ) -> AppResult<()> {
         let store = &self.deps.store;
         let pause = store.open_pause(task_id).await?;
+        let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
+        // A saved Codex start has already chosen a fresh request or a native continuation.
+        // It takes precedence over observations left by the run that stopped.
+        if task.harness == Harness::Codex
+            && let Some(pause) = pause.as_ref().filter(|pause| !pause.kind.holds_process())
+        {
+            let prompt = pause.continuation.clone();
+            let start = match pause.kind {
+                PauseKind::FreshStart => RunStart::Fresh { prompt },
+                _ => RunStart::Resume { prompt },
+            };
+            return self
+                .switch_from(
+                    task_id,
+                    Some(TaskStatus::WaitingCapacity),
+                    account,
+                    reason,
+                    start,
+                    Some(pause),
+                )
+                .await;
+        }
         let at_limit = pause.as_ref().is_some_and(|p| p.kind == PauseKind::Limit)
             || self.runtime(task_id).at_limit.load(Ordering::SeqCst);
         if at_limit {
@@ -186,17 +208,8 @@ impl App {
             let start = RunStart::Fresh { prompt: None };
             return self.switch_with(task_id, account, reason, start).await;
         }
-        let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
         let prompt = match pause {
-            Some(pause) if pause.kind == PauseKind::FreshStart => {
-                let start = RunStart::Fresh {
-                    prompt: pause.continuation,
-                };
-                return self.switch_with(task_id, account, reason, start).await;
-            }
-            Some(pause) if matches!(pause.kind, PauseKind::Prompt | PauseKind::Start) => {
-                pause.continuation
-            }
+            Some(pause) if pause.kind == PauseKind::Prompt => pause.continuation,
             Some(pause) if pause.kind == PauseKind::Turn => self.stop_continuation(&task).await,
             _ if task.status == TaskStatus::Running && task.activity == Some(Activity::Working) => {
                 Some(CONTINUE_TASK_PROMPT.into())
