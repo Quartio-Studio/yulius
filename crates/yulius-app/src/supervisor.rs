@@ -1967,16 +1967,11 @@ impl App {
         Ok(accounts
             .iter()
             .filter(|a| a.credential.is_some())
-            .map(|a| AccountView {
-                id: a.id.clone(),
-                provider: a.provider,
-                healthy: a.status.healthy(),
-                usage: a
-                    .usage_json
-                    .as_deref()
-                    .map(usage_json::from_json)
-                    .unwrap_or_default(),
-                in_use: crate::accounts::in_use_count(&a.id, &live),
+            .map(|account| {
+                crate::capacity::rotation_view(
+                    account,
+                    crate::accounts::in_use_count(&account.id, &live),
+                )
             })
             .collect())
     }
@@ -2364,7 +2359,9 @@ impl App {
                         .filter(|_| task.status.is_resting() || moving_pause);
                     let kept = start.kept(chosen);
                     let queued = if owner_continue {
-                        self.claim_owner_continuation(&task, Some(&kept)).await?
+                        self.claim_owner_continuation(&task, Some(&kept), chosen)
+                            .await?
+                            .is_some()
                     } else {
                         self.deps
                             .store
@@ -2394,8 +2391,23 @@ impl App {
                 _ => (start, account),
             };
             let launching = Launching::start(&self.supervisor.launching, &task.id);
+            let admission = if owner_continue {
+                self.prepare_start_claim(&task.id).await?;
+                let Some(admitted) = self
+                    .claim_owner_continuation(&task, None, account.as_ref())
+                    .await?
+                else {
+                    return Ok(false);
+                };
+                self.publish_task(&task.id).await;
+                Some(admitted)
+            } else {
+                None
+            };
+            // Launch failure cleanup answers subscription questions. A refused Continue
+            // returns above, while the owner's original controls still belong to it.
             let result = self
-                .launch_attempt(&task, start, account, rest, pause_outcome, owner_continue)
+                .launch_attempt(&task, start, account, rest, pause_outcome, admission)
                 .await;
             if let Err(err) = &result {
                 // Settle the failed launch before another Continue can install a new pause.
@@ -2465,18 +2477,39 @@ impl App {
         &self,
         task: &TaskRecord,
         queue: Option<&QueuedStart>,
-    ) -> AppResult<bool> {
+        requested: Option<&AccountId>,
+    ) -> AppResult<Option<crate::capacity::ContinuationAdmission>> {
         let accepted = self
             .deps
             .store
-            .claim_continuation(task, queue, self.now())
+            .claim_continuation(task, queue, requested, self.now())
             .await?;
-        if accepted {
+        if accepted.is_some() {
+            crate::race::reached(
+                crate::race::Point::OwnerContinueAccepted,
+                Path::new(task.id.as_str()),
+            );
             // A resting owner's Continue clears only this task's browser actions (SPEC-494).
             self.clear_task_browser_actions(&task.sandbox_id, &task.id, None)
                 .await;
         }
         Ok(accepted)
+    }
+
+    async fn prepare_start_claim(&self, task_id: &TaskId) -> AppResult<()> {
+        // A waiting or resting task with no run left: an intent of a stop or close that ended
+        // no run is not for the run this launch starts (SPEC-140 STP-002). One whose run still
+        // ends keeps it for that run's end.
+        if self.deps.store.live_attempt(task_id).await?.is_none()
+            && let Ok(mut intent) = self.runtime(task_id).intent.lock()
+        {
+            *intent = None;
+        }
+        crate::race::reached(
+            crate::race::Point::StartClaimReady,
+            Path::new(task_id.as_str()),
+        );
+        Ok(())
     }
 
     async fn launch_attempt(
@@ -2486,7 +2519,7 @@ impl App {
         requested: Option<AccountId>,
         rest: Option<IdleRest>,
         pause_outcome: &'static str,
-        owner_continue: bool,
+        admission: Option<crate::capacity::ContinuationAdmission>,
     ) -> AppResult<bool> {
         let store = &self.deps.store;
         let relaunch = start.clone();
@@ -2495,7 +2528,9 @@ impl App {
             .await?
             .ok_or(AppError::NotFound)?;
         // Status → Starting (unless a switch drives this launch).
-        if task.status != TaskStatus::Switching && task.status != TaskStatus::Starting {
+        if admission.is_none()
+            && !matches!(task.status, TaskStatus::Starting | TaskStatus::Switching)
+        {
             let next = match task.status {
                 TaskStatus::Queued => TaskStatus::Starting,
                 TaskStatus::WaitingCapacity => TaskStatus::WaitingCapacity
@@ -2507,25 +2542,10 @@ impl App {
                     .unwrap_or(TaskStatus::Starting),
                 other => return Err(AppError::Conflict(format!("task is {}", other.as_str()))),
             };
-            // A waiting or resting task with no run left: an intent of a stop or close that ended
-            // no run is not for the run this launch starts (SPEC-140 STP-002). One whose run still
-            // ends keeps it for that run's end.
-            if store.live_attempt(&task.id).await?.is_none()
-                && let Ok(mut intent) = self.runtime(&task.id).intent.lock()
-            {
-                *intent = None;
-            }
-            crate::race::reached(
-                crate::race::Point::StartClaimReady,
-                Path::new(task.id.as_str()),
-            );
-            let claimed = if owner_continue {
-                self.claim_owner_continuation(task, None).await?
-            } else {
-                store
-                    .transition_task(&task.id, Some(task.status), next, None, self.now())
-                    .await?
-            };
+            self.prepare_start_claim(&task.id).await?;
+            let claimed = store
+                .transition_task(&task.id, Some(task.status), next, None, self.now())
+                .await?;
             if !claimed {
                 // Stop won the claim. This start owns neither the task nor a replacement pause.
                 return Ok(false);
@@ -2546,19 +2566,31 @@ impl App {
         if let Ok(Some(fresh)) = store.task(&task.id).await {
             self.allocate_spec_path(&fresh, &worktree).await;
         }
-        let task = store.task(&task.id).await?.ok_or(AppError::NotFound)?;
+        let mut task = store.task(&task.id).await?.ok_or(AppError::NotFound)?;
         let lineage = store.provider_sessions(&task.id).await?;
         let previous = lineage.last().cloned();
         let harness = task.harness;
-        // A subscription asked for and removed since (after the switch's preflight) is no choice
-        // any more: the pool chooses, as for a launch that chose it just before (SPEC-447).
-        let requested = match requested {
-            Some(id) if store.account(&id).await?.is_none() => None,
-            other => other,
-        };
-        let Some(Placed { account, fallback }) =
+        let placement = if let Some(crate::capacity::ContinuationAdmission::Named {
+            account,
+            model,
+            fallback,
+        }) = admission
+        {
+            // A later model edit is for the next start. This run uses the accepted placement.
+            task.model = model;
+            Some(Placed {
+                account: *account,
+                fallback,
+            })
+        } else {
+            // If a subscription disappeared after a switch's preflight, the pool chooses again (SPEC-447).
+            let requested = match requested {
+                Some(id) if store.account(&id).await?.is_none() => None,
+                other => other,
+            };
             self.choose_account(&task, requested.as_ref()).await?
-        else {
+        };
+        let Some(Placed { account, fallback }) = placement else {
             // No subscription has capacity: the task waits before starting, without a process
             // (ROT-010); the resume loop starts it when capacity returns. A turn a limit cut
             // keeps its `limit` pause, so it still resumes past the limit (SPEC-034).
@@ -3080,15 +3112,8 @@ impl App {
             store
                 .transition_attempt(&attempt_id, AttemptState::Exited, &update)
                 .await?;
-            return Box::pin(self.launch_attempt(
-                &task,
-                relaunch,
-                None,
-                rest,
-                pause_outcome,
-                false,
-            ))
-            .await;
+            return Box::pin(self.launch_attempt(&task, relaunch, None, rest, pause_outcome, None))
+                .await;
         }
         // Before the spawn, so the first prompt's hook always finds it (SPEC-068).
         if typed_opening.is_some()
@@ -8419,7 +8444,7 @@ pub(crate) fn model_change_notice(own: &str, before: Option<&str>, model: &str) 
 
 /// Why a person's choice of subscription cannot take the task, in one plain sentence naming it
 /// (SPEC-447 MOV-002).
-fn refused_choice(
+pub(crate) fn refused_choice(
     label: Option<&str>,
     provider: yulius_domain::harness::Provider,
     reason: &rotation::DecisionReason,
