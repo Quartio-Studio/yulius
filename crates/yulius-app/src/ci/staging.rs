@@ -132,14 +132,14 @@ impl App {
                         open.len()
                     )));
                 }
-                let landings = self
+                let landed = self
                     .deps
                     .store
-                    .task_landings(&ctx.task.id, &profile.integration_branch)
+                    .staging_landing(&ctx.task.id, &profile.integration_branch, None)
                     .await?;
-                let Some(revision) = landings.last().cloned() else {
+                let Some(revision) = landed else {
                     return Err(AppError::Conflict(format!(
-                        "nothing to deploy yet: this task has merged nothing into {}; staging takes the merged revision, after delivery_merge",
+                        "nothing to deploy yet: this task has merged nothing confirmed for its current delivery into {}; read delivery_status to reconcile the landing before asking for staging",
                         profile.integration_branch
                     )));
                 };
@@ -862,6 +862,7 @@ impl App {
         &self,
         task: &crate::model::TaskRecord,
         sandbox: &SandboxRecord,
+        receipt_pr: Option<u64>,
     ) -> Option<String> {
         if sandbox.is_playground() || !self.deps.git.has_cd_mirror() {
             return None;
@@ -869,19 +870,24 @@ impl App {
         let branch = delivery_profile(sandbox).integration_branch;
         let store = &self.deps.store;
         let read = async {
-            let Some(landing) = store.task_landings(&task.id, &branch).await?.pop() else {
+            let landing = store.staging_landing(&task.id, &branch, receipt_pr).await?;
+            if landing.is_none() && receipt_pr.is_none() {
                 return Ok(None);
-            };
+            }
             let Some(target) = self.staging_target(sandbox).await?.1 else {
                 return Ok(None);
             };
-            let newest = store
-                .staging_requests_of(&sandbox.id, &target.name, Some(&task.id), &landing)
-                .await?
-                .pop();
-            AppResult::Ok(Some((landing, target, newest)))
+            let requests = match &landing {
+                Some(sha) => {
+                    store
+                        .staging_requests_of(&sandbox.id, &target.name, Some(&task.id), sha)
+                        .await?
+                }
+                None => Vec::new(),
+            };
+            AppResult::Ok(Some((landing, target, requests)))
         };
-        let (landing, target, newest) = match read.await {
+        let (landing, target, requests) = match read.await {
             Ok(found) => found?,
             Err(err) => {
                 tracing::warn!(task = %task.id, error = %err, "delivery_status: staging could not be read");
@@ -889,30 +895,46 @@ impl App {
             }
         };
         let lead = format!("Staging ([cd.{}], merge-first)", target.name);
-        // A failed or superseded request of an older revision leaves the fix's revision due.
-        let ended = |r: &StagingRequestRecord| {
-            matches!(
-                r.state,
-                StagingState::GateFailed | StagingState::DeployFailed | StagingState::Superseded
-            )
-        };
-        let Some(request) = newest.filter(|r| !(ended(r) && r.revision != landing)) else {
+        let Some(landing) = landing else {
             return Some(format!(
-                "{lead}: your merged revision {} has no staging request. Once your whole \
-                 delivery merged (no steps open), ask once with cd_deploy {}: Yulius runs the \
-                 full gate on that revision, then deploys it (or answers included when staging \
-                 already contains it) and tells you the outcome.",
-                short(&landing),
-                serde_json::json!({"environment": target.name}),
+                "{lead}: the landing of pull request #{} on {branch} awaits confirmation. Read delivery_status to reconcile the merged revision before requesting staging.",
+                receipt_pr?
             ));
         };
-        let next = staging_next(&request);
+        // The receipt and cd_deploy make the same decision about this task's older requests.
+        // Containment only changes a new request's initial state, which the call will report.
+        let facts = requests
+            .iter()
+            .map(|r| facts_of(r, &[]))
+            .collect::<Vec<_>>();
+        let request = match stg::admit(&landing, &facts, false) {
+            Admission::Existing(id) | Admission::Retry(id) => {
+                requests.iter().find(|r| r.id == id)?
+            }
+            Admission::Refused(reason) => {
+                return Some(format!(
+                    "{lead}: your merged revision {}. {reason}.",
+                    short(&landing)
+                ));
+            }
+            Admission::New { .. } => {
+                return Some(format!(
+                    "{lead}: your merged revision {} has no staging request. Once your whole \
+                 delivery has landed, ask once with cd_deploy {} before ending your turn. Yulius \
+                 runs the full suite, then deploys and verifies that revision. If your final step \
+                 requires the outcome, leave it in progress. Yulius wakes this task with the outcome.",
+                    short(&landing),
+                    serde_json::json!({"environment": target.name}),
+                ));
+            }
+        };
+        let next = staging_next(request);
         Some(format!(
             "{lead}: request {} for revision {} is {}{}{}.{}",
             request.id,
             short(&request.revision),
             request.state.as_str(),
-            run_ids(&request),
+            run_ids(request),
             request
                 .note
                 .as_deref()
@@ -1150,6 +1172,12 @@ impl App {
                 continue;
             }
             if task.activity == Some(Activity::NeedsAttention)
+                || !matches!(store.task_needs_you(&task.id).await, Ok(None))
+                || !matches!(store.pending_hold(&task.id).await, Ok(None))
+                || self
+                    .browser_tab_request_for(&task.sandbox_id, &task.id)
+                    .await
+                    .is_some()
                 || self.is_paused(&task).await
                 || self.update_holds_starts()
             {
@@ -1172,6 +1200,7 @@ impl App {
                 _ => false,
             };
             if delivered && store.mark_staging_told(&request.id).await.unwrap_or(false) {
+                self.publish_task(&task.id).await;
                 told += 1;
             }
         }
@@ -1192,6 +1221,9 @@ impl App {
             .move_staging_request(&request.id, request.state, to, &change, self.now())
             .await?;
         if moved && to != request.state {
+            if let Some(task) = &request.task_id {
+                self.publish_task(task).await;
+            }
             tracing::info!(request = %request.id, from = request.state.as_str(), to = to.as_str(), revision = %short(&request.revision), "staging request moved");
         }
         Ok(moved)

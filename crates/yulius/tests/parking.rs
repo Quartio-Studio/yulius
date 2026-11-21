@@ -3186,7 +3186,7 @@ fn a_staging_outcome_reaches_its_task_once() -> TestResult {
     let rt = runtime()?;
     rt.block_on(async {
         let app = app(&data, 8, 0).await?;
-        let (id, _) = answered(&app, &data).await?;
+        let (id, caller) = answered(&app, &data).await?;
         let task = TaskStore::task(app.deps.store.as_ref(), &id)
             .await?
             .ok_or("task")?;
@@ -3212,6 +3212,15 @@ fn a_staging_outcome_reaches_its_task_once() -> TestResult {
                 })
                 .await?
         );
+        app.deps.store.set_activity(&id, Some(Activity::Done), app.now()).await?;
+        let owner = AuthContext {
+            user: app.deps.store.user(&caller.user).await?.ok_or("owner")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        assert_eq!(app.capacity_view(&owner).await?.accounts[0].in_use_by, Some(1),
+            "the session that will receive the staging outcome still uses its subscription");
         TaskStore::transition_task(
             app.deps.store.as_ref(),
             &id,
@@ -3232,6 +3241,9 @@ fn a_staging_outcome_reaches_its_task_once() -> TestResult {
             app.now(),
         )
         .await?;
+        ask(&app, &id).await?;
+        assert_eq!(app.tell_staging_outcomes().await, 0, "an explicit decision is outstanding");
+        app.deps.store.set_task_needs_you(&id, None, app.now()).await?;
         wait_for("the outcome told", Duration::from_secs(30), || async {
             app.tell_staging_outcomes().await;
             let shown = screen(&app, &id);
@@ -3244,6 +3256,9 @@ fn a_staging_outcome_reaches_its_task_once() -> TestResult {
             app.deps.store.untold_staging_requests().await?.is_empty(),
             "told once"
         );
+        app.deps.store.set_activity(&id, Some(Activity::Done), app.now()).await?;
+        assert_eq!(app.capacity_view(&owner).await?.accounts[0].in_use_by, Some(0),
+            "a finished task releases its subscription once its outcome has been delivered");
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

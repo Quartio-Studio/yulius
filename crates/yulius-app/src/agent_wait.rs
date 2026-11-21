@@ -1289,7 +1289,7 @@ impl App {
                 {
                     tracing::warn!(task = %task.id, error = %err, "audit of an armed merge failed");
                 }
-                let next = self.after_merge_of(task, PROFILE_ASKS).await;
+                let next = self.after_merge_of(task, &sandbox, merged.number).await;
                 Verdict::Decided(format!("{}. Its checks passed. {next}", merged.receipt))
             }
             // GitHub could not take the pull request's new title for now: armed until the next
@@ -1558,12 +1558,39 @@ impl App {
     }
 
     /// [`after_merge`] for `task` as its plan is now (a store failure reads as nothing ahead).
-    pub(crate) async fn after_merge_of(&self, task: &TaskRecord, asks: &str) -> String {
+    pub(crate) async fn after_merge_of(
+        &self,
+        task: &TaskRecord,
+        sandbox: &crate::model::SandboxRecord,
+        number: u64,
+    ) -> String {
         let ahead = match self.deps.store.steps(&task.id).await {
             Ok(steps) => crate::delivery::steps_ahead_note(&steps),
             Err(_) => String::new(),
         };
-        after_merge(&ahead, asks)
+        if let Some(staging) = self.staging_note(task, sandbox, Some(number)).await {
+            return format!("{staging}{ahead}");
+        }
+        after_merge(&ahead, PROFILE_ASKS)
+    }
+
+    /// Only a green accepted head can proceed to staging. Bind its instructions to that PR.
+    pub(crate) async fn green_merge_staging_note(
+        &self,
+        task: &TaskRecord,
+        sandbox: &crate::model::SandboxRecord,
+        number: u64,
+        gate: yulius_domain::ci::GateResult,
+    ) -> Option<String> {
+        use yulius_domain::ci::{GateResult, RunState};
+        if matches!(
+            gate,
+            GateResult::Run(Some(RunState::Passed | RunState::Skipped))
+        ) {
+            self.staging_note(task, sandbox, Some(number)).await
+        } else {
+            None
+        }
     }
 
     /// What a merge of `task`'s pull request `number` counts as (SPEC-441 MQ-009): the merged
@@ -1597,15 +1624,26 @@ impl App {
                  known yet: `delivery_status` says it once GitHub answers.{ahead}"
             );
         };
-        merged_text(
+        let gate = self.ci_gate_for_pull(sandbox, number, &pull.head_sha).await;
+        let staging = if next {
+            self.green_merge_staging_note(task, sandbox, number, gate)
+                .await
+        } else {
+            None
+        };
+        let receipt = merged_text(
             number,
             &pull.base,
             &pull.head_sha,
             pull.merge_commit_sha.as_deref(),
-            self.ci_gate_for_pull(sandbox, number, &pull.head_sha).await,
-            next,
+            gate,
+            next && staging.is_none(),
             &ahead,
-        )
+        );
+        match staging {
+            Some(note) => format!("{receipt} {note}{ahead}"),
+            None => receipt,
+        }
     }
 
     /// The state `yulius wait` compares (local records only).

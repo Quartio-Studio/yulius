@@ -1789,6 +1789,56 @@ async fn retrying_a_restored_arm_does_not_import_an_unrelated_stale_arm_file_ent
 }
 
 #[tokio::test]
+async fn a_person_merging_an_armed_head_tells_the_agent_which_revision_to_stage() -> TestResult {
+    let f = fixture().await?;
+    f.advance_dev_with("yulius.toml", &format!(
+        "{YULIUS_TOML}\n[cd.dev]\n[cd.prod]\n[cd.staging]\nstage = \"dev\"\nmerge_first = true\ndeploy = \"d\"\nverify = \"v\"\nrollback = \"r\"\nmigrations = \"none: stateless\"\n"
+    ))?;
+    let tree = f.task(1, &[("owner.txt", "change")]).await?;
+    let head = git(&tree, &["rev-parse", "HEAD"])?;
+    f.arm(1, &tree).await?;
+    f.record_passed(&f.h.app, 1, &head).await?;
+    let response = call(
+        &f.h.router,
+        Method::POST,
+        "/api/tasks/t1/delivery/merge",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+    let landed = git(&f.origin, &["rev-parse", f.integration])?;
+    let receipt =
+        f.h.app
+            .agent_wait_state("tok-t1", Some(&head))
+            .await?
+            .merge_outcome
+            .ok_or("receipt")?;
+    assert!(
+        receipt.contains(&format!("your merged revision {}", &landed[..12]))
+            && receipt.contains("cd_deploy {\"environment\":\"staging\"}"),
+        "{receipt}"
+    );
+    let repeated = support::mcp_tool(
+        &f.h,
+        "tok-t1",
+        "delivery_merge",
+        json!({"reviewed_head": head, "review_summary": "approve"}),
+    )
+    .await?;
+    let repeated = support::tool_text(&repeated);
+    let next = repeated["next"].as_str().ok_or("repeated merge receipt")?;
+    assert!(
+        next.contains("it counts as merged on green Yulius CI")
+            && next.contains(&format!("your merged revision {}", &landed[..12]))
+            && next.contains("cd_deploy {\"environment\":\"staging\"}")
+            && !next.contains("Finish what the delivery profile still asks"),
+        "{next}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn the_person_http_merge_keeps_its_receipt_when_the_closed_pr_read_fails() -> TestResult {
     let f = fixture().await?;
     let tree = f.task(1, &[("owner.txt", "change")]).await?;
@@ -5714,6 +5764,15 @@ async fn a_train_skips_the_full_suite_and_the_merged_head_runs_it() -> TestResul
     .await?;
     app.ci_sync_sandbox(&sandbox).await?;
     f.settle(&app).await?;
+    let outcome = f.wait(2, &worktrees[1]).await?["merge_outcome"]
+        .as_str()
+        .ok_or("merge outcome")?
+        .to_owned();
+    assert!(
+        outcome.contains("cd_deploy {\"environment\":\"staging\"}")
+            && outcome.contains("final staging step"),
+        "{outcome}"
+    );
     let mut trains = 0;
     for run in f.runs(&app).await? {
         if !matches!(run.reference, CiRef::Train(_)) {

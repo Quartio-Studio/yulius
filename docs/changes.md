@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- Merge-first tasks show their full-suite and staging waits until Yulius delivers the outcome.
+  [SPEC-597](../.ai/specs/SPEC-597-tests-that-hold-under-a-loaded-host-and.md)
 - Load-sensitive browser and merge-train tests wait for observable progress under contention.
   The Docker smoke fixture holds its first result until the browser displays it.
   [SPEC-597](../.ai/specs/SPEC-597-tests-that-hold-under-a-loaded-host-and.md)
