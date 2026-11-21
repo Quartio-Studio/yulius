@@ -152,6 +152,12 @@ class CompileCache(unittest.TestCase):
         self.assertEqual((cache / ".yulius-mbx-v1").read_bytes(), b"mbx-v1\n")
 
     def test_terminating_the_launcher_stops_its_descendants_and_keeps_the_lease_private(self):
+        self.check_cached_cancellation(scratch=False)
+
+    def test_cancelling_a_cached_disposable_target_reaps_its_backend(self):
+        self.check_cached_cancellation(scratch=True)
+
+    def check_cached_cancellation(self, scratch):
         import fcntl
         import select
         import signal
@@ -166,22 +172,30 @@ class CompileCache(unittest.TestCase):
             self.cargo.write_text("#!/usr/bin/env python3\nimport os,signal,socket,sys\n"
                                   "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
                                   "s=socket.socket(socket.AF_UNIX);s.connect(sys.argv[2])\n"
-                                  "s.sendall(repr([os.readlink('/proc/self/fd/'+x) for x in os.listdir('/proc/self/fd') "
-                                  "if os.path.exists('/proc/self/fd/'+x)]).encode());signal.pause()")
+                                  "s.sendall((str(os.getpid())+chr(10)+repr([os.readlink('/proc/self/fd/'+x) for x in os.listdir('/proc/self/fd') "
+                                  "if os.path.exists('/proc/self/fd/'+x)])).encode());signal.pause()")
             mbx = self.task / ".tools/bin/mbx"
-            mbx.write_text('#!/bin/sh\n"$CARGO" "$@"\n')
+            mbx.write_text('#!/bin/sh\n' + ('exec ' if scratch else '') + '"$CARGO" "$@"\n')
             mbx.chmod(0o755)
             env = self.cargo_env(home, self.cargo)
-            proc = subprocess.Popen([self.task / "scripts/cargo", "run", ready], env=env,
+            target_root = self.sandbox / "scratch"
+            env["YULIUS_BUILD_SCRATCH"] = str(target_root)
+            flag = ["--scratch-target"] if scratch else []
+            backend = None
+            proc = subprocess.Popen([self.task / "scripts/cargo", *flag, "run", ready], env=env,
                                     stdin=subprocess.DEVNULL, start_new_session=True)
             try:
                 conn, _ = listener.accept()
                 with conn:
-                    descriptors = conn.recv(4096).decode()
+                    pid, descriptors = conn.recv(4096).decode().split("\n", 1)
+                    backend = int(pid)
                     proc.terminate()
                     proc.wait(timeout=8)
                     self.assertTrue(select.select([conn], [], [], 1)[0], "Cargo child survived cancellation")
                     self.assertEqual(conn.recv(1), b"")
+                    backend = None
+                    if scratch:
+                        self.assertEqual(list(target_root.iterdir()), [])
                     self.assertNotIn(str(self.sandbox) + "'", descriptors)
                     lease = os.open(self.sandbox, os.O_RDONLY | os.O_DIRECTORY)
                     try:
@@ -189,6 +203,11 @@ class CompileCache(unittest.TestCase):
                     finally:
                         os.close(lease)
             finally:
+                if backend is not None:
+                    try:
+                        os.kill(backend, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
                 try:
                     os.killpg(proc.pid, signal.SIGKILL)
                 except ProcessLookupError:
@@ -219,13 +238,14 @@ class CompileCache(unittest.TestCase):
         env = self.caller_fixture("print(os.read(int(os.environ['TOKEN_FD']),1).decode())")
         read, write = os.pipe()
         try:
-            os.write(write, b"X")
-            env.update(CARGO_MAKEFLAGS=f"-j --jobserver-auth={read},{write}", TOKEN_FD=str(read))
-            result = subprocess.run([self.task / "scripts/cargo", "build"], env=env,
-                                    start_new_session=True, stdin=subprocess.DEVNULL, pass_fds=(read, write),
-                                    capture_output=True, text=True, timeout=5)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout.strip(), "X")
+            for flag in ([], ["--scratch-target"]):
+                os.write(write, b"X")
+                env.update(CARGO_MAKEFLAGS=f"-j --jobserver-auth={read},{write}", TOKEN_FD=str(read))
+                result = subprocess.run([self.task / "scripts/cargo", *flag, "build"], env=env,
+                                        start_new_session=True, stdin=subprocess.DEVNULL, pass_fds=(read, write),
+                                        capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), "X")
         finally:
             os.close(read)
             os.close(write)

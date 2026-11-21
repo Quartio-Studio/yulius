@@ -14,8 +14,13 @@ use std::process::{Command, ExitCode};
 use std::sync::{Arc, atomic::AtomicBool};
 use std::time::{Duration, Instant};
 
-/// The changed-line mutant count that permits a second build and wider scope.
-const WIDE_THRESHOLD: usize = 16;
+/// The most mutants tested at once by default: the most measured (SPEC-506, 2026-11-17).
+const MOST_JOBS: u32 = 7;
+/// Mutants listed per job by default: each job first builds the workspace in a copy of its own,
+/// which pays only when it then tests several mutants (7 jobs tested 8 mutants no sooner than 2).
+const MUTANTS_PER_JOB: usize = 8;
+/// Memory a job may take by default: a copy of the workspace with its build (12 GB here, in the
+/// temporary directory) and the tests it runs.
 const JOB_MEMORY_MB: u64 = 12_000;
 
 /// The process's budget, as Yulius gives it (`YULIUS_CPUS`, `YULIUS_MEMORY_MB`).
@@ -53,12 +58,6 @@ pub struct Settings {
     /// Mutants tested at once (each in a build directory of its own), when `--jobs` names it;
     /// else [`Self::jobs_for`] decides from the mutants listed and the budget.
     pub jobs: Option<u32>,
-    /// A changed contract that warrants a broader review.
-    pub risk: Option<String>,
-    /// Explicitly include unchanged lines of the touched Rust files.
-    pub whole_files: bool,
-    /// Check whether a one-file change can use a recorded rollback test.
-    pub check_proof: bool,
     /// The process's budget.
     pub budget: Budget,
     /// A nextest filter for the `yulius` package's tests in place of the changed ones.
@@ -91,19 +90,12 @@ impl Settings {
             minutes: 30,
             mutant_seconds: 300,
             jobs: None,
-            risk: None,
-            whole_files: false,
-            check_proof: false,
             budget,
             tests: None,
             seconds: None,
         };
         let mut args = args.iter();
         while let Some(option) = args.next() {
-            if option == "--check-proof" {
-                settings.check_proof = true;
-                continue;
-            }
             let value = args
                 .next()
                 .ok_or_else(|| format!("{option} needs a value"))?;
@@ -116,19 +108,8 @@ impl Settings {
             match option.as_str() {
                 "--base" => settings.base.clone_from(value),
                 "--minutes" => settings.minutes = number()?,
-                "--mutant-seconds" => settings.mutant_seconds = number()?.min(300),
+                "--mutant-seconds" => settings.mutant_seconds = number()?,
                 "--jobs" => settings.jobs = Some(u32::try_from(number()?).unwrap_or(u32::MAX)),
-                "--risk"
-                    if matches!(
-                        value.as_str(),
-                        "authorization" | "persistence" | "lifecycle"
-                    ) =>
-                {
-                    settings.risk = Some(value.clone())
-                }
-                "--scope" if value == "files" || value == "lines" => {
-                    settings.whole_files = value == "files"
-                }
                 "--tests" => settings.tests = Some(value.clone()),
                 other => return Err(format!("unknown option {other}")),
             }
@@ -136,27 +117,28 @@ impl Settings {
         Ok(settings)
     }
 
-    fn wider_budget(&self, changed: usize) -> bool {
-        changed >= WIDE_THRESHOLD || self.risk.is_some()
-    }
-
-    /// Parallel workspace builds permitted by size, explicit risk and resource ceilings.
+    /// Mutants tested at once for `listed` mutants (SPEC-506 FST-005): `--jobs` when given, else
+    /// one per [`MUTANTS_PER_JOB`] listed, at least 2, at most a third of the CPUs (the rest is
+    /// the review's and CI's, which run beside it), one per [`JOB_MEMORY_MB`] and [`MOST_JOBS`];
+    /// 2 with no budget, as before.
     #[must_use]
-    pub fn jobs_for(&self, changed: usize) -> u32 {
-        let cap = if self.wider_budget(changed) { 2 } else { 1 };
-        let by_cpu = self.budget.cpus.map_or(2, |cpus| (cpus / 3).max(1));
-        let by_memory = self
-            .budget
-            .memory_mb
-            .map_or(2, |mb| (mb / JOB_MEMORY_MB).clamp(1, 2) as u32);
-        self.jobs.unwrap_or(cap).min(cap).min(by_cpu).min(by_memory)
+    pub fn jobs_for(&self, listed: usize) -> u32 {
+        if let Some(jobs) = self.jobs {
+            return jobs;
+        }
+        let by_mutants = u32::try_from(listed.div_ceil(MUTANTS_PER_JOB)).unwrap_or(u32::MAX);
+        let by_cpus = self.budget.cpus.map_or(2, |cpus| cpus / 3);
+        let jobs = by_mutants.min(by_cpus).clamp(2, MOST_JOBS);
+        match self.budget.memory_mb {
+            Some(mb) => jobs.min(u32::try_from(mb / JOB_MEMORY_MB).unwrap_or(u32::MAX).max(1)),
+            None => jobs,
+        }
     }
 
-    fn bound(&self, changed: usize) -> Duration {
-        let minutes = self
-            .minutes
-            .min(if self.wider_budget(changed) { 30 } else { 10 });
-        Duration::from_secs(self.seconds.unwrap_or(minutes * 60))
+    /// The bound on the whole run.
+    #[must_use]
+    pub fn bound(&self) -> Duration {
+        Duration::from_secs(self.seconds.unwrap_or(self.minutes * 60))
     }
 }
 
@@ -443,7 +425,7 @@ fn campaign(
         .map_err(|e| io::Error::other(format!("cannot lock mutation reports: {e}")))?;
     let diff_file = dir.join("branch.diff");
     std::fs::write(&diff_file, &diff)?;
-    let list = |bound| -> io::Result<Vec<String>> {
+    let list = |bound: Duration| -> io::Result<Vec<String>> {
         let list_path = dir.join("listed.txt");
         let mut command = mutants_command(cargo, root, &head);
         command
@@ -468,78 +450,8 @@ fn campaign(
             .map(str::to_owned)
             .collect())
     };
-    let mut listed = list(settings.bound(0))?;
-    let changed = listed.len();
-    if settings.check_proof {
-        let paths = git(
-            root,
-            &[
-                "diff",
-                "--name-only",
-                "-z",
-                base.trim(),
-                "HEAD",
-                "--",
-                "*.rs",
-                ":(exclude,glob)tools/**",
-                ":(exclude,glob)crates/*/tests/**",
-            ],
-        )?;
-        let files = paths.split_terminator('\0').count();
-        if files != 1
-            || !(1..=8).contains(&changed)
-            || settings.risk.is_some()
-            || settings.whole_files
-        {
-            return Err(io::Error::other(format!(
-                "rollback proof ineligible: {files} product Rust files, {changed} mutants, risk={:?}; run the campaign",
-                settings.risk
-            )));
-        }
-        for mutant in listed {
-            println!("{mutant}");
-        }
-        println!(
-            "base={} scope=lines risk=routine files=1 changed={changed}: eligible for a rollback proof; no campaign ran. Record the changed behavior, failing rollback test and passing restored test.",
-            base.trim()
-        );
-        return Ok(None);
-    }
-    if settings.whole_files {
-        if !settings.wider_budget(changed) {
-            return Err(io::Error::other(
-                "file scope requires 16 changed-line mutants or --risk authorization|persistence|lifecycle",
-            ));
-        }
-        // Treat each touched, surviving Rust file as newly added. Git's literal
-        // pathspecs preserve spaces and glob characters without changing scope.
-        let paths = git(
-            root,
-            &[
-                "diff",
-                "--name-only",
-                "-z",
-                "--diff-filter=ACMRT",
-                base.trim(),
-                "HEAD",
-                "--",
-                "*.rs",
-            ],
-        )?;
-        let empty_tree = git(root, &["hash-object", "-t", "tree", "--stdin"])?;
-        let mut args = plain.to_vec();
-        args.extend([empty_tree.trim(), "HEAD", "--"]);
-        let files: Vec<_> = paths
-            .split_terminator('\0')
-            .map(|p| format!(":(literal){p}"))
-            .collect();
-        if files.is_empty() {
-            return Ok(None);
-        }
-        args.extend(files.iter().map(String::as_str));
-        std::fs::write(&diff_file, git(root, &args)?)?;
-        listed = list(settings.bound(changed))?;
-    }
+    let bound = settings.bound();
+    let listed = list(bound)?;
     if listed.is_empty() {
         println!(
             "No mutant in the Rust lines changed against {}.",
@@ -549,29 +461,15 @@ fn campaign(
     }
     // The product's tests are narrowed where the product is: a filter naming a package the
     // workspace does not have is refused by nextest.
-    let filter = root.join("crates/yulius/Cargo.toml").exists().then(|| {
-        test_filter(
-            settings
-                .tests
-                .as_deref()
-                .or(settings.risk.as_ref().map(|_| "all()")),
-            &changed_tests(&functions),
-        )
-    });
-    let jobs = settings
-        .jobs_for(changed)
-        .min(u32::try_from(listed.len()).unwrap_or(u32::MAX));
-    let scope = if settings.whole_files {
-        "files"
-    } else {
-        "lines"
-    };
-    let risk = settings.risk.as_deref().unwrap_or("routine");
-    let bound = settings.bound(changed);
+    let filter = root
+        .join("crates/yulius/Cargo.toml")
+        .exists()
+        .then(|| test_filter(settings.tests.as_deref(), &changed_tests(&functions)));
+    let jobs = settings.jobs_for(listed.len());
     let (cap_args, cap_env) = budget_caps(settings.budget, jobs);
     println!(
-        "{} mutants in scope={scope}, trigger={risk}, changed-line count={changed}; each tested with nextest ({}), {} at once{}, \
-         {} s each at most, {} s in all.",
+        "{} mutants in the changed lines; each tested with nextest ({}), {} at once{}, \
+         {} s per mutant test phase at most, {} s in all.",
         listed.len(),
         filter.as_deref().unwrap_or("all tests"),
         jobs,
@@ -581,7 +479,7 @@ fn campaign(
             .map(|cpus| format!(" within {cpus} CPUs"))
             .unwrap_or_default(),
         settings.mutant_seconds,
-        bound.as_secs()
+        settings.bound().as_secs()
     );
     let scratch_parent = std::env::var_os("YULIUS_BUILD_SCRATCH")
         .map(std::path::PathBuf::from)
@@ -696,7 +594,7 @@ fn campaign(
         }
     }
     println!(
-        "base={} scope={scope} risk={risk} changed={changed} jobs={jobs} test_timeout={}s baseline={baseline} tests=[{}] {}",
+        "base={} scope=lines jobs={jobs} test_timeout={}s baseline={baseline} tests=[{}] {}",
         base.trim(),
         settings.mutant_seconds,
         filter.as_deref().unwrap_or("all"),
@@ -872,9 +770,6 @@ mod tests {
             // The default jobs within a budget of 2 CPUs: the pinned tool takes the caps
             // (`--jobserver-tasks`) and the run's own call of `jobs_for` (SPEC-506, review round 2).
             jobs: None,
-            risk: None,
-            whole_files: false,
-            check_proof: false,
             budget: Budget {
                 cpus: Some(2),
                 memory_mb: None,
@@ -933,40 +828,6 @@ mod tests {
         assert!(outcomes.held(), "{outcomes:?}");
         assert!(outcomes.caught.iter().any(|m| m.contains("two")));
         assert!(outcomes.baseline_passed);
-        let proof = Settings {
-            check_proof: true,
-            ..settings(&base)
-        };
-        assert_eq!(run(&dir, "cargo", &proof)?, None);
-        assert!(
-            run(
-                &dir,
-                "cargo",
-                &Settings {
-                    risk: Some("persistence".into()),
-                    ..proof.clone()
-                }
-            )
-            .is_err_and(|e| e.to_string().contains("rollback proof ineligible"))
-        );
-        let small = Settings {
-            whole_files: true,
-            ..settings(&base)
-        };
-        assert!(
-            run(&dir, "cargo", &small)
-                .is_err_and(|e| e.to_string().contains("16 changed-line mutants"))
-        );
-        let wide = Settings {
-            risk: Some("lifecycle".into()),
-            ..small
-        };
-        let expanded = run(&dir, "cargo", &wide)?.ok_or("no file scope")?;
-        assert!(
-            expanded.caught.iter().any(|m| m.contains("one ->")),
-            "{expanded:?}"
-        );
-        assert!(expanded.held());
         let (docs, docs_base) = fixture("docs")?;
         commit(&docs, "README.md", "words\n")?;
         assert_eq!(run(&docs, "cargo", &settings(&docs_base))?, None);
@@ -1116,12 +977,11 @@ mod tests {
         );
         assert_eq!(Settings::parse(&[], "dev")?.base, "origin/dev");
         assert!(Settings::parse(&["--minutes".to_owned(), "0".to_owned()], "dev").is_err());
-        assert!(Settings::parse(&["--check-proof".into()], "dev").is_ok());
         assert!(Settings::parse(&["--other".to_owned(), "1".to_owned()], "dev").is_err());
         Ok(())
     }
 
-    /// Routine, larger and risk-declared changes respect operator ceilings.
+    /// `YULIUS_MEMORY_MB` and [`MOST_JOBS`]; `--jobs` still decides; with no budget it stays 2.
     #[test]
     fn the_jobs_follow_the_mutants_and_the_budget() -> Result<(), String> {
         let env = |cpus: Option<&'static str>, memory: Option<&'static str>| {
@@ -1137,21 +997,14 @@ mod tests {
         };
         let session = Budget::read(env(Some("22"), Some("232566")));
         // A fix's few mutants: no more than before (7 jobs finished 8 no sooner than 2).
-        assert_eq!(jobs(&[], session, 8)?, 1);
-        assert_eq!(jobs(&[], session, 36)?, 2);
-        assert_eq!(jobs(&[], session, 15)?, 1);
-        assert_eq!(jobs(&[], session, 16)?, 2);
-        assert_eq!(jobs(&["--risk", "authorization"], session, 1)?, 2);
-        assert!(jobs(&["--risk", "unspecified"], session, 1).is_err());
-        let settings = Settings::parse_with(&[], "dev", session)?;
-        assert_eq!(settings.bound(15), Duration::from_secs(600));
-        assert_eq!(settings.bound(16), Duration::from_secs(1800));
+        assert_eq!(jobs(&[], session, 8)?, 2);
+        assert_eq!(jobs(&[], session, 36)?, 5);
         // A whole change: a third of the CPUs.
-        assert_eq!(jobs(&[], session, 260)?, 2);
-        assert_eq!(jobs(&[], Budget::read(env(Some("64"), None)), 260)?, 2);
-        // Smaller CPU allocations lower the worker ceiling.
-        assert_eq!(jobs(&[], Budget::read(env(Some("4"), None)), 260)?, 1);
-        assert_eq!(jobs(&[], Budget::read(env(Some("12"), None)), 260)?, 2);
+        assert_eq!(jobs(&[], session, 260)?, 7);
+        assert_eq!(jobs(&[], Budget::read(env(Some("64"), None)), 260)?, 7);
+        // A small budget still gets 2.
+        assert_eq!(jobs(&[], Budget::read(env(Some("4"), None)), 260)?, 2);
+        assert_eq!(jobs(&[], Budget::read(env(Some("12"), None)), 260)?, 4);
         // A small host's memory bounds it, down to one job.
         assert_eq!(
             jobs(&[], Budget::read(env(Some("22"), Some("30000"))), 260)?,
@@ -1164,8 +1017,8 @@ mod tests {
         // No budget, or one that does not parse: 2, as before.
         assert_eq!(jobs(&[], Budget::read(env(None, None)), 260)?, 2);
         assert_eq!(jobs(&[], Budget::read(env(Some("lots"), None)), 260)?, 2);
-        // An explicit job count can only narrow the budget.
-        assert_eq!(jobs(&["--jobs", "3"], session, 8)?, 1);
+        // `--jobs` decides.
+        assert_eq!(jobs(&["--jobs", "3"], session, 8)?, 3);
         // The run stays within the CPUs: the jobserver gets them, each job's tests its share.
         assert_eq!(
             budget_caps(session, 7),

@@ -484,7 +484,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0436 -->
 <!-- ADR 0437 -->
 <!-- ADR 0438 -->
-- [0439](0439-build-scratch-and-mutation-budgets.md): Build scratch lives on disk and changed lines determine the mutation budget.
+- [0439](0439-delivery-checks-mutations-by-hand-and-builds-on-disk.md): Delivery checks mutations by hand and requested campaigns build on disk.
 <!-- ADR 0439 -->
 <!-- ADR 0440 -->
 <!-- ADR 0441 -->

@@ -1,6 +1,6 @@
 //! Restart reconciliation of run directories (SPEC-002 §7.1, DATA-002, AC-NFR-2).
 //!
-//! Reconciliation only observes and, when asked, terminates; it never respawns anything.
+//! Reconciliation observes process identity, terminates when asked and reclaims stopped build scratch.
 
 use std::path::Path;
 use std::time::Duration;
@@ -97,15 +97,36 @@ fn parse_boottime(text: &str) -> Option<String> {
 /// mistaken for the run.
 #[must_use]
 pub fn inspect_run_dir(run_dir: &Path) -> RunDirState {
-    if let Ok(Some(exit)) = read_exit(run_dir) {
-        return RunDirState::Exited(exit);
+    let exit = read_exit(run_dir).ok().flatten();
+    if let Some(exit) = &exit
+        && !crate::build_scratch::recorded(run_dir)
+    {
+        return RunDirState::Exited(exit.clone());
     }
-    let Ok(Some(status)) = read_status(&run_dir.join(STATUS_FILE)) else {
-        return RunDirState::Missing;
+    let status = match read_status(&run_dir.join(STATUS_FILE)) {
+        Ok(Some(status)) => status,
+        Ok(None) => {
+            if let Err(error) = crate::build_scratch::reclaim_unrecorded(run_dir) {
+                eprintln!("cannot reclaim unrecorded build scratch: {error}");
+            }
+            return exit.map_or(RunDirState::Missing, RunDirState::Exited);
+        }
+        Err(_) => return exit.map_or(RunDirState::Missing, RunDirState::Exited),
     };
-    let same_boot = current_boot_id().is_some_and(|id| id == status.boot_id);
+    let boot = current_boot_id();
+    let same_boot = boot.as_deref() == Some(status.boot_id.as_str());
     let host_alive = same_boot && host_matches(&status).is_some();
     let child_alive = same_boot && child_matches(&status).is_some();
+    if boot.is_some()
+        && !host_alive
+        && !child_alive
+        && let Err(error) = crate::build_scratch::reclaim(run_dir)
+    {
+        eprintln!("cannot reclaim finished build scratch: {error}");
+    }
+    if let Some(exit) = exit {
+        return RunDirState::Exited(exit);
+    }
     RunDirState::Recorded {
         status,
         host_alive,
@@ -135,6 +156,9 @@ pub enum TerminateError {
     /// The recorded process identities could not be read.
     #[error("cannot read the process status: {0}")]
     Status(String),
+    /// The run stopped but removing its recorded scratch failed.
+    #[error("cannot reclaim build scratch: {0}")]
+    Scratch(#[from] std::io::Error),
     /// A signal could not be delivered.
     #[error("cannot signal process {pid}: {errno}")]
     Signal {
@@ -161,7 +185,29 @@ pub fn terminate_run_dir(run_dir: &Path) -> Result<(), TerminateError> {
         .map_err(|error| TerminateError::Status(error.to_string()))?
     {
         terminate_recorded(&status)?;
+        if current_boot_id().is_some() {
+            crate::build_scratch::reclaim(run_dir)?;
+        }
     }
+    Ok(())
+}
+
+/// The server has reaped this host. The only scratch-bearing children are
+/// bubblewrap processes with --die-with-parent. Also terminate a recorded
+/// child that is still shutting down before removing its build tree.
+pub(crate) fn reclaim_after_host_exit(run_dir: &Path) -> Result<(), TerminateError> {
+    if !crate::build_scratch::recorded(run_dir) {
+        return Ok(());
+    }
+    if let Some(status) = read_status(&run_dir.join(STATUS_FILE))
+        .map_err(|error| TerminateError::Status(error.to_string()))?
+    {
+        if current_boot_id().is_none() {
+            return Err(TerminateError::Status("unknown boot identity".into()));
+        }
+        terminate_recorded(&status)?;
+    }
+    crate::build_scratch::reclaim(run_dir)?;
     Ok(())
 }
 

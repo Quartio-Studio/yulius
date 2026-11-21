@@ -3,55 +3,50 @@ yulius-task: ba2b5b3f-2b04-4241-8917-82815c6f57af
 status: in-progress
 ---
 
-# SPEC-600 Disk scratch and change-sized mutation testing
+# SPEC-600 Disk build scratch and by-hand mutation checks
 
 ## Goal
 
-Keep workspace copies and temporary Cargo targets on disk. Give routine changes a short, line-scoped campaign and preserve mutation evidence at high-risk boundaries.
+Keep workspace copies and disposable Cargo targets on disk. Use by-hand mutation checks for every delivery. Run a project's mutation command only when the task asks for that campaign by name.
 
 ## Context
 
-On 2026-11-21 the owner measured 105 minutes waiting for mutation tests in 22 Codex sessions (16% of agent time). Three sessions held 231 GiB on a 377 GiB host. The existing workspace peer baseline and outcome accounting are specified in SPEC-533 and SPEC-569. Parallel task #584 supplies independent benchmark evidence.
+On 2026-11-21 the owner measured 105 minutes waiting for mutation tests in 22 Codex sessions (16% of agent time). Three sessions held 231 GiB on a 377 GiB host. Later that day the owner replaced the proposed size thresholds with the instance's by-hand policy and requested its exact wording from the installed skills. Parallel task #584 supplied the independent before-and-after measurements.
 
 ## Requirements
 
-- **MTS-001** Give agent and CI build commands private disk scratch. Reclaim finished campaigns and run-owned alternate targets. Bound each contained session's ordinary /tmp at 1 GiB. A write past capacity returns ENOSPC.
-- **MTS-002** Default to changed lines with one worker and a 10-minute campaign limit. At 16 listed changed-line mutants or an explicit risk declaration (authorization, persistence or process lifecycle), permit the wider budget of 30 minutes and at most two workers within the existing resource ceilings. Risky changes exercise affected integration tests, defaulting to all when no filter is supplied. Explicit file scope covers the touched Rust files. Record scope, trigger, limits, baseline and outcomes. Follow-up fixes use the reviewed head. A routine one-file change with one behavior and 1–8 changed-line candidates may use the list-only eligibility check with a recorded failing rollback and passing restoration.
-- **MTS-003** Put the rule in the repository and its bootstrap workflow, skill and review guidance. Existing external repositories receive edits only through their own tasks.
-- **MTS-004** Record elapsed time and measured memory before and after on a real mutation run. Preserve comparable test and mutation outcomes, distinguish scratch from process memory, and identify measurement limits.
+- **MTS-001** Give contained agent and CI build commands private disk scratch. Reclaim finished campaigns and run-owned alternate targets, including after cancellation. Bound each contained session's /tmp at 1 GiB. A write past capacity returns ENOSPC.
+- **MTS-002** Undo the lines a delivery's tests should hold, observe the tests fail, restore the lines and record the failure. The reviewer may undo a doubtful line. Keep ADR-0141's requirement to fix a test that cannot fail in the same PR. Preserve scripts/dev mutants as an on-request command.
+- **MTS-003** Carry the installed policy into the four catalog skills, local instructions and skills, review and verification documents and their enforced contracts. The bootstrap gives this guidance to fresh projects. Existing external repositories receive changes only through their own tasks. After merge, request staging once and end the task.
+- **MTS-004** Record elapsed time and measured memory before and after on a real mutation run, distinguishing tmpfs from process memory. Use the independent measurements. Run no new campaign for this delivery.
 
 ## Plan
 
-- [x] Specify scratch ownership and the mutation budgets
 - [x] Bound session tmpfs and provide run-owned disk scratch
-- [x] Apply change-sized mutation scope and clean campaign build trees
-- [x] Install the same policy through bootstrap and verify its evidence
 - [x] Reap interrupted builds and verify current-run baseline evidence
-- [x] Verify the rollback-proof path for a routine one-file fix
-- [ ] Measure the real campaign and deliver the reviewed change
+- [x] Record independent before-and-after measurements
+- [x] Install the instance's by-hand delivery policy and bootstrap contract
+- [x] Preserve Cargo cancellation and inherited jobserver tokens
+- [x] Reclaim attempt scratch after forced host termination
+- [ ] Verify by hand and deliver the reviewed change
 
 ## Acceptance criteria
 
-- A contained run sees the documented capacity and a disk build path. Concurrent runs own distinct scratch. Finishing or failing a build releases its copies while retaining diagnostic results.
-- A small diff uses a single job. The size boundary, declared risk and smaller CPU or memory budgets choose reproducible limits. Baseline failures, misses, timeouts and unreached mutants remain visible.
-- Fresh bootstrap instructions describe the same thresholds and reviewer evidence. The measured result and reviewed head reach dev through Yulius CI.
+- Concurrent agent and CI runs own separate disk scratch. Completed and forcibly ended runs release their copies. A session's ordinary /tmp reports the documented limit and a write past it fails with ENOSPC.
+- The catalog and repository tell authors and reviewers when and how to check their tests by hand. The named on-request command uses disk scratch. An installed bootstrap carries the same rule.
+- The spec records real elapsed time, tmpfs and disk allocations, limitations, and by-hand red/restored-green checks. The reviewed head merges into dev on green Yulius CI, followed by one staging request.
 
 ## Test plan
 
-Test the plain and joined bubblewrap arguments and the actual mount where user namespaces are available. Exercise scratch lifetime on successful, failing and bounded campaigns, the policy boundaries, and the real workspace peer fixture. Check the built-in catalog guidance and repository contracts. Compare a fixed change before and after with the pinned tool.
+Exercise plain and joined bubblewrap arguments and the actual mount where user namespaces are available. Check scratch lifetime on success, failure and forced termination, including a concurrent live run. Verify Cargo jobserver descriptors and interactive and cached cancellation. Run the affected catalog, onboarding, process-host and repository contracts. Undo targeted behaviors to prove their tests fail and restore them before delivery.
 
 ## Decisions
 
-Keep /tmp for small temporary files. Allocate build scratch per run and per campaign, retaining only the campaign report. Use changed-line mutant count to budget builds and a declared risk to broaden the tests for those lines. Preserve the existing workspace baseline for every verdict.
-
+ADR-0439 replaces the delivery default of ADR-0347 with the owner's by-hand rule. Disk scratch is private to the attempt and the command. Keep the matched workspace baseline for explicitly requested campaigns.
 
 ## Evidence
 
-The original containment argument tests failed when required to show a size on /tmp. The budget test failed when eight changed-line mutants were required to use one worker. All 46 process-host unit tests passed after the mount change. The ownership test passed on the quota-accounted scratch location for both agent and CI launches. A disposable Linux container reported exactly 1,073,741,824 bytes and returned ENOSPC to a 1,073,741,825-byte allocation. Nested bubblewrap was denied by this session, so the live contained-agent test skipped its mount assertions.
-
-The real xtask peer fixture rejected a broken baseline, reported two missed mutants, then caught both after the peer asserted the result. A file-scope run included an unchanged function and caught all three. A timed campaign reported unreached mutants. Forcing the fixture to check its ordinary temp root failed while it saw the build directory. Passing the temporary Cargo configuration restored /tmp for nextest while the copies stayed on disk. The catalog guidance test and the disposable Cargo target success/failure check passed.
-
-For fresh projects the onboarding prompt and infra-bootstrap workflow point to the rule in the built-in infra-bootstrap skill. That skill installs the thresholds, disk scratch and evidence requirements into the project's own guidance and mutation command. The bundled delivery, TDD and review skills use the same thresholds. Changes to existing external repositories belong to tasks in those repositories.
+The original containment argument tests failed when required to show a size on /tmp. All 46 process-host unit tests passed after the mount change. The ownership test passed for both agent and CI launches. A disposable Linux container reported exactly 1,073,741,824 bytes and returned ENOSPC to a 1,073,741,825-byte allocation. Nested bubblewrap was denied by this session, so the live contained-agent test skipped its mount assertions.
 
 ### Matched real mutation runs
 
@@ -62,10 +57,18 @@ Task #584 replayed the full yulius-contracts crate and the redraw change and reg
 | Before, 14e01f438 | 2 | 39.611 s | 903,884,800 B | 904,015,872 B on tmpfs | 874,444 KiB |
 | Disk campaign, fb9d5a07b | 1 | 127.762 s | 0 B | 581,419,008 B on ext4 | 849,368 KiB |
 
-The samples used statvfs at about 200 ms intervals and getrusage for child RSS. A disk-only control with the old two-worker settings took 50.424 s. A disk-only one-worker control took 77.790 s. A preliminary disk run took 120.198 s. These sequential trials shared a loaded host; the one-minute load average reached 287 during the fb9d5a07b replay. The measured campaign reduced tmpfs use and took longer on this change. The list-only rollback-proof path addresses the fixed build cost for eligible routine changes with existing behavioral evidence.
+The disk campaign was measured on an intermediate implementation before the owner replaced change-sized campaigns with by-hand checks. The final on-request tool keeps the pre-existing worker and time settings. No elapsed time for a final-head campaign is claimed.
 
-### Lightweight proof and review corrections
+The samples used statvfs at about 200 ms intervals and getrusage for child RSS. A disk-only control with the old two-worker settings took 50.424 s, caught all seven mutants and used 1,037,381,632 B on ext4 with zero sampled tmpfs growth. A disk-only one-worker control took 77.790 s. A preliminary disk run took 120.198 s. These sequential trials shared a loaded host; the one-minute load average reached 287 during the fb9d5a07b replay. The measured campaign reduced tmpfs use and took longer on this change.
 
-On the same real redraw fix, `scripts/dev mutants --check-proof --base HEAD^` listed the seven eligible candidates in 0.572 s and started zero workspace builds. With the new regression test present, replacing only the implementation of Redraw::process with its parent revision made `cargo test -p yulius-contracts a_codex_erase_from_home_proves_a_repaint_across_read_boundaries` fail at split 0 (exit 101, 29.394 s including cold compilation). Restoring the implementation passed the identical test (exit 0, 7.637 s). Eligibility plus both commands took 37.603 s. A previously recorded equivalent rollback and restoration require only the eligibility check at review.
 
-Independent review of fb9d5a07b reproduced a retained Cargo target and a live backend after SIGTERM with a foreground PTY. The PTY regression failed with a retained target before the fix, then read interactive input, forwarded termination, reaped the child and observed an empty scratch parent. The exact reviewed runner also credited a stale caught.txt when the current process ignored TERM; the regression failed after 8.10 s on that head. Both discovery and execution now keep a dedicated POSIX session, use the campaign deadline and escalate after three seconds. The current run rotates old reports and requires its own recorded successful baseline. Its summary includes the filter, baseline state and mutant test-phase timeout. The pinned tool applies its 300 s timeout to testing; the whole-campaign deadline covers discovery, builds and tests.
+### Delivery checks by hand
+
+Reverting the by-hand paragraph in the local verification skill made the repository policy test fail on that file. Restoring the paragraph passed the same test. The installed mutation, re-review and staging passages matched their relevant catalog copies byte for byte. All 22 skill tests passed. A workspace campaign already started under the original brief had stopped at the unmutated baseline with zero mutants tested. Its catalog test found a 1,541-byte workflow exceeding the existing 1,444-byte limit. The shortened bootstrap points to the owning skill. No campaign was started after the owner's policy change.
+
+Removing the two tmpfs size arguments and the scratch ownership receipt by hand failed three host tests: the plain mount arguments, the joined mount arguments, and forced termination retaining its build tree. Restoring those lines restored the checks. Forcing the direct Cargo launcher to close inherited file descriptors made the jobserver token test fail with EBADF. Restoring inheritance passed the same test. The cached, noninteractive cancellation regression failed on the nested supervisors with a live Cargo child after termination. The corrected single supervisor reaped that backend and removed the disposable target. All 23 compiler-cache tests passed, including foreground terminal input and cancellation.
+
+Requested campaigns retain reports separately from their disk workspace copies. Before the policy change, a real peer fixture failed its unmutated baseline, reported two misses, then caught both with the restored peer assertion. A timed-out command that left stale verdicts had previously claimed catches from its predecessor. Its regression failed on the previous runner and passed with report rotation, a verified current baseline and reaped cancellation. Security scanning is disabled for this project.
+
+
+The final process-host suite passed 49 unit tests and 16 supervision tests. The two containment test entry points passed with the live nested mount limitation recorded above. The supervisor reaped a real process-group leader after SIGKILL and removed its populated scratch while another attempt retained its build. Reconciliation retained a starting host, reclaimed a previous-boot attempt and refused to delete a replacement directory. Both shipped workflow tests and all 13 onboarding tests passed. The repository contracts and formatting passed.

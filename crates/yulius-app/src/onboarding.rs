@@ -131,8 +131,7 @@ CI runs them; in a monorepo every project (each app, client, package or service 
 build) gets a CI job running its own checks, so no later task meets a project without CI. Findings \
 that already exist do not change application code here: commit the tool's baseline or allowlist, \
 or scope the check to what passes today, so the gate passes now and fails on new findings, and \
-file one issue (`issue_create`) to burn the baseline down. Install the change-sized mutation budgets \
- and disk scratch rule from infra-bootstrap in the project guidance and tooling. Prove every job as described above.";
+file one issue (`issue_create`) to burn the baseline down. Install the by-hand mutation checks and disk scratch rule from infra-bootstrap in the project guidance and tooling. Prove every job as described above.";
 
 /// CD (deployment) at onboarding (SPEC-134 CDK-001): what deploys today is found and written down
 /// as `[cd.dev]` and `[cd.prod]`, both explicit even when empty.

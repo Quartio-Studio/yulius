@@ -10,7 +10,7 @@ FST-005, task #488: the run starts with the first review and runs beside it, a l
 is run on its own lines, and the jobs follow the mutants listed and the budget in place of "2
 jobs" below (see Amendment).
 
-The current scope, scratch ownership and worker and time ceilings are specified in [ADR-0439](0439-build-scratch-and-mutation-budgets.md).
+Superseded on 2026-11-21 for delivery campaigns by [ADR-0439](0439-delivery-checks-mutations-by-hand-and-builds-on-disk.md).
 
 ## Context
 

@@ -253,8 +253,10 @@ pub async fn spawn_host(
     let mut child = command.spawn().map_err(io_error("spawn ptyhost"))?;
     let host_pid = child.id().unwrap_or(0);
     let (sender, mut exit) = watch::channel(None);
+    let cleanup_dir = run_dir.to_owned();
     let waiter = tokio::spawn(async move {
         let status = child.wait().await;
+        let status_reaped = status.is_ok();
         let exit = status.map_or(
             HostProcessExit {
                 code: None,
@@ -266,6 +268,14 @@ pub async fn spawn_host(
             },
         );
         let _ = sender.send(Some(exit));
+        if status_reaped {
+            let _ = tokio::task::spawn_blocking(move || {
+                if let Err(error) = crate::reconcile::reclaim_after_host_exit(&cleanup_dir) {
+                    eprintln!("cannot reclaim stopped host's build scratch: {error}");
+                }
+            })
+            .await;
+        }
     });
     match wait_ready(run_dir, &exit, timeout).await {
         Ok(status) => Ok(SpawnedHost {

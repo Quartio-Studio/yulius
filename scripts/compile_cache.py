@@ -83,7 +83,10 @@ def run_session(command, env, lease=None, *, interactive=False):
     signals = (signal.SIGHUP, signal.SIGINT, signal.SIGQUIT, signal.SIGTERM)
     previous = {sig: signal.signal(sig, cancel) for sig in signals}
     try:
-        child = subprocess.Popen(command, env=env, pass_fds=() if lease is None else (lease,), process_group=0)
+        # Direct Cargo inherits exactly the descriptors its caller left inheritable,
+        # including a Make jobserver. Only the private lease crosses into mbx.
+        child = subprocess.Popen(command, env=env, close_fds=lease is not None,
+                                 pass_fds=() if lease is None else (lease,), process_group=0)
         if terminal is not None:
             try:
                 foreground(child.pid)

@@ -12,20 +12,25 @@ root = Path(__file__).resolve().parent.parent
 args = sys.argv[1:]
 os.environ["PATH"] = str(root / ".tools/bin") + os.pathsep + os.environ.get("PATH", "")
 
-# A disposable target is owned by this invocation. In an older/local session
-# the checkout's target directory provides the disk fallback.
-if args[:1] == ["--scratch-target"]:
-    parent = Path(os.environ.get("YULIUS_BUILD_SCRATCH", root / "target"))
+scratch_target = args[:1] == ["--scratch-target"]
+if scratch_target:
+    args = args[1:]
+
+
+def run_build(command, env, lease=None):
+    if not scratch_target:
+        return run_session(command, env, lease)
+    parent = Path(env.get("YULIUS_BUILD_SCRATCH", root / "target"))
     parent.mkdir(exist_ok=True, parents=True)
     with tempfile.TemporaryDirectory(prefix="cargo-", dir=parent) as build:
-        command = [__file__, *args[1:]]
-        env = dict(os.environ, CARGO_TARGET_DIR=build)
-        status = run_session(command, env, interactive=True)
-    sys.exit(status if status >= 0 else 128 - status)
+        return run_session(command, dict(env, CARGO_TARGET_DIR=build), lease, interactive=True)
 
 
 def plain(cargo):
     os.environ["CARGO"] = cargo
+    if scratch_target:
+        status = run_build([cargo, *args], os.environ)
+        sys.exit(status if status >= 0 else 128 - status)
     os.execvp(cargo, [cargo, *args])
 
 
@@ -92,7 +97,7 @@ try:
                    MBX_RESTORE_HARDLINK="0", MBX_SCHEDULER="0", MBX_BUILD_SCRIPT_EXECUTION="0",
                    MBX_CC="0", MBX_SHARE_WORKSPACE_ROOT="0", MBX_SHARE_OUT_DIR="0",
                    MBX_LEARNED_INCREMENTAL="0", MBX_DISPLAY="plain", MBX_SUMMARY="full")
-        status = run_session([mbx, *args], env, lease)
+        status = run_build([mbx, *args], env, lease)
         bypasses = sum(1 for _ in Path(scratch).glob("bypass.*"))
         if bypasses:
             print(f"yulius[cache]: {bypasses} compiler invocations bypassed for unknown or procedural-macro inputs",
