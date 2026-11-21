@@ -104,9 +104,8 @@ pub fn run_host(run_dir: &Path) -> Result<(), HostError> {
     let absolute = std::path::absolute(run_dir).unwrap_or_else(|_| run_dir.to_path_buf());
     let run_dir = absolute.as_path();
     // Taken first: a run directory removed while the host starts is still detected as orphaned.
-    let control = fs::File::open(run_dir).map_err(io_error("open run directory"))?;
     let identity = dir_identity(run_dir);
-    let mut launch = load_launch(run_dir)?;
+    let launch = load_launch(run_dir)?;
     let attempt = launch.attempt_id.clone();
     let fail = |reason, error| record_failure(run_dir, &attempt, reason, error);
     // A run of an isolated sandbox joins its holder before anything else, while this process
@@ -131,16 +130,6 @@ pub fn run_host(run_dir: &Path) -> Result<(), HostError> {
         .map_err(io_error("chmod pty.sock"))
         .map_err(|e| fail(ExitReason::HostError, e))?;
 
-    // Keep build trees inside the measured sandbox filesystem. The guard outlives
-    // the child and reclaims alternate targets even if their command was interrupted.
-    let scratch = attach_build_scratch(
-        &control,
-        &launch.containment,
-        &mut launch.env,
-        &launch.token_sha256,
-    )
-    .map_err(io_error("create build scratch"))
-    .map_err(|e| fail(ExitReason::SpawnFailed, e))?;
     let command = prepare_command(&launch).map_err(|e| fail(ExitReason::SpawnFailed, e))?;
     let size = PtySize {
         rows: launch.rows,
@@ -184,37 +173,7 @@ pub fn run_host(run_dir: &Path) -> Result<(), HostError> {
         });
     }
     let linger = Duration::from_millis(u64::from(launch.linger_ms));
-    wait_for_completion(&shared, linger)?;
-    if let Some(scratch) = scratch {
-        scratch.close().map_err(io_error("remove build scratch"))?;
-    }
-    Ok(())
-}
-
-fn attach_build_scratch(
-    run_dir: &fs::File,
-    containment: &Containment,
-    env: &mut std::collections::BTreeMap<String, String>,
-    token: &str,
-) -> io::Result<Option<crate::build_scratch::Guard>> {
-    let Containment::Bubblewrap(spec) = containment else {
-        return Ok(None);
-    };
-    if !env.contains_key("YULIUS_TASK_WORKTREE") && !env.contains_key("YULIUS_CI_RUN") {
-        return Ok(None);
-    }
-    // The existing sandbox bind exposes this path to the contained child.
-    // Never add a host bind for a child-selected path in a writable sandbox.
-    let scratch = tempfile::Builder::new()
-        .prefix("build-")
-        .permissions(Permissions::from_mode(0o700))
-        .tempdir_in(&spec.sandbox_root)?;
-    let scratch = crate::build_scratch::own(run_dir, scratch, std::process::id(), token)?;
-    env.insert(
-        "YULIUS_BUILD_SCRATCH".into(),
-        scratch.payload().display().to_string(),
-    );
-    Ok(Some(scratch))
+    wait_for_completion(&shared, linger)
 }
 
 fn load_launch(run_dir: &Path) -> Result<LaunchSpec, HostError> {
@@ -338,7 +297,6 @@ fn start_run(
         attempt_id: launch.attempt_id.clone(),
         ptyhost_pid: host_pid,
         child_pid: u32::try_from(child_pid.as_raw()).unwrap_or(0),
-        child_birth: crate::process::birth_identity(child_pid),
         started_at_ms: now_ms(),
         boot_id: current_boot_id().unwrap_or_else(|| "unknown".into()),
         token_sha256: launch.token_sha256.clone(),
@@ -1257,231 +1215,9 @@ impl ClientQueue {
 mod tests {
     use super::*;
 
-    #[test]
-    fn forced_termination_reclaims_only_the_recorded_attempt()
-    -> Result<(), Box<dyn std::error::Error>> {
-        use std::os::unix::process::CommandExt;
-        let root = tempfile::tempdir()?;
-        let run_dir = tempfile::tempdir()?;
-        let other_run = tempfile::tempdir()?;
-        let mut spec: yulius_contracts::ptyhost::BubblewrapSpec =
-            serde_json::from_str(r#"{"sandbox_root":"/s","home":"/s/home"}"#)?;
-        spec.sandbox_root = root.path().display().to_string();
-        let contained = Containment::Bubblewrap(spec);
-        let mut env = std::collections::BTreeMap::from([("YULIUS_CI_RUN".into(), "ci".into())]);
-        let mut host = std::process::Command::new("sleep")
-            .arg("60")
-            .process_group(0)
-            .spawn()?;
-        // Keep the guard in scope so only reconciliation can satisfy the assertion.
-        let stopped = crate::build_scratch::own(
-            &fs::File::open(run_dir.path())?,
-            tempfile::tempdir_in(root.path())?,
-            host.id(),
-            "",
-        )?;
-        let lost = stopped.path();
-        let active = attach_build_scratch(
-            &fs::File::open(other_run.path())?,
-            &contained,
-            &mut env,
-            "test-token",
-        )?
-        .ok_or("expected scratch")?;
-        fs::write(lost.join("target"), b"build")?;
-        fs::write(active.path().join("target"), b"live")?;
-        let status = StatusRecord {
-            version: RECORD_VERSION,
-            attempt_id: "scratch-test".into(),
-            ptyhost_pid: host.id(),
-            child_pid: 0,
-            child_birth: None,
-            started_at_ms: now_ms(),
-            boot_id: crate::current_boot_id().ok_or("boot id")?,
-            token_sha256: String::new(),
-        };
-        atomic_write(
-            run_dir.path(),
-            STATUS_FILE,
-            &serde_json::to_vec(&status)?,
-            0o600,
-        )?;
-        assert!(matches!(
-            crate::inspect_run_dir(run_dir.path()),
-            crate::RunDirState::Recorded {
-                host_alive: true,
-                ..
-            }
-        ));
-        assert!(lost.join("target").is_file());
-        crate::terminate_run_dir(run_dir.path())?;
-        let killed = host.try_wait()?.is_some();
-        if !killed {
-            host.kill()?;
-            host.wait()?;
-        }
-        assert!(killed, "recorded host survived forced termination");
-        assert!(!lost.exists(), "finished attempt retained its build tree");
-        assert!(active.path().join("target").exists());
-        Ok(())
-    }
-
-    #[test]
-    fn host_teardown_retains_a_replacement_on_success_and_early_failure() -> io::Result<()> {
-        let root = tempfile::tempdir()?;
-        let mut spec: yulius_contracts::ptyhost::BubblewrapSpec =
-            serde_json::from_str(r#"{"sandbox_root":"/s","home":"/s/home"}"#)?;
-        spec.sandbox_root = root.path().display().to_string();
-        let contained = Containment::Bubblewrap(spec);
-        for close in [true, false] {
-            let run = tempfile::tempdir()?;
-            let mut env =
-                std::collections::BTreeMap::from([("YULIUS_TASK_WORKTREE".into(), "one".into())]);
-            let owned = attach_build_scratch(
-                &fs::File::open(run.path())?,
-                &contained,
-                &mut env,
-                "test-token",
-            )?
-            .ok_or_else(|| io::Error::other("expected scratch"))?;
-            let path = owned.path().to_owned();
-            let moved = root.path().join(format!("moved-{close}"));
-            fs::rename(&path, moved)?;
-            fs::create_dir(&path)?;
-            fs::write(path.join("other"), b"live")?;
-            if close {
-                let _ = owned.close();
-            } else {
-                drop(owned);
-            }
-            assert!(
-                path.join("other").is_file(),
-                "host removed another build tree, close={close}"
-            );
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn the_guard_reclaims_builds_after_ci_removes_its_run_record() -> io::Result<()> {
-        let run = tempfile::tempdir()?;
-        let sandbox = tempfile::tempdir()?;
-        let guard = crate::build_scratch::own(
-            &fs::File::open(run.path())?,
-            tempfile::tempdir_in(sandbox.path())?,
-            std::process::id(),
-            "test-token",
-        )?;
-        let path = guard.path().to_owned();
-        fs::write(path.join("target"), b"build")?;
-        fs::remove_dir_all(run.path())?;
-        guard.close()?;
-        assert!(!path.exists());
-        Ok(())
-    }
-
-    #[test]
-    fn clearing_exported_scratch_keeps_forced_cleanup_recoverable()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let sandbox = tempfile::tempdir()?;
-        let run = tempfile::tempdir()?;
-        let sibling_run = tempfile::tempdir()?;
-        let mut spec: yulius_contracts::ptyhost::BubblewrapSpec =
-            serde_json::from_str(r#"{"sandbox_root":"/s","home":"/s/home"}"#)?;
-        spec.sandbox_root = sandbox.path().display().to_string();
-        let contained = Containment::Bubblewrap(spec);
-        let mut env = std::collections::BTreeMap::from([("YULIUS_CI_RUN".into(), "ci".into())]);
-        let stopped = attach_build_scratch(
-            &fs::File::open(run.path())?,
-            &contained,
-            &mut env,
-            "stopped",
-        )?
-        .ok_or("no scratch")?;
-        let advertised = PathBuf::from(&env["YULIUS_BUILD_SCRATCH"]);
-        for entry in fs::read_dir(&advertised)? {
-            let entry = entry?;
-            if entry.file_type()?.is_dir() {
-                fs::remove_dir_all(entry.path())?;
-            } else {
-                fs::remove_file(entry.path())?;
-            }
-        }
-        fs::write(advertised.join("target"), b"built after clearing scratch")?;
-        let sibling = attach_build_scratch(
-            &fs::File::open(sibling_run.path())?,
-            &contained,
-            &mut env,
-            "live",
-        )?
-        .ok_or("no live scratch")?;
-        let live = PathBuf::from(&env["YULIUS_BUILD_SCRATCH"]).join("active");
-        fs::write(&live, b"live build")?;
-        crate::reconcile::reclaim_after_host_exit(run.path(), std::process::id(), "stopped")?;
-        assert!(
-            !stopped.path().exists(),
-            "clearing the advertised scratch prevented recovery"
-        );
-        assert!(sibling.path().exists() && live.exists());
-        Ok(())
-    }
-
-    #[test]
-    fn each_agent_and_ci_run_owns_only_its_build_scratch() -> io::Result<()> {
-        let root = tempfile::tempdir()?;
-        let runs = [tempfile::tempdir()?, tempfile::tempdir()?];
-        let mut spec: yulius_contracts::ptyhost::BubblewrapSpec =
-            serde_json::from_str(r#"{"sandbox_root":"/s","home":"/s/home"}"#)?;
-        spec.sandbox_root = root.path().display().to_string();
-        let contained = Containment::Bubblewrap(spec);
-        let mut env = std::collections::BTreeMap::new();
-        assert!(
-            attach_build_scratch(
-                &fs::File::open(runs[0].path())?,
-                &contained,
-                &mut env,
-                "test-token"
-            )?
-            .is_none()
-        );
-        let mut active = Vec::new();
-        for (key, run) in ["YULIUS_CI_RUN", "YULIUS_TASK_WORKTREE"]
-            .into_iter()
-            .zip(&runs)
-        {
-            let mut env = std::collections::BTreeMap::from([(key.into(), "one".into())]);
-            assert!(
-                attach_build_scratch(
-                    &fs::File::open(run.path())?,
-                    &Containment::None,
-                    &mut env,
-                    "test-token"
-                )?
-                .is_none()
-            );
-            let owned = attach_build_scratch(
-                &fs::File::open(run.path())?,
-                &contained,
-                &mut env,
-                "test-token",
-            )?
-            .ok_or_else(|| io::Error::other("missing scratch"))?;
-            let path = PathBuf::from(&env["YULIUS_BUILD_SCRATCH"]);
-            assert_eq!(path, owned.payload());
-            assert_eq!(path.parent(), Some(owned.path()));
-            assert_eq!(owned.path().parent(), Some(root.path()));
-            fs::write(path.join("target"), b"artifact")?;
-            active.push((owned, path));
-        }
-        assert_ne!(active[0].1, active[1].1);
-        for (owned, path) in active {
-            assert!(path.join("target").is_file());
-            owned.close()?;
-            assert!(!path.exists());
-        }
-        Ok(())
-    }
-
+    /// ADR-0314: the program is taken from the first absolute directory of the host's `PATH`
+    /// that holds an executable file of its name; a relative directory (the run's working
+    /// folder), a file that is not executable and a directory of that name are passed over.
     #[test]
     fn a_host_program_is_an_executable_file_in_an_absolute_directory()
     -> Result<(), Box<dyn std::error::Error>> {

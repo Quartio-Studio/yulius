@@ -919,7 +919,6 @@ async fn reconciliation_classifies_run_dirs_and_terminates_live_hosts() -> TestR
         attempt_id: "att-dead".into(),
         ptyhost_pid: reaped_pid,
         child_pid: reaped_pid,
-        child_birth: None,
         started_at_ms: 0,
         boot_id: boot_id.clone(),
         token_sha256: "0".repeat(64),

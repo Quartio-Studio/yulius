@@ -5,13 +5,10 @@
 //! its lines, unless `--tests` names others. A bound on the whole run ends it and names the
 //! mutants it did not reach; the last line is the summary for the spec's Evidence.
 
-mod process;
-
 use std::collections::BTreeSet;
 use std::io;
 use std::path::Path;
 use std::process::{Command, ExitCode};
-use std::sync::{Arc, atomic::AtomicBool};
 use std::time::{Duration, Instant};
 
 /// The most mutants tested at once by default: the most measured (SPEC-506, 2026-11-17).
@@ -192,8 +189,6 @@ pub fn test_filter(tests: Option<&str>, changed: &[String]) -> String {
 /// What became of the mutants listed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Outcomes {
-    /// The current campaign recorded a successful unmutated baseline.
-    pub baseline_passed: bool,
     /// A test failed for it.
     pub caught: Vec<String>,
     /// No test failed for it.
@@ -211,7 +206,6 @@ impl Outcomes {
     #[must_use]
     pub fn of(
         listed: &[String],
-        baseline_passed: bool,
         caught: &str,
         missed: &str,
         timeout: &str,
@@ -242,7 +236,6 @@ impl Outcomes {
             .cloned()
             .collect();
         Self {
-            baseline_passed,
             caught,
             missed,
             timeout,
@@ -254,10 +247,7 @@ impl Outcomes {
     /// Whether every mutant was tested and caught (or did not build).
     #[must_use]
     pub fn held(&self) -> bool {
-        self.baseline_passed
-            && self.missed.is_empty()
-            && self.timeout.is_empty()
-            && self.unreached.is_empty()
+        self.missed.is_empty() && self.timeout.is_empty() && self.unreached.is_empty()
     }
 
     /// The summary line for the Evidence.
@@ -305,7 +295,7 @@ fn outer_nextest(name: &str) -> bool {
 /// report mutants caught or missed wrongly; review round 1 of fix 8) and nothing an outer
 /// nextest run set ([`outer_nextest`]).
 fn mutants_command(cargo: &str, root: &Path, head: &str) -> Command {
-    let mut command = process::command(cargo);
+    let mut command = Command::new(cargo);
     command
         .current_dir(root)
         .env_remove("CARGO_TARGET_DIR")
@@ -357,32 +347,12 @@ fn selection(diff: &Path) -> Vec<String> {
     args
 }
 
-/// Interrupts request the same reaped shutdown as a campaign deadline, so
-/// temporary workspace copies are removed before the command exits.
-pub fn run(root: &Path, cargo: &str, settings: &Settings) -> io::Result<Option<Outcomes>> {
-    let stop = Arc::new(AtomicBool::new(false));
-    for signal in [
-        signal_hook::consts::SIGINT,
-        signal_hook::consts::SIGTERM,
-        signal_hook::consts::SIGHUP,
-    ] {
-        signal_hook::flag::register(signal, Arc::clone(&stop))?;
-    }
-    campaign(root, cargo, settings, &stop)
-}
-
 /// Runs the campaign in the repository at `root`: `None` when the branch changed no Rust code
 /// with a mutant in it.
 ///
 /// # Errors
 /// Git or cargo-mutants could not be run.
-fn campaign(
-    root: &Path,
-    cargo: &str,
-    settings: &Settings,
-    stop: &AtomicBool,
-) -> io::Result<Option<Outcomes>> {
-    let started = Instant::now();
+pub fn run(root: &Path, cargo: &str, settings: &Settings) -> io::Result<Option<Outcomes>> {
     let base = git(root, &["merge-base", &settings.base, "HEAD"])?;
     let head = git(root, &["rev-parse", "HEAD"])?.trim().to_owned();
     // Read as Git itself writes it, whatever the configuration says (no external diff, no
@@ -420,40 +390,26 @@ fn campaign(
     }
     let dir = root.join("target/mutants");
     std::fs::create_dir_all(&dir)?;
-    let lock = std::fs::File::create(dir.join(".lock"))?;
-    lock.try_lock()
-        .map_err(|e| io::Error::other(format!("cannot lock mutation reports: {e}")))?;
     let diff_file = dir.join("branch.diff");
     std::fs::write(&diff_file, &diff)?;
-    let list = |bound: Duration| -> io::Result<Vec<String>> {
-        let list_path = dir.join("listed.txt");
-        let mut command = mutants_command(cargo, root, &head);
-        command
+    let listed: Vec<String> = {
+        let out = mutants_command(cargo, root, &head)
             .args(selection(&diff_file))
             .arg("--list")
-            .stdout(std::fs::File::create(&list_path)?);
-        let status = process::run(&mut command, started + bound, stop)
-            .map_err(process::RunError::into_io)?
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "deadline reached during mutation discovery",
-                )
-            })?;
-        if !status.success() {
+            .output()?;
+        if !out.status.success() {
             return Err(io::Error::other(format!(
-                "cargo mutants --list failed ({status})"
+                "cargo mutants --list failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
             )));
         }
-        Ok(std::fs::read_to_string(list_path)?
+        String::from_utf8_lossy(&out.stdout)
             .lines()
             .map(str::trim)
             .filter(|l| !l.is_empty())
             .map(str::to_owned)
-            .collect())
+            .collect()
     };
-    let bound = settings.bound();
-    let listed = list(bound)?;
     if listed.is_empty() {
         println!(
             "No mutant in the Rust lines changed against {}.",
@@ -471,7 +427,7 @@ fn campaign(
     let (cap_args, cap_env) = budget_caps(settings.budget, jobs);
     println!(
         "{} mutants in the changed lines; each tested with nextest ({}), {} at once{}, \
-         {} s per mutant test phase at most, {} s in all.",
+         {} s each at most, {} s in all.",
         listed.len(),
         filter.as_deref().unwrap_or("all tests"),
         jobs,
@@ -483,22 +439,10 @@ fn campaign(
         settings.mutant_seconds,
         settings.bound().as_secs()
     );
-    let scratch_parent = std::env::var_os("YULIUS_BUILD_SCRATCH")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| dir.clone());
-    let scratch = allocate_campaign_scratch(&scratch_parent)?;
-    let disk = scratch.path().canonicalize()?;
-    let cargo_config = disk.join("test-env.toml");
-    std::fs::write(
-        &cargo_config,
-        "[env]\nTMPDIR = { value = \"/tmp\", force = true }\n",
-    )?;
+    let started = Instant::now();
     let mut command = mutants_command(cargo, root, &head);
     command
-        .env("TMPDIR", &disk)
-        .env("YULIUS_BUILD_SCRATCH", &disk)
         .args(selection(&diff_file))
-        .arg("--copy-target=false")
         .args([
             "--test-tool",
             "nextest",
@@ -507,11 +451,8 @@ fn campaign(
             // Override test_workspace in .cargo/mutants.toml to avoid passing it twice.
             "--test-workspace=false",
             "--cargo-arg=--workspace",
-            // Only the copy/build tree belongs in the disk scratch. Confined
-            // Git fixtures and Unix sockets expect the ordinary temp root.
             "--no-shuffle",
         ])
-        .arg(format!("--cargo-arg=--config={}", cargo_config.display()))
         .args(["--jobs", &jobs.to_string()])
         .args(&cap_args)
         .envs(cap_env)
@@ -522,59 +463,55 @@ fn campaign(
                 .iter()
                 .flat_map(|filter| ["--", "-E", filter.as_str()]),
         );
-    // Rotate under the checkout lock before spawning. A tool killed during
-    // discovery cannot leave the previous baseline or mutant verdicts at this path.
-    let current = dir.join("mutants.out");
-    if current.exists() {
-        let old = dir.join("mutants.out.old");
-        if old.exists() {
-            std::fs::remove_dir_all(&old)?;
+    let mut child = command.spawn()?;
+    let bound = settings.bound();
+    let mut bounded = false;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
         }
-        std::fs::rename(&current, old)?;
+        if started.elapsed() >= bound {
+            println!(
+                "The bound of {} s is reached: the run ends here.",
+                bound.as_secs()
+            );
+            bounded = true;
+            // cargo-mutants stops the builds and tests it started when it is asked to end.
+            #[cfg(unix)]
+            let _ = Command::new("kill")
+                .args(["-TERM", &child.id().to_string()])
+                .status();
+            #[cfg(not(unix))]
+            let _ = child.kill();
+            break child.wait()?;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    // 0: all caught; 2: some missed; 3: some timed out. Anything else, unless the bound ended
+    // it, is cargo-mutants' own failure (a baseline that does not pass), not mutants unreached.
+    if !bounded && status.code() == Some(4) {
+        return Err(io::Error::other(format!(
+            "cargo-mutants failed its unmutated baseline; see {}",
+            dir.join("mutants.out/log/baseline.log").display()
+        )));
     }
-    let run = process::run(&mut command, started + bound, stop);
-    let status = scratch.finish(run)?;
-    if let Some(status) = status {
-        if status.code() == Some(4) {
-            return Err(io::Error::other(format!(
-                "cargo-mutants failed its unmutated baseline; see {}",
-                current.join("log/baseline.log").display()
-            )));
-        }
-        if !matches!(status.code(), Some(0 | 2 | 3)) {
-            return Err(io::Error::other(format!(
-                "cargo-mutants failed ({status}); its log: {}",
-                current.join("debug.log").display()
-            )));
-        }
+    if !bounded && !matches!(status.code(), Some(0 | 2 | 3)) {
+        return Err(io::Error::other(format!(
+            "cargo-mutants failed ({status}); its log: {}",
+            dir.join("mutants.out/debug.log").display()
+        )));
     }
-    let baseline_passed = std::fs::read(current.join("outcomes.json"))
-        .ok()
-        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-        .is_some_and(|report| {
-            report["outcomes"].as_array().is_some_and(|outcomes| {
-                outcomes
-                    .iter()
-                    .any(|o| o["scenario"] == "Baseline" && o["summary"] == "Success")
-            })
-        });
     let read = |kind: &str| {
         std::fs::read_to_string(dir.join("mutants.out").join(format!("{kind}.txt")))
             .unwrap_or_default()
     };
     let outcomes = Outcomes::of(
         &listed,
-        baseline_passed,
         &read("caught"),
         &read("missed"),
         &read("timeout"),
         &read("unviable"),
     );
-    let baseline = if baseline_passed {
-        "passed"
-    } else {
-        "incomplete"
-    };
     for (what, mutants) in [
         ("Missed (no test failed)", &outcomes.missed),
         ("Timed out", &outcomes.timeout),
@@ -594,11 +531,8 @@ fn campaign(
         }
     }
     println!(
-        "base={} scope=lines jobs={jobs} test_timeout={}s baseline={baseline} tests=[{}] {}",
-        base.trim(),
-        settings.mutant_seconds,
-        filter.as_deref().unwrap_or("all"),
-        outcomes.summary(listed.len(), bound, started.elapsed())
+        "{}",
+        outcomes.summary(listed.len(), settings.bound(), started.elapsed())
     );
     Ok(Some(outcomes))
 }
@@ -613,135 +547,9 @@ pub fn exit_code(outcomes: Option<&Outcomes>) -> ExitCode {
     }
 }
 
-struct CampaignScratch {
-    path: std::path::PathBuf,
-    tree: Option<yulius_sandbox::build_tree::BuildTree>,
-}
-
-fn allocate_campaign_scratch(parent: &Path) -> io::Result<CampaignScratch> {
-    let dir = tempfile::Builder::new().prefix("mut-").tempdir_in(parent)?;
-    let tree = yulius_sandbox::build_tree::BuildTree::open(dir.path())?
-        .ok_or_else(|| io::Error::other("campaign scratch disappeared during allocation"))?;
-    Ok(CampaignScratch {
-        path: dir.keep(),
-        tree: Some(tree),
-    })
-}
-
-impl CampaignScratch {
-    fn path(&self) -> &Path {
-        &self.path
-    }
-
-    fn finish(
-        mut self,
-        run: Result<Option<std::process::ExitStatus>, process::RunError>,
-    ) -> io::Result<Option<std::process::ExitStatus>> {
-        if let Err(process::RunError::Unreaped(error)) = run {
-            self.tree = None;
-            return Err(io::Error::other(format!(
-                "{error}; retained build scratch {}",
-                self.path.display()
-            )));
-        }
-        self.reclaim()?;
-        run.map_err(process::RunError::into_io)
-    }
-
-    fn reclaim(&mut self) -> io::Result<()> {
-        if let Some(tree) = &self.tree {
-            tree.clear()?;
-            self.tree = None;
-        }
-        Ok(())
-    }
-}
-
-impl Drop for CampaignScratch {
-    fn drop(&mut self) {
-        if let Err(error) = self.reclaim() {
-            eprintln!("cannot reclaim campaign scratch: {error}");
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn run(root: &Path, cargo: &str, settings: &Settings) -> io::Result<Option<Outcomes>> {
-        campaign(root, cargo, settings, &AtomicBool::new(false))
-    }
-
-    #[test]
-    fn only_unconfirmed_worker_shutdown_retains_command_scratch() -> io::Result<()> {
-        let parent = tempfile::tempdir()?;
-        for unconfirmed in [true, false] {
-            let scratch = allocate_campaign_scratch(parent.path())?;
-            let path = scratch.path().to_owned();
-            std::fs::write(path.join("artifact"), b"build")?;
-            let failure = io::Error::other("worker observation failed");
-            let outcome = if unconfirmed {
-                process::RunError::Unreaped(failure)
-            } else {
-                process::RunError::Command(failure)
-            };
-            let error = scratch
-                .finish(Err(outcome))
-                .err()
-                .ok_or("expected a failed command")
-                .map_err(io::Error::other)?;
-            assert_eq!(
-                path.join("artifact").exists(),
-                unconfirmed,
-                "scratch lifetime"
-            );
-            if unconfirmed {
-                assert!(error.to_string().contains(path.to_string_lossy().as_ref()));
-            }
-        }
-        Ok(())
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn command_scratch_reclaims_read_only_builds_before_returning() -> io::Result<()> {
-        use rustix::thread::{CapabilitySet, capabilities, set_capabilities};
-        use std::fs;
-        use std::os::unix::fs::{PermissionsExt, symlink};
-
-        let parent = tempfile::tempdir()?;
-        let outside = parent.path().join("outside");
-        fs::create_dir(&outside)?;
-        fs::write(outside.join("keep"), b"live")?;
-        for completed in [true, false] {
-            let scratch = allocate_campaign_scratch(parent.path())?;
-            let path = scratch.path().to_owned();
-            let dependency = path.join("target");
-            fs::create_dir(&dependency)?;
-            symlink(&outside, dependency.join("other"))?;
-            fs::write(dependency.join("build"), b"artifact")?;
-            fs::set_permissions(dependency, fs::Permissions::from_mode(0o555))?;
-            let original = capabilities(None)?;
-            let mut limited = original;
-            limited
-                .effective
-                .remove(CapabilitySet::DAC_OVERRIDE | CapabilitySet::DAC_READ_SEARCH);
-            set_capabilities(None, limited)?;
-            let result = if completed {
-                scratch.finish(Ok(None)).map(|_| ())
-            } else {
-                // An early error in command setup or supervision drops its owner.
-                drop(scratch);
-                Ok(())
-            };
-            set_capabilities(None, original)?;
-            result?;
-            assert!(!path.exists());
-            assert!(outside.join("keep").is_file());
-        }
-        Ok(())
-    }
 
     /// SPEC-493 MUT-001: the product's tests a branch added or changed are the ones each mutant
     /// is tested with; other packages' tests all run; `--tests` names others.
@@ -793,7 +601,6 @@ mod tests {
         .to_vec();
         let held = Outcomes::of(
             &listed,
-            true,
             "a.rs:1:1: m1\na.rs:2:1: m2\na.rs:3:1: m3\n",
             "",
             "",
@@ -802,7 +609,6 @@ mod tests {
         assert!(held.held());
         let partial = Outcomes::of(
             &listed,
-            true,
             "a.rs:1:1: m1\n",
             "a.rs:2:1: m2\n",
             "a.rs:3:1: m3\n",
@@ -821,9 +627,7 @@ mod tests {
     /// that use it need the pinned cargo-mutants on `PATH` (`scripts/dev` puts `.tools/bin`
     /// there).
     fn fixture(name: &str) -> Result<(std::path::PathBuf, String), Box<dyn std::error::Error>> {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target")
-            .join(format!("xtask-mutants-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("xtask-mutants-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src"))?;
         std::fs::write(
@@ -930,11 +734,7 @@ mod tests {
         let log = std::fs::read_to_string(dir.join("target/mutants/mutants.out/log/baseline.log"))?;
         assert!(log.contains("peer_test"), "{log}");
 
-        commit(
-            &dir,
-            observer,
-            "#[test] fn peer_test() { assert_eq!(std::env::temp_dir(), std::path::Path::new(\"/tmp\")); }\n",
-        )?;
+        commit(&dir, observer, "#[test] fn peer_test() {}\n")?;
         let outcomes = run(&dir, "cargo", &settings(&base))?.ok_or("nothing mutated")?;
         assert!(
             outcomes.missed.iter().any(|m| m.contains("two")),
@@ -949,7 +749,6 @@ mod tests {
         let outcomes = run(&dir, "cargo", &settings(&base))?.ok_or("nothing mutated")?;
         assert!(outcomes.held(), "{outcomes:?}");
         assert!(outcomes.caught.iter().any(|m| m.contains("two")));
-        assert!(outcomes.baseline_passed);
         let (docs, docs_base) = fixture("docs")?;
         commit(&docs, "README.md", "words\n")?;
         assert_eq!(run(&docs, "cargo", &settings(&docs_base))?, None);
@@ -973,11 +772,6 @@ mod tests {
         let outcomes = run(&slow, "cargo", &bounded)?.ok_or("nothing mutated")?;
         assert!(!outcomes.unreached.is_empty(), "{outcomes:?}");
         assert!(!outcomes.held());
-        assert!(
-            std::fs::read_dir(slow.join("target/mutants"))?
-                .all(|entry| entry
-                    .is_ok_and(|e| !e.file_name().to_string_lossy().starts_with("mut-")))
-        );
         let _ = std::fs::remove_dir_all(&slow);
         // A tree whose own tests fail is cargo-mutants' failure, said as such, not mutants
         // unreached (review round 1 of fix 8).
@@ -995,45 +789,6 @@ mod tests {
             "{failed:?}"
         );
         let _ = std::fs::remove_dir_all(&broken);
-        Ok(())
-    }
-
-    #[test]
-    fn a_stalled_command_cannot_reuse_the_last_campaign() -> Result<(), Box<dyn std::error::Error>>
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        let (root, base) = fixture("stale")?;
-        commit(&root, "src/lib.rs", "pub fn one() -> u32 { 2 }\n")?;
-        let reports = root.join("target/mutants/mutants.out");
-        std::fs::create_dir_all(&reports)?;
-        std::fs::write(reports.join("caught.txt"), "variant\n")?;
-        std::fs::write(
-            reports.join("outcomes.json"),
-            r#"{"outcomes":[{"scenario":"Baseline","summary":"Success"}]}"#,
-        )?;
-        let cargo = root.join("fake-cargo");
-        // Finish on our own after a longer outer bound so the original unbounded wait also returns.
-        std::fs::write(
-            &cargo,
-            "#!/bin/sh\ncase \" $* \" in *' --list '*) echo variant; exit 0;; esac\ntrap '' TERM\nsleep 12\ntouch overran\n",
-        )?;
-        std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o700))?;
-        let mut settings = Settings::parse_with(&[], "dev", Budget::default())?;
-        settings.base = base;
-        settings.seconds = Some(1);
-        let outcome = run(&root, cargo.to_str().ok_or("path")?, &settings)?.ok_or("no run")?;
-        assert!(!outcome.held(), "previous caught.txt credited to this run");
-        assert!(
-            !root.join("overran").exists(),
-            "TERM was ignored past shutdown grace"
-        );
-        std::fs::write(&cargo, "#!/bin/sh\ntrap '' TERM\nsleep 12\ntouch overran\n")?;
-        assert!(run(&root, cargo.to_str().ok_or("path")?, &settings).is_err());
-        assert!(
-            !root.join("overran").exists(),
-            "listing ignored the deadline"
-        );
-        std::fs::remove_dir_all(root)?;
         Ok(())
     }
 
@@ -1103,6 +858,8 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-506 FST-005 (AC-3, review round 1 of pull request 2): with no `--jobs`, one job per
+    /// eight mutants listed, at least 2, at most a third of `YULIUS_CPUS`, one per 12 GB of
     /// `YULIUS_MEMORY_MB` and [`MOST_JOBS`]; `--jobs` still decides; with no budget it stays 2.
     #[test]
     fn the_jobs_follow_the_mutants_and_the_budget() -> Result<(), String> {

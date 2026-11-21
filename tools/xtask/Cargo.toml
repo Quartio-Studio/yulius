@@ -13,13 +13,5 @@ workspace = true
 [package.metadata.yulius]
 layer = "tooling"
 
-[dependencies]
-yulius-sandbox.workspace = true
-nix.workspace = true
-rustix = { workspace = true, features = ["process"] }
-serde_json.workspace = true
-signal-hook.workspace = true
+[dev-dependencies]
 tempfile.workspace = true
-
-[target.'cfg(target_os = "linux")'.dev-dependencies]
-rustix = { workspace = true, features = ["thread"] }

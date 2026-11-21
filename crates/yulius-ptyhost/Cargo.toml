@@ -19,7 +19,6 @@ layer = "adapter"
 test-support = []
 
 [dependencies]
-tempfile.workspace = true
 # Explicit version: cargo-deny `wildcards = "deny"` rejects versionless path dependencies.
 yulius-contracts = { workspace = true }
 yulius-sandbox = { workspace = true }
@@ -37,6 +36,4 @@ rustix = { workspace = true, features = ["event", "process"] }
 
 [dev-dependencies]
 yulius-ptyhost = { path = ".", version = "0.1.0", features = ["test-support"] }
-
-[target.'cfg(target_os = "linux")'.dev-dependencies]
-rustix = { workspace = true, features = ["thread"] }
+tempfile.workspace = true

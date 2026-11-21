@@ -12,9 +12,6 @@ pub const BWRAP_PROGRAM: &str = "bwrap";
 /// Host system directories bound read-only at the same path (skipped by bwrap when absent).
 pub const SYSTEM_READONLY_DIRS: [&str; 6] = ["/usr", "/bin", "/lib", "/lib64", "/etc", "/opt"];
 
-/// Bytes in a contained run's ordinary temporary filesystem (1 GiB).
-const TMP_BYTES: &str = "1073741824";
-
 /// The host resolver configuration.
 const RESOLV_CONF: &str = "/etc/resolv.conf";
 
@@ -70,8 +67,6 @@ pub fn bwrap_argv(c: &BubblewrapSpec, inner_argv: &[String], cwd: &str) -> Vec<S
         "/proc",
         "--dev",
         "/dev",
-        "--size",
-        TMP_BYTES,
         "--tmpfs",
         "/tmp",
     ]
@@ -185,8 +180,6 @@ fn joined_argv(
             "1777",
             "--tmpfs",
             "/dev/shm",
-            "--size",
-            TMP_BYTES,
             "--perms",
             "1777",
             "--tmpfs",
@@ -376,7 +369,7 @@ mod tests {
             "/data/sandboxes/s1/worktrees/t1",
         );
         assert_eq!(
-            &argv[..13],
+            &argv[..11],
             &[
                 "bwrap",
                 "--die-with-parent",
@@ -387,8 +380,6 @@ mod tests {
                 "/proc",
                 "--dev",
                 "/dev",
-                "--size",
-                "1073741824",
                 "--tmpfs",
                 "/tmp"
             ]
@@ -490,13 +481,7 @@ mod tests {
             "identity files override the system layer: {argv:?}"
         );
         assert!(position(&argv, &["--symlink", "usr/bin", "/bin"]).is_some());
-        assert!(
-            position(
-                &argv,
-                &["--size", "1073741824", "--perms", "1777", "--tmpfs", "/tmp"]
-            )
-            .is_some()
-        );
+        assert!(position(&argv, &["--perms", "1777", "--tmpfs", "/tmp"]).is_some());
         assert_eq!(
             &argv[argv.len() - 2..],
             &["--".to_owned(), "bash".to_owned()]
