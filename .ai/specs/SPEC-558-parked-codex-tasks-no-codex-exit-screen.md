@@ -62,6 +62,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Report the active singleton and replay its recorded failure for the original owner
 - [x] Reproduce candidate status across restart on the live and parked PR owner
 - [x] Verify the failed integration candidate before parking its original owner
+- [ ] Bind a parked message to the attempt its caller observed
 - [ ] Resume only the parked run whose screen finished saving
 - [ ] Preserve a continuation while its previous parked run settles
 - [ ] Order parking and replacement merge requests through run settlement
@@ -112,9 +113,11 @@ The live watcher resolves ordinary CI for the owner at the armed head and reads 
 
 The final parking check compares the owner’s saved singleton decision with the verified PR head and integration base. A change to the saved merge decision during hosted verification defers the pass. A changed base or published repair retires the old failure for this decision.
 
-The SQLite read which returns a Parked task also returns its latest attempt ID. Every parked resume carries that observation through account and permission checks. It waits outside the launch lock for the prior run to publish its saved screen, end its pause and send terminal exit, within the stop escalation interval. A successor’s hosted PR check can continue after that point. When an exit reader and the escalation both observe the end, the observer that records it owns the terminal write. An exit arriving after escalation checks its original attempt before using the task’s current session. Admission rechecks the parked status and attempt ID under the lock before restoring Codex lineage or accepting a prompt. A new turn can park while a message is waiting, so simply checking the status twice would allow a stale message to start another turn.
+The SQLite query returning a parked task includes the latest attempt ID in the same snapshot. Admission checks that ID under the launch lock after caller preflight. A message can wait while another turn resumes and parks, so task status alone cannot identify the session the sender observed. Only a matching parked attempt can restore Codex lineage or accept the prompt.
 
 ## Evidence
+
+- Parked attempt identity and final-screen ownership have separate delivery steps. The identity change retains the existing supervisor exit path. The combined prototype at `89fdfcecb` incorrectly recorded a confirmed clean host exit as lost when its optional model value could not be decoded. The exit ownership step preserves that outcome alongside both delayed-reader regressions.
 
 - At `44b61d2de` a message selected before caller preflight still started a third turn, and holding a successor’s PR check caused a false screen-saving timeout. Both public-path regressions passed on `d00c1a484`, along with all 203 selected parking, provider, message, handoff and chain tests. Independent review then reproduced an exit reader overwriting the lost attempt’s final screen with the next turn, both when the park intent was already taken and when the old exit arrived after the new host attached.
 

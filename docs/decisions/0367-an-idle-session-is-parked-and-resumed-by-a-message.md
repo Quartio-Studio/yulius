@@ -44,7 +44,7 @@ issue #1412. Extends SPEC-050 SES-101 (Done tasks' sessions do not count toward 
 - A queued task says what it waits for (`queue_reason`), and the Capacity card shows working,
   parked, idle and queued sessions apart.
 
-A parked resume waits for the old reader to publish its screen. Check the attempt ID again at launch because a second turn can run and park during that wait. The existing reader count and stop escalation interval bound the wait outside the launch lock.
+Capture the attempt ID in the task read that sees Parked, then check it at launch. Another turn can start and park during account or permission checks. Its outstanding decision belongs to that later turn.
 
 ## Alternatives
 

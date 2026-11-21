@@ -493,8 +493,6 @@ pub struct TaskRuntime {
     /// Run endings being recorded (`finalize_attempt`, `mark_lost`): raised before the attempt is
     /// marked ended, lowered once its chains and queue work is done (SPEC-065 END-003).
     finalizing: tokio::sync::watch::Sender<u32>,
-    /// Run-ending observers using the old terminal or run, before onboarding and chain work.
-    terminal_cleanup: tokio::sync::watch::Sender<u32>,
     /// The run whose host could not be terminated after its stop or close escalation, and why
     /// (SPEC-065 END-001): it stays live until its processes are gone.
     end_failed: Mutex<Option<(AttemptId, String)>>,
@@ -796,7 +794,6 @@ impl TaskRuntime {
             claude_move_refused_ms: AtomicI64::new(0),
             context: Mutex::new(crate::context_full::ContextEpisode::default()),
             finalizing: tokio::sync::watch::channel(0).0,
-            terminal_cleanup: tokio::sync::watch::channel(0).0,
             end_failed: Mutex::new(None),
             parked_activity: Mutex::new(None),
             taken_request: Mutex::new(None),
@@ -1906,7 +1903,6 @@ impl App {
     ) -> BoxFuture<'a, AppResult<bool>> {
         Box::pin(async move {
             if matches!(condition, StartCondition::Parked(_)) {
-                self.wait_for_parked_screen(task_id).await?;
                 crate::race::reached(
                     crate::race::Point::ParkedResumePrepared,
                     Path::new(task_id.as_str()),
@@ -3936,15 +3932,7 @@ impl App {
                         app.runtime(&tid).hub.reset(seq, &screen, cols, rows);
                     }
                     Ok(Some(RunEvent::Exit(exit))) => {
-                        crate::race::reached(
-                            crate::race::Point::HostExitReceived,
-                            Path::new(aid.as_str()),
-                        );
                         app.finalize_attempt(&tid, &aid, exit).await;
-                        crate::race::reached(
-                            crate::race::Point::HostExitFinalized,
-                            Path::new(aid.as_str()),
-                        );
                         return;
                     }
                     Ok(None) | Err(_) => {
@@ -4045,32 +4033,6 @@ impl App {
             ));
         }
         self.settle_unheld_run(task_id, &run.id).await
-    }
-
-    /// Wait outside the launch lock until the parked reader finishes publishing its grid.
-    async fn wait_for_parked_screen(&self, task_id: &TaskId) -> AppResult<()> {
-        let Some(runtime) = self.existing_runtime(task_id) else {
-            return Ok(());
-        };
-        let mut ending = runtime.terminal_cleanup.subscribe();
-        if *ending.borrow_and_update() == 0 {
-            return Ok(());
-        }
-        crate::race::reached(
-            crate::race::Point::ParkedResumeWaitsForReader,
-            Path::new(task_id.as_str()),
-        );
-        let bound = Duration::from_millis(self.config.stop_escalation_ms);
-        tokio::time::timeout(bound, ending.wait_for(|count| *count == 0))
-            .await
-            .map_err(|_| {
-                AppError::Conflict(
-                    "The parked screen is still being saved. Retry after the session finishes parking."
-                        .into(),
-                )
-            })?
-            .map(|_| ())
-            .map_err(AppError::internal)
     }
 
     /// Settles a live run on record that this server holds no connection to (ADR-0050).
@@ -4193,9 +4155,18 @@ impl App {
         // `existing_runtime`: a deleted task's runtime is not brought back.
         let runtime = self.existing_runtime(task_id);
         let _finalizing = runtime.as_ref().map(|rt| Finalizing::start(&rt.finalizing));
-        let terminal_cleanup = runtime
-            .as_ref()
-            .map(|rt| Finalizing::start(&rt.terminal_cleanup));
+        // Keep the screen the run was lost on, not its last settled turn's (SPEC-301 LRS-001). A
+        // runtime made after a restart has no output: the saved screen stays. Only when the hub
+        // shows this run: until its attach resets the hub, it shows the run before.
+        if let Some(rt) = &runtime
+            && rt
+                .screen_of
+                .lock()
+                .is_ok_and(|shown| shown.as_ref() == Some(attempt_id))
+            && let Ok(Some(attempt)) = self.deps.store.attempt(attempt_id).await
+        {
+            save_screen(&rt.hub, Path::new(&attempt.run_dir));
+        }
         let now = self.now();
         let update = AttemptUpdate {
             ended_at: Some(now),
@@ -4210,18 +4181,6 @@ impl App {
             .unwrap_or(false);
         if !first {
             return; // another observer already recorded the outcome
-        }
-        // Keep the screen the run was lost on, not its last settled turn's (SPEC-301 LRS-001). A
-        // runtime made after a restart has no output: the saved screen stays. Only when the hub
-        // shows this run: until its attach resets the hub, it shows the run before.
-        if let Some(rt) = &runtime
-            && rt
-                .screen_of
-                .lock()
-                .is_ok_and(|shown| shown.as_ref() == Some(attempt_id))
-            && let Ok(Some(attempt)) = self.deps.store.attempt(attempt_id).await
-        {
-            save_screen(&rt.hub, Path::new(&attempt.run_dir));
         }
         crate::race::reached(
             crate::race::Point::LossRecorded,
@@ -4277,7 +4236,6 @@ impl App {
             };
             rt.hub.exit(ended.as_str(), None);
         }
-        drop(terminal_cleanup);
         self.publish_task(task_id).await;
         self.advance_chains(task_id).await;
         self.drain_queue().await;
@@ -4364,10 +4322,6 @@ impl App {
                 Ok(false) => {}
                 Ok(true) => {
                     if to == TaskStatus::Parked {
-                        crate::race::reached(
-                            crate::race::Point::ParkStateRecorded,
-                            Path::new(task_id.as_str()),
-                        );
                         if let Some(run) = &attempt
                             && let Some((cols, rows, screen)) =
                                 crate::parking::publish_parked_screen(Path::new(&run.run_dir))
@@ -4427,25 +4381,10 @@ impl App {
         let store = &self.deps.store;
         let runtime = self.runtime(task_id);
         let _finalizing = Finalizing::start(&runtime.finalizing);
-        let terminal_cleanup = Finalizing::start(&runtime.terminal_cleanup);
         crate::race::reached(
             crate::race::Point::RunEndTaking,
             Path::new(task_id.as_str()),
         );
-        // Escalation may already have settled this attempt and admitted its replacement.
-        // Only a still-live attempt can consume the current session's end intent.
-        let attempt = match store.attempt(attempt_id).await {
-            Ok(Some(attempt)) if !attempt.state.is_terminal() => attempt,
-            Ok(_) => return,
-            Err(err) => {
-                tracing::warn!(task = %task_id, attempt = %attempt_id, error = %err, "could not read the ending attempt");
-                // The host exited. If the row can still be settled, let the loss
-                // recorder claim it before touching any task-wide runtime state.
-                drop(terminal_cleanup);
-                self.mark_lost(task_id, attempt_id, StopReason::Lost).await;
-                return;
-            }
-        };
         let intent = runtime.intent.lock().ok().and_then(|mut g| {
             let intent = g.take();
             let request = match &intent {
@@ -4462,7 +4401,15 @@ impl App {
             intent
         });
         crate::race::reached(crate::race::Point::RunEndTaken, Path::new(task_id.as_str()));
-        let session_end = runtime.session_end.lock().ok().and_then(|end| end.clone());
+        let session_end = runtime.session_end.lock().ok().and_then(|mut g| g.take());
+        runtime.verdict_stop_ms.clear();
+        runtime.watcher_alive.store(false, Ordering::SeqCst);
+        // Keep the last screen so viewers still see how the run ended after a server restart.
+        let mut session_started = true;
+        if let Ok(Some(attempt)) = store.attempt(attempt_id).await {
+            save_screen(&runtime.hub, Path::new(&attempt.run_dir));
+            session_started = session_started_marked(Path::new(&attempt.run_dir));
+        }
         let state = if intent.is_some() {
             AttemptState::Killed
         } else {
@@ -4514,14 +4461,6 @@ impl App {
         if !first {
             return; // another observer already recorded the outcome
         }
-        // The losing reader leaves the winner's screen and session state intact.
-        if let Ok(mut end) = runtime.session_end.lock() {
-            *end = None;
-        }
-        runtime.verdict_stop_ms.clear();
-        runtime.watcher_alive.store(false, Ordering::SeqCst);
-        save_screen(&runtime.hub, Path::new(&attempt.run_dir));
-        let session_started = session_started_marked(Path::new(&attempt.run_dir));
         // This reader won and settles its request below.
         runtime.take_reader_request(attempt_id);
         runtime.clear_start_counters(attempt_id);
@@ -4595,7 +4534,6 @@ impl App {
             .flatten()
             .map_or_else(|| "stopped_lost".into(), |t| t.status.as_str().to_owned());
         runtime.hub.exit_at(&status, exit.code, cause);
-        drop(terminal_cleanup);
         self.publish_task(task_id).await;
         if let Ok(Some(task)) = self.deps.store.task(task_id).await
             && let Err(err) = self.refresh_onboarding(&task.sandbox_id).await
