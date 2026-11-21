@@ -176,17 +176,28 @@ impl App {
         reason: &str,
     ) -> AppResult<()> {
         let store = &self.deps.store;
-        let pause = store.open_pause(task_id).await?;
+        let observed = store.open_pause_with_process(task_id).await?;
         let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
-        // A saved Codex start has already chosen a fresh request or a native continuation.
-        // It takes precedence over observations left by the run that stopped.
-        if task.harness == Harness::Codex
-            && let Some(pause) = pause.as_ref().filter(|pause| !pause.kind.holds_process())
+        crate::race::reached(
+            crate::race::Point::MovePauseRead,
+            std::path::Path::new(task_id.as_str()),
+        );
+        // An admitted start owns its saved instruction and its pause row. Read a legacy
+        // goal turn's process with that row so a later run cannot turn it into a live move.
+        if let Some((pause, has_process)) = &observed
+            && match pause.kind {
+                PauseKind::GoalFreshStart | PauseKind::GoalResumeStart => true,
+                PauseKind::FreshStart | PauseKind::Start => task.harness == Harness::Codex,
+                PauseKind::Turn => task.mode == crate::model::TaskMode::Goal && !has_process,
+                PauseKind::Limit | PauseKind::Prompt => false,
+            }
         {
-            let prompt = pause.continuation.clone();
-            let start = match pause.kind {
-                PauseKind::FreshStart => RunStart::Fresh { prompt },
-                _ => RunStart::Resume { prompt },
+            let start = if pause.kind == PauseKind::Start {
+                RunStart::Resume {
+                    prompt: pause.continuation.clone(),
+                }
+            } else {
+                self.start_for_capacity_pause(&task, pause).await?
             };
             return self
                 .switch_from(
@@ -199,6 +210,7 @@ impl App {
                 )
                 .await;
         }
+        let pause = observed.map(|(pause, _)| pause);
         let at_limit = pause.as_ref().is_some_and(|p| p.kind == PauseKind::Limit)
             || self.runtime(task_id).at_limit.load(Ordering::SeqCst);
         if at_limit {
@@ -208,6 +220,10 @@ impl App {
             let start = RunStart::Fresh { prompt: None };
             return self.switch_with(task_id, account, reason, start).await;
         }
+        let goal_stop = task.mode == crate::model::TaskMode::Goal
+            && pause
+                .as_ref()
+                .is_some_and(|pause| pause.kind == PauseKind::Turn);
         let prompt = match pause {
             Some(pause) if pause.kind == PauseKind::Prompt => pause.continuation,
             Some(pause) if pause.kind == PauseKind::Turn => self.stop_continuation(&task).await,
@@ -216,8 +232,13 @@ impl App {
             }
             _ => None,
         };
-        self.switch_with(task_id, account, reason, RunStart::Resume { prompt })
-            .await
+        self.switch_with(
+            task_id,
+            account,
+            reason,
+            RunStart::Resume { prompt }.with_goal_continuation(goal_stop),
+        )
+        .await
     }
 
     /// Says in the task's terminal, in one line, why it left its subscription and where it went
