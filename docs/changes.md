@@ -7,10 +7,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-21
 
 - Instance disk upkeep clears idle Rust compiler stores over 20 GiB or under remaining disk pressure. Removing a store refreshes sandbox quota usage and gives a blocked task one admission retry. [SPEC-595](../.ai/specs/SPEC-595-share-compiled-rust-across-worktrees-and.md)
+- The seven-day API estimate includes recorded GPT-6 Codex runs at Standard prices and shows what the pool would cost if eligible runs used Ultrafast. [SPEC-602](../.ai/specs/SPEC-602-it-doesnt-seem-real-verify-i-think-it-s.md)
+
+- Load-sensitive browser and merge-train tests wait for observable progress under contention.
+  The Docker smoke fixture holds its first result until the browser displays it.
+  [SPEC-597](../.ai/specs/SPEC-597-tests-that-hold-under-a-loaded-host-and.md)
 - Goal tasks continue unfinished plan and spec work, including verification after merge, without asking their owner to type “continue”. [SPEC-589](../.ai/specs/SPEC-589-it-shouldnt-ask-for-things-like-that-fix.md)
 - Resuming a parked task waits for its old screen to finish saving. If that takes too long, Yulius asks the sender to retry and keeps the outstanding question open. [SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
 
 - A message prepared for an earlier parked attempt asks the sender to try again if another turn resumes and parks first. The new turn keeps its own outstanding decision. [SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
+- Replaying the terminal-redraw fix caught all seven mutants with zero sampled growth in session tmpfs, down from 862 MiB. The spec records elapsed time for the earlier full campaign and the by-hand rollback check. [SPEC-601](../.ai/specs/SPEC-601-mutation-testing-sized-to-the-change-wit.md)
 - The Rust compiler cache served 12 of 12 eligible requests in a fresh CI lane replay. The first two scheduled gates each recorded zero hits in 27 eligible requests. The spec records execution and queue times for the physical runs. [SPEC-595](../.ai/specs/SPEC-595-share-compiled-rust-across-worktrees-and.md)
 - Yulius's own delivery is merge-first. A pull request merges on `quality` and `security`, and both test shards and e2e run once on the merged revision. Staging changes only to a revision whose full suite passed. A promotion to `main` comes only from what staging verified, and a red `dev` is fixed forward. Staging's deploy keeps the server stopped when it cannot put back the previous store, instead of starting it on another one. [ADR-0436](decisions/0436-yuliuss-full-suite-runs-after-the-merge-and-promotion-comes-from-verified-staging.md), [SPEC-591](../.ai/specs/SPEC-591-yulius-gets-its-own-staging-instance-and.md)
 - Contained Claude tasks and reviewers now receive a checked retry for variable-path and root-level scratch removals. The retry preserves the script’s conditions and file-only deletions. They can finish cleanup without waiting for a person to reply. [SPEC-596](../.ai/specs/SPEC-596-such-requests-should-be-answered-automat.md)

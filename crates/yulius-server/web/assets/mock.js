@@ -185,7 +185,7 @@ function seed(params) {
     // problem), `docker=kept` (the last host check failed items but kept Docker, #674; with
     // `update=1` there is none until the update's), `docker=legacy` (sandboxes not isolated);
     // `smoke=fail` (the smoke's pull fails).
-    docker: { mode: params.get('docker') || 'ok', smokeFails: params.get('smoke') === 'fail', smoke: null, hostCheck: undefined },
+    docker: { mode: params.get('docker') || 'ok', smokeFails: params.get('smoke') === 'fail', clock: params.get('smokeclock') === 'manual' ? manualClock(Date.now()) : null, smoke: null, hostCheck: undefined },
     // The Claude Code sandboxes run (SPEC-461): `claude=incident` (runs get the host's 2.1.311,
     // which does not know the default model; a check installs 2.1.322), `claude=ahead` (the
     // newest release was refused for it too), `claude=gap` (2.1.400 lacks another offered
@@ -5131,8 +5131,9 @@ route('POST', '/api/admin/sandbox-docker/smoke', ({ db }) => {
   if (d.smoke && d.smoke.state === 'running') fail(409, 'conflict', 'a Docker smoke test is running already');
   const run = { state: 'running', started_by: db.me.user.login, started_at: new Date().toISOString(), finished_at: null, checks: [], error: null };
   d.smoke = run;
+  const schedule = d.clock?.setTimeout ?? later;
   SMOKE_CHECKS.forEach(([name, detail], i) => {
-    later(() => {
+    schedule(() => {
       if (d.smoke !== run || run.state !== 'running') return;
       const failed = d.smokeFails && i === 2;
       run.checks.push({ name, ok: !failed, detail: failed ? 'toomanyrequests: You have reached your pull rate limit' : detail });

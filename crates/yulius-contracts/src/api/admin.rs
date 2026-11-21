@@ -139,7 +139,7 @@ pub struct TokenTotalsView {
     pub cache_read: Option<u64>,
     /// Cache-write tokens.
     pub cache_write: Option<u64>,
-    /// What the runs whose model has a price would cost at Claude API list prices, in USD;
+    /// What the runs whose model has a price would cost at standard API list prices, in USD;
     /// `null` when none has one (SPEC-110 TUS-004).
     #[serde(default)]
     pub cost_usd: Option<f64>,
@@ -286,7 +286,7 @@ pub struct CapacityAccount {
     pub in_use_by: Option<u32>,
 }
 
-/// Tokens spent in a period and what they would cost at Claude API list prices (SPEC-110).
+/// Tokens spent in a period and what they would cost at standard API prices (SPEC-110, SPEC-602).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TokenSpendView {
     /// Input tokens.
@@ -316,6 +316,10 @@ pub struct PoolTokensView {
     pub unknown_usage_runs: u32,
     /// Runs in the 7 days whose model has no price (tokens counted, cost not).
     pub unpriced_runs: u32,
+    /// Weekly estimate if all Ultrafast-eligible Codex usage used that tier. Absent without
+    /// eligible usage or in older payloads. Other priced runs use their Standard rates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ultrafast_cost_usd: Option<f64>,
 }
 
 /// `GET /api/capacity` (signed in): the subscription pool, its burn rate and forecast
