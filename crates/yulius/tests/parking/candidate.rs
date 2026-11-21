@@ -226,10 +226,15 @@ fn a_new_ordinary_reruns_deadline_survives_restart_and_delivers_the_singleton_on
     )))?;
     rt.shutdown_timeout(Duration::from_secs(5));
     let queued = 1_200_000;
+    let rerun_at = queued + WAIT_LIMIT_MS + 1;
+    let new_decision_at = rerun_at + WAIT_LIMIT_MS + 1;
     for (now, expect_diagnosis) in [
         (queued, false),
         (queued + WAIT_LIMIT_MS, false),
-        (queued + WAIT_LIMIT_MS + 1, true),
+        (rerun_at, false),
+        (new_decision_at, false),
+        (new_decision_at + WAIT_LIMIT_MS, false),
+        (new_decision_at + WAIT_LIMIT_MS + 1, true),
     ] {
         let rt = runtime()?;
         rt.block_on(async {
@@ -281,6 +286,60 @@ fn a_new_ordinary_reruns_deadline_survives_restart_and_delivers_the_singleton_on
                     .await?
                     .ok_or("promoted rerun")?;
                 assert!(promoted.queued_at.0 < now - WAIT_LIMIT_MS);
+            }
+            if now == rerun_at {
+                let owner = app.deps.store.task(&id).await?.ok_or("owner")?;
+                assert!(
+                    app.deps
+                        .store
+                        .transition_ci_run(
+                            "still-queued",
+                            &[RunState::Queued],
+                            RunState::Cancelled,
+                            &yulius_app::ci::CiRunUpdate {
+                                ended_at: Some(app.now()),
+                                ..Default::default()
+                            }
+                        )
+                        .await?
+                );
+                let (mut run, job) = crate::pr_watch::run(
+                    &owner.sandbox_id,
+                    "second-rerun",
+                    &head,
+                    RunState::Running,
+                    None,
+                    now,
+                );
+                run.reference = CiRef::PullRequest(1481);
+                app.deps.store.insert_ci_run(&run, &[job]).await?;
+            }
+            if now == new_decision_at {
+                let prior = app
+                    .deps
+                    .store
+                    .latest_merge_wait(&id)
+                    .await?
+                    .ok_or("decision")?;
+                // A later arm tests the same inputs while this rerun is still active.
+                app.deps
+                    .store
+                    .insert_span(&yulius_app::stages::NewSpan {
+                        key: format!("wait@{now}"),
+                        started_at: app.now(),
+                        ended_at: Some(app.now()),
+                        sandbox_id: prior.sandbox_id,
+                        subject_kind: prior.subject_kind,
+                        subject_id: prior.subject_id,
+                        parent_key: prior.parent_key,
+                        kind: prior.kind,
+                        name: prior.name,
+                        environment: prior.environment,
+                        job: prior.job,
+                        outcome: prior.outcome,
+                        detail: prior.detail,
+                    })
+                    .await?;
             }
             let bounds = WatchBounds::default();
             let news = Box::pin(app.watch_prs(&bounds)).await;
@@ -1453,7 +1512,7 @@ async fn check_live_queue(
                 "{seen:?}"
             );
             let receipt = data.join(yulius_app::pr_watch::PR_NOTICES_FILE);
-            let told: serde_json::Value = serde_json::from_slice(&std::fs::read(receipt)?)?;
+            let told: serde_json::Value = serde_json::from_slice(&std::fs::read(&receipt)?)?;
             assert_eq!(
                 told[id.as_str()]["keys"]["green"],
                 format!("{head}:held"),
@@ -1473,6 +1532,12 @@ async fn check_live_queue(
             assert!(
                 larger_notice[0].1.contains("smaller candidates"),
                 "{larger_notice:?}"
+            );
+            let heard: serde_json::Value = serde_json::from_slice(&std::fs::read(&receipt)?)?;
+            assert_eq!(
+                heard[id.as_str()]["keys"]["candidate"],
+                "earlier-bisection",
+                "a larger candidate keeps the notice key saved by previous releases"
             );
             assert!(cold.watch_prs(&bounds).await.is_empty());
             // The source run has not been attributed to this member yet. Its raw job
@@ -1552,7 +1617,6 @@ async fn check_recorded_decision(
     remote: Arc<crate::support::FakeGitHub>,
 ) -> TestResult {
     let bounds = WatchBounds::default();
-    let origin = data.join("origin.git");
     let prior_notice = matches!(case, ColdCandidate::PriorNotice);
     if matches!(
         case,
@@ -1697,68 +1761,7 @@ async fn check_recorded_decision(
         *remote.remote.lock().map_err(|_| "remote")? = saved_remote;
     }
     if prior_notice {
-        // The remote base advanced while the daemon's origin/dev still names the tested base.
-        let seed = data.join("seed");
-        let base = crate::pr_watch::git(&origin, &["rev-parse", "dev"])?;
-        std::fs::write(seed.join("changed-base"), b"new integration tree")?;
-        crate::pr_watch::git(&seed, &["add", "changed-base"])?;
-        crate::pr_watch::git(&seed, &["commit", "-qm", "Advance integration"])?;
-        crate::pr_watch::git(&seed, &["push", "-q", "origin", "HEAD:dev"])?;
-        let obsolete = Box::pin(cold.watch_prs(&bounds)).await;
-        crate::pr_watch::git(&origin, &["update-ref", "refs/heads/dev", &base])?;
-        assert!(
-            obsolete.is_empty(),
-            "superseded integration tree: {obsolete:?}"
-        );
-        let saved_remote = remote.remote.lock().map_err(|_| "remote")?.take();
-        for (base, sha) in [("release", head), ("dev", "superseding-head")] {
-            {
-                let mut pulls = remote.pulls.lock().map_err(|_| "fixture pull")?;
-                let pull = pulls.first_mut().ok_or("pull")?;
-                pull.base = base.into();
-                pull.head_sha = sha.into();
-            }
-            assert!(
-                Box::pin(cold.watch_prs(&bounds)).await.is_empty(),
-                "obsolete candidate {base} {sha}"
-            );
-        }
-        set_pull_head(&remote, 1481, head)?;
-        *remote.remote.lock().map_err(|_| "remote")? = saved_remote;
-        let arms = data.join(yulius_app::agent_wait::ARMED_MERGES_FILE);
-        for rearmed in [false, true] {
-            let gate = Arc::new(tokio::sync::Notify::new());
-            *remote.pull_read_hold.lock().map_err(|_| "PR gate")? = Some(gate.clone());
-            let watcher = cold.clone();
-            let pass =
-                tokio::spawn(async move { watcher.watch_prs(&WatchBounds::default()).await });
-            let entered =
-                tokio::time::timeout(Duration::from_secs(5), remote.pull_read_entered.notified())
-                    .await;
-            if rearmed {
-                std::fs::write(
-                    &arms,
-                    serde_json::to_vec(
-                        &json!([{"task":id.as_str(),"head":head,"summary":"approved"}]),
-                    )?,
-                )?;
-            } else {
-                ask(&cold, id).await?;
-            }
-            *remote.pull_read_hold.lock().map_err(|_| "PR gate")? = None;
-            gate.notify_one();
-            let typed = tokio::time::timeout(Duration::from_secs(10), pass).await??;
-            entered?;
-            assert!(typed.is_empty(), "decision crossed the PR read: {typed:?}");
-            if rearmed {
-                std::fs::write(&arms, b"[]")?;
-            } else {
-                cold.deps
-                    .store
-                    .set_task_needs_you(id, None, cold.now())
-                    .await?;
-            }
-        }
+        Box::pin(check_changed_owner_inputs(data, id, head, &cold, &remote)).await?;
     }
     let notices = Box::pin(cold.watch_prs(&bounds)).await;
     let repeated = Box::pin(cold.watch_prs(&bounds)).await;
@@ -1808,5 +1811,145 @@ async fn check_recorded_decision(
     }
     assert!(repeated.is_empty(), "{repeated:?}");
     assert_eq!(attempts.len(), 1);
+    Ok(())
+}
+
+/// A previously notified author's old green status cannot validate the trained head.
+async fn check_changed_owner_inputs(
+    data: &Path,
+    id: &TaskId,
+    head: &str,
+    cold: &Arc<yulius_app::context::App>,
+    remote: &Arc<crate::support::FakeGitHub>,
+) -> TestResult {
+    let bounds = WatchBounds::default();
+    let origin = data.join("origin.git");
+    // The remote base advanced while the daemon's origin/dev still names the tested base.
+    let seed = data.join("seed");
+    let base = crate::pr_watch::git(&origin, &["rev-parse", "dev"])?;
+    std::fs::write(seed.join("changed-base"), b"new integration tree")?;
+    crate::pr_watch::git(&seed, &["add", "changed-base"])?;
+    crate::pr_watch::git(&seed, &["commit", "-qm", "Advance integration"])?;
+    crate::pr_watch::git(&seed, &["push", "-q", "origin", "HEAD:dev"])?;
+    let obsolete = Box::pin(cold.watch_prs(&bounds)).await;
+    crate::pr_watch::git(&origin, &["update-ref", "refs/heads/dev", &base])?;
+    assert!(
+        obsolete.is_empty(),
+        "superseded integration tree: {obsolete:?}"
+    );
+    let saved_remote = remote.remote.lock().map_err(|_| "remote")?.take();
+    let mut original_pull = remote.pull(1481).ok_or("owner PR")?;
+    original_pull.base_sha = base;
+    let changes: [fn(&mut yulius_app::ports::github::GhPull); 7] = [
+        |pull| pull.base = "release".into(),
+        |pull| pull.head_sha = "superseding-head".into(),
+        |pull| pull.head = "feat/another-owner".into(),
+        |pull| pull.from_fork = true,
+        |pull| pull.merged = true,
+        |pull| pull.state = "closed".into(),
+        |pull| pull.base_sha.clear(),
+    ];
+    for change in changes {
+        let mut other = original_pull.clone();
+        change(&mut other);
+        remote.pulls.lock().map_err(|_| "fixture pull")?[0] = other.clone();
+        assert!(
+            Box::pin(cold.watch_prs(&bounds)).await.is_empty(),
+            "unverified owner PR: {other:?}"
+        );
+    }
+    remote.pulls.lock().map_err(|_| "fixture pull")?[0] = original_pull.clone();
+    let (entered, gate) = super::pause_watch_or_queue(super::Point::ArmedNoticePublicationRead, id);
+    let watcher = cold.clone();
+    let pass = tokio::spawn(async move { watcher.watch_prs(&WatchBounds::default()).await });
+    tokio::time::timeout(Duration::from_secs(5), entered.notified()).await?;
+    remote.pulls.lock().map_err(|_| "fixture pull")?[0].base_sha = "new-base".into();
+    gate.notify_one();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(10), pass)
+            .await??
+            .is_empty()
+    );
+    remote.pulls.lock().map_err(|_| "fixture pull")?[0] = original_pull;
+    *remote.remote.lock().map_err(|_| "remote")? = saved_remote;
+    // Retirement can land after the watcher prepares the diagnosis and before it
+    // obtains the original writer. The next pass must also leave it unheard.
+    let span = cold
+        .deps
+        .store
+        .latest_merge_wait(id)
+        .await?
+        .ok_or("recorded decision")?;
+    let (entered, gate) = super::pause_watch_or_queue(super::Point::ArmedNoticePublicationRead, id);
+    let watcher = cold.clone();
+    let pass = tokio::spawn(async move { watcher.watch_prs(&WatchBounds::default()).await });
+    tokio::time::timeout(Duration::from_secs(5), entered.notified()).await?;
+    assert!(
+        cold.deps
+            .store
+            .retire_singleton(id, &span, cold.now())
+            .await?
+    );
+    gate.notify_one();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(10), pass)
+            .await??
+            .is_empty()
+    );
+    assert!(Box::pin(cold.watch_prs(&bounds)).await.is_empty());
+    let db = rusqlite::Connection::open(data.join("yulius.db"))?;
+    assert_eq!(
+        db.execute(
+            "UPDATE spans SET detail=?1 WHERE subject_id=?2 AND key=?3",
+            rusqlite::params![span.detail, id.as_str(), span.key]
+        )?,
+        1
+    );
+    drop(db);
+    let arms = data.join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+    for (rearmed, final_read) in [(false, false), (true, false), (true, true)] {
+        let (entered, gate) = if final_read {
+            let (entered, gate) =
+                super::pause_watch_or_queue(super::Point::ArmedNoticePublicationRead, id);
+            (Some(entered), gate)
+        } else {
+            let gate = Arc::new(tokio::sync::Notify::new());
+            *remote.pull_read_hold.lock().map_err(|_| "PR gate")? = Some(gate.clone());
+            (None, gate)
+        };
+        let watcher = cold.clone();
+        let pass = tokio::spawn(async move { watcher.watch_prs(&WatchBounds::default()).await });
+        let entered = tokio::time::timeout(
+            Duration::from_secs(5),
+            entered
+                .as_deref()
+                .unwrap_or(&remote.pull_read_entered)
+                .notified(),
+        )
+        .await;
+        if rearmed {
+            std::fs::write(
+                &arms,
+                serde_json::to_vec(
+                    &json!([{"task":id.as_str(),"head":head,"summary":"approved"}]),
+                )?,
+            )?;
+        } else {
+            ask(cold, id).await?;
+        }
+        *remote.pull_read_hold.lock().map_err(|_| "PR gate")? = None;
+        gate.notify_one();
+        let typed = tokio::time::timeout(Duration::from_secs(10), pass).await??;
+        entered?;
+        assert!(typed.is_empty(), "decision crossed the PR read: {typed:?}");
+        if rearmed {
+            std::fs::write(&arms, b"[]")?;
+        } else {
+            cold.deps
+                .store
+                .set_task_needs_you(id, None, cold.now())
+                .await?;
+        }
+    }
     Ok(())
 }

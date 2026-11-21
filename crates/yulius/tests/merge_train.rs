@@ -2897,6 +2897,39 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
         "{outcome}"
     );
     assert_eq!(f.train_runs(app).await?, [red]);
+    if matches!(change, SingletonChange::None) {
+        // Both the live slot and its durable decision still name this failure. A new
+        // ordinary rerun must enter its bounded wait even before the daemon restarts.
+        f.h.clock.0.fetch_add(1, Ordering::SeqCst);
+        let (mut rerun, job) = crate::pr_watch::run(
+            &f.sandbox,
+            "recheck-owner",
+            &head,
+            RunState::Running,
+            None,
+            app.now().0,
+        );
+        rerun.reference = CiRef::PullRequest(1);
+        app.deps.store.insert_ci_run(&rerun, &[job]).await?;
+        let notices = app
+            .config
+            .data_dir
+            .join(yulius_app::pr_watch::PR_NOTICES_FILE);
+        let bounds = yulius_app::pr_watch::WatchBounds::default();
+        // Retaining an older receipt with the same head and different diagnosis must
+        // not replace the newer in-memory decision or start a wait on its behalf.
+        f.h.store.execute_for_tests("CREATE TABLE prior_decision AS SELECT id, detail FROM spans WHERE subject_id='t1' AND outcome='dropped' AND name='merge_armed'").await?;
+        f.h.store.execute_for_tests("UPDATE spans SET detail=json_set(detail, '$.message', 'an earlier diagnosis') WHERE id IN (SELECT id FROM prior_decision)").await?;
+        Box::pin(app.watch_prs(&bounds)).await;
+        if notices.exists() {
+            let saved: Value = serde_json::from_slice(&std::fs::read(&notices)?)?;
+            assert!(saved["t1"]["singleton_wait"].is_null(), "{saved}");
+        }
+        f.h.store.execute_for_tests("UPDATE spans SET detail=(SELECT detail FROM prior_decision WHERE prior_decision.id=spans.id) WHERE id IN (SELECT id FROM prior_decision)").await?;
+        assert!(Box::pin(app.watch_prs(&bounds)).await.is_empty());
+        let saved: Value = serde_json::from_slice(&std::fs::read(notices)?)?;
+        assert_eq!(saved["t1"]["singleton_wait"]["run"], rerun.id, "{saved}");
+    }
     let cold = restart(app).await;
     let spans = cold
         .deps
