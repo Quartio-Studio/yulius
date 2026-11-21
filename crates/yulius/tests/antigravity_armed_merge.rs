@@ -1607,15 +1607,69 @@ async fn disarmed_pr_on_deferred_pass_resets_stall_clock_before_rearm() -> TestR
     }
     let wait = f.wait_state(1, &worktree).await?;
     assert_eq!(wait["merge_armed"], false, "PR must be disarmed: {wait}");
+    let outcome = wait["merge_outcome"]
+        .as_str()
+        .ok_or("expected merge_outcome after disarm")?
+        .to_owned();
+
+    // Record a valid dropped-singleton `("wait", "merge_armed")` span matching the dropped head
+    // and outcome so `SingletonDecision::from_span` returns `Ok(Some(decision))` and the unarmed
+    // pass enters `hosted_owner_pull` -> `return observed_only()` when GitHub is unavailable.
+    f.h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+    let now = app.now();
+    app.deps
+        .store
+        .insert_span(&yulius_app::stages::NewSpan {
+            sandbox_id: f.sandbox.clone(),
+            subject_kind: yulius_domain::stages::SubjectKind::Task,
+            subject_id: id.as_str().to_owned(),
+            key: format!("merge_armed:{}", now.0),
+            parent_key: None,
+            kind: "wait".into(),
+            name: "merge_armed".into(),
+            environment: None,
+            job: None,
+            started_at: now,
+            ended_at: Some(now),
+            outcome: Some("dropped".into()),
+            detail: Some(
+                json!({
+                    "head": head,
+                    "message": outcome,
+                    "singleton": {
+                        "pr": 1,
+                        "base": "base-sha",
+                        "tree": "tree-sha",
+                        "run": "run-singleton-1"
+                    }
+                })
+                .to_string(),
+            ),
+        })
+        .await?;
 
     // Force `if !armed` to defer via `observed_only()` (GitHub unavailable during `hosted_owner_pull`).
     f.h.github.no_installation.store(true, Ordering::SeqCst);
-    let _ = app.watch_prs(&bounds).await;
+    let deferred = app.watch_prs(&bounds).await;
     f.h.github.no_installation.store(false, Ordering::SeqCst);
+    assert!(
+        deferred.is_empty(),
+        "deferred unarmed pass must not type a message: {deferred:?}"
+    );
 
     let notices: Value = serde_json::from_str(&std::fs::read_to_string(
         app.config.data_dir.join("pr-notices.json"),
     )?)?;
+    assert!(
+        notices["t1"]["progress"]
+            .as_str()
+            .is_some_and(|p| p.ends_with("|armed")),
+        "precondition: unarmed pass must have deferred via observed_only() (keeping prior `|armed` progress): {notices}"
+    );
+    assert!(
+        notices["t1"]["keys"].get("outcome").is_none(),
+        "precondition: unarmed pass must have deferred via observed_only() without recording outcome: {notices}"
+    );
     assert_eq!(
         notices["t1"]["armed_green_key"], "",
         "deferred unarmed pass must clear armed_green_key: {notices}"
