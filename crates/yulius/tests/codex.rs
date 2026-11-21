@@ -854,6 +854,109 @@ fn moving_idle_working_and_held_codex_turns_selects_their_own_prompts() -> TestR
 }
 
 #[test]
+fn a_manual_move_of_a_live_held_goal_keeps_its_turn_and_spends_one_attempt() -> TestResult {
+    let (_dir, data) = temp()?;
+    runtime()?.block_on(async {
+        let (app, _, user, id, session) = restart_fixture_in(&data, TaskMode::Goal).await?;
+        let ctx = admin_ctx(&app, &user).await?;
+        let alternate =
+            add_codex_account(&app, "alternate", &codex_auth("2026-11-01T10:00:00Z")).await?;
+        let task_before = task(&app, &id).await?;
+        let worktree = Path::new(task_before.worktree_path.as_deref().ok_or("worktree")?);
+        std::fs::write(worktree.join("feature.rs"), "pub fn feature() {}\n")?;
+        assert!(
+            std::process::Command::new("git")
+                .current_dir(worktree)
+                .args(["add", "feature.rs"])
+                .status()?
+                .success()
+        );
+        let store = &app.deps.store;
+        let run = store.live_attempt(&id).await?.ok_or("held run")?;
+        app.pause_task(
+            &id,
+            yulius_app::model::PauseKind::Turn,
+            run.account_id,
+            None,
+        )
+        .await?;
+        app.switch_task(
+            &ctx,
+            id.as_str(),
+            &yulius_contracts::api::tasks::ContinueTask {
+                account_id: Some(alternate.to_string()),
+                ..Default::default()
+            },
+        )
+        .await?;
+        let replacement = store.live_attempt(&id).await?.ok_or("replacement run")?;
+        assert_ne!(replacement.id, run.id);
+        assert_eq!(replacement.account_id, Some(alternate));
+        assert_eq!(
+            replacement.provider_session_id.as_deref(),
+            Some(session.as_str())
+        );
+        let launch = Path::new(&replacement.run_dir).join("fake-launch.txt");
+        wait_for("the moved held goal", Duration::from_secs(30), || async {
+            std::fs::read_to_string(&launch).is_ok_and(|text| {
+                text.contains("Continue the authorized goal.") && text.contains("needs a spec")
+            })
+        })
+        .await?;
+        assert_eq!(
+            task(&app, &id).await?.gate_blocks,
+            task_before.gate_blocks + 1
+        );
+        support::stop_tasks(&app, &[&id]).await
+    })
+}
+
+#[test]
+fn process_free_capacity_retries_the_original_opening_and_resumes_a_later_prompt() -> TestResult {
+    use yulius_app::model::PauseKind;
+    let (_dir, data) = temp()?;
+    runtime()?.block_on(async {
+        let (app, _, _, id, _) = restart_fixture(&data).await?;
+        let store = &app.deps.store;
+        let held = "Continue with the owner's follow-up";
+        for (opening, kind) in [(true, LaunchKind::New), (false, LaunchKind::Resume)] {
+            let run = store.live_attempt(&id).await?.ok_or("prior run")?;
+            support::stop_tasks(&app, &[&id]).await?;
+            if opening {
+                std::fs::write(Path::new(&run.run_dir).join("opening-pending"), b"entered")?;
+            }
+            let stopped = task(&app, &id).await?.status;
+            assert!(
+                store
+                    .transition_task(
+                        &id,
+                        Some(stopped),
+                        TaskStatus::WaitingCapacity,
+                        None,
+                        app.now()
+                    )
+                    .await?
+            );
+            app.pause_task(&id, PauseKind::Prompt, None, Some(held.into()))
+                .await?;
+            app.resume_round().await;
+            let resumed = store.live_attempt(&id).await?.ok_or("resumed hold")?;
+            assert_eq!(resumed.launch_kind, kind);
+            let expected = if opening {
+                "ECHO: Original request: answer with an echo"
+            } else {
+                held
+            };
+            wait_for("the resumed prompt", Duration::from_secs(30), || {
+                screen_contains(&app, &id, expected)
+            })
+            .await?;
+        }
+        support::stop_tasks(&app, &[&id]).await
+    })
+}
+
+#[test]
 fn moving_a_codex_restart_waiting_for_capacity_keeps_its_continuation() -> TestResult {
     move_waiting_restart(false)
 }

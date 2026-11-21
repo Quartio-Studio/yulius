@@ -2130,6 +2130,31 @@ async fn goal_stop_continues_verification_after_merge_without_a_person() -> Test
 }
 
 #[tokio::test]
+async fn goal_stop_bounds_spec_diagnostics_and_prompt_mode_keeps_the_full_report() -> TestResult {
+    for mode in [TaskMode::Goal, TaskMode::Prompt] {
+        let f = task_with_open_step(Agent::Codex, mode, "Fix the spec").await?;
+        std::fs::write(f.worktree.join("api.rs"), "fn main() {}\n")?;
+        std::fs::create_dir_all(f.worktree.join("docs/specs"))?;
+        let spec = format!("## Plan\n{}", "- [ ] repeated step\n".repeat(2000));
+        std::fs::write(f.worktree.join("docs/specs/checkout.md"), spec)?;
+        let stop = stop_of(&f, Agent::Codex).await?;
+        assert_eq!(stop["decision"], "block");
+        let reason = stop["reason"].as_str().ok_or("spec instruction")?;
+        if mode == TaskMode::Goal {
+            assert!(
+                reason.starts_with("Continue the authorized goal.")
+                    && reason.contains("spec_check")
+            );
+            assert!(reason.len() <= yulius_app::capacity::CONTINUATION_MAX);
+        } else {
+            assert!(reason.starts_with("The task spec"));
+            assert!(reason.len() > yulius_app::capacity::CONTINUATION_MAX);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn goal_stop_continues_unfinished_spec_then_explains_the_retry_limit() -> TestResult {
     let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Write spec").await?;
     std::fs::create_dir_all(f.worktree.join("docs/specs"))?;

@@ -1,6 +1,6 @@
 ---
 yulius-task: b2d041b9-f438-4630-8b8c-a686f9c0ef0d
-status: in-progress
+status: done
 ---
 
 # SPEC-589 Continue authorized work at the end of a goal turn
@@ -39,7 +39,7 @@ Earlier user requests establish the ownership rule. Task #534 concerned automate
 - [x] Integrate and verify the updated Codex resume and capacity behavior
 - [x] Keep delivery and merge-train verification within the worker stack
 - [x] Preserve queued goal launch choices and the current Codex capacity pause
-- [ ] Recover admitted goals across harnesses, stale moves and oversized diagnostics
+- [x] Recover admitted goals across harnesses, stale moves and oversized diagnostics
 
 ## Acceptance criteria
 
@@ -112,3 +112,8 @@ Make the continuation decision where the agent can act on it, at the shared Stop
 - The four new admission regressions and all 77 scoped controls passed at `96997d6d8`, including manual and automatic recovery, the prior session identity, instruction receipt and the durable attempt count. The committed head passed Clippy. Independent review then found shared harness and ownership cases beyond these Codex controls.
 - Three regressions on `96997d6d8` demonstrated loss of a Claude Code fresh launch, termination of a replacement Codex run before Move classified its older pause, and loss of the actionable prompt when the real spec formatter produced more than 100 KiB of diagnostics. The database now observes the pause and its process together. Every harness claims its saved goal pause, and oversized instructions refer the agent to spec_check and steps_get within the stored-prompt bound.
 - The bounded stack-fix mutation campaign finished all 12 candidates. One was caught and 11 were unviable. No survivors or timeouts were reported.
+- Independent review approved integrated product head `adbb7475e052072e583c6435d5f607360060ec1e` against dev `b00cc76a4`. The reviewer independently ran the replacement-identity, cross-harness launch and oversized-diagnostic regressions. All three passed. Local verification passed all 381 affected tests, including the earlier delivery and merge-train CI failures. The focused UTF-8 byte-boundary test passed for exactly 100 KiB, one byte over, empty and absent instructions. Format, repository contracts and all-feature Clippy passed. The clean build-tool merge passed 16 compile-cache tests, with four optional tests skipped. Vidoc remained disabled.
+- Follow-up checks passed for an opening prompt held before the process was lost, a later submitted prompt and the exact UTF-8 byte limit. Applying the generated mutations made the corresponding controls fail. Removing fresh-start selection failed both ordinary Codex restart controls. Removing the live held-turn instruction left one recorded attempt when two were due. Forcing the opening-marker check in either direction chose the wrong session mode.
+- The Codex admission mutation campaign reported `44 listed, 13 caught, 3 missed, 0 timed out, 7 unviable, 21 not reached` at twelve minutes. The targeted opening and held-turn controls above caught all three survivors when their mutations were applied.
+- The shared recovery mutation campaign finished all 38 candidates in its twelve-minute bound and reported `7 caught, 4 missed, 0 timed out, 27 unviable`. The UTF-8 boundary test fails when validation accepts either a nonempty or a small instruction alone. The HTTP Stop regression fails when the spec diagnostics are bounded for the wrong task mode. On the reviewed code, all four follow-up controls passed, covering those two cases, a process-free opening or later prompt, and a subscription move with a live goal at Stop.
+- Applying the two remaining Move mutations failed the ordinary Codex fresh restart and the live goal move. The first incorrectly resumed an old session and the second refused a valid live move. All four shared-recovery survivors now have demonstrated failing controls. Final all-feature Clippy and the repository quick gate passed.

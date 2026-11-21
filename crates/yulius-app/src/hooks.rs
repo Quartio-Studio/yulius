@@ -2422,6 +2422,19 @@ mod tests {
     use std::path::Path;
     use yulius_contracts::hooks::HookInput;
 
+    #[test]
+    fn retained_goal_instruction_preserves_the_byte_limit_and_recovers_missing_text() {
+        let limit = crate::capacity::CONTINUATION_MAX;
+        let exact = "é".repeat(limit / 2);
+        assert_eq!(super::retained_goal_instruction(Some(exact.clone())), exact);
+        for prompt in [None, Some(String::new()), Some(format!("{exact}x"))] {
+            let instruction = super::retained_goal_instruction(prompt);
+            assert!(instruction.len() <= limit);
+            assert!(instruction.starts_with(super::GOAL_CONTINUATION));
+            assert!(instruction.contains("spec_check") && instruction.contains("steps_get"));
+        }
+    }
+
     fn notice(kind: Option<&str>, message: Option<&str>) -> HookInput {
         HookInput {
             notification_type: kind.map(str::to_owned),
