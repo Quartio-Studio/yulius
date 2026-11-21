@@ -536,7 +536,7 @@ export function mountTaskView(ctx, sandbox, task) {
     if (pressed) { attentionStale = true; return; }
     attentionStale = false;
     const pr = ctx.store.pullsOf(current.sandbox_id).get(current.id);
-    const info = taskInfo(current, ctx.store.state.actionRequests, ctx.store.pullForStatus(current));
+    const info = taskInfo(current, ctx.store.state.actionRequests, pr);
     // Failed checks already have their PR action in the strip.
     const waitingForReply = current.status === 'running' && current.activity === 'waiting' && info.group === 'needs' && !info.pr;
     const parkedWaiting = current.status === 'parked' && current.activity === 'waiting' && info.group === 'needs';
@@ -1000,14 +1000,16 @@ export function mountTaskView(ctx, sandbox, task) {
     renderQueue();
     const steps = current.steps || { done: 0, total: 0, current: null };
     // The session's state as the sidebar says it (pull request, browser request, usage limit).
-    const info = taskInfo(current, ctx.store.state.actionRequests, ctx.store.pullForStatus(current));
+    const info = taskInfo(current, ctx.store.state.actionRequests, ctx.store.pullsOf(current.sandbox_id).get(current.id));
     const total = steps.total || 0;
     const done = steps.done || 0;
     let n = total ? Math.min(total, done + (steps.current ? 1 : 0)) : 0;
-    if (detail && Array.isArray(detail.steps_list)) {
+    // A parked list can observe the last step finishing while the terminal still has the old plan.
+    const samePlan = detail?.steps?.total === total && detail.steps.done === done && detail.steps.current === steps.current;
+    if (detail && Array.isArray(detail.steps_list) && (current.status !== 'parked' || samePlan)) {
       const ordered = [...detail.steps_list].sort((a, b) => a.ordinal - b.ordinal);
       const index = ordered.findIndex((s) => s.status === 'in_progress');
-      if (index >= 0 && (current.status !== 'parked' || ordered[index].title === steps.current)) n = index + 1;
+      if (index >= 0) n = index + 1;
     }
     // A plan that grew since its first step was finished says what it had then (SPEC-484): the
     // server sends `first_total` only for such a plan.
@@ -1122,16 +1124,13 @@ export function mountTaskView(ctx, sandbox, task) {
   async function loadDetail() {
     const read = ++detailRead;
     const heardBefore = changesHeard;
-    const publishParked = ctx.store.beginParkedDetail();
     try {
       const fresh = await ctx.api.get(`/api/tasks/${enc(current.id)}`, { signal: reads.signal });
       if (!alive || read < appliedRead) return; // the view was left, or a newer answer was applied
       appliedRead = read;
       detail = fresh;
       if (detail && detail.id === current.id) {
-        const unchanged = read === detailRead && changesHeard === heardBefore;
-        const summary = unchanged ? { ...current, ...pickSummary(detail) } : current;
-        current = publishParked(detail, summary);
+        if (read === detailRead && changesHeard === heardBefore) current = { ...current, ...pickSummary(detail) };
         heldKey = '';
         renderStrip();
         // The end banner may name the limit the last run met (SPEC-268), known only from here.
@@ -1182,7 +1181,7 @@ export function mountTaskView(ctx, sandbox, task) {
       const previousStatus = current.status;
       const previousUpdate = current.updated_at;
       const previousOwner = owner();
-      current = { ...current, ...next, needs_you_notice: next.needs_you_notice, parked_needs_you: next.parked_needs_you, parked_pr: next.parked_pr };
+      current = { ...current, ...next, needs_you_notice: next.needs_you_notice };
       // Whether the task started is the detail's: a status with a run means it has, and any status
       // change reads the detail again (a start that found no capacity has not). A message someone
       // else queued changes the request: read it again too.
