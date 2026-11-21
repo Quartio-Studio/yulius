@@ -661,7 +661,11 @@ impl App {
     /// A clean Stop ended the turn (TSK-014): remembers when, and settles it now, or once the goal
     /// verdict came while a goal is open (SPEC-079 BGW-005; Claude Code's evaluator is a Stop
     /// hook that runs after this one, so the hook cannot wait for it).
-    pub(crate) async fn clean_stop(self: &Arc<Self>, task: &TaskRecord) -> AppResult<()> {
+    pub(crate) async fn clean_stop(
+        self: &Arc<Self>,
+        task: &TaskRecord,
+        pending_goal: bool,
+    ) -> AppResult<()> {
         let runtime = self.runtime(&task.id);
         crate::race::reached(
             crate::race::Point::StopClean,
@@ -676,7 +680,8 @@ impl App {
             stop_ms
         };
         runtime.resumed_turn.store(false, Ordering::SeqCst);
-        if runtime.goal_open.load(Ordering::SeqCst) && !runtime.goal_achieved.load(Ordering::SeqCst)
+        if (pending_goal || runtime.goal_open.load(Ordering::SeqCst))
+            && !runtime.goal_achieved.load(Ordering::SeqCst)
         {
             runtime.verdict_stop_ms.open(stop_ms);
             let (app, task_id) = (Arc::clone(self), task.id.clone());

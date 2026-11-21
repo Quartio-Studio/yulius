@@ -82,6 +82,8 @@ const MAX_DECISION_FILES: usize = 200;
 enum StopGate {
     Pass,
     Handoff,
+    /// Claude’s first native goal record has yet to reach the transcript watcher.
+    NativeGoal,
     /// Observe the current plan and budget together after the live probes and before acting.
     Declared,
     Continue(String),
@@ -1222,6 +1224,13 @@ impl App {
         if self.turn_handoff_pending(task).await? {
             return Ok(StopGate::Handoff);
         }
+        if task.follows_goal()
+            && !self.runtime(&task.id).goal_submitted.load(Ordering::SeqCst)
+            && let Some(run) = self.deps.store.live_attempt(&task.id).await?
+            && crate::supervisor::native_goal_pending(Path::new(&run.run_dir))
+        {
+            return Ok(StopGate::NativeGoal);
+        }
         if self.goal_is_open(&task.id) {
             return Ok(StopGate::Pass);
         }
@@ -1268,7 +1277,7 @@ impl App {
         };
         match gate {
             StopGate::Continue(reason) => Some(reason),
-            StopGate::Pass | StopGate::Handoff | StopGate::Declared => None,
+            StopGate::Pass | StopGate::Handoff | StopGate::NativeGoal | StopGate::Declared => None,
         }
     }
 
@@ -1500,9 +1509,10 @@ impl App {
             || (matches!(gate, StopGate::Pass) && !self.goal_is_open(&task.id));
         let can_nudge =
             matches!(gate, StopGate::Pass) || (declared && matches!(gate, StopGate::Continue(_)));
+        let pending_goal = matches!(gate, StopGate::NativeGoal);
         let mut reason = match gate {
             StopGate::Continue(reason) => Some(reason),
-            StopGate::Pass | StopGate::Handoff | StopGate::Declared => None,
+            StopGate::Pass | StopGate::Handoff | StopGate::NativeGoal | StopGate::Declared => None,
         };
         if task.mode == TaskMode::Goal
             && let Some(reason) = &reason
@@ -1674,7 +1684,7 @@ impl App {
             }
             // Done when the goal is achieved, waiting otherwise (TSK-014), once the goal verdict
             // came while a goal is open (SPEC-079 BGW-005).
-            self.clean_stop(task).await?;
+            self.clean_stop(task, pending_goal).await?;
             return Ok(HookReply::Output(HookOutput::default()));
         };
 

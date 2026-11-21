@@ -1,6 +1,6 @@
 ---
 yulius-task: b2d041b9-f438-4630-8b8c-a686f9c0ef0d
-status: in-progress
+status: done
 ---
 
 # SPEC-589 Continue authorized work at the end of a goal turn
@@ -19,7 +19,7 @@ Earlier user requests establish the ownership rule. Task #534 concerned automate
 
 ## Requirements
 
-- GCT-001. At a clean Stop of a live goal-mode task, continue actionable plan work or an unfinished spec under the existing authorization. Apply the rule across harnesses, including when the remaining step is post-merge verification. Preserve prompt-mode turn boundaries and the native goal evaluator.
+- GCT-001. At a clean Stop of a live goal-mode task, continue actionable plan work or an unfinished spec under the existing authorization. Apply the rule across harnesses, including when the remaining step is post-merge verification. Preserve prompt-mode turn boundaries and the native goal evaluator, including the first Stop before the transcript watcher confirms a launched or typed goal.
 - GCT-002. An outstanding human decision, a pause, an active background operation, or delivery news that already owns the next turn takes precedence over a continuation for declared work. The existing spec-format gate still checks required artifacts. A failed Antigravity turn uses its existing error path. Completion requires the normal evidence and step updates.
 - GCT-003. Use the existing persisted Stop retry limit. When continuations are exhausted, expose the unsuccessful attempts and remaining work. A completed step restores the attempt budget. A subscription move or a capacity wait preserves it. A plan whose remaining steps are explicitly blocked shows the recorded dependency. A clean stop with finished work releases the turn.
 
@@ -40,7 +40,7 @@ Earlier user requests establish the ownership rule. Task #534 concerned automate
 - [x] Keep delivery and merge-train verification within the worker stack
 - [x] Preserve queued goal launch choices and the current Codex capacity pause
 - [x] Recover admitted goals across harnesses, stale moves and oversized diagnostics
-- [ ] Preserve the native evaluator on a goal’s first Stop
+- [x] Preserve the native evaluator on a goal’s first Stop
 
 ## Acceptance criteria
 
@@ -118,3 +118,5 @@ Make the continuation decision where the agent can act on it, at the shared Stop
 - The Codex admission mutation campaign reported `44 listed, 13 caught, 3 missed, 0 timed out, 7 unviable, 21 not reached` at twelve minutes. The targeted opening and held-turn controls above caught all three survivors when their mutations were applied.
 - The shared recovery mutation campaign finished all 38 candidates in its twelve-minute bound and reported `7 caught, 4 missed, 0 timed out, 27 unviable`. The UTF-8 boundary test fails when validation accepts either a nonempty or a small instruction alone. The HTTP Stop regression fails when the spec diagnostics are bounded for the wrong task mode. On the reviewed code, all four follow-up controls passed, covering those two cases, a process-free opening or later prompt, and a subscription move with a live goal at Stop.
 - Applying the two remaining Move mutations failed the ordinary Codex fresh restart and the live goal move. The first incorrectly resumed an old session and the second refused a valid live move. All four shared-recovery survivors now have demonstrated failing controls. Final all-feature Clippy and the repository quick gate passed.
+- Yulius CI run `6a2673be-f167-4230-85fb-2f73e9b3d4a3` failed the onboarding archive regression on `052a1a624`. The local subprocess reproduction remained Working after Claude recorded its achieved goal and spent one checklist continuation. The HTTP regression in `1d81fd1dd` showed the exact checklist instruction issued before the first native goal record reached Yulius. It covers both a newly launched and a restored goal, preserves two consumed attempts while Claude owns the Stop, and resumes the checklist once that ownership ends.
+- After the clean merge of dev `00ff06cbf`, the onboarding archive and sandbox-ready assertions passed in 1.7 seconds. All 563 selected tests passed across Stop hooks, native goal settlement, subscriptions, delivery, the merge train, CLI commands and the integrated harness changes. All-feature Clippy passed with warnings denied. The fixtures exercise real local hooks and subprocesses with synthetic provider sessions.

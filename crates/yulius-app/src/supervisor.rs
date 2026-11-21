@@ -1193,6 +1193,11 @@ impl PendingGoal {
     }
 }
 
+/// The run was given a native goal whose submission its watcher has yet to confirm.
+pub(crate) fn native_goal_pending(run_dir: &Path) -> bool {
+    PendingGoal::Launch.pending(run_dir) || PendingGoal::Typed.pending(run_dir)
+}
+
 /// Why a task has no goal when a person typed before Yulius could type it.
 const GOAL_LEFT_TO_DRAFT: &str = "Someone typed in the terminal before Yulius set the task's \
                                   goal, so their draft was left alone";
