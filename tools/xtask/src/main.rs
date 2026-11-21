@@ -24,6 +24,7 @@ const HELP: &str = "Yulius engineering commands (scripts/dev <command>)
             --all scans the whole repository (needs a Vidoc key; not in ci)
   mutants   Mutation-test the Rust lines the branch changed, beside the first review (SPEC-506):
             --base REF (origin/<integration branch>; the reviewed head for a fix's lines),
+            --check-proof lists eligibility for the one-file routine rollback proof (1 to 8 mutants).
             --scope lines|files, --risk authorization|persistence|lifecycle. Below 16 listed
             changed-line mutants use 10 minutes and one job. At 16 or a declared risk allow file
             scope, 30 minutes and two jobs. --minutes N, --mutant-seconds N (300), --jobs N and

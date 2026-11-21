@@ -236,19 +236,28 @@ class CompileCache(unittest.TestCase):
     def test_a_foreground_command_with_redirected_input_can_read_dev_tty(self):
         self.check_foreground_terminal(redirect_stdin=True)
 
-    def check_foreground_terminal(self, redirect_stdin):
+    def test_disposable_target_read_from_tty_and_cleanup_on_term(self):
+        self.check_foreground_terminal(redirect_stdin=False, scratch=True)
+
+    def check_foreground_terminal(self, redirect_stdin, scratch=False):
         import pty
         import select
         import signal
         import time
         read = "open('/dev/tty').readline().strip()" if redirect_stdin else "input()"
-        env = self.caller_fixture(f"print('ready',flush=True);print('received '+{read},flush=True)")
+        env = self.caller_fixture(f"print('ready',flush=True);print('received '+{read},flush=True)" + (";input()" if scratch else ""))
+        args = ["cargo", "test", "--", "--nocapture"]
+        if scratch:
+            root = self.sandbox / "scratch"
+            root.mkdir()
+            env.update(YULIUS_BUILD_SCRATCH=str(root))
+            args.insert(1, "--scratch-target")
         pid, terminal = pty.fork()
         if pid == 0:
             if redirect_stdin:
                 with open(os.devnull, "rb") as empty:
                     os.dup2(empty.fileno(), 0)
-            os.execve(self.task / "scripts/cargo", ["cargo", "test", "--", "--nocapture"], env)
+            os.execve(self.task / "scripts/cargo", args, env)
         try:
             received = b""
             for expected in (b"ready", b"received X"):
@@ -266,6 +275,9 @@ class CompileCache(unittest.TestCase):
                 pass
             os.waitpid(pid, 0)
             os.close(terminal)
+
+        if scratch:
+            self.assertEqual(list(root.iterdir()), [], "cancelled foreground build retained its target")
 
     @unittest.skipUnless(shutil.which("script"), "Linux CI terminal required")
     def test_unattended_ci_caches_inside_the_original_runner_session(self):

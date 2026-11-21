@@ -1371,6 +1371,7 @@ mod tests {
         ] {
             let guide = read(rel)?;
             for requirement in [
+                "1–8 listed changed-line mutants",
                 "one worker and 10 minutes",
                 "16 listed changed-line mutants",
                 "two workers and 30 minutes",

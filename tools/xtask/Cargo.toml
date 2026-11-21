@@ -14,5 +14,7 @@ workspace = true
 layer = "tooling"
 
 [dependencies]
+nix.workspace = true
+serde_json.workspace = true
 signal-hook.workspace = true
 tempfile.workspace = true

@@ -54,7 +54,7 @@ def open_store(cache, checkout):
         os.close(directory)
 
 
-def run_session(command, env, lease=None):
+def run_session(command, env, lease=None, *, interactive=False):
     """Forward cancellation to the whole Cargo command, escalating any surviving descendants."""
     child = None
     requested = None
@@ -68,10 +68,29 @@ def run_session(command, env, lease=None):
         if child is not None:
             raise Cancelled
 
+    terminal = None
+    if interactive and foreground_terminal():
+        terminal = os.open("/dev/tty", os.O_RDONLY | os.O_NOCTTY)
+
+    def foreground(group):
+        # The supervisor is in the background when restoring its foreground group.
+        previous_ttou = signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+        try:
+            os.tcsetpgrp(terminal, group)
+        finally:
+            signal.signal(signal.SIGTTOU, previous_ttou)
+
     signals = (signal.SIGHUP, signal.SIGINT, signal.SIGQUIT, signal.SIGTERM)
     previous = {sig: signal.signal(sig, cancel) for sig in signals}
     try:
         child = subprocess.Popen(command, env=env, pass_fds=() if lease is None else (lease,), process_group=0)
+        if terminal is not None:
+            try:
+                foreground(child.pid)
+                # A fast reader may have received SIGTTIN before the handoff.
+                os.killpg(child.pid, signal.SIGCONT)
+            except ProcessLookupError:
+                pass
         if requested is not None:
             raise Cancelled
         return child.wait()
@@ -90,6 +109,11 @@ def run_session(command, env, lease=None):
         child.wait()
         return -requested
     finally:
+        if terminal is not None:
+            try:
+                foreground(os.getpgrp())
+            finally:
+                os.close(terminal)
         for sig, handler in previous.items():
             signal.signal(sig, handler)
 

@@ -10,7 +10,7 @@ Workspace copies under the session tmpfs consumed 231 GiB across three sessions.
 
 ## Decision
 
-Give contained agents and CI jobs a run-owned directory inside the sandbox disk quota for disposable builds. Cap the ordinary /tmp mount at 1 GiB. Use one mutation worker for up to 10 minutes on routine diffs. At 16 changed-line mutants, or when the change alters authorization, persistence or process lifecycle, allow up to two workers for 30 minutes. The latter boundaries require their relevant integration tests alongside the workspace baseline. Keep the diff and individual verdicts in the evidence.
+Give contained agents and CI jobs a run-owned directory inside the sandbox disk quota for disposable builds. Cap the ordinary /tmp mount at 1 GiB. Use one mutation worker for up to 10 minutes on routine diffs. At 16 changed-line mutants, or when the change alters authorization, persistence or process lifecycle, allow up to two workers for 30 minutes. The latter boundaries require their relevant integration tests alongside the workspace baseline. Keep the diff and individual verdicts in the evidence. A routine single-file, single-behavior change with 1–8 changed-line candidates may use a recorded rollback failure and restored pass. A list-only eligibility check lets the reviewer verify the scope.
 
 ## Alternatives
 

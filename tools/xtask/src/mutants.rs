@@ -5,14 +5,13 @@
 //! its lines, unless `--tests` names others. A bound on the whole run ends it and names the
 //! mutants it did not reach; the last line is the summary for the spec's Evidence.
 
+mod process;
+
 use std::collections::BTreeSet;
 use std::io;
 use std::path::Path;
 use std::process::{Command, ExitCode};
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::{Arc, atomic::AtomicBool};
 use std::time::{Duration, Instant};
 
 /// The changed-line mutant count that permits a second build and wider scope.
@@ -58,6 +57,8 @@ pub struct Settings {
     pub risk: Option<String>,
     /// Explicitly include unchanged lines of the touched Rust files.
     pub whole_files: bool,
+    /// Check whether a one-file change can use a recorded rollback test.
+    pub check_proof: bool,
     /// The process's budget.
     pub budget: Budget,
     /// A nextest filter for the `yulius` package's tests in place of the changed ones.
@@ -92,12 +93,17 @@ impl Settings {
             jobs: None,
             risk: None,
             whole_files: false,
+            check_proof: false,
             budget,
             tests: None,
             seconds: None,
         };
         let mut args = args.iter();
         while let Some(option) = args.next() {
+            if option == "--check-proof" {
+                settings.check_proof = true;
+                continue;
+            }
             let value = args
                 .next()
                 .ok_or_else(|| format!("{option} needs a value"))?;
@@ -204,6 +210,8 @@ pub fn test_filter(tests: Option<&str>, changed: &[String]) -> String {
 /// What became of the mutants listed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Outcomes {
+    /// The current campaign recorded a successful unmutated baseline.
+    pub baseline_passed: bool,
     /// A test failed for it.
     pub caught: Vec<String>,
     /// No test failed for it.
@@ -221,6 +229,7 @@ impl Outcomes {
     #[must_use]
     pub fn of(
         listed: &[String],
+        baseline_passed: bool,
         caught: &str,
         missed: &str,
         timeout: &str,
@@ -251,6 +260,7 @@ impl Outcomes {
             .cloned()
             .collect();
         Self {
+            baseline_passed,
             caught,
             missed,
             timeout,
@@ -262,7 +272,10 @@ impl Outcomes {
     /// Whether every mutant was tested and caught (or did not build).
     #[must_use]
     pub fn held(&self) -> bool {
-        self.missed.is_empty() && self.timeout.is_empty() && self.unreached.is_empty()
+        self.baseline_passed
+            && self.missed.is_empty()
+            && self.timeout.is_empty()
+            && self.unreached.is_empty()
     }
 
     /// The summary line for the Evidence.
@@ -310,7 +323,7 @@ fn outer_nextest(name: &str) -> bool {
 /// report mutants caught or missed wrongly; review round 1 of fix 8) and nothing an outer
 /// nextest run set ([`outer_nextest`]).
 fn mutants_command(cargo: &str, root: &Path, head: &str) -> Command {
-    let mut command = Command::new(cargo);
+    let mut command = process::command(cargo);
     command
         .current_dir(root)
         .env_remove("CARGO_TARGET_DIR")
@@ -430,26 +443,68 @@ fn campaign(
         .map_err(|e| io::Error::other(format!("cannot lock mutation reports: {e}")))?;
     let diff_file = dir.join("branch.diff");
     std::fs::write(&diff_file, &diff)?;
-    let list = || -> io::Result<Vec<String>> {
-        let out = mutants_command(cargo, root, &head)
+    let list = |bound| -> io::Result<Vec<String>> {
+        let list_path = dir.join("listed.txt");
+        let mut command = mutants_command(cargo, root, &head);
+        command
             .args(selection(&diff_file))
             .arg("--list")
-            .output()?;
-        if !out.status.success() {
+            .stdout(std::fs::File::create(&list_path)?);
+        let status = process::run(&mut command, started + bound, stop)?.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                "deadline reached during mutation discovery",
+            )
+        })?;
+        if !status.success() {
             return Err(io::Error::other(format!(
-                "cargo mutants --list failed: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
+                "cargo mutants --list failed ({status})"
             )));
         }
-        Ok(String::from_utf8_lossy(&out.stdout)
+        Ok(std::fs::read_to_string(list_path)?
             .lines()
             .map(str::trim)
             .filter(|l| !l.is_empty())
             .map(str::to_owned)
             .collect())
     };
-    let mut listed = list()?;
+    let mut listed = list(settings.bound(0))?;
     let changed = listed.len();
+    if settings.check_proof {
+        let paths = git(
+            root,
+            &[
+                "diff",
+                "--name-only",
+                "-z",
+                base.trim(),
+                "HEAD",
+                "--",
+                "*.rs",
+                ":(exclude,glob)tools/**",
+                ":(exclude,glob)crates/*/tests/**",
+            ],
+        )?;
+        let files = paths.split_terminator('\0').count();
+        if files != 1
+            || !(1..=8).contains(&changed)
+            || settings.risk.is_some()
+            || settings.whole_files
+        {
+            return Err(io::Error::other(format!(
+                "rollback proof ineligible: {files} product Rust files, {changed} mutants, risk={:?}; run the campaign",
+                settings.risk
+            )));
+        }
+        for mutant in listed {
+            println!("{mutant}");
+        }
+        println!(
+            "base={} scope=lines risk=routine files=1 changed={changed}: eligible for a rollback proof; no campaign ran. Record the changed behavior, failing rollback test and passing restored test.",
+            base.trim()
+        );
+        return Ok(None);
+    }
     if settings.whole_files {
         if !settings.wider_budget(changed) {
             return Err(io::Error::other(
@@ -483,7 +538,7 @@ fn campaign(
         }
         args.extend(files.iter().map(String::as_str));
         std::fs::write(&diff_file, git(root, &args)?)?;
-        listed = list()?;
+        listed = list(settings.bound(changed))?;
     }
     if listed.is_empty() {
         println!(
@@ -569,68 +624,59 @@ fn campaign(
                 .iter()
                 .flat_map(|filter| ["--", "-E", filter.as_str()]),
         );
-    if stop.load(Ordering::Relaxed) {
-        return Err(io::Error::new(
-            io::ErrorKind::Interrupted,
-            "mutation run interrupted",
-        ));
+    // Rotate under the checkout lock before spawning. A tool killed during
+    // discovery cannot leave the previous baseline or mutant verdicts at this path.
+    let current = dir.join("mutants.out");
+    if current.exists() {
+        let old = dir.join("mutants.out.old");
+        if old.exists() {
+            std::fs::remove_dir_all(&old)?;
+        }
+        std::fs::rename(&current, old)?;
     }
-    let mut child = command.spawn()?;
-    let mut bounded = false;
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        if started.elapsed() >= bound || stop.load(Ordering::Relaxed) {
-            println!(
-                "Stopping the campaign (deadline {} s or cancellation).",
-                bound.as_secs()
-            );
-            bounded = true;
-            // cargo-mutants stops the builds and tests it started when it is asked to end.
-            #[cfg(unix)]
-            let _ = Command::new("kill")
-                .args(["-TERM", &child.id().to_string()])
-                .status();
-            #[cfg(not(unix))]
-            let _ = child.kill();
-            break child.wait()?;
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    };
-    // Report cleanup errors instead of silently dropping an incomplete build tree.
+    let status = process::run(&mut command, started + bound, stop)?;
     scratch.close()?;
-    if stop.load(Ordering::Relaxed) {
-        return Err(io::Error::new(
-            io::ErrorKind::Interrupted,
-            "mutation run interrupted",
-        ));
+    if let Some(status) = status {
+        if status.code() == Some(4) {
+            return Err(io::Error::other(format!(
+                "cargo-mutants failed its unmutated baseline; see {}",
+                current.join("log/baseline.log").display()
+            )));
+        }
+        if !matches!(status.code(), Some(0 | 2 | 3)) {
+            return Err(io::Error::other(format!(
+                "cargo-mutants failed ({status}); its log: {}",
+                current.join("debug.log").display()
+            )));
+        }
     }
-    // 0: all caught; 2: some missed; 3: some timed out. Anything else, unless the bound ended
-    // it, is cargo-mutants' own failure (a baseline that does not pass), not mutants unreached.
-    if !bounded && status.code() == Some(4) {
-        return Err(io::Error::other(format!(
-            "cargo-mutants failed its unmutated baseline; see {}",
-            dir.join("mutants.out/log/baseline.log").display()
-        )));
-    }
-    if !bounded && !matches!(status.code(), Some(0 | 2 | 3)) {
-        return Err(io::Error::other(format!(
-            "cargo-mutants failed ({status}); its log: {}",
-            dir.join("mutants.out/debug.log").display()
-        )));
-    }
+    let baseline_passed = std::fs::read(current.join("outcomes.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .is_some_and(|report| {
+            report["outcomes"].as_array().is_some_and(|outcomes| {
+                outcomes
+                    .iter()
+                    .any(|o| o["scenario"] == "Baseline" && o["summary"] == "Success")
+            })
+        });
     let read = |kind: &str| {
         std::fs::read_to_string(dir.join("mutants.out").join(format!("{kind}.txt")))
             .unwrap_or_default()
     };
     let outcomes = Outcomes::of(
         &listed,
+        baseline_passed,
         &read("caught"),
         &read("missed"),
         &read("timeout"),
         &read("unviable"),
     );
+    let baseline = if baseline_passed {
+        "passed"
+    } else {
+        "incomplete"
+    };
     for (what, mutants) in [
         ("Missed (no test failed)", &outcomes.missed),
         ("Timed out", &outcomes.timeout),
@@ -650,9 +696,10 @@ fn campaign(
         }
     }
     println!(
-        "base={} scope={scope} risk={risk} changed={changed} jobs={jobs} timeout={}s {}",
+        "base={} scope={scope} risk={risk} changed={changed} jobs={jobs} test_timeout={}s baseline={baseline} tests=[{}] {}",
         base.trim(),
         settings.mutant_seconds,
+        filter.as_deref().unwrap_or("all"),
         outcomes.summary(listed.len(), bound, started.elapsed())
     );
     Ok(Some(outcomes))
@@ -726,6 +773,7 @@ mod tests {
         .to_vec();
         let held = Outcomes::of(
             &listed,
+            true,
             "a.rs:1:1: m1\na.rs:2:1: m2\na.rs:3:1: m3\n",
             "",
             "",
@@ -734,6 +782,7 @@ mod tests {
         assert!(held.held());
         let partial = Outcomes::of(
             &listed,
+            true,
             "a.rs:1:1: m1\n",
             "a.rs:2:1: m2\n",
             "a.rs:3:1: m3\n",
@@ -825,6 +874,7 @@ mod tests {
             jobs: None,
             risk: None,
             whole_files: false,
+            check_proof: false,
             budget: Budget {
                 cpus: Some(2),
                 memory_mb: None,
@@ -882,6 +932,23 @@ mod tests {
         let outcomes = run(&dir, "cargo", &settings(&base))?.ok_or("nothing mutated")?;
         assert!(outcomes.held(), "{outcomes:?}");
         assert!(outcomes.caught.iter().any(|m| m.contains("two")));
+        assert!(outcomes.baseline_passed);
+        let proof = Settings {
+            check_proof: true,
+            ..settings(&base)
+        };
+        assert_eq!(run(&dir, "cargo", &proof)?, None);
+        assert!(
+            run(
+                &dir,
+                "cargo",
+                &Settings {
+                    risk: Some("persistence".into()),
+                    ..proof.clone()
+                }
+            )
+            .is_err_and(|e| e.to_string().contains("rollback proof ineligible"))
+        );
         let small = Settings {
             whole_files: true,
             ..settings(&base)
@@ -948,6 +1015,45 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn a_stalled_command_cannot_reuse_the_last_campaign() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let (root, base) = fixture("stale")?;
+        commit(&root, "src/lib.rs", "pub fn one() -> u32 { 2 }\n")?;
+        let reports = root.join("target/mutants/mutants.out");
+        std::fs::create_dir_all(&reports)?;
+        std::fs::write(reports.join("caught.txt"), "variant\n")?;
+        std::fs::write(
+            reports.join("outcomes.json"),
+            r#"{"outcomes":[{"scenario":"Baseline","summary":"Success"}]}"#,
+        )?;
+        let cargo = root.join("fake-cargo");
+        // Finish on our own after a longer outer bound so the original unbounded wait also returns.
+        std::fs::write(
+            &cargo,
+            "#!/bin/sh\ncase \" $* \" in *' --list '*) echo variant; exit 0;; esac\ntrap '' TERM\nsleep 12\ntouch overran\n",
+        )?;
+        std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o700))?;
+        let mut settings = Settings::parse_with(&[], "dev", Budget::default())?;
+        settings.base = base;
+        settings.seconds = Some(1);
+        let outcome = run(&root, cargo.to_str().ok_or("path")?, &settings)?.ok_or("no run")?;
+        assert!(!outcome.held(), "previous caught.txt credited to this run");
+        assert!(
+            !root.join("overran").exists(),
+            "TERM was ignored past shutdown grace"
+        );
+        std::fs::write(&cargo, "#!/bin/sh\ntrap '' TERM\nsleep 12\ntouch overran\n")?;
+        assert!(run(&root, cargo.to_str().ok_or("path")?, &settings).is_err());
+        assert!(
+            !root.join("overran").exists(),
+            "listing ignored the deadline"
+        );
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
     /// Review round 1 of fix 8: cargo-mutants runs with no shared target directory and none of
     /// an outer nextest's settings, whatever the caller's environment holds.
     #[test]
@@ -1010,6 +1116,7 @@ mod tests {
         );
         assert_eq!(Settings::parse(&[], "dev")?.base, "origin/dev");
         assert!(Settings::parse(&["--minutes".to_owned(), "0".to_owned()], "dev").is_err());
+        assert!(Settings::parse(&["--check-proof".into()], "dev").is_ok());
         assert!(Settings::parse(&["--other".to_owned(), "1".to_owned()], "dev").is_err());
         Ok(())
     }
@@ -1036,6 +1143,9 @@ mod tests {
         assert_eq!(jobs(&[], session, 16)?, 2);
         assert_eq!(jobs(&["--risk", "authorization"], session, 1)?, 2);
         assert!(jobs(&["--risk", "unspecified"], session, 1).is_err());
+        let settings = Settings::parse_with(&[], "dev", session)?;
+        assert_eq!(settings.bound(15), Duration::from_secs(600));
+        assert_eq!(settings.bound(16), Duration::from_secs(1800));
         // A whole change: a third of the CPUs.
         assert_eq!(jobs(&[], session, 260)?, 2);
         assert_eq!(jobs(&[], Budget::read(env(Some("64"), None)), 260)?, 2);
