@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- A sandbox browser whose profile came from another host now starts. Chrome's stale `Singleton*` lock files from the old host are removed before Chrome and its display start. A lock held by a running process here is kept, and a failed start names that process. Before this, after the 2026-11-21 move, the display restarted every 30 s. [SPEC-593](../.ai/specs/SPEC-593-sandbox-browser-never-starts-on-a-moved.md)
 - Yulius's own `[cd.dev]` now deploys the exact build of a dev revision to its staging VM, the former production host. Each deploy keeps the store the replaced release left. A deploy first migrates a copy of the live store and is refused when it would lose rows. Verify checks the commit, HTTPS, the contained doctor, the store's schema and the Docker smoke test. Rollback restores a release with its own store. [ADR-0430](decisions/0430-yuliuss-staging-builds-in-cds-builder-and-installs-a-kept-release-with-its-store.md), [SPEC-591](../.ai/specs/SPEC-591-yulius-gets-its-own-staging-instance-and.md)
 - The new-task composer now keeps multiple unfinished drafts in one sandbox, each with its own text, attachments and task choices. [SPEC-594](../.ai/specs/SPEC-594-i-should-be-able-to-create-many-drafts-l.md)
 

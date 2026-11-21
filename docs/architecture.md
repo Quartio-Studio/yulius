@@ -558,6 +558,7 @@ blocks; `yulius_browser::policy`, written by `yulius host setup`;
 [ADR-0318](decisions/0318-viewers-input-reaches-a-sandbox-browser-only-under-the-hosts-managed-policy.md)).
 The private X display watches for a fresh CLIPBOARD owner after a viewer’s primary click. The viewer receives a one-use offer. Accepting it reads the selection and returns plain text on that socket. [ADR-0423](decisions/0423-a-webpage-copy-returns-through-the-clicking-viewers-connection.md)
 A writer can restart this sandbox's browser through the same grant. The manager reaps its process and display, reuses the profile, and installs the address guard before reopening the tabs. [ADR-0404](decisions/0404-restart-one-sandbox-browser-through-its-viewer-grant.md)
+Before each start the manager removes the profile's Chrome lock entries (`SingletonLock`, `SingletonCookie`, `SingletonSocket`) unless a running process of this host holds the lock, so a profile carried from another host starts. This happens before the display starts (`yulius_browser::profile`). [ADR-0432](decisions/0432-a-browser-start-clears-chrome-profile-locks-no-live-process-holds.md)
 
 Sandbox browsers skip default app installation. On a virtual display they also leave profile
 extensions unloaded, so a later policy reload can take effect without a native administrator
