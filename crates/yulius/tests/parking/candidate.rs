@@ -894,6 +894,7 @@ async fn check_live_queue(
                             check_in_after_ms: 0,
                             stall_quiet_ms: 0,
                             stall_after_ms: 0,
+                            ..WatchBounds::default()
                         })
                         .await
                 });
@@ -973,6 +974,7 @@ async fn check_live_queue(
                         check_in_after_ms: 0,
                         stall_quiet_ms: 0,
                         stall_after_ms: 0,
+                        ..WatchBounds::default()
                     })
                     .await
             });
@@ -1086,6 +1088,7 @@ async fn check_live_queue(
                 check_in_after_ms: 0,
                 stall_quiet_ms: 0,
                 stall_after_ms: 0,
+                ..WatchBounds::default()
             };
             let repeated = cold.watch_prs(&due).await;
             cold.stop_task_now(id).await?;
@@ -1377,6 +1380,7 @@ async fn check_live_queue(
             check_in_after_ms: 0,
             stall_quiet_ms: 0,
             stall_after_ms: 0,
+            ..WatchBounds::default()
         };
         let unavailable = cold.watch_prs(&due).await;
         assert!(
@@ -1435,6 +1439,7 @@ async fn check_live_queue(
                 check_in_after_ms: 0,
                 stall_quiet_ms: 0,
                 stall_after_ms: 0,
+                ..WatchBounds::default()
             };
             let mut obsolete_news = Vec::new();
             for (run_id, verdict) in [

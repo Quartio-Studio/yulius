@@ -446,6 +446,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0417 -->
 - [0418](0418-keep-the-newest-successful-task-list.md) keeps the newest successful browser task list when full reads overlap.
 <!-- ADR 0418 -->
+- [0419](0419-antigravity-stop-settles-turn-and-armed-green-prs-have-a-stall-bound.md) settles Antigravity `Stop` turns (`yulius wait` vs non-wait background PTY work), reports fresh PR conflicts and drops conflicting armed merges immediately, and bounds stalled armed green PRs with a 10 min check-in and 20 min SPEC-578 Needs You escalation (SPEC-580).
 <!-- ADR 0419 -->
 - [0420](0420-recognize-the-empty-codex-composer.md) recognizes the focused Codex placeholder and its full repaint after resize (SPEC-581).
 <!-- ADR 0420 -->

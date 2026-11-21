@@ -123,7 +123,12 @@ shell keeps the sandbox's `HOME`); an uncontained one sets `HOME` to the run's A
 `yulius hook antigravity <event>` translates its hooks (SessionStart, the first model call of a
 turn, Stop, `run_command`) to Yulius's; its transcript gives prompts, tokens and limits, and
 a turn its model API failed ends with a Stop Yulius settles without a gate. A successful Stop
-with `fullyIdle: false` keeps the task Working while its command runs. A first invocation
+with `fullyIdle: false` probes live background processes (including PTY-hosted commands) and active
+`yulius wait` calls: when only `yulius wait` is running, Yulius settles the turn to Waiting with
+`yulius_wait = true` so the merge queue proceeds; when non-wait background work runs, Yulius
+settles `activity = Waiting` while tracking `background_shells >= 1` so SPEC-528 does not show
+Needs You and the merge queue holds until that work ends ([ADR-0419](decisions/0419-antigravity-stop-settles-turn-and-armed-green-prs-have-a-stall-bound.md),
+[SPEC-580](../.ai/specs/SPEC-580-an-armed-green-pr-merges-when-its-agent.md)). A first invocation
 following a system message signals activity without submitting a prompt ([SPEC-528](../.ai/specs/SPEC-528-antigravity-tasks-show-needs-its-person.md)). When its run ends, a
 token file the CLI refreshed replaces the stored sign-in and is removed.
 
