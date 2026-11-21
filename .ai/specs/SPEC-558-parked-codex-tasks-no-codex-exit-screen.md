@@ -68,6 +68,8 @@ The failed-integration-candidate step covers the owner's November 20 observation
 - AC-3 Five completed steps, two open steps and a failing PR produce a continuation at Stop. Either unfinished condition alone suffices. Retries stop at the existing bound and human requests keep control.
 - AC-4 Neither grace-period parking nor digest parking consumes an unfinished task. The sidebar and tools agree when an already parked task has open work.
 
+- AC-5 When a failed merge candidate is narrowed to one PR, its still-current owner receives the failing job and a bounded, redacted diagnostic. The recorded decision identifies the PR, head, integration base, tested tree and source run, including when a larger candidate supplied that run. A changed head or base invalidates the attribution.
+
 ## Test plan
 
 Use the fake Codex executable, its rollout, real PTY shutdown and the application Stop hook. Exercise saved-screen and terminal readers, terminal restoration, step and pull combinations and historical statuses. Run scoped Rust and web tests, repository quick checks, the security command and Yulius CI.
@@ -82,7 +84,13 @@ The scheduler discards older completed verdicts for a head after a later run was
 
 Yulius CI schedules one run per commit even when two PRs publish the same head. The queue and `yulius wait` prefer the owner’s own ordinary run when one exists. Otherwise they use the run that covers that commit under the scheduler’s rule. An ordinary integration configuration refusal invalidates earlier completed results for every PR at the commit. Active owner runs and explicit owner cancellations retain their meaning. A cancellation of a different reference cannot lend a verdict. Queue decisions and merged receipts use the full object name supplied by Git or the host. The wait endpoint also accepts a unique abbreviation. GitHub still enforces its required commit status when the queue submits the merge.
 
+A failed singleton can reuse the tested tree of a candidate with several members. Attribute it to the member the queue decided, record the tuple in its merge wait span, and verify the PR’s hosted head and base in one lookup. An ordinary owner rerun keeps its existing deadline. The owner message includes a bounded excerpt of retained failure text after sandbox secret redaction.
+
 ## Evidence
+
+- On dev `b5b821fdd`, the single-PR regression reused a failed run originally recorded for PRs 8 and 9. PR 1’s merge outcome named `prior-train` but omitted shard 2 and the observed 292.1 ms search against a 200 ms limit. The fixture also checks that an earlier failed job with no retained diagnostic, a cancelled sibling and raw job output cannot displace that reason.
+
+- PR #1562 passed Yulius CI on head `f7adf1343` in run `4ba14ab0-cbc4-4518-9666-da131ec47db3`. The dev squash `b5b821fdd` has the same tree, recorded in run `c9d24d51-a2de-4e82-aece-fae33785e579`. Quality, both Rust shards and browser e2e passed. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/b5b821fdd2dd15bf86e1180f77cf32ee3cc253ce)
 
 - The shared-owner mutation campaign reported `84 listed, 48 caught, 8 missed, 0 timed out, 28 unviable, 0 not reached` in 1,097 seconds. The shared-owner tests now exercise the fast queue pass directly, and parked detail verifies the owner’s green rerun beside a pending peer. Targeted mutation reruns caught all four fast-pass survivors and all four parked-reference and candidate survivors. The candidate rerun included the existing tests for an owner failing inside a passed candidate and the bounded wait for an ongoing owner run. All 361 scoped tests passed again with the added assertions.
 

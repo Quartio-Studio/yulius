@@ -171,6 +171,8 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # While it waits for a subscription the message is retained and its last parked screen stays visible.
 # An open plan step, unfinished spec or unfinished goal keeps the agent live, including while it asks its owner.
 # A failing ordinary PR run, unreadable check or unpublished repair keeps its author live.
+# A failed single-PR merge candidate names its source run, failing job and a redacted
+# excerpt. Its merge wait span records which PR, head and integration base the queue tested.
 # The PR watcher delivers actionable failures once and waits for a pending human decision.
 # When PRs share a head, their tasks can wait on the same ordinary CI run. An explicit
 # rerun for the owner takes precedence in yulius wait and in its merge queue decision.
