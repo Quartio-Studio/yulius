@@ -1726,7 +1726,7 @@ impl App {
 
     /// Reads and validates the task spec; registers a discovered spec path.
     async fn dlv_read_spec(&self, task: &TaskRecord) -> SpecCheck {
-        self.publish_after_updates(task, self.read_spec_under_plan_lock(task))
+        self.publish_after_updates(task, Box::pin(self.read_spec_under_plan_lock(task)))
             .await
     }
 

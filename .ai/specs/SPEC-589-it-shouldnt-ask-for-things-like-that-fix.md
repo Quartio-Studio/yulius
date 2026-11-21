@@ -36,7 +36,8 @@ Earlier user requests establish the ownership rule. Task #534 concerned automate
 - [x] Carry the source of a continuation across launch and delayed hook delivery
 - [x] Protect goal attempts while owners draft and workers complete steps
 - [x] Verify the fix and obtain independent approval
-- [ ] Integrate and verify the updated Codex resume and capacity behavior
+- [x] Integrate and verify the updated Codex resume and capacity behavior
+- [ ] Keep delivery and merge-train verification within the worker stack
 
 ## Acceptance criteria
 
@@ -102,3 +103,5 @@ Make the continuation decision where the agent can act on it, at the shared Stop
 - The frozen terminal-framing mutation run reported 14 listed, 1 caught, 0 missed, 1 unviable and 12 not reached within its bound. A later campaign stopped at its unmodified baseline on the previously identified editor normalization regression. The normalized-input follow-up reported 11 listed, 2 caught, 0 missed and 9 not reached. The replay follow-up reported 9 listed, 1 caught, 0 missed and 8 not reached. Both had zero timeouts and zero unviable mutations.
 - The invocation mutation run reported 44 listed, 4 caught, 2 missed, 0 timed out, 5 unviable and 33 not reached at 18 minutes. Both surviving predicate inversions discarded the first machine instruction when a second was issued. A new hook regression retains both instructions and replays the first ahead of an edited owner reply. The unmodified methods passed that sequence and each predicate inversion failed it. The integration fixture also passed. The final reservation mutation run reported 16 listed, 2 caught, 0 missed, 0 timed out, 0 unviable and 14 not reached at 12 minutes.
 - Dev advanced to `7383920f0` with SPEC-590 while PR #1616 was in CI. The conflict resolution passes the goal continuation’s origin through Codex’s guarded capacity launch. It keeps the explicit fresh-start pause and idle state of a bare Codex resume alongside the goal retry budget and submit history.
+- Yulius CI on `b045c9cee` reported stack overflows across delivery, merge trains and remote MCP. Two failures reproduced in isolation at that head. The stack traces showed the task-local spec-publication future nested inside delivery and merge arbitration. The shared publication function now accepts pinned work and returns a heap-pinned future, keeping both out of its callers’ stack frames.
+- After resolving the conflicts with dev, 111 Codex restart, capacity, supervisor and goal continuation tests passed. The repository quick gate and Clippy with warnings denied passed for the conflict resolution and the subsequent bounded-stack fix.

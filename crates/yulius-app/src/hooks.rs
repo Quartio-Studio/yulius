@@ -27,7 +27,7 @@ use crate::delivery::{RepoReadError, read_spec};
 use crate::error::{AppError, AppResult};
 use crate::model::{PauseKind, TaskMode, TaskRecord};
 use crate::ports::store::TaskFieldUpdate;
-use crate::supervisor::RunStart;
+use crate::supervisor::{BoxFuture, RunStart};
 
 /// Consecutive Stop-hook blocks per turn before the task needs attention (AC-DSC-3).
 pub const MAX_GATE_BLOCKS: u32 = 3;
@@ -322,32 +322,36 @@ impl App {
     /// Gather same-task updates until the operation finishes. A spec watcher releases
     /// its plan lock before building the task view, including its live browser lookup.
     /// When Stop owns the outer operation it publishes the final continuation decision.
-    pub(crate) async fn publish_after_updates<T>(
-        &self,
-        task: &TaskRecord,
-        work: impl std::future::Future<Output = T>,
-    ) -> T {
-        let (result, changed, steps_changed) = TASK_UPDATES
-            .scope(
-                TaskUpdates {
-                    task: task.id.clone(),
-                    changed: Default::default(),
-                    steps_changed: Default::default(),
-                },
-                async {
-                    let result = work.await;
-                    TASK_UPDATES.with(|updates| {
-                        (result, updates.changed.get(), updates.steps_changed.get())
-                    })
-                },
-            )
-            .await;
-        if steps_changed {
-            self.publish_steps(task).await;
-        } else if changed {
-            self.publish_task(&task.id).await;
-        }
-        result
+    pub(crate) fn publish_after_updates<'a, T: Send + 'a>(
+        &'a self,
+        task: &'a TaskRecord,
+        work: BoxFuture<'a, T>,
+    ) -> BoxFuture<'a, T> {
+        // Spec reads are nested inside delivery, merge-queue and MCP futures. Keep
+        // the work and its publication scope on the heap across those callers.
+        Box::pin(async move {
+            let (result, changed, steps_changed) = TASK_UPDATES
+                .scope(
+                    TaskUpdates {
+                        task: task.id.clone(),
+                        changed: Default::default(),
+                        steps_changed: Default::default(),
+                    },
+                    async {
+                        let result = work.await;
+                        TASK_UPDATES.with(|updates| {
+                            (result, updates.changed.get(), updates.steps_changed.get())
+                        })
+                    },
+                )
+                .await;
+            if steps_changed {
+                self.publish_steps(task).await;
+            } else if changed {
+                self.publish_task(&task.id).await;
+            }
+            result
+        })
     }
 
     async fn submit_origin(
@@ -1954,7 +1958,7 @@ impl App {
     /// # Errors
     /// Store failures.
     pub async fn sync_steps_from_spec(&self, task: &TaskRecord) -> AppResult<bool> {
-        self.publish_after_updates(task, self.sync_spec_plan(task))
+        self.publish_after_updates(task, Box::pin(self.sync_spec_plan(task)))
             .await
     }
 
