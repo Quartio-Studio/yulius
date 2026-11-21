@@ -1,6 +1,6 @@
 ---
 yulius-task: b2d041b9-f438-4630-8b8c-a686f9c0ef0d
-status: done
+status: in-progress
 ---
 
 # SPEC-589 Continue authorized work at the end of a goal turn
@@ -42,6 +42,7 @@ Earlier user requests establish the ownership rule. Task #534 concerned automate
 - [x] Recover admitted goals across harnesses, stale moves and oversized diagnostics
 - [x] Preserve the native evaluator on a goal’s first Stop
 - [x] Carry the opening verification turn across a capacity move before its native goal starts
+- [ ] Keep a delayed native-goal Stop and its verdict with their originating attempt
 
 ## Acceptance criteria
 

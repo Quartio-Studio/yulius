@@ -847,6 +847,135 @@ fn a_manual_move_delivers_saved_fresh_and_resumed_goals_across_harnesses() -> Te
     Ok(())
 }
 
+/// A native goal Stop authenticated before a subscription change arrives after the
+/// replacement has submitted its opening turn. Its verdict deadline belongs to the old run.
+#[test]
+fn a_late_native_goal_stop_cannot_settle_a_replacement_turn() -> TestResult {
+    use yulius_app::race::{Point, on};
+    use yulius_domain::task::Activity;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(Box::pin(async {
+        let app = build_with(
+            &data,
+            &fake,
+            Arc::new(ScriptedUsage::default()),
+            FakeAgentOptions::default(),
+        )?;
+        let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
+        let id = app
+            .create_task_internal(NewTask {
+                sandbox,
+                created_by: user,
+                prompt: "Check delivery".into(),
+                harness: Harness::ClaudeCode,
+                title: Some("Verify checkout".into()),
+                workflow_id: None,
+                steps: vec!["Verify dev".into()],
+                model: None,
+                effort: None,
+                origin: TaskOrigin::Ui,
+                automation_run: None,
+                start: true,
+                mode: yulius_app::model::TaskMode::Goal,
+                supertask: false,
+            })
+            .await?
+            .id;
+        let limit = Duration::from_secs(30);
+        wait_for("the first goal run", limit, || async {
+            screen(&app, &id).contains("FAKE-AGENT READY")
+        })
+        .await?;
+        let bind_token = |attempt: &yulius_domain::ids::AttemptId, token: &str| -> TestResult {
+            rusqlite::Connection::open(data.join("yulius.db"))?.execute(
+                "UPDATE attempts SET token_hash = ?1 WHERE id = ?2",
+                rusqlite::params![
+                    app.deps.crypto.sha256_hex(token.as_bytes()),
+                    attempt.as_str()
+                ],
+            )?;
+            Ok(())
+        };
+        let first = app.deps.store.live_attempt(&id).await?.ok_or("first run")?;
+        bind_token(&first.id, "test-old-goal-stop")?;
+        let (arrived, parked) = tokio::sync::oneshot::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        on(Point::StopClean, Path::new(id.as_str()), move || {
+            let _ = arrived.send(());
+            let _ = tokio::task::block_in_place(|| blocked.recv_timeout(limit));
+        });
+        let old_stop = tokio::spawn({
+            let app = app.clone();
+            async move {
+                app.hook_event(
+                    "test-old-goal-stop",
+                    "claude",
+                    "Stop",
+                    &Default::default(),
+                    None,
+                )
+                .await
+            }
+        });
+        tokio::time::timeout(limit, parked).await??;
+        let prompt = "Continue the authorized goal. Verify dev";
+        app.switch_with(
+            &id,
+            Some(AccountId::parse("b-second")?),
+            "Capacity",
+            yulius_app::supervisor::RunStart::GoalResume {
+                prompt: prompt.into(),
+            },
+        )
+        .await?;
+        let replacement = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("replacement run")?;
+        assert_ne!(first.id, replacement.id);
+        bind_token(&replacement.id, "test-replacement-submit")?;
+        app.hook_event(
+            "test-replacement-submit",
+            "claude",
+            "UserPromptSubmit",
+            &yulius_contracts::hooks::HookInput {
+                prompt: Some(prompt.into()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await?;
+        assert_eq!(task(&app, &id).await?.activity, Some(Activity::Working));
+        release.send(())?;
+        old_stop.await??;
+        let ended = wait_for(
+            "an old Stop settling the replacement",
+            yulius_app::finish::GOAL_VERDICT_WAIT + Duration::from_secs(2),
+            || async {
+                task(&app, &id)
+                    .await
+                    .is_ok_and(|task| task.activity != Some(Activity::Working))
+            },
+        )
+        .await;
+        let current = task(&app, &id).await?;
+        assert!(
+            ended.is_err(),
+            "the old Stop changed the replacement to {:?}",
+            current.activity
+        );
+        assert_eq!(current.activity, Some(Activity::Working));
+        assert_eq!(current.gate_blocks, 1);
+        stop(&app, &id).await
+    }))?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// A gate prompt carried to another process spends one of the goal's bounded attempts.
 #[test]
 fn a_goal_continuation_delivered_by_a_move_counts_once() -> TestResult {
