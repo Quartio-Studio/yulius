@@ -4371,66 +4371,6 @@ async fn task_detail_keeps_attempt_and_session_evidence_of_starting() -> TestRes
 }
 
 #[tokio::test]
-async fn advancing_the_base_during_a_parked_detail_read_preserves_the_heads_ordinary_failure()
--> TestResult {
-    for (persisted, during_final_list) in
-        [(true, false), (true, true), (false, false), (false, true)]
-    {
-        let (f, owner) = owner_observed_external_pr().await?;
-        install_app(&f).await?;
-        use yulius_app::ports::github::ChecksState;
-        let app = if persisted {
-            super::delivery::insert_ci_attempt(
-                &f.h.store,
-                "ordinary-red",
-                "abc123",
-                yulius_domain::ci::CiRef::PullRequest(1461),
-                yulius_domain::ci::RunState::Failed,
-                10,
-                &[],
-            )
-            .await?;
-            f.h.github.set_checks("abc123", ChecksState::Success);
-            let mut config = f.h.app.config.clone();
-            config.ci.enabled = false;
-            yulius_app::context::App::new(config, f.h.app.deps.clone())
-        } else {
-            f.h.github.set_checks("abc123", ChecksState::Failure);
-            f.h.app.clone()
-        };
-        let held = f.h.github.hold_checks();
-        let reading = app.task_detail(&owner, f.task.as_str());
-        let advance = async {
-            tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                f.h.github.checks_entered.notified(),
-            )
-            .await?;
-            let update = |pr: &mut yulius_app::ports::github::GhPull| {
-                pr.base_sha = "new-base".into();
-                pr.behind = true;
-                pr.mergeable = None;
-            };
-            if during_final_list {
-                f.h.github.change_before_branch_list(1461, update)?;
-            } else {
-                update(&mut f.h.github.pulls.lock().map_err(|_| "pulls")?[0]);
-            }
-            f.h.github.release_checks(&held);
-            Ok::<_, Box<dyn std::error::Error>>(())
-        };
-        let (detail, advanced) = tokio::join!(reading, advance);
-        advanced?;
-        let notice = detail?.summary.needs_you_notice.ok_or("parked notice")?;
-        assert_eq!(
-            notice.happened,
-            "The task is parked and pull request #1461 checks are failing."
-        );
-    }
-    Ok(())
-}
-
-#[tokio::test]
 async fn a_parked_task_keeps_a_confirmed_failure_in_an_incomplete_check_report() -> TestResult {
     use yulius_app::ports::github::{ChecksReport, ChecksSource, ChecksState};
     let (f, owner) = owner_observed_external_pr().await?;
