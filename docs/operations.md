@@ -198,7 +198,8 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 
 # When a failed train has one PR left, its owner waits while Yulius verifies the head and checks.
 # If the server restarts after the queue drops the arm, the owner hears the recorded job failure
-# once. A newer ordinary run gets its own wait. A replacement head gets its current CI or conflict.
+# once. A newer ordinary run gets 15 minutes from admission, including across restart.
+# A replacement head gets its current CI or conflict.
 # A busy terminal writer defers the notice. On its next pass the watcher checks the owner again.
 # When PRs share a head, their tasks can wait on the same ordinary CI run. An explicit
 # rerun for the owner takes precedence in yulius wait and in its merge queue decision.

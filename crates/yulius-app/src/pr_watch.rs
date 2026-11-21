@@ -1243,6 +1243,13 @@ impl App {
         let train_read = self.watched_train(task, pr);
         let train = train_read.as_ref().ok().and_then(Option::as_ref);
         let holding = train.and_then(|train| train.candidate.as_ref());
+        // A narrowed train may reuse its larger predecessor's run. Its verification
+        // notice is a separate event; larger candidates retain their persisted key.
+        let candidate_kind = if holding.is_some_and(|(_, members)| members.len() == 1) {
+            "singleton"
+        } else {
+            "candidate"
+        };
         // An ordinary failure is actionable even when the holding CI record cannot be decoded.
         let ordinary_takes_precedence = own.as_ref().is_some_and(|run| {
             run.state == RunState::Failed
@@ -1303,7 +1310,7 @@ impl App {
             && holding.is_some_and(|_| match candidate.map(|run| run.state) {
                 Some(RunState::Queued | RunState::Running | RunState::Passed) => false,
                 Some(RunState::Failed) => {
-                    candidate.is_some_and(|run| told_key("candidate", &run.id))
+                    candidate.is_some_and(|run| told_key(candidate_kind, &run.id))
                 }
                 Some(RunState::Error | RunState::Cancelled | RunState::Skipped) | None => true,
             })
@@ -1313,7 +1320,7 @@ impl App {
         if let (Some(run), Some((_, members))) = (candidate, holding)
             && run.state == RunState::Failed
             && !own.is_some_and(|run| run.state == RunState::Failed)
-            && !told_key("candidate", &run.id)
+            && !told_key(candidate_kind, &run.id)
         {
             let jobs = self
                 .deps
@@ -1322,7 +1329,7 @@ impl App {
                 .await
                 .unwrap_or_default();
             events.push(Event {
-                kind: "candidate",
+                kind: candidate_kind,
                 key: run.id.clone(),
                 text: red_candidate_text(run, members, &jobs, &integration),
             });
@@ -1435,7 +1442,10 @@ impl App {
             facts.head.clone_from(&pull.head_sha);
             if pull.head_sha == decision.head && pull.base_sha == decision.singleton.base {
                 if own.is_some_and(|run| {
-                    run.state.is_active() && decision.expired_ordinary_run.as_ref() != Some(&run.id)
+                    run.state.is_active()
+                        && decision.expired_ordinary_run.as_ref() != Some(&run.id)
+                        && now_ms.saturating_sub(run.queued_at.0)
+                            <= crate::merge_train::WAIT_LIMIT_MS
                 }) {
                     return observed_only();
                 }

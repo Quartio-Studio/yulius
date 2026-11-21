@@ -215,6 +215,77 @@ fn a_conflicting_replacement_with_an_older_green_run_reaches_the_original_owner_
     cold_candidate_case(ColdCandidate::ReplacementWithOldGreen)
 }
 
+#[test]
+fn a_new_ordinary_reruns_deadline_survives_restart_and_delivers_the_singleton_once() -> TestResult {
+    use yulius_app::merge_train::WAIT_LIMIT_MS;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    let (id, head, original) = rt.block_on(Box::pin(seed_candidate(
+        &data,
+        &ColdCandidate::TimedOutOrdinary,
+    )))?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    let queued = 1000;
+    for (now, expect_diagnosis) in [
+        (queued, false),
+        (queued + WAIT_LIMIT_MS, false),
+        (queued + WAIT_LIMIT_MS + 1, true),
+    ] {
+        let rt = runtime()?;
+        rt.block_on(async {
+            let clock = Arc::new(crate::support::TestClock(now.into()));
+            let (app, remote) = super::app_with_pulls_and_clock(&data, 8, 1, clock, |_| {}).await?;
+            remote.set_remote(Arc::new(crate::delivery::BareRemote {
+                origin: data.join("origin.git"),
+            }));
+            open_pull_at(&app, &remote, &id, 1481, &head).await?;
+            remote.set_checks(&head, ChecksState::Success);
+            app.reconcile().await?;
+            assert_eq!(
+                app.deps
+                    .store
+                    .live_attempt(&id)
+                    .await?
+                    .ok_or("original attempt")?
+                    .id,
+                original
+            );
+            if now == queued {
+                let owner = app.deps.store.task(&id).await?.ok_or("owner")?;
+                let (mut run, job) = crate::pr_watch::run(
+                    &owner.sandbox_id,
+                    "still-queued",
+                    &head,
+                    RunState::Queued,
+                    None,
+                    queued,
+                );
+                run.reference = CiRef::PullRequest(1481);
+                run.started_at = None;
+                run.ended_at = None;
+                app.deps.store.insert_ci_run(&run, &[job]).await?;
+            }
+            let bounds = WatchBounds::default();
+            let news = Box::pin(app.watch_prs(&bounds)).await;
+            if expect_diagnosis {
+                assert_eq!(
+                    news.len(),
+                    1,
+                    "expired rerun suppressed the decision: {news:?}"
+                );
+                assert!(news[0].1.contains("292.1 ms"), "{news:?}");
+                assert!(Box::pin(app.watch_prs(&bounds)).await.is_empty());
+                app.stop_task_now(&id).await?;
+            } else {
+                assert!(news.is_empty(), "rerun still within its wait: {news:?}");
+            }
+            Ok::<_, Error>(())
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+    }
+    Ok(())
+}
+
 enum ColdCandidate {
     ReplacementConflict,
     ReplacementWithOldGreen,
@@ -1375,6 +1446,18 @@ async fn check_live_queue(
             let path = data.join(yulius_app::merge_train::MERGE_TRAINS_FILE);
             let mut current: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
             current[task.sandbox_id.as_str()]["train"]["run"] = json!("earlier-bisection");
+            let mut larger = current.clone();
+            larger[task.sandbox_id.as_str()]["train"]["members"]
+                .as_array_mut().ok_or("members")?
+                .push(json!({"task":"peer","pr":99,"head":"peer-head","armed_at":30,"tree":"peer-tree"}));
+            std::fs::write(&path, serde_json::to_vec(&larger)?)?;
+            let larger_notice = cold.watch_prs(&bounds).await;
+            assert_eq!(larger_notice.len(), 1, "{larger_notice:?}");
+            assert!(
+                larger_notice[0].1.contains("smaller candidates"),
+                "{larger_notice:?}"
+            );
+            assert!(cold.watch_prs(&bounds).await.is_empty());
             std::fs::write(&path, serde_json::to_vec(&current)?)?;
             let held = cold.watch_prs(&bounds).await;
             assert_eq!(held.len(), 1, "current failed singleton: {held:?}");
@@ -1516,7 +1599,7 @@ async fn check_recorded_decision(
             head,
             RunState::Running,
             None,
-            30,
+            cold.now().0,
         );
         rerun.reference = CiRef::PullRequest(1481);
         cold.deps.store.insert_ci_run(&rerun, &[job]).await?;
