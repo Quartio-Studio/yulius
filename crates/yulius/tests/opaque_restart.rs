@@ -82,12 +82,12 @@ async fn start(data: &Path, port: &InternalPort, route: Route) -> Result<Child, 
     let _ = rustls::crypto::ring::default_provider().install_default();
     let http = reqwest::Client::builder().no_proxy().build()?;
     loop {
-        let log = std::fs::read_to_string(&log_path)?;
         if let Some(status) = child.try_wait()? {
+            let log = std::fs::read_to_string(&log_path)?;
             let message = log.lines().last().unwrap_or("no startup diagnostic");
             return Err(format!("server exited during startup with {status}: {message}").into());
         }
-        if log.contains("yulius listening")
+        if std::fs::read_to_string(&log_path)?.contains("yulius listening")
             && let Ok(response) = http.get(&health).send().await
             && response.status().is_success()
             && response.text().await? == "ok"
@@ -132,23 +132,31 @@ async fn another_servers_health_response_cannot_start_the_restart_fixture() -> R
     let router =
         axum::Router::new().route("/internal/healthz", axum::routing::get(|| async { "ok" }));
     let check = async {
-        if let Ok(mut child) = start(data.path(), &port, Route::Direct).await {
-            let mut client = BufReader::new(TcpStream::connect(internal).await?);
-            client
-                .get_mut()
-                .write_all(b"CONNECT fixture.test:443 HTTP/1.1\r\nHost: fixture.test:443\r\n\r\n")
-                .await?;
-            let mut status = String::new();
-            client.read_line(&mut status).await?;
-            child.kill().await?;
-            return Err(format!(
-                "fixture accepted the other server as ready; CONNECT returned {}",
-                status.trim()
-            )
-            .into());
-        }
-        let log = std::fs::read_to_string(data.path().join("fixture-serve.log"))?;
-        assert!(log.contains(&format!("cannot bind {internal}")), "{log}");
+        let error = match start(data.path(), &port, Route::Direct).await {
+            Err(error) => error,
+            Ok(mut child) => {
+                let mut client = BufReader::new(TcpStream::connect(internal).await?);
+                client
+                    .get_mut()
+                    .write_all(
+                        b"CONNECT fixture.test:443 HTTP/1.1\r\nHost: fixture.test:443\r\n\r\n",
+                    )
+                    .await?;
+                let mut status = String::new();
+                client.read_line(&mut status).await?;
+                child.kill().await?;
+                return Err(format!(
+                    "fixture accepted the other server as ready; CONNECT returned {}",
+                    status.trim()
+                )
+                .into());
+            }
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains(&format!("cannot bind {internal}")),
+            "{message}"
+        );
         Ok(())
     };
     tokio::select! {
