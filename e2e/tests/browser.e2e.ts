@@ -78,6 +78,27 @@ test('the sandbox Chrome streams into the panel and takes clicks and keys', asyn
   await expect(screen.getByRole('textbox', 'Address')).toHaveValue('');
 });
 
+test('a blocked Browser clipboard write can be completed with an explicit click', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', /^Browser/).click();
+  await expect(screen.getByRole('tab', /^Checkout/)).toHaveAttribute('aria-selected', 'true');
+  await browser.evaluate(() => {
+    type Socket = { push(message: string): void };
+    type Mock = { browsers: Map<string, { viewers: Map<Socket, string> }> };
+    const session = (window as unknown as { __yuliusMock: Mock }).__yuliusMock.browsers.get('sb_studio')!;
+    navigator.clipboard.writeText = async () => { throw new DOMException('Blocked', 'NotAllowedError'); };
+    document.addEventListener('copy', event => {
+      document.body.dataset.copiedText = event.clipboardData?.getData('text/plain');
+    });
+    for (const socket of session.viewers.keys()) socket.push(JSON.stringify({ type: 'clipboard', text: 'first line\nzażółć' }));
+  });
+  const copy = screen.getByRole('button', 'Copy to my clipboard');
+  await expect(copy).toBeVisible();
+  await copy.click();
+  expect(await browser.evaluate(() => document.body.dataset.copiedText)).toBe('first line\nzażółć');
+});
+
 // SPEC-434 MTB-003/004: the Browser's tabs move as the sandbox and Notes tabs do, and keep their order.
 const bpStrip = '[role="tablist"][aria-label="Browser tabs"]';
 

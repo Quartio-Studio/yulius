@@ -451,6 +451,7 @@ If a reservation skips past all available slots, land an empty extension first w
 - [0421](0421-codex-right-click-opens-the-viewers-clipboard-menu.md) reserves a plain right-click in a mouse-tracking Codex terminal for the viewer’s clipboard menu.
 <!-- ADR 0421 -->
 <!-- ADR 0422 -->
+- [0423](0423-a-webpage-copy-returns-through-the-clicking-viewers-connection.md) returns a webpage’s clipboard write through the viewer connection that clicked.
 <!-- ADR 0423 -->
 <!-- ADR 0424 -->
 <!-- ADR 0425 -->
