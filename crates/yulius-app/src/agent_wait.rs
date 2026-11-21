@@ -897,9 +897,15 @@ impl App {
         let require_checks = profile.require_checks;
         // With Yulius CI, its run at the armed head decides: GitHub may still show an older head
         // whose run passed, and the base must not be merged into one whose run still goes.
-        let checks =
-            crate::delivery::ci_checks_word(self.ci_gate_result(&sandbox, &armed.head).await)
-                .map_or_else(|| pr.checks.clone(), str::to_owned);
+        let checks = crate::delivery::ci_checks_word(
+            self.ci_gate_result_for_ref(
+                &sandbox,
+                &armed.head,
+                Some(&yulius_domain::ci::CiRef::PullRequest(pr.number)),
+            )
+            .await,
+        )
+        .map_or_else(|| pr.checks.clone(), str::to_owned);
         let green = checks == "success" || (checks == "none" && !require_checks);
         if checks == "failure" {
             return Verdict::Decided(format!(
@@ -1324,25 +1330,38 @@ impl App {
             .filter(|h| h.len() >= 7 && h.chars().all(|c| c.is_ascii_hexdigit()))
             .map(str::to_ascii_lowercase)
             .unwrap_or_default();
+        let delivery = store.delivery(&task.id).await?;
+        let pr = delivery
+            .as_ref()
+            .filter(|record| record.stage == yulius_domain::delivery::DeliveryStage::PrOpen)
+            .and_then(|record| record.pr_number);
         let (checks, checks_detail) = if head.is_empty() {
             ("none".to_owned(), None)
         } else {
-            let runs = store.ci_runs(&task.sandbox_id, 50).await?;
-            // A playground task's run tests its head merged into the integration branch (SPEC-163
-            // PCI-006): the newest that tested it.
-            let run = match runs.iter().find(|run| run.sha.starts_with(&head)) {
-                Some(run) => Some(run),
-                None => self.task_run_of_head(task, &runs, &head).await,
+            let runs = if pr.is_some() && matches!(head.len(), 40 | 64) {
+                store.ci_runs_for_sha(&task.sandbox_id, &head).await?
+            } else {
+                store.ci_runs(&task.sandbox_id, 50).await?
+            };
+            // Open hosted PRs can share a SHA. Each reports its own run. A playground
+            // can instead have a run that tested its head merged with the base (PCI-006).
+            let run = if let Some(pr) = pr {
+                runs.iter().find(|run| {
+                    run.reference == yulius_domain::ci::CiRef::PullRequest(pr)
+                        && run.sha.starts_with(&head)
+                })
+            } else {
+                match runs.iter().find(|run| run.sha.starts_with(&head)) {
+                    Some(run) => Some(run),
+                    None => self.task_run_of_head(task, &runs, &head).await,
+                }
             };
             match run {
                 Some(run) => (run.state.as_str().to_owned(), run.reason.clone()),
                 None => ("none".to_owned(), None),
             }
         };
-        let stage = store
-            .delivery(&task.id)
-            .await?
-            .map_or_else(|| "none".to_owned(), |record| record.stage.encode());
+        let stage = delivery.map_or_else(|| "none".to_owned(), |record| record.stage.encode());
         // One read of the slot: the outcome and whether a merge is armed agree (WAI-003).
         let (merge_armed, outcome, note) = lock_slot(&self.runtime(&task.id)).view();
         let push_problem = self

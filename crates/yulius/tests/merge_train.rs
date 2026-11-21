@@ -1169,7 +1169,28 @@ async fn a_base_advance_during_singleton_verification_keeps_the_arm_and_no_drop_
     reused_singleton(SingletonChange::BaseDuringRead).await
 }
 
+#[tokio::test]
+async fn another_pr_failing_at_the_same_sha_keeps_the_singleton_failure_with_its_owner()
+-> TestResult {
+    reused_singleton(SingletonChange::PeerFailed).await
+}
+
+#[tokio::test]
+async fn an_owner_rerun_started_during_singleton_verification_keeps_its_bounded_wait() -> TestResult
+{
+    reused_singleton(SingletonChange::RerunStarted).await
+}
+
+#[tokio::test]
+async fn a_singleton_wait_deadline_survives_repeated_reads_and_reports_the_tested_failure()
+-> TestResult {
+    reused_singleton(SingletonChange::RerunExpired).await
+}
+
 enum SingletonChange {
+    RerunExpired,
+    PeerFailed,
+    RerunStarted,
     BaseDuringRead,
     Ordinary,
     None,
@@ -1252,7 +1273,11 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
     app.merge_armed(&f.sandbox).await;
     if matches!(
         change,
-        SingletonChange::Ordinary | SingletonChange::BaseDuringRead
+        SingletonChange::Ordinary
+            | SingletonChange::BaseDuringRead
+            | SingletonChange::PeerFailed
+            | SingletonChange::RerunStarted
+            | SingletonChange::RerunExpired
     ) {
         let hold = Arc::new(tokio::sync::Notify::new());
         *f.h.github.pull_read_hold.lock().map_err(|_| "hold")? = Some(hold.clone());
@@ -1266,16 +1291,38 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
                 if matches!(change, SingletonChange::BaseDuringRead) {
                     f.advance_dev("late-base.txt")?;
                 } else {
-                    let (mut failed, job) = crate::pr_watch::run(
+                    let state = match change {
+                        SingletonChange::PeerFailed => RunState::Passed,
+                        SingletonChange::RerunStarted | SingletonChange::RerunExpired => {
+                            RunState::Running
+                        }
+                        _ => RunState::Failed,
+                    };
+                    let (mut own, job) = crate::pr_watch::run(
                         &f.sandbox,
                         "ordinary-rerun",
                         &head,
-                        RunState::Failed,
+                        state,
                         None,
                         app.now().0 + 1,
                     );
-                    failed.reference = CiRef::PullRequest(1);
-                    app.deps.store.insert_ci_run(&failed, &[job]).await?;
+                    own.reference = CiRef::PullRequest(1);
+                    app.deps.store.insert_ci_run(&own, &[job]).await?;
+                    let peer_state = if matches!(change, SingletonChange::PeerFailed) {
+                        RunState::Failed
+                    } else {
+                        RunState::Passed
+                    };
+                    let (mut peer, job) = crate::pr_watch::run(
+                        &f.sandbox,
+                        "peer",
+                        &head,
+                        peer_state,
+                        None,
+                        app.now().0 + 2,
+                    );
+                    peer.reference = CiRef::PullRequest(2);
+                    app.deps.store.insert_ci_run(&peer, &[job]).await?;
                 }
                 Ok::<_, Box<dyn std::error::Error>>(())
             }
@@ -1305,11 +1352,77 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
             );
             return Ok(());
         }
+        if matches!(
+            change,
+            SingletonChange::RerunStarted | SingletonChange::RerunExpired
+        ) {
+            assert_eq!(state["merge_armed"], true, "{state}");
+            assert_eq!(state["checks"], "running", "{state}");
+            assert!(state["merge_outcome"].is_null(), "{state}");
+            assert!(
+                state["merge_train"].as_str().is_some_and(
+                    |note| note.contains("waits") && note.contains("own Yulius CI run")
+                ),
+                "{state}"
+            );
+            let spans = app
+                .deps
+                .store
+                .subject_spans(&f.sandbox, SubjectKind::Task, "t1", 100)
+                .await?;
+            assert!(
+                !spans
+                    .iter()
+                    .any(|s| s.name == "merge_armed" && s.outcome.as_deref() == Some("dropped"))
+            );
+            if matches!(change, SingletonChange::RerunExpired) {
+                f.h.clock
+                    .0
+                    .fetch_add(yulius_app::merge_train::WAIT_LIMIT_MS, Ordering::SeqCst);
+                app.merge_armed(&f.sandbox).await;
+                assert_eq!(f.wait(1, &worktree).await?["merge_armed"], true);
+                f.h.clock.0.fetch_add(1, Ordering::SeqCst);
+                app.merge_armed(&f.sandbox).await;
+                let state = f.wait(1, &worktree).await?;
+                assert_eq!(state["merge_armed"], false);
+                let text = state["merge_outcome"]
+                    .as_str()
+                    .ok_or("the expired singleton verdict")?;
+                assert!(
+                    text.contains("prior-train") && !text.contains("passed its own run"),
+                    "{text}"
+                );
+                return Ok(());
+            }
+            end_own_run(app, "ordinary-rerun", RunState::Failed).await?;
+            app.merge_armed(&f.sandbox).await;
+            let state = f.wait(1, &worktree).await?;
+            assert!(
+                state["merge_outcome"].as_str().is_some_and(
+                    |outcome| outcome.contains("checks") && !outcome.contains("prior-train")
+                ),
+                "{state}"
+            );
+            return Ok(());
+        }
+        if matches!(change, SingletonChange::PeerFailed) {
+            assert!(
+                state["merge_outcome"]
+                    .as_str()
+                    .is_some_and(
+                        |outcome| outcome.contains("prior-train") && outcome.contains("shard 2")
+                    ),
+                "{state}"
+            );
+            assert_eq!(state["checks"], "passed", "{state}");
+            return Ok(());
+        }
         let outcome = state["merge_outcome"].as_str().ok_or("ordinary outcome")?;
         assert!(
             outcome.contains("checks") && !outcome.contains("prior-train"),
             "{state}"
         );
+        assert_eq!(state["checks"], "failed", "{state}");
         return Ok(());
     }
     if !matches!(change, SingletonChange::None) {
@@ -1322,7 +1435,12 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
                 git(&worktree, &["commit", "--allow-empty", "-qm", "later head"])?;
                 git(&worktree, &["push", "-q", "origin", "HEAD"])?;
             }
-            SingletonChange::None | SingletonChange::Ordinary | SingletonChange::BaseDuringRead => {
+            SingletonChange::None
+            | SingletonChange::Ordinary
+            | SingletonChange::BaseDuringRead
+            | SingletonChange::PeerFailed
+            | SingletonChange::RerunStarted
+            | SingletonChange::RerunExpired => {
                 unreachable!()
             }
         }
