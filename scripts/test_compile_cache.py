@@ -171,7 +171,7 @@ class CompileCache(unittest.TestCase):
         self.assertEqual(failed_build.returncode, 37, failed_build.stderr)
         self.assertEqual(self.record.read_text().splitlines(), ["build", "build", "build"])
 
-    def build_fixture(self, tree, target, *, plain=False, incremental=None):
+    def build_fixture(self, tree, target, *, plain=False, incremental=None, package=None):
         home = self.sandbox / ("ci/home" if tree == self.lane else "home")
         home.mkdir(parents=True, exist_ok=True)
         toolchain = Path(subprocess.check_output(["rustup", "which", "cargo"], cwd=SCRIPTS, text=True).strip()).parent
@@ -185,7 +185,10 @@ class CompileCache(unittest.TestCase):
         if incremental is not None:
             env["CARGO_INCREMENTAL"] = incremental
         command = toolchain / "cargo" if plain else tree / "scripts/cargo"
-        result = subprocess.run([command, "build", "--offline", "--target-dir", target], cwd=tree,
+        args = [command, "build", "--offline", "--target-dir", target]
+        if package:
+            args.extend(["--package", package])
+        result = subprocess.run(args, cwd=tree,
                                 env=env, capture_output=True, text=True, timeout=120)
         self.assertEqual(result.returncode, 0, result.stderr)
         return tree / target / "debug/fixture", result.stderr
@@ -213,6 +216,9 @@ class CompileCache(unittest.TestCase):
             actual = subprocess.check_output([self.build_fixture(tree, "cached")[0]], text=True)
             self.assertEqual(expected.strip(), str(dep / "src/lib.rs"))
             self.assertEqual(actual, expected)
+            # This registry's literal source root is unchanged in another fresh target.
+            _, report = self.build_fixture(tree, "fresh", package="loc")
+            self.assertRegex(report, r"mbx\[cache\]: [1-9][0-9]* hits")
 
     @unittest.skipUnless((SCRIPTS.parent / ".tools/bin/mbx").exists() and shutil.which("readelf"),
                          "pinned mbx and readelf required")
@@ -288,6 +294,27 @@ class CompileCache(unittest.TestCase):
 
 
 class ReleaseInstall(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "linux", "the optional release installs on Linux")
+    def test_interrupted_optional_download_allows_bootstrap_to_finish(self):
+        import http.client
+        import runpy
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temp:
+            sandbox = Path(temp)
+            tree = CompileCache.checkout(sandbox / "worktrees/task")
+            shutil.copy2(SCRIPTS / "bootstrap.py", tree / "scripts/bootstrap.py")
+            (tree / "rust-toolchain.toml").write_text('[toolchain]\nchannel="stable"\nprofile="minimal"\ncomponents=[]\n')
+            (tree / ".config/tools.toml").write_text('[tools]\n[mbx]\n[zig]\n')
+            with (patch.dict(os.environ, HOME=str(sandbox / "home"), YULIUS_SANDBOX="fixture",
+                             YULIUS_TOOLS_CACHE=str(sandbox / "cache")),
+                  patch.object(sys, "path", list(sys.path)),
+                  patch("shutil.which", return_value="/fixture/rustup"),
+                  patch("subprocess.run"), patch("subprocess.check_output", return_value="/fixture/rustc"),
+                  patch("compile_cache.install", side_effect=http.client.IncompleteRead(b"truncated")),
+                  patch("zig_install.install", return_value="zig installed") as zig):
+                runpy.run_path(str(tree / "scripts/bootstrap.py"))
+                zig.assert_called_once()
+
     def test_only_a_verified_executable_is_published_and_reused(self):
         import hashlib
         import io

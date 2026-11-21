@@ -30,7 +30,7 @@ def literal_path_key():
     if "-g" in args or any("debuginfo=" in arg and arg.rsplit("=", 1)[-1] not in {"0", "none"} for arg in args):
         paths.append(os.getcwdb())
     if paths:
-        identity = "/__yulius_source_" + hashlib.sha256(b"\0".join(paths)).hexdigest()
+        identity = "__yulius_source_" + hashlib.sha256(b"\0".join(paths)).hexdigest()
         return [f"--remap-path-prefix={identity}={identity}"]
     return []
 
