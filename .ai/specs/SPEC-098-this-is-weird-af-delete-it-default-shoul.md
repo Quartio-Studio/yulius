@@ -43,6 +43,8 @@ xterm, iTerm2 and GNOME Terminal.
 
 ## Requirements
 
+[SPEC-582](SPEC-582-fix-clipboard-on-codex.md) refines MSE-002 and MSE-008 for a plain right-click in Codex.
+
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | MSE-001 | The terminal shows no mouse chip or toggle (`.term-mouse-toggle` and its CSS are gone). | `terminal.e2e.ts` "a click on Claude Code's output expands it" |

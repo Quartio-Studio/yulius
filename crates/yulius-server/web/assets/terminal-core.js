@@ -457,13 +457,15 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     event.stopPropagation();
     showNotice(readOnlyText());
   }, true);
-  // Right-click: Copy, Paste and Select all; Shift+right-click keeps the browser's own menu. While
-  // the program has the mouse, a right-click is the program's alone (no menu over it) and the key
-  // that selects text (Shift; Option on macOS) brings this menu instead (SPEC-098 MSE-003).
+  // Codex tries to read the sandbox's clipboard on a plain right-button press. Give that
+  // gesture to the viewer's clipboard menu even while Codex has the mouse (SPEC-582).
+  const codexClipboardClick = (event) => state.harness === 'codex' && event.button === 2
+    && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey;
+  // Other mouse-tracking programs own the right-click unless the selection key is held.
   el.addEventListener('contextmenu', (event) => {
     if (!host.contains(event.target)) return;
     if (programHasMouse()) {
-      if (!pageKey(event)) { event.preventDefault(); return; }
+      if (!pageKey(event) && !codexClipboardClick(event)) { event.preventDefault(); return; }
     } else if (event.shiftKey) return;
     event.preventDefault();
     const own = term.hasSelection();
@@ -618,6 +620,8 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   // the selection key still starts a selection there.
   host.addEventListener('mousedown', (event) => {
     if (!programHasMouse() || pageKey(event)) return;
+    // xterm sends the press and installs its release handler before contextmenu fires.
+    if (codexClipboardClick(event)) { event.stopPropagation(); return; }
     const grid = (host.querySelector('.xterm-screen') || host).getBoundingClientRect();
     if (event.clientX >= grid.left && event.clientX < grid.right && event.clientY >= grid.top && event.clientY < grid.bottom) return;
     event.preventDefault();

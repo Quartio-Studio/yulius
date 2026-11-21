@@ -448,6 +448,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0418 -->
 <!-- ADR 0419 -->
 <!-- ADR 0420 -->
+- [0421](0421-codex-right-click-opens-the-viewers-clipboard-menu.md) reserves a plain right-click in a mouse-tracking Codex terminal for the viewer’s clipboard menu.
 <!-- ADR 0421 -->
 <!-- ADR 0422 -->
 <!-- ADR 0423 -->

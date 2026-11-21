@@ -3552,6 +3552,8 @@ sequenceDiagram
   Note over L: every 60 s a spawned re-check, its verdict selected beside input and output
 ```
 
+A plain right-click in a mouse-tracking Codex terminal opens the viewer’s clipboard menu. Choosing Paste sends the text through xterm’s existing input path. [Decision 0421](decisions/0421-codex-right-click-opens-the-viewers-clipboard-menu.md)
+
 Output can carry a program's copy: Claude Code copies the selection it draws with an OSC 52 write.
 The browser terminal (`terminal-core.js`) writes it to the clipboard only for a viewer who can write
 and just pressed a key or the mouse there, and never answers a clipboard query
