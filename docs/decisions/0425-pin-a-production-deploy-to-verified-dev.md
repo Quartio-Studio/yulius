@@ -19,3 +19,5 @@ Waiting for the current head prevents a release while newer work is being checke
 ## Consequences
 
 Newer tasks keep their integration state and continue verification. A confirmed release can be retried against the same ref. Production access, release checks and the person's confirmation still apply.
+
+GitHub's pull-request merge accepts an expected head SHA. Yulius also checks the production base immediately before merging and verifies the resulting commit and tree before recording a release. An outside writer can still move the base during GitHub's merge call. If the result differs from the confirmed tree, CD returns a conflict, leaves the tasks on dev and starts no deployment scripts. [GitHub merge API](https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request)

@@ -684,6 +684,17 @@ pub trait CiStore: Send + Sync {
     ) -> AppResult<()>;
 }
 
+/// Which CD outcomes can supply a historical run.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CdRunHistory {
+    /// Include the run in progress.
+    Latest,
+    /// The latest terminal verdict, including failures.
+    Finished,
+    /// Only a successful run.
+    Passed,
+}
+
 /// CD (deployment) runs (SPEC-134, table `cd_runs`).
 #[async_trait]
 pub trait CdStore: Send + Sync {
@@ -735,7 +746,7 @@ pub trait CdStore: Send + Sync {
         environment: &str,
         stage: yulius_domain::cd::CdStage,
         kind: yulius_domain::rollback::CdRunKind,
-        finished_only: bool,
+        history: CdRunHistory,
     ) -> AppResult<Option<crate::ci::cd::CdRunRecord>>;
     /// Records releases of an environment of `stage` (in order, the last the newest) and keeps
     /// the newest [`yulius_domain::rollback::KEEP_RELEASE_RECORDS`] of each part.

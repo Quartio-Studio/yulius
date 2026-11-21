@@ -74,6 +74,8 @@ pub struct FakeGitHub {
     pub guarded_branches: Mutex<Vec<String>>,
     /// A PR retargeted at GitHub after the client observed it and before the merge lands.
     pub retarget_on_merge: Mutex<Option<String>>,
+    /// A concurrent GitHub write to the base immediately before merging a pull request.
+    pub advance_base_on_merge: Mutex<Option<String>>,
     /// GitHub accepted the merge, but reading the closed PR fails until it recovers.
     pub fail_merged_reads: std::sync::atomic::AtomicBool,
     /// Metadata confirms a merge while the branch listing still has the open PR.
@@ -626,6 +628,16 @@ impl GitHubPort for FakeGitHub {
         let remote = self
             .remote()
             .ok_or_else(|| AppError::Upstream("no remote".into()))?;
+        if let Some(new_base) = self
+            .advance_base_on_merge
+            .lock()
+            .map_err(AppError::internal)?
+            .take()
+        {
+            remote
+                .fast_forward(&pull.base, &new_base)
+                .map_err(AppError::Upstream)?;
+        }
         if self.strict.load(Ordering::SeqCst) {
             let base = remote.branch_sha(&pull.base).unwrap_or_default();
             if remote.contains(&base, &pull.head_sha) != Some(true) {

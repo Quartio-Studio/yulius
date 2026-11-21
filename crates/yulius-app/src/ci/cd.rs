@@ -62,6 +62,7 @@ use crate::delivery::{PromotionSource, delivery_profile};
 use crate::error::{AppError, AppResult};
 use crate::model::{SandboxRecord, Secret, UserRecord};
 use crate::ports::session::{Containment, LaunchPlan};
+use crate::ports::store_ext::CdRunHistory;
 use crate::vault::holds::StateHold;
 use crate::vault::states::{CdRestored, CdWriter};
 
@@ -537,14 +538,20 @@ impl App {
                     drill_env,
                     CdStage::Dev,
                     CdRunKind::Drill,
-                    false,
+                    CdRunHistory::Latest,
                 )
                 .await?
             && run.state.is_active()
             && staged.as_ref().is_none_or(|sha| sha == &run.sha)
         {
             let previous = store
-                .last_cd_run_of_kind(&sandbox.id, drill_env, CdStage::Dev, CdRunKind::Drill, true)
+                .last_cd_run_of_kind(
+                    &sandbox.id,
+                    drill_env,
+                    CdStage::Dev,
+                    CdRunKind::Drill,
+                    CdRunHistory::Finished,
+                )
                 .await?;
             let Some(proof) =
                 previous.filter(|proof| proof.state == RunState::Passed && proof.sha != run.sha)
@@ -567,22 +574,28 @@ impl App {
         if let Some(sha) = staged {
             return Ok(sha);
         }
-        if let Some(dev) = config.target_of(drill_env, CdStage::Dev)
+        if config.target_of(drill_env, CdStage::Dev).is_some()
             && store
                 .last_cd_run_of_kind(
                     &sandbox.id,
                     drill_env,
                     CdStage::Dev,
                     CdRunKind::Deploy,
-                    false,
+                    CdRunHistory::Latest,
                 )
                 .await?
                 .is_some_and(|run| run.state.is_active())
         {
-            return self
-                .staging_serving(sandbox, dev)
+            return store
+                .last_cd_run_of_kind(
+                    &sandbox.id,
+                    drill_env,
+                    CdStage::Dev,
+                    CdRunKind::Deploy,
+                    CdRunHistory::Passed,
+                )
                 .await?
-                .map(|(sha, _)| sha)
+                .map(|run| run.sha)
                 .ok_or_else(|| {
                     AppError::Conflict(format!(
                         "nothing ran: {drill_env} is verifying its first deployment"
@@ -590,13 +603,13 @@ impl App {
                 });
         }
         let reference = yulius_domain::ci::CiRef::Branch(branch.to_owned());
-        if store
-            .ci_runs_for_sha(&sandbox.id, head)
-            .await?
-            .iter()
-            .find(|run| run.reference == reference)
-            .is_some_and(|run| run.state.is_active())
-        {
+        let verdict = self
+            .ci_gate_result_for_ref(sandbox, head, Some(&reference))
+            .await;
+        if matches!(
+            verdict,
+            yulius_domain::ci::GateResult::Run(None | Some(RunState::Queued | RunState::Running))
+        ) {
             return store
                 .previous_green_branch_sha(&sandbox.id, branch, head)
                 .await?
@@ -1245,7 +1258,7 @@ impl App {
     /// The commit GitHub reports as `branch`'s head, taken from the sandbox clone into the CD
     /// mirror with every object checked (review C1): what a deploy runs never depends on
     /// anything an agent can write.
-    pub(super) async fn cd_verified_head(
+    pub(crate) async fn cd_verified_head(
         &self,
         sandbox: &SandboxRecord,
         branch: &str,
@@ -1562,6 +1575,7 @@ impl App {
                 PromotionSource::Verified {
                     sha: &sha,
                     head: &observed_integration,
+                    base: &before,
                     mirror: &mirror,
                 }
             } else {

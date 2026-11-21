@@ -738,12 +738,49 @@ async fn running_dev_ci_releases_only_the_preceding_green_revision() -> TestResu
         off_branch.body
     );
     gate(&f, &a, RunState::Passed).await?;
+    // Dev moves once more before the CI scheduler admits C. B is still verifying.
+    f.push("dev", &[("newest.txt", Some("awaiting CI admission"))])?;
     let deployed = f.deploy(&f.bob, "prod", Some("app")).await?;
     assert!(deployed.status.is_success(), "{}", deployed.body);
     assert_eq!(f.head("main")?, a);
     assert_eq!(
         f.h.store.ci_run(&active).await?.ok_or("active")?.state,
         RunState::Running
+    );
+    Ok(())
+}
+
+/// If production changes in the hosting provider's merge window, CD refuses the resulting
+/// tree and keeps the included task on integration.
+#[tokio::test]
+async fn a_concurrent_production_change_never_records_the_wrong_tree_as_released() -> TestResult {
+    let f = fixture(&promoting_toml()).await?;
+    let unrelated = f.push("other-release", &[("other.txt", Some("concurrent"))])?;
+    agent(&f, "t1").await?;
+    let a = land(&f, "t1", "a.txt").await?;
+    gate(&f, &a, RunState::Passed).await?;
+    ask(&f, "t1").await?;
+    settle(&f).await?;
+    f.push("dev", &[("b.txt", Some("pending"))])?;
+    f.h.store.execute_for_tests("INSERT INTO delivery (task_id, stage, pr_number, updated_at) VALUES ('t1', 'merged_integration', NULL, 1)").await?;
+    *f.h.github
+        .advance_base_on_merge
+        .lock()
+        .map_err(|_| "poisoned")? = Some(unrelated);
+    let refused = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(
+        refused.status,
+        axum::http::StatusCode::CONFLICT,
+        "{}",
+        refused.body
+    );
+    assert_eq!(
+        f.h.store
+            .delivery(&TaskId::parse("t1")?)
+            .await?
+            .ok_or("stage")?
+            .stage,
+        yulius_domain::delivery::DeliveryStage::MergedIntegration
     );
     Ok(())
 }

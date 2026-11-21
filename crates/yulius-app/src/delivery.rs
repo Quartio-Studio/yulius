@@ -772,6 +772,7 @@ pub(crate) enum PromotionSource<'a> {
     Verified {
         sha: &'a str,
         head: &'a str,
+        base: &'a str,
         mirror: &'a Path,
     },
 }
@@ -5533,6 +5534,14 @@ impl App {
         let production_sha = github
             .branch_sha(token, owner, name, &profile.production_branch)
             .await?;
+        if let PromotionSource::Verified { base, .. } = source
+            && production_sha.as_deref() != Some(base)
+        {
+            return Err(AppError::Conflict(
+                "nothing was promoted: the production base changed after the release preview"
+                    .into(),
+            ));
+        }
         let relation = match (source, production_sha.as_deref()) {
             (PromotionSource::Verified { mirror, .. }, Some(prod)) => Some(
                 self.deps
@@ -5744,6 +5753,15 @@ impl App {
                             self.dlv_checks_allow(sandbox, token, &pull.head_sha, false)
                                 .await?;
                         }
+                        if let PromotionSource::Verified { base, .. } = source
+                            && github
+                                .branch_sha(token, owner, name, &profile.production_branch)
+                                .await?
+                                .as_deref()
+                                != Some(base)
+                        {
+                            return Err(AppError::Conflict("nothing was promoted: the production base changed while checking the release pull request".into()));
+                        }
                         let sha = github
                             .merge_pull(
                                 token,
@@ -5759,6 +5777,29 @@ impl App {
                 }
             }
         };
+        if let PromotionSource::Verified {
+            sha: candidate,
+            mirror,
+            ..
+        } = source
+        {
+            // GitHub guards the PR head atomically. An outside writer can still move its base
+            // inside the merge call. Check the result before recording any delivery as released.
+            self.dlv_refresh_clone(sandbox).await?;
+            let current = self
+                .cd_verified_head(sandbox, &profile.production_branch, token)
+                .await?;
+            let tree = self.deps.git.tree_of(mirror, candidate).await?;
+            if current != sha
+                || tree.is_none()
+                || self.deps.git.tree_of(mirror, &current).await? != tree
+            {
+                return Err(AppError::Conflict(
+                    "nothing was deployed: the production merge did not land the confirmed tree"
+                        .into(),
+                ));
+            }
+        }
         self.dlv_audit(
             &Self::dlv_policy_actor(by, actor),
             "delivery.promote",

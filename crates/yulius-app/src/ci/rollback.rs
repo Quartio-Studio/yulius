@@ -36,6 +36,7 @@ use crate::delivery::delivery_profile;
 use crate::delivery::runner::OutputRing;
 use crate::error::{AppError, AppResult};
 use crate::model::SandboxRecord;
+use crate::ports::store_ext::CdRunHistory;
 
 /// Why a production deploy is refused for its rollback.
 pub(super) struct GateRefusal {
@@ -429,7 +430,7 @@ impl App {
                 drill_env,
                 CdStage::Dev,
                 CdRunKind::Drill,
-                false,
+                CdRunHistory::Latest,
             )
             .await?
         {
@@ -438,10 +439,6 @@ impl App {
                 let git = &self.deps.git;
                 let deploying = git.tree_of(repo, sha).await?;
                 if let Some(tree) = deploying
-                    && git
-                        .tree_of(repo, &run.sha)
-                        .await?
-                        .is_some_and(|active| active != tree)
                     && let Some(proof) = self
                         .deps
                         .store
@@ -450,9 +447,10 @@ impl App {
                             drill_env,
                             CdStage::Dev,
                             CdRunKind::Drill,
-                            true,
+                            CdRunHistory::Finished,
                         )
                         .await?
+                    && proof.sha != run.sha
                     && proof.state == RunState::Passed
                     && git.tree_of(repo, &proof.sha).await?.as_ref() == Some(&tree)
                 {
@@ -845,7 +843,7 @@ impl App {
                 &drill_environment,
                 CdStage::Dev,
                 CdRunKind::Drill,
-                false,
+                CdRunHistory::Latest,
             )
             .await?
         {

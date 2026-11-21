@@ -750,9 +750,21 @@ async fn a_deploy_whose_request_is_dropped_after_its_record_still_runs() -> Test
 /// Dev's independent deploy stays running while production ships its last verified release.
 #[tokio::test]
 async fn running_dev_deploy_keeps_its_previously_verified_release_available() -> TestResult {
-    let f = fixture(&full_cd()).await?;
+    let toml = full_cd().replace("[cd.dev]", "[cd.dev]\nparts = [\"engine\", \"infra\"]");
+    let f = fixture(&toml).await?;
     f.allow_secret().await?;
-    let a = f.push("dev", &[("a.txt", Some("verified"))])?;
+    let script = format!(
+        "{DEPLOY}\necho '::yulius-release engine=old-engine'\necho '::yulius-release infra=old-infra'\n"
+    );
+    f.push("dev", &[("scripts/cd/deploy.sh", Some(&script))])?;
+    let old = f.deploy(&f.alice, "dev", None).await?;
+    assert_eq!(
+        f.ended(old.body["run_id"].as_str().ok_or("old run")?)
+            .await?["state"],
+        "passed"
+    );
+    let script = format!("{DEPLOY}\necho '::yulius-release infra=new-infra'\n");
+    let a = f.push("dev", &[("scripts/cd/deploy.sh", Some(&script))])?;
     let first = f.deploy(&f.alice, "dev", None).await?;
     let id = first.body["run_id"].as_str().ok_or("dev run")?;
     assert_eq!(f.ended(id).await?["state"], "passed");
@@ -799,7 +811,9 @@ async fn newer_dev_drill_leaves_the_proven_revision_deployable() -> TestResult {
     let f = fixture(&full_cd()).await?;
     let a = f.push("dev", &[("a.txt", Some("proven"))])?;
     f.prove("dev").await?;
-    let b = f.push("dev", &[("b.txt", Some("drilling"))])?;
+    // A newer commit with the same tree still has a distinct verification.
+    f.push("dev", &[("transient.txt", Some("transient"))])?;
+    let b = f.push("dev", &[("transient.txt", None)])?;
     let mut active =
         f.h.store
             .cd_run(&format!("drill-{}", &a[..12]), false)

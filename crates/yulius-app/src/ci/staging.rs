@@ -746,7 +746,7 @@ impl App {
     /// What staging serves now: the commit and run of the current release of its first part
     /// in the kept history (deploys, restores and rollbacks alike), else the newest passed
     /// deploy's (SPEC-575 MFS-006; review round 1: a rollback moves it back).
-    pub(super) async fn staging_serving(
+    async fn staging_serving(
         &self,
         sandbox: &SandboxRecord,
         target: &CdTarget,
