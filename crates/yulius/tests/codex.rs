@@ -511,6 +511,94 @@ fn moving_a_codex_restart_waiting_for_capacity_keeps_its_continuation() -> TestR
 }
 
 #[test]
+fn stopping_an_admitted_capacity_restart_prevents_its_codex_turn() -> TestResult {
+    stop_during_capacity_restart(false)
+}
+
+#[test]
+fn a_cancelled_capacity_restart_cannot_claim_a_later_codex_pause() -> TestResult {
+    stop_during_capacity_restart(true)
+}
+
+fn stop_during_capacity_restart(continue_again: bool) -> TestResult {
+    let (_dir, data) = temp()?;
+    runtime()?.block_on(async {
+        let (app, _, user, id, _) = restart_fixture(&data).await?;
+        let ctx = admin_ctx(&app, &user).await?;
+        support::stop_tasks(&app, &[&id]).await?;
+        let account = AccountId::parse("a-codex")?;
+        let limited = yulius_app::usage_json::to_json(&yulius_domain::usage::AccountUsage {
+            limit_reached: true,
+            limit_resets_at: Some(Timestamp(4_000_000_000_000)),
+            ..Default::default()
+        });
+        let store = &app.deps.store;
+        store
+            .set_account_state(
+                &account,
+                AccountStatus::Limited,
+                Some(&limited),
+                None,
+                app.now(),
+            )
+            .await?;
+        let waiting = app
+            .continue_task(&ctx, id.as_str(), &Default::default())
+            .await?;
+        assert_eq!(waiting.status, "waiting_capacity");
+        store
+            .set_account_state(&account, AccountStatus::Ok, None, None, app.now())
+            .await?;
+        let (at, go) =
+            support::hold_point(yulius_app::race::Point::CapacityStartReady, id.as_str());
+        let worker = Arc::clone(&app);
+        let recovering = tokio::spawn(async move { worker.resume_round().await });
+        support::point_reached(at).await?;
+        support::stop_tasks(&app, &[&id]).await?;
+        if continue_again {
+            store
+                .set_account_state(
+                    &account,
+                    AccountStatus::Limited,
+                    Some(&limited),
+                    None,
+                    app.now(),
+                )
+                .await?;
+            let next = app
+                .continue_task(&ctx, id.as_str(), &Default::default())
+                .await?;
+            assert_eq!(next.status, "waiting_capacity");
+            store
+                .set_account_state(&account, AccountStatus::Ok, None, None, app.now())
+                .await?;
+        }
+        go.send(())?;
+        tokio::time::timeout(Duration::from_secs(60), recovering).await??;
+        assert_eq!(
+            store.attempts(&id).await?.len(),
+            1,
+            "cancelled recovery launched Codex"
+        );
+        let current = task(&app, &id).await?;
+        if continue_again {
+            assert_eq!(current.status, TaskStatus::WaitingCapacity);
+            let _ = app.resume_round().await;
+            wait_for(
+                "the newly requested continuation",
+                Duration::from_secs(30),
+                || screen_contains(&app, &id, "ECHO: Continue"),
+            )
+            .await?;
+            support::stop_tasks(&app, &[&id]).await?;
+        } else {
+            assert!(matches!(current.status, TaskStatus::Stopped(_)));
+        }
+        Ok(())
+    })
+}
+
+#[test]
 fn a_stopped_codex_task_with_only_stale_lineage_cannot_resume_the_wrong_session() -> TestResult {
     let (_dir, data) = temp()?;
     runtime()?.block_on(async {

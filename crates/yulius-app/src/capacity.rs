@@ -950,6 +950,10 @@ impl App {
                             return Resume::Waiting(None);
                         }
                     };
+                    crate::race::reached(
+                        crate::race::Point::CapacityStartReady,
+                        std::path::Path::new(task.id.as_str()),
+                    );
                     if let Err(err) = self.start_run(&task.id, start, account).await {
                         tracing::warn!(error = %err, task = %task.id, "paused task failed to start");
                         // Nothing was resumed: the next task of this round need not wait the

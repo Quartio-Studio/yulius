@@ -14,6 +14,8 @@ pub enum Point {
     ParkedStatusRead,
     /// A queued row reads session capacity to explain its wait. Keyed by task ID.
     QueuedRowCapacity,
+    /// The capacity worker selected a saved start and has not yet claimed the task.
+    CapacityStartReady,
     /// An idle running row reads its pending PR news. Keyed by task ID.
     LiveRowPrNews,
     /// The live watch has read an open PR, before returning its advice. Keyed by task ID.
