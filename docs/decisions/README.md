@@ -407,7 +407,7 @@ If a reservation skips past all available slots, land an empty extension first w
 - [0395](0395-tasks-hand-work-to-another-sandbox-behind-an-instance-switch.md): amends ADR-0227 for task agents: an instance switch (off by default, ask, automatic; depth 1 to 5, default 3; per owner a day 1 to 100, default 20) and each sandbox's opt-out for its writers; `sandbox_handoff` served to task agents only while on, with `sandbox_task_create`'s checks plus depth, cycles and the daily bound, every refusal audited; ask stores a request the owner answers in a browser session, automatic creates as the owner; origin `handoff`, "Handed off from" on the target, the outcome told to the source; `task.handoff` on both sandboxes, never the prompt; rejected: only ask, serving `sandbox_task_create` to tasks, provenance in the prompt (SPEC-512)
 - [0396](0396-capture-the-parked-terminal-before-shutdown.md) preserves the pre-stop terminal and continues unfinished Codex goals through the bounded Stop hook.
 - [0397](0397-gpt-models-imply-codex.md): GPT models imply Codex
-- [0398](0398-astra-6-2-inherits-extra-high-effort.md) GPT-6.2 Astra inherits extra high effort on fresh and resumed Codex launches. Task details distinguish an inherited effort from an explicit choice (SPEC-561).
+- [0398](0398-astra-6-2-inherits-extra-high-effort.md) GPT-6.2 Astra inherits extra high effort on fresh and resumed Codex launches. Task details distinguish an inherited effort from an explicit choice (SPEC-561). ADR-0444 supersedes the effort default.
 - [0399](0399-task-evidence-belongs-to-the-landed-commit.md) Task verification evidence binds the landed commit to its actual CI and environment attempts (SPEC-562).
 - [0400](0400-continuing-a-reviewer-after-its-report-opens-the-next-round.md) records a new round when an author continues a reviewer after its report.
 - [0401](0401-red-ci-notices-include-partial-sibling-failures.md) Red CI notices and run details include partial failures observed in siblings stopped by fail-fast.
@@ -482,6 +482,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0435 -->
 - [0436](0436-yuliuss-full-suite-runs-after-the-merge-and-promotion-comes-from-verified-staging.md): Yulius's `[cd.dev]` is merge-first; both `test` shards and `e2e` are `after_merge` (11.6 of 17.1 job-minutes per pull request head), `quality` and `security` stay on pull requests; promotion to `main` only from a revision whose full suite passed and that staging verified, tested with the repository's own `yulius.toml`; a red `dev` is fixed forward (SPEC-591).
 <!-- ADR 0436 -->
+- [0437](0437-the-staging-request-keeps-its-task-waiting-until-the-outcome-is-delivered.md): the staging request keeps its task waiting until the outcome is delivered (SPEC-597).
 <!-- ADR 0437 -->
 - [0438](0438-quality-passes-have-own-jobs-and-test-partitions-share-a-build.md) Quality passes have separate CI jobs and test partitions share a build.
 <!-- ADR 0438 -->
@@ -493,7 +494,9 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0441 -->
 <!-- ADR 0442 -->
 <!-- ADR 0443 -->
+- [0444](0444-codex-tasks-inherit-high-effort-on-every-model.md) Codex tasks inherit High effort on every model. A task can explicitly choose Extra high or Max on GPT-6.2 Astra and Sol.
 <!-- ADR 0444 -->
+- [0445](0445-antigravity-resume-activity-follows-its-launch-prompt.md) A bare Antigravity resume starts at its saved idle activity or Waiting.
 <!-- ADR 0445 -->
 <!-- ADR 0446 -->
 <!-- ADR 0447 -->

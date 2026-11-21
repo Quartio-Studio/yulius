@@ -121,16 +121,17 @@ async fn shown(h: &Harness, alice: &Creds, id: &str) -> Result<(String, String),
     ))
 }
 
-/// SPEC-561: the HTTP request keeps the owner's choice, including an explicit default value.
+/// SPEC-607: the HTTP request keeps the owner's choice, including an explicit default value.
 #[tokio::test]
 async fn codex_task_creation_preserves_effort_provenance() -> TestResult {
     let (h, alice) = world().await?;
     available(&h, "a-codex", Provider::OpenAi).await?;
     for (model, effort, expected) in [
-        (None, None, "xhigh"),
-        (Some("gpt-6.2-astra"), None, "xhigh"),
+        (None, None, "high"),
+        (Some("gpt-6.2-astra"), None, "high"),
         (None, Some("high"), "high"),
         (Some("gpt-6.2-astra"), Some("xhigh"), "xhigh"),
+        (Some("gpt-6.2-astra"), Some("max"), "max"),
         (Some("gpt-6.2-sol"), None, "high"),
     ] {
         let mut body = json!({"prompt":"Compare effort", "harness":"codex"});

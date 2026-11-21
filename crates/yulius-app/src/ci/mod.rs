@@ -11,8 +11,8 @@
 //! task delivers, that task's head merged into it (`task/<n>`, SPEC-163); nothing is published.
 //!
 //! Ownership and bounds (RUN-001..003):
-//! - the **sync loop** (every [`CiSettings::poll`]) fetches each sandbox clone, lists open pull
-//!   requests, plans with [`yulius_domain::ci::plan`]: queues new heads and cancels runs whose
+//! - the **sync loop** (every [`CiSettings::poll`]) lists open pull requests, fetches each
+//!   sandbox clone and plans with [`yulius_domain::ci::plan`]: queues new heads and cancels runs whose
 //!   reference moved (superseded) or disappeared;
 //! - the **dispatcher** starts the oldest queued run of each sandbox that has none executing
 //!   (up to [`CiSettings::lanes`] runs per sandbox at a time, each lane with its own persistent

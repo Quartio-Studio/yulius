@@ -8,9 +8,9 @@ Yulius develops itself with Yulius. Its pull requests get independent results fo
 A GitHub App subscribed to PR openings triggers CI for hand-opened pull requests as soon as GitHub delivers the event and a place is available within the sandbox’s 30 open PRs. [Decision 0441](decisions/0441-github-pr-openings-trigger-exact-head-ci.md)
 
 It also runs native Codex CLI sessions on Codex (OpenAI) subscriptions, chosen per task or
-automation. GPT-6.2 Astra is the default model and inherits extra high effort. Other Codex models
-inherit high effort. A task's explicit effort takes precedence.
-[SPEC-561](../.ai/specs/SPEC-561-default-astra-6-2-to-xhigh-for-new-work.md)
+automation. GPT-6.2 Astra is the default model. Every Codex model inherits High effort.
+A task's explicit effort takes precedence, including Extra high and Max on GPT-6.2 Astra and Sol.
+[SPEC-607](../.ai/specs/SPEC-607-codex-tasks-run-at-high-effort-unless-th.md)
 
 Continue resumes a stopped Codex task in its saved conversation. Reopening a closed Codex conversation shows Waiting until its next turn. [SPEC-590](../.ai/specs/SPEC-590-look-bro-the-taks-says-it-working-but-th.md)
 
@@ -37,7 +37,9 @@ moves only between Antigravity subscriptions, and Yulius provides the pinned Ant
 [ADR-0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md),
 [ADR-0373](decisions/0373-gemini-4-neon-is-antigravitys-default-model-on-agy-1-5-12.md)). An
 Antigravity task stays Working while its command runs in the background or its agent resumes by
-itself ([SPEC-528](../.ai/specs/SPEC-528-antigravity-tasks-show-needs-its-person.md)). A
+itself ([SPEC-528](../.ai/specs/SPEC-528-antigravity-tasks-show-needs-its-person.md)). Reopening its
+conversation without a prompt leaves it idle and eligible for normal parking or closure, even
+with a Gemini announcement visible. A
 task created with the composer’s `Random` setting or an explicit `auto` harness and
 without a model that implies one draws uniformly across all added harnesses (`claude`, `codex`,
 `antigravity`) that currently have at least one non-exhausted subscription — one equal chance per
@@ -599,7 +601,8 @@ watching, steering and unblocking.
     - Pull requests merge on the quick checks. The full suite (`after_merge` jobs) runs once on
       the merged revision.
     - A task asks for staging with `cd_deploy` once its delivery merged. Yulius deploys and
-      verifies that tested revision in revision order, once per task.
+      verifies that tested revision in revision order, once per task. The task shows the full-suite
+      or staging wait and resumes on the outcome, including a failed gate.
     - A failing candidate leaves staging on its last verified release and tells the task.
     - A person can deploy the revision staging verified while the next dev revision is being checked. [ADR-0425](decisions/0425-pin-a-production-deploy-to-verified-dev.md)
   - Each task tests locally first with the project's `[local]` deployment inside its own sandbox.
