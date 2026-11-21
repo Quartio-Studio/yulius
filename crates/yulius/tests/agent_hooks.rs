@@ -3158,6 +3158,11 @@ async fn goal_stop_accepts_recalled_and_cursor_edited_owner_work() -> TestResult
             .as_str()
             .ok_or("continuation")?
             .to_owned();
+        // The initial callback can finish before the viewer starts editing. A
+        // lost response can then replay the same instruction after the viewer sends.
+        f.h.app
+            .hook_event(TOKEN, "codex", "UserPromptSubmit", &submit(&reason), None)
+            .await?;
         for frame in frames {
             f.h.app.record_terminal_frame(&f.task, &owner, frame);
         }
