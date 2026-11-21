@@ -1,6 +1,6 @@
 ---
 yulius-task: a4a6603c-af95-4f93-8c03-fee246e93ef4
-status: in-progress
+status: done
 ---
 
 # SPEC-610 Run repository file readers before merge
@@ -30,7 +30,7 @@ PR #1645 changed the composer mock. The merge train passed and dev revision 13a6
 - [x] Verify reader coverage, timing and delivery evidence
 - [x] Resolve named runtime paths in repository tests
 - [x] Trace exported file constants into their consumer tests
-- [ ] Approve the change for delivery to dev
+- [x] Approve the change for delivery to dev
 
 ## Acceptance criteria
 
@@ -62,3 +62,4 @@ The change diff uses the merge base with the integration branch and includes bot
 - The second review reproduced a missed embedded HTTP security policy, an unqualified Rust file read and 112 unrelated cases selected by a rejected JSON path in a delivery test. Regression tests failed for all three. Header access now identifies policy consumers, imported reads resolve their literal inputs, and source edits select tests through their actual inputs. A delivery.rs-only change selects fixture_hygiene. All ten Python tests passed. The final unrelated-file probe returned 78 in 2.24 s.
 - The third review found a typed path constant and the public SCANNER include. The follow-up work split runtime binding and exported data discovery. Both new fixtures failed first. The selector now derives public file constants at their definitions across the workspace and selects cases that use them, including the real scanner refusal test. Typed let, const and static path bindings resolve at filesystem reads. Eleven Python tests passed, and the compiled scanner refusal case passed.
 - The final catalog audit found Auto’s assertion about the first advertised workflow. Its shared helper reads the workflow-list HTTP route. The new selection assertion failed before catalog route discovery, then passed alongside the ten other selector regressions. The real Auto case passed. The selector also recognizes skill and automation catalog routes and the catalog-facing MCP reads.
+- Independent review approved fc9b924ba. The reviewer independently ran all eleven selector regressions and the compiled Auto case, verified UI-only and unrelated-file selection, and checked the diff. The local PR-diff probe ran 58 cases in 0.966 s of test execution and 130.07 s wall time with its build. Hosted gate and staging evidence follow in the task delivery record.
