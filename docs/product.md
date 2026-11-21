@@ -410,8 +410,9 @@ watching, steering and unblocking.
   placed from the tray, and the agent gets the file at that place (a file left without one comes
   after the text). A file can be up to 1 GB by default, so a screen recording of a bug fits: the
   agent extracts frames from it with `ffmpeg` and looks at them (SPEC-325).
-  A half-written task (its prompt, attached files and choices) waits in the composer while
-  people look elsewhere, also across a reload, until it starts.
+  **New draft** opens another unfinished task in the same sandbox. **Drafts** lets a person
+  return to a prompt with its attachments and task choices, even after reloading the browser.
+  Starting or discarding one draft leaves the others available. [SPEC-594](../.ai/specs/SPEC-594-i-should-be-able-to-create-many-drafts-l.md)
   A task is its owner's: Yulius acts on GitHub for it with their credentials (the agent's own Git
   and `gh` use a narrowed App token), so only they steer it: type into it, send it messages,
   answer what it asks in its terminal, continue, start, pause or deliver it. Anyone who may work in the project

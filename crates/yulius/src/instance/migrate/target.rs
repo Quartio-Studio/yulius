@@ -172,10 +172,14 @@ pub enum Request {
         /// The files.
         files: Vec<TextFile>,
     },
-    /// Validate and start Caddy.
+    /// Validate Caddy's configuration, make the running Caddy load it and ask its port 443
+    /// (SPEC-592).
     Proxy {
         /// Its files changed in this run.
         changed: bool,
+        /// The public URL's host when it is `https://`: the name port 443 is asked for.
+        #[serde(default)]
+        https: Option<String>,
     },
     /// Say how the next copy is installed.
     Expect(Expect),
@@ -1328,8 +1332,91 @@ fn texts(host: &mut dyn Host, name: &str, files: &[TextFile], l: &mut Lines) {
     }
 }
 
-fn proxy(host: &mut dyn Host, changed: bool, l: &mut Lines) {
+/// What the new host's own port 443 answered for the public host ([`ask_https`]).
+enum Https {
+    /// An HTTP answer, with its status (the instance does not run yet: 502 is expected).
+    Answers(String),
+    /// Port 443 took the connection but the TLS handshake failed: Caddy has no certificate for
+    /// the name, as while it still leads to the old host.
+    NoCertificate(String),
+    /// Nothing answered on port 443.
+    Refused(String),
+    /// `curl` could not run (exit 126 or 127, or not started).
+    Unasked(String),
+}
+
+/// Asks the new host's own port 443 for `name`, accepting any certificate and any status.
+/// `--disable` and `--noproxy` keep a `.curlrc` or a proxy in the environment from sending
+/// the question elsewhere; the retries (also of a 5xx answer, so about 3 s while the
+/// instance does not run) cover a Caddy still binding its ports.
+fn ask_https(host: &mut dyn Host, name: &str) -> Https {
+    let resolve = format!("{name}:443:127.0.0.1");
+    let url = format!("https://{name}/");
+    let out = run(
+        host,
+        &long(
+            &[
+                "curl",
+                "--disable",
+                "--noproxy",
+                "*",
+                "--silent",
+                "--show-error",
+                "--insecure",
+                "--output",
+                "/dev/null",
+                "--write-out",
+                "%{http_code}",
+                "--connect-timeout",
+                "5",
+                "--max-time",
+                "10",
+                "--retry",
+                "3",
+                "--retry-connrefused",
+                "--retry-delay",
+                "1",
+                "--resolve",
+                &resolve,
+                &url,
+            ],
+            60,
+        ),
+    );
+    match out.code {
+        0 => Https::Answers(out.stdout.trim().to_owned()),
+        // CURLE_SSL_CONNECT_ERROR: the port took the connection, the handshake failed.
+        35 => Https::NoCertificate(out.why()),
+        // Not found or not executable; -1 is also how a run that could not start comes back.
+        -1 | 126 | 127 => Https::Unasked(out.why()),
+        _ => Https::Refused(out.why()),
+    }
+}
+
+/// A host name `curl --resolve` takes as it is: letters, digits, dots and hyphens.
+fn plain_host(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with(['-', '.'])
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+}
+
+/// Validates the carried Caddyfile, restarts Caddy with it whatever this run wrote (Caddy may
+/// have started before the files were there: the package's postinst, or an earlier pass; and
+/// only a restart reads the carried drop-ins' environment), and asks port 443 for the public
+/// host (SPEC-592). The new host serves nobody yet, so the restart costs nothing.
+fn proxy(host: &mut dyn Host, changed: bool, https: Option<&str>, l: &mut Lines) {
     const ITEM: &str = "reverse proxy";
+    const LOOK: &str = "see `systemctl status caddy` and `journalctl -u caddy -n 50`";
+    if let Some(name) = https
+        && !plain_host(name)
+    {
+        return l.failed(
+            ITEM,
+            format!("{name:?} is not a plain host name: port 443 cannot be asked for it"),
+        );
+    }
     let valid = run(
         host,
         &long(
@@ -1357,25 +1444,63 @@ fn proxy(host: &mut dyn Host, changed: bool, l: &mut Lines) {
             .to_owned()
     };
     let was = state(host, "is-active") == "active" && state(host, "is-enabled") == "enabled";
-    if was && !changed {
-        return l.ok(ITEM, "Caddy runs with the carried configuration");
-    }
     // Its drop-ins were carried as files.
     sh(host, &["systemctl", "daemon-reload"]);
     let enabled = sh(host, &["systemctl", "enable", "caddy"]);
-    let started = sh(host, &["systemctl", "reload-or-restart", "caddy"]);
-    if !enabled.ok() || !started.ok() {
-        let why = if enabled.ok() {
-            started.why()
-        } else {
-            enabled.why()
-        };
-        return l.failed(ITEM, format!("Caddy did not start: {why}"));
+    if !enabled.ok() {
+        return l.failed(ITEM, format!("Caddy cannot be enabled: {}", enabled.why()));
     }
-    l.changed(
-        ITEM,
-        "Caddy validated the carried configuration and runs with it",
-    );
+    let restarted = sh(host, &["systemctl", "restart", "caddy"]);
+    if !restarted.ok() {
+        return l.failed(
+            ITEM,
+            format!(
+                "Caddy did not start with the carried configuration: {}; {LOOK}, then run the \
+                 move again",
+                restarted.why()
+            ),
+        );
+    }
+    let answered = match https {
+        None => "no https:// public URL, so port 443 was not asked".to_owned(),
+        Some(name) => match ask_https(host, name) {
+            Https::Answers(status) => {
+                format!("https://{name} answers on this host's port 443 (HTTP {status})")
+            }
+            Https::NoCertificate(why) => format!(
+                "port 443 takes connections but Caddy has no certificate for {name} yet ({why}); \
+                 it is still obtaining one, or gets it once {name} leads to this host"
+            ),
+            Https::Refused(why) => {
+                return l.failed(
+                    ITEM,
+                    format!(
+                        "Caddy was restarted with the carried {} but nothing answers HTTPS for \
+                         {name} on this host's port 443 ({why}): Caddy is not running it, or it \
+                         has no site on port 443 (TLS that ends in front of Caddy is not \
+                         carried); {LOOK}, then run the move again",
+                        profile::CADDYFILE
+                    ),
+                );
+            }
+            Https::Unasked(why) => {
+                return l.failed(
+                    ITEM,
+                    format!(
+                        "port 443 could not be asked for {name} ({why}): install curl on this \
+                         host, then run the move again"
+                    ),
+                );
+            }
+        },
+    };
+    let detail =
+        format!("Caddy validated the carried configuration and restarted with it; {answered}");
+    if changed || !was {
+        l.changed(ITEM, detail);
+    } else {
+        l.ok(ITEM, detail);
+    }
 }
 
 /// The sandboxes whose package layer exists (`sysroots/<id>/upper` holds a dpkg database).
@@ -1926,7 +2051,7 @@ pub fn handle(host: &mut dyn Host, env: &mut Env<'_>, request: &Request) -> Repl
         }
         Request::BeforeStart { setup } => l.0 = (env.setup)(host, Part::BeforeStart, setup),
         Request::Texts { name, files } => texts(host, name, files, &mut l),
-        Request::Proxy { changed } => proxy(host, *changed, &mut l),
+        Request::Proxy { changed, https } => proxy(host, *changed, https.as_deref(), &mut l),
         Request::Expect(expect) => {
             let text = serde_json::to_string(expect).unwrap_or_default();
             if let Err(why) = host.write(Path::new(EXPECT_FILE), &text, 0o600) {
