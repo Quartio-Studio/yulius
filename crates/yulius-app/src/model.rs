@@ -624,6 +624,10 @@ pub enum PauseKind {
     Start,
     /// No process: keep an explicit fresh launch even if a session ID is already recorded.
     FreshStart,
+    /// No process: an admitted goal continuation must start in a fresh session.
+    GoalFreshStart,
+    /// No process: an admitted goal continuation must resume the selected lineage.
+    GoalResumeStart,
 }
 
 impl PauseKind {
@@ -636,6 +640,8 @@ impl PauseKind {
             Self::Limit => "limit",
             Self::Start => "start",
             Self::FreshStart => "fresh_start",
+            Self::GoalFreshStart => "goal_fresh_start",
+            Self::GoalResumeStart => "goal_resume_start",
         }
     }
 
@@ -647,6 +653,8 @@ impl PauseKind {
             "prompt" => Self::Prompt,
             "limit" => Self::Limit,
             "fresh_start" => Self::FreshStart,
+            "goal_fresh_start" => Self::GoalFreshStart,
+            "goal_resume_start" => Self::GoalResumeStart,
             _ => Self::Start,
         }
     }
@@ -654,7 +662,7 @@ impl PauseKind {
     /// Whether the agent's process stays alive during the pause.
     #[must_use]
     pub fn holds_process(self) -> bool {
-        !matches!(self, Self::Start | Self::FreshStart)
+        matches!(self, Self::Turn | Self::Prompt | Self::Limit)
     }
 }
 

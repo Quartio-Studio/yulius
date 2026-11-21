@@ -181,12 +181,18 @@ impl App {
         // A saved Codex start has already chosen a fresh request or a native continuation.
         // It takes precedence over observations left by the run that stopped.
         if task.harness == Harness::Codex
-            && let Some(pause) = pause.as_ref().filter(|pause| !pause.kind.holds_process())
+            && let Some(pause) = pause.as_ref()
+            && (!pause.kind.holds_process()
+                || (pause.kind == PauseKind::Turn
+                    && task.mode == crate::model::TaskMode::Goal
+                    && store.live_attempt(task_id).await?.is_none()))
         {
-            let prompt = pause.continuation.clone();
-            let start = match pause.kind {
-                PauseKind::FreshStart => RunStart::Fresh { prompt },
-                _ => RunStart::Resume { prompt },
+            let start = if pause.kind == PauseKind::Start {
+                RunStart::Resume {
+                    prompt: pause.continuation.clone(),
+                }
+            } else {
+                self.start_for_capacity_pause(&task, pause).await?
             };
             return self
                 .switch_from(

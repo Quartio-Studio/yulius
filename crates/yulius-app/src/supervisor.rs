@@ -2454,8 +2454,9 @@ impl App {
             // (ROT-010); the resume loop starts it when capacity returns. A turn a limit cut
             // keeps its `limit` pause, so it still resumes past the limit (SPEC-034).
             let (kind, continuation) = match &start {
-                RunStart::GoalFresh { prompt } | RunStart::GoalResume { prompt } => {
-                    (PauseKind::Turn, Some(prompt.clone()))
+                RunStart::GoalFresh { prompt } => (PauseKind::GoalFreshStart, Some(prompt.clone())),
+                RunStart::GoalResume { prompt } => {
+                    (PauseKind::GoalResumeStart, Some(prompt.clone()))
                 }
                 RunStart::AfterLimit => (PauseKind::Limit, None),
                 RunStart::Fresh { prompt } if harness == Harness::Codex => {
