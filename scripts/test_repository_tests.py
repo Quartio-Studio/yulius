@@ -55,6 +55,7 @@ class RepositoryTests(unittest.TestCase):
             self.assertIn("every_place_states_one_rule_for_local_checks", names(path))
         self.assertIn("default_workflows_follow_the_discipline", names("catalog/workflows/fix.md"))
         self.assertIn("the_repositorys_own_cd_is_defined", names("yulius.toml"))
+        self.assertIn("auto_chooses_goal_and_a_workflow_from_the_store", names("catalog/workflows/feature.md"))
         self.assertIn("agents_manage_automations_through_mcp_tools", names("catalog/workflows/fix.md"))
         self.assertIn("ready_made_automations_are_enabled_in_one_call", names("catalog/automations/docs-up-to-date.md"))
         self.assertIn("the_scanner_recognizes_the_proxys_refusal", names("scripts/vidoc_scan.py"))

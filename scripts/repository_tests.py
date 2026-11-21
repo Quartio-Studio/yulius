@@ -31,11 +31,16 @@ MANIFEST = re.compile(r'env!\s*\(\s*"CARGO_MANIFEST_DIR"\s*\)\s*\)')
 CONCAT_MANIFEST = re.compile(r'concat!\s*\(\s*env!\s*\(\s*"CARGO_MANIFEST_DIR"\s*\)\s*,\s*"/([^"\\]+)"')
 PATH_LITERAL = re.compile(r'"([\w./-]+)"')
 JOIN = re.compile(r'\s*\.join\(\s*"([\w./-]+)"\s*\)')
+CATALOG_ROUTES = {"workflows": "catalog/workflows", "skills": "catalog/skills",
+                  "automation-templates": "catalog/automations"}
+ROUTE = re.compile(r'"/api/(?:[^"\s]*/)?(workflows|skills|automation-templates)(?=[/?"#])')
 # Compiled-in data also reaches tests through these accessors, routes and headers.
 EMBEDDED = {
     "catalog::default_workflow(": "catalog/workflows",
     "catalog::defaults(": "catalog/workflows",
-    "/automation-templates": "catalog/automations",
+    '"workflows_list"': "catalog/workflows",
+    '"automation_template_enable"': "catalog/automations",
+    '"automations_list"': "catalog/automations",
     '"content-security-policy"': "crates/yulius-server/src/content-security-policy.txt",
     "header::CONTENT_SECURITY_POLICY": "crates/yulius-server/src/content-security-policy.txt",
     "templates::template(": "catalog/automations",
@@ -101,6 +106,7 @@ def inputs_for(root, crate, path, text, embedded, caller_text=None):
         else:
             for name in JOIN.findall(caller_text or text):
                 add(crate, name)
+    inputs.update(CATALOG_ROUTES[route] for route in ROUTE.findall(text))
     for accessor, dependency in embedded:
         if accessor in text:
             inputs.add(dependency)
@@ -156,7 +162,8 @@ def inventory(root):
                 dependency = Path(os.path.normpath(source.parent / relative))
                 if dependency.is_relative_to(root):
                     embedded.append((name, dependency.relative_to(root).as_posix()))
-    anchors = ("include_str!", "include_bytes!", "CARGO_MANIFEST_DIR", *(name for name, _ in embedded))
+    anchors = ("include_str!", "include_bytes!", "CARGO_MANIFEST_DIR",
+               *("/" + route for route in CATALOG_ROUTES), *(name for name, _ in embedded))
     readers = []
     for manifest in manifests:
         crate = manifest.parent
