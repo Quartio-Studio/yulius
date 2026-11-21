@@ -55,7 +55,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Preserve the latest queue decision for each existing task during history cleanup
 - [x] Recover the recorded singleton decision and its replacement arm
 - [x] Preserve the ordinary armed merge outcome after a person merges through HTTP
-- [ ] Keep the live owner’s merge notice across a queue decision
+- [x] Keep the live owner’s merge notice across a queue decision
 - [ ] Verify restored arms and deliver current ordinary CI and train notices to the owner
 - [ ] Report the active singleton and replay its recorded failure for the original owner
 - [ ] Verify candidate status before parking, showing Done or resuming a parked owner
@@ -98,6 +98,8 @@ The queue writes the accepted singleton to the owner’s completed merge wait be
 When the watcher sees an open PR during an active queue decision or its slot changes during the read, it supplies the PR number to the normal notice bookkeeping and defers events, check-ins and stalls for that pass. A subsequent recorded merge remains eligible for delivery once to the same task.
 
 ## Evidence
+
+- Independent review approved `2af197087f44febdf4010703e55cdc5cf1afe6ce` and passed all six live queue fixtures. All 271 scoped parking, PR watch, delivery, merge queue, merge train and agent wait tests passed. Repository contracts, formatting and spec validation passed. Vidoc was disabled. The stall-clock and overtaken-watch mutation runs caught all four and all nine mutations respectively. The earlier first-watch campaign caught six of seven; the strengthened timestamp fixture caught the previously missed deletion in a separate run. The integrated generation and successful-take campaigns were running at review.
 
 - On integrated commit `8505cfa60`, 270 scoped tests passed. A subsequent real queue retry kept the same arm and recorded a hosted PR read outage while the watcher was preparing advice. The old watcher reported a stall from before the retry. The regression checks for silence on the interrupted pass and delivery of the new reason exactly once. A separate count of successful takes distinguishes retries within the same request generation. The queue continues to use its request generation to reject superseded writers.
 
