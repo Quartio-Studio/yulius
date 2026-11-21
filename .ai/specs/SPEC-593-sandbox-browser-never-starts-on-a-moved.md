@@ -1,6 +1,6 @@
 ---
 yulius-task: 2bfb2cd1-d319-4db4-bbb7-e1467fffa1a0
-status: in-progress
+status: done
 ---
 
 # SPEC-593. The sandbox browser starts on a moved host: stale Chrome profile locks are cleared
@@ -45,8 +45,9 @@ browser; the move helper is `crates/yulius/src/instance/migrate`.
 - **SPL-002** A lock naming this host with a running pid is kept with its cookie and socket, so
   a browser Yulius runs (or any live Chrome) never loses its profile lock; Chrome itself decides
   (hand-over, or its own removal when the pid is not Chrome).
-- **SPL-003** When a start fails while such a kept lock names a running process, the failure
-  says the profile is held by that process on this host. When a stale lock cannot be removed,
+- **SPL-003** When Chrome gives up on a start (it exits, or never answers on DevTools) while
+  such a kept lock still names the same running process, the failure says the profile is held
+  by that process on this host; other failures (the display, a lock Chrome took over) do not. When a stale lock cannot be removed,
   the start fails before the display or Chrome starts, saying which lock and why.
 - **SPL-004** The fake Chromium behaves like the real one: it holds its own `SingletonLock`
   (`<host>-<pid>`) while it runs, refuses a profile whose lock names another host (headless:
@@ -55,13 +56,13 @@ browser; the move helper is `crates/yulius/src/instance/migrate`.
 
 ## Plan
 
-- [ ] Spec and decision record for clearing stale profile locks
-- [ ] Fake Chromium holds and honours profile locks like Chrome (failing tests first)
-- [ ] Stale profile locks are cleared before Chrome starts; a live one is kept
-- [ ] A start that fails on a held profile says which process holds it
-- [ ] Real Chrome starts on a profile carried from another host (opt-in test)
-- [ ] Operations notes, architecture and changes updated
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Spec and decision record for clearing stale profile locks
+- [x] Fake Chromium holds and honours profile locks like Chrome (failing tests first)
+- [x] Stale profile locks are cleared before Chrome starts; a live one is kept
+- [x] A start that fails on a held profile says which process holds it
+- [x] Real Chrome starts on a profile carried from another host (opt-in test)
+- [x] Operations notes, architecture and changes updated
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -99,10 +100,50 @@ run it). `scripts/dev quick`, the crate's tests, and Yulius CI for the whole gat
   removes; the manager never starts two browsers on one profile. A running pid of this host keeps
   the lock even when another program may have reused the pid: Chrome resolves that case itself,
   and Yulius never breaks a live browser's lock.
-- A failed start is blamed on the holder only when Chrome gave up on it (it exited, or never
-  answered) and the lock still names the same pid afterwards (review round 1): Chrome replaces a
-  lock whose pid is no Chrome with its own, so a reused pid is never named.
+- A failed start is blamed on the holder only when Chrome's DevTools wait failed (it exited, or
+  never answered) and the lock still names the same pid afterwards (review rounds 1 and 2):
+  Chrome replaces a lock whose pid is no Chrome with its own, so a reused pid is named only when
+  Chrome died before it reached its lock check (a missing library); the error keeps Chrome's own
+  failure beside it.
 - A start on a profile held by a running local process is still attempted (Chrome may find the
   pid is not Chrome and proceed); only its failure is explained, so a reused pid never blocks
   the browser.
 - `gethostname` comes from `nix` (feature `hostname`), already a dependency; no new crate.
+
+## Evidence
+
+- Real Chrome 158.0.8127.36 in this sandbox, profile with `SingletonLock -> old-host-4242`:
+  headless exited 21 with "The profile appears to be in use by another Google Chrome process
+  (4242) on another computer (old-host)"; headful on Xvfb it printed the same and never answered
+  (killed by `timeout` after 12 s).
+- Test-first: the four new manager tests failed before the fix, for the intended reasons:
+  `ExitedEarly { status: 21, "…another computer (old-host)" }` (AC-1), `ExitedEarly { status: 0,
+  "Opening in existing browser session." }` not naming the holder (AC-3, twice), and
+  `StartupTimeout { 30s }` with the display started (AC-4). Review round 1's tests failed before
+  their fix (a `sleep` holder refused the start; a refused fake recorded its pid), as did round 2's
+  (an Xvfb exiting early beside a held lock was reported as `ProfileInUse`). Replacing the
+  `still_held` check with "always" fails `a_start_that_failed_for_another_reason…`.
+- `cargo nextest run -p yulius-browser --features fake`: 150 passed. `cargo clippy -p
+  yulius-browser --features fake --all-targets -- -D warnings`: clean. `scripts/dev quick`: passed.
+- `yulius` crate suites `browser::`, `superagent_browser::` (and `browser_network::`,
+  `live_display::` on the first head): 41 and 43 passed.
+- Opt-in real Chrome (`YULIUS_TEST_CHROMIUM=/usr/bin/google-chrome
+  YULIUS_TEST_CHROMIUM_NO_SANDBOX=1`): `real_chrome_starts_on_a_profile_locked_by_another_host`
+  passed (headful on Xvfb, about 2 s; the lock then names this host and Chrome's pid); with the
+  cleanup disabled it failed with `StartupTimeout { 60s }`, the production loop. The whole
+  opt-in suite with a `--no-sandbox` wrapper: 5 of 6 passed; the sixth,
+  `a_secret_is_not_typed_into_a_tab_that_is_leaving…`, flakes on Chrome 158 on a fresh profile
+  without locks (1 failure in 4 runs, `ElementNotFound`, nothing typed), outside this change:
+  [#1604](https://github.com/Quartio-Studio/yulius/issues/1604). CI never runs these tests.
+- CI run e822c548 failed `e2e` in `claude-connect.e2e.ts` (a mixed request refused): the mock's
+  ambient browser request for #10 arrives 5 s in and became a second toast. A 6 s delay probe
+  before the toast check reproduced it locally; with `ambient=0` the file passed 7/7 with the
+  probe and without it.
+- Independent review: round 1 (Fable 5.2) approved `fbd738d9e` with three minors and three nits;
+  round 2 approved `c31c4e3a2` with two minors and three nits; all fixed test-first above. The
+  pre-existing note that an Xvfb exit reads "Chromium exited during startup"
+  (`display.rs`) is outside this change.
+- `scripts/dev security`: Vidoc is switched off for this project (CI `security` skipped), so
+  unrun, not passed.
+- Not tested here: an actual instance move between two hosts (the real-Chrome test stands in for
+  the carried profile); the move helper is unchanged by decision.
