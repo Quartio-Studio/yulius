@@ -77,6 +77,8 @@ pub enum Point {
     SwitchDecided,
     /// A switch passed preflight and has yet to claim the task status. The path is the task id.
     SwitchPrepared,
+    /// A subscription move has read the original capacity pause. Keyed by task id.
+    MovePauseRead,
     /// A queued limit move is about to check its reporting attempt. The path is the task id.
     LimitMoveReady,
     /// The pool stored the limit pause and is finishing its notices. The path is the task id.

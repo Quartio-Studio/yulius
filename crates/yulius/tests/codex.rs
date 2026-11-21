@@ -445,11 +445,30 @@ fn an_overtaken_codex_move_from_a_process_free_legacy_goal_hold_is_cancelled() -
     )
 }
 
+#[test]
+fn an_overtaken_codex_move_keeps_a_replacement_live_before_pause_classification() -> TestResult {
+    restart_before_rollout(
+        CapacityRestart::CancelledMove {
+            already_running: true,
+        },
+        QueuedRequest::LegacyGoal,
+    )
+}
+
+#[test]
+fn a_queued_goal_with_oversized_spec_diagnostics_keeps_an_actionable_instruction() -> TestResult {
+    restart_before_rollout(
+        CapacityRestart::Automatic,
+        QueuedRequest::OversizedGoalResume,
+    )
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum QueuedRequest {
     Original,
     GoalFresh,
     GoalResume,
+    OversizedGoalResume,
     LegacyGoal,
 }
 
@@ -526,6 +545,18 @@ fn restart_before_rollout(restart: CapacityRestart, request: QueuedRequest) -> T
             } else {
                 QueuedStartKind::GoalResume
             };
+            let prompt = if request == QueuedRequest::OversizedGoalResume {
+                let spec = format!("## Plan\n{}", "- [ ] repeated step\n".repeat(2000));
+                let report = yulius_domain::spec_format::validate_spec(&spec);
+                let instruction = format!(
+                    "Continue the authorized goal. {}",
+                    report.agent_message("docs/specs/goal.md")
+                );
+                assert!(instruction.len() > yulius_app::capacity::CONTINUATION_MAX);
+                instruction
+            } else {
+                goal_prompt.to_owned()
+            };
             assert!(
                 app.deps
                     .store
@@ -534,7 +565,7 @@ fn restart_before_rollout(restart: CapacityRestart, request: QueuedRequest) -> T
                         task(&app, &id).await?.status,
                         &QueuedStart {
                             kind,
-                            prompt: Some(goal_prompt.into()),
+                            prompt: Some(prompt),
                             account_id: None
                         },
                         app.now()
@@ -585,8 +616,13 @@ fn restart_before_rollout(restart: CapacityRestart, request: QueuedRequest) -> T
             assert!(app.deps.store.live_attempt(&id).await?.is_none());
         }
         if let CapacityRestart::CancelledMove { already_running } = restart {
-            let (prepared, release) =
-                support::hold_point(yulius_app::race::Point::SwitchPrepared, id.as_str());
+            let before_classification = request == QueuedRequest::LegacyGoal && already_running;
+            let point = if before_classification {
+                yulius_app::race::Point::MovePauseRead
+            } else {
+                yulius_app::race::Point::SwitchPrepared
+            };
+            let (prepared, release) = support::hold_point(point, id.as_str());
             let moving = {
                 let (app, id, account) = (Arc::clone(&app), id.clone(), replacement.clone());
                 tokio::spawn(async move {
@@ -634,23 +670,33 @@ fn restart_before_rollout(restart: CapacityRestart, request: QueuedRequest) -> T
                     app.now(),
                 )
                 .await?;
-            if already_running {
+            let replacement_run = if already_running {
                 let _ = app.resume_round().await;
-                assert_eq!(task(&app, &id).await?.status, TaskStatus::Running);
-            }
+                Some(
+                    store
+                        .live_attempt(&id)
+                        .await?
+                        .ok_or("replacement already running")?
+                        .id,
+                )
+            } else {
+                None
+            };
             release.send(())?;
             let moved = tokio::time::timeout(Duration::from_secs(60), moving).await??;
             assert!(matches!(
                 moved,
                 Err(yulius_app::error::AppError::Conflict(_))
             ));
-            assert!(
-                store
-                    .switches(&id)
-                    .await?
-                    .iter()
-                    .any(|switch| switch.reason == "manual" && switch.outcome == "cancelled")
-            );
+            if !before_classification {
+                assert!(
+                    store
+                        .switches(&id)
+                        .await?
+                        .iter()
+                        .any(|switch| switch.reason == "manual" && switch.outcome == "cancelled")
+                );
+            }
             if !already_running {
                 assert_eq!(
                     store.open_pause(&id).await?,
@@ -660,6 +706,9 @@ fn restart_before_rollout(restart: CapacityRestart, request: QueuedRequest) -> T
                 let _ = app.resume_round().await;
             }
             let run = store.live_attempt(&id).await?.ok_or("new continuation")?;
+            if let Some(replacement_run) = replacement_run {
+                assert_eq!(run.id, replacement_run);
+            }
             assert_eq!(run.provider_session_id.as_deref(), Some(session.as_str()));
             return support::stop_tasks(&app, &[&id]).await;
         }
@@ -680,6 +729,7 @@ fn restart_before_rollout(restart: CapacityRestart, request: QueuedRequest) -> T
         let (kind, expected) = match request {
             QueuedRequest::GoalFresh => (LaunchKind::New, goal_prompt),
             QueuedRequest::GoalResume => (LaunchKind::Resume, goal_prompt),
+            QueuedRequest::OversizedGoalResume => (LaunchKind::Resume, "spec_check"),
             _ => (
                 LaunchKind::New,
                 "ECHO: Original request: answer with an echo",

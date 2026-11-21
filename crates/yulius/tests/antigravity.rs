@@ -34,7 +34,7 @@ use yulius_store::crypto::MasterKeyCrypto;
 
 const API_KEY: &str = "SYNTHETIC-gemini-api-key-0123456789";
 
-async fn add_google_account(
+pub(super) async fn add_google_account(
     app: &App,
     id: &str,
     credential: &[u8],
@@ -60,7 +60,7 @@ async fn add_google_account(
     Ok(account)
 }
 
-fn api_key() -> Result<Vec<u8>, String> {
+pub(super) fn api_key() -> Result<Vec<u8>, String> {
     antigravity_api_key_credential(API_KEY).ok_or_else(|| "an API key envelope".to_owned())
 }
 

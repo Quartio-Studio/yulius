@@ -178,6 +178,10 @@ impl App {
         let store = &self.deps.store;
         let pause = store.open_pause(task_id).await?;
         let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
+        crate::race::reached(
+            crate::race::Point::MovePauseRead,
+            std::path::Path::new(task_id.as_str()),
+        );
         // A saved Codex start has already chosen a fresh request or a native continuation.
         // It takes precedence over observations left by the run that stopped.
         if task.harness == Harness::Codex

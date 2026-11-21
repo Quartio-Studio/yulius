@@ -38,7 +38,8 @@ Earlier user requests establish the ownership rule. Task #534 concerned automate
 - [x] Verify the fix and obtain independent approval
 - [x] Integrate and verify the updated Codex resume and capacity behavior
 - [x] Keep delivery and merge-train verification within the worker stack
-- [ ] Preserve queued goal launch choices and the current Codex capacity pause
+- [x] Preserve queued goal launch choices and the current Codex capacity pause
+- [ ] Recover admitted goals across harnesses, stale moves and oversized diagnostics
 
 ## Acceptance criteria
 
@@ -108,3 +109,4 @@ Make the continuation decision where the agent can act on it, at the shared Stop
 - After resolving the conflicts with dev, 111 Codex restart, capacity, supervisor and goal continuation tests passed. The repository quick gate and Clippy with warnings denied passed for the conflict resolution and the subsequent bounded-stack fix.
 - All 174 all-feature delivery, merge-train, remote MCP and goal controls passed at `3178f2cb9`. Independent review found no further stack issue. It found an integration defect in the process-free goal launch choice and the pause identity used by Codex Switch.
 - Four Codex regressions failed on the integrated implementation. Both automatic capacity recovery and a manual subscription move launched a native resume for an admitted fresh goal. A resumed goal lost its exact instruction, and a delayed move from an older process-free turn reported success after Stop and Continue replaced the pause. The new pause kinds persist the launch choice and instruction. The manual move claims the original pause row, including for a process-free legacy goal hold.
+- The four new admission regressions and all 77 scoped controls passed at `96997d6d8`, including manual and automatic recovery, the prior session identity, instruction receipt and the durable attempt count. The committed head passed Clippy. Independent review then found shared harness and ownership cases beyond these Codex controls.
