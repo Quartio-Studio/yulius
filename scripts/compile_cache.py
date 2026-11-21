@@ -56,7 +56,7 @@ def open_store(cache, checkout):
         os.close(directory)
 
 
-def run_disposable(command, env):
+def run_disposable(command, env, lease=None):
     """Keep Cargo in the shell job. Release the target only after its workers exit."""
     subreaper = sys.platform == "linux"
     if subreaper:
@@ -81,7 +81,8 @@ def run_disposable(command, env):
             return -requested
         # Inherit the caller's process group and inheritable jobserver descriptors.
         # The shell delivers stop, continue and terminal ownership to the whole job.
-        child = subprocess.Popen(command, env=env, close_fds=False)
+        child = subprocess.Popen(command, env=env, close_fds=lease is not None,
+                                 pass_fds=() if lease is None else (lease,))
         try:
             # Block only in the parent, after spawn. On hosts with sigtimedwait
             # the kernel identifies terminal-generated signals by sender PID 0.

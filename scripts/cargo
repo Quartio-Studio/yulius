@@ -13,12 +13,15 @@ root = Path(__file__).resolve().parent.parent
 args = sys.argv[1:]
 os.environ["PATH"] = str(root / ".tools/bin") + os.pathsep + os.environ.get("PATH", "")
 
+EXTERNAL_BUILDS = {"clippy", "nextest"}
+
+
 def validate_scratch_args(args):
     # Cargo expands configured aliases after parsing its options. Use a named
     # build command whose output arguments can be inspected before dispatch.
     builtins = {"bench", "build", "check", "clean", "doc", "fix", "run", "rustc", "rustdoc", "test"}
-    if not args or args[0] not in builtins:
-        sys.exit("--scratch-target needs a built-in Cargo build subcommand; expand any alias")
+    if not args or args[0] not in builtins | EXTERNAL_BUILDS:
+        sys.exit("--scratch-target needs a supported Cargo build subcommand; expand any alias")
     for arg in args:
         if arg == "--":
             break
@@ -56,9 +59,14 @@ def scratch_config_end(args):
     return end
 
 
-def run_build(command, env):
-    parent = Path(env.get("YULIUS_BUILD_SCRATCH", root / "target")).resolve()
+def scratch_parent():
+    parent = Path(os.environ.get("YULIUS_BUILD_SCRATCH", root / "target")).resolve()
     parent.mkdir(exist_ok=True, parents=True)
+    return parent
+
+
+def run_build(command, env, lease=None):
+    parent = scratch_parent()
     build = tempfile.mkdtemp(prefix="cargo-", dir=parent)
     try:
         config_end = scratch_config_end(command[1:])
@@ -69,7 +77,7 @@ def run_build(command, env):
             path = json.dumps(build, ensure_ascii=False)
             command = [*command[:insert], "--config", f"build.target-dir={path}",
                        "--config", f"build.build-dir={path}", *command[insert:]]
-        result = run_disposable(command, dict(env, CARGO_TARGET_DIR=build, CARGO_BUILD_BUILD_DIR=build, CARGO_BUILD_TARGET_DIR=build))
+        result = run_disposable(command, dict(env, CARGO_TARGET_DIR=build, CARGO_BUILD_BUILD_DIR=build, CARGO_BUILD_TARGET_DIR=build), lease)
     except UnreapedBuild as error:
         # The containing session can reclaim this target once its processes end.
         raise UnreapedBuild(f"{error}; retained build target {build}") from error
@@ -93,12 +101,16 @@ def remove_target(build, parent):
             os.rename(build, Path(disposal) / "target")
 
 
-def plain(cargo):
+def plain(cargo, plugin=None):
     os.environ["CARGO"] = cargo
+    executable = plugin or cargo
     if scratch_target:
-        status = run_build([cargo, *args], os.environ)
+        try:
+            status = run_build([executable, *args], os.environ)
+        except OSError as error:
+            sys.exit(f"disposable build failed: {error}")
         sys.exit(status if status >= 0 else 128 - status)
-    os.execvp(cargo, [cargo, *args])
+    os.execvp(executable, [executable, *args])
 
 
 # mbx invokes Cargo for discovery before the build. Mark the actual dispatch, so a cache
@@ -111,7 +123,10 @@ if marker is not None:
         if "RUSTC_WRAPPER" in os.environ:
             os.environ["YULIUS_MBX_RUSTC"] = os.environ["RUSTC_WRAPPER"]
             os.environ["RUSTC_WRAPPER"] = str(root / "scripts/cache-rustc")
-    plain(os.environ.pop("YULIUS_MBX_CARGO"))
+    plugin = os.environ.pop("YULIUS_MBX_PLUGIN", None)
+    if plugin and (not args or Path(plugin).name != "cargo-" + args[0]):
+        plugin = None  # Discovery commands still go to Cargo.
+    plain(os.environ.pop("YULIUS_MBX_CARGO"), plugin)
 
 configured = os.environ.get("CARGO") or "cargo"
 cargo = shutil.which(configured) or configured
@@ -125,9 +140,16 @@ if Path(cargo).resolve() == launcher:
             break
     else:
         sys.exit("The project Cargo launcher needs a Cargo executable on PATH")
+plugin = None
 if scratch_target:
     validate_scratch_args(args)
-    plain(cargo)
+    if args[0] in EXTERNAL_BUILDS:
+        # Invoke the named plugin using Cargo's external command convention.
+        # Workspace, environment and CLI Cargo aliases cannot replace it.
+        plugin = shutil.which("cargo-" + args[0])
+        if plugin is None:
+            sys.exit(f"cargo-{args[0]} is required for this disposable build")
+
 
 # Yulius CI keeps the runner's session for cancellation and redirects all three streams.
 unattended_ci = (os.environ.get("YULIUS_CI") == "1" and os.environ.get("YULIUS_CI_RUN")
@@ -137,29 +159,30 @@ if (sys.platform != "linux" or not os.environ.get("YULIUS_SANDBOX")
         or "RUSTC_WRAPPER" in os.environ or os.environ.get("CARGO_INCREMENTAL", "0") != "0"
         or sys.stdin.isatty() or (not unattended_ci and foreground_terminal())
         or any("--jobserver-" in os.environ.get(name, "") for name in ("CARGO_MAKEFLAGS", "MAKEFLAGS", "MFLAGS"))):
-    plain(cargo)
+    plain(cargo, plugin)
 
 import fcntl
 
 sandbox = sandbox_for(root, Path.home().resolve())
 if sandbox is None:
-    plain(cargo)
+    plain(cargo, plugin)
 # Leave explicit global or remote mbx configurations outside this repository policy.
 config_home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
 if os.environ.get("MBX_REMOTE_URL") or (config_home / "mbx/config.toml").exists():
-    plain(cargo)
+    plain(cargo, plugin)
 cache = sandbox / "rust-compile-cache"
+dispatched = False
 try:
     mbx = installed(root)
     if not os.access(mbx, os.X_OK):
-        plain(cargo)
+        plain(cargo, plugin)
     # Disk upkeep locks this same directory exclusively before reclaiming the cache. A build
     # arriving during reclamation starts immediately with plain Cargo.
     lease = os.open(sandbox, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     fcntl.flock(lease, fcntl.LOCK_SH | fcntl.LOCK_NB)
     if not open_store(cache, root):
-        plain(cargo)
-    with tempfile.TemporaryDirectory(prefix="yulius-cargo-") as scratch:
+        plain(cargo, plugin)
+    with tempfile.TemporaryDirectory(prefix="yulius-cargo-", dir=scratch_parent() if scratch_target else None) as scratch:
         marker = Path(scratch) / "dispatched"
         env = dict(os.environ, CARGO=str(root / "scripts/cargo"), YULIUS_MBX_CARGO=cargo,
                    YULIUS_MBX_DISPATCH=str(marker), YULIUS_MBX_LEASE=str(lease),
@@ -168,13 +191,21 @@ try:
                    MBX_RESTORE_HARDLINK="0", MBX_SCHEDULER="0", MBX_BUILD_SCRIPT_EXECUTION="0",
                    MBX_CC="0", MBX_SHARE_WORKSPACE_ROOT="0", MBX_SHARE_OUT_DIR="0",
                    MBX_LEARNED_INCREMENTAL="0", MBX_DISPLAY="plain", MBX_SUMMARY="full")
-        status = run_session([mbx, *args], env, lease)
+        if plugin:
+            env["YULIUS_MBX_PLUGIN"] = plugin
+        try:
+            runner = run_build if scratch_target else run_session
+            status = runner([mbx, *args], env, lease)
+        finally:
+            dispatched = marker.exists()
         bypasses = sum(1 for _ in Path(scratch).glob("bypass.*"))
         if bypasses:
             print(f"yulius[cache]: {bypasses} compiler invocations bypassed for unknown or procedural-macro inputs",
                   file=sys.stderr)
-        if marker.exists() or status < 0:
+        if dispatched or status < 0:
             sys.exit(status if status >= 0 else 128 - status)
 except (OSError, KeyError, ValueError) as error:
+    if dispatched:
+        sys.exit(f"dispatched Cargo command failed: {error}")
     print(f"Rust compile cache unavailable ({error}); running Cargo directly", file=sys.stderr)
-plain(cargo)
+plain(cargo, plugin)
