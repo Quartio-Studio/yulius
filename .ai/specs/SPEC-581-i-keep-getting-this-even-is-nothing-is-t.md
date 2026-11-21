@@ -1,6 +1,6 @@
 ---
 yulius-task: 053eac70-0fdb-46ba-8e1f-c23a5c21bf23
-status: in-progress
+status: done
 ---
 
 # SPEC-581 — Deliver waiting messages to an empty Codex prompt
@@ -26,8 +26,8 @@ Task #565 shows a held-message warning alongside terminal output. The screenshot
 - [x] Reproduce the empty-box warning and specify the correction
 - [x] Prove the false hold and protect genuine drafts with regression tests
 - [x] Correct the draft signal and verify queued delivery
-- [ ] Protect recalled images and recognize the Ultra prompt
-- [ ] Obtain independent approval for delivery to dev
+- [x] Protect recalled images and recognize the Ultra prompt
+- [x] Obtain independent approval for delivery to dev
 
 ## Acceptance criteria
 
@@ -50,3 +50,7 @@ The three new regressions failed on dev `6a566d9db` before the correction. The P
 Independent review of `74a1c5c37` found two own-code issues. The reader accepted a placeholder with a recalled image and rejected an Ultra prompt. Both failed against that head in VT replay. Codex 0.170.0 draws recalled image labels above the text area and derives its navigation footer from both text and attachments. [Native composer](https://github.com/openai/codex/blob/rust-v0.170.0/codex-rs/tui/src/bottom_pane/chat_composer.rs#L1195-L1197) · [Footer hints](https://github.com/openai/codex/blob/rust-v0.170.0/codex-rs/tui/src/bottom_pane/chat_composer/passive_hints.rs#L316-L329)
 
 With synthetic credentials and a loopback model endpoint, Codex 0.170.0 displayed both its standard and Ultra empty markers. Typing the placeholder produced plain draft text. Pasting a PNG produced an image token. After clearing each, the native UserPromptSubmit hook received only the synthetic PR notice. The live resize capture replayed through the bounded VT reader at 90×28.
+
+At `112a82697`, 73 focused nextest cases passed across task messages, the terminal hub, Claude and Codex input readers, restored drafts and the resize tracker. The PR-watch test observed the notice as its own prompt, removal of the recovery mark, settlement of the warning and zero repeat deliveries. Targeted Clippy with all targets and features and warnings denied passed. Independent round two approved this head and separately ran the Codex composer, resize and PR-watch regressions. `scripts/dev quick` passed. `scripts/dev security` reported Vidoc disabled for the project.
+
+`scripts/dev mutants` caught all 31 changed-line mutants on the approved head. The run finished in 611 seconds with no misses, timeouts or untested mutants. The recalled-image case was verified against the pinned renderer and terminal replay. The live CLI image check used a locally pasted PNG.
