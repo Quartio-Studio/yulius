@@ -17,7 +17,7 @@ order: 60
 
 ## Instructions
 
-Follow `infra-bootstrap` for the content and `delivery-pipeline` for the delivery.
+Follow `infra-bootstrap`, including by-hand checks and disk scratch, and `delivery-pipeline`.
 
 - Respect what exists: map existing scripts, tests and docs instead of replacing them, and pick
   what is state of the art for this stack. Every choice gets an ADR.

@@ -8,6 +8,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - CI gives each quality pass its own budget and verdict. Both Rust test partitions use one build. [SPEC-598](../.ai/specs/SPEC-598-shorten-a-yulius-ci-run-parallel-quality.md)
 
+- Deliveries check new tests by hand and request staging once after merge. The project mutation command runs only when a task requests it by name. New projects receive the same rule at bootstrap. [SPEC-600](../.ai/specs/SPEC-600-mutation-testing-sized-to-the-change-wit.md)
 - Continuing a stopped task waits for its previous terminal to finish parking. A timeout, a later archive or a replacement run leaves the task’s question and archive intact. [SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
 - Instance disk upkeep clears idle Rust compiler stores over 20 GiB or under remaining disk pressure. Removing a store refreshes sandbox quota usage and gives a blocked task one admission retry. [SPEC-595](../.ai/specs/SPEC-595-share-compiled-rust-across-worktrees-and.md)
 - The seven-day API estimate includes recorded GPT-6 Codex runs at Standard prices and shows what the pool would cost if eligible runs used Ultrafast. [SPEC-602](../.ai/specs/SPEC-602-it-doesnt-seem-real-verify-i-think-it-s.md)
