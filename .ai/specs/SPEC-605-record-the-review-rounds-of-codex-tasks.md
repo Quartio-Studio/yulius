@@ -38,9 +38,12 @@ no observable role to distinguish a reviewer from other Codex subagents.
   evidence cannot block the reviewer.
 - **CDR-004** Reuse the delivery view, merge transaction and analytics for both harnesses.
   Delivery exposes each round's timestamps and PR number when known. It shows the current
-  review for any harness. A Codex task can also show the PR it just delivered when no review
-  is open. The merge links the rows to the PR and resets numbering for the next PR. It also
+  review or the just-delivered PR's rounds, regardless of the task's harness. The merge links
+  the rows to the PR and resets numbering for the next PR. It also
   records a durable boundary so a delayed start from the prior PR cannot appear on the next one.
+- **CDR-005** The parking coverage in the combined delivery uses idle sessions with a host
+  attached, as required by SPEC-558. The tests retain their checks for unfinished plans, PR
+  state and changes during verification.
 
 ## Plan
 
@@ -53,6 +56,9 @@ no observable role to distinguish a reviewer from other Codex subagents.
 - [x] Preserve Claude Code delivery behavior after a merge
 - [x] Verify Codex and Claude Code delivery together
 - [x] Approve the staging fix for delivery
+- [x] Restore the shared view of delivered review rounds
+- [x] Exercise parking decisions with attached idle runs
+- [x] Verify and approve the combined staging fix
 
 ## Acceptance criteria
 
@@ -62,11 +68,12 @@ no observable role to distinguish a reviewer from other Codex subagents.
 - **AC-2 (CDR-002, CDR-003)** A partial response leaves the round open. A later report
   ends it with the actual model, timestamp and verdict once. A new reviewer records
   the next round after the prior verdict. A verdict can arrive before its start hook.
-- **AC-3 (CDR-004)** Delivery shows the current PR's rows and timestamps. After a Codex merge,
-  the rows show the landed PR number and dashboard analytics count its rounds and reviewer
-  models. The next PR starts at round one, even if a pre-merge hook is delayed and the
-  merge had zero review rows. A Claude Code task clears its merged rows from its delivery
-  view while preserving the merge's review audit and analytics.
+- **AC-3 (CDR-004)** Delivery shows the current PR's rows and timestamps. After a Claude Code
+  or Codex merge, the rows include the landed PR number and the reported verdict. Dashboard
+  analytics count its rounds and reviewer models. The next PR starts at round one, even if a
+  pre-merge hook is delayed and the merge had zero review rows.
+- **AC-4 (CDR-005)** The tests first verify the live run stays when the plan or PR is
+  unfinished, then verify the same run can be parked when the blocker clears.
 
 ## Test plan
 
@@ -76,6 +83,8 @@ test that exercises hooks, duplicate or invalid evidence, delivery and analytics
 Run the existing Claude review tests, including `delivery::agents_merge_only_through_gated_tools`,
 and the Codex launch and briefing tests. The fix forward runs the full `yulius::main`
 binary and the application, store and contract test binaries.
+Run the existing agent hook and parking integration tests on the combined revision, including
+the tests that kept their process only as a stored live attempt before #1662.
 
 ## Decisions
 
@@ -87,8 +96,10 @@ insufficient to identify the child and observe the actual answer. The record is
 prospective because old spawns did not follow the reserved naming convention.
 Antigravity's swarm uses a separate lifecycle without equivalent configured
 subagent hooks. Its instrumentation is outside this slice.
-Task delivery selects landed history specifically for Codex, whose merged tasks were the
-missing cases in the report. Claude Code's open-round view remains compatible with existing clients.
+The merged delivery contract from #1662 expects the completed Claude Code round to remain
+visible. Use the same landed history for both harnesses, as in #1648. The current review and
+the landed PR continue to use the existing PR boundaries. Parking tests use the existing
+session host port and the app's restart attachment path to model the live run they exercise.
 
 ## Evidence
 
@@ -136,3 +147,24 @@ missing cases in the report. Claude Code's open-round view remains compatible wi
   `yulius::main` binary and the app, store and contract packages passed all 3,423
   scheduled tests across five binaries. Nextest reported 24 skipped tests. The selector
   was `binary_id(=yulius::main) | package(=yulius-app) | package(=yulius-store) | package(=yulius-contracts)`.
+- The second staging run, `78469d0d-d0df-4caf-8980-6f59d9d5b676` at `d643f0262`,
+  exposed the updated gated-delivery assertion from #1662 and 14 parking cases whose
+  stored attempts lacked attached hosts. The gated-delivery assertion expected one
+  completed Claude Code round and observed zero. The parking cases expected one park
+  after clearing their blockers and observed zero. [Delivery evidence](https://yulius.quartio.ai/api/tasks/390479b9-2747-4388-b326-779981ff5f47/delivery/evidence/d643f02626ac4bfad5376cd532a0a912011c120c)
+- All 18 Pipeline Chromium tests passed again on the combined fix.
+- The focused run passed 59 integration tests. Two parking cases outside the name
+  selector also passed. Together they cover every failure in the second staging run.
+- The full integration, application, store and contract binaries ran 3,465 tests on the
+  fix at base `792913c65`. They passed 3,463 and failed two parked-status assertions also
+  reproduced on `dev` in staging CI run `6f7921e2-c888-4098-a3e0-90b5008634e7`.
+  Task #592 is correcting those two assertions. Nextest reported 24 skipped tests.
+- Independent review approved `7c49b5015` and independently passed 11 gated-delivery,
+  Codex review and parking integration tests. `scripts/dev quick` and `spec_check` passed.
+  The project disables Vidoc, so the security command sent nothing for scanning.
+- Task #592 tested both fixes together on `c007db55d`. All 17 cases from the failing
+  staging runs and all 258 tests in the `agent_hooks` and `delivery` modules passed.
+- After merging `c007db55d` into the task branch, Nextest run
+  `da09c463-fc41-4109-8ab7-4915adf0f00d` passed all 974 scheduled tests. The selector
+  included the review and parking cases plus the complete application, store and contract
+  packages.
