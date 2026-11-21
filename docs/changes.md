@@ -7,6 +7,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-21
 
 - An idle task with a current failed integration candidate stays live and out of Done even when its ordinary checks are green. An already parked owner resumes once for the recorded failure after any human decision clears (SPEC-558).
+- A plain right-click in a Codex terminal opens the clipboard menu. Paste now uses the viewer’s clipboard, fixing “clipboard text is unavailable” on headless sandboxes. [SPEC-582](../.ai/specs/SPEC-582-fix-clipboard-on-codex.md)
 
 - After a restart, a failed single-PR merge train reports its recorded job failure once to the original task. The watcher checks for repairs, reruns and human decisions before sending it (SPEC-558).
 

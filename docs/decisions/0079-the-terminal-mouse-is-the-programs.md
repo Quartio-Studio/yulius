@@ -3,7 +3,8 @@
 ## Status
 
 Accepted; refined by [ADR-0210](0210-a-wheel-turn-reaches-the-program-as-one-report-per-row.md)
-(a wheel turn sends one report per row). Specified in [SPEC-098](../../.ai/specs/SPEC-098-this-is-weird-af-delete-it-default-shoul.md).
+(a wheel turn sends one report per row) and [ADR-0421](0421-codex-right-click-opens-the-viewers-clipboard-menu.md)
+(a plain right-click in Codex opens the viewer’s clipboard menu). Specified in [SPEC-098](../../.ai/specs/SPEC-098-this-is-weird-af-delete-it-default-shoul.md).
 Changes UI-019 (F 2026-10-07: terminal text behaves like page text) and replaces SPEC-027's
 forwarding of plain clicks and wheel turns.
 
