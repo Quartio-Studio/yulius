@@ -1,6 +1,6 @@
 ---
 yulius-task: 053eac70-0fdb-46ba-8e1f-c23a5c21bf23
-status: in-progress
+status: done
 ---
 
 # SPEC-581 — Deliver waiting messages to an empty Codex prompt
@@ -10,6 +10,8 @@ status: in-progress
 A person who presses Backspace in an empty Codex terminal, or clears a draft there, can receive waiting PR news without submitting an extra prompt.
 
 Fixes #1583.
+
+The merge-train relay tests keep their TCP port reserved through startup. Fixes #1572.
 
 ## Context
 
@@ -28,13 +30,14 @@ Task #565 shows a held-message warning alongside terminal output. The screenshot
 - [x] Correct the draft signal and verify queued delivery
 - [x] Protect recalled images and recognize the Ultra prompt
 - [x] Obtain independent approval for delivery to dev
-- [ ] Keep the relay fixture port reserved throughout merge-train testing
+- [x] Keep the relay fixture port reserved throughout merge-train testing
 
 ## Acceptance criteria
 
 1. An automatic message held for a Codex draft reaches the session as its own prompt after the person clears the draft and the quiet minute expires. The warning clears.
 2. A Codex placeholder is recognized with its standard or Ultra marker, observed attributes, cursor and native empty-composer footer. Typed lookalike text, an image token, a recalled image with empty text, a hidden or displaced cursor and unfamiliar screens still hold delivery.
 3. Resizing cannot turn a cropped draft into evidence of emptiness. A full Codex repaint can reestablish evidence even when the PTY splits its erase sequence across reads.
+4. A competing listener cannot take the test forward's port during setup. The relay restart, drop count and link tests pass together.
 
 ## Test plan
 
@@ -57,3 +60,7 @@ At `112a82697`, 73 focused nextest cases passed across task messages, the termin
 `scripts/dev mutants` caught all 31 changed-line mutants on the approved head. The run finished in 611 seconds with no misses, timeouts or untested mutants. The recalled-image case was verified against the pinned renderer and terminal replay. The live CLI image check used a locally pasted PNG.
 
 The PR head passed Yulius CI. Merge-train run `235dc68c-1bf0-4277-a98a-6449c7a7ab12` failed in the sandbox relay restart test with `AddrInUse`. The fixture dropped its listener and rebound the port after starting its server. A competing bind in that interval reproduced the error. Issue #1572 records the same gap in another caller of the limited forward.
+
+At `222ea422c` the restart regression failed because a competing listener claimed the port before server startup. At `1c3c9d56f` all three limited-forward fixtures pass their original bound listener into the forward. All 62 relay tests passed together, including the restart, drop count and link tests. The updated branch passed 79 terminal and message tests, sandbox Clippy with warnings denied and the repository quick checks.
+
+`scripts/dev mutants --base 222ea422c` passed its baseline and finished in 270 seconds. All eight generated replacements for returning a Tokio join handle failed compilation. The run recorded zero caught, missed, timed out or unreached and eight unviable. The competing-bind regression is the behavioral evidence for this fix.
