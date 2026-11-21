@@ -76,6 +76,10 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- On merged #1557, eleven of twelve archive regressions failed. The mounted terminal retained its archived title after Undo when it had received only the preceding Closed event, and it could leave the active task list unchanged when its detail discovered an archive. The change removes the row on verified archive, retains the observation through overlapping reads, and notifies the mounted terminal. The first notification can explain an earlier empty list without adding another membership change.
+
+- PR #1557 delivered verified restoration at dev `4706dbda6`. Yulius CI run `2c77d886-a75a-4b98-a199-724a10d03aac` passed quality, both Rust shards and e2e on `72a8cf148`. Dev run `54b1ee87-7773-4f2e-b266-f1f776ba87a2` reused the identical tree. The product commit passed 1,273 local Chromium tests with one optional skip. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe704d71f9/delivery/evidence/4706dbda696510c1a254ee1c6651802a04a3eca4)
+
 - Independent review approved `01095a7c4` for verified restoration. All four new Chromium regressions failed against the merged #1555 product code. The author passed nine focused tests, and the reviewer independently passed seven including both mounted Stopped-task cases. Direct checks confirmed that later removal took precedence and that private run data and the account email stayed out of the public row. Repository contracts, formatting and spec validation passed. No Rust mutation targets changed, and project Vidoc scanning was disabled.
 
 - The combined archive and Undo review found that an empty list could remove the mounted row before its Undo read started. The original store left all three restored resting tasks absent. The correction published each verified unarchived task and honored deletion or a newer empty list. Restoration is delivered first. The archive-removal prototype, including its mounted two-event regression, is retained for the following step.
