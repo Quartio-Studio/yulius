@@ -109,14 +109,14 @@ was verified there.
 
 ## Plan
 
-- [ ] Write and validate SPEC-591 with the plan of both slices
-- [ ] Pin the staging host key and add CD's SSH library with refusal tests
-- [ ] Build the exact revision in CD's builder and keep the last 10 releases
-- [ ] Install a kept release with its store snapshot, restarting only yulius.service
-- [ ] Verify the commit, public HTTPS, contained doctor, migration without loss and Docker smoke
-- [ ] Roll back to a kept release and its store, with dry run and refusals tested
-- [ ] Run the scripts against the staging VM by hand and restore 3fc0e5976
-- [ ] Fill [cd.dev], ADR-0430 and the staging VM's operations, architecture and AGENTS docs
+- [x] Write and validate SPEC-591 with the plan of both slices
+- [x] Pin the staging host key and add CD's SSH library with refusal tests
+- [x] Build the exact revision in CD's builder and keep the last 10 releases
+- [x] Install a kept release with its store snapshot, restarting only yulius.service
+- [x] Verify the commit, public HTTPS, contained doctor, migration without loss and Docker smoke
+- [x] Roll back to a kept release and its store, with dry run and refusals tested
+- [x] Run the scripts against the staging VM by hand and restore 3fc0e5976
+- [x] Fill [cd.dev], ADR-0430 and the staging VM's operations, architecture and AGENTS docs
 - [ ] Independent review of the CD slice approved
 - [ ] First staging deploy through CD and the rollback drill of the next deploy recorded
 - [ ] Move the test shards and e2e to the merged revision with merge_first and an ADR
