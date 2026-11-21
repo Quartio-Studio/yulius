@@ -2127,6 +2127,8 @@ Each parked task read includes the latest attempt ID from the same SQLite snapsh
 
 Continue also binds the owner’s selection to the latest attempt and archive state on an ended task. Exit and loss release terminal cleanup before successor checks. Once that cleanup finishes, the store compares the selection and records Starting or a queued start together with clearing the archive and question. A named Continue applies the pool’s manual placement policy to the task model and subscription records in that transaction. An immediate launch uses the accepted model and subscription. A queued start retains its subscription choice for the normal dispatch check.
 
+Parking takes the task’s merge writer for the final eligibility check and releases it before requesting terminal shutdown. The runtime records which attempt committed to park until its exit or loss settles. A new merge request checks that marker and the durable status while holding the same writer.
+
 `park_task_now` asks again under the launch lock, sets the run's end intent `Park` and ends the
 session as a close does (graceful shutdown, then the escalation). The run's end, by its exit or
 its loss, makes the task `parked` with its activity (`settle_parked`) and audits `task.parked`.

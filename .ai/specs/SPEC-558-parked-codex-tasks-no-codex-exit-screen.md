@@ -92,6 +92,8 @@ Use the fake Codex executable, its rollout, real PTY shutdown and the applicatio
 
 ## Decisions
 
+Parking and a replacement merge request share the task’s merge writer at admission. If the writer is busy or a merge is armed, the idle pass leaves the session live. Once the park commits, a new merge request checks the committed run and durable task state before it can arm. Stop, close, or loss can settle that same run and release its park marker.
+
 A named Continue checks the current model and the requested subscription when Yulius accepts the start or queue entry. A refusal preserves the resting state, archive and question. The queue checks availability again at dispatch through its existing subscription policy. An immediate launch uses the model and account admitted together.
 
 An owner can stop a task while its previous run is still finishing a park. Continue waits for that run's terminal cleanup before entering the queue or starting again. A settlement timeout or a refusal because the previous run is still live leaves the archive and outstanding question available for retry. The owner can also archive or close a replacement turn during admission. The start or queue claim checks the original attempt, archive and status together with the change that accepts the continuation. A remote restart keeps its first selection through the permission check. A goal resume waits for terminal cleanup under the same bound. Direct resume, including onboarding, carries the resting selection through acquisition of the launch lock. A replacement attempt must settle under its own admission check. Answering the question records the timestamp of acceptance.
@@ -121,6 +123,8 @@ The final parking check compares the owner’s saved singleton decision with the
 The SQLite query returning a parked task includes the latest attempt ID in the same snapshot. Admission checks that ID under the launch lock after caller preflight. A message can wait while another turn resumes and parks, so task status alone cannot identify the session the sender observed. Only a matching parked attempt can restore Codex lineage or accept the prompt. Bulk messages, Telegram replies and remote restarts carry the attempt from their first task lookup through dispatch. They check the caller’s current access before acting.
 
 ## Evidence
+
+- PR #1638 delivered named Continue on dev `21e580070`. Its head passed CI run `626c72ad-54a8-4204-be61-0d6e29e53a9f`. The merged revision passed quality, both test shards and e2e in `bd5b55c7-ef1f-4baa-8e5c-060c6b4d0fd3`. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/21e580070b129943e914fa8fb02b2ef5911ec2e6)
 
 - The named-Continue hand check used the earlier model, allowed a refused placement through the claim, and discarded the admitted launch model. All five focused regressions failed in `7b1d5a68-7dcb-4b24-8e10-95706bae88df`. The affected source files were restored to the reviewed commit.
 - Independent review approved `156cb1b43c23a60f2617fdc2cf11ac3aa2554d54` against dev `3b72387f1` and ran 22 integration and store checks. Run `1d21f3e2-e866-4def-8c0e-9264054d775c` passed all 241 scoped tests, including the actual model and subscription delivered through the real PTY to a fake agent. Repository quick checks and spec validation passed. Vidoc was disabled.
