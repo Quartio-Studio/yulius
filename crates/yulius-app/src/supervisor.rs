@@ -2226,24 +2226,21 @@ impl App {
         pause: Option<PausedStart<'a>>,
     ) -> BoxFuture<'a, AppResult<bool>> {
         Box::pin(async move {
-            if matches!(condition, StartCondition::Parked(_)) {
+            let resume = matches!(start, RunStart::Resume { .. } | RunStart::GoalResume { .. });
+            let settled = if matches!(condition, StartCondition::Parked(_)) {
                 self.wait_for_terminal_cleanup(task_id, true).await?;
                 crate::race::reached(
                     crate::race::Point::ParkedResumePrepared,
                     Path::new(task_id.as_str()),
                 );
+                None
             } else {
                 let selected = match condition {
                     StartCondition::OwnerContinue(selected) => Some(selected),
                     _ => None,
                 };
-                self.settle_resting_run(
-                    task_id,
-                    selected,
-                    matches!(start, RunStart::Resume { .. } | RunStart::GoalResume { .. }),
-                )
-                .await?;
-            }
+                self.settle_resting_run(task_id, selected, resume).await?
+            };
             // The Codex CLI is installed before the launch lock, so a first install does not hold
             // other tasks' starts (SPEC-503 CLI-002); the launch asks again and reports a failure.
             if let Ok(Some(task)) = self.deps.store.task(task_id).await {
@@ -2258,6 +2255,10 @@ impl App {
                     Harness::ClaudeCode => {}
                 }
             }
+            crate::race::reached(
+                crate::race::Point::StartPreflightFinished,
+                Path::new(task_id.as_str()),
+            );
             let guard = self.supervisor.launch.lock().await;
             let task = self
                 .deps
@@ -2268,6 +2269,21 @@ impl App {
             let owner_continue = matches!(condition, StartCondition::OwnerContinue(_));
             let mut start = start;
             match &condition {
+                // A direct resume (including onboarding) can lose its place while acquiring the
+                // lock. Only the resting selection checked outside it has finished settling.
+                StartCondition::Any
+                    if resume && (settled.is_some() || task.status.is_resting()) =>
+                {
+                    if !settled
+                        .as_ref()
+                        .is_some_and(|original| task.matches_continuation(original))
+                    {
+                        return Err(AppError::Conflict(
+                            "The task changed during resume. Read it again after terminal exit."
+                                .into(),
+                        ));
+                    }
+                }
                 StartCondition::OwnerContinue(selected) => {
                     if !task.matches_continuation(selected) {
                         return Ok(false);
@@ -4483,10 +4499,10 @@ impl App {
         task_id: &TaskId,
         selected: Option<&TaskRecord>,
         resume: bool,
-    ) -> AppResult<()> {
+    ) -> AppResult<Option<TaskRecord>> {
         let store = &self.deps.store;
         let Some(task) = store.task(task_id).await? else {
-            return Ok(());
+            return Ok(None);
         };
         let changed =
             || AppError::Conflict("the task changed while it was continued; try again".into());
@@ -4494,7 +4510,7 @@ impl App {
             return Err(changed());
         }
         if !task.status.is_resting() {
-            return Ok(());
+            return Ok(None);
         }
         if let Some(run) = store.live_attempt(task_id).await? {
             if selected.is_some_and(|seen| seen.resume_attempt_id.as_ref() != Some(&run.id)) {
@@ -4509,8 +4525,9 @@ impl App {
         }
         if resume {
             self.wait_for_terminal_cleanup(task_id, false).await?;
+            return Ok(Some(task));
         }
-        Ok(())
+        Ok(None)
     }
 
     /// Wait outside the launch lock for terminal cleanup. Successor and onboarding checks

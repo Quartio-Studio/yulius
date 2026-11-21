@@ -12,6 +12,8 @@ use std::path::Path;
 pub enum Point {
     /// An owner requested continuation of an ended task.
     OwnerContinueRequested,
+    /// A start finished its preflight outside the launch lock.
+    StartPreflightFinished,
     /// The exit reader recorded the attempt outcome before finishing terminal cleanup.
     RunReaped,
     /// A continuation is waiting for the previous reader's cleanup.

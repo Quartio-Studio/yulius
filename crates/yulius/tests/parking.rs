@@ -255,6 +255,99 @@ fn superseded_owner_continue(archive_at_claim: bool) -> TestResult {
     result
 }
 
+#[test]
+fn a_direct_resume_cannot_enter_while_a_replacement_reader_settles() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    let result = rt.block_on(async {
+        let app = app(&data, 8, 1).await?;
+        let (id, caller) = answered(&app, &data).await?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&caller.user).await?.ok_or("owner")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        app.close_task_and_wait(&id).await?;
+        let (prepared, proceed) = pause_watch_or_queue(Point::StartPreflightFinished, &id);
+        let starting = app.clone();
+        let selected = id.clone();
+        let resume = tokio::spawn(async move {
+            starting
+                .start_run(
+                    &selected,
+                    yulius_app::supervisor::RunStart::Resume { prompt: None },
+                    None,
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(10), prepared.notified()).await?;
+        app.continue_task(&ctx, id.as_str(), &Default::default())
+            .await?;
+        // The replacement is durably closed while the supervisor still holds its process.
+        assert!(
+            app.deps
+                .store
+                .transition_task(
+                    &id,
+                    Some(TaskStatus::Running),
+                    TaskStatus::Closed,
+                    None,
+                    app.now()
+                )
+                .await?
+        );
+        let (reaped, exit) = pause_watch_or_queue(Point::RunReaped, &id);
+        let mut frames = app.runtime(&id).hub.watch();
+        app.stop_task_now(&id).await?;
+        tokio::time::timeout(Duration::from_secs(10), reaped.notified()).await?;
+        assert!(app.deps.store.live_attempt(&id).await?.is_none());
+        let account = yulius_domain::ids::AccountId::parse("a-only")?;
+        let usage = json!({"primary":{"used_percent":100,"window_minutes":300,
+                            "resets_at":app.now().plus_millis(3_600_000).0}})
+        .to_string();
+        app.deps
+            .store
+            .set_account_state(
+                &account,
+                yulius_app::model::AccountStatus::Limited,
+                Some(&usage),
+                None,
+                app.now(),
+            )
+            .await?;
+        proceed.notify_one();
+        let late = tokio::time::timeout(Duration::from_secs(10), resume).await??;
+        exit.notify_one();
+        assert!(
+            matches!(late, Err(yulius_app::error::AppError::Conflict(_))),
+            "{late:?}"
+        );
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if matches!(frames.recv().await?, yulius_app::hub::HubFrame::Exit { .. }) {
+                    return Ok::<_, tokio::sync::broadcast::error::RecvError>(());
+                }
+            }
+        })
+        .await??;
+        app.start_run(
+            &id,
+            yulius_app::supervisor::RunStart::Resume { prompt: None },
+            None,
+        )
+        .await?;
+        assert_eq!(
+            status_of(&app, &id).await.0,
+            Some(TaskStatus::WaitingCapacity)
+        );
+        assert!(app.deps.store.open_pause(&id).await?.is_some());
+        Ok::<_, Error>(())
+    });
+    rt.shutdown_timeout(Duration::from_secs(5));
+    result
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ContinuedOwner {
     Queued,
