@@ -3202,6 +3202,58 @@ async fn goal_stop_accepts_recalled_and_cursor_edited_owner_work() -> TestResult
     Ok(())
 }
 
+/// A lost machine response keeps its invocation. A new edited submission of
+/// the identical instruction is the owner's, even when both arrive together.
+#[tokio::test]
+async fn goal_stop_distinguishes_replay_from_an_edited_copy_of_the_issued_prompt() -> TestResult {
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify dev").await?;
+    let reason = stop_of(&f, Agent::Codex).await?["reason"]
+        .as_str()
+        .ok_or("missing continuation")?
+        .to_owned();
+    let submit = async |id: u128| {
+        let req = Request::post("/hooks/codex/UserPromptSubmit")
+            .header("Authorization", format!("Bearer {TOKEN}"))
+            .header("Content-Type", "application/json")
+            .header("x-yulius-hook-invocation", format!("{id:032x}"))
+            .body(Body::from(json!({"prompt": reason}).to_string()))?;
+        assert_eq!(f.h.internal.clone().oneshot(req).await?.status(), 200);
+        Ok::<_, Box<dyn std::error::Error>>(())
+    };
+    submit(1).await?;
+    let owner = UserId::parse("u1")?;
+    for frame in [reason.as_bytes(), b"x", b"\x7f", b"\r"] {
+        f.h.app.record_terminal_frame(&f.task, &owner, frame);
+    }
+    submit(1).await?;
+    assert_eq!(
+        f.h.app
+            .deps
+            .store
+            .task(&f.task)
+            .await?
+            .ok_or("task")?
+            .gate_blocks,
+        1
+    );
+    submit(2).await?;
+    assert_eq!(
+        f.h.app
+            .deps
+            .store
+            .task(&f.task)
+            .await?
+            .ok_or("task")?
+            .gate_blocks,
+        0
+    );
+    assert!(!f.h.app.has_draft(&f.task));
+    Ok(())
+}
+
 /// The client has already sent Enter when the next draft reaches Yulius. The HTTP
 /// callback arrives later, carrying the client's send time.
 #[tokio::test]
