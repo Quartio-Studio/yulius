@@ -1927,6 +1927,7 @@ mod tests {
                 ("macos", false),
                 ("docs", false),
                 ("deps", false),
+                ("file-contracts", false),
                 ("test (1/2)", true),
                 ("test (2/2)", true),
                 ("e2e", true),

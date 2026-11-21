@@ -3,7 +3,7 @@
 Yulius is a self-hosted coding workspace for the Quartio team, written in Rust and inspired by
 Cezar and Open Mercato Cloud. It runs native Claude Code sessions, one per task, inside
 contained sandboxes on a single Linux VM, and enforces engineering discipline around them.
-Yulius develops itself with Yulius. Its pull requests get independent results for check, lint, macOS, docs and dependencies. The merged revision runs both Rust test partitions from one build and runs the browser suite. [Decision 0438](decisions/0438-quality-passes-have-own-jobs-and-test-partitions-share-a-build.md)
+Yulius develops itself with Yulius. Its pull requests get independent results for check, lint, macOS, docs and dependencies. Pull requests and merge trains also run the Rust contracts that read changed repository files. The merged revision runs both Rust test partitions from one build and runs the browser suite. [Decision 0438](decisions/0438-quality-passes-have-own-jobs-and-test-partitions-share-a-build.md)
 
 Finished tasks keep their last observed pull request state while GitHub is unavailable. The instance shows when merges, CI status updates and staging can use GitHub again. [SPEC-608](../.ai/specs/SPEC-608-a-github-rate-limit-must-not-show-finish.md)
 
@@ -15,6 +15,10 @@ A task's explicit effort takes precedence, including Extra high and Max on GPT-6
 [SPEC-607](../.ai/specs/SPEC-607-codex-tasks-run-at-high-effort-unless-th.md)
 
 Continue resumes a stopped Codex task in its saved conversation. Reopening a closed Codex conversation shows Waiting until its next turn. [SPEC-590](../.ai/specs/SPEC-590-look-bro-the-taks-says-it-working-but-th.md)
+
+Automatic Codex placement uses the eligible subscription with the most quota left in its tightest
+window. An idle Codex task moved to another subscription keeps Waiting or Done.
+[SPEC-611](../.ai/specs/SPEC-611-a-moved-task-is-not-shown-as-working-and.md)
 
 Tasks created by the CLI or either Superagent default to Codex when harness and model are omitted.
 A task created with a `gpt-*` model and no explicit agent selects Codex.
@@ -381,7 +385,7 @@ watching, steering and unblocking.
   the third, and Opus 5.5 when the task's subscription cannot run Fable then; each round is
   recorded with its reviewer, its model and its verdict. Continuing a reviewer after it reports
   counts as a new round in the Review card (SPEC-565). Codex tasks request GPT-6.2 Astra for every
-  review round, and their named review subagents populate the same delivery history and Review
+  review round, and their named review subagents populate task delivery and the Review
   card. Antigravity tasks request Gemini 4 Neon (High).
   Task intake splits mixed requests, holds scope changes and chains
   dependent tasks, also by a logical rule such as "#12 done and #13 done", which the composer
