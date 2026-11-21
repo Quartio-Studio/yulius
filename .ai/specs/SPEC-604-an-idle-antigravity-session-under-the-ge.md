@@ -21,18 +21,25 @@ The incident report describes two completed and merged tasks that occupied sessi
 - **AGI-002** A fresh prompt, resumed prompt or interrupted-turn continuation starts working. Subsequent native prompt and Stop hooks continue to open and settle turns.
 - **AGI-003** Suppress the Gemini announcement at launch if the pinned CLI provides a verified way that cannot affect a turn or a person's input.
 
+- **AGI-004** The post-merge gate verifies that a composer task drawn to Antigravity with both settings omitted inherits Gemini 4 Neon and High.
+
 ## Plan
 
 - [x] Trace the reported screen through turn detection
 - [x] Recognize the idle prompt and protect active turns
 - [x] Verify the parking path and startup behavior
 - [x] Approve the fix for merge and staging
+- [x] Reproduce the merged composer contract failure
+- [x] Verify the shared composer correction alongside idle resume
+- [x] Approve the corrected staging revision
 
 ## Acceptance criteria
 
 - **AC-1 (AGI-001)** Reopen a conversation without a message and display the reported screen. Its activity is Waiting. Parking releases its live attempt, and a person can close the conversation after its next turn.
 - **AC-2 (AGI-002)** An actual prompt starts a turn. The announcement cannot end it. A Stop settles the turn normally.
 - **AC-3 (AGI-003)** Check startup behavior on the pinned CLI. Exercise any banner preference through the adapter's generated files.
+
+- **AC-4 (AGI-004)** Choose Random and draw Antigravity. Observe the created task’s effective model, effort and both inherited-setting indicators. Run the corrected repository contract and the idle-resume regression on the delivery revision.
 
 ## Test plan
 
@@ -50,3 +57,13 @@ Use the resolved launch mode to classify a resumed conversation. The pinned CLI 
 - All four selected harness launch tests passed for Antigravity and Codex resume arguments.
 - Manual mutation removed Antigravity from the bare-resume arm. The regression again read `Some(Working)` at the Waiting assertion. Restored the implementation and reran the fixture test successfully.
 - Independent review approved the implementation at `64cdbc6f4` with no findings. The reviewer ran 12 Antigravity lifecycle tests and three native hook tests. Repository contracts, formatting and `spec_check` passed. Vidoc was disabled. The task delivery record identifies the merged revision and its staging request.
+
+### Post-merge staging gate
+
+PR #1646 merged into dev at `13a632c40` after train run `21c0a1a2-1cb3-4932-b043-9aa973413f6c` passed. Staging request `b18c6879-1b4f-467c-bdb0-67df55a401f8` recorded a failed full gate. In run `fc6b9b38-9a54-4bde-9a2b-5eb1c7f0d883`, the second test partition failed at `ui_contract::the_composer_offers_antigravity_on_its_default_model`. Its assertion required the previous spelling of the mock's High-effort default. Running the exact test locally against the same mock reproduced the assertion. PR #1645 introduced the shared High default. This branch uses task #591’s reviewed correction to the Rust contract from `7b6419ed9`. Its browser assertion reads the resulting task through the Random composer flow.
+
+All 11 Antigravity browser tests passed. A manual mutation marked the inherited effort as explicit. The new assertion failed on the inherited flag while the effective effort still read High. Restoring the mock made the same browser test pass.
+
+All twelve Rust UI contracts and the PTY idle-resume regression passed together on this branch with the shared correction. PR #1651 landed that same Rust change at `1f9314339`.
+
+Independent review approved the fix-forward at `2eb1ab6d9` with no findings. The reviewer independently ran all 11 Antigravity Chromium tests, the 12 Rust UI contracts and the idle-resume regression. The task delivery record identifies the follow-up merge and renewed staging request.
