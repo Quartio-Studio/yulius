@@ -14,7 +14,7 @@ Use the existing sandbox PR watch to refresh the bounded task-list endpoint when
 
 An older blocking Git chip stays visible when a later list verifies recovery on that PR. The sidebar and task lists use the newer result for grouping. A later Git request, a different PR or a summary without verified identity retains its own signal. Preserve a person’s outstanding decision, local work and a failing PR with a different identity. If the summary is unavailable, preserve a known open PR or the verifier’s prior Needs you decision until verification succeeds. A timeout can occur before the verifier identifies a PR. The same rule applies when the overview first discovers an open replacement after the summary has failed.
 
-The terminal and Task Info publish only the fields used to classify parked work into the shared row. A detail response can recover the status after an earlier watch, regardless of reply order. A later list verification, failed watch or lifecycle event protects its status from an older detail. Unrelated list fields such as the title can still update. A detail response cannot recreate a removed row.
+The terminal and Task Info publish only the fields used to classify parked work into the shared row. A detail response can recover the status after an earlier watch, regardless of reply order. A later list verification, failed watch or lifecycle event protects its status from an older detail. Unrelated list fields such as the title can still update. When a tab misses a park or resume, a newer detail updates the existing row’s lifecycle state. A removed row stays absent. A failed watch keeps its own request order, so delayed reads can contribute a newly discovered open PR while preserving a later Needs you decision.
 
 ## Alternatives
 

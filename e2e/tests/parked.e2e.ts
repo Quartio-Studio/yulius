@@ -1701,3 +1701,109 @@ test('a parked detail without a verified group preserves Needs you until verific
   });
   expect(groups).toEqual([true, true, false]);
 });
+
+test('a held Done list preserves later parked evidence when verification is unavailable', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const states = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const results = [];
+    const row = { id: 'p', sandbox_id: 's', status: 'parked', activity: 'done', parked_needs_you: true };
+    for (const [partial, discoverPr] of [[false, false], [true, false], [false, true], [true, true]]) {
+      const gate = Promise.withResolvers<void>();
+      let reads = 0;
+      const store = createStore({ get: async () => {
+        if (++reads === 1) return [row];
+        if (reads === 2) { await gate.promise; return [{ ...row, parked_needs_you: false, parked_pr: discoverPr ? { number: 42, open: true } : undefined }]; }
+        throw new Error('verification unavailable');
+      } });
+      await store.loadTasks('s');
+      const stale = store.loadTasks('s', partial);
+      if (discoverPr) store.upsertTask({ ...row, title: 'Renamed' });
+      store.beginParkedDetail()({ ...row, parked_needs_you: partial ? undefined : true });
+      if (!partial) await store.loadTasks('s', true);
+      gate.resolve();
+      await stale;
+      const latest = store.findTask('p');
+      results.push([latest.parked_needs_you, latest.parked_pr?.number ?? null]);
+    }
+    return results;
+  });
+  expect(states).toEqual([[true, null], [true, null], [true, 42], [true, 42]]);
+});
+
+for (const [route, selector] of [['t', '.strip-status'], ['tasks', '.gt-state']]) {
+  test(`the ${route} page reconciles a missed park from the verified task detail`, async ({ app, browser, screen }) => {
+    await app.open(mock('/s/studio', '&ambient=0&pullgap=0&pullclock=manual'));
+    await expect(screen.getByRole('link', /Improve the code/).first()).toBeVisible();
+    await browser.evaluate(route => {
+      type Fixture = { __yuliusMock: { tasks: { id: string }[]; holdGitReads: boolean } };
+      const db = (window as unknown as Fixture).__yuliusMock;
+      db.holdGitReads = true;
+      // Update the server record without sending the lifecycle event to this tab.
+      Object.assign(db.tasks.find(t => t.id === 'tsk_studio_13')!, {
+        status: 'parked', activity: 'done', parked_needs_you: true, parked_pr: { number: 520, open: true },
+      });
+      location.hash = `/s/studio/${route}/13`;
+    }, route);
+    await expect(browser.locator(selector)).toHaveText(/Your turn.*parked|checks.*parked/);
+    await expect(screen.getByRole('region', 'Needs you').getByRole('link', /parked.*Improve the code/i)).toBeVisible();
+  });
+}
+
+test('a parked detail respects a later resume or removal and supersedes a held pre-park list', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const live = { id: 'p', sandbox_id: 's', status: 'running', activity: 'done' };
+    const parked = { ...live, status: 'parked', parked_needs_you: true };
+    const results = [];
+    for (const event of ['resume', 'remove', 'old-list']) {
+      const gate = Promise.withResolvers<void>();
+      let reads = 0;
+      const store = createStore({ get: async () => {
+        if (++reads === 1) return [event === 'old-list' ? live : parked];
+        await gate.promise;
+        return [live];
+      } });
+      await store.loadTasks('s');
+      const stale = store.loadTasks('s', true);
+      const publish = store.beginParkedDetail();
+      if (event === 'resume') store.upsertTask(live);
+      if (event === 'remove') store.removeTask('p');
+      publish(parked);
+      gate.resolve();
+      await stale;
+      const row = store.findTask('p');
+      results.push([row?.status ?? null, row?.parked_needs_you ?? null]);
+    }
+    return results;
+  });
+  expect(seen).toEqual([['running', null], [null, null], ['parked', true]]);
+});
+
+test('a missed resume from task detail preserves live work across an older parked list', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const gate = Promise.withResolvers<void>();
+    const old = { id: 'p', sandbox_id: 's', status: 'parked', activity: 'done', background_shells: 0, parked_needs_you: false };
+    let reads = 0;
+    const store = createStore({ get: async () => {
+      if (++reads > 1) await gate.promise;
+      return [{ ...old }];
+    } });
+    await store.loadTasks('s');
+    const pending = store.loadTasks('s', true);
+    store.upsertTask({ ...old, title: 'Renamed' });
+    const live = { ...old, status: 'running', background_shells: 1, parked_needs_you: undefined, account_email: 'private@example.invalid' };
+    store.beginParkedDetail()(live);
+    gate.resolve();
+    await pending;
+    const row = store.findTask('p');
+    return [row.status, row.background_shells, row.parked_needs_you ?? null, Object.hasOwn(row, 'account_email')];
+  });
+  expect(seen).toEqual(['running', 1, null, false]);
+});

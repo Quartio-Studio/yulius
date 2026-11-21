@@ -133,7 +133,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   // snapshot even when the other request fails.
   let nextListRead = 0;
   const listOrder = new WeakMap();
-  const parkedRowOrder = new WeakMap();
+  const rowOrder = new WeakMap();
   const overviewOrder = new WeakMap();
 
   // Events have second-resolution timestamps. Confirm a lifecycle change seen
@@ -168,35 +168,23 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       const current = state.tasks.get(sandboxId);
       if (listOrder.get(current) > snapshotOrder) return current;
       const missedChange = pullWatch.get(sandboxId)?.changeBeforeParkedRows > snapshotOrder;
-      const needsVerification = missedChange || read.failedWatchOrder > snapshotOrder;
+      const failureOrder = Math.max(read.failedWatchOrder, pullWatch.get(sandboxId)?.changeBeforeParkedRows ?? 0);
       const map = new Map();
-      for (let task of Array.isArray(list) ? list : []) {
+      for (const task of Array.isArray(list) ? list : []) {
         if (task.archived) continue;
-        if (task.status === 'parked') {
-          const prior = current?.get(task.id);
-          const priorOrder = parkedRowOrder.get(prior) ?? 0;
-          const verificationOrder = Math.max(snapshotOrder, read.failedWatchOrder);
-          if (priorOrder > verificationOrder && !unverified.has(prior)) {
-            // A newer detail already verified this row. Keep other fields from the list.
-            task = { ...task, ...parkedFacts(prior) };
-            parkedRowOrder.set(task, priorOrder);
-          } else {
-            unverified.delete(task);
-            if (needsVerification) task = awaitingVerification(task);
-            parkedRowOrder.set(task, verificationOrder);
-          }
-        }
-        map.set(task.id, task);
+        map.set(task.id, orderedListRow(task, current?.get(task.id), snapshotOrder, failureOrder));
       }
       for (const [id, task] of read.changes) {
         const listed = map.get(id);
         if (!watching && !confirming && !read.parked.has(id) && listed && listed.status !== 'parked') continue;
+        if (task.archived) {
+          map.delete(id);
+          continue;
+        }
         const prior = current?.get(id);
-        if (task.archived) map.delete(id);
-        else if (task.status === 'parked' && prior?.status === 'parked' &&
-            parkedRowOrder.get(prior) > Math.max(snapshotOrder, parkedRowOrder.get(task) ?? 0)) map.set(id, prior);
-        else if (unverified.has(task)) map.set(id, awaitingVerification(task, map.get(id)));
-        else map.set(id, task);
+        // A detail can supersede an event after the list saved it for replay.
+        const latest = rowOrder.get(prior) > Math.max(snapshotOrder, rowOrder.get(task) ?? 0) ? prior : task;
+        map.set(id, unverified.has(latest) ? awaitingVerification(latest, listed) : latest);
       }
       for (const id of read.deleted) map.delete(id);
       state.taskErrors.delete(sandboxId);
@@ -233,9 +221,8 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
         }
         let changed = false;
         for (const [id, task] of current || []) {
-          if (task.status !== 'parked' || read.changes.has(id) || parkedRowOrder.get(task) > order) continue;
-          const updated = awaitingVerification(task);
-          parkedRowOrder.set(updated, order);
+          if (task.status !== 'parked' || read.changes.has(id) || Math.max(rowOrder.get(task) ?? 0, unverified.get(task) ?? 0) > order) continue;
+          const updated = awaitingVerification(task, undefined, order);
           if (updated !== task) {
             current.set(id, updated);
             emit('task', updated);
@@ -259,11 +246,29 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   // Keep detail-only data (runs, transcripts, etc.) out of the shared task list.
   function parkedFacts(task) {
     return {
-      activity: task.activity, steps: task.steps, spec_unfinished: task.spec_unfinished,
+      status: task.status, activity: task.activity, steps: task.steps, spec_unfinished: task.spec_unfinished,
       goal_unfinished: task.goal_unfinished, held_prompt: task.held_prompt,
       needs_you: task.needs_you, needs_you_notice: task.needs_you_notice,
       parked_needs_you: task.parked_needs_you, parked_pr: task.parked_pr,
     };
+  }
+
+  function orderedListRow(listed, prior, snapshotOrder, failureOrder) {
+    // A detail or lifecycle event that started later supplies the parked state.
+    // The list can still carry a new title or discover an open PR.
+    const priorOrder = rowOrder.get(prior) ?? 0;
+    const keepPrior = priorOrder > snapshotOrder && (prior.status === 'parked' || listed.status === 'parked');
+    const order = keepPrior ? priorOrder : snapshotOrder;
+    let row = listed;
+    if (keepPrior) row = prior.status === listed.status ? { ...listed, ...parkedFacts(prior) } : { ...prior };
+    const fallbackOrder = Math.max(failureOrder, unverified.get(prior) ?? 0);
+    if (row.status === 'parked' && fallbackOrder >= order) {
+      row = awaitingVerification(row, keepPrior ? listed : prior, fallbackOrder);
+    } else {
+      unverified.delete(row);
+    }
+    rowOrder.set(row, order);
+    return row;
   }
 
   function beginParkedDetail() {
@@ -271,11 +276,18 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     return detail => {
       const map = state.tasks.get(detail.sandbox_id);
       const row = map?.get(detail.id);
-      if (detail.status !== 'parked' || row?.status !== 'parked') return {};
-      if (parkedRowOrder.get(row) > order) return parkedFacts(row);
+      if (!row || (detail.status !== 'parked' && row.status !== 'parked')) return {};
+      if (Math.max(rowOrder.get(row) ?? 0, unverified.get(row) ?? 0) > order) return parkedFacts(row);
       let updated = { ...row, ...parkedFacts(detail) };
-      if (typeof detail.parked_needs_you !== 'boolean') updated = awaitingVerification(updated, row);
-      parkedRowOrder.set(updated, order);
+      if (row.status !== detail.status) {
+        // A missed park or resume changes execution fields too. Copy only keys
+        // already exposed by the summary (the detail can include private fields).
+        for (const key of Object.keys(row)) if (key in detail) updated[key] = detail[key];
+      }
+      if (detail.status === 'parked' && typeof detail.parked_needs_you !== 'boolean') {
+        updated = awaitingVerification(updated, row, order);
+      }
+      rowOrder.set(updated, order);
       map.set(row.id, updated);
       if (JSON.stringify(updated) !== JSON.stringify(row) || pullForStatus(updated) !== pullForStatus(row)) {
         emit('task', updated);
@@ -299,8 +311,9 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     const pending = [...activeLists].filter(read => read.sandboxId === task.sandbox_id);
     if (pending.some(read => read.deleted.has(task.id))) return;
     const recheck = task.status === 'parked' && !task.archived && typeof task.parked_needs_you !== 'boolean';
-    if (recheck) task = awaitingVerification(task, prior);
-    if (task.status === 'parked') parkedRowOrder.set(task, ++nextListRead);
+    const order = ++nextListRead;
+    if (recheck) task = awaitingVerification(task, prior, order);
+    rowOrder.set(task, order);
     for (const read of pending) {
       if (task.status === 'parked' || prior?.status === 'parked') read.parked.add(task.id);
       read.changes.set(task.id, task);
@@ -436,7 +449,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   const sources = [refreshParkedGroups, loadGitOverview];
   const inFlight = new Map(sources.map(source => [source, new Map()]));
   // A failed read may need a conservative display when Git later discovers an open PR.
-  const unverified = new WeakSet();
+  const unverified = new WeakMap();
   const pollPaused = () => document.hidden || navigator.onLine === false;
   // The overview takes seconds (GitHub and Git for every task), so this browser keeps what the
   // last read said, per user, and a page load shows it at once until its own read replaces it
@@ -463,10 +476,10 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     const pulls = pullsOf(task.sandbox_id);
     const pr = pulls.get(task.id);
     // Mounted views add detail-only fields to a copy of the list row.
-    const row = parkedRowOrder.has(task) ? task : state.tasks.get(task.sandbox_id)?.get(task.id);
+    const row = rowOrder.has(task) ? task : state.tasks.get(task.sandbox_id)?.get(task.id);
     if (pr?.state === 'open' && task.parked_needs_you === false && task.parked_pr?.number === pr.number &&
         row?.parked_needs_you === false && row.parked_pr?.number === pr.number && !unverified.has(row) &&
-        parkedRowOrder.get(row) > (overviewOrder.get(pulls) ?? 0) &&
+        rowOrder.get(row) > (overviewOrder.get(pulls) ?? 0) &&
         (pr.conflicts || !['success', 'none'].includes(pr.checks))) return null;
     return pr;
   }
@@ -490,7 +503,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     if (hasParkedRows(state.tasks.get(sandboxId))) await loadTasks(sandboxId, true);
   }
 
-  function awaitingVerification(task, snapshot) {
+  function awaitingVerification(task, snapshot, order = unverified.get(task) ?? 0) {
     const prior = task.parked_pr?.open ? task : snapshot ?? task;
     const pr = knownOpenPr(prior, task.sandbox_id, task.id);
     const alreadyWaiting = task.parked_needs_you && task.parked_pr?.open && task.parked_pr.number === pr?.number;
@@ -500,8 +513,8 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       // Verification can time out before discovering which PR blocks Done.
       updated = { ...task, parked_needs_you: true };
     }
-    if (updated !== task && parkedRowOrder.has(task)) parkedRowOrder.set(updated, parkedRowOrder.get(task));
-    unverified.add(updated);
+    if (updated !== task && rowOrder.has(task)) rowOrder.set(updated, rowOrder.get(task));
+    unverified.set(updated, order);
     return updated;
   }
 

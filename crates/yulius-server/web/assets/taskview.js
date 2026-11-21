@@ -1130,8 +1130,9 @@ export function mountTaskView(ctx, sandbox, task) {
       detail = fresh;
       if (detail && detail.id === current.id) {
         if (read === detailRead) {
-          if (changesHeard === heardBefore) current = { ...current, ...pickSummary(detail) };
-          if (current.status === 'parked') current = { ...current, ...publishParked(detail) };
+          const unchanged = changesHeard === heardBefore;
+          const facts = publishParked(detail);
+          current = { ...current, ...(unchanged ? pickSummary(detail) : {}), ...facts };
         }
         heldKey = '';
         renderStrip();

@@ -236,7 +236,8 @@ export function mountTaskInfoView(ctx, sandbox, task) {
       detail = fresh;
       detailError = null;
       current = current === prior ? { ...current, ...fresh } : { ...fresh, ...current };
-      if (current.status === 'parked') current = { ...current, ...publishParked(fresh) };
+      const facts = publishParked(fresh);
+      current = { ...current, ...facts };
       loadWaterfall(ctx, sandbox, `task:${task.id}`, stagesHost, { title: 'Stages of this task' });
     } catch (error) {
       if (!alive || read !== detailRead || error.code === 'aborted') return;
