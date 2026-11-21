@@ -43,6 +43,8 @@ class CompileCache(unittest.TestCase):
         env = dict(os.environ, HOME=str(home), YULIUS_SANDBOX="project", CARGO=str(self.cargo),
                    RECORD=str(self.record), CARGO_RESULT=str(cargo_result),
                    YULIUS_TOOLS_CACHE=str(home / ".cache/yulius-tools"))
+        env.pop("RUSTC_WRAPPER", None)
+        env.pop("CARGO_INCREMENTAL", None)
         return subprocess.run([tree / "scripts/cargo", "build"], cwd=tree, env=env,
                               capture_output=True, text=True, timeout=10)
 
@@ -169,29 +171,77 @@ class CompileCache(unittest.TestCase):
         self.assertEqual(failed_build.returncode, 37, failed_build.stderr)
         self.assertEqual(self.record.read_text().splitlines(), ["build", "build", "build"])
 
+    def build_fixture(self, tree, target, *, plain=False, incremental=None):
+        home = self.sandbox / ("ci/home" if tree == self.lane else "home")
+        home.mkdir(parents=True, exist_ok=True)
+        toolchain = Path(subprocess.check_output(["rustup", "which", "cargo"], cwd=SCRIPTS, text=True).strip()).parent
+        mbx = tree / ".tools/bin/mbx"
+        if not mbx.exists():
+            mbx.symlink_to((SCRIPTS.parent / ".tools/bin/mbx").resolve())
+        env = dict(os.environ, HOME=str(home), CARGO_HOME=str(home / ".cargo"), YULIUS_SANDBOX="project",
+                   CARGO=str(toolchain / "cargo"), RUSTC=str(toolchain / "rustc"), RUSTDOC=str(toolchain / "rustdoc"))
+        env.pop("RUSTC_WRAPPER", None)
+        env.pop("CARGO_INCREMENTAL", None)
+        if incremental is not None:
+            env["CARGO_INCREMENTAL"] = incremental
+        command = toolchain / "cargo" if plain else tree / "scripts/cargo"
+        result = subprocess.run([command, "build", "--offline", "--target-dir", target], cwd=tree,
+                                env=env, capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return tree / target / "debug/fixture", result.stderr
+
+    def create_fixture(self, tree, source, manifest=""):
+        (tree / "Cargo.toml").write_text('[package]\nname="fixture"\nversion="0.1.0"\nedition="2024"\n[workspace]\n' + manifest)
+        (tree / "src").mkdir()
+        (tree / "src/main.rs").write_text(source)
+
+    @unittest.skipUnless((SCRIPTS.parent / ".tools/bin/mbx").exists(), "optional pinned mbx unavailable")
+    def test_cached_registry_file_macro_agrees_with_plain_cargo_in_each_home(self):
+        for tree, home in ((self.task, self.sandbox / "home"), (self.lane, self.sandbox / "ci/home")):
+            registry = home / ".cargo/registry/src/index.crates.io-1949cf8c6b5b557f"
+            dep = registry / "loc-0.1.0"
+            (dep / "src").mkdir(parents=True)
+            (dep / "src/lib.rs").write_text('pub fn f()-> &\'static str { file!() }')
+            (dep / "Cargo.toml").write_text('[package]\nname="loc"\nversion="0.1.0"\nedition="2024"\n')
+            (dep / ".cargo-checksum.json").write_text('{"files":{},"package":null}')
+            (tree / ".cargo").mkdir()
+            (tree / ".cargo/config.toml").write_text('[source.crates-io]\nreplace-with="local"\n'
+                                                     f'[source.local]\ndirectory="{registry}"\n')
+            self.create_fixture(tree, 'fn main(){println!("{}",loc::f());}',
+                                '[dependencies]\nloc="=0.1.0"\n[profile.dev]\ndebug=false\n')
+            expected = subprocess.check_output([self.build_fixture(tree, "plain", plain=True)[0]], text=True)
+            actual = subprocess.check_output([self.build_fixture(tree, "cached")[0]], text=True)
+            self.assertEqual(expected.strip(), str(dep / "src/lib.rs"))
+            self.assertEqual(actual, expected)
+
+    @unittest.skipUnless((SCRIPTS.parent / ".tools/bin/mbx").exists() and shutil.which("readelf"),
+                         "pinned mbx and readelf required")
+    def test_debug_compilation_directory_belongs_to_the_current_worktree(self):
+        for tree in (self.task, self.lane):
+            self.create_fixture(tree, 'fn main(){println!("debug");}')
+            for target in ("plain", "cached"):
+                binary, _ = self.build_fixture(tree, target, plain=target == "plain")
+                debug = subprocess.check_output(["readelf", "--debug-dump=info", binary], text=True)
+                self.assertTrue(any("DW_AT_comp_dir" in line and str(tree) in line
+                                    for line in debug.splitlines()), f"missing debug root for {tree} in {target}")
+
+    @unittest.skipUnless((SCRIPTS.parent / ".tools/bin/mbx").exists(), "optional pinned mbx unavailable")
+    def test_explicit_incremental_build_keeps_private_compiler_state(self):
+        self.create_fixture(self.task, 'fn main(){}')
+        self.build_fixture(self.task, "target", incremental="1")
+        self.assertTrue(list((self.task / "target/debug/incremental").rglob("dep-graph.bin")))
+
     @unittest.skipUnless((SCRIPTS.parent / ".tools/bin/mbx").exists(), "optional pinned mbx unavailable")
     def test_real_cache_reuses_a_library_and_rebuilds_changed_or_corrupt_outputs(self):
         from concurrent.futures import ThreadPoolExecutor
-        real_cargo = subprocess.check_output(["rustup", "which", "cargo"], cwd=SCRIPTS, text=True).strip()
-        compiler = subprocess.check_output(["rustup", "which", "rustc"], cwd=SCRIPTS, text=True).strip()
         for tree in (self.task, self.lane):
-            (tree / ".tools/bin/mbx").symlink_to((SCRIPTS.parent / ".tools/bin/mbx").resolve())
-            (tree / "Cargo.toml").write_text('[package]\nname="fixture"\nversion="0.1.0"\nedition="2024"\n[workspace]\n')
-            (tree / "src").mkdir()
+            self.create_fixture(tree, 'fn main(){println!("{} {}", fixture::value(),env!("CARGO_MANIFEST_DIR"));}',
+                                '[profile.dev]\ndebug=false\n')
             (tree / "src/lib.rs").write_text('pub fn value() -> u32 { 17 }')
-            (tree / "src/main.rs").write_text('fn main(){println!("{} {}", fixture::value(),env!("CARGO_MANIFEST_DIR"));}')
 
         def build(tree, target):
-            home = self.sandbox / ("ci/home" if tree == self.lane else "home")
-            home.mkdir(parents=True, exist_ok=True)
-            env = dict(os.environ, HOME=str(home), YULIUS_SANDBOX="project", CARGO=real_cargo,
-                       RUSTC=compiler, RUSTDOC=str(Path(compiler).with_name("rustdoc")))
-            env.pop("RUSTC_WRAPPER", None)
-            result = subprocess.run([tree / "scripts/cargo", "build", "--offline", "--target-dir", target],
-                                    cwd=tree, env=env, capture_output=True, text=True, timeout=120)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            binary = tree / target / "debug/fixture"
-            return subprocess.check_output([binary], text=True).strip(), result.stderr, binary
+            binary, report = self.build_fixture(tree, target)
+            return subprocess.check_output([binary], text=True).strip(), report, binary
 
         first, _, binary = build(self.task, "a")
         self.assertEqual(first, f"17 {self.task}")
