@@ -170,6 +170,9 @@ pub struct RemovalOptions {
     /// Report a missing path as an error.
     #[arg(long)]
     pub require_existing: bool,
+    /// Require a directory where an expanded operand ends with a slash.
+    #[arg(long)]
+    pub preserve_trailing_slash: bool,
 }
 
 /// Runs `yulius remove <paths>` with its original defaults.
@@ -238,8 +241,7 @@ impl RemovalOptions {
         let outcomes: Vec<(&PathBuf, Outcome)> = paths
             .iter()
             .map(|path| {
-                let outcome = match remove_one(path, cwd, worktree, mounts, tracked, self.file_only)
-                {
+                let outcome = match remove_one(path, cwd, worktree, mounts, tracked, self) {
                     Outcome::Gone if self.require_existing => {
                         Outcome::Failed("path does not exist".to_owned())
                     }
@@ -259,6 +261,8 @@ enum Outcome {
     Removed(PathBuf),
     /// Nothing was there.
     Gone,
+    /// A forced retry encountered an operand that requires a directory and names a nondirectory.
+    KeptNonDirectory,
     /// It is not the task's (why).
     Refused(String),
     /// It is the task's but could not be removed (the error).
@@ -273,6 +277,10 @@ fn report(out: &mut dyn Write, outcomes: &[(&PathBuf, Outcome)], worktree_known:
         let line = match outcome {
             Outcome::Removed(target) => format!("removed {}", target.display()),
             Outcome::Gone => format!("already gone: {}", path.display()),
+            Outcome::KeptNonDirectory => format!(
+                "kept {}: a path component requires a directory",
+                path.display()
+            ),
             Outcome::Refused(reason) => {
                 refused = true;
                 format!("not removed: {}: {reason}", path.display())
@@ -303,10 +311,11 @@ fn remove_one(
     worktree: Option<&Path>,
     mounts: &[Mount],
     tracked: &dyn Fn(&Path, &Path) -> Result<bool, String>,
-    file_only: bool,
+    options: RemovalOptions,
 ) -> Outcome {
     use std::os::unix::ffi::OsStrExt as _;
-    let mut trimmed = path.as_os_str().as_bytes();
+    let raw = path.as_os_str().as_bytes();
+    let mut trimmed = raw;
     while let Some(shorter) = trimmed.strip_suffix(b"/") {
         trimmed = shorter;
     }
@@ -336,7 +345,24 @@ fn remove_one(
     if let Err(reason) = decide(&target, worktree, mounts, tracked) {
         return Outcome::Refused(reason);
     }
-    let removed = if metadata.is_dir() && !file_only {
+    if options.preserve_trailing_slash && raw.ends_with(b"/") && !metadata.is_dir() {
+        // Stat the spelling the shell passed. A trailing slash can lead through a directory
+        // symlink; cleanup must leave both the link and its target intact in that case.
+        return match std::fs::metadata(&absolute) {
+            Ok(_) => Outcome::Refused("the trailing slash would follow a symbolic link".to_owned()),
+            Err(err)
+                if !options.require_existing
+                    && matches!(
+                        err.kind(),
+                        std::io::ErrorKind::NotADirectory | std::io::ErrorKind::NotFound
+                    ) =>
+            {
+                Outcome::KeptNonDirectory
+            }
+            Err(err) => Outcome::Failed(err.to_string()),
+        };
+    }
+    let removed = if metadata.is_dir() && !options.file_only {
         std::fs::remove_dir_all(&target)
     } else {
         std::fs::remove_file(&target)
@@ -699,7 +725,7 @@ mod tests {
         };
         let forced = RemovalOptions {
             file_only: true,
-            require_existing: false,
+            ..RemovalOptions::default()
         };
         assert_eq!(apply("target", forced).0, 1);
         assert!(root.join("target/debug/out").is_file());
@@ -715,6 +741,52 @@ mod tests {
         assert_eq!(apply("scratch.txt", strict).0, 1);
         assert_eq!(apply("missing/child", strict).0, 1);
         assert_eq!(apply("scratch2", strict).0, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn retry_keeps_a_nondirectory_operand_with_a_trailing_slash() -> TestResult {
+        let dir = worktree()?;
+        let root = std::fs::canonicalize(dir.path())?;
+        std::os::unix::fs::symlink("target", root.join("dir-link"))?;
+        std::os::unix::fs::symlink("scratch.txt", root.join("file-link"))?;
+        std::os::unix::fs::symlink("absent", root.join("dangling"))?;
+        let apply = |name: &str, file_only: bool, require_existing: bool| {
+            let options = RemovalOptions {
+                file_only,
+                require_existing,
+                preserve_trailing_slash: true,
+            };
+            let mut out = Vec::new();
+            let code = options.remove(
+                &mut out,
+                &[PathBuf::from(name)],
+                &root,
+                Some(&root),
+                &parse_mountinfo(HOST),
+                &git_tracked,
+            );
+            (code, String::from_utf8_lossy(&out).into_owned())
+        };
+        for file_only in [false, true] {
+            for require_existing in [false, true] {
+                for nondir in ["scratch.txt///", "file-link/", "dangling/"] {
+                    let (code, out) = apply(nondir, file_only, require_existing);
+                    assert_eq!(code, i32::from(require_existing), "{out}");
+                    assert!(
+                        std::fs::symlink_metadata(root.join(nondir.trim_end_matches('/'))).is_ok()
+                    );
+                    assert!(!out.starts_with("removed"), "{out}");
+                }
+                assert_eq!(apply("dir-link/", file_only, require_existing).0, 1);
+                assert!(root.join("dir-link").is_symlink());
+                assert!(root.join("target/debug/out").exists());
+            }
+        }
+        assert_eq!(apply("target/", true, false).0, 1);
+        assert!(root.join("target/debug/out").exists());
+        assert_eq!(apply("target/", false, false).0, 0);
+        assert!(!root.join("target").exists());
         Ok(())
     }
 

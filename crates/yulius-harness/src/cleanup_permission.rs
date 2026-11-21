@@ -142,7 +142,7 @@ fn cleanup_in_pipe(cmd: &DefaultPipeableCommand) -> Option<String> {
             _ => return None,
         }
     }
-    let mut retry = String::from("yulius remove");
+    let mut retry = String::from("yulius remove --preserve-trailing-slash");
     if !recursive {
         retry.push_str(" --file-only");
     }

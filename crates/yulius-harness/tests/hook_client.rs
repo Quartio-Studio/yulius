@@ -1191,69 +1191,79 @@ cd $S/r3m && n=$(grep -n '^  phase=installed$' scripts/cd/remote.sh | sed -n 2p 
 sed -i "${n}s/.* /   : # mutated/" scripts/cd/remote.sh && sed -n "$((n-2)),$((n+1))p" scripts/cd/remote.sh
 python3 -m unittest scripts/test_cd.py 2>&1 | grep -E "^(FAIL|Ran|OK)"
 cd $S/probe && python3 r2.py $S/r3p/scripts 2>&1 | tail -n 8"#,
-            r#"yulius remove -- "${S:?}/${d:?}""#,
+            r#"yulius remove --preserve-trailing-slash -- "${S:?}/${d:?}""#,
         ),
         (
             r#"rm -fr -- "${scratch}/${copy}""#,
-            r#"yulius remove -- "${scratch:?}/${copy:?}""#,
+            r#"yulius remove --preserve-trailing-slash -- "${scratch:?}/${copy:?}""#,
         ),
-        (r#"rm -rf "$scratch""#, r#"yulius remove -- "${scratch:?}""#),
+        (
+            r#"rm -rf "$scratch""#,
+            r#"yulius remove --preserve-trailing-slash -- "${scratch:?}""#,
+        ),
         (
             r#"rm -rf "$TMPDIR/scratch""#,
-            r#"yulius remove -- "${TMPDIR:?}/scratch""#,
+            r#"yulius remove --preserve-trailing-slash -- "${TMPDIR:?}/scratch""#,
         ),
-        ("rm -rf $S/leaf", r#"yulius remove -- "${S:?}/leaf""#),
+        (
+            r#"rm "$scratch/""#,
+            r#"yulius remove --preserve-trailing-slash --file-only --require-existing -- "${scratch:?}/""#,
+        ),
+        (
+            "rm -rf $S/leaf",
+            r#"yulius remove --preserve-trailing-slash -- "${S:?}/leaf""#,
+        ),
         (
             "rm -rf $S/$d another-path",
-            r#"yulius remove -- "${S:?}/${d:?}" "another-path""#,
+            r#"yulius remove --preserve-trailing-slash -- "${S:?}/${d:?}" "another-path""#,
         ),
         (
             "if test -d scratch; then rm -rf $S/$d; fi",
-            r#"yulius remove -- "${S:?}/${d:?}""#,
+            r#"yulius remove --preserve-trailing-slash -- "${S:?}/${d:?}""#,
         ),
         (
             r#"test -f marker && rm -f "$S/$d""#,
-            r#"yulius remove --file-only -- "${S:?}/${d:?}""#,
+            r#"yulius remove --preserve-trailing-slash --file-only -- "${S:?}/${d:?}""#,
         ),
         (
             "rm -f /task.log /probe.log",
-            r#"yulius remove --file-only -- "/task.log" "/probe.log""#,
+            r#"yulius remove --preserve-trailing-slash --file-only -- "/task.log" "/probe.log""#,
         ),
         (
             "rm /task.log",
-            r#"yulius remove --file-only --require-existing -- "/task.log""#,
+            r#"yulius remove --preserve-trailing-slash --file-only --require-existing -- "/task.log""#,
         ),
         (
             "rm -r /scratch",
-            r#"yulius remove --require-existing -- "/scratch""#,
+            r#"yulius remove --preserve-trailing-slash --require-existing -- "/scratch""#,
         ),
         (
             "while test -e ready; do rm --recursive --force /artifact; done",
-            r#"yulius remove -- "/artifact""#,
+            r#"yulius remove --preserve-trailing-slash -- "/artifact""#,
         ),
         (
             "until test -e ready; do rm -R -f /artifact; done",
-            r#"yulius remove -- "/artifact""#,
+            r#"yulius remove --preserve-trailing-slash -- "/artifact""#,
         ),
         (
             "case x in x) (rm -f /artifact);; esac",
-            r#"yulius remove --file-only -- "/artifact""#,
+            r#"yulius remove --preserve-trailing-slash --file-only -- "/artifact""#,
         ),
         (
             "true || { rm -f /artifact; }",
-            r#"yulius remove --file-only -- "/artifact""#,
+            r#"yulius remove --preserve-trailing-slash --file-only -- "/artifact""#,
         ),
         (
             "if false; then true; else rm -f /artifact | cat; fi",
-            r#"yulius remove --file-only -- "/artifact""#,
+            r#"yulius remove --preserve-trailing-slash --file-only -- "/artifact""#,
         ),
         (
             "rm -rf -- -name /artifact",
-            r#"yulius remove -- "-name" "/artifact""#,
+            r#"yulius remove --preserve-trailing-slash -- "-name" "/artifact""#,
         ),
         (
             r#"rm -rf "${S}/some space""#,
-            r#"yulius remove -- "${S:?}/some space""#,
+            r#"yulius remove --preserve-trailing-slash -- "${S:?}/some space""#,
         ),
     ] {
         let mut event = request(command);

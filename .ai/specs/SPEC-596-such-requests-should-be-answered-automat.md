@@ -17,7 +17,7 @@ Task #586 shows a background reviewer resetting two scratch directories in a loo
 
 - **CLR-001** Answer a contained Claude Bash permission request for ordinary variable-path or root-level scratch removal locally and immediately, including removals inside a reviewer loop or conditional. Give the agent an in-place retry that preserves control flow, quotes each operand and requires nonempty variables. The agent continues its turn.
 - **CLR-002** Apply this policy only when Claude requests permission. Ordinary commands, other tools and uncontained runs keep their existing permission handling. Treat malformed or oversized events as unrecognized.
-- **CLR-003** The agent executes the retry in its run. The existing cleanup tool can remove a whole scratch directory and refuses shared paths. Preserve non-recursive removal by using a file-only operation for those requests. An unrelated action embedded in the original Bash command receives no automatic approval.
+- **CLR-003** The agent executes the retry in its run. The existing cleanup tool can remove a whole scratch directory and refuses shared paths. Preserve non-recursive removal by using a file-only operation for those requests. An expanded operand ending in a slash requires a directory. A trailing slash on a regular file preserves the file with the original forced or unforced status. A directory symlink used this way is refused. An unrelated action embedded in the original Bash command receives no automatic approval.
 
 ## Plan
 
@@ -25,6 +25,7 @@ Task #586 shows a background reviewer resetting two scratch directories in a loo
 - [x] Route task and reviewer cleanup through the run’s removal policy
 - [x] Verify scratch cleanup and other permission decisions
 - [x] Preserve conditions and file-only semantics for equivalent removals
+- [x] Preserve directory requirements on expanded cleanup paths
 - [ ] Independent review approves the verified change for delivery
 
 ## Acceptance criteria
@@ -53,3 +54,6 @@ Use Claude's structured PermissionRequest event. Its decision belongs to the pen
 - The first independent review requested coverage for single-variable, variable-plus-literal and root-level scratch operands, and an explicit in-place retry for conditional commands. Both findings were in the change. Before the fixes, equivalent cleanup requests had no hook decision, the message omitted the in-place instruction and the CLI rejected both new options. The regression now exercises these shapes and the helper's recursive and missing-target behavior.
 - After the review fixes, the 51 hook and launch tests and the 12 `remove_cli` tests passed. In a real Claude Code 2.1.330 asynchronous reviewer with a loopback model stub, a conditional inside the original loop selected one scratch copy. The checked retry rebuilt that copy, preserved the other copy and left the sibling marker intact.
 - `scripts/dev quick` passed. `cargo deny check bans licenses` passed. `scripts/dev security` reported Vidoc disabled for this project and scanned no code.
+
+- The second review found that trimming a trailing slash could unlink a regular file. Before the correction, both forced and unforced retries removed the disposable marker. Tests now cover expanded operands ending in one or several slashes, regular files, dangling links, links to files, directory symlinks and actual directories. The original helper's default trailing-slash test still covers its existing callers.
+- After the trailing-slash correction, all 51 hook and launch tests and all 13 removal tests passed.

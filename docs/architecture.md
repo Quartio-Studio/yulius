@@ -1744,7 +1744,9 @@ For a contained Claude task, a Bash permission request about a recursive scratch
 as `rm -rf $S/$d` returns a checked retry directly to the calling agent, including a reviewer.
 The local hook leaves the original script unexecuted. The agent retries it with the checked
 removal in place, preserving its conditions and loop bindings. File-only cleanup unlinks files
-and links and fails on directories. Cleanup without force reports missing targets as errors. [Decision 0435](decisions/0435-claude-returns-variable-path-cleanup-to-the-calling-agent.md)
+and links and fails on directories. Cleanup without force reports missing targets as errors.
+On retry, a trailing slash on the expanded path requires a directory. A directory symlink
+spelled this way produces a refusal and preserves its target. [Decision 0435](decisions/0435-claude-returns-variable-path-cleanup-to-the-calling-agent.md)
 
 ```mermaid
 flowchart TD
