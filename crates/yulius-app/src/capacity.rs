@@ -841,7 +841,10 @@ impl App {
                     crate::race::Point::CapacityStaleCleanup,
                     std::path::Path::new(pause.task_id.as_str()),
                 );
-                self.end_pause(&pause.task_id, "ended").await;
+                if let Err(err) = self.end_stale_pause(pause).await {
+                    tracing::warn!(error = %err, task = %pause.task_id, "could not close the observed capacity pause");
+                    return Resume::Waiting(None);
+                }
                 return Resume::Gone;
             }
             Err(_) => return Resume::Waiting(None),
@@ -983,6 +986,23 @@ impl App {
         let prompts_before = self.prompts_passed(task_id);
         self.await_transcript_read(task_id).await;
         self.prompt_waits_for_turns_end(task_id, prompts_before)
+    }
+
+    /// An ended task may already have continued into a different pause by the time the
+    /// worker cleans up. End the observed row and its observed subscription request only.
+    async fn end_stale_pause(&self, pause: &PauseRecord) -> AppResult<()> {
+        let store = &self.deps.store;
+        let request = store.task_needs_you(&pause.task_id).await?;
+        if store
+            .end_pause_if(&pause.task_id, Some(&pause.id), self.now(), "ended")
+            .await?
+            && let Some(request) =
+                request.filter(|r| crate::moves::is_no_subscription_action(&r.action))
+        {
+            self.end_needs_you_asked_at(&pause.task_id, request.at, request.cause)
+                .await;
+        }
+        Ok(())
     }
 
     /// Whether `pause` is still the task's open pause.

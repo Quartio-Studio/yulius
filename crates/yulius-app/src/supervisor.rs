@@ -4932,7 +4932,11 @@ impl App {
             }
             return Ok(Some(id));
         }
-        if sessions.is_empty() && task.status != TaskStatus::Parked {
+        // A failed fresh spawn opened no session. A previous attempt's lineage is still on
+        // record, but the failed launch must retry the original request.
+        let fresh_spawn_failed = run.launch_kind == LaunchKind::New
+            && run.exit_reason.as_deref() == Some("spawn_failed");
+        if task.status != TaskStatus::Parked && (sessions.is_empty() || fresh_spawn_failed) {
             return Ok(None);
         }
         let entry = latest

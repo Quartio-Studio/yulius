@@ -30,7 +30,7 @@ pub(crate) fn no_subscription_action(provider: Provider) -> String {
 }
 
 /// Whether `action` is the "no subscription left" request of any provider.
-fn is_no_subscription_action(action: &str) -> bool {
+pub(crate) fn is_no_subscription_action(action: &str) -> bool {
     Harness::ALL
         .iter()
         .any(|harness| action == no_subscription_action(harness.provider()))

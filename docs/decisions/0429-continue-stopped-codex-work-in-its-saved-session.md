@@ -14,6 +14,8 @@ Continue on a stopped or failed Codex task with a saved conversation submits a c
 
 The supervisor initializes a bare Codex resume with idle activity. Reopening a closed conversation leaves the next prompt to the person. Submitting a prompt and interrupting a turn use the existing hook and rollout observations.
 
+A capacity worker can act on a pause it observed before Stop or a subsequent Continue. Admission checks the waiting state and pause ID under the launch lock. Cleanup uses the observed pause ID and the subscription request it read, so a replacement retains its continuation.
+
 ## Alternatives
 
 Correcting only the activity label would still require a second message to resume stopped work. Inferring activity from the terminal's visible text would mistake an old interruption in scrollback for the state of the current turn.

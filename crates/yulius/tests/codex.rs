@@ -713,7 +713,20 @@ fn a_stale_capacity_cleanup_leaves_the_new_codex_pause_and_request() -> TestResu
         tokio::time::timeout(Duration::from_secs(60), round).await??;
         assert_eq!(store.open_pause(&id).await?, Some(replacement));
         assert_eq!(store.task_needs_you(&id).await?, Some(request));
-        support::stop_tasks(&app, &[&id]).await
+        // An interruption can leave the observed row open after the task changes state.
+        store
+            .transition_task(
+                &id,
+                Some(TaskStatus::WaitingCapacity),
+                TaskStatus::Stopped(yulius_domain::task::StopReason::Cancelled),
+                None,
+                app.now(),
+            )
+            .await?;
+        let _ = app.resume_round().await;
+        assert!(store.open_pause(&id).await?.is_none());
+        assert!(store.task_needs_you(&id).await?.is_none());
+        Ok(())
     })
 }
 
