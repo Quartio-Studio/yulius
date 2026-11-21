@@ -45,7 +45,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Show current parked progress and owner notices in the terminal
 - [x] Publish verified parked task detail to the terminal
 - [x] Publish a missed park discovered by terminal detail
-- [ ] Publish terminal-discovered resumes to the active task list
+- [x] Publish terminal-discovered resumes to the active task list
 - [ ] Reconcile terminal-discovered archives and later Undo
 - [ ] Publish verified parked task detail to Task Info
 - [ ] Keep failed integration candidates with their original owner
@@ -74,6 +74,8 @@ Capture a separate screen at the park decision because exiting can clear the ent
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
 ## Evidence
+
+- Independent review approved `725fa0f16` for missed resume publication. All nine changed Chromium tests passed independently. The author passed 13 scoped cases, including the existing subscription-switching test and the new mounted-menu regression. Repository contracts, format checks and spec validation passed. There were no changed Rust mutation targets. Vidoc was disabled. The earlier combined checkpoint at `ebd074bfa` passed the complete local Chromium suite with 1,272 passes and one optional skip.
 
 - At `425dfdb98`, a mounted terminal discovered that the task resumed on Claude #4. A newer capacity summary omitted the subscription ID and cleared its label. The chip then showed “No subscription” while the Run on menu still marked #4 “Waits on it”. A Chromium regression uses the same optional-ID serialization as the server and exercises the mounted menu. Both full-summary updates and subsequent detail reads now clear an omitted ID.
 
