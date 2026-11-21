@@ -121,6 +121,7 @@ export function goesOn(task) {
   return backgroundShells(task) > 0 || task.yulius_wait === true;
 }
 
+const YOUR_TURN = { glyph: '○', icon: 'st-input', tone: 'waiting', label: 'Your turn', group: 'needs' };
 const DONE = { glyph: '✓', icon: 'check', tone: 'done', label: 'Done', group: 'done' };
 
 /**
@@ -172,7 +173,7 @@ export function statusInfo(task) {
     // Without an idle activity (the Dashboard's Outcomes bucket counts statuses alone) it reads
     // what it is: parked, waiting for a person to resume it.
     if (task.activity !== 'waiting' && task.activity !== 'done') return { glyph: '◐', icon: 'st-paused', tone: 'queued', label: 'Parked', group: 'needs', parked: true };
-    return { ...statusInfo(asIdleRun(task)), parked: true };
+    return { ...parkedWorkStatus(task, statusInfo(asIdleRun(task))), parked: true };
   }
   const status = task.status;
   const activity = task.activity;
@@ -201,8 +202,7 @@ export function statusInfo(task) {
       if (shells) return stillWorking(shells, task.background_shells_since);
       if (task.yulius_wait === true) return { ...WAITING_ON_YULIUS };
       if (!workLeft(task) && task.goal_unfinished !== true) return { ...ANSWERED };
-      const turn = { glyph: '○', icon: 'st-input', tone: 'waiting', label: 'Your turn', group: 'needs' };
-      return !planOpen(task) && task.spec_unfinished === true ? { ...turn, detail: SPEC_UNFINISHED } : turn;
+      return !planOpen(task) && task.spec_unfinished === true ? { ...YOUR_TURN, detail: SPEC_UNFINISHED } : { ...YOUR_TURN };
     }
     if (activity === 'working') return { glyph: '●', icon: 'st-working', tone: 'working', label: 'Working', group: 'working' };
     return { glyph: '●', icon: 'st-working', tone: 'running', label: 'Running', group: 'working' };
@@ -262,6 +262,15 @@ function asIdleRun(task) {
   return { ...task, status: 'running', background_shells: 0, yulius_wait: false, merge_armed: false, pause: null };
 }
 
+// Keep the more specific reason already shown for a person's decision or failing PR.
+function parkedWorkStatus(task, shown) {
+  if (shown.group !== 'done') return shown;
+  if (workLeft(task) || task.goal_unfinished === true) {
+    return statusInfo({ ...asIdleRun(task), activity: 'waiting' });
+  }
+  return task.parked_needs_you === true ? YOUR_TURN : shown;
+}
+
 /** What a parked task's row says (SPEC-512 PRK-005). */
 export const PARKED_LINE = 'Parked to free its session · resumes when you write to it';
 
@@ -313,6 +322,10 @@ export function pauseLine(pause) {
  * should do, in words — the reason of a browser request, the current step, or the state.
  */
 export function activityLine(task, info = statusInfo(task)) {
+  const notice = info.group === 'needs' ? task.needs_you_notice : null;
+  if (notice && (notice.happened || notice.action)) {
+    return [notice.happened, notice.action].filter(Boolean).join(' · ').replaceAll('`', '');
+  }
   if (task.status === 'parked') return PARKED_LINE;
   if (info.paused) return pauseLine(info.paused);
   if (info.request) return info.request.reason || 'Do something in the sandbox browser';
@@ -387,14 +400,26 @@ export function supertaskLine(task) {
 export function taskInfo(task, actionRequests, pr) {
   // A parked task is shown where it was, as its idle run would be, marked parked (SPEC-512 PRK-004).
   if (task.status === 'parked') {
-    const shown = taskInfo(asIdleRun(task), actionRequests, pr);
+    const shown = parkedWorkStatus(task, taskInfo(asIdleRun(task), actionRequests, pr));
     // Nothing of it goes on by itself: what would keep a running agent busy (its checks, a
     // conflict it is told of, a CI run to run again) is a person's now, never Working (review
     // round 1 of SPEC-512 part 1; the server's `parked_group`).
     const waits = shown.group === 'working' ? { icon: 'st-attention', tone: 'attention', group: 'needs' } : {};
-    return { ...shown, ...waits, label: `${shown.label} · parked`, parked: true };
+    const merged = { ...shown, ...waits, label: `${shown.label} · parked`, parked: true };
+    if (merged.group === 'needs' && task.needs_you_notice) {
+      merged.notice = task.needs_you_notice;
+      if (!merged.detail) merged.detail = [task.needs_you_notice.happened, task.needs_you_notice.action].filter(Boolean).join(' — ');
+    }
+    return merged;
   }
   let info = taskInfoOf(task, actionRequests, pr);
+  if (info.group === 'needs' && task.needs_you_notice) {
+    info = {
+      ...info,
+      notice: task.needs_you_notice,
+      detail: info.detail || [task.needs_you_notice.happened, task.needs_you_notice.action].filter(Boolean).join(' — '),
+    };
+  }
   // Another live task claims paths this one claims (SPEC-493 SCO-002): said beside the rest, a
   // stalled pull request's mark too; the detail names them when nothing else is said.
   const overlaps = (task.overlaps || []).filter((o) => o && o.task_number);

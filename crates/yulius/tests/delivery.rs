@@ -4786,6 +4786,48 @@ async fn a_parked_detail_bounds_its_initial_browser_lookup_and_keeps_the_recorde
 }
 
 #[tokio::test]
+async fn parked_mcp_uses_the_visible_plan_when_browser_verification_times_out() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let id = TaskId::parse("t1")?;
+    f.add_task("t1", "Finish the plan", "feat/1-finish", "dev")
+        .await?;
+    f.h.store
+        .transition_task(
+            &id,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Done),
+            f.h.app.now(),
+        )
+        .await?;
+    set_steps(&f, "t1", &["done", "in_progress"]).await?;
+    let caller = crate::task_message::superagent(
+        &SandboxId::parse("s1")?,
+        &UserId::parse("alice")?,
+        "admin",
+    );
+    let browser = Arc::new(HeldBrowserLookup::default());
+    browser.calls.store(1, std::sync::atomic::Ordering::SeqCst);
+    let mut deps = f.h.app.deps.clone();
+    deps.browser = browser.clone();
+    let app = yulius_app::context::App::new(f.h.app.config.clone(), deps);
+    let reading =
+        tokio::spawn(async move { app.tool_task_get(&caller, &json!({"task_id":"t1"})).await });
+    tokio::time::timeout(Duration::from_secs(5), browser.entered.notified()).await?;
+    let row = tokio::time::timeout(Duration::from_secs(3), reading).await;
+    browser.release.notify_one();
+    let row = row???;
+    assert_eq!(row["shows"], "needs_you");
+    assert_eq!(row["steps"]["done"], 1);
+    assert_eq!(row["steps"]["total"], 2);
+    assert_eq!(
+        row["wait_reason"],
+        "The task is parked with unfinished steps in its plan (1 open, next: \"Step 1\")."
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_parked_successor_waits_if_its_owner_resumes_during_the_final_browser_read() -> TestResult
 {
     let f = fixture(&DeliveryProfile::standard()).await?;
@@ -5103,6 +5145,15 @@ async fn a_parked_achieved_goal_waits_for_its_failed_ordinary_run() -> TestResul
         &[],
     )
     .await?;
+    // The parked detail reads the exact PR reference. A peer at the same
+    // commit still has a pending run, while the owner's rerun just passed.
+    let owner =
+        f.h.app
+            .authenticate_bearer(f.alice.bearer.as_deref().ok_or("owner token")?)
+            .await?
+            .ok_or("owner")?;
+    let detail = f.h.app.task_detail(&owner, before.as_str()).await?;
+    assert_eq!(detail.summary.parked_needs_you, Some(false));
     f.h.github.set_checks(&head, ChecksState::Failure);
     app.advance_chains(&before).await;
     assert_eq!(
@@ -6326,6 +6377,15 @@ async fn an_armed_merge_ends_with_its_tasks_run() -> TestResult {
         .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
         .await?;
     assert_eq!(by_hand.status, StatusCode::OK, "{}", by_hand.body);
+    let confirmed = t.wait(Value::Null).await?;
+    assert_eq!(confirmed["merge_armed"], false, "{confirmed}");
+    assert_eq!(confirmed["merge_outcome_head"], t.head, "{confirmed}");
+    assert!(
+        confirmed["merge_outcome"]
+            .as_str()
+            .is_some_and(|text| text.contains("merged")),
+        "{confirmed}"
+    );
     commit_file(&t.wt, "landing.txt", "v3", "After the merge")?;
     becomes(TaskStatus::Closed).await?;
     f.h.app.merge_armed(&sandbox).await;
@@ -6334,6 +6394,26 @@ async fn an_armed_merge_ends_with_its_tasks_run() -> TestResult {
         outcome.contains("merged") && !outcome.contains("dropped"),
         "{outcome}"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_person_http_merge_of_another_head_leaves_the_original_arm_to_the_queue() -> TestResult {
+    let t = ArmedTask::new().await?;
+    t.arm().await?;
+    commit_file(&t.wt, "landing.txt", "v2", "Owner's later change")?;
+    git(&t.wt, &["push", "origin", "HEAD"])?;
+    let newer = git(&t.wt, &["rev-parse", "HEAD"])?;
+    assert_ne!(t.head, newer);
+    edit_pull(&t.f, 1, |pull| pull.head_sha = newer.clone());
+    t.f.h.github.set_checks(&newer, ChecksState::Success);
+    let by_hand =
+        t.f.req(Method::POST, "/api/tasks/t1/delivery/merge", None, &t.f.bob)
+            .await?;
+    assert_eq!(by_hand.status, StatusCode::OK, "{}", by_hand.body);
+    let waiting = t.wait(Value::Null).await?;
+    assert_eq!(waiting["merge_armed"], true, "{waiting}");
+    assert!(waiting["merge_outcome"].is_null(), "{waiting}");
     Ok(())
 }
 
@@ -6372,6 +6452,68 @@ async fn a_restore_never_brings_back_a_merge_decided_since() -> TestResult {
     let state = t.wait(Value::Null).await?;
     assert_eq!(state["merge_armed"], false, "{state}");
     assert_eq!(state["merge_outcome"], decided.as_str(), "{state}");
+    Ok(())
+}
+
+/// The same stale snapshot after a cold ordinary decision must stay consumed.
+#[tokio::test]
+async fn a_second_restore_cannot_rearm_a_decided_cold_generation() -> TestResult {
+    let t = ArmedTask::new().await?;
+    t.arm().await?;
+    let cold = yulius_app::context::App::new(t.f.h.app.config.clone(), t.f.h.app.deps.clone());
+    let path = cold
+        .config
+        .data_dir
+        .join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+    let saved = std::fs::read(&path)?;
+    cold.restore_armed_merges().await;
+    commit_file(&t.wt, "landing.txt", "v2", "Later work")?;
+    cold.merge_armed(&SandboxId::parse("s1")?).await;
+    let before = cold.agent_wait_state("tok-agent", Some(&t.head)).await?;
+    assert!(!before.merge_armed);
+    std::fs::write(path, saved)?;
+    cold.restore_armed_merges().await;
+    let after = cold.agent_wait_state("tok-agent", Some(&t.head)).await?;
+    assert!(!after.merge_armed, "cold ordinary arm restored twice");
+    assert_eq!(after.merge_outcome, before.merge_outcome);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_newly_reviewed_head_gets_a_new_place_and_an_immediate_merge_clears_it() -> TestResult {
+    let t = ArmedTask::new().await?;
+    t.arm().await?;
+    let app = &t.f.h.app;
+    let path = app
+        .config
+        .data_dir
+        .join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+    let stored = || -> BoxResult<Value> { Ok(serde_json::from_slice(&std::fs::read(&path)?)?) };
+    let earlier = stored()?[0]["armed_at"].as_i64().ok_or("old stamp")?;
+    commit_file(&t.wt, "landing.txt", "reviewed v2", "New review")?;
+    let next = git(&t.wt, &["rev-parse", "HEAD"])?;
+    t.f.h
+        .clock
+        .0
+        .fetch_add(1000, std::sync::atomic::Ordering::SeqCst);
+    t.f.h.github.set_checks(&next, ChecksState::Pending);
+    let ctx = app.agent_context("tok-agent").await?;
+    let args = json!({"reviewed_head":next,"review_summary":"approve"});
+    let accepted = app.tool_delivery_merge(&ctx, &args).await?;
+    assert_eq!(accepted["armed"], true, "{accepted}");
+    assert!(
+        stored()?[0]["armed_at"].as_i64().ok_or("new stamp")? > earlier,
+        "new review inherited an older activation"
+    );
+    t.f.h.github.set_checks(&next, ChecksState::Success);
+    let accepted = app.tool_delivery_merge(&ctx, &args).await?;
+    assert_eq!(accepted["merged"], true, "{accepted}");
+    assert!(
+        !app.agent_wait_state("tok-agent", Some(&next))
+            .await?
+            .merge_armed
+    );
+    assert_eq!(stored()?, json!([]));
     Ok(())
 }
 
@@ -8142,6 +8284,7 @@ async fn the_branch_policy_gates_every_merge() -> TestResult {
         state: "open".into(),
         merged: false,
         base: "main".into(),
+        base_sha: String::new(),
         head: "dev".into(),
         head_sha: head.clone(),
         mergeable: None,

@@ -528,6 +528,8 @@ gives its `number` and whether it is `open`. A branch lookup can identify a repl
 for an older recorded delivery. With outstanding local work, the detail keeps an owner-observed open PR
 or the recorded delivery identity. Unfinished work and unreadable checks keep the task under Needs you.
 
+The MCP tools `task_get` and `tasks_list` use the verified parked group and include `parked_pr` when the verifier can identify the PR. A parked row’s `wait_reason` explains a current check failure, pending checks, an unreadable PR, a conflict, a required base update or unfinished local work. A stored owner decision or held prompt supplies its own fields. The `needs_you` scope keeps activity order and applies its limit after filtering. The `archived` scope reads archived tasks.
+
 A `queued` task not held by a supertask carries `queue_reason`, one line: "Waiting for a free
 session: N of M in use", "Waiting for the Yulius update to finish", or "Starting: a session is
 free" (the queue's next pass starts it) (SPEC-512 PRK-007); null otherwise, and in `tasks_list`
@@ -751,7 +753,8 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
 - **Merge** uses the profile's merge method and passes the head that was checked as the
   expected head; a PR head that differs from the task worktree's head is refused as stale.
   With `auto_promote` (Studio), the integration branch is promoted right after a merge done
-  through Yulius once no integration environment is pending; the outcome is added to `notes`
+  through Yulius once no integration environment is pending (with a merge-first staging target:
+  once the staging queue verified the head, SPEC-575); the outcome is added to `notes`
   and audited. With `require_checks`, an automatic fast-forward does not wait for the
   integration head's own checks (they may not have reported yet), and is stopped by failing
   or unreadable ones ("Automatic promotion did not happen: …"). No other path merges,
@@ -991,6 +994,15 @@ merge_first = true                  # at most one; needs deploy, verify and roll
                                     #   after_merge jobs off pull requests (SPEC-575, ADR-0410)
 ```
 
+A task-local deployment (SPEC-575 MFS-010, ADR-0415) is one table:
+
+```toml
+[local]
+about = "the app and its database in docker compose, on this sandbox's ports"
+deploy = "scripts/cd/deploy.sh local"   # required; deploys into this sandbox only
+verify = "scripts/cd/verify.sh local"   # optional
+```
+
 The merge-first environment changes only through its staging queue (ADR-0411):
 
 - A task's agent's `cd_deploy` of it records a staging request for the task's newest landing on
@@ -1016,8 +1028,12 @@ The merge-first environment changes only through its staging queue (ADR-0411):
 - The deploy scripts of a merge-first target must be idempotent: a run lost to a restart is
   retried, up to three attempts.
 - A failed deploy that announced a rollback barrier is not restored; its request says so.
-- With a merge-first target, a production deploy that promotes is refused (409) until staging
-  serves the integration head, verified.
+- With a merge-first target, every promotion (a production deploy's, `POST …/delivery/promote`,
+  the profile's automatic one) is refused (409) until staging serves the integration head,
+  verified; the automatic promotion then runs once the staging queue verified it.
+- For every project, `POST …/delivery/promote` and the automatic promotion read the integration
+  head and its `[cd.*]` tables through the verified CD mirror first, and answer 409 when they
+  cannot be read: a fetch failure, or an invalid `yulius.toml` at the head.
 
 A run deploys the commit GitHub reports for the branch, taken into a mirror only Yulius writes
 (every object checked, replacement refs ignored). It writes the commit's files into the run's own
@@ -1146,7 +1162,7 @@ armed-merge waits and updates onto the integration branch; a CI run's queue (wit
 preparation, job-slot waits, jobs, checkouts and the stages its output names; a CD run's
 confirmation, checks, promotion, deploy, verify and the stages their output names. Spans recorded
 before migration 28 from older tables are `backfilled`; a CI result reused from an identical tree
-is `detail.reused` and not counted. Spans are kept 180 days. Nothing writes them through the API.
+is `detail.reused` and not counted. Spans are kept 180 days. Each existing task also keeps its latest completed merge wait for delivery recovery. Nothing writes them through the API.
 
 A CI job or CD script names its stages and figures with lines Yulius reads as it runs; Yulius
 times them by its own clock:

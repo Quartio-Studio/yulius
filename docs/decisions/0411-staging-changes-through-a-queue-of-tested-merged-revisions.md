@@ -90,11 +90,17 @@ that failed.
   - Ticks never overlap.
   - `cd_status` and the CD page list the queue with its revisions and run ids, and the revision
     staging serves.
-- **Production from verified staging.** With a merge-first target at the verified integration
-  head, a person's production deploy that promotes is refused unless that head is the revision
-  staging serves and a verified request deployed it. The table is read through the CD mirror.
-  The Delivery page's Promote and the profile's automatic promotion get the same gate in the
-  next slice of SPEC-575, also read through the mirror.
+- **Production from verified staging.**
+  - With a merge-first target at the verified integration head, every promotion is refused
+    unless that head is the revision staging serves and a verified request deployed it: a
+    person's production deploy (`cd_prepare`), the Delivery page's Promote and the profile's
+    automatic promotion (`staging_promotion_head`, then `dlv_promote_exactly` of exactly that
+    head).
+  - The tables are read through the CD mirror. When they cannot be read, the promotion is
+    refused whatever the project, so an agent breaking its clone can only cause a refusal. A host
+    whose Git keeps no CD mirror runs no CD, so it has nothing to gate.
+  - An automatic promotion that waits for staging is audited as `delivery.promote.waiting`, not
+    as failed, and is run by the queue once staging verified a revision.
 - **Deleted tasks.** A deleted task's requests stay, without the task, so what staging verified
   stays known.
 - **Who moves it.** The background tick advances every queue with a request on its way (and for

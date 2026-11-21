@@ -907,6 +907,9 @@ fn task_line(task: &Value) -> Option<String> {
     if let Some(branch) = text(task, "branch") {
         parts.push(format!("branch {branch}"));
     }
+    if let Some(number) = task.pointer("/parked_pr/number").and_then(Value::as_u64) {
+        parts.push(format!("PR #{number}"));
+    }
     if let Some(steps) = task.get("steps") {
         let total = steps.get("total").and_then(Value::as_u64).unwrap_or(0);
         if total > 0 {
@@ -966,6 +969,24 @@ fn waits_why(task: &Value) -> Vec<String> {
         parts.push("NEEDS ITS PERSON".to_owned());
         if let Some(reason) = text(task, "wait_reason") {
             parts.push(reason.to_owned());
+        }
+        if task.get("needs_you").and_then(Value::as_object).is_none()
+            && task.get("attention").and_then(Value::as_object).is_none()
+            && let Some(notice) = task.get("needs_you_notice").and_then(Value::as_object)
+        {
+            let notice_val = Value::Object(notice.clone());
+            if text(task, "wait_reason").is_none()
+                && let Some(happened) = text(&notice_val, "happened")
+            {
+                parts.push(happened.to_owned());
+            }
+            if let Some(action) = text(&notice_val, "action") {
+                let mut part = format!("To do: {action}");
+                if let Some(link) = text(&notice_val, "link") {
+                    part.push_str(&format!(" (where: {link})"));
+                }
+                parts.push(part);
+            }
         }
     }
     if let Some(asked) = task.get("needs_you").filter(|v| v.is_object()) {
@@ -1093,6 +1114,30 @@ fn task_get(value: &Value) -> Option<String> {
             step_line(&mut out, ordinal_of(step, index), step);
         }
     }
+    if let Some(history) = value
+        .get("wait_history")
+        .and_then(Value::as_array)
+        .filter(|h| !h.is_empty())
+    {
+        push_line(&mut out, "Wait history:");
+        for entry in history {
+            let at = text(entry, "at").unwrap_or("?");
+            let source = text(entry, "source").unwrap_or("system");
+            let happened = text(entry, "happened").unwrap_or("");
+            let action = text(entry, "action").unwrap_or("");
+            let mut line = format!("- [{at}] ({source}) {happened}");
+            if !action.is_empty() {
+                line.push_str(&format!(" To do: {action}"));
+            }
+            if let Some(link) = text(entry, "link") {
+                line.push_str(&format!(" ({link})"));
+            }
+            if let Some(resolved) = text(entry, "resolved_at") {
+                line.push_str(&format!(" [resolved {resolved}]"));
+            }
+            push_line(&mut out, &line);
+        }
+    }
     if let Some(prompt) = text(value, "prompt") {
         push_line(&mut out, "Prompt:");
         push_line(&mut out, prompt.trim_end());
@@ -1147,6 +1192,19 @@ mod tests {
     use super::{outline, render};
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn parked_task_text_names_the_verified_pull_beside_its_reason() {
+        let task = json!({"number":325,"title":"Finish compatibility","status":"parked",
+            "shows":"needs_you","parked_pr":{"number":1461,"open":true},"wait_reason":"Checks failed."});
+        for output in [
+            render("task_get", &json!({}), &task),
+            render("tasks_list", &json!({}), &json!({"tasks":[task]})),
+        ] {
+            assert!(output.contains("PR #1461"), "{output}");
+            assert!(output.contains("Checks failed."), "{output}");
+        }
+    }
 
     /// SPEC-493 REV-005: `delivery_status` lists the review's rounds of the open pull request:
     /// the model that answered (else the one asked for) and how each stands.

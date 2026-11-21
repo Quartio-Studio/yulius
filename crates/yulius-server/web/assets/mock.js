@@ -523,6 +523,7 @@ function accountEmailOf(label) {
 }
 
 function summary(task) {
+  const idleRun = ['running', 'parked'].includes(task.status) && ['waiting', 'done'].includes(task.activity);
   return {
     id: task.id, sandbox_id: task.sandbox_id, number: task.number, title: task.title, harness: task.harness,
     harness_choice: task.harness_choice || 'chosen',
@@ -538,9 +539,12 @@ function summary(task) {
     owner_asks_first: Boolean(task.ownerAsksFirst),
     // What the agent asked a person to do (`needs_you`, SPEC-134).
     needs_you: task.needs_you ? { ...task.needs_you } : null,
+    ...(task.status === 'parked' && typeof task.parked_needs_you === 'boolean' ? { parked_needs_you: task.parked_needs_you, parked_pr: task.parked_pr } : {}),
+    ...(task.needs_you_notice ? { needs_you_notice: { ...task.needs_you_notice } } : {}),
     // Why it reads needs_attention (SPEC-472): the flag's reason, only while it reads that flag.
     attention: task.status === 'running' && task.activity === 'needs_attention' && task.attention ? { ...task.attention } : null,
     steps: stepsSummary(task), archived: task.archived, account_label: task.account_label,
+    ...(task.account_id ? { account_id: task.account_id } : {}),
     resumes_at: task.status === 'waiting_capacity' ? task.resumes_at || null : null,
     // No account of its provider usable (SPEC-246, SPEC-503): it waits for one, not for capacity.
     waits_for_account: task.status === 'waiting_capacity' && Boolean(seededDb) && !usableOf(seededDb, providerOfTask(task)),
@@ -565,9 +569,9 @@ function summary(task) {
     yulius_wait: task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done') && task.yulius_wait === true,
     merge_armed: task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done') && task.merge_armed === true,
     // Claude Code last recorded the goal as set, not met or failed (SPEC-429).
-    goal_unfinished: task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done') && task.goal_unfinished === true,
+    goal_unfinished: idleRun && task.goal_unfinished === true,
     // Its spec says its work is not finished (SPEC-491 DON-004).
-    spec_unfinished: task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done') && task.spec_unfinished === true,
+    spec_unfinished: idleRun && task.spec_unfinished === true,
     // A resting task that never ran, and the onboarding task a `pending` sandbox waits for (SPEC-153).
     not_started: task.status === 'closed' && task.neverRan === true,
     awaits_start_onboarding: task.status === 'closed' && task.neverRan === true && task.awaitsStart === true,
@@ -750,6 +754,7 @@ function detail(db, task) {
     ...(cli ? { cli_version: cli } : {}),
     ...(cli && live && cli !== db.claude.version ? { cli_moves_to: db.claude.version } : {}),
     cli_moves_stopped: Boolean(cli && live && cli !== db.claude.version && db.claude.movesStopped),
+    ...(Array.isArray(task.wait_history) && task.wait_history.length ? { wait_history: task.wait_history.map((e) => ({ ...e })) } : {}),
   };
 }
 
@@ -7597,6 +7602,10 @@ export function createMockTransport(params) {
     emit(db, { type: 'browser.action_requested', sandbox_id: 'sb_studio', tab_id: 'tab-aws', reason: 'Sign in to AWS so task #10 can deploy', task_id: 'tsk_studio_10' });
     return true;
   };
+  db.clearBrowserAction = (sandboxId, tabId, taskId = null) => {
+    emit(db, { type: 'browser.action_cleared', sandbox_id: sandboxId, tab_id: tabId, task_id: taskId });
+    return true;
+  };
   // The bot receives `text` from the person's chat (SPEC-498): `/start <code>` with the shown code
   // links it, once. Says whether it linked.
   db.telegramStart = (text) => {
@@ -7713,10 +7722,16 @@ export function createMockTransport(params) {
     movePollMs: params.has('movepoll') ? Number(params.get('movepoll')) : undefined,
     pullClock,
     // Like window.fetch, an aborted signal (a timeout, a view that went away) rejects the request.
-    fetch: (url, init = {}) => {
+    fetch: async (url, init = {}) => {
       if (init.keepalive) db.keepaliveRequests.push(url);
-      const work = handleFetch(db, url, init);
       const { signal } = init;
+      signal?.throwIfAborted();
+      const dispatch = () => handleFetch(db, url, init);
+      // Exercise dispatch order before simulated latency, with the normal abort handler.
+      const intercept = window.__yuliusTaskListReply;
+      const work = intercept && String(url).includes('/tasks?archived=')
+        ? Promise.resolve(intercept(url)).then(reply => { signal?.throwIfAborted(); return reply ?? dispatch(); })
+        : dispatch();
       if (!signal) return work;
       return new Promise((resolve, reject) => {
         const abort = () => reject(new DOMException('The operation was aborted.', 'AbortError'));

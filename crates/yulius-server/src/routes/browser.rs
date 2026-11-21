@@ -745,7 +745,11 @@ async fn pump(
                             return;
                         }
                     }
-                    Some(BrowserNotice::ActionCleared { .. }) => {}
+                    Some(BrowserNotice::ActionCleared { tab_id }) => {
+                        if !out.json(&ViewerServerMsg::ActionCleared { tab_id }).await {
+                            return;
+                        }
+                    }
                     Some(BrowserNotice::AgentActivity { tab_id, x, y, action, label }) => {
                         let message = ViewerServerMsg::AgentActivity { tab_id, x, y, action, label };
                         if !out.json(&message).await {
@@ -868,6 +872,11 @@ async fn pump(
                         } else {
                             Err((ViewerErrorCode::Invalid, "input arrives too fast; slow down".into()))
                         }
+                    }
+                    Ok(ViewerClientMsg::ClearAction { tab_id }) => {
+                        app.clear_browser_action_for_sandbox(&grant.sandbox_id, &tab_id)
+                            .await;
+                        Ok(())
                     }
                     Ok(message) => session.apply_viewer(message).await.map_err(|failure| {
                         (failure.viewer_code(), failure.message)

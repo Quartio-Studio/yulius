@@ -765,7 +765,21 @@ impl App {
                 ));
             }
             match store.insert_sandbox(&record).await {
-                Ok(()) => return Ok(record),
+                Ok(()) => {
+                    // Its onboarding (or template) lays the current bootstrap default: nothing
+                    // to upgrade later (SPEC-575 MFS-012).
+                    if let Err(err) = store
+                        .lay_bootstrap_revision(
+                            &record.id,
+                            crate::bootstrap_upgrade::BOOTSTRAP_REVISION,
+                            record.created_at,
+                        )
+                        .await
+                    {
+                        tracing::warn!(error = %err, sandbox = %record.slug, "bootstrap revision not recorded");
+                    }
+                    return Ok(record);
+                }
                 Err(AppError::Conflict(_)) => {
                     if let Some(existing) = store
                         .sandbox_by_repo(&record.repo_owner, &record.repo_name)
@@ -1086,6 +1100,7 @@ impl App {
             if !app.end_shells(&shells).await {
                 tracing::warn!(sandbox = %id, "a shell of the removed sandbox could not be ended");
             }
+            app.clear_sandbox_browser_actions(&id).await;
             app.deps.browser.stop(&id).await;
         });
     }

@@ -581,6 +581,7 @@ impl TaskStore for SqliteStore {
                 "DELETE FROM step_events WHERE task_id = ?1",
                 "DELETE FROM steps WHERE task_id = ?1",
                 "DELETE FROM task_harness_draws WHERE task_id = ?1",
+                "DELETE FROM task_wait_messages WHERE task_id = ?1",
                 "DELETE FROM switch_decisions WHERE task_id = ?1",
                 "DELETE FROM capacity_pauses WHERE task_id = ?1",
                 "DELETE FROM spans WHERE subject_kind = 'task' AND subject_id = ?1",

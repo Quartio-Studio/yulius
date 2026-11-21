@@ -97,6 +97,10 @@
 //! rollback = "scripts/cd/rollback.sh staging"
 //! migrations = "none: stateless"
 //!
+//! [local]                              # the task-local deployment (SPEC-575 MFS-010): it deploys
+//! deploy = "scripts/cd/deploy.sh local"  # and tests the project in the task's own sandbox only
+//! verify = "scripts/cd/verify.sh local"
+//!
 //! [[delivery.environments]]
 //! name = "dev-vm"
 //! after = "integration"
@@ -106,7 +110,7 @@
 
 use crate::branch_policy::BranchPolicy;
 use crate::cd::{
-    CdConfig, CdStage, CdTarget, MAX_ABOUT_CHARS, MAX_CD_ENVIRONMENTS, MAX_CD_SECRETS,
+    CdConfig, CdStage, CdTarget, LocalDeploy, MAX_ABOUT_CHARS, MAX_CD_ENVIRONMENTS, MAX_CD_SECRETS,
     MAX_CD_STATES, MAX_CD_VARIABLES, fixed_stage, valid_env_name, valid_secret_name,
 };
 use crate::delivery::{
@@ -309,6 +313,7 @@ struct Document {
     disk: Option<Table>,
     review: Option<Table>,
     merge_queue: Option<Table>,
+    local: Option<Table>,
     branch_policy: Option<Table>,
     environments: Vec<Table>,
     ci_jobs: Vec<Table>,
@@ -323,6 +328,7 @@ const DELIVERY_KEYS: &str = "preset, integration_branch, production_branch, merg
 const DISK_KEYS: &str = "caches";
 const REVIEW_KEYS: &str = "product, not_product";
 const MERGE_QUEUE_KEYS: &str = "apart";
+const LOCAL_KEYS: &str = "deploy, verify, about";
 /// Most globs in one `[review]` key.
 const MAX_REVIEW_GLOBS: usize = 50;
 const BRANCH_POLICY_KEYS: &str = "preset, types";
@@ -493,7 +499,7 @@ fn parse_document(text: &str) -> Result<Document, FormatError> {
         let name = key.get_ref().as_ref();
         let line = line_at(text, key.span().start);
         match name {
-            "docs" | "commands" | "disk" | "review" | "merge_queue" | "branch_policy" => {
+            "docs" | "commands" | "disk" | "review" | "merge_queue" | "local" | "branch_policy" => {
                 let table = Some(single_table(text, name, value, line)?);
                 match name {
                     "docs" => document.docs = table,
@@ -501,6 +507,7 @@ fn parse_document(text: &str) -> Result<Document, FormatError> {
                     "disk" => document.disk = table,
                     "review" => document.review = table,
                     "merge_queue" => document.merge_queue = table,
+                    "local" => document.local = table,
                     _ => document.branch_policy = table,
                 }
             }
@@ -984,6 +991,7 @@ pub fn parse_yulius_toml(text: &str) -> Result<ProjectConfig, FormatError> {
     branch_policy_of(&document)?;
     review_of(&document)?;
     merge_queue_of(&document)?;
+    local_of(&document)?;
     resources_env(&document)?;
     cd_of(&document)?;
     Ok(ProjectConfig {
@@ -1416,6 +1424,57 @@ pub fn parse_yulius_toml_review(text: &str) -> Result<ProductRule, FormatError> 
 /// ```
 pub fn parse_yulius_toml_merge_queue(text: &str) -> Result<Vec<Pattern>, FormatError> {
     parse_document(text).and_then(|document| merge_queue_of(&document))
+}
+
+/// The task-local deployment (SPEC-575 MFS-010): `[local]` with its `deploy` command and an
+/// optional `verify` and `about`; `None` without the table.
+///
+/// # Errors
+/// A syntax error of the file or an invalid `[local]` table.
+///
+/// # Examples
+/// ```
+/// use yulius_domain::spec_format::parse_yulius_toml_local;
+/// let local = parse_yulius_toml_local("[local]\ndeploy = \"scripts/cd/deploy.sh local\"\n")?;
+/// assert_eq!(local.map(|l| l.deploy).as_deref(), Some("scripts/cd/deploy.sh local"));
+/// # Ok::<(), yulius_domain::spec_format::FormatError>(())
+/// ```
+pub fn parse_yulius_toml_local(text: &str) -> Result<Option<LocalDeploy>, FormatError> {
+    parse_document(text).and_then(|document| local_of(&document))
+}
+
+fn local_of(document: &Document) -> Result<Option<LocalDeploy>, FormatError> {
+    let Some(table) = &document.local else {
+        return Ok(None);
+    };
+    let (mut deploy, mut verify, mut about) = (None, None, None);
+    for entry in &table.entries {
+        match entry.key.as_str() {
+            "deploy" => deploy = Some(command(entry)?),
+            "verify" => verify = Some(command(entry)?),
+            "about" => {
+                let text = string_value(entry)?.trim();
+                if text.chars().count() > MAX_ABOUT_CHARS || text.contains(['\n', '\r']) {
+                    return Err(err(
+                        entry.line,
+                        ConfigProblem::InvalidValue {
+                            key: entry.key.clone(),
+                            value: clip(text),
+                            allowed: CD_ABOUT,
+                        },
+                    ));
+                }
+                about = (!text.is_empty()).then(|| text.to_owned());
+            }
+            _ => return Err(unknown("local", entry, LOCAL_KEYS)),
+        }
+    }
+    let deploy = deploy.ok_or_else(|| err(table.line, ConfigProblem::MissingKey("deploy")))?;
+    Ok(Some(LocalDeploy {
+        deploy,
+        verify,
+        about,
+    }))
 }
 
 /// `[merge_queue]`'s `apart` patterns, checked.
@@ -2449,6 +2508,33 @@ anything = { a = [1, 2.5, { b = 1979-05-27 }] }
             problem("[[ci.jobs]]\nname = \"x\"\ncommand = \"y\"\nafter_merge = true\n"),
             Some((1, ConfigProblem::NoQuickCheck))
         );
+        Ok(())
+    }
+
+    /// SPEC-575 MFS-010: `[local]` names the task-local deployment, a deploy command with an
+    /// optional verify and about; anything else is refused at its line.
+    #[test]
+    fn local_names_the_task_local_deployment() -> TestResult {
+        let local = parse_yulius_toml_local(
+            "[local]\nabout = \"the app on this sandbox's ports\"\n\
+             deploy = \"scripts/cd/deploy.sh local\"\nverify = \"scripts/cd/verify.sh local\"\n",
+        )?
+        .ok_or("local")?;
+        assert_eq!(local.deploy, "scripts/cd/deploy.sh local");
+        assert_eq!(local.verify.as_deref(), Some("scripts/cd/verify.sh local"));
+        assert_eq!(
+            local.about.as_deref(),
+            Some("the app on this sandbox's ports")
+        );
+        assert_eq!(parse_yulius_toml_local("[commands]\ntest = \"t\"\n")?, None);
+        for (bad, says) in [
+            ("[local]\nverify = \"v\"\n", "deploy"),
+            ("[local]\ndeploy = \"d\"\nhost = \"x\"\n", "host"),
+            ("[local]\ndeploy = \"\"\n", "deploy"),
+        ] {
+            let error = parse_yulius_toml(bad).err().ok_or("refused")?;
+            assert!(error.to_string().contains(says), "{bad}: {error}");
+        }
         Ok(())
     }
 

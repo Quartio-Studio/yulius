@@ -3,7 +3,8 @@
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params, params_from_iter};
 use yulius_app::ci::{
-    CiJobRecord, CiJobUpdate, CiMinutesRow, CiRunRecord, CiRunUpdate, FiledFinding, Quarantined,
+    CiJobRecord, CiJobUpdate, CiMinutesRow, CiRunRecord, CiRunUpdate, FiledFinding, PullHead,
+    Quarantined,
 };
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::ports::store_ext::CiStore;
@@ -265,6 +266,22 @@ impl CiStore for SqliteStore {
         .await
     }
 
+    async fn ci_planning_runs(
+        &self,
+        sandbox: &SandboxId,
+        limit: u32,
+    ) -> AppResult<Vec<CiRunRecord>> {
+        let sandbox = sandbox.as_str().to_owned();
+        self.call(move |c| {
+            select_runs(
+                c,
+                "sandbox_id = ?1 ORDER BY rowid DESC LIMIT ?2",
+                &[&sandbox, &i64::from(limit)],
+            )
+        })
+        .await
+    }
+
     async fn ci_runs_for_sha(&self, sandbox: &SandboxId, sha: &str) -> AppResult<Vec<CiRunRecord>> {
         let (sandbox, sha) = (sandbox.as_str().to_owned(), sha.to_owned());
         self.call(move |c| {
@@ -272,6 +289,43 @@ impl CiStore for SqliteStore {
                 c,
                 "sandbox_id = ?1 AND sha = ?2 ORDER BY queued_at DESC, rowid DESC",
                 &[&sandbox, &sha],
+            )
+        })
+        .await
+    }
+
+    async fn ci_runs_for_pull_head(
+        &self,
+        sandbox: &SandboxId,
+        head: PullHead<'_>,
+    ) -> AppResult<Vec<CiRunRecord>> {
+        let (head, exact_only) = match head {
+            PullHead::Exact(sha) => (sha.to_owned(), true),
+            PullHead::WaitArgument(input) => (input.to_owned(), input.len() == 64),
+        };
+        let sandbox = sandbox.as_str().to_owned();
+        // A hexadecimal range uses the (sandbox_id, sha) index. Two distinct
+        // commits suffice to rule out ambiguity, regardless of the sandbox’s age.
+        self.call(move |c| {
+            if exact_only || head.len() == 40 {
+                let exact = select_runs(
+                    c,
+                    "sandbox_id = ?1 AND sha = ?2 ORDER BY rowid DESC",
+                    &[&sandbox, &head],
+                )?;
+                if exact_only || !exact.is_empty() {
+                    return Ok(exact);
+                }
+            }
+            select_runs(
+                c,
+                "sandbox_id = ?1 AND sha = (
+                    SELECT MIN(sha) FROM (
+                        SELECT DISTINCT sha FROM ci_runs
+                        WHERE sandbox_id = ?1 AND sha >= ?2 AND sha < ?3 LIMIT 2
+                    ) HAVING COUNT(*) = 1
+                ) ORDER BY rowid DESC",
+                &[&sandbox, &head, &format!("{head}g")],
             )
         })
         .await
@@ -1650,6 +1704,21 @@ mod tests {
             store.claim_security_finding(&one, finding, at).await?,
             "a forgotten finding is claimed anew"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_scheduler_keeps_the_latest_admissions_even_when_they_inherit_an_old_place()
+    -> TestResult {
+        let store = SqliteStore::open_in_memory()?;
+        let sandbox = SandboxId::parse("s1")?;
+        for (id, place) in [("old", 20), ("pass", 30), ("refusal", 2)] {
+            store.insert_ci_run(&run(id, "head", place)?, &[]).await?;
+        }
+        let planning = store.ci_planning_runs(&sandbox, 2).await?;
+        let ids: Vec<_> = planning.iter().map(|run| run.id.as_str()).collect();
+        assert_eq!(ids, ["refusal", "pass"]);
+        assert_eq!(store.ci_runs(&sandbox, 1).await?[0].id, "pass");
         Ok(())
     }
 

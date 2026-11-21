@@ -439,6 +439,7 @@ impl GitHubPort for FakeGitHub {
             state: "open".into(),
             merged: false,
             base: pull.base.clone(),
+            base_sha: String::new(),
             head: pull.head.clone(),
             head_sha,
             mergeable: None,
@@ -1345,8 +1346,11 @@ impl FakeGitHub {
                 if let Some(sha) = remote.branch_sha(&pull.head) {
                     pull.head_sha = sha;
                 }
-                if strict && let Some(base) = remote.branch_sha(&pull.base) {
-                    pull.behind = remote.contains(&base, &pull.head_sha) == Some(false);
+                if let Some(base) = remote.branch_sha(&pull.base) {
+                    if strict {
+                        pull.behind = remote.contains(&base, &pull.head_sha) == Some(false);
+                    }
+                    pull.base_sha = base;
                 }
             }
         }

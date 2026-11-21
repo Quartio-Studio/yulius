@@ -2979,6 +2979,10 @@ impl BrowserInstance {
             | ViewerClientMsg::Watch { .. }
             | ViewerClientMsg::Ack { .. }
             | ViewerClientMsg::Keyframe => Ok(None),
+            ViewerClientMsg::ClearAction { tab_id } => {
+                self.clear_action(&tab_id);
+                Ok(None)
+            }
         }
     }
 

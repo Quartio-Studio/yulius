@@ -1851,6 +1851,12 @@ fn foundations(root: &Path, toml: Option<&str>) -> Foundations {
                     .collect()
             })
             .unwrap_or_default(),
+        merge_first: toml
+            .and_then(|text| yulius_domain::spec_format::parse_yulius_toml_cd(text).ok())
+            .and_then(|cd| cd.merge_first().map(|target| target.name.clone())),
+        local: toml
+            .and_then(|text| yulius_domain::spec_format::parse_yulius_toml_local(text).ok())
+            .flatten(),
     }
 }
 

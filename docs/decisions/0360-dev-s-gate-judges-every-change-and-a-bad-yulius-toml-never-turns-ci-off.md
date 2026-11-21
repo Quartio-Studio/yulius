@@ -72,6 +72,7 @@ The rules allowed both incidents:
   repair an invalid `dev` fails naming `dev`'s problem, and runs again by itself once `dev`'s
   file is valid. Where Git cannot tell whether the change touched the file, its own file is
   checked.
+- After repair, a configuration refusal invalidates earlier completed verdicts on the same commit for scheduling. Read the bounded history by admission because a replacement can inherit an older queue place. Keep active runs and reference-specific cancellations in the plan. [SPEC-558](../../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
 - **The last valid gate runs while dev's file is invalid** (CFG-003). The gate in force is that of
   the newest first-parent commit of the integration branch, at most 100 back, whose file is
   valid. It runs until a fix merges. When Git cannot walk the history, nothing is judged until it

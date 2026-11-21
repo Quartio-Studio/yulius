@@ -28,6 +28,9 @@ pub struct AppConfig {
     pub yulius_exe: PathBuf,
     /// Whether sandboxes run in OS containment.
     pub contained: bool,
+    /// Whether a server start brings onboarded sandboxes to the current Infra bootstrap revision
+    /// with an upgrade task each (SPEC-575 MFS-012); the server's own setting, off in tests.
+    pub bootstrap_upgrades: bool,
     /// Maximum concurrently live sessions.
     pub max_live_sessions: u32,
     /// How long a task whose turn ended and that waits for a person keeps its idle session
@@ -187,6 +190,7 @@ impl AppConfig {
             internal_url: internal_url.trim_end_matches('/').to_owned(),
             yulius_exe,
             contained: false,
+            bootstrap_upgrades: false,
             max_live_sessions: 8,
             park_after_ms: crate::parking::DEFAULT_PARK_AFTER_MS,
             parked_pr_read_ms: 750,
@@ -362,6 +366,21 @@ pub struct App {
     /// The overlaps a holding task was told of (or is being told), by holder, claimer and paths:
     /// one message each (SPEC-493 SCO-001).
     pub(crate) scope_told: std::sync::Mutex<std::collections::BTreeSet<String>>,
+    /// Per-sandbox browser session notice watchers `(watcher_id, AbortHandle)` so
+    /// `ActionCleared` / `Disconnected` run once per sandbox regardless of connected viewer count
+    /// or `BrowserPort::ensure` wrapper allocations (SPEC-578).
+    pub(crate) browser_watchers:
+        Mutex<HashMap<yulius_domain::ids::SandboxId, (u64, tokio::task::AbortHandle)>>,
+    /// Monotonic id generator for [`Self::browser_watchers`] entries.
+    pub(crate) next_browser_watcher_id: std::sync::atomic::AtomicU64,
+    /// Counts of `(sandbox, tab_id)` browser action clears already persisted and broadcast by
+    /// `App` before `session.clear_action` emitted `BrowserNotice::ActionCleared`, so the sandbox
+    /// watcher skips duplicate DB scans and duplicate `UiEvent::BrowserActionCleared` (SPEC-578).
+    pub(crate) handled_browser_clears:
+        Mutex<HashMap<(yulius_domain::ids::SandboxId, String), usize>>,
+    /// True once server shutdown begins (`stop_workspace_services`), so persisted browser
+    /// handoffs survive orderly restarts instead of being cleared on browser disconnect (SPEC-578).
+    pub(crate) shutting_down: std::sync::atomic::AtomicBool,
 }
 
 impl App {
@@ -436,6 +455,10 @@ impl App {
             github_callback: crate::github_callback::CallbackKept::default(),
             docker_told: crate::docker_trouble::DockerTold::default(),
             scope_told: std::sync::Mutex::default(),
+            browser_watchers: Mutex::default(),
+            next_browser_watcher_id: std::sync::atomic::AtomicU64::new(1),
+            handled_browser_clears: Mutex::default(),
+            shutting_down: std::sync::atomic::AtomicBool::new(false),
         })
     }
 

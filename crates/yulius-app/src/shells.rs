@@ -1644,6 +1644,8 @@ impl App {
     /// the next server process, like agent sessions — and stops every browser (browsers do not
     /// outlive the server; their processes are reaped).
     pub async fn stop_workspace_services(&self) {
+        self.shutting_down
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let shells: Vec<Arc<ShellRuntime>> = self
             .shells
             .shells

@@ -161,6 +161,11 @@ deploy tool's inventory, rollout folders) goes where the hand-over says with sec
 secret_state_save; configs naming keys by a laptop path point to files secret_copy_to_env writes. \
 A deploy that uses such a state runs from CD with the state named in its [cd.<name>] table \
 (states = [\"NAME\"]): each run restores it into $YULIUS_STATE_NAME and saves it after. \
+A shared staging target (a machine people test on before production) becomes the merge-first \
+target (skill infra-bootstrap step 3): `merge_first = true` on its dev-stage table, the long \
+checks as `after_merge = true` jobs (every check kept, at least one quick), and a `[local]` \
+deployment into the task's own sandbox; without one, the full suite stays on pull requests and \
+[cd.dev] `about` says there is no shared target. \
 Only a credential or machine nobody gave: ask with needs_you and go on.";
 
 /// The security scan at onboarding (SPEC-195 VIB-002, SPEC-217 VDP-002), skill infra-bootstrap:
@@ -1865,6 +1870,14 @@ mod tests {
                 .any(|step| step.contains("open the pull request"))
         );
         assert!(prompt.contains("infra-bootstrap"));
+        // SPEC-575 MFS-011: merge-first is the default with a shared staging target.
+        assert!(
+            prompt.contains("`merge_first = true`")
+                && prompt.contains("`after_merge = true` jobs")
+                && prompt.contains("`[local]`")
+                && prompt.contains("no shared target"),
+            "{prompt}"
+        );
         // F 2026-10-13 (SPEC-054 DCT-002): onboarding sets up a dead-code check with its tools.
         assert!(prompt.contains("dead-code-cleanup"));
         assert!(prompt.contains("--no-verify"));

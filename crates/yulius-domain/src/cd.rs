@@ -116,6 +116,18 @@ pub fn env_label(name: &str) -> &str {
     if name == "prod" { "production" } else { name }
 }
 
+/// The task-local deployment (`[local]`, SPEC-575 MFS-010): how a task builds, deploys and
+/// tests the project inside its own sandbox before it merges.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalDeploy {
+    /// Deploys into this sandbox (its ports, its own test data).
+    pub deploy: String,
+    /// Checks the local deployment from outside.
+    pub verify: Option<String>,
+    /// One line for people.
+    pub about: Option<String>,
+}
+
 /// One environment's table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CdTarget {

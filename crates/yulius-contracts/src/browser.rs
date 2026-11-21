@@ -366,6 +366,11 @@ pub enum ViewerClientMsg {
     /// The viewer's decoder needs a keyframe (it failed or fell too far behind). Rate-limited by
     /// the server.
     Keyframe,
+    /// Mark a tab's pending user-action handoff done/cleared (SPEC-578).
+    ClearAction {
+        /// The tab whose pending action request is cleared.
+        tab_id: TabId,
+    },
 }
 
 /// How a viewer receives pages (SPEC-001 BRW-005, SPEC-002 ADR-15).
@@ -420,6 +425,11 @@ pub enum ViewerServerMsg {
         reason: String,
         /// Requesting task, if any.
         task_id: Option<String>,
+    },
+    /// A tab's pending user-action request was cleared (SPEC-578).
+    ActionCleared {
+        /// Tab whose request was cleared.
+        tab_id: TabId,
     },
     /// A request failed.
     Error {

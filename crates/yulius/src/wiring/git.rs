@@ -895,6 +895,10 @@ impl GitPort for GitAdapter {
         blocking(move || git.list_dir(&repo, &rev, &dir)).await
     }
 
+    fn has_cd_mirror(&self) -> bool {
+        true
+    }
+
     async fn cd_mirror_fetch(
         &self,
         mirror: &Path,

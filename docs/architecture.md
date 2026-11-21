@@ -1544,6 +1544,7 @@ request as it is:
 
 - a pull request's own run (its pre-check) always finishes: until it passed, Yulius never merges
   the integration branch into it, so a moving base never supersedes it;
+- when open PRs share a commit, the scheduler tests it once. The merge queue and its owner’s `yulius wait` use that ordinary run until the PR has its own run at that head. A later admission after configuration repair replaces a refusal.
 - green and up to date: merged now;
 - green, or its own run still queued or running, and behind: into the next merge candidate
   (`merge_train.rs`), the integration branch with up to 8 such pull requests merged in, in arm
@@ -1618,6 +1619,7 @@ person must act first (a prompt on screen, `needs_you`) or may have a draft in t
   the kept failures, partial observations from siblings stopped by a failed job, and the exact
   `ci_status` run), or one that errored;
 - a red merge candidate of two or more holding it, with "do not re-arm, merge or push";
+- a failed single-PR candidate, with the source CI run, failing job and a bounded, redacted excerpt. The queue verifies the live PR head and integration base even when another candidate tested the same tree. Unavailable diagnostic or redaction data leaves the arm in place within the verification budget. A running ordinary check retains its original wait deadline. The queue saves the decision in the task’s latest completed merge wait before clearing its arm. The record identifies the original PR, head, tested base and tree, source run and redacted failure. Hourly cleanup retains it. Startup uses the activation time to discard a consumed arm or retire its decision for a newer saved arm.
 - a conflict with the integration branch (checked in the task's worktree), once per head;
 - how its armed merge ended (the slot's outcome), and its merge (`merged_text`), after which the
   watch is over for it;
@@ -2115,6 +2117,14 @@ run for these reads per application. Each keeps its permit until Git returns.
 [ADR-0409](decisions/0409-report-the-pr-that-blocks-a-parked-task.md)
 
 Task lists share one 750 ms PR verification budget. Each batch of up to eight parked rows receives a share of the remaining time. Home verifies parked rows across all visible projects before it counts live rows. A slow local Git read for a running task cannot spend the parked rows’ lookup time. The HTTP response uses the plan read by the verifier for both progress and detailed steps. [ADR-0412](decisions/0412-share-parked-pr-read-time-across-task-lists.md)
+
+The browser uses the parked summary’s verified Needs you group and its open steps, spec or goal when classifying a task. It retains the displayed reason for a human decision or failing PR. [ADR-0412](decisions/0412-share-parked-pr-read-time-across-task-lists.md)
+
+The sidebar watches the bounded task list and Git overview independently. It can update a parked group while the Git read is pending. The list reader confirms an overlapping parked lifecycle change once. The mounted terminal uses the refreshed row for plan progress and owner notices while a detail read is outstanding. Opening the terminal or Task Info verifies parked work and publishes its progress, owner decision and PR state to the existing parked row. The request order resolves overlapping answers from the list, detail and Git overview. A terminal detail can also update an existing task’s lifecycle when its park event was missed. An older outstanding list retains that transition, even if its snapshot omitted the task. A terminal that discovers a resume also publishes the active subscription and work state to the sidebar. A Closed, Stopped or Failed task can be restored after archive without changing its process status. Its unarchived terminal detail verifies membership in the active task list, even if an older list omitted the row. A newer list that restores a row also updates its mounted terminal. Archive detail removes the active row and notifies the terminal even when an empty list has already omitted it. Overlapping reads keep the archive observation until a newer Undo or removal resolves the task’s membership. [ADR-0417](decisions/0417-refresh-parked-task-status-alongside-the-git-overview.md)
+
+When browser list requests overlap, the newest successful snapshot supplies the task list. A failed cold task page recovers when an overlapping request supplies the list. [ADR-0418](decisions/0418-keep-the-newest-successful-task-list.md)
+
+MCP parked task reads use the verifier’s plan snapshot for progress and detailed steps. The Needs you filter uses the group rendered with the owner’s current decision. Each page shares one parked PR lookup budget. [ADR-0416](decisions/0416-parked-mcp-rows-use-the-verified-plan-and-pr.md)
 
 The end-of-day digest (`yulius-app/src/digest.rs`, SPEC-512 part 3,
 [decision 0380](decisions/0380-an-end-of-day-digest-built-from-task-state.md)) runs from the same
@@ -3182,8 +3192,11 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
   - `tell_staging_outcomes` types each task's outcome into its session once.
   - `cd_status` and the CD page (`CdEnvironment.staging`) list the queue with revisions and run
     ids.
-  - A person's production deploy that promotes waits until staging serves the integration
-    head, verified (read through the CD mirror in `cd_prepare`).
+  - Every promotion waits until staging serves the integration head, verified, read through the
+    CD mirror: `cd_prepare` for a production deploy, `staging_promotion_head` for the Delivery
+    page and the automatic one.
+    - A head that cannot be read is refused.
+    - The queue's verified deploy runs the automatic promotion that waited.
   - A failed deploy that announced a rollback barrier is not restored.
 - **Idempotence.** Each move is a compare-and-set from the state it was read in. One live
   request per requester and revision, and one success per task and environment. The background
@@ -3204,6 +3217,25 @@ stateDiagram-v2
     testing --> superseded: a newer revision of the task
     ready --> superseded: a newer revision of the task
 ```
+
+### Merge-first as the bootstrap default
+
+[Decision 0415](decisions/0415-merge-first-is-the-bootstrap-default-and-reaches-onboarded-projects-through-a-task.md)
+(SPEC-575 MFS-010 to MFS-012).
+
+- **The default, taught.** The built-in `infra-bootstrap` skill, its workflow, the
+  `delivery-pipeline` skill, the onboarding prompt (`onboarding.rs` `CD_SETUP`) and the
+  new-project template make a shared staging target merge-first and add a `[local]` deployment.
+- **The briefing.**
+  - `Foundations.merge_first` replaces "merges deploy nothing" with how staging changes.
+  - `Foundations.local` names `[local]` beside the dev-server ports
+    (`spec_format::parse_yulius_toml_local`).
+- **The upgrade.** At a server start (`App::create_bootstrap_upgrades`, `bootstrap_upgrade.rs`),
+  each onboarded sandbox below `BOOTSTRAP_REVISION` gets one Infra bootstrap task.
+  - It is owned by the sandbox's creator, with an automation's origin.
+  - Its record in `bootstrap_upgrades` (migration 0079) is `laid` at creation or before
+    onboarding, `claimed` while the task is being made, and `linked` once it is made.
+  - Every start finishes a claim left unfinished: it adopts a task made since, else makes it.
 
 ### Rollback
 
@@ -3900,9 +3932,18 @@ on, after a restart as before one. The same holds for a question that took a sec
 flag over.
 
 A live `yulius wait` under Codex counts as a wait whether Codex execs it directly or launches
-it through a shell. The process probe excludes waits adopted by the sandbox init. A failed PR
-check has its own action in the task strip. The terminal reply banner is for a person's turn
-or an explicit request ([SPEC-552](../.ai/specs/SPEC-552-on-codex-agent-keeps-calling-me-even-if.md)).
+it through a shell. The process probe excludes waits adopted by the sandbox init. Every task in
+Needs you carries a unified redacted `NeedsYouNoticeView` (`App::resolve_needs_you_notice`) naming
+what happened, what to do, and where to act—shown beside the task status (even when stopped or
+parked), in the attention bar, Needs you lists, notifications, and identically across `tasks_list`
+and `task_get`, with deduplicated timestamped episodes persisted in `task_wait_messages`. Browser
+handoffs (`browser_request_user_action`) persist on `tasks.needs_you` and clear across tab state,
+persisted requests, and legacy browser `tasks.attention` when answered, dismissed, superseded,
+closed, viewer-cleared (`clear_action`), or ended; untold failed Yulius CI runs on a live session
+and newer progressing CI runs keep the task in Working until human action is needed
+([SPEC-552](../.ai/specs/SPEC-552-on-codex-agent-keeps-calling-me-even-if.md),
+[SPEC-578](../.ai/specs/SPEC-578-show-an-actionable-message-whenever-a-ta.md),
+[ADR-0414](decisions/0414-actionable-needs-you-notices-and-wait-history.md)).
 
 Needs you means a person has to act. An idle agent that stopped reads "Your turn" under Needs you only
 while its work is visibly unfinished: plan steps open, or a goal that Claude Code last recorded as set,
@@ -4028,6 +4069,7 @@ outcome recorded")]
 `yulius.toml` is read with a TOML 1.1 parser (`spec_format::config`, the `toml` crate's spanned
 document): any valid layout parses, and invalid TOML is refused with the parser's message at its
 line.
+After the integration configuration is repaired, the scheduler reads its bounded run history in admission order. For a refused head, completed verdicts admitted before the refusal cannot cover the repair. A later active run covers it, and a cancellation retains its reference-specific effect.
 
 - **The gate in force** (`App::ci_configured_gate`) comes from the integration branch's head.
   While that file is invalid, the gate comes from the newest first-parent commit (at most 100

@@ -555,7 +555,8 @@ watching, steering and unblocking.
   and kept 180 days (SPEC-137): a task's waits, states, steps (with their tokens), runs, pauses,
   pull request and merge waits; a CI run's queue (and why), jobs and the stages their output names
   (`::yulius-stage`, with test counts); a deploy's confirmation, promotion, deploy and verify; what a
-  CI job or deploy used (CPU time, peak memory, bytes written; SPEC-154). The Dashboard's Pipeline
+  CI job or deploy used (CPU time, peak memory, bytes written; SPEC-154). Each task keeps its
+  latest completed merge wait beyond the telemetry window (SPEC-558). The Dashboard's Pipeline
   (stages) tab (`?section=pipeline`; `/pipeline` still opens it) shows deployment frequency, lead
   time, change failure rate and time to restore for dev and production, any stage's daily p50 and
   p90 and the stage table (with CPU and memory p50 · p90) with CSV/JSON export; a CI run, a deploy
@@ -570,9 +571,22 @@ watching, steering and unblocking.
   exact commits GitHub reports for the protected branches, dev inside the sandbox and production
   outside it, with the agent secrets allowed for each (see the secrets vault below), and shows each run on the CD
   (deployment) page; a confirmed deploy shows its run's view at once, saying what it checks and
-  promotes, and that view becomes the run. A merge deploys nothing: a person or an agent
-  (`cd_deploy`) deploys dev when it is wanted, or the ready-made "Deploy dev every night"
-  automation deploys and tests it. Every environment that deploys also defines its rollback
+  promotes, and that view becomes the run. A merge deploys nothing by itself: a person or an
+  agent (`cd_deploy`) deploys dev when it is wanted, or the ready-made "Deploy dev every night"
+  automation deploys and tests it.
+  - **Merge-first staging** (SPEC-575) applies to a project whose shared staging target is
+    `merge_first = true`.
+    - Pull requests merge on the quick checks. The full suite (`after_merge` jobs) runs once on
+      the merged revision.
+    - A task asks for staging with `cd_deploy` once its delivery merged. Yulius deploys and
+      verifies that tested revision in revision order, once per task.
+    - A failing candidate leaves staging on its last verified release and tells the task.
+    - Production is promoted only from the revision staging verified.
+  - Each task tests locally first with the project's `[local]` deployment inside its own sandbox.
+  - New projects with such a target are bootstrapped this way, and onboarded ones get one task
+    that adopts it.
+
+  Every environment that deploys also defines its rollback
   (SPEC-415): a command that redeploys a release Yulius kept from an earlier deploy, never
   building, and a line saying how data changes stay compatible. The CD page lists each part's
   three newest releases (older ones fold), each with one action: "Roll back to previous" on the

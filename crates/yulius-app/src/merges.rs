@@ -232,7 +232,6 @@ impl App {
         if merge_now {
             // The page's merge, which audits it under the person's name.
             let view = self.merge_task_pr(ctx, id).await?;
-            self.clear_armed(&task);
             return Ok(json!({
                 "merged": true,
                 "armed": false,
@@ -295,7 +294,7 @@ impl App {
             self.dlv_check_policy(&sandbox, &profile, pull.number, &facts)
                 .await?;
         }
-        if !self.arm_merge_for_person(&task, &head, &login) {
+        if !self.arm_merge_for_person(&task, &head, &login).await? {
             return Ok(json!({
                 "merged": false,
                 "armed": true,

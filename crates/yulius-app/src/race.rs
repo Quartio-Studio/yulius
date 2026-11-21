@@ -12,6 +12,8 @@ use std::path::Path;
 pub enum Point {
     /// A parked read classified the task, before the response renders its plan. Keyed by task ID.
     ParkedStatusRead,
+    /// A queued row reads session capacity to explain its wait. Keyed by task ID.
+    QueuedRowCapacity,
     /// An idle running row reads its pending PR news. Keyed by task ID.
     LiveRowPrNews,
     /// A review starts reading its Git head. Keyed by worktree path.
@@ -120,6 +122,8 @@ pub enum Point {
     /// A failed candidate has checked its members for failures and is deciding how to
     /// account for their runs. The path is the candidate run id.
     FailedTrainDeciding,
+    /// Dissolution is about to write its CI and audit records. The path is the run id.
+    TrainDissolving,
     /// Start onboarding (SPEC-256) read the sandbox `pending`; the start has not read it again
     /// yet. The path is the sandbox id.
     OnboardingApproved,

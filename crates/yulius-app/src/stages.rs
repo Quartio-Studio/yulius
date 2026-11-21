@@ -491,6 +491,33 @@ impl OutputStages {
     }
 }
 
+impl NewSpan {
+    pub(crate) fn finished_task(
+        sandbox: SandboxId,
+        task: &TaskId,
+        (kind, name): (&str, &str),
+        (started_at, ended_at): (Timestamp, Timestamp),
+        outcome: &str,
+        detail: Value,
+    ) -> Self {
+        Self {
+            sandbox_id: sandbox,
+            subject_kind: SubjectKind::Task,
+            subject_id: task.as_str().to_owned(),
+            key: format!("{kind}@{}", started_at.0),
+            parent_key: None,
+            kind: kind.to_owned(),
+            name: name.to_owned(),
+            environment: None,
+            job: None,
+            started_at,
+            ended_at: Some(ended_at),
+            outcome: Some(outcome.to_owned()),
+            detail: Some(detail.to_string()),
+        }
+    }
+}
+
 impl App {
     /// Applies span writes; a failed one is logged and dropped (SPEC-137 STG-003).
     pub(crate) async fn record_spans(
@@ -555,21 +582,14 @@ impl App {
             Ok(Some(record)) => record.sandbox_id,
             _ => return,
         };
-        self.record_span(NewSpan {
-            sandbox_id: sandbox,
-            subject_kind: SubjectKind::Task,
-            subject_id: task.as_str().to_owned(),
-            key: format!("{kind}@{}", started_at.0),
-            parent_key: None,
-            kind: kind.to_owned(),
-            name: name.to_owned(),
-            environment: None,
-            job: None,
-            started_at,
-            ended_at: Some(ended_at),
-            outcome: Some(outcome.to_owned()),
-            detail: Some(detail.to_string()),
-        })
+        self.record_span(NewSpan::finished_task(
+            sandbox,
+            task,
+            (kind, name),
+            (started_at, ended_at),
+            outcome,
+            detail,
+        ))
         .await;
     }
 

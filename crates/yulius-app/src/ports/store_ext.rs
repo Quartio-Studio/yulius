@@ -492,11 +492,25 @@ pub trait CiStore: Send + Sync {
         sandbox: &SandboxId,
         limit: u32,
     ) -> AppResult<Vec<crate::ci::CiRunRecord>>;
+    /// Bounded scheduler history, most recently admitted first. A new run may
+    /// inherit an older queue position from the head it superseded.
+    async fn ci_planning_runs(
+        &self,
+        sandbox: &SandboxId,
+        limit: u32,
+    ) -> AppResult<Vec<crate::ci::CiRunRecord>>;
     /// Runs of a sandbox for one commit, newest first.
     async fn ci_runs_for_sha(
         &self,
         sandbox: &SandboxId,
         sha: &str,
+    ) -> AppResult<Vec<crate::ci::CiRunRecord>>;
+    /// Runs at a full or uniquely abbreviated PR head, latest admission first.
+    /// A transferred queue place can precede an older verdict at the same head.
+    async fn ci_runs_for_pull_head(
+        &self,
+        sandbox: &SandboxId,
+        head: crate::ci::PullHead<'_>,
     ) -> AppResult<Vec<crate::ci::CiRunRecord>>;
     /// Queued and running runs of every sandbox, oldest first.
     async fn active_ci_runs(&self) -> AppResult<Vec<crate::ci::CiRunRecord>>;
@@ -844,6 +858,19 @@ pub struct StagingChange {
     pub clear_cd_run: bool,
 }
 
+/// A sandbox's recorded Infra bootstrap revision (SPEC-575 MFS-012, migration 0079).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BootstrapUpgrade {
+    /// The revision.
+    pub revision: u32,
+    /// `laid`, `claimed` or `linked`.
+    pub state: String,
+    /// Its upgrade task, once linked (and not deleted since).
+    pub task_id: Option<TaskId>,
+    /// When it was recorded (for a claim: claimed).
+    pub claimed_at: Timestamp,
+}
+
 /// Merge-first staging requests (SPEC-575 MFS-005, MFS-008, migration 0078). Every move is a
 /// compare-and-set from the state it was decided on, so a restart or a second tick never moves a
 /// request twice.
@@ -895,6 +922,33 @@ pub trait StagingStore: Send + Sync {
     async fn untold_staging_requests(&self) -> AppResult<Vec<StagingRequestRecord>>;
     /// Records the outcome as told; `false` when it already was.
     async fn mark_staging_told(&self, id: &str) -> AppResult<bool>;
+    /// Claims making the upgrade task of Infra bootstrap `revision` for `sandbox` (SPEC-575
+    /// MFS-012, migration 0079): `true` when it recorded the claim, which happens only while
+    /// its recorded revision is older (or none). A claim stays until its task is linked.
+    async fn claim_bootstrap_upgrade(
+        &self,
+        sandbox: &SandboxId,
+        revision: u32,
+        at: Timestamp,
+    ) -> AppResult<bool>;
+    /// Records that `sandbox` is at `revision` with nothing to upgrade (created or onboarded at
+    /// it), unless a record at it or later exists.
+    async fn lay_bootstrap_revision(
+        &self,
+        sandbox: &SandboxId,
+        revision: u32,
+        at: Timestamp,
+    ) -> AppResult<()>;
+    /// Links the upgrade task of a claimed revision, only while it is claimed: `false`
+    /// otherwise, so a task is adopted or linked exactly once.
+    async fn link_bootstrap_task(
+        &self,
+        sandbox: &SandboxId,
+        revision: u32,
+        task: &TaskId,
+    ) -> AppResult<bool>;
+    /// The sandbox's recorded bootstrap revision, its state, task and when it was recorded.
+    async fn bootstrap_upgrade(&self, sandbox: &SandboxId) -> AppResult<Option<BootstrapUpgrade>>;
     /// The commits a task's pull requests landed on `branch` (migration 0077), in landing order.
     async fn task_landings(&self, task: &TaskId, branch: &str) -> AppResult<Vec<String>>;
 }
@@ -940,6 +994,31 @@ pub trait DigestStore: Send + Sync {
     async fn latest_digest(&self, user: &UserId) -> AppResult<Option<StoredDigest>>;
 }
 
+/// One timestamped Needs You system or agent message recorded in a task's history (SPEC-578).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WaitMessageRecord {
+    /// Task id.
+    pub task_id: TaskId,
+    /// Stable wait-episode key (`UNIQUE (task_id, episode)`).
+    pub episode: String,
+    /// `agent`, `browser`, `terminal`, or `system`.
+    pub source: String,
+    /// What happened.
+    pub happened: String,
+    /// Optional problem/context.
+    pub problem: Option<String>,
+    /// Concrete next action.
+    pub action: String,
+    /// Relevant Yulius link.
+    pub link: String,
+    /// Whether the person was asked to decide.
+    pub decision: bool,
+    /// When the wait episode was recorded.
+    pub created_at: Timestamp,
+    /// When the wait episode ended, or `None` while open.
+    pub resolved_at: Option<Timestamp>,
+}
+
 /// What a task's agent asked a person to do (SPEC-134 CDT-004, column `tasks.needs_you`).
 #[async_trait]
 pub trait NeedsYouStore: Send + Sync {
@@ -983,6 +1062,27 @@ pub trait NeedsYouStore: Send + Sync {
     ) -> AppResult<bool>;
     /// Tasks of a sandbox with an open request.
     async fn needs_you_tasks(&self, sandbox: &SandboxId) -> AppResult<Vec<TaskId>>;
+    /// Records one wait-episode message idempotently (SPEC-578): resolves any other open wait
+    /// message for the same task and keeps a single row per `(task_id, episode)`. Returns `true`
+    /// when a new row was inserted.
+    async fn record_wait_message(&self, entry: &WaitMessageRecord) -> AppResult<bool>;
+    /// Marks every open wait message of `task` resolved at `at`. Returns `true` when any row
+    /// changed.
+    async fn resolve_wait_messages(&self, task: &TaskId, at: Timestamp) -> AppResult<bool>;
+    /// Timestamped wait messages of `task`, newest first (up to `limit`).
+    async fn task_wait_messages(
+        &self,
+        task: &TaskId,
+        limit: u32,
+    ) -> AppResult<Vec<WaitMessageRecord>>;
+    /// Reads the stored `tasks.attention` payload regardless of current `activity`, for legacy
+    /// browser-handoff fallback (SPEC-578).
+    async fn stored_task_attention(
+        &self,
+        task: &TaskId,
+    ) -> AppResult<Option<(crate::attention::AttentionRecord, Timestamp)>>;
+    /// Clears `tasks.attention` when a legacy browser handoff is resolved (SPEC-578).
+    async fn clear_stored_task_attention(&self, task: &TaskId) -> AppResult<bool>;
 }
 
 /// Notepads (SPEC-041): one row per scope (`team`, `sandbox:<sid>`).
@@ -1029,6 +1129,18 @@ pub trait SpanStore: Send + Sync {
         figures: &[(String, f64)],
         add: bool,
     ) -> AppResult<()>;
+    /// Retires an observed singleton only while the same decision is still current.
+    async fn retire_singleton(
+        &self,
+        task: &TaskId,
+        observed: &crate::stages::SpanRecord,
+        now: Timestamp,
+    ) -> AppResult<bool>;
+    /// Latest merge wait for this task, including ordinary decisions that supersede a singleton.
+    async fn latest_merge_wait(
+        &self,
+        task: &TaskId,
+    ) -> AppResult<Option<crate::stages::SpanRecord>>;
     /// A subject's newest `limit` spans, in start order.
     async fn subject_spans(
         &self,
