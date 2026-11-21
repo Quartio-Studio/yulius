@@ -80,13 +80,11 @@ never switch an existing worktree to another branch. Never work directly on
 ([ADR-0436](docs/decisions/0436-yuliuss-full-suite-runs-after-the-merge-and-promotion-comes-from-verified-staging.md)):
 a pull request merges on `quality` and `security` (and any job it adds or changes); both `test`
 shards and `e2e` run once on the merged revision. So before the review run the tests and e2e
-specs your change touches yourself. After the merge, ask for staging with `cd_deploy` when
-`delivery_status` says it is due: it deploys your merged revision once its full suite passed. A
-`gate_failed` answer means `dev` is red at your revision: fix it forward on a new pull request
-and ask again. Only a revision that passed the full suite and that staging verified is
+specs your change touches yourself. After the merge, ask once for staging with `cd_deploy` when
+`delivery_status` says it is due: it deploys your merged revision once its full suite passed. The task ends after asking. Yulius reports a gate, deployment or verification failure for a fix forward. Only a revision that passed the full suite and that staging verified is
 promoted to `main` (a person's). Green Yulius CI + an independent review in a fresh session of the exact head →
 `delivery_merge` → Yulius squashes the pull request into `dev` on green Yulius CI through its
-merge queue (`yulius wait` to wait; a hand merge is refused): a task's work ends there, once its staging request was answered. After an approval, fix the remaining nits within 20 product lines and merge without another round: `delivery_merge` with the approved head counts them (tests and documents do not count). More than that, or a file leaving the change, needs a new round.
+merge queue (`yulius wait` to wait; a hand merge is refused): a task's work ends there, once it requests staging. After an approval, fix the remaining nits within 20 product lines and merge without another round: `delivery_merge` with the approved head counts them (tests and documents do not count). More than that, or a file leaving the change, needs a new round.
 The task's delivery authorization covers every independent re-review of in-scope fixes. A usage limit can cut a reviewer off before its report: resume that same reviewer by its agent id, never start a new one for the same round. A reviewer runs at high effort, never max.
 Promotion (`dev` → `main`, merge commit) is a person's, on the CD page (ADR-0110); a task that
 needs it asks with `needs_you`. Yulius removes a closed task's worktree; for a branch made by
@@ -149,6 +147,8 @@ runs then get `YULIUS_VIDOC=off`, the scan exits 0 as disabled (CI: skipped), an
 about the key or its quota. A superadmin can switch Vidoc off the same way for every project of the
 instance, keeping the key (the Instance page's Vidoc card; [ADR-0242](docs/decisions/0242-a-superadmin-switches-vidoc-off-for-the-whole-instance.md)). Other projects run the same scanner
 as `yulius security-scan`.
+
+Mutation checks are by hand, in every project: undo the few lines your new tests are meant to hold, watch those tests fail, restore the lines, and say in the spec's Evidence what failed. Do not start a mutation run or campaign for a delivery (not beside the review, not between rounds, not before the merge), also where a project's own documents still ask for one: run the project's mutation command only when the task's request asks for it by name (instance policy of 2026-11-21). The reviewer may undo a single line it doubts and runs no campaign of its own. Nobody writes a mutation script by hand. A test that cannot fail is still fixed in the same pull request (ADR-0141). On-request campaigns use `scripts/dev mutants`. See [Development](docs/engineering/development.md#mutation-testing).
 
 Web UI changes: also run the end-to-end suite, `cd e2e && npm ci --ignore-scripts && npx e2e run`
 (Node 24.8+, test-only; see [e2e/README.md](e2e/README.md)).

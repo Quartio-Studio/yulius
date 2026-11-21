@@ -54,8 +54,7 @@ A review finding or a failed check is a defect like any other: reproduce it with
 failing command), fix it minimally, rerun the checks it touches, and answer the finding with the
 evidence.
 Before asking for another round, answer each finding of the last report with the test that fails
-without its fix (or why no test can), check every finding of that report against the new head, and
-run the project's mutation command on the lines of the fix where it can take them.
+without its fix (or why no test can) and check every finding of that report against the new head.
 
 ## Rules
 

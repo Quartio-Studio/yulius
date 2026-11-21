@@ -43,14 +43,11 @@ test the change did not cause, or a cosmetic nit left after 3 rounds becomes
 an issue, saying why it is outside the change ("present on dev before this change",
 with the evidence). The PR answers every finding; deferring an own-code finding
 makes your verdict request changes (`docs/engineering/workflow.md`, Review output).
-Before asking for another round, answer each finding of the last report with the
-test that fails without its fix (or why no test can), check every finding of
-that report against the new head, and run the project's mutation command on the
-lines of the fix where it can take them. Here: `scripts/dev mutants --base
-<reviewed head>`.
+Before asking for another round, answer each finding of the last report with the test that fails
+without its fix (or why no test can) and check every finding of that report against the new head.
 After an approval, fix the remaining nits within 20 product lines and merge
 without another round: `delivery_merge` with the approved head counts them
 (tests and documents do not count). More than that, or a file leaving the
 change, needs a new round. A usage limit can cut a reviewer off before its report: resume that same reviewer by its agent id, never start a new one for the same round. A reviewer runs at high effort, never max.
 
-Mutation testing runs beside the review: when you ask for a pull request's first review, start the project's mutation command in the background and let the reviewer read meanwhile; when it ends, put its summary line in the spec's Evidence and fix each missed mutant test-first before the merge. After a later round's fix, run it on that fix's lines alone. A project without one undoes by hand the few lines its new tests are meant to hold and says what failed. The reviewer may undo a single line it doubts and runs no campaign of its own. Nobody writes a mutation script by hand. A test that cannot fail is still fixed in the same pull request (ADR-0141). Here the command is `scripts/dev mutants`.
+Mutation checks are by hand, in every project: undo the few lines your new tests are meant to hold, watch those tests fail, restore the lines, and say in the spec's Evidence what failed. Do not start a mutation run or campaign for a delivery (not beside the review, not between rounds, not before the merge), also where a project's own documents still ask for one: run the project's mutation command only when the task's request asks for it by name (instance policy of 2026-11-21). The reviewer may undo a single line it doubts and runs no campaign of its own. Nobody writes a mutation script by hand. A test that cannot fail is still fixed in the same pull request (ADR-0141). Here the on-request command is `scripts/dev mutants`.

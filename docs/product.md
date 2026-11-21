@@ -62,6 +62,8 @@ page is the short version for anyone who must know the whole product before buil
 
 Yulius's own Rust builds share compiled artifacts across task worktrees and CI lanes on the project sandbox's disk. [ADR-0434](decisions/0434-keep-a-local-compiler-cache-in-each-project-sandbox.md)
 
+Deliveries check their tests by hand. A task can request a mutation campaign by name. [Decision 0439](decisions/0439-delivery-checks-mutations-by-hand-and-builds-on-disk.md)
+
 ## Who it is for
 
 A small team (2-5 people; the founders are superadmins) that works with several Claude
