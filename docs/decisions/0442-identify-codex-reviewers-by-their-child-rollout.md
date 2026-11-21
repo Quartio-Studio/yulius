@@ -31,5 +31,7 @@ model answered.
 
 ## Consequences
 
-Codex rounds feed the same delivery and dashboard data as Claude Code rounds. Older
-reviewers have no reliable launch marker. Antigravity's swarm uses a separate lifecycle.
+Codex rounds feed the same delivery and dashboard data as Claude Code rounds. Codex
+delivery can show the just-landed PR when no review is open. Claude Code delivery
+continues to show its current review. Older reviewers have no reliable launch marker.
+Antigravity's swarm uses a separate lifecycle.
