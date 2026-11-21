@@ -1,6 +1,6 @@
 ---
 yulius-task: 390479b9-2747-4388-b326-779981ff5f47
-status: in-progress
+status: done
 ---
 
 # SPEC-605: Record the review rounds of Codex tasks
@@ -51,8 +51,8 @@ no observable role to distinguish a reviewer from other Codex subagents.
 - [x] Preserve review evidence across delayed hooks and successive pull requests
 - [x] Approve the change for delivery
 - [x] Preserve Claude Code delivery behavior after a merge
-- [ ] Verify Codex and Claude Code delivery together
-- [ ] Approve the staging fix for delivery
+- [x] Verify Codex and Claude Code delivery together
+- [x] Approve the staging fix for delivery
 
 ## Acceptance criteria
 
@@ -129,4 +129,10 @@ missing cases in the report. Claude Code's open-round view remains compatible wi
 - On the fix-forward branch, `E2E_TELEMETRY_DISABLED=1 npx e2e run tests/pipeline.e2e.ts`
   passed all 18 Pipeline browser tests.
 - The previously failing gated-delivery test passed unchanged on the fix-forward branch.
-  The five Codex review cases passed, including landed history after a merge.
+  The five Codex review cases passed, including landed history after a merge. The focused
+  Rust run passed all 41 cases. Independent review approved `ddf2a8809` after rerunning
+  the gated-delivery test and all five Codex review cases.
+- `scripts/cargo nextest run --locked --all-features --profile ci` with the full
+  `yulius::main` binary and the app, store and contract packages passed all 3,423
+  scheduled tests across five binaries. Nextest reported 24 skipped tests. The selector
+  was `binary_id(=yulius::main) | package(=yulius-app) | package(=yulius-store) | package(=yulius-contracts)`.
