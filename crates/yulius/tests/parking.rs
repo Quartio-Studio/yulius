@@ -3017,3 +3017,5 @@ fn a_cold_parked_summary_reads_historical_spec_and_goal_evidence() -> TestResult
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+mod candidate;

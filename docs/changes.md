@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- After restart, the PR watcher can deliver a failed integration candidate’s recorded job and reason once to its original session. A rearmed owner receives queue instructions for its current candidate (SPEC-558).
+
 - The merge queue saves a failed single-PR decision before clearing its request. After restart it preserves a later request for the same head, including a retry that finds the PR already merged. When a person merges the armed head, its agent can read the merge receipt immediately in `yulius wait` (SPEC-558).
 
 - Hourly history cleanup preserves each existing task’s latest merge queue decision, even if the arm began before the telemetry cutoff (SPEC-558).

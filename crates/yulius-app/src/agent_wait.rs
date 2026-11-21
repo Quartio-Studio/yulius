@@ -666,6 +666,11 @@ impl App {
         armed.then(|| self.train_note(task).or(note)).flatten()
     }
 
+    /// The slot's own queue note when no current train holds the armed activation.
+    pub(crate) fn arm_queue_note(&self, task: &TaskId) -> Option<QueueNote> {
+        lock_slot(&self.runtime(task)).view().2
+    }
+
     /// Records where `task`'s armed merge stands, for the decision in progress (SPEC-441
     /// MQ-007): kept when that decision keeps the merge armed.
     fn note_armed(&self, task: &TaskId, text: String) {

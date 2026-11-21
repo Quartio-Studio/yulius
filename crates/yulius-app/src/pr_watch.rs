@@ -325,10 +325,14 @@ fn red_candidate_text(
     integration: &str,
 ) -> String {
     let listed: Vec<String> = members.iter().map(|n| format!("#{n}")).collect();
+    let next = if members.len() > 1 {
+        "Yulius tests smaller candidates and tells the pull request that breaks it."
+    } else {
+        "Yulius is verifying this pull request's head and checks before reporting the failure."
+    };
     format!(
         "Merge candidate {} (run {}), which holds it, failed: {}. Read `ci_status` with run_id {}. \
-         Set job to a listed name for its full details. Yulius tests smaller candidates \
-         and tells the pull request that breaks it. Do not re-arm, merge `{integration}` or push \
+         Set job to a listed name for its full details. {next} Do not re-arm, merge `{integration}` or push \
          to this branch meanwhile.",
         listed.join(", "),
         run.id,
@@ -1029,6 +1033,16 @@ impl App {
         if record.stage != DeliveryStage::PrOpen {
             return None;
         }
+        // During restoration or a queue decision an arm can be known without a
+        // verified activation. Even a due check-in must wait for that decision.
+        if armed
+            && !matches!(
+                self.armed_now(&task.id),
+                crate::agent_wait::ArmedNow::Armed(_)
+            )
+        {
+            return None;
+        }
         let integration = delivery_profile(&sandbox).integration_branch;
         if !runs.contains_key(sandbox.id.as_str()) {
             let read = self
@@ -1085,14 +1099,25 @@ impl App {
         {
             own = None;
         }
-        let sandbox_runs = runs.get(sandbox.id.as_str()).map_or(&[][..], Vec::as_slice);
         let own = own.as_ref();
-        // A candidate older than the pull request's own newest run is about an earlier head.
-        let candidate = sandbox_runs
-            .iter()
-            .find(|run| matches!(&run.reference, CiRef::Train(members) if members.contains(&pr)))
-            .filter(|run| own.is_none_or(|own| run.queued_at >= own.queued_at));
-        let hold = self.train_hold(task);
+        let train = self.watched_train(task, pr);
+        let holding = train.as_ref().and_then(|train| train.candidate.as_ref());
+        let candidate = match holding {
+            Some((id, _)) => self
+                .deps
+                .store
+                .ci_run(id)
+                .await
+                .ok()?
+                .filter(|run| run.sandbox_id == sandbox.id),
+            None => None,
+        };
+        let candidate = candidate.as_ref();
+        let hold = if train.is_some() {
+            Hold::Held
+        } else {
+            Hold::Free
+        };
         let mut events = Vec::new();
         let told_key = |kind: &str, key: &str| told.keys.get(kind).is_some_and(|k| k == key);
         if let Some(run) = own {
@@ -1118,10 +1143,8 @@ impl App {
                 _ => {}
             }
         }
-        if let Some(run) = candidate
-            && let CiRef::Train(members) = &run.reference
+        if let (Some(run), Some((_, members))) = (candidate, holding)
             && run.state == RunState::Failed
-            && members.len() > 1
             && !told_key("candidate", &run.id)
         {
             let jobs = self
@@ -1136,13 +1159,13 @@ impl App {
                 text: red_candidate_text(run, members, &jobs, &integration),
             });
         }
-        if !armed && let Some((head, text)) = outcome {
-            let key = outcome_key(&head, &text);
+        if !armed && let Some((head, text)) = &outcome {
+            let key = outcome_key(head, text);
             if !told_key("outcome", &key) {
                 events.push(Event {
                     kind: "outcome",
                     key,
-                    text,
+                    text: text.clone(),
                 });
             }
         }
@@ -1183,9 +1206,15 @@ impl App {
         }
         let green =
             own.is_some_and(|run| matches!(run.state, RunState::Passed | RunState::Skipped));
-        let queue_note = self.merge_queue_note(task);
-        if let (true, Some(head)) = (green, &head) {
-            let said = green_said(head, armed, hold, queue_note.as_ref(), &integration);
+        let arm_note = self.arm_queue_note(&task.id);
+        let queue_note = train
+            .as_ref()
+            .map(|train| &train.note)
+            .or(arm_note.as_ref());
+        if let (true, Some(head)) = (green, &head)
+            && candidate.is_none_or(|run| run.state != RunState::Failed)
+        {
+            let said = green_said(head, armed, hold, queue_note, &integration);
             if let Some((class, text)) = said {
                 events.push(Event {
                     kind: "green",
@@ -1214,7 +1243,7 @@ impl App {
         let has_ci = self.config.ci.enabled
             && (own.is_some() || self.ci_gate(&sandbox).await.gate.is_some());
         let status = if has_ci {
-            status_text(own, armed, hold, queue_note.as_ref(), &integration)
+            status_text(own, armed, hold, queue_note, &integration)
         } else {
             no_ci_status(armed)
         };
@@ -1225,7 +1254,7 @@ impl App {
             .load(Ordering::SeqCst)
             .max(runtime.spawned_ms.load(Ordering::SeqCst));
         let check_ins = !runtime.goal_achieved.load(Ordering::SeqCst) && !needs_you;
-        Some(PrFacts {
+        let mut facts = PrFacts {
             now_ms,
             pr,
             events,
@@ -1239,7 +1268,144 @@ impl App {
             working: runtime.turn_in_progress(),
             has_ci,
             head: own.map(|run| run.sha.clone()).unwrap_or_default(),
-        })
+        };
+        if !armed
+            && !person_must_act
+            && let Some(span) = self.deps.store.latest_merge_wait(&task.id).await.ok()?
+            && let Some(decision) = crate::merge_train::SingletonDecision::from_span(&span).ok()?
+        {
+            self.apply_singleton_news(
+                task,
+                &sandbox,
+                &integration,
+                outcome.as_ref(),
+                (span, decision),
+                &mut facts,
+            )
+            .await?;
+        }
+        if self.merge_is_armed(&task.id) != armed
+            || (armed && self.watched_train(task, pr) != train)
+        {
+            return None;
+        }
+        Some(facts)
+    }
+
+    /// A saved decision belongs to this owner only while the tested inputs and original
+    /// delivery still match. Use the same outcome key the live queue already told.
+    async fn apply_singleton_news(
+        &self,
+        task: &TaskRecord,
+        sandbox: &SandboxRecord,
+        integration: &str,
+        outcome: Option<&(String, String)>,
+        (span, decision): (
+            crate::stages::SpanRecord,
+            crate::merge_train::SingletonDecision,
+        ),
+        facts: &mut PrFacts,
+    ) -> Option<()> {
+        use crate::merge_train::SingletonObservation;
+        if outcome.is_some_and(|(head, text)| *head != decision.head || *text != decision.message) {
+            return Some(());
+        }
+        let key = outcome_key(&decision.head, &decision.message);
+        facts
+            .events
+            .retain(|event| event.kind != "outcome" || event.key != key);
+        if decision.superseded_at.is_some() || decision.singleton.pr != facts.pr {
+            return Some(());
+        }
+        let observation = self
+            .singleton_observation(
+                sandbox,
+                &task.id,
+                (facts.pr, &decision.head),
+                integration,
+                &decision.singleton.base,
+            )
+            .await?;
+        let ordinary_failure = match &observation {
+            SingletonObservation::Current(Some(run)) if run.state == RunState::Failed => {
+                let jobs = self.deps.store.ci_jobs(&run.id, true).await.ok()?;
+                Some(Event {
+                    kind: "run",
+                    key: run.id.clone(),
+                    text: red_run_text(run, &jobs),
+                })
+            }
+            _ => None,
+        };
+        let fresh = self.deps.store.task(&task.id).await.ok()??;
+        if fresh.status != TaskStatus::Running
+            || fresh.archived_at.is_some()
+            || self
+                .deps
+                .store
+                .task_needs_you(&task.id)
+                .await
+                .ok()?
+                .is_some()
+            || self.deps.store.open_pause(&task.id).await.ok()?.is_some()
+            || self
+                .browser_tab_request_for(&task.sandbox_id, &task.id)
+                .await
+                .is_some()
+            || fresh.activity == Some(yulius_domain::task::Activity::NeedsAttention)
+                && !self.held_message_flag_outlived(&fresh).await
+            || self
+                .deps
+                .store
+                .latest_merge_wait(&task.id)
+                .await
+                .ok()?
+                .as_ref()
+                != Some(&span)
+            || self.merge_is_armed(&task.id)
+            || self.armed_view(&task.id).1.as_ref() != outcome
+        {
+            return None;
+        }
+        let ordinary = match observation {
+            SingletonObservation::Changed(hosted_head) => {
+                return (hosted_head.as_deref() == Some(facts.head.as_str())).then_some(());
+            }
+            SingletonObservation::Current(ordinary) => ordinary,
+        };
+        facts.events.retain(|event| {
+            event.kind != "green"
+                && (event.kind != "run"
+                    || ordinary_failure.is_none()
+                        && ordinary.as_ref().is_some_and(|run| run.id == event.key))
+        });
+        if let Some(run) = ordinary {
+            if run.state.is_active() && decision.expired_ordinary_run.as_ref() != Some(&run.id) {
+                return None;
+            }
+            if let Some(failure) = ordinary_failure {
+                facts.status = status_text(Some(&run), false, Hold::Free, None, integration);
+                facts.progress.push_str(&format!("|{}", run.id));
+                facts.ci_busy = false;
+                facts.head.clone_from(&run.sha);
+                facts.events.push(failure);
+                return Some(());
+            }
+        }
+        facts
+            .progress
+            .push_str(&format!("|{}", decision.singleton.run));
+        facts.status = format!(
+            "The integration candidate failed for pull request #{}.",
+            facts.pr
+        );
+        facts.head.clone_from(&decision.head);
+        facts.events.push(Event {
+            kind: "outcome",
+            key,
+            text: decision.message,
+        });
+        Some(())
     }
 
     /// The merge notice of `task`'s pull request `pr` (`merged_text`), read from GitHub once and
