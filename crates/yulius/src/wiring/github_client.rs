@@ -38,15 +38,13 @@ impl GitHubAdapter {
     }
 
     fn for_token(&self, token: &Secret) -> Arc<GitHubClient> {
+        if !token.is_github_installation() {
+            return Arc::clone(&self.plain);
+        }
         self.cached
             .lock()
             .ok()
-            .and_then(|cached| {
-                cached
-                    .as_ref()
-                    .filter(|(_, client)| client.issued_installation_token(token.expose()))
-                    .map(|(_, client)| Arc::clone(client))
-            })
+            .and_then(|cached| cached.as_ref().map(|(_, client)| Arc::clone(client)))
             .unwrap_or_else(|| Arc::clone(&self.plain))
     }
 
@@ -328,7 +326,7 @@ impl GitHubPort for GitHubAdapter {
             .create_installation_token(installation_id)
             .await
             .map_err(map_err)?;
-        Ok(app_secret(&t.token))
+        Ok(Secret::github_installation(t.token.expose().to_owned()))
     }
 
     async fn repository_token(
@@ -342,7 +340,7 @@ impl GitHubPort for GitHubAdapter {
             .create_repository_token(installation_id, repo)
             .await
             .map_err(map_err)?;
-        Ok(app_secret(&t.token))
+        Ok(Secret::github_installation(t.token.expose().to_owned()))
     }
 
     async fn agent_token(
@@ -356,7 +354,7 @@ impl GitHubPort for GitHubAdapter {
             .create_agent_token(installation_id, repo)
             .await
             .map_err(map_err)?;
-        Ok(app_secret(&t.token))
+        Ok(Secret::github_installation(t.token.expose().to_owned()))
     }
 
     async fn installation_repos(

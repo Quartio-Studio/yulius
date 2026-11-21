@@ -6824,3 +6824,82 @@ async fn unreadable_checks_keep_a_verified_head_but_do_not_test_a_new_push() -> 
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn a_parked_new_head_with_unreadable_checks_survives_the_next_outage() -> TestResult {
+    use yulius_app::ports::github::ChecksState;
+    let (f, owner) = owner_observed_external_pr().await?;
+    install_app(&f).await?;
+    f.h.github.set_checks("abc123", ChecksState::Success);
+    let app = &f.h.app;
+    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let args = json!({"task_id":f.task.as_str()});
+    assert_eq!(app.tool_task_get(&caller, &args).await?["shows"], "done");
+    f.h.github.pulls.lock().map_err(|_| "pulls")?[0].head_sha = "new-sha".into();
+    *f.h.github.checks_error.lock().map_err(|_| "checks")? =
+        Some(yulius_app::error::AppError::Upstream("HTTP 503".into()));
+    assert_eq!(
+        app.tool_task_get(&caller, &args).await?["shows"],
+        "needs_you"
+    );
+    f.h.github.no_installation.store(true, Ordering::SeqCst);
+    app.deps.store.set_installation(None).await?;
+    assert_eq!(
+        app.tool_task_get(&caller, &args).await?["shows"],
+        "needs_you"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_real_local_ci_error_supersedes_cached_green_during_a_github_outage() -> TestResult {
+    use yulius_domain::ci::{CiRef, RunState};
+    let (f, owner) = owner_observed_external_pr().await?;
+    install_app(&f).await?;
+    f.h.github
+        .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
+    let app = &f.h.app;
+    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let args = json!({"task_id":f.task.as_str()});
+    assert_eq!(app.tool_task_get(&caller, &args).await?["shows"], "done");
+    super::delivery::insert_ci_attempt(
+        &f.h.store,
+        "new-error",
+        "abc123",
+        CiRef::PullRequest(1461),
+        RunState::Error,
+        app.now().0,
+        &[],
+    )
+    .await?;
+    f.h.github.no_installation.store(true, Ordering::SeqCst);
+    app.deps.store.set_installation(None).await?;
+    let brief = app.tool_task_get(&caller, &args).await?;
+    assert_eq!(
+        brief["wait_reason"],
+        "CI could not complete the checks for the parked task's pull request."
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_partial_green_check_report_keeps_the_prior_failure_for_the_same_head() -> TestResult {
+    use yulius_app::ports::github::{ChecksReport, ChecksSource, ChecksState};
+    let (f, owner) = owner_observed_external_pr().await?;
+    f.h.github.set_checks_report(
+        "abc123",
+        ChecksReport {
+            state: ChecksState::Success,
+            unreadable: vec![ChecksSource::CommitStatuses],
+        },
+    );
+    let overview = f.h.app.git_overview(&owner, f.sandbox.as_str()).await?;
+    let pr = overview
+        .tasks
+        .iter()
+        .find(|t| t.task_id == f.task.as_str())
+        .and_then(|t| t.pr.as_ref())
+        .ok_or("pull")?;
+    assert_eq!(pr.checks, "failure");
+    Ok(())
+}

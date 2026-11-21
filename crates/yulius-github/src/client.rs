@@ -81,15 +81,6 @@ impl GitHubClient {
         self.inner.transport.rate_limit_reset()
     }
 
-    /// Whether this client issued the bearer through its installation-token cache.
-    #[must_use]
-    pub fn issued_installation_token(&self, bearer: &str) -> bool {
-        self.inner
-            .tokens
-            .lock()
-            .is_ok_and(|tokens| tokens.values().any(|entry| entry.token.expose() == bearer))
-    }
-
     /// The configuration this client was built with.
     #[must_use]
     pub fn config(&self) -> &GitHubConfig {

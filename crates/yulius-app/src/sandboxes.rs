@@ -69,19 +69,20 @@ impl ParkedStatus {
 pub(crate) struct ObservedPull {
     pub(crate) head: Option<Arc<str>>,
     pub(crate) number: u64,
+    pub(crate) open: bool,
     pub(crate) signal: Option<PullSignal>,
 }
 
 impl ObservedPull {
-    pub(crate) fn open(&self) -> bool {
-        self.signal
-            .is_some_and(|signal| signal != PullSignal::Merged)
-    }
-
     /// A branch listing confirms identity. Keep the checks already observed on that open PR.
     fn after_branch_read(self, prior: Option<Self>) -> Self {
         prior
-            .filter(|old| old.number == self.number && old.open() && self.open())
+            .filter(|old| {
+                old.number == self.number
+                    && old.open
+                    && self.open
+                    && (self.head.is_none() || old.head == self.head)
+            })
             .unwrap_or(self)
     }
 }
@@ -101,10 +102,10 @@ impl Overview {
     fn reading(&self, task: &TaskId, prior: Option<ObservedPull>) -> Option<ObservedPull> {
         let read = self.rows.get(task)?.clone();
         if !self.complete
-            && let Some(open) = prior.filter(|pr| pr.open())
+            && let Some(open) = prior.filter(|pr| pr.open)
             && read
                 .as_ref()
-                .is_none_or(|pr| !pr.open() && pr.number != open.number)
+                .is_none_or(|pr| !pr.open && pr.number != open.number)
         {
             return Some(open);
         }
@@ -223,12 +224,17 @@ impl OverviewRead {
         let pr = ObservedPull {
             head: None,
             number: replacement.unwrap_or(merged),
+            open: replacement.is_some(),
             signal: Some(if replacement.is_some() {
                 PullSignal::InReview
             } else {
                 PullSignal::Merged
             }),
         };
+        self.record_identity(task, pr);
+    }
+
+    pub(crate) fn record_identity(self, task: &TaskId, pr: ObservedPull) {
         self.publish(PullObservation::Branch(task.clone(), pr));
     }
 
@@ -498,6 +504,7 @@ impl App {
             .begin_branch(&task.sandbox_id, &task.id)
             .ok();
         let mut verified = false;
+        let mut local_ci = None;
         let check = async {
             let record = self.deps.store.delivery(&task.id).await?;
             observed = self.known_parked_pull(task, record.as_ref());
@@ -508,6 +515,12 @@ impl App {
                 .await?;
             if status.facts.parked_has_local_work_or_request() {
                 return Ok(());
+            }
+            if let Some(pr) = observed.pr.filter(|pr| pr.open)
+                && let Some(head) = observed.head.clone()
+                && let Some(signal) = self.parking_ci_signal(task, pr.number, &head, None).await?
+            {
+                local_ci = Some((pr.number, head, signal));
             }
             if let Some(merged) = record
                 .as_ref()
@@ -589,6 +602,14 @@ impl App {
                 status.facts.pull = self.last_pull_signal(task, &observed);
             }
         }
+        if status.followup_unverified
+            && let Some((number, head, signal)) = local_ci
+            && observed.pr.is_some_and(|pr| pr.open && pr.number == number)
+            && observed.head.as_ref() == Some(&head)
+            && observed.signal.is_none()
+        {
+            status.facts.pull = Some(signal);
+        }
         crate::race::reached(
             crate::race::Point::ParkedStatusRead,
             std::path::Path::new(task.id.as_str()),
@@ -596,15 +617,20 @@ impl App {
         let confirmed = verified.then_some(status.facts.pull).flatten();
         if let Some(mut discovery) = discovery {
             discovery.publish(&task.id, &observed, confirmed);
-        } else if let Some(read) = publication.filter(|_| verified) {
-            read.verified(
-                &task.id,
-                observed.pr.map(|pr| ObservedPull {
-                    head: observed.head.clone(),
-                    number: pr.number,
-                    signal: confirmed,
-                }),
-            );
+        } else if let Some(read) = publication {
+            let pull = observed.pr.map(|pr| ObservedPull {
+                number: pr.number,
+                open: pr.open,
+                head: observed.head.clone(),
+                signal: status.facts.pull,
+            });
+            if verified {
+                read.verified(&task.id, pull);
+            } else if observed.fresh_head
+                && let Some(pull) = pull
+            {
+                read.record_identity(&task.id, pull);
+            }
         }
         status.pr = observed.pr;
         status
@@ -841,11 +867,13 @@ mod overview_tests {
         let red = Some(ObservedPull {
             head: None,
             number: 2,
+            open: true,
             signal: Some(PullSignal::Failing),
         });
         let landed = Some(ObservedPull {
             head: None,
             number: 1,
+            open: false,
             signal: Some(PullSignal::Merged),
         });
         for (complete, later, expected) in [
@@ -856,6 +884,7 @@ mod overview_tests {
                 Some(ObservedPull {
                     head: None,
                     number: 2,
+                    open: false,
                     signal: None,
                 }),
                 None,
@@ -903,6 +932,7 @@ mod overview_tests {
         let red = Some(ObservedPull {
             head: None,
             number: 2,
+            open: true,
             signal: Some(PullSignal::Failing),
         });
         let rows = HashMap::from([(task.clone(), red.clone()), (other.clone(), red)]);
@@ -961,6 +991,7 @@ mod overview_tests {
         let red = Some(ObservedPull {
             head: None,
             number: 2,
+            open: true,
             signal: Some(PullSignal::Failing),
         });
         for _ in 1..OVERVIEW_WINDOW {

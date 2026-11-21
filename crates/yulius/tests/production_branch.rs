@@ -333,6 +333,15 @@ async fn only_an_installation_token_reports_the_instances_github_wait() -> TestR
         .adapter
         .installation_token(&world.app, world.installation)
         .await?;
+    // Enough repository-scoped credentials to displace the original cache entry.
+    for i in 0..65 {
+        let name = format!("repo-{i}");
+        world.fake.add_repo("acme", &name, true);
+        world
+            .adapter
+            .repository_token(&world.app, world.installation, &name)
+            .await?;
+    }
     world.fake.inject_fault(
         FakeFault::new("GET", "/repos/acme/app/pulls", 429, 2).header("retry-after", "904"),
     );

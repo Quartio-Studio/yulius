@@ -285,6 +285,7 @@ function createStatusPanel(ctx, button) {
   let offFocus = null;
   let el = null;
   let timer = null;
+  let expiry = null;
   let onDoc = null;
   let onKey = null;
 
@@ -292,8 +293,15 @@ function createStatusPanel(ctx, button) {
     if (!el) return;
     try {
       const data = await ctx.api.get('/api/status');
-      if (el) keepFocus(el, () => setChildren(el, renderStatus(data || {})));
+      if (!el) return;
+      const render = () => { if (el) keepFocus(el, () => setChildren(el, renderStatus(data || {}))); };
+      render();
+      clearTimeout(expiry);
+      if (githubWaitText(data?.github_reset_at_ms)) {
+        expiry = setTimeout(render, Math.min(data.github_reset_at_ms - Date.now(), 2_147_483_647));
+      }
     } catch (error) {
+      clearTimeout(expiry);
       if (el) setChildren(el, h('div', { class: 'status-section' }, h('div', { class: 'placeholder placeholder-error' }, error.message)));
     }
   }
@@ -312,6 +320,7 @@ function createStatusPanel(ctx, button) {
   }
 
   function close() {
+    clearTimeout(expiry);
     clearInterval(timer);
     timer = null;
     if (offFocus) offFocus();

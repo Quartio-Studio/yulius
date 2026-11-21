@@ -116,6 +116,7 @@ impl PrVerification {
 #[derive(Default)]
 pub(crate) struct ParkedPullRead {
     pub(crate) unavailable: bool,
+    pub(crate) fresh_head: bool,
     pub(crate) head: Option<Arc<str>>,
     pub(crate) signal: Option<PullSignal>,
     pub(crate) pr: Option<yulius_contracts::api::tasks::ParkedPr>,
@@ -124,6 +125,7 @@ pub(crate) struct ParkedPullRead {
 impl ParkedPullRead {
     fn note_open_branch(&mut self, branch: &[GhPull]) {
         if let Some(pull) = branch.last() {
+            self.fresh_head = true;
             self.head = Some(Arc::from(pull.head_sha.as_str()));
             self.signal = None;
             self.pr = Some(yulius_contracts::api::tasks::ParkedPr {
@@ -133,11 +135,14 @@ impl ParkedPullRead {
         }
     }
 
-    fn note_closed(&mut self, pull: &GhPull) {
-        if !is_open(pull)
-            && let Some(pr) = self.pr.as_mut().filter(|pr| pr.number == pull.number)
-        {
-            pr.open = false;
+    fn note_current(&mut self, pull: &GhPull) {
+        let Some(pr) = self.pr.as_mut().filter(|pr| pr.number == pull.number) else {
+            return;
+        };
+        self.head = Some(Arc::from(pull.head_sha.as_str()));
+        self.fresh_head = true;
+        pr.open = is_open(pull);
+        if !pr.open {
             // A directly observed unmerged closure still needs delivery reconciliation.
             self.signal = Some(if pull.merged {
                 PullSignal::Merged
@@ -235,8 +240,22 @@ impl FollowupDiscovery {
                     Some(crate::sandboxes::ObservedPull {
                         head: observed.head.clone(),
                         number,
+                        open: true,
                         signal: Some(signal),
                     }),
+                );
+            } else if let Some(number) = replacement
+                && observed.fresh_head
+                && observed.pr.is_some_and(|pr| pr.open && pr.number == number)
+            {
+                read.record_identity(
+                    task,
+                    crate::sandboxes::ObservedPull {
+                        number,
+                        open: true,
+                        head: observed.head.clone(),
+                        signal: Some(PullSignal::InReview),
+                    },
                 );
             } else {
                 read.record_branch(task, self.merged, replacement);
@@ -2395,6 +2414,7 @@ impl App {
         let mut open_pulls = Vec::new();
         let mut overview_complete = false;
         let mut checks_by_pr = Vec::new();
+        let mut partial_checks = std::collections::HashSet::new();
         let mut checks_unreadable = Vec::new();
         if let Some(token) = &token {
             match self.deps.github.list_pulls(token, owner, name, None).await {
@@ -2428,6 +2448,9 @@ impl App {
                     Ok(at) => {
                         // A missing permission is said once for the repository, not per PR.
                         merge_sources(&mut checks_unreadable, &at.unreadable);
+                        if !at.unreadable.is_empty() && at.word != "failure" {
+                            partial_checks.insert(pull.number);
+                        }
                         at.word
                     }
                     Err(err) => {
@@ -2601,6 +2624,7 @@ impl App {
                     conflicts: false,
                 });
             }
+            let mut preserved = None;
             if let Some(known) = self
                 .observed_pulls
                 .known_pull(&sandbox.id, &task.id)
@@ -2608,17 +2632,21 @@ impl App {
             {
                 let missing = (!overview_complete || unread_recorded == Some(known.number))
                     && view.pr.as_ref().is_none_or(|pr| {
-                        pr.state == "merged" && known.open() && pr.number != known.number
+                        pr.state == "merged" && known.open && pr.number != known.number
                     });
                 let unread_checks = view.pr.as_ref().is_some_and(|pr| {
                     pr.number == known.number
                         && pr.state == "open"
-                        && pr.checks == "unknown"
-                        && known.open()
+                        && (pr.checks == "unknown" || partial_checks.contains(&pr.number))
+                        && known.open
                         && head.is_some()
                         && head == known.head
                 });
                 if missing || unread_checks {
+                    // Behind and an open head with no observed check have no exact wire word.
+                    if matches!(known.signal, None | Some(PullSignal::Behind)) {
+                        preserved = Some(known.signal);
+                    }
                     head = known.head.clone();
                     let pr = view.pr.get_or_insert_with(|| PullView {
                         number: known.number,
@@ -2638,17 +2666,25 @@ impl App {
                         Some(PullSignal::Errored) => ("open", "error"),
                         Some(PullSignal::Failing) => ("open", "failure"),
                         Some(PullSignal::InReview | PullSignal::Behind) => ("open", "pending"),
+                        None if known.open => ("open", "unknown"),
                         None => ("closed", "none"),
                     };
                     pr.state = state.into();
                     pr.checks = checks.into();
-                    pr.conflicts = known.signal == Some(PullSignal::Conflicting);
+                    pr.conflicts |= known.signal == Some(PullSignal::Conflicting);
+                    if let Some(listed) = pulls.iter_mut().find(|listed| listed.number == pr.number)
+                    {
+                        listed.checks.clone_from(&pr.checks);
+                        listed.conflicts = pr.conflicts;
+                    }
                 }
             }
             let pull = view.pr.as_ref().map(|pr| crate::sandboxes::ObservedPull {
                 head,
+                open: pr.state == "open",
                 number: pr.number,
-                signal: PullSignal::from_wire(&pr.state, &pr.checks, pr.conflicts),
+                signal: preserved
+                    .unwrap_or_else(|| PullSignal::from_wire(&pr.state, &pr.checks, pr.conflicts)),
             });
             observed.insert(task.id.clone(), pull);
             tasks.push(view);
@@ -4188,7 +4224,7 @@ impl App {
         Ok(None)
     }
 
-    async fn parking_ci_signal(
+    pub(crate) async fn parking_ci_signal(
         &self,
         task: &TaskRecord,
         number: u64,
@@ -4395,12 +4431,12 @@ impl App {
             .flatten()
             .filter(|pr| {
                 Some(pr.number) != merged
-                    && (pr.open() || observed.pr.is_none_or(|r| r.number == pr.number))
+                    && (pr.open || observed.pr.is_none_or(|r| r.number == pr.number))
             });
         if let Some(pr) = known {
             observed.pr = Some(yulius_contracts::api::tasks::ParkedPr {
                 number: pr.number,
-                open: pr.open(),
+                open: pr.open,
             });
             observed.signal = None;
             observed.head = pr.head;
@@ -4418,7 +4454,7 @@ impl App {
             self.observed_pulls
                 .known_pull(&task.sandbox_id, &task.id)
                 .flatten()
-                .filter(|known| known.number == pr.number && known.open() == pr.open)
+                .filter(|known| known.number == pr.number && known.open == pr.open)
                 .and_then(|known| {
                     if observed.head.is_some() && observed.head != known.head {
                         Some(PullSignal::InReview)
@@ -4673,6 +4709,7 @@ impl App {
                     .filter(|pr| !closed.contains(&pr.number))
                     .or_else(|| current.iter().rev().find(|pr| !closed.contains(&pr.number)));
                 if let Some(open) = known_open {
+                    observed.fresh_head = true;
                     observed.head = Some(Arc::from(open.head_sha.as_str()));
                     observed.pr = Some(yulius_contracts::api::tasks::ParkedPr {
                         number: open.number,
@@ -4751,25 +4788,21 @@ impl App {
         };
         // Each unfinished or unreadable check belongs to the PR being verified.
         if observed.pr.is_none_or(|pr| pr.number != number) {
+            observed.fresh_head = false;
             observed.head = None;
             observed.signal = None;
             observed.pr = Some(yulius_contracts::api::tasks::ParkedPr { number, open: true });
         }
         let pull = read().await?;
-        observed.pr = Some(yulius_contracts::api::tasks::ParkedPr {
-            number,
-            open: is_open(&pull),
-        });
         observed.signal = None;
-        observed.head = Some(Arc::from(pull.head_sha.as_str()));
+        observed.note_current(&pull);
         if !is_open(&pull) {
-            observed.note_closed(&pull);
             return Ok(pull.merged.then_some(pull));
         }
         if pull.behind {
             if purpose == PrVerification::Display {
                 let current = read().await?;
-                observed.note_closed(&current);
+                observed.note_current(&current);
                 if same_open_pull(&pull, &current) {
                     observed.signal = self
                         .parking_ci_signal(task, number, &pull.head_sha, None)
@@ -4827,7 +4860,7 @@ impl App {
                 return Ok(None);
             }
             let current = read().await?;
-            observed.note_closed(&current);
+            observed.note_current(&current);
             if same_open_pull(&pull, &current) {
                 let own = self
                     .parking_ci_signal(task, number, &pull.head_sha, None)
@@ -4869,7 +4902,7 @@ impl App {
         }
         // Checks and local conflict detection can take long enough for another push.
         let current = read().await?;
-        observed.note_closed(&current);
+        observed.note_current(&current);
         let same_open_head = same_open_pull(&pull, &current)
             && (purpose == PrVerification::Display || pull.base_sha == current.base_sha);
         if same_open_head && mergeable != Some(true) {

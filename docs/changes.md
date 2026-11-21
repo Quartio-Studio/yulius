@@ -8,7 +8,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - Task lists retain observed pull request state during a GitHub outage. The Status panel and task lists report when the GitHub App’s request budget resets. [SPEC-608](../.ai/specs/SPEC-608-a-github-rate-limit-must-not-show-finish.md)
 - Antigravity conversations reopened without a prompt show Waiting and can release their session slots while the Gemini announcement is visible. [SPEC-604](../.ai/specs/SPEC-604-an-idle-antigravity-session-under-the-ge.md)
-- Codex tasks inherit High effort on new and resumed processes for every model. GPT-6.2 Astra and Sol offer explicit Extra high and Max. [SPEC-607](../.ai/specs/SPEC-607-codex-tasks-run-at-high-effort-unless-th.md)
+- Codex tasks inherit High effort on new and resumed processes for every model. GPT-6.2 Astra and Sol offer explicit Extra high and Max. The UI contract checks Antigravity’s inherited High against the shared mock default. [SPEC-607](../.ai/specs/SPEC-607-codex-tasks-run-at-high-effort-unless-th.md)
 - `scripts/cargo --scratch-target` gives an ad-hoc build a private disk target and removes it when its workers stop. [SPEC-600](../.ai/specs/SPEC-600-mutation-testing-sized-to-the-change-wit.md)
 
 - Agent and CI attempts receive private disk scratch for build trees. The process host caps each session’s memory-backed `/tmp` at 1 GiB. Named mutation campaigns reclaim their disk copies when workers exit. [SPEC-600](../.ai/specs/SPEC-600-mutation-testing-sized-to-the-change-wit.md)
