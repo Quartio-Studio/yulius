@@ -698,3 +698,7 @@ matched relay and proxy restoration has its own review and CI.
   response markers and passed the new request through to the static server. All
   14 startup and mock-readiness cases passed with retries disabled.
   [Browser fixture report #1551](https://github.com/Quartio-Studio/yulius/issues/1551)
+- Independent review found that the fresh-response assertion also accepted a 404.
+  Substituting a synthetic 404 confirmed the gap. The strengthened test rejected
+  that status and a synthetic empty 200 response. All eight repetitions then passed
+  with HTTP 200 and the exact repository `api.js` returned by the static server.

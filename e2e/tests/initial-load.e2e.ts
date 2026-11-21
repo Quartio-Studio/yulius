@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { afterEach, beforeEach, test } from '@e2e-dev/web';
 import { expect } from 'e2e';
 import type { Route } from 'playwright-core';
@@ -73,8 +74,7 @@ test('startup teardown delivers both responses already owned by route handlers',
   const page = surface.page();
   const request = (id: number) => page.evaluate(async (id) => {
     const response = await fetch('/assets/api.js?held=' + id, { cache: 'no-store' });
-    await response.text();
-    return response.headers.get('x-fixture-response');
+    return { status: response.status, marker: response.headers.get('x-fixture-response'), body: await response.text() };
   }, id);
   const responses = held.map((_, id) => request(id));
   let removed: Promise<void> | undefined;
@@ -82,11 +82,15 @@ test('startup teardown delivers both responses already owned by route handlers',
     await expect.poll(() => entered, { timeout: FIRST_LOAD_MS }).toBe(2);
     removed = removeStartupRoutes();
     held[0].resolve();
-    assert.equal(await responses[0], '0');
+    assert.deepEqual(await responses[0], { status: 200, marker: '0', body: 'fixture' });
     // During cleanup a fresh request goes to the static server while the second remains held.
-    assert.equal(await request(0), null);
+    const fresh = await request(0);
+    assert.equal(fresh.status, 200);
+    assert.equal(fresh.marker, null);
+    const script = await readFile(new URL('../../crates/yulius-server/web/assets/api.js', import.meta.url), 'utf8');
+    assert.ok(fresh.body === script, 'the fresh request must receive the static server’s api.js');
     held[1].resolve();
-    assert.equal(await responses[1], '1');
+    assert.deepEqual(await responses[1], { status: 200, marker: '1', body: 'fixture' });
   } finally {
     held.forEach((gate) => gate.resolve());
     await removed;
