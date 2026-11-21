@@ -109,6 +109,7 @@ struct RealGit {
 struct ParkedGitHold {
     started: std::sync::atomic::AtomicUsize,
     released: tokio::sync::Semaphore,
+    finishing: tokio::sync::Semaphore,
 }
 
 #[derive(Default)]
@@ -348,6 +349,7 @@ impl GitPort for RealGit {
                 hold.started
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let _ = hold.released.acquire().await;
+                let _ = hold.finishing.acquire().await;
             })
             .await
             .map_err(AppError::internal)?;
@@ -5420,6 +5422,7 @@ async fn overlapping_parked_status_reads_bound_git_workers_after_timeouts() -> T
     let hold = Arc::new(ParkedGitHold {
         started: Default::default(),
         released: tokio::sync::Semaphore::new(0),
+        finishing: tokio::sync::Semaphore::new(0),
     });
     *f.git.parked_git_hold.lock().map_err(|_| "git hold")? = Some(hold.clone());
     let checked = async {
@@ -5447,6 +5450,7 @@ async fn overlapping_parked_status_reads_bound_git_workers_after_timeouts() -> T
             .parked_needs_you,
         Some(false)
     );
+    hold.finishing.close();
     Ok(())
 }
 
