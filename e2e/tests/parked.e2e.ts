@@ -549,10 +549,16 @@ test('the sidebar keeps verified unfinished parked work under Needs you with a h
       parked_needs_you: false, parked_pr: { number: 520, open: true },
     });
   });
-  const task = /Improve the code/;
+  const task = /PR #520\s*, pull request, open, checks passed.*Improve the code/;
   await expect(screen.getByRole('region', 'Done').getByRole('link', task)).toBeVisible();
   await touchTask(browser, 'sb_studio', 13, { parked_needs_you: true });
   await expect(screen.getByRole('region', 'Needs you').getByRole('link', task)).toBeVisible();
   await touchTask(browser, 'sb_studio', 13, { parked_needs_you: false });
   await expect(screen.getByRole('region', 'Done').getByRole('link', task)).toBeVisible();
+  for (const flag of ['spec_unfinished', 'goal_unfinished']) {
+    await touchTask(browser, 'sb_studio', 13, { [flag]: true });
+    await expect(screen.getByRole('region', 'Needs you').getByRole('link', task)).toBeVisible();
+    await touchTask(browser, 'sb_studio', 13, { [flag]: false });
+    await expect(screen.getByRole('region', 'Done').getByRole('link', task)).toBeVisible();
+  }
 });
