@@ -63,7 +63,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Reproduce candidate status across restart on the live and parked PR owner
 - [x] Verify the failed integration candidate before parking its original owner
 - [x] Bind a parked message to the attempt its caller observed
-- [ ] Resume only the parked run whose screen finished saving
+- [x] Resume only the parked run whose screen finished saving
 - [ ] Preserve a continuation while its previous parked run settles
 - [ ] Order parking and replacement merge requests through run settlement
 - [ ] Deliver the recorded integration failure once to an already parked owner
@@ -116,6 +116,26 @@ The final parking check compares the owner’s saved singleton decision with the
 The SQLite query returning a parked task includes the latest attempt ID in the same snapshot. Admission checks that ID under the launch lock after caller preflight. A message can wait while another turn resumes and parks, so task status alone cannot identify the session the sender observed. Only a matching parked attempt can restore Codex lineage or accept the prompt. Bulk messages, Telegram replies and remote restarts carry the attempt from their first task lookup through dispatch. They check the caller’s current access before acting.
 
 ## Evidence
+
+- The final-screen ordering fix listed 11 mutations, caught 3 and found 8 unviable. The commit-boundary observation change listed 9, caught 2 and found 7 unviable. Both campaigns reached every mutation with zero missed and zero timed out. Their unmutated baselines passed 3,392 and 3,385 tests respectively.
+
+- On reviewed head `75098e156`, run `0ae29695-1dbf-4b30-a558-94a295201300` passed both SQLite commit-boundary assertions and the delayed-reader replacement park. Workspace Clippy with all targets and features passed with warnings denied. Vidoc was disabled.
+
+- Independent review approved `75098e156d998f40ee7aa148fd9d0fe01485ada6` against dev `86b2acb08`. The observer reads the final-screen file immediately after the SQLite transaction commits, before control returns to the supervisor. Deliberately committing before saving inside the serialized helper failed both host loss and close in run `3a306770-95fb-4b06-8e4d-12bb141766ac`. With publication in the required order, run `8b82229b-a17a-41f9-8431-84ab199356ee` passed all 186 selected Rust tests, including unreadable optional metadata and both delayed-reader orderings.
+
+- The initial mutation campaign at `c7ad33727` listed 62 changes, caught 7, missed 1 and found 54 unviable. None timed out or were left untested. All 3,396 unmutated tests passed. The missed mutation disabled the terminal-state guard before reading the session’s end intent. On `75098e156`, Cargo Mutants reran that exact mutation against the held replacement park regression and caught it. The original code passed the test and the mutant consumed the replacement’s park request.
+
+- Run `34079a24-c366-464b-a57f-c583ddc0860f` reproduced the final-screen ordering regression for both host loss and normal close. A reader at the durable attempt transition saw the previous turn’s file even though later output was already visible in the hub. The corrected exit and loss paths serialize the final screen write and the attempt transition and recheck the attempt inside that critical section.
+
+- The held replacement park passed with the guard present, together with seven admission and metadata controls in run `2c97d193-88e3-4f61-b520-0fd600322bab`. The test-only review delta contained no eligible mutation. Further review identified the separate requirement to publish the final screen before committing an exit or loss so a restart at that boundary sees current output. [SPEC-301](SPEC-301-a-run-lost-while-yulius-runs-saves-its-l.md)
+
+- In isolated run `746fa1e0-e581-400a-a775-c0cf19d5e4c0`, removing only the terminal-attempt guard allowed the stale reader to consume the replacement’s park request. The replacement recorded `exited code=None signal=Some(2)` instead of `parked`. The regression holds both exit readers and checks the replacement’s durable attempt ID and capture after they finish.
+
+- The screen-settlement implementation at `c7ad33727` passed all 185 selected parking, Codex, supervision and lost-screen tests in run `ba615278-18a9-46e7-88ba-e34aceddd074`. Review requested a test that holds the replacement's own park request while the stale reader finishes. It also identified a separate pre-existing live-output path that selects a hub by task after a replacement attaches. That ordering was traced by inspection. [Issue #1624](https://github.com/Quartio-Studio/yulius/issues/1624)
+
+- Before changing the exit and resume paths, run `95aa3f86-7b25-4f96-bd59-b410200f5b88` reproduced three failures on the delivered parked dispatch code. Resume accepted a message during screen publication, accepted another while an exit reader held the old run, and a late reader rewrote the old saved screen with output from the replacement run. Both controls passed. An obsolete message was refused and a held successor PR lookup allowed the owner to resume.
+
+- PR #1621 delivered parked attempt selection at dev `dc08c1a23`. PR run `ed3009cd-2971-4ef9-b3f2-61ecd612bd63` and merge train `e5428c1d-eb75-413e-bb5a-c510dc3e54e7` passed. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/dc08c1a230ec2ca90eeb185a58c69801265877d6)
 
 - PR #1621 CI run `c387d03f-e4bc-47df-b485-9d4bdaf5ed0e` failed the workspace Clippy check on two `expect()` calls in the replacement-turn fixture. The same check reproduced both findings locally and passed after the fixture asserted each store result with its error detail. All five dispatch tests that use the fixture passed in run `5bfa3015-04c0-48ba-b8b7-ab198d8c4fea`.
 

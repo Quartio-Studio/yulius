@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- Resuming a parked task waits for its old screen to finish saving. If that takes too long, Yulius asks the sender to retry and keeps the outstanding question open. [SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
+
 - A message prepared for an earlier parked attempt asks the sender to try again if another turn resumes and parks first. The new turn keeps its own outstanding decision. [SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
 - The Rust compiler cache served 12 of 12 eligible requests in a fresh CI lane replay. The first two scheduled gates each recorded zero hits in 27 eligible requests. The spec records execution and queue times for the physical runs. [SPEC-595](../.ai/specs/SPEC-595-share-compiled-rust-across-worktrees-and.md)
 - Yulius's own delivery is merge-first. A pull request merges on `quality` and `security`, and both test shards and e2e run once on the merged revision. Staging changes only to a revision whose full suite passed. A promotion to `main` comes only from what staging verified, and a red `dev` is fixed forward. Staging's deploy keeps the server stopped when it cannot put back the previous store, instead of starting it on another one. [ADR-0436](decisions/0436-yuliuss-full-suite-runs-after-the-merge-and-promotion-comes-from-verified-staging.md), [SPEC-591](../.ai/specs/SPEC-591-yulius-gets-its-own-staging-instance-and.md)
