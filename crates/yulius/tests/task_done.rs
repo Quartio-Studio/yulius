@@ -4336,6 +4336,67 @@ fn a_start_settles_a_run_no_server_holds_before_it_starts_the_next() -> TestResu
     Ok(())
 }
 
+/// A second observer can win the final write for the unheld run Continue inspected.
+#[test]
+fn continuing_an_unheld_run_waits_for_the_observer_that_recorded_its_loss() -> TestResult {
+    use yulius_app::race::{Point, on};
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = data_dir()?;
+    let (id, _host_pid) = left_by_a_dead_server(&data, &fake)?;
+    let rt = runtime()?;
+    let result = rt.block_on(async {
+        let app = second_server(&data, &fake).await?;
+        let run = app.deps.store.live_attempt(&id).await?.ok_or("unheld run")?;
+        let usage = serde_json::json!({
+            "primary": { "used_percent": 100.0, "window_minutes": 300, "resets_at": app.now().plus_millis(3_600_000).0 }
+        }).to_string();
+        app.deps.store.set_account_state(&AccountId::parse("a-claude")?, AccountStatus::Limited, Some(&usage), None, app.now()).await?;
+        let hold = |point, key: &Path| {
+            let entered = Arc::new(tokio::sync::Notify::new());
+            let release = Arc::new(tokio::sync::Notify::new());
+            let (ready, gate) = (entered.clone(), release.clone());
+            let handle = tokio::runtime::Handle::current();
+            on(point, key, move || {
+                ready.notify_one();
+                let result = wait_in_hook(&handle, tokio::time::timeout(Duration::from_secs(20), gate.notified()));
+                assert!(result.is_ok(), "observer was never released");
+            });
+            (entered, release)
+        };
+        let (inspected, resume_inspection) = hold(Point::LostRunTermination, Path::new(&run.run_dir));
+        let (lost, finish_loss) = hold(Point::LossRecorded, Path::new(id.as_str()));
+        let waiting = Arc::new(tokio::sync::Notify::new());
+        let ready = waiting.clone();
+        on(Point::ContinueWaitsForReader, Path::new(id.as_str()), move || ready.notify_one());
+        let (starting, next_id) = (app.clone(), id.clone());
+        let mut next = tokio::spawn(async move { resume(&starting, &next_id).await });
+        tokio::time::timeout(Duration::from_secs(15), inspected.notified()).await?;
+        let (stopping, stop_id) = (app.clone(), id.clone());
+        let stop = tokio::spawn(async move { stopping.stop_task_now(&stop_id).await });
+        tokio::time::timeout(Duration::from_secs(15), lost.notified()).await?;
+        assert!(app.deps.store.live_attempt(&id).await?.is_none());
+        resume_inspection.notify_one();
+        tokio::select! {
+            early = &mut next => {
+                finish_loss.notify_one();
+                stop.await??;
+                return Err(format!("Continue returned before the winning loss observer settled: {:?}", early?).into());
+            }
+            () = waiting.notified() => (),
+        }
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::Stopped(StopReason::ServerLost));
+        finish_loss.notify_one();
+        stop.await??;
+        next.await??;
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::WaitingCapacity);
+        assert!(app.deps.store.open_pause(&id).await?.is_some());
+        app.stop_task_now(&id).await?;
+        Ok::<_, BoxError>(())
+    });
+    rt.shutdown_timeout(Duration::from_secs(5));
+    result
+}
+
 /// SPEC-458 RUN-003: Stop on such a task ends the run (its host still runs here) and records it
 /// lost, instead of answering "task is stopped_server_lost" and changing nothing.
 #[test]
@@ -6736,7 +6797,7 @@ fn a_reboot_closes_a_done_task_and_keeps_every_screen() -> TestResult {
             .deps
             .store
             .insert_task(&TaskRecord {
-                parked_attempt_id: None,
+                resume_attempt_id: None,
                 id: TaskId::parse("t-unattached")?,
                 sandbox_id: sandbox.clone(),
                 number: 0,

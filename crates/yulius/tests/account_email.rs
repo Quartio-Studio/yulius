@@ -641,7 +641,7 @@ async fn task_on(
     let task = h
         .store
         .insert_task(&TaskRecord {
-            parked_attempt_id: None,
+            resume_attempt_id: None,
             id: TaskId::parse(&format!("t-email-{n}"))?,
             sandbox_id: SandboxId::parse("s1")?,
             number: 0,

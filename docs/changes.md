@@ -7,6 +7,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-21
 
 - Mutation builds and disposable Cargo targets use disk scratch, ordinary session `/tmp` is capped at 1 GiB, and each delivery checks its tests by hand and requests staging once after merge. [SPEC-600](../.ai/specs/SPEC-600-mutation-testing-sized-to-the-change-wit.md)
+- Continuing a stopped task waits for its previous terminal to finish parking. A timeout, a later archive or a replacement run leaves the task’s question and archive intact. [SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
 - Instance disk upkeep clears idle Rust compiler stores over 20 GiB or under remaining disk pressure. Removing a store refreshes sandbox quota usage and gives a blocked task one admission retry. [SPEC-595](../.ai/specs/SPEC-595-share-compiled-rust-across-worktrees-and.md)
 - The seven-day API estimate includes recorded GPT-6 Codex runs at Standard prices and shows what the pool would cost if eligible runs used Ultrafast. [SPEC-602](../.ai/specs/SPEC-602-it-doesnt-seem-real-verify-i-think-it-s.md)
 
