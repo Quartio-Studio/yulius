@@ -1703,7 +1703,7 @@ impl App {
         use sha2::Digest;
         let digest: [u8; 32] = sha2::Sha256::digest(prompt).into();
         let runtime = self.runtime(task);
-        let submits = self
+        let mut submits = self
             .supervisor
             .viewer_submits
             .lock()
@@ -1735,26 +1735,34 @@ impl App {
                 held_owner: None,
             });
         }
-        if let Some(owner) = eligible
+        let direct = eligible
             .clone()
-            .find(|key| key.enter == ViewerEnter::Submitted(digest))
+            .find(|key| key.enter == ViewerEnter::Submitted(digest));
+        // An invocation with different identity may submit an edited copy of an
+        // acknowledged instruction. Older clients need direct input evidence for a copy.
+        let owner =
+            if direct.is_some() {
+                direct
+            } else if let Some(issued) = receipts.issued.iter_mut().find(|issued| {
+                issued.digest == digest && (invocation.is_none() || issued.pending > 0)
+            }) {
+                issued.pending = issued.pending.saturating_sub(1);
+                None
+            } else {
+                eligible.next()
+            };
+        let owner = owner.map(|key| (key.time, key.sequence));
+        if let (Some(_), Some((_, seq))) = (invocation, owner)
+            && let Some(pending) = submits.get_mut(task)
         {
-            return Some((owner.time, owner.sequence));
+            // Transfer the Enter to its invocation before another callback can claim it.
+            // A held invocation retains the selected key for its own release.
+            pending.retain(|key| key.sequence != seq);
+            if pending.is_empty() {
+                submits.remove(task);
+            }
         }
-        // A distinct invocation may carry an edited copy of an already acknowledged
-        // machine instruction. Older clients lack an identity, so their repeats keep
-        // the original attribution unless the viewer directly entered the same text.
-        if let Some(issued) = receipts
-            .issued
-            .iter_mut()
-            .find(|issued| issued.digest == digest && (invocation.is_none() || issued.pending > 0))
-        {
-            issued.pending = issued.pending.saturating_sub(1);
-            return None;
-        }
-        // The provider may edit or normalize what the viewer entered. Once an
-        // automatic send is excluded, its accepted callback confirms the pending Enter.
-        eligible.next().map(|key| (key.time, key.sequence))
+        owner
     }
 
     /// The release of a held submit acknowledges the original Enter, even if
