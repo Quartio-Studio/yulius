@@ -29,6 +29,7 @@ Earlier user requests establish the ownership rule. Task #534 concerned automate
 - [x] Reproduce the incorrect handoff in regression tests
 - [x] Route unfinished work to its automatic continuation owner
 - [x] Preserve goal continuation through capacity recovery and a busy browser
+- [ ] Track completed background work and concurrent plan progress at Stop
 - [ ] Verify the fix and obtain independent approval
 
 ## Acceptance criteria

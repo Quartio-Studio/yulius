@@ -320,6 +320,11 @@ async fn an_exhausted_pool_holds_the_turn_until_capacity_returns() -> TestResult
     advance(&h, 2 * HOUR + 1_000);
     let _ = restarted.resume_round().await;
     assert_eq!(status(&h, &task).await?, TaskStatus::Running);
+    assert_eq!(
+        h.store.task(&task).await?.ok_or("released task")?.activity,
+        Some(yulius_domain::task::Activity::Waiting),
+        "the native goal has no carried plan work"
+    );
     assert!(h.store.open_pause(&task).await?.is_none());
     let (code, _, body) = hook(&internal, "Stop", json!({})).await?;
     assert_eq!(code, 200, "the held turn goes on: {body}");
@@ -406,6 +411,18 @@ async fn a_codex_goal_stop_is_held_only_for_actionable_work() -> TestResult {
             .task_wait_messages(&task, 1)
             .await?
             .is_empty()
+    );
+    let held = h.store.open_pause(&task).await?.ok_or("turn hold")?;
+    assert!(
+        held.continuation
+            .as_deref()
+            .is_some_and(|s| s.contains("Verify dev"))
+    );
+    // The same in-place recovery works for a hold persisted by an earlier server.
+    assert!(
+        h.store
+            .update_open_pause(&task, PauseKind::Turn, None)
+            .await?
     );
     advance(&h, 2 * HOUR + 1_000);
     h.app.resume_round().await;

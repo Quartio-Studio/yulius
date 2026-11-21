@@ -2217,6 +2217,91 @@ async fn goal_stop_after_an_antigravity_model_error_ends_the_turn() -> TestResul
 }
 
 #[tokio::test]
+async fn goal_stop_continues_when_antigravity_reports_its_worker_finished() -> TestResult {
+    let f = task_with_open_step(Agent::Antigravity, TaskMode::Goal, "Verify dev").await?;
+    agy_event(&f, "Stop", json!({"fully_idle":false})).await?;
+    assert_eq!(task_brief(&f).await?["shows"], "working");
+    let reply = stop_of(&f, Agent::Antigravity).await?;
+    assert_eq!(reply["decision"], "block");
+    assert_eq!(task_brief(&f).await?["shows"], "working");
+    assert!(
+        f.h.app
+            .deps
+            .store
+            .task_wait_messages(&f.task, 1)
+            .await?
+            .is_empty()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_retains_the_one_time_stale_step_guidance() -> TestResult {
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify dev").await?;
+    f.h.clock.0.fetch_add(90 * 60_000, Ordering::SeqCst);
+    let first = stop_of(&f, Agent::Codex).await?;
+    let repeated = stop_of(&f, Agent::Codex).await?;
+    assert_eq!(first["decision"], "block");
+    assert!(
+        first["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("has been in progress for 90 min")),
+        "{first}"
+    );
+    assert_eq!(repeated["decision"], "block");
+    assert!(
+        repeated["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("Verify dev") && !r.contains("has been in progress")),
+        "{repeated}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_rechecks_the_remaining_step_after_a_slow_observation() -> TestResult {
+    use std::time::Duration;
+    use yulius_app::ports::browser::BrowserPort;
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Build checkout").await?;
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    f.h.app.tool_steps_set(&ctx, &json!({"steps":[{"title":"Build checkout","status":"in_progress"},{"title":"Verify dev"}]})).await?;
+    for _ in 0..yulius_app::hooks::MAX_GATE_BLOCKS {
+        assert_eq!(stop_of(&f, Agent::Codex).await?["decision"], "block");
+    }
+    let browser = Arc::new(crate::delivery::HeldBrowserLookup::default());
+    let (entered, release) = browser.hold_publication_lookup(&f.task);
+    browser.running(&f.sandbox).await;
+    let mut deps = f.h.app.deps.clone();
+    deps.browser = browser;
+    let app = yulius_app::context::App::new(f.h.app.config.clone(), deps);
+    let hook_app = app.clone();
+    let stop = tokio::spawn(async move {
+        hook_app
+            .hook_event(TOKEN, "codex", "Stop", &Default::default(), None)
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(4), entered.notified()).await?;
+    app.tool_step_update(&ctx, &json!({"ordinal":1,"status":"done"}))
+        .await?;
+    release.notify_one();
+    let yulius_app::hooks::HookReply::Output(reply) = stop.await?? else {
+        return Err("held".into());
+    };
+    let reply = serde_json::to_value(reply)?;
+    assert_eq!(reply["decision"], "block", "{reply}");
+    assert!(
+        reply["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("Verify dev")),
+        "{reply}"
+    );
+    let task = app.deps.store.task(&f.task).await?.ok_or("task")?;
+    assert_eq!(task.gate_blocks, 1);
+    assert_eq!(task.activity, Some(Activity::Working));
+    Ok(())
+}
+
+#[tokio::test]
 async fn goal_stop_restores_working_when_the_turn_was_last_seen_waiting() -> TestResult {
     let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify dev").await?;
     f.h.app
@@ -2224,6 +2309,12 @@ async fn goal_stop_restores_working_when_the_turn_was_last_seen_waiting() -> Tes
         .store
         .set_activity(&f.task, Some(Activity::Waiting), f.h.app.now())
         .await?;
+    std::fs::create_dir_all(f.worktree.join("docs/specs"))?;
+    std::fs::write(
+        f.worktree.join("docs/specs/checkout.md"),
+        "---\nyulius-task: t-main\nstatus: in-progress\n---\n# Checkout\n\n## Goal\n\nVerify checkout.\n\n## Context\n\nFixture.\n\n## Requirements\n\n- Verify.\n\n## Plan\n\n- [x] Build checkout\n- [ ] Verify dev\n\n## Acceptance criteria\n\nCheckout verified.\n\n## Test plan\n\nRun tests.\n\n## Decisions\n\nUse fixtures.\n",
+    )?;
+    let mut events = f.h.app.events.subscribe();
     assert_eq!(stop_of(&f, Agent::Codex).await?["decision"], "block");
     let brief = task_brief(&f).await?;
     assert_eq!(brief["shows"], "working");
@@ -2236,6 +2327,20 @@ async fn goal_stop_restores_working_when_the_turn_was_last_seen_waiting() -> Tes
             .await?
             .is_empty()
     );
+    let mut updated = false;
+    while let Ok(envelope) = events.try_recv() {
+        if let yulius_contracts::events::UiEvent::TaskUpdated { task } = envelope.event
+            && task.id == f.task.as_str()
+        {
+            updated = true;
+            assert!(
+                task.needs_you_notice.is_none(),
+                "intermediate notice: {:?}",
+                task.needs_you_notice
+            );
+        }
+    }
+    assert!(updated, "the final working state was published");
     Ok(())
 }
 
