@@ -256,9 +256,14 @@ pub fn build_commit() -> Option<String> {
 
 /// Instance updates (SPEC-002 ADR-18): `main` of Quartio-Studio/yulius on GitHub, the helper's
 /// files, and the read token when one is configured.
-fn update_services(args: &ServeArgs) -> Result<yulius_app::updates::UpdateServices, String> {
+fn update_services(
+    args: &ServeArgs,
+    meter: yulius_github::RequestMeter,
+) -> Result<yulius_app::updates::UpdateServices, String> {
     let mut services = yulius_app::updates::UpdateServices::new(build_commit());
-    services.source = Some(Arc::new(crate::wiring::release::GitHubReleases::new()?));
+    services.source = Some(Arc::new(crate::wiring::release::GitHubReleases::new(
+        meter,
+    )?));
     services.helper = Some(Arc::new(
         crate::wiring::update_files::FileUpdateHelper::new(
             &args.data_dir,
@@ -545,12 +550,14 @@ pub fn build_app(
         .contained_readonly
         .clone_from(&args.contained_readonly);
     let (browser, browser_network) = browser_port(args);
+    let github_meter = yulius_github::RequestMeter::default();
     let deps = Deps {
         store: Arc::new(store),
         clock: Arc::new(SystemClock),
         crypto: Arc::new(crypto),
-        github: Arc::new(GitHubAdapter::new(
+        github: Arc::new(GitHubAdapter::metered(
             yulius_github::GitHubConfig::github_com().map_err(|e| e.to_string())?,
+            github_meter.clone(),
         )?),
         session_host: Arc::new(PtySessionHost::new(config.yulius_exe.clone())),
         harness: Arc::new(antigravity_cli(
@@ -576,7 +583,7 @@ pub fn build_app(
         )),
         yulius_app::telegram::ChannelTuning::default(),
     ));
-    app.set_updates(update_services(args)?);
+    app.set_updates(update_services(args, github_meter)?);
     // The move helper is named after the unit this server runs in (SPEC-470 MVB-007).
     app.set_move_helper(Arc::new(crate::wiring::migrate_files::FileMoveHelper::new(
         &args.data_dir,

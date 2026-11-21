@@ -555,7 +555,11 @@ impl App {
             }
             "task_merge" => {
                 let task = self.agent_task_ref(project, args).await?;
-                self.merge_for_person(ctx, task.id.as_str()).await
+                crate::ports::github::for_purpose(
+                    crate::ports::github::GitHubPurpose::Merges,
+                    self.merge_for_person(ctx, task.id.as_str()),
+                )
+                .await
             }
             "merge_queue" => self.merge_queue_for_person(ctx, &sandbox.id).await,
             // The Subscriptions panel as everyone signed in sees it (SPEC-487 SUB-001).

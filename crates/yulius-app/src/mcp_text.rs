@@ -1088,6 +1088,9 @@ fn waits_why(task: &Value) -> Vec<String> {
 fn tasks_list(value: &Value) -> Option<String> {
     let tasks = value.get("tasks")?.as_array()?;
     let mut out = String::new();
+    if let Some(note) = value.get("github_refresh_note").and_then(Value::as_str) {
+        push_line(&mut out, note);
+    }
     if let Some(you) = value.get("you").filter(|v| !v.is_null()) {
         push_line(&mut out, &format!("You: {}", task_line(you)?));
     }

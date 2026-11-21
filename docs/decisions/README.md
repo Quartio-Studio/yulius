@@ -495,6 +495,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0444 -->
 <!-- ADR 0445 -->
 <!-- ADR 0446 -->
+- [0447](0447-task-display-shares-github-reads-and-yields-to-delivery.md): Task display shares GitHub reads and yields to delivery.
 <!-- ADR 0447 -->
 <!-- ADR 0448 -->
 <!-- ADR 0449 -->

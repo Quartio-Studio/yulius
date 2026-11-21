@@ -248,6 +248,7 @@ impl App {
                 && !facts.goal_unfinished
                 && self.pr_ci_progressing(task).await);
         Ok(TaskSummary {
+            github_display_paused: false,
             parked_pr: None,
             parked_needs_you: None,
             id: task.id.to_string(),
@@ -724,6 +725,11 @@ impl App {
                 )
                 .await?;
             out.push(summary);
+        }
+        if self.github_budget().await?.display_paused {
+            for row in &mut out {
+                row.github_display_paused = true;
+            }
         }
         Ok(out)
     }

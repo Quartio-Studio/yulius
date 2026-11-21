@@ -25,6 +25,7 @@ const MAX_COMMITS: usize = 250;
 
 /// `main` of the update repository on GitHub.
 pub struct GitHubReleases {
+    meter: yulius_github::RequestMeter,
     http: reqwest::Client,
     api: String,
 }
@@ -34,8 +35,10 @@ impl GitHubReleases {
     ///
     /// # Errors
     /// When the HTTP client cannot be built.
-    pub fn new() -> Result<Self, String> {
-        Self::with_api(GITHUB_API.to_owned(), true)
+    pub fn new(meter: yulius_github::RequestMeter) -> Result<Self, String> {
+        let mut source = Self::with_api(GITHUB_API.to_owned(), true)?;
+        source.meter = meter;
+        Ok(source)
     }
 
     /// A source for another API base (tests).
@@ -60,6 +63,7 @@ impl GitHubReleases {
             .build()
             .map_err(|e| format!("GitHub client setup failed: {e}"))?;
         Ok(Self {
+            meter: yulius_github::RequestMeter::default(),
             http,
             api: api.trim_end_matches('/').to_owned(),
         })
@@ -74,8 +78,20 @@ impl GitHubReleases {
         if let Some(token) = token {
             request = request.bearer_auth(token.expose());
         }
+        use yulius_github::Clock;
+        let attempt = self
+            .meter
+            .attempt(
+                token.map(Secret::expose),
+                yulius_app::ports::github::GitHubPurpose::Other,
+                yulius_github::SystemClock.now(),
+            )
+            .map_err(|_| SourceError::RateLimited)?;
         let mut response = request.send().await.map_err(|e| failure(&e))?;
         let status = response.status();
+        if let Some(attempt) = attempt {
+            attempt.response(status.as_u16(), response.headers());
+        }
         let limited = response
             .headers()
             .get("x-ratelimit-remaining")

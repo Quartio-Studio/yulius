@@ -43,6 +43,7 @@ impl Clock for TestClock {
 /// Fake GitHub: OAuth codes map to users; permissions per (login, repo).
 #[derive(Default)]
 pub struct FakeGitHub {
+    pub budget_view: Mutex<Option<yulius_app::ports::github::GitHubBudget>>,
     pub users_by_code: Mutex<HashMap<String, GhUser>>,
     pub perms: Mutex<HashMap<(String, String), GitHubPermissions>>,
     pub fail_permissions: std::sync::atomic::AtomicBool,
@@ -59,6 +60,8 @@ pub struct FakeGitHub {
     /// When set, a callback question waits for it; `callback_entered` says one began.
     pub callback_hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
     pub callback_entered: tokio::sync::Notify,
+    pub pull_get_count: std::sync::atomic::AtomicUsize,
+    pub pull_list_count: std::sync::atomic::AtomicUsize,
     /// Pull requests (delivery tests).
     pub pulls: Mutex<Vec<GhPull>>,
     /// Simulates a failed repository-wide overview while individual PRs remain readable.
@@ -178,6 +181,13 @@ fn login_of(token: &Secret) -> String {
 
 #[async_trait]
 impl GitHubPort for FakeGitHub {
+    fn budget(&self, _: Option<u64>) -> yulius_app::ports::github::GitHubBudget {
+        self.budget_view
+            .lock()
+            .ok()
+            .and_then(|v| v.clone())
+            .unwrap_or_else(yulius_app::ports::github::GitHubBudget::empty)
+    }
     fn authorize_url(&self, _: &GitHubAppConfig, state: &str, _: &str, select: bool) -> String {
         let prompt = if select { "&prompt=select_account" } else { "" };
         format!("https://github.test/login/oauth/authorize?state={state}{prompt}")
@@ -470,6 +480,7 @@ impl GitHubPort for FakeGitHub {
         Ok(created)
     }
     async fn get_pull(&self, _: &Secret, _: &str, _: &str, number: u64) -> AppResult<GhPull> {
+        self.pull_get_count.fetch_add(1, Ordering::SeqCst);
         let hold = self
             .pull_read_hold
             .lock()
@@ -536,6 +547,7 @@ impl GitHubPort for FakeGitHub {
         _: &str,
         head: Option<&str>,
     ) -> AppResult<Vec<GhPull>> {
+        self.pull_list_count.fetch_add(1, Ordering::SeqCst);
         let hold = self
             .pull_list_hold
             .lock()

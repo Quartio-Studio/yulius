@@ -1934,6 +1934,14 @@ impl App {
 
     /// `announce`: the run changed (not a retry of its status), so the browsers are told.
     async fn ci_try_publish(&self, run_id: &str, announce: bool) -> AppResult<()> {
+        crate::ports::github::for_purpose(
+            crate::ports::github::GitHubPurpose::CiStatuses,
+            self.ci_try_publish_inner(run_id, announce),
+        )
+        .await
+    }
+
+    async fn ci_try_publish_inner(&self, run_id: &str, announce: bool) -> AppResult<()> {
         let store = &self.deps.store;
         let Some(run) = store.ci_run(run_id).await? else {
             return Ok(());

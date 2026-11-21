@@ -35,6 +35,7 @@ pub(crate) struct Call<'a> {
     pub(crate) url: Url,
     pub(crate) bearer: Option<&'a str>,
     pub(crate) body: Body,
+    pub(crate) etag: Option<HeaderValue>,
     pub(crate) accept: &'static str,
     /// Extra values to scrub from error messages (client secrets, codes).
     pub(crate) sensitive: Vec<&'a str>,
@@ -47,6 +48,7 @@ impl<'a> Call<'a> {
             url,
             bearer,
             body: Body::None,
+            etag: None,
             accept: API_ACCEPT,
             sensitive: Vec::new(),
         }
@@ -67,10 +69,11 @@ impl<'a> Call<'a> {
 }
 
 /// A complete response.
+#[derive(Clone)]
 pub(crate) struct Reply {
     pub(crate) status: u16,
     pub(crate) headers: HeaderMap,
-    pub(crate) body: Vec<u8>,
+    pub(crate) body: Arc<[u8]>,
 }
 
 impl Reply {
@@ -84,6 +87,8 @@ pub(crate) struct Transport {
     retry: RetryPolicy,
     request_timeout: Duration,
     clock: Arc<dyn Clock>,
+    pub(crate) meter: crate::RequestMeter,
+    pub(crate) purpose: fn() -> yulius_contracts::api::status::GitHubPurpose,
 }
 
 static CRYPTO_PROVIDER: Once = Once::new();
@@ -96,7 +101,12 @@ pub(crate) fn install_crypto_provider() {
 }
 
 impl Transport {
-    pub(crate) fn new(config: &GitHubConfig, clock: Arc<dyn Clock>) -> Result<Self, GitHubError> {
+    pub(crate) fn new(
+        config: &GitHubConfig,
+        clock: Arc<dyn Clock>,
+        meter: crate::RequestMeter,
+        purpose: fn() -> yulius_contracts::api::status::GitHubPurpose,
+    ) -> Result<Self, GitHubError> {
         install_crypto_provider();
         let http = reqwest::Client::builder()
             .user_agent(USER_AGENT)
@@ -109,6 +119,8 @@ impl Transport {
             retry: config.retry,
             request_timeout: config.request_timeout,
             clock,
+            meter,
+            purpose,
         })
     }
 
@@ -173,12 +185,21 @@ impl Transport {
             Body::Json(value) => request.json(value),
             Body::Form(fields) => request.form(fields),
         };
+        if let Some(etag) = &call.etag {
+            request = request.header(reqwest::header::IF_NONE_MATCH, etag);
+        }
+        let attempt = self
+            .meter
+            .attempt(call.bearer, (self.purpose)(), self.now())?;
         let mut response = request
             .send()
             .await
             .map_err(|e| transport_error(&e, &known))?;
         let status = response.status().as_u16();
         let headers = response.headers().clone();
+        if let Some(attempt) = attempt {
+            attempt.response(status, &headers);
+        }
         if response
             .content_length()
             .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
@@ -203,7 +224,7 @@ impl Transport {
         Ok(Reply {
             status,
             headers,
-            body,
+            body: body.into(),
         })
     }
 

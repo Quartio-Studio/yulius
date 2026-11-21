@@ -2791,7 +2791,11 @@ impl App {
             && let Ok((head, Some(target))) = self.staging_target(&sandbox).await
             && target.name == env
         {
-            let request = self.staging_request(&sandbox, &env, ctx, &head).await?;
+            let request = crate::ports::github::for_purpose(
+                crate::ports::github::GitHubPurpose::Staging,
+                self.staging_request(&sandbox, &env, ctx, &head),
+            )
+            .await?;
             let text = if request.state.is_pending() {
                 format!(
                     "Staging request {} for revision {} of {}: {}. {}. Yulius tells this session its outcome; meanwhile cd_status shows the queue with its run ids, and cd_deploy again answers with this request.",

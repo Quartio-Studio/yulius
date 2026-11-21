@@ -321,6 +321,18 @@ impl App {
         sandbox: &SandboxRecord,
         env: &str,
     ) -> AppResult<()> {
+        crate::ports::github::for_purpose(
+            crate::ports::github::GitHubPurpose::Staging,
+            self.staging_advance_inner(sandbox, env),
+        )
+        .await
+    }
+
+    async fn staging_advance_inner(
+        self: &Arc<Self>,
+        sandbox: &SandboxRecord,
+        env: &str,
+    ) -> AppResult<()> {
         let lock = queue_lock(&sandbox.id);
         let _queue = lock.lock().await;
         let store = &self.deps.store;

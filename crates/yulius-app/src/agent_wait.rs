@@ -965,6 +965,14 @@ impl App {
     /// or the merge was refused; `yulius wait` says which. A merge train goes first (SPEC-084):
     /// it forms, or merges the pull requests it tested together.
     pub async fn merge_armed(self: &Arc<Self>, sandbox: &SandboxId) {
+        crate::ports::github::for_purpose(
+            crate::ports::github::GitHubPurpose::Merges,
+            self.merge_armed_pass(sandbox),
+        )
+        .await;
+    }
+
+    async fn merge_armed_pass(self: &Arc<Self>, sandbox: &SandboxId) {
         // One pass per sandbox at a time (SPEC-084 TRN-010): a pass that read a branch as up to
         // date while another merged into its base had its merge refused as behind, and the
         // armed merge was dropped.

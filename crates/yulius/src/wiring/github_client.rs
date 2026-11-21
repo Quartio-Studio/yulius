@@ -18,6 +18,7 @@ use yulius_github::{
 
 /// GitHub adapter with one cached client per App id (keeps installation tokens warm).
 pub struct GitHubAdapter {
+    meter: yulius_github::RequestMeter,
     base: GitHubConfig,
     cached: Mutex<Option<(u64, Arc<GitHubClient>)>>,
     plain: Arc<GitHubClient>,
@@ -29,9 +30,24 @@ impl GitHubAdapter {
     /// # Errors
     /// Fails when the HTTP client cannot be built.
     pub fn new(base: GitHubConfig) -> Result<Self, String> {
-        let plain = GitHubClient::new(base.clone()).map_err(|e| e.to_string())?;
+        Self::metered(base, yulius_github::RequestMeter::default())
+    }
+
+    /// Use the instance meter shared with the update client.
+    ///
+    /// # Errors
+    /// Fails when the HTTP client cannot be built.
+    pub fn metered(base: GitHubConfig, meter: yulius_github::RequestMeter) -> Result<Self, String> {
+        let plain = GitHubClient::metered(
+            base.clone(),
+            Arc::new(yulius_github::SystemClock),
+            meter.clone(),
+            yulius_app::ports::github::current_purpose,
+        )
+        .map_err(|e| e.to_string())?;
         Ok(Self {
             base,
+            meter,
             cached: Mutex::new(None),
             plain: Arc::new(plain),
         })
@@ -55,7 +71,15 @@ impl GitHubAdapter {
             private_key_pem: GhSecret::new(app.private_key_pem.clone()),
             slug: app.slug.clone(),
         });
-        let client = Arc::new(GitHubClient::new(config).map_err(map_err)?);
+        let client = Arc::new(
+            GitHubClient::metered(
+                config,
+                Arc::new(yulius_github::SystemClock),
+                self.meter.clone(),
+                yulius_app::ports::github::current_purpose,
+            )
+            .map_err(map_err)?,
+        );
         *cached = Some((app.app_id, client.clone()));
         Ok(client)
     }
@@ -163,6 +187,12 @@ fn merge_method(text: &str) -> AppResult<MergeMethod> {
 
 #[async_trait]
 impl GitHubPort for GitHubAdapter {
+    fn budget(&self, installation: Option<u64>) -> yulius_app::ports::github::GitHubBudget {
+        use yulius_github::Clock;
+        self.meter
+            .snapshot(installation, yulius_github::SystemClock.now())
+    }
+
     fn authorize_url(
         &self,
         app: &GitHubAppConfig,

@@ -18,6 +18,9 @@
 //! With the `fake` feature, [`fake::FakeGitHub`] is an in-process GitHub stand-in for tests.
 
 mod app;
+mod budget;
+mod display;
+pub use budget::{Attempt, RequestMeter};
 pub mod client;
 mod config;
 mod error;
