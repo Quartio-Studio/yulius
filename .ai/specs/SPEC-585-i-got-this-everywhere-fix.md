@@ -50,3 +50,5 @@ The two screenshot regressions passed with the display fix. A scoped cache test 
 Review on `496faa34` found that a stale list could resurrect a directly confirmed closure, or replace a verified failing PR with a higher-numbered green PR. Both consecutive-read tests failed on that head. The display now publishes the result after direct verification, excludes confirmed closures, and keeps the PR responsible for the attention notice.
 
 The busy-sandbox test reproduced a capacity error after 30 parked branch reads behind a slow overview. The overview and individual branches now have independent overlap limits. All five overview-cache tests passed. The scoped parking and dependency suite passed all 175 tests with the follow-up identity fix.
+
+Review on `41198e18` found two remaining false waits. Holding the final branch list after a directly confirmed merge and reading a settled task for the 31st time behind a held overview each reproduced the original notice. The display now uses the same local recheck for both cases. Directly confirmed merges are published before consulting concurrent observations. The API reference documents the prerequisite exception.

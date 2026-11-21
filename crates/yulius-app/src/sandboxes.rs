@@ -490,11 +490,13 @@ impl App {
                 .filter(|r| crate::delivery::past_merge(&r.stage))
                 .and_then(|r| r.pr_number)
             {
+                let read = match self.observed_pulls.begin_branch(&task.sandbox_id, &task.id) {
+                    Ok(read) => Some(read),
+                    Err(crate::error::AppError::Capacity(_)) => None,
+                    Err(err) => return Err(err),
+                };
                 discovery = Some(crate::delivery::FollowupDiscovery::new(
-                    self.observed_pulls
-                        .begin_branch(&task.sandbox_id, &task.id)?,
-                    merged,
-                    deadline,
+                    read, merged, deadline,
                 ));
             }
             let prs = self
@@ -550,7 +552,7 @@ impl App {
             crate::race::Point::ParkedStatusRead,
             std::path::Path::new(task.id.as_str()),
         );
-        if let Some(discovery) = discovery {
+        if let Some(mut discovery) = discovery {
             discovery.publish(&task.id, observed.pr);
         }
         status.pr = observed.pr;

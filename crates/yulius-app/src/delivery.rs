@@ -159,7 +159,7 @@ pub(crate) struct ParkingPrs {
 /// A display read publishes one ordered observation of a merged task's branch. Its
 /// direct PR checks refine the list, including when a later check hits the deadline.
 pub(crate) struct FollowupDiscovery {
-    read: crate::sandboxes::OverviewRead,
+    read: Option<crate::sandboxes::OverviewRead>,
     merged: u64,
     deadline: tokio::time::Instant,
     open: Option<Vec<u64>>,
@@ -167,7 +167,7 @@ pub(crate) struct FollowupDiscovery {
 
 impl FollowupDiscovery {
     pub(crate) fn new(
-        read: crate::sandboxes::OverviewRead,
+        read: Option<crate::sandboxes::OverviewRead>,
         merged: u64,
         deadline: tokio::time::Instant,
     ) -> Self {
@@ -177,6 +177,18 @@ impl FollowupDiscovery {
             deadline,
             open: None,
         }
+    }
+
+    async fn lookup<T>(&self, read: impl std::future::Future<Output = AppResult<T>>) -> Option<T> {
+        self.read.as_ref()?;
+        // Reserve time for the local task and delivery recheck after an inconclusive list.
+        let remaining = self
+            .deadline
+            .saturating_duration_since(tokio::time::Instant::now());
+        tokio::time::timeout_at(self.deadline - remaining / 4, read)
+            .await
+            .ok()?
+            .ok()
     }
 
     fn listed(&mut self, pulls: &[GhPull], closed: &std::collections::BTreeSet<u64>) {
@@ -190,16 +202,16 @@ impl FollowupDiscovery {
     }
 
     pub(crate) fn publish(
-        self,
+        &mut self,
         task: &TaskId,
         verified: Option<yulius_contracts::api::tasks::ParkedPr>,
     ) {
-        if let Some(open) = self.open {
+        if let (Some(read), Some(open)) = (self.read.take(), self.open.take()) {
             let replacement = verified
                 .filter(|pr| pr.open && open.contains(&pr.number))
                 .map(|pr| pr.number)
                 .or_else(|| open.last().copied());
-            self.read.record_branch(task, self.merged, replacement);
+            read.record_branch(task, self.merged, replacement);
         }
     }
 }
@@ -4339,19 +4351,18 @@ impl App {
             let branch = branch_pulls(&token).await?;
             Ok::<_, AppError>((token, branch))
         };
-        let (token, branch) = if let Some(until) = discovery.as_ref().map(|read| read.deadline) {
-            // Leave time inside the existing display budget to reconfirm the task and delivery.
-            let remaining = until.saturating_duration_since(tokio::time::Instant::now());
-            match tokio::time::timeout_at(until - remaining / 4, discover).await {
-                Ok(Ok(found)) => found,
-                _ => {
-                    *observed = self.known_parked_pull(task, record);
-                    return Ok(observed.pr.filter(|pr| !pr.open).map(|_| ParkingPrs {
-                        followup_unverified: true,
-                        ..ParkingPrs::default()
-                    }));
-                }
-            }
+        let inconclusive = |observed: &mut ParkedPullRead| {
+            *observed = self.known_parked_pull(task, record);
+            observed.pr.filter(|pr| !pr.open).map(|_| ParkingPrs {
+                followup_unverified: true,
+                ..ParkingPrs::default()
+            })
+        };
+        let (token, branch) = if let Some(read) = discovery.as_ref() {
+            let Some(found) = read.lookup(discover).await else {
+                return Ok(inconclusive(observed));
+            };
+            found
         } else {
             discover.await?
         };
@@ -4423,7 +4434,19 @@ impl App {
             pulls,
             watched,
         };
-        let current = branch_pulls(&token).await?;
+        let current = if let Some(read) = discovery
+            .as_mut()
+            .filter(|_| verified && closed.len() == branch.len())
+        {
+            let Some(current) = read.lookup(branch_pulls(&token)).await else {
+                // Publish the directly confirmed merges before consulting concurrent observations.
+                read.publish(&task.id, observed.pr);
+                return Ok(inconclusive(observed));
+            };
+            current
+        } else {
+            branch_pulls(&token).await?
+        };
         if let Some(read) = discovery {
             read.listed(&current, &closed);
         }

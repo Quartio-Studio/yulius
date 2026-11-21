@@ -3878,21 +3878,21 @@ async fn a_parked_merge_survives_a_stalled_branch_lookup_and_finds_a_replacement
     let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let args = json!({"task_id":f.task.as_str()});
     *f.h.github
-        .branch_list_hold
+        .pull_list_hold
         .lock()
         .map_err(|_| "branch fixture")? = Some(Arc::new(tokio::sync::Notify::new()));
     let read = app.tool_task_get(&caller, &args);
     tokio::pin!(read);
     tokio::select! {
         result = &mut read => return Err(format!("discovery never started: {result:?}").into()),
-        () = f.h.github.branch_list_entered.notified() => {}
+        () = f.h.github.pull_list_entered.notified() => {}
     }
     let brief = tokio::time::timeout(std::time::Duration::from_secs(2), read).await??;
     assert_eq!(brief["shows"], "done", "{brief}");
     assert_eq!(brief["parked_pr"], json!({"number":1491,"open":false}));
 
     *f.h.github
-        .branch_list_hold
+        .pull_list_hold
         .lock()
         .map_err(|_| "branch fixture")? = None;
     f.h.github
@@ -3993,6 +3993,108 @@ async fn followup_discovery_keeps_blocker_identity_during_an_outage() -> TestRes
 }
 
 #[tokio::test]
+async fn a_parked_merge_survives_stalled_final_discovery_after_direct_closure() -> TestResult {
+    let (f, owner) = parked_with_recorded_merge().await?;
+    let mut config = f.h.app.config.clone();
+    config.parked_pr_read_ms = 750;
+    let app = yulius_app::context::App::new(config, f.h.app.deps.clone());
+    f.h.github
+        .pulls
+        .lock()
+        .map_err(|_| "pulls")?
+        .push(yulius_app::ports::github::GhPull {
+            number: 1492,
+            base: "release".into(),
+            ..compatibility_pull()
+        });
+    f.h.github
+        .set_checks("abc123", yulius_app::ports::github::ChecksState::Failure);
+    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let args = json!({"task_id":f.task.as_str()});
+    assert_eq!(
+        app.tool_task_get(&caller, &args).await?["shows"],
+        "needs_you"
+    );
+    let gate = Arc::new(tokio::sync::Notify::new());
+    *f.h.github
+        .pull_read_hold
+        .lock()
+        .map_err(|_| "direct hold")? = Some(gate.clone());
+    let after_listing = async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            f.h.github.pull_read_entered.notified(),
+        )
+        .await?;
+        *f.h.github
+            .merged_on_direct_read
+            .lock()
+            .map_err(|_| "direct merge")? = Some(1492);
+        *f.h.github
+            .pull_read_hold
+            .lock()
+            .map_err(|_| "direct hold")? = None;
+        *f.h.github.pull_list_hold.lock().map_err(|_| "list hold")? =
+            Some(Arc::new(tokio::sync::Notify::new()));
+        gate.notify_one();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            f.h.github.pull_list_entered.notified(),
+        )
+        .await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    };
+    let (status, held) = tokio::join!(app.tool_task_get(&caller, &args), after_listing);
+    held?;
+    let status = status?;
+    assert_eq!(status["shows"], "done", "{status}");
+    assert_eq!(status["parked_pr"], json!({"number":1491,"open":false}));
+    assert_eq!(app.tool_task_get(&caller, &args).await?["shows"], "done");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_parked_merge_survives_saturated_followup_discovery_and_remains_a_prerequisite()
+-> TestResult {
+    let (f, owner) = parked_with_recorded_merge().await?;
+    let app = &f.h.app;
+    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let args = json!({"task_id":f.task.as_str()});
+    let gate = Arc::new(tokio::sync::Notify::new());
+    f.h.github.hold_overview_list.store(true, Ordering::SeqCst);
+    *f.h.github
+        .pull_list_hold
+        .lock()
+        .map_err(|_| "overview hold")? = Some(gate.clone());
+    let reads = async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            f.h.github.pull_list_entered.notified(),
+        )
+        .await?;
+        for _ in 0..30 {
+            assert_eq!(app.tool_task_get(&caller, &args).await?["shows"], "done");
+        }
+        let saturated = app.tool_task_get(&caller, &args).await?;
+        assert_eq!(saturated["shows"], "done", "{saturated}");
+        assert_eq!(saturated["parked_pr"], json!({"number":1491,"open":false}));
+        let created = app
+            .tool_task_create(
+                &caller,
+                &json!({"prompt":"Wait for the current tasks","after_all_tasks":true}),
+            )
+            .await?;
+        assert_eq!(created["task"]["start_rule"], "#1 done and #2 done");
+        gate.notify_one();
+        Ok::<_, Box<dyn std::error::Error>>(())
+    };
+    let (overview, statuses) = tokio::join!(app.git_overview(&owner, f.sandbox.as_str()), reads);
+    statuses?;
+    overview?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_parked_merge_rechecks_local_work_after_stalled_followup_discovery() -> TestResult {
     let (f, owner) = parked_with_recorded_merge().await?;
     let ctx = f.h.app.agent_context(TOKEN).await?;
@@ -4001,7 +4103,7 @@ async fn a_parked_merge_rechecks_local_work_after_stalled_followup_discovery() -
     let app = yulius_app::context::App::new(config, f.h.app.deps.clone());
     let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     *f.h.github
-        .branch_list_hold
+        .pull_list_hold
         .lock()
         .map_err(|_| "branch fixture")? = Some(Arc::new(tokio::sync::Notify::new()));
     let args = json!({"task_id":f.task.as_str()});
@@ -4009,7 +4111,7 @@ async fn a_parked_merge_rechecks_local_work_after_stalled_followup_discovery() -
     let reopen = async {
         tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            f.h.github.branch_list_entered.notified(),
+            f.h.github.pull_list_entered.notified(),
         )
         .await?;
         app.tool_steps_set(&ctx, &json!({"steps":["Inspect the follow-up"]}))

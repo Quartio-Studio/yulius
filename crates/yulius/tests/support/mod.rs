@@ -63,9 +63,10 @@ pub struct FakeGitHub {
     pub pulls: Mutex<Vec<GhPull>>,
     /// Simulates a failed repository-wide overview while individual PRs remain readable.
     pub fail_overview_pulls: std::sync::atomic::AtomicBool,
-    /// Hold branch-scoped PR discovery until cancelled or explicitly released.
-    pub branch_list_hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
-    pub branch_list_entered: tokio::sync::Notify,
+    /// Hold the selected PR list until cancelled or explicitly released.
+    pub hold_overview_list: std::sync::atomic::AtomicBool,
+    pub pull_list_hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
+    pub pull_list_entered: tokio::sync::Notify,
     pub no_installation: std::sync::atomic::AtomicBool,
     /// The branch of every `branch_pulls` call, in order: one GitHub request each (the hygiene
     /// scan's `MAX_PULL_LOOKUPS` bound).
@@ -528,14 +529,14 @@ impl GitHubPort for FakeGitHub {
         head: Option<&str>,
     ) -> AppResult<Vec<GhPull>> {
         let hold = self
-            .branch_list_hold
+            .pull_list_hold
             .lock()
             .map_err(AppError::internal)?
             .clone();
-        if head.is_some()
+        if head.is_none() == self.hold_overview_list.load(Ordering::SeqCst)
             && let Some(hold) = hold
         {
-            self.branch_list_entered.notify_one();
+            self.pull_list_entered.notify_one();
             hold.notified().await;
         }
         if head.is_none()
