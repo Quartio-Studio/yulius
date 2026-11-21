@@ -1545,6 +1545,7 @@ request as it is:
 - a pull request's own run (its pre-check) always finishes: until it passed, Yulius never merges
   the integration branch into it, so a moving base never supersedes it;
 - green and up to date: merged now;
+- when open PRs share a commit, the scheduler tests it once. Each arm and its owner’s `yulius wait` use that result until the PR has a run of its own at that head;
 - green, or its own run still queued or running, and behind: into the next merge candidate
   (`merge_train.rs`), the integration branch with up to 8 such pull requests merged in, in arm
   order, tested by one run (`train/<n>+…`) beside the members' own runs (SPEC-493 MQC-001); once
@@ -1618,7 +1619,6 @@ person must act first (a prompt on screen, `needs_you`) or may have a draft in t
   the kept failures, partial observations from siblings stopped by a failed job, and the exact
   `ci_status` run), or one that errored;
 - a red merge candidate of two or more holding it, with "do not re-arm, merge or push";
-- a singleton that fails on the integration base, with the queue’s run ID, failing job and a bounded excerpt of the retained failure. The queue and its owner’s wait read ordinary CI for the PR number and head together. An ordinary rerun that starts during verification keeps the existing wait deadline;
 - a conflict with the integration branch (checked in the task's worktree), once per head;
 - how its armed merge ended (the slot's outcome), and its merge (`merged_text`), after which the
   watch is over for it;

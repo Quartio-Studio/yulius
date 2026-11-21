@@ -101,7 +101,6 @@ async fn open_pull_at(
             state: "open".into(),
             merged: false,
             base: "dev".into(),
-            base_sha: String::new(),
             head: branch,
             head_sha: head.into(),
             mergeable: Some(true),

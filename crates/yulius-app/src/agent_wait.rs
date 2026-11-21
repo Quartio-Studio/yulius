@@ -142,8 +142,6 @@ pub(crate) enum Verdict {
     Keep(ArmedMerge),
     /// Merged, refused or dropped: one line for the agent.
     Decided(String),
-    /// The queue dropped the one member it tested on the integration base.
-    FailedSingleton(String, crate::merge_train::FailedSingleton),
 }
 
 impl ArmedSlot {
@@ -189,7 +187,7 @@ impl ArmedSlot {
                 self.note = note;
                 changed
             }
-            Verdict::Decided(text) | Verdict::FailedSingleton(text, _) => {
+            Verdict::Decided(text) => {
                 self.note = None;
                 self.outcome = Some(MergeOutcome {
                     head: deciding.merge.head.clone(),
@@ -534,17 +532,22 @@ impl App {
             let ArmedNow::Armed(armed) = self.armed_now(&task.id) else {
                 continue;
             };
+            let Some(pr) = self
+                .deps
+                .store
+                .delivery(&task.id)
+                .await
+                .ok()
+                .flatten()
+                .filter(|record| record.stage == yulius_domain::delivery::DeliveryStage::PrOpen)
+                .and_then(|record| record.pr_number)
+            else {
+                continue;
+            };
             if !matches!(
-                self.ci_gate_result(sandbox, &armed.head).await,
+                self.ci_gate_for_pull(sandbox, pr, &armed.head).await,
                 GateResult::Run(Some(RunState::Passed | RunState::Skipped))
             ) {
-                continue;
-            }
-            let open = matches!(
-                self.deps.store.delivery(&task.id).await,
-                Ok(Some(record)) if record.stage == yulius_domain::delivery::DeliveryStage::PrOpen
-            );
-            if !open {
                 continue;
             }
             let current = matches!(
@@ -640,23 +643,16 @@ impl App {
 
     /// Ends a decision of [`App::take_armed`] in one step, as [`App::merge_armed`] does.
     pub(crate) async fn finish_armed(&self, task: &TaskId, deciding: &Deciding, verdict: Verdict) {
-        let decided = !matches!(verdict, Verdict::Keep(_));
-        let candidate = match &verdict {
-            Verdict::FailedSingleton(_, candidate) => Some(candidate.clone()),
-            _ => None,
-        };
-        let applied = {
+        let decided = matches!(verdict, Verdict::Decided(_));
+        {
             let runtime = self.runtime(task);
             let mut slot = lock_slot(&runtime);
-            let applied = slot.finish(deciding, verdict);
-            if applied {
+            if slot.finish(deciding, verdict) {
                 self.save_armed(task, slot.merge.as_ref());
             }
-            applied
-        };
-        if decided && (applied || candidate.is_none()) {
-            self.armed_wait_ended(task, &deciding.merge, candidate)
-                .await;
+        }
+        if decided {
+            self.armed_wait_ended(task, &deciding.merge).await;
         }
     }
 
@@ -681,34 +677,18 @@ impl App {
 
     /// Records how long an armed merge waited for its checks, from arming to its decision
     /// (SPEC-137 STG-104): `merged` when the task's pull request is merged now, else `dropped`.
-    async fn armed_wait_ended(
-        &self,
-        task: &TaskId,
-        armed: &ArmedMerge,
-        candidate: Option<crate::merge_train::FailedSingleton>,
-    ) {
+    async fn armed_wait_ended(&self, task: &TaskId, armed: &ArmedMerge) {
         use yulius_domain::delivery::DeliveryStage;
-        let (outcome, detail) = if let Some(candidate) = candidate {
-            (
-                "dropped",
-                serde_json::json!({ "head": armed.head, "singleton": candidate }),
-            )
-        } else {
-            let merged = matches!(
-                self.deps.store.delivery(task).await,
-                Ok(Some(record)) if !matches!(record.stage, DeliveryStage::None | DeliveryStage::PrOpen)
-            );
-            (
-                if merged { "merged" } else { "dropped" },
-                serde_json::json!({ "head": armed.head }),
-            )
-        };
+        let merged = matches!(
+            self.deps.store.delivery(task).await,
+            Ok(Some(record)) if !matches!(record.stage, DeliveryStage::None | DeliveryStage::PrOpen)
+        );
         self.record_task_span(
             task,
             ("wait", "merge_armed"),
             (Timestamp(armed.armed_at), self.now()),
-            outcome,
-            detail,
+            if merged { "merged" } else { "dropped" },
+            serde_json::json!({ "head": armed.head }),
         )
         .await;
     }
@@ -741,7 +721,16 @@ impl App {
                 continue;
             };
             let verdict = self.merge_armed_task(&task, deciding.merge.clone()).await;
-            self.finish_armed(&task.id, &deciding, verdict).await;
+            let decided = matches!(verdict, Verdict::Decided(_));
+            {
+                let mut slot = lock_slot(&runtime);
+                if slot.finish(&deciding, verdict) {
+                    self.save_armed(&task.id, slot.merge.as_ref());
+                }
+            }
+            if decided {
+                self.armed_wait_ended(&task.id, &deciding.merge).await;
+            }
         }
     }
 
@@ -898,12 +887,8 @@ impl App {
         // With Yulius CI, its run at the armed head decides: GitHub may still show an older head
         // whose run passed, and the base must not be merged into one whose run still goes.
         let checks = crate::delivery::ci_checks_word(
-            self.ci_gate_result_for_ref(
-                &sandbox,
-                &armed.head,
-                Some(&yulius_domain::ci::CiRef::PullRequest(pr.number)),
-            )
-            .await,
+            self.ci_gate_for_pull(&sandbox, pr.number, &armed.head)
+                .await,
         )
         .map_or_else(|| pr.checks.clone(), str::to_owned);
         let green = checks == "success" || (checks == "none" && !require_checks);
@@ -1331,10 +1316,7 @@ impl App {
             .map(str::to_ascii_lowercase)
             .unwrap_or_default();
         let delivery = store.delivery(&task.id).await?;
-        let pr = delivery
-            .as_ref()
-            .filter(|record| record.stage == yulius_domain::delivery::DeliveryStage::PrOpen)
-            .and_then(|record| record.pr_number);
+        let pr = delivery.as_ref().and_then(|record| record.pr_number);
         let (checks, checks_detail) = if head.is_empty() {
             ("none".to_owned(), None)
         } else {
@@ -1343,13 +1325,10 @@ impl App {
             } else {
                 store.ci_runs(&task.sandbox_id, 50).await?
             };
-            // Open hosted PRs can share a SHA. Each reports its own run. A playground
-            // can instead have a run that tested its head merged with the base (PCI-006).
+            // A hosted PR keeps its verdict after merge. A playground run can instead
+            // have tested its head merged with the base (PCI-006).
             let run = if let Some(pr) = pr {
-                runs.iter().find(|run| {
-                    run.reference == yulius_domain::ci::CiRef::PullRequest(pr)
-                        && run.sha.starts_with(&head)
-                })
+                crate::ci::run_for_pull_head(&runs, pr, &head)
             } else {
                 match runs.iter().find(|run| run.sha.starts_with(&head)) {
                     Some(run) => Some(run),

@@ -225,6 +225,30 @@ pub struct CiJobRecord {
     pub waited_ms: Option<i64>,
 }
 
+/// Train and playground runs belong to their private queues. Other references
+/// participate in the ordinary commit scheduler, including a staging candidate.
+fn ordinary_scheduler_ref(reference: &CiRef) -> bool {
+    !matches!(reference, CiRef::Train(_) | CiRef::Task(_))
+}
+
+/// PR-specific reruns decide their owner. Otherwise the scheduler covers every
+/// reference at the commit with one run. Input records are ordered newest first.
+pub(crate) fn run_for_pull_head<'a>(
+    runs: &'a [CiRunRecord],
+    pr: u64,
+    head: &str,
+) -> Option<&'a CiRunRecord> {
+    let mut at = runs.iter().filter(|r| r.sha.starts_with(head));
+    at.clone()
+        .find(|r| r.reference == CiRef::PullRequest(pr))
+        .or_else(|| {
+            at.find(|r| {
+                ordinary_scheduler_ref(&r.reference)
+                    && yulius_domain::ci::covers_shared_commit(r.state)
+            })
+        })
+}
+
 /// Test names retained by a cancelled sibling of a failed job (SPEC-566).
 /// The reason is written by the CI runner; other cancellation causes carry no observation.
 pub(crate) fn sibling_failure_names(reason: Option<&str>, kept: &str) -> Vec<String> {
@@ -1074,15 +1098,40 @@ impl App {
         sha: &str,
         reference: Option<&CiRef>,
     ) -> GateResult {
+        self.ci_gate_select(sandbox, sha, |runs| {
+            runs.iter()
+                .find(|run| reference.is_none_or(|r| *r == run.reference))
+                .map(|run| run.state)
+        })
+        .await
+    }
+
+    /// The ordinary CI verdict for an armed PR, including its scheduler-shared run.
+    pub(crate) async fn ci_gate_for_pull(
+        &self,
+        sandbox: &SandboxRecord,
+        pr: u64,
+        sha: &str,
+    ) -> GateResult {
+        self.ci_gate_select(sandbox, sha, |runs| {
+            run_for_pull_head(runs, pr, sha).map(|r| r.state)
+        })
+        .await
+    }
+
+    async fn ci_gate_select(
+        &self,
+        sandbox: &SandboxRecord,
+        sha: &str,
+        select: impl FnOnce(&[CiRunRecord]) -> Option<RunState>,
+    ) -> GateResult {
         if !self.config.ci.enabled {
             return GateResult::NotConfigured;
         }
         if let Ok(runs) = self.deps.store.ci_runs_for_sha(&sandbox.id, sha).await
-            && let Some(latest) = runs
-                .iter()
-                .find(|run| reference.is_none_or(|r| *r == run.reference))
+            && let Some(state) = select(&runs)
         {
-            return GateResult::Run(Some(latest.state));
+            return GateResult::Run(Some(state));
         }
         // No run yet: one will come when Yulius CI tests this commit, with the integration
         // branch's jobs or, for a commit that brings CI to a branch without any, with its own
@@ -1478,7 +1527,7 @@ impl App {
             .iter()
             // A candidate run (SPEC-575) stays in the facts: it tests its commit once for the
             // branch too, and `plan` never supersedes it.
-            .filter(|run| !matches!(run.reference, CiRef::Train(_) | CiRef::Task(_)))
+            .filter(|run| ordinary_scheduler_ref(&run.reference))
             .filter(|run| {
                 !(dev_valid
                     && run

@@ -142,7 +142,6 @@ fn pull(p: PullRequest) -> GhPull {
         },
         merged: p.state == PullState::Merged,
         base: p.base,
-        base_sha: p.base_sha,
         head: p.head,
         head_sha: p.head_sha,
         mergeable: p.mergeable,

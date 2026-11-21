@@ -1912,7 +1912,13 @@ impl App {
                 }
             }
             if let Some(pull) = pr.as_ref().filter(|p| is_open(p)) {
-                match self.dlv_checks_at(sandbox, token, &pull.head_sha).await {
+                let gate = self
+                    .ci_gate_for_pull(sandbox, pull.number, &pull.head_sha)
+                    .await;
+                match self
+                    .checks_with_gate(sandbox, token, &pull.head_sha, gate)
+                    .await
+                {
                     Ok(at) => {
                         checks_errored = at.word == "error";
                         checks = at.state;

@@ -110,7 +110,6 @@ mod tests {
             state: "closed".into(),
             merged: true,
             base: "dev".into(),
-            base_sha: String::new(),
             head: "docs/setup".into(),
             head_sha: "a".repeat(40),
             mergeable: None,
