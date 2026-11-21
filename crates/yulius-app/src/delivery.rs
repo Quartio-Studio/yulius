@@ -115,6 +115,7 @@ impl PrVerification {
 /// Identity to show even when the checks are unfinished or unreadable.
 #[derive(Default)]
 pub(crate) struct ParkedPullRead {
+    pub(crate) candidate: Option<crate::merge_train::SingletonDecision>,
     pub(crate) signal: Option<PullSignal>,
     pub(crate) pr: Option<yulius_contracts::api::tasks::ParkedPr>,
 }
@@ -144,7 +145,10 @@ impl ParkedPullRead {
                 .filter(|_| open || past_merge(&r.stage))
                 .map(|number| yulius_contracts::api::tasks::ParkedPr { number, open })
         });
-        Self { pr, signal: None }
+        Self {
+            pr,
+            ..Self::default()
+        }
     }
 }
 
@@ -3963,21 +3967,34 @@ impl App {
         &self,
         task: &TaskRecord,
         facts: &ParkingPrs,
-    ) -> AppResult<Option<(u64, PullSignal)>> {
+    ) -> AppResult<Option<ParkedPullRead>> {
         for pull in &facts.pulls {
+            let pr = Some(yulius_contracts::api::tasks::ParkedPr {
+                number: pull.number,
+                open: true,
+            });
+            // A current ordinary failure has its own run and repair instructions.
+            if let Some(signal) = self
+                .parking_ci_signal(task, pull.number, &pull.head_sha, facts.watched)
+                .await?
+            {
+                return Ok(Some(ParkedPullRead {
+                    pr,
+                    signal: Some(signal),
+                    candidate: None,
+                }));
+            }
             if !pull.merged
                 && let Some(decision) = self.recorded_candidate(task, pull.number).await?
             {
                 let sandbox = self.dlv_sandbox_of(task).await?;
                 if let Some(signal) = self.candidate_pull_signal(task, &sandbox, &decision, pull) {
-                    return Ok(Some((pull.number, signal)));
+                    return Ok(Some(ParkedPullRead {
+                        pr,
+                        signal: Some(signal),
+                        candidate: (signal == PullSignal::Failing).then_some(decision),
+                    }));
                 }
-            }
-            if let Some(signal) = self
-                .parking_ci_signal(task, pull.number, &pull.head_sha, facts.watched)
-                .await?
-            {
-                return Ok(Some((pull.number, signal)));
             }
         }
         Ok(None)
@@ -4370,10 +4387,8 @@ impl App {
                 facts
                     .pulls
                     .retain(|pull| survives(pull.number, Some(&pull.head_sha)));
-                if let Some((number, signal)) = self.parking_ci_blocker(task, &facts).await? {
-                    observed.signal = Some(signal);
-                    observed.pr =
-                        Some(yulius_contracts::api::tasks::ParkedPr { number, open: true });
+                if let Some(blocker) = self.parking_ci_blocker(task, &facts).await? {
+                    *observed = blocker;
                     return Ok(None);
                 }
                 let known_open = changed
@@ -4650,9 +4665,8 @@ impl App {
         if checkout_changed || status.facts.parked_has_local_work_or_request() {
             return Ok(false);
         }
-        if let Some((number, signal)) = self.parking_ci_blocker(task, prs).await? {
-            observed.signal = Some(signal);
-            observed.pr = Some(yulius_contracts::api::tasks::ParkedPr { number, open: true });
+        if let Some(blocker) = self.parking_ci_blocker(task, prs).await? {
+            *observed = blocker;
             return Ok(false);
         }
         if store.delivery(&task.id).await?.as_ref() != record {

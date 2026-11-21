@@ -110,6 +110,8 @@ A capacity wait leaves the candidate failure unheard and the owner parked. Launc
 
 ## Evidence
 
+- Server-only review of `5c10e2c22` reproduced an incorrect wait-history message on the #1481 fixture. The ordinary checks passed, but reading the parked detail said those checks had failed. The assertion on the returned notice failed there. Candidate verification now carries the selected integration run and diagnostic through the HTTP and MCP read paths and their saved wait history. An explicit human decision keeps precedence. All 490 parking, delivery, Done, PR-watch and merge-train tests passed with the corrected provenance.
+
 - The final combined review of `662efef5c` independently passed all 53 parking candidate tests and found a mounted browser defect. After a candidate cleared, task #13's sidebar returned to Done while its terminal header retained an In review label. The server slice delivers candidate status in the task API, uses it in parking, wake and dependency checks, and retains the established parked-row display. Browser classification and application of successive snapshots belong to the next plan item. The integrated Chromium suite passed 1,298 tests with one skipped before that split.
 
 - After integrating dev `414a3dd5c`, all 556 scoped Rust tests passed on the default stack. The nextest selection covered parking, merge trains, ordinary PR watching, delivery, task messages, Done and Codex. It includes each review regression and the real restart/PTY #331 case in both orders. The task list and Home complete while GitHub is held. The successor remains Chained across the replacement arm.

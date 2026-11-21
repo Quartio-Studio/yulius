@@ -15,7 +15,6 @@ use crate::error::AppResult;
 use crate::model::{SandboxRecord, StepRecord, TaskRecord};
 use tokio::sync::OnceCell;
 use tokio::time::Instant;
-use yulius_contracts::api::tasks::ParkedPr;
 
 /// Maximum concurrent reads per batch and active native Git workers per application.
 pub(crate) const PARKED_READS: usize = 8;
@@ -46,7 +45,7 @@ pub(crate) fn fair_batches<T>(
 /// Display result of one bounded read. An early timeout may precede the plan lookup.
 pub(crate) struct ParkedStatus {
     pub(crate) facts: AttentionFacts,
-    pub(crate) pr: Option<ParkedPr>,
+    pub(crate) pull: crate::delivery::ParkedPullRead,
     pub(crate) steps: Option<Vec<StepRecord>>,
 }
 
@@ -54,7 +53,7 @@ impl ParkedStatus {
     pub(crate) fn new(task: &TaskRecord) -> Self {
         Self {
             facts: AttentionFacts::new(task.status, task.activity),
-            pr: None,
+            pull: crate::delivery::ParkedPullRead::default(),
             steps: None,
         }
     }
@@ -449,7 +448,7 @@ impl App {
             crate::race::Point::ParkedStatusRead,
             std::path::Path::new(task.id.as_str()),
         );
-        status.pr = observed.pr;
+        status.pull = observed;
         status
     }
 

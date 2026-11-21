@@ -154,7 +154,7 @@ impl App {
         requests: &tokio::sync::OnceCell<std::collections::HashSet<String>>,
     ) -> AppResult<Value> {
         let (mut facts, snapshot, pr) = match parked {
-            Some(status) => (status.facts, status.steps, status.pr),
+            Some(status) => (status.facts, status.steps, Some(status.pull)),
             None => (self.list_attention_facts(task, requests).await?, None, None),
         };
         let steps = match snapshot {
@@ -165,9 +165,9 @@ impl App {
             facts.plan_open = crate::sandboxes::plan_open(&steps);
         }
         let mut brief = self
-            .task_brief_with_steps(task, facts, person, &steps, pr.map(|pr| pr.number))
+            .task_brief_with_steps(task, facts, person, &steps, pr.as_ref())
             .await?;
-        if let Some(pr) = pr {
+        if let Some(pr) = pr.and_then(|read| read.pr) {
             brief["parked_pr"] = json!(pr);
         }
         if detail {
@@ -187,7 +187,7 @@ impl App {
         mut facts: AttentionFacts,
         person: bool,
         steps: &[StepRecord],
-        pr_hint: Option<u64>,
+        pr_hint: Option<&crate::delivery::ParkedPullRead>,
     ) -> AppResult<Value> {
         let mut brief = self.task_brief_plain(task, steps).await?;
         // Where the task list shows it, and why it waits for a person or is held (SPEC-487

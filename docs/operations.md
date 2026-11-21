@@ -174,7 +174,8 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # A recorded failed integration candidate also keeps its original author live while the tested
 # PR head and base remain current. An already parked owner resumes for the recorded reason
 # once a session and subscription are available. A pending human decision holds the wake.
-# The watch verifies the PR again when capacity returns. Page reads only refresh its status.
+# The watch verifies the PR again when capacity returns. The page and wait history identify
+# the failed integration run and its reason. Reading that notice only refreshes status.
 # A failed single-PR merge candidate names its source run, failing job and a redacted
 # excerpt or its recorded configuration error. The queue verifies the current PR head and integration base.
 # If it cannot verify them, read ordinary CI at that head or safely read the failing job,

@@ -496,6 +496,35 @@ fn candidate_owner_status(already_parked: bool) -> TestResult {
                 Some(true),
                 "red candidate on green PR"
             );
+            let notice = detail
+                .summary
+                .needs_you_notice
+                .as_ref()
+                .ok_or("candidate notice")?;
+            assert!(
+                notice.link.ends_with("/ci?run=candidate-red"),
+                "{}",
+                notice.link
+            );
+            assert!(
+                notice.happened.contains("integration candidate")
+                    && notice.happened.contains("candidate-red"),
+                "{}",
+                notice.happened
+            );
+            assert!(
+                notice
+                    .problem
+                    .as_deref()
+                    .is_some_and(|problem| problem.contains("292.1 ms"))
+            );
+            assert!(
+                detail
+                    .wait_history
+                    .iter()
+                    .any(|entry| entry.happened == notice.happened
+                        && entry.problem == notice.problem)
+            );
             ask(&app, &id).await?;
             assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
             app.deps

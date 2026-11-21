@@ -758,9 +758,9 @@ impl App {
             effective.browser_request |= summary.needs_you.is_some();
             effective.held_prompt |= summary.held_prompt.is_some();
             summary.parked_needs_you = Some(effective.needs_you());
-            summary.parked_pr = read.pr;
+            summary.parked_pr = read.pull.pr;
             summary.needs_you_notice = self
-                .resolve_needs_you_notice_with_pr(task, &effective, read.pr.map(|pr| pr.number))
+                .resolve_needs_you_notice_with_pr(task, &effective, Some(&read.pull))
                 .await;
         }
         if sync_wait && task.archived_at.is_none() && !task.status.is_resting() {
