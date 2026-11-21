@@ -670,7 +670,15 @@ impl App {
     /// Tasks with a pending request for a person to act in the sandbox's browser (BRW-004), read
     /// from its tabs: none while the browser does not run.
     pub(crate) async fn browser_tab_requests(&self, sandbox: &SandboxId) -> HashSet<String> {
-        match self.deps.browser.running(sandbox).await {
+        let read = self.deps.browser.running(sandbox);
+        // Stop may publish several task views while synchronizing the spec and plan.
+        // They share its observation deadline. Parking and other decision paths keep
+        // their own browser read contracts.
+        let session = match crate::hooks::STOP_BROWSER_DEADLINE.try_with(|deadline| *deadline) {
+            Ok(deadline) => tokio::time::timeout_at(deadline, read).await.ok().flatten(),
+            Err(_) => read.await,
+        };
+        match session {
             Some(session) => session
                 .tabs()
                 .into_iter()

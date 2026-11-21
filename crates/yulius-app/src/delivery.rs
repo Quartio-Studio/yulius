@@ -1726,6 +1726,11 @@ impl App {
 
     /// Reads and validates the task spec; registers a discovered spec path.
     async fn dlv_read_spec(&self, task: &TaskRecord) -> SpecCheck {
+        self.publish_after_updates(task, Box::pin(self.read_spec_under_plan_lock(task)))
+            .await
+    }
+
+    async fn read_spec_under_plan_lock(&self, task: &TaskRecord) -> SpecCheck {
         let Some(worktree) = task.worktree_path.as_deref().map(PathBuf::from) else {
             return SpecCheck::problem(
                 task.spec_path.clone(),

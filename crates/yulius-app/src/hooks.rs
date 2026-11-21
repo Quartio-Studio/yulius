@@ -27,13 +27,67 @@ use crate::delivery::{RepoReadError, read_spec};
 use crate::error::{AppError, AppResult};
 use crate::model::{PauseKind, TaskMode, TaskRecord};
 use crate::ports::store::TaskFieldUpdate;
+use crate::supervisor::{BoxFuture, RunStart};
 
 /// Consecutive Stop-hook blocks per turn before the task needs attention (AC-DSC-3).
 pub const MAX_GATE_BLOCKS: u32 = 3;
+
+tokio::task_local! {
+    /// Deadline for live browser observations made while answering one Stop hook.
+    pub(crate) static STOP_BROWSER_DEADLINE: tokio::time::Instant;
+}
+
+struct TaskUpdates {
+    task: yulius_domain::ids::TaskId,
+    changed: std::cell::Cell<bool>,
+    steps_changed: std::cell::Cell<bool>,
+}
+
+tokio::task_local! {
+    /// Task and plan updates are published together after their writer releases the plan lock.
+    static TASK_UPDATES: TaskUpdates;
+}
+
+pub(crate) fn defer_task_update(task: &yulius_domain::ids::TaskId, steps: bool) -> bool {
+    TASK_UPDATES
+        .try_with(|update| {
+            if &update.task != task {
+                return false;
+            }
+            update.changed.set(true);
+            if steps {
+                update.steps_changed.set(true);
+            }
+            true
+        })
+        .unwrap_or(false)
+}
+
+/// The agent-facing introduction to the goal's Stop instruction.
+pub(crate) const GOAL_CONTINUATION: &str = "Continue the authorized goal. ";
+
+/// A goal instruction must fit both the capacity record and a provider CLI argument.
+/// The complete spec diagnostics and plan remain available through task tools.
+pub(crate) fn retained_goal_instruction(prompt: Option<String>) -> String {
+    prompt.filter(|text| !text.is_empty() && text.len() <= crate::capacity::CONTINUATION_MAX)
+        .unwrap_or_else(|| format!("{GOAL_CONTINUATION}Run spec_check and correct any reported problems. Use steps_get to continue the next unfinished step and record its evidence."))
+}
+
 /// Largest repository document read for the briefing or the gate.
 const MAX_DOC_BYTES: u64 = 256 * 1024;
 /// Largest number of decision records read.
 const MAX_DECISION_FILES: usize = 200;
+
+/// The action owned by a turn boundary. A handoff suppresses the optional step nudge too.
+enum StopGate {
+    Pass,
+    Handoff,
+    /// Claude’s first native goal record has yet to reach the transcript watcher.
+    NativeGoal,
+    /// Observe the current plan and budget together after the live probes and before acting.
+    Declared,
+    Continue(String),
+}
 
 /// Joins a repository-relative path, refusing absolute paths and `..` components.
 fn repo_path(root: &Path, relative: &str) -> Option<PathBuf> {
@@ -174,13 +228,13 @@ impl App {
             return Err(AppError::NotFound);
         };
         // Capture the ordering boundary before the token lookup yields to a viewer key.
-        let input_seq = self.supervisor.input_seq.load(Ordering::SeqCst);
         // Never later than now: the client's clock is the host's (loopback only), and a time
         // from the future would order nothing. One not after the epoch is none (SPEC-346 LPH-001).
         let now = self.now().0;
         let sent = sent_ms
             .filter(|sent| *sent > 0)
             .map_or(now, |sent| sent.min(now));
+        let sequence = self.viewer_input_sequence();
         let ctx = self.agent_context(token).await?;
         if ctx.attempt.harness != harness {
             return Err(AppError::Unauthenticated);
@@ -209,7 +263,7 @@ impl App {
             None
         };
         if event != events::STOP {
-            return self.answer_hook(&ctx, event, input, sent, input_seq).await;
+            return self.answer_hook(&ctx, event, input, sent, sequence).await;
         }
         // The agent sent this Stop after every prompt of its turn (SPEC-346 LPH-002).
         {
@@ -227,7 +281,19 @@ impl App {
             attempt: ctx.attempt,
         };
         let _in_flight = crate::finish::StopInFlight::enter(&runtime);
-        let reply = self.answer_hook(&ctx, event, input, sent, input_seq).await;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(750);
+        // Keep one hook future across the nested task-local scopes. Moving the whole
+        // turn through each scope exhausted the worker stack on a resumed goal.
+        let answer = Box::pin(self.answer_hook(&ctx, event, input, sent, sequence));
+        let reply = STOP_BROWSER_DEADLINE
+            .scope(deadline, async {
+                if ctx.task.mode == TaskMode::Goal {
+                    self.publish_after_updates(&ctx.task, answer).await
+                } else {
+                    answer.await
+                }
+            })
+            .await;
         // Only the live run's answers count: a late one of a run a switch ended is not this
         // session's (SPEC-290 GDW-001).
         let live = matches!(
@@ -235,6 +301,14 @@ impl App {
             Ok(Some(attempt)) if attempt.id == ctx.attempt.id
         );
         let now = self.now().0;
+        if live
+            && ctx.task.mode == TaskMode::Goal
+            && let Ok(HookReply::Output(output)) = &reply
+            && output.decision.as_deref() == Some(yulius_contracts::hooks::DECISION_BLOCK)
+            && let Some(reason) = &output.reason
+        {
+            self.note_issued_prompt(&ctx.task.id, reason.as_bytes());
+        }
         if reply.is_ok() && live {
             // An answered Stop, whatever Yulius decided. Also kept in the run directory: after a
             // restart, a turn whose Stop was answered is not woken (SPEC-358 MSB-007).
@@ -253,6 +327,41 @@ impl App {
             self.settle_unanswered_turn(&ctx.task.id, record_ms).await;
         }
         reply
+    }
+
+    /// Gather same-task updates until the operation finishes. A spec watcher releases
+    /// its plan lock before building the task view, including its live browser lookup.
+    /// When Stop owns the outer operation it publishes the final continuation decision.
+    pub(crate) fn publish_after_updates<'a, T: Send + 'a>(
+        &'a self,
+        task: &'a TaskRecord,
+        work: BoxFuture<'a, T>,
+    ) -> BoxFuture<'a, T> {
+        // Spec reads are nested inside delivery, merge-queue and MCP futures. Keep
+        // the work and its publication scope on the heap across those callers.
+        Box::pin(async move {
+            let (result, changed, steps_changed) = TASK_UPDATES
+                .scope(
+                    TaskUpdates {
+                        task: task.id.clone(),
+                        changed: Default::default(),
+                        steps_changed: Default::default(),
+                    },
+                    async {
+                        let result = work.await;
+                        TASK_UPDATES.with(|updates| {
+                            (result, updates.changed.get(), updates.steps_changed.get())
+                        })
+                    },
+                )
+                .await;
+            if steps_changed {
+                self.publish_steps(task).await;
+            } else if changed {
+                self.publish_task(&task.id).await;
+            }
+            result
+        })
     }
 
     async fn submit_origin(
@@ -303,11 +412,11 @@ impl App {
         event: &str,
         input: &HookInput,
         sent: i64,
-        input_seq: u64,
+        sequence: u64,
     ) -> AppResult<HookReply> {
         if event != events::USER_PROMPT_SUBMIT {
             return self
-                .answer_event(ctx, event, input, sent, SubmitOrigin::Unmarked)
+                .answer_event(ctx, event, input, sent, SubmitOrigin::Unmarked, false)
                 .await;
         }
         // A prompt submitted from the session's prompt box empties it: what was typed before
@@ -326,21 +435,44 @@ impl App {
         };
         let from_box = box_text && origin == SubmitOrigin::Unmarked;
         let sent_again = runtime.prompt_held.load(Ordering::SeqCst);
+        let invocation = if ctx.task.mode == TaskMode::Goal {
+            input.invocation
+        } else {
+            None
+        };
         let submitted = if from_box {
             let mut mark = runtime.draft_mark.lock().await;
-            if !sent_again {
-                mark.submit = (sent, input_seq);
+            if invocation.is_some() || !sent_again {
+                let enter = self.viewer_submit_at(
+                    &ctx.task.id,
+                    sent,
+                    sequence,
+                    input.prompt.as_deref().unwrap_or_default().as_bytes(),
+                    invocation,
+                );
+                // Enter empties the owner's draft at that key, even if more text is
+                // already in the PTY when the provider sends or retries its callback.
+                mark.submit = match enter {
+                    Some((at, seq)) if ctx.task.mode == TaskMode::Goal => (at, seq, true),
+                    _ => (sent, sequence, enter.is_some()),
+                };
             }
             Some(mark.submit)
         } else {
             None
         };
-        let reply = self.answer_event(ctx, event, input, sent, origin).await;
+        let viewer_input = submitted.is_some_and(|(_, _, owner)| owner);
+        let reply = self
+            .answer_event(ctx, event, input, sent, origin, viewer_input)
+            .await;
         // A prompt that is held stays held through an answer that fails: the hook client, once
         // it holds, asks again after a 5xx or a lost connection (it fails open at a first
         // request). At a 4xx it ends its hold and the prompt goes on; that is read as held
         // here too, which errs toward a draft, as after a hold the CLI gave up.
         let held = matches!(reply, Ok(HookReply::Hold { .. })) || (sent_again && reply.is_err());
+        if held && let (Some(id), Some((at, sequence, true))) = (invocation, submitted) {
+            self.keep_held_owner(&ctx.task.id, id, (at, sequence));
+        }
         // The box is taken as emptied once the prompt goes on, not while it is held: a prompt
         // Yulius blocks in the end (its scope check held it, TSK-013) never reaches the agent,
         // and Claude Code puts its text back into the box, so that submit emptied nothing.
@@ -350,10 +482,22 @@ impl App {
                 if output.decision.as_deref() == Some(yulius_contracts::hooks::DECISION_BLOCK)
         );
         if from_box && blocked {
+            if let Some((_, keys, true)) = submitted {
+                runtime
+                    .viewer_prompt
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .restored();
+                self.retract_viewer_submit(&ctx.task.id, keys);
+            }
             // What was submitted is back in the box: nothing was sent past a draft.
             runtime.sent_past_draft.store(false, Ordering::SeqCst);
         }
-        if let Some((emptied, keys)) = submitted
+        if let Some((emptied, keys, owner)) = submitted
+            && (ctx.task.mode == TaskMode::Prompt
+                || owner
+                || !self.persons_draft_holds(&ctx.task.id)
+                || runtime.sent_past_draft.load(Ordering::SeqCst))
             && !held
             && !blocked
         {
@@ -377,6 +521,13 @@ impl App {
                 runtime.typed_at_ms.fetch_max(inherited, Ordering::SeqCst);
                 mark.written = true;
             } else {
+                if ctx.task.mode == TaskMode::Goal {
+                    if owner {
+                        self.retract_viewer_submit(&ctx.task.id, keys);
+                    }
+                } else {
+                    self.consume_viewer_submits(&ctx.task.id, keys);
+                }
                 if emptied >= runtime.box_emptied_ms.fetch_max(emptied, Ordering::SeqCst) {
                     runtime.emptied_seq.fetch_max(keys, Ordering::SeqCst);
                 }
@@ -415,6 +566,7 @@ impl App {
         input: &HookInput,
         sent: i64,
         origin: SubmitOrigin,
+        viewer_input: bool,
     ) -> AppResult<HookReply> {
         // This run reports its turn boundaries through hooks: the Stop hook decides switches
         // and pauses, not the transcript.
@@ -457,7 +609,10 @@ impl App {
             events::SESSION_START => Ok(HookReply::Output(
                 self.hook_session_start(ctx, input).await?,
             )),
-            events::USER_PROMPT_SUBMIT => self.hook_prompt_submit(ctx, input, sent, origin).await,
+            events::USER_PROMPT_SUBMIT => {
+                self.hook_prompt_submit(ctx, input, sent, origin, viewer_input)
+                    .await
+            }
             events::PRE_INVOCATION if ctx.attempt.harness == Harness::Antigravity => {
                 self.antigravity_work(&ctx.task.id, sent).await?;
                 Ok(HookReply::Output(HookOutput::default()))
@@ -860,13 +1015,17 @@ impl App {
         input: &HookInput,
         sent: i64,
         origin: SubmitOrigin,
+        viewer_input: bool,
     ) -> AppResult<HookReply> {
         let typed = origin == SubmitOrigin::Unmarked
             && crate::finish::is_typed_prompt(input.prompt.as_deref());
         let store = &self.deps.store;
         // A person wrote to the task (they typed it, even a prompt held below): what its agent
         // asked a person is answered (SPEC-134 CDT-004). Prompts Yulius types do not count.
-        if typed && self.typed_recently(&ctx.task.id).is_some() {
+        if typed
+            && (ctx.task.mode == TaskMode::Prompt || viewer_input)
+            && self.typed_recently(&ctx.task.id).is_some()
+        {
             self.end_needs_you(&ctx.task.id).await;
         }
         // A prompt held for capacity stays held while its pause lasts (also across a restart).
@@ -907,6 +1066,15 @@ impl App {
             let current = ctx.attempt.account_id.clone();
             let pool = self.rotation_input(&ctx.task, current.clone()).await?;
             if let (Decision::Wait { .. }, _) = rotation::decide(&pool, Trigger::Proactive) {
+                // A replacement process carries the accepted prompt and has no viewer keys
+                // of its own. Record new work before the pause becomes eligible to resume.
+                if ctx.task.mode == TaskMode::Goal && viewer_input && typed {
+                    let runtime = self.runtime(&ctx.task.id);
+                    let _order = runtime.turn_order.lock().await;
+                    if sent >= runtime.turn_end_ms.load(Ordering::SeqCst) {
+                        self.reset_stop_budget(&ctx.task).await?;
+                    }
+                }
                 self.pause_task(
                     &ctx.task.id,
                     PauseKind::Prompt,
@@ -948,12 +1116,8 @@ impl App {
         }
         // As it is now: a Stop of the turn before may have settled it since it was read.
         let task = store.task(&ctx.task.id).await?.ok_or(AppError::NotFound)?;
-        if task.gate_blocks != 0 {
-            let update = TaskFieldUpdate {
-                gate_blocks: Some(0),
-                ..TaskFieldUpdate::default()
-            };
-            store.update_task(&task.id, &update, self.now()).await?;
+        if task.mode == TaskMode::Prompt || viewer_input {
+            self.reset_stop_budget(&task).await?;
         }
         runtime.resumed_turn.store(false, Ordering::SeqCst);
         runtime.background_agents.store(0, Ordering::SeqCst);
@@ -993,23 +1157,142 @@ impl App {
         Ok(HookReply::Output(HookOutput::default()))
     }
 
-    /// The discipline gate's reasons at a turn end (the spec gate).
-    async fn stop_reasons(&self, task: &TaskRecord) -> AppResult<Vec<String>> {
-        Ok(self.spec_gate(task).await?.into_iter().collect())
+    async fn reset_stop_budget(&self, task: &TaskRecord) -> AppResult<()> {
+        if task.gate_blocks != 0 {
+            let update = TaskFieldUpdate {
+                gate_blocks: Some(0),
+                ..Default::default()
+            };
+            self.deps
+                .store
+                .update_task(&task.id, &update, self.now())
+                .await?;
+        }
+        Ok(())
     }
 
-    /// The prompt for a session resumed on another subscription after a held turn: the gate's
-    /// reasons when the gate would have kept the agent working, else none (a goal-mode session
-    /// gets its goal again when it launches).
+    /// A clean goal turn continues declared work unless another actor already owns the next action.
+    async fn stop_gate(&self, task: &TaskRecord, reported_background: bool) -> AppResult<StopGate> {
+        if let Some(reason) = self.spec_gate(task).await? {
+            return Ok(StopGate::Continue(if task.mode == TaskMode::Goal {
+                retained_goal_instruction(Some(format!("{GOAL_CONTINUATION}{reason}")))
+            } else {
+                reason
+            }));
+        }
+        if task.mode != TaskMode::Goal {
+            return Ok(StopGate::Pass);
+        }
+        if reported_background {
+            return Ok(StopGate::Handoff);
+        }
+        if self.turn_handoff_pending(task).await? {
+            return Ok(StopGate::Handoff);
+        }
+        // These observations share a small part of the five-second hook deadline. Only
+        // confirmed work owns a wake. An unavailable probe can safely continue this same
+        // turn; the separate rotation decision still requires proof before moving a run.
+        let budget = std::time::Duration::from_millis(750);
+        let (background, delivery, browser) = tokio::join!(
+            tokio::time::timeout(budget, self.background_or_wait_now(&task.id)),
+            tokio::time::timeout(budget, self.pr_news_due(task)),
+            tokio::time::timeout(budget, self.browser_tab_requests(&task.sandbox_id))
+        );
+        Ok(
+            if matches!(background, Ok(Some(true)))
+                || delivery.unwrap_or(false)
+                || browser.is_ok_and(|tasks| tasks.contains(task.id.as_str()))
+            {
+                StopGate::Handoff
+            } else {
+                StopGate::Declared
+            },
+        )
+    }
+
+    async fn turn_handoff_pending(&self, task: &TaskRecord) -> AppResult<bool> {
+        let store = &self.deps.store;
+        Ok(task.activity == Some(Activity::NeedsAttention)
+            || self.active_waits_of(&task.id) > 0
+            || store.task_needs_you(&task.id).await?.is_some()
+            || store.pending_hold(&task.id).await?.is_some()
+            || self.is_paused(task).await)
+    }
+
+    /// Local work is read after live observations, under the plan writers' lock at Stop.
+    async fn declared_stop_work(
+        &self,
+        task: &TaskRecord,
+        run_dir: Option<&Path>,
+    ) -> AppResult<StopGate> {
+        if self.turn_handoff_pending(task).await? {
+            return Ok(StopGate::Handoff);
+        }
+        // A held opening turn still owns its instruction. Claude gets its native goal
+        // after that turn ends, even if the goal marker already exists for recovery.
+        let runtime = self.runtime(&task.id);
+        if task.follows_goal()
+            && !runtime.opening_turn.load(Ordering::SeqCst)
+            && !runtime.goal_submitted.load(Ordering::SeqCst)
+            && run_dir.is_some_and(crate::supervisor::native_goal_pending)
+        {
+            return Ok(StopGate::NativeGoal);
+        }
+        if self.goal_is_open(&task.id) {
+            return Ok(StopGate::Pass);
+        }
+        let store = &self.deps.store;
+        let steps = crate::discipline::step_states(&store.steps(&task.id).await?, &[]);
+        let reason = if let Some(index) = yulius_domain::steps::current(&steps) {
+            let next = &steps[index].title;
+            format!(
+                "{GOAL_CONTINUATION}The next unfinished step is \"{next}\". Record the evidence and update the step when its work is complete."
+            )
+        } else if steps.iter().any(|step| !step.status.is_resolved()) {
+            return Ok(StopGate::Handoff);
+        } else if self.read_spec_unfinished(&task.id).await? {
+            format!(
+                "{GOAL_CONTINUATION}The spec still declares unfinished work. Check its acceptance criteria, complete any remaining work and record the evidence."
+            )
+        } else {
+            return Ok(StopGate::Pass);
+        };
+
+        Ok(StopGate::Continue(reason))
+    }
+
+    /// What a session resumed on another subscription should do after a held turn.
     pub(crate) async fn stop_continuation(&self, task: &TaskRecord) -> Option<String> {
+        if task.mode == TaskMode::Prompt {
+            return if task.gate_blocks < MAX_GATE_BLOCKS {
+                self.spec_gate(task).await.ok().flatten()
+            } else {
+                None
+            };
+        }
+        let gate = self.stop_gate(task, false).await.ok()?;
+        let runtime = self.runtime(&task.id);
+        let _work = runtime.steps_lock.lock().await;
+        let task = self.deps.store.task(&task.id).await.ok()??;
         if task.gate_blocks >= MAX_GATE_BLOCKS {
             return None;
         }
-        let reasons = self.stop_reasons(task).await.ok()?;
-        if reasons.is_empty() {
-            return None;
+        let gate = if matches!(gate, StopGate::Declared) {
+            let run = if task.follows_goal() {
+                self.deps.store.live_attempt(&task.id).await.ok()?
+            } else {
+                None
+            };
+            self.declared_stop_work(&task, run.as_ref().map(|run| Path::new(&run.run_dir)))
+                .await
+                .ok()?
+        } else {
+            gate
+        };
+        match gate {
+            StopGate::Continue(reason) => Some(reason),
+            StopGate::Pass | StopGate::Handoff | StopGate::NativeGoal | StopGate::Declared => None,
         }
-        Some(reasons.join("\n\n"))
     }
 
     async fn hook_stop(
@@ -1075,25 +1358,33 @@ impl App {
         if let Err(err) = self.sync_steps_from_spec(task).await {
             tracing::warn!(error = %err, task = %task.id, "step sync from the spec failed");
         }
-        let reasons = if failed {
-            Vec::new()
-        } else {
-            self.stop_reasons(task).await?
-        };
-        let gate_continues = !reasons.is_empty() && task.gate_blocks < MAX_GATE_BLOCKS;
-        // Would the agent work on after this boundary (a gate block, or its goal)?
-        let continues = gate_continues || (task.follows_goal() && !failed);
-
+        if antigravity && input.fully_idle == Some(true) {
+            // This Stop supersedes a previous in-process worker report, even if the
+            // PreInvocation of the new turn was missed. Live launches are probed separately.
+            let runtime = self.runtime(&task.id);
+            runtime.background_agents.store(0, Ordering::SeqCst);
+            runtime.background_shells.store(0, Ordering::SeqCst);
+            runtime.shells_since_ms.store(0, Ordering::SeqCst);
+        }
         if preceding_turn {
-            // Preserve the later prompt's pause. A gate or goal that requires further work
-            // waits at this Stop too. Only the submit client keeps the prompt hold alive.
-            return Ok(if continues {
-                hold()
-            } else {
-                HookReply::Output(HookOutput::default())
-            });
+            // Preserve the later prompt's pause. Only the submit client keeps its hold alive.
+            return Ok(
+                if !failed && (task.follows_goal() || self.stop_continuation(task).await.is_some())
+                {
+                    hold()
+                } else {
+                    HookReply::Output(HookOutput::default())
+                },
+            );
         }
 
+        // Prompt-mode spec discipline is known before the rotation and transcript
+        // checks. Its capacity and licensing decisions retain their existing order.
+        let prompt_gate = if task.mode == TaskMode::Prompt && !failed {
+            Some(self.stop_gate(task, reported_background).await?)
+        } else {
+            None
+        };
         // The turn boundary: stay, move to another subscription, or pause (ROT-003, ROT-010).
         self.runtime(&task.id)
             .proactive_switch
@@ -1119,6 +1410,7 @@ impl App {
         if matches!(decision.0, Decision::Stay) && self.review_round_open(&task.id).await {
             self.await_transcript_read(&task.id).await;
         }
+        let mut move_reviewer = None;
         if matches!(decision.0, Decision::Stay)
             && self
                 .runtime(&task.id)
@@ -1140,27 +1432,7 @@ impl App {
                     {
                         later();
                     } else {
-                        let continuation = gate_continues.then(|| reasons.join("\n\n"));
-                        let app = Arc::clone(self);
-                        let task_id = task.id.clone();
-                        tokio::spawn(async move {
-                            if let Err(err) = app
-                                .switch_task_now(
-                                    &task_id,
-                                    Some(account),
-                                    crate::review::REVIEW_RESUME,
-                                    continuation,
-                                )
-                                .await
-                            {
-                                tracing::warn!(error = %err, task = %task_id, "the move for a cut-off reviewer failed");
-                                // Due again at a later turn's end (review round 1 of fix 7).
-                                app.runtime(&task_id)
-                                    .reviewer_move
-                                    .store(true, Ordering::SeqCst);
-                            }
-                        });
-                        return Ok(self.hold_for(&task.id));
+                        move_reviewer = Some(account);
                     }
                 }
                 crate::review::ReviewerMove::Later => later(),
@@ -1201,6 +1473,13 @@ impl App {
         } else {
             (false, false)
         };
+        let gate = if failed {
+            StopGate::Handoff
+        } else if let Some(gate) = prompt_gate {
+            gate
+        } else {
+            self.stop_gate(task, reported_background).await?
+        };
         // A session that works on after this boundary (a gate's block, its goal) and runs an
         // older Claude Code than runs get now restarts on the newer one here, as a move to
         // another subscription does (SPEC-461 CCM-013): the resumed session gets the gate's
@@ -1211,25 +1490,100 @@ impl App {
         // blocks as usual (SPEC-468 CCF-001). A goal known by now saves the look at the session;
         // one set in this very turn may not be read yet, so it is asked again after the look,
         // which reads the turn's lines.
-        let works_on = !self.keeps_own_goal(task)
-            && (gate_continues || {
-                let runtime = self.runtime(&task.id);
-                task.mode == TaskMode::Goal
-                    && runtime.goal_open.load(Ordering::SeqCst)
-                    && !runtime.goal_achieved.load(Ordering::SeqCst)
-            });
-        if matches!(decision.0, Decision::Stay)
-            && works_on
-            && let Some(version) = self.claude_code_move_due(&task.id, &ctx.attempt.id).await
+        let version = if matches!(decision.0, Decision::Stay)
+            && move_reviewer.is_none()
             && !self.keeps_own_goal(task)
+            && ((matches!(gate, StopGate::Continue(_) | StopGate::Declared)
+                && (task.mode == TaskMode::Goal || task.gate_blocks < MAX_GATE_BLOCKS))
+                || (task.mode == TaskMode::Goal && self.goal_is_open(&task.id)))
         {
-            let continuation = gate_continues.then(|| reasons.join("\n\n"));
+            self.claude_code_move_due(&task.id, &ctx.attempt.id).await
+        } else {
+            None
+        };
+
+        // A worker may complete the selected step during any of the probes above.
+        // Plan writers reset the budget under this lock. Keep it from the final local
+        // read through issuing the continuation or recording exhaustion.
+        let runtime = self.runtime(&task.id);
+        let declared = matches!(gate, StopGate::Declared);
+        let _work = if declared {
+            Some(runtime.steps_lock.lock().await)
+        } else {
+            None
+        };
+        if !self.attempt_live(&task.id, &ctx.attempt.id).await {
+            return Ok(HookReply::Output(HookOutput::default()));
+        }
+        let current_task = store.task(&task.id).await?.ok_or(AppError::NotFound)?;
+        task = &current_task;
+        let gate = if declared {
+            self.declared_stop_work(task, Some(Path::new(&ctx.attempt.run_dir)))
+                .await?
+        } else {
+            gate
+        };
+        let clears_budget = task.mode == TaskMode::Prompt
+            || (matches!(gate, StopGate::Pass) && !self.goal_is_open(&task.id));
+        let can_nudge =
+            matches!(gate, StopGate::Pass) || (declared && matches!(gate, StopGate::Continue(_)));
+        let pending_goal = matches!(gate, StopGate::NativeGoal);
+        let mut reason = match gate {
+            StopGate::Continue(reason) => Some(reason),
+            StopGate::Pass | StopGate::Handoff | StopGate::NativeGoal | StopGate::Declared => None,
+        };
+        if task.mode == TaskMode::Goal
+            && let Some(reason) = &reason
+            && task.gate_blocks >= MAX_GATE_BLOCKS
+        {
+            if move_reviewer.is_some() {
+                runtime.reviewer_move.store(true, Ordering::SeqCst);
+            }
+            return self.exhausted_stop(task, reason).await;
+        }
+
+        let continuation = reason
+            .as_ref()
+            .filter(|_| task.gate_blocks < MAX_GATE_BLOCKS);
+        let gate_continues = continuation.is_some();
+        let continues = gate_continues || (task.follows_goal() && !failed);
+        if let Some(account) = move_reviewer {
+            let start = RunStart::Resume {
+                prompt: continuation.cloned(),
+            }
+            .with_goal_continuation(task.mode == TaskMode::Goal);
+            let app = Arc::clone(self);
+            let task_id = task.id.clone();
+            tokio::spawn(async move {
+                if let Err(err) = app
+                    .switch_with(&task_id, Some(account), crate::review::REVIEW_RESUME, start)
+                    .await
+                {
+                    tracing::warn!(error = %err, task = %task_id, "the move for a cut-off reviewer failed");
+                    // Due again at a later turn's end (review round 1 of fix 7).
+                    app.runtime(&task_id)
+                        .reviewer_move
+                        .store(true, Ordering::SeqCst);
+                }
+            });
+            return Ok(self.hold_for(&task.id));
+        }
+        if let Some(version) = version
+            && !self.keeps_own_goal(task)
+            && (gate_continues
+                || (task.mode == TaskMode::Goal
+                    && self.goal_is_open(&task.id)
+                    && !runtime.goal_achieved.load(Ordering::SeqCst)))
+        {
+            let start = RunStart::Resume {
+                prompt: continuation.cloned(),
+            }
+            .with_goal_continuation(task.mode == TaskMode::Goal);
             let app = Arc::clone(self);
             let task_id = task.id.clone();
             let run = (ctx.attempt.id.clone(), current.clone());
             tokio::spawn(async move {
-                app.move_to_claude_code(&task_id, run, version, continuation)
-                    .await;
+                app.move_to_claude_code(&task_id, run, version, start).await;
             });
             return Ok(self.hold_for(&task.id));
         }
@@ -1249,13 +1603,16 @@ impl App {
             (Decision::Switch { account }, reason) => {
                 // The agent waits here while it moves; the resumed session gets the gate's
                 // reasons as its prompt when the gate would have kept it working.
-                let continuation = gate_continues.then(|| reasons.join("\n\n"));
+                let start = RunStart::Resume {
+                    prompt: continuation.cloned(),
+                }
+                .with_goal_continuation(task.mode == TaskMode::Goal);
                 let app = Arc::clone(self);
                 let task_id = task.id.clone();
                 let reason = format!("{reason:?}");
                 tokio::spawn(async move {
                     if let Err(err) = app
-                        .switch_task_now(&task_id, Some(account), &reason, continuation)
+                        .switch_with(&task_id, Some(account), &reason, start)
                         .await
                     {
                         tracing::warn!(error = %err, task = %task_id, "switch at the turn boundary failed");
@@ -1264,7 +1621,10 @@ impl App {
                 return Ok(self.hold_for(&task.id));
             }
             (Decision::Wait { .. }, _) if continues => {
-                self.pause_task(&task.id, PauseKind::Turn, current, None)
+                let carried = continuation
+                    .filter(|_| task.mode == TaskMode::Goal)
+                    .cloned();
+                self.pause_task(&task.id, PauseKind::Turn, current, carried)
                     .await?;
                 return Ok(self.hold_for(&task.id));
             }
@@ -1274,15 +1634,22 @@ impl App {
 
         // A clean turn end on the same subscription may carry one gentle step nudge (STP-008).
         // It is not a gate block: it is given once and never escalates to "needs attention".
-        if reasons.is_empty() && stays && !failed && !reported_background {
+        if can_nudge && stays && !reported_background {
             match self.take_turn_end_nudge(task).await {
-                Ok(Some(text)) => return Ok(HookReply::Output(HookOutput::block(text))),
+                Ok(Some(text)) => match &mut reason {
+                    Some(reason) => {
+                        reason.push_str("\n\n");
+                        reason.push_str(&text);
+                    }
+                    None => return Ok(HookReply::Output(HookOutput::block(text))),
+                },
                 Ok(None) => {}
                 Err(err) => tracing::warn!(error = %err, task = %task.id, "step nudge unavailable"),
             }
         }
-        if reasons.is_empty() {
-            if task.gate_blocks != 0 {
+        let Some(reason) = reason else {
+            drop(_work);
+            if clears_budget && task.gate_blocks != 0 {
                 let update = TaskFieldUpdate {
                     gate_blocks: Some(0),
                     ..TaskFieldUpdate::default()
@@ -1335,37 +1702,71 @@ impl App {
             }
             // Done when the goal is achieved, waiting otherwise (TSK-014), once the goal verdict
             // came while a goal is open (SPEC-079 BGW-005).
-            self.clean_stop(task).await?;
+            self.clean_stop(task, &ctx.attempt.id, pending_goal).await?;
             return Ok(HookReply::Output(HookOutput::default()));
-        }
+        };
 
         if task.gate_blocks >= MAX_GATE_BLOCKS {
-            let stopped = format!(
-                "stopped {MAX_GATE_BLOCKS} times without fixing: {}",
-                reasons.join(" ").chars().take(300).collect::<String>()
-            );
-            // Said by the task itself, for whoever opens it later (SPEC-472), and in its
-            // terminal for the viewers there now.
-            self.flag_attention(
-                &task.id,
-                crate::attention::AttentionRecord::yulius(
-                    &format!("The agent {stopped}"),
-                    "Tell it how to go on, in the terminal.",
-                ),
-            )
-            .await?;
-            self.runtime(&task.id)
-                .hub
-                .notice(format!("Yulius: the agent {stopped}"));
-            return Ok(HookReply::Output(HookOutput::default()));
+            return self.exhausted_stop(task, &reason).await;
         }
-        let update = TaskFieldUpdate {
-            gate_blocks: Some(task.gate_blocks + 1),
-            ..TaskFieldUpdate::default()
+        store
+            .consume_stop_attempt(&task.id, MAX_GATE_BLOCKS, self.now())
+            .await?;
+        if task.mode == TaskMode::Prompt {
+            self.publish_task(&task.id).await;
+        }
+        // A previously missed submit or an older capacity release can leave the row idle.
+        // Only recover that same idle state; a permission raised meanwhile keeps its flag.
+        if task.mode == TaskMode::Goal
+            && !matches!(
+                task.activity,
+                Some(Activity::Working | Activity::NeedsAttention)
+            )
+            && let Some(times) = store.task_times(&task.id).await?
+            && store
+                .set_activity_from(
+                    &task.id,
+                    (task.activity, times.state_at),
+                    Some(Activity::Working),
+                    self.now(),
+                )
+                .await?
+        {
+            self.publish_task(&task.id).await;
+        }
+        Ok(HookReply::Output(HookOutput::block(reason)))
+    }
+
+    /// A repeated gate reason survives as the explanation shown to the task owner.
+    async fn exhausted_stop(&self, task: &TaskRecord, reason: &str) -> AppResult<HookReply> {
+        let (stopped, action) = if let Some(work) = reason.strip_prefix(GOAL_CONTINUATION) {
+            (
+                format!(
+                    "could not finish after {MAX_GATE_BLOCKS} automatic attempts. {}",
+                    work.chars().take(300).collect::<String>()
+                ),
+                "Review the last attempt in the task terminal to identify what blocked completion.",
+            )
+        } else {
+            (
+                format!(
+                    "stopped {MAX_GATE_BLOCKS} times without fixing: {}",
+                    reason.chars().take(300).collect::<String>()
+                ),
+                "Tell it how to go on, in the terminal.",
+            )
         };
-        store.update_task(&task.id, &update, self.now()).await?;
-        self.publish_task(&task.id).await;
-        Ok(HookReply::Output(HookOutput::block(reasons.join("\n\n"))))
+        // Said by the task itself, for whoever opens it later (SPEC-472), and in its
+        // terminal for the viewers there now.
+        self.flag_attention(
+            &task.id,
+            crate::attention::AttentionRecord::yulius(&format!("The agent {stopped}"), action),
+        )
+        .await?;
+        self.runtime(&task.id)
+            .hub
+            .notice(format!("Yulius: the agent {stopped}"));
+        Ok(HookReply::Output(HookOutput::default()))
     }
 
     /// A turn of a run without hooks ended (seen in its transcript): run a pending proactive
@@ -1593,6 +1994,11 @@ impl App {
     /// # Errors
     /// Store failures.
     pub async fn sync_steps_from_spec(&self, task: &TaskRecord) -> AppResult<bool> {
+        self.publish_after_updates(task, Box::pin(self.sync_spec_plan(task)))
+            .await
+    }
+
+    async fn sync_spec_plan(&self, task: &TaskRecord) -> AppResult<bool> {
         let (Some(worktree), Some(spec_path)) =
             (task.worktree_path.as_ref(), task.spec_path.as_ref())
         else {
@@ -2043,6 +2449,19 @@ mod tests {
     };
     use std::path::Path;
     use yulius_contracts::hooks::HookInput;
+
+    #[test]
+    fn retained_goal_instruction_preserves_the_byte_limit_and_recovers_missing_text() {
+        let limit = crate::capacity::CONTINUATION_MAX;
+        let exact = "é".repeat(limit / 2);
+        assert_eq!(super::retained_goal_instruction(Some(exact.clone())), exact);
+        for prompt in [None, Some(String::new()), Some(format!("{exact}x"))] {
+            let instruction = super::retained_goal_instruction(prompt);
+            assert!(instruction.len() <= limit);
+            assert!(instruction.starts_with(super::GOAL_CONTINUATION));
+            assert!(instruction.contains("spec_check") && instruction.contains("steps_get"));
+        }
+    }
 
     fn notice(kind: Option<&str>, message: Option<&str>) -> HookInput {
         HookInput {
