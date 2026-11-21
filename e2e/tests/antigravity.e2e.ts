@@ -11,7 +11,7 @@ failOnPageErrors();
 
 type Mocked = {
   __yuliusMock: {
-    tasks: { harness: string; harness_choice?: string; model: string; effort: string }[];
+    tasks: { harness: string; harness_choice?: string; model: string; model_default: boolean; effort: string; effort_default: boolean }[];
     harnessRolls: number[];
     accounts: { id?: string; label: string; provider: string; status: string }[];
     automations: { name: string; harness: string }[];
@@ -295,9 +295,16 @@ test('a task started on Random draws across available harnesses, and says so', a
   const second = await browser.evaluate(() => {
     const tasks = (window as unknown as Mocked).__yuliusMock.tasks;
     const last = tasks[tasks.length - 1];
-    return { harness: last.harness, choice: last.harness_choice };
+    return {
+      harness: last.harness, choice: last.harness_choice,
+      model: last.model, modelDefault: last.model_default,
+      effort: last.effort, effortDefault: last.effort_default,
+    };
   });
-  expect(second).toEqual({ harness: 'antigravity', choice: 'random' });
+  expect(second).toEqual({
+    harness: 'antigravity', choice: 'random',
+    model: 'gemini-4-neon', modelDefault: true, effort: 'high', effortDefault: true,
+  });
   await browser.evaluate(() => { location.hash = location.hash.replace('/t/', '/tasks/'); });
   await expect(browser.locator('main')).toContainText('Antigravity (drawn at random)');
 
