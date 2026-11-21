@@ -65,6 +65,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Bind a parked message to the attempt its caller observed
 - [x] Resume only the parked run whose screen finished saving
 - [ ] Preserve a continuation while its previous parked run settles
+- [ ] Verify the current model and subscription before accepting a named Continue
 - [ ] Order parking and replacement merge requests through run settlement
 - [ ] Deliver the recorded integration failure once to an already parked owner
 - [ ] Hold the original owner’s session and successor while its open delivery cannot be verified
@@ -91,7 +92,7 @@ Use the fake Codex executable, its rollout, real PTY shutdown and the applicatio
 
 ## Decisions
 
-An owner can stop a task while its previous run is still finishing a park. Continue waits for that run's terminal cleanup before entering the queue or starting again. A timeout or a refused launch leaves the archive and outstanding question available for retry. The owner can also archive or close a replacement turn during admission. The start or queue claim checks the original attempt, archive and status together with the change that accepts the continuation. A remote restart keeps its first selection through the permission check. For an immediate start on a named subscription, the placement decision precedes acceptance. If the model changes during admission, launch reevaluates the placement for the current model. A goal resume waits for terminal cleanup under the same bound. Answering the question records the timestamp of acceptance.
+An owner can stop a task while its previous run is still finishing a park. Continue waits for that run's terminal cleanup before entering the queue or starting again. A settlement timeout or a refusal because the previous run is still live leaves the archive and outstanding question available for retry. The owner can also archive or close a replacement turn during admission. The start or queue claim checks the original attempt, archive and status together with the change that accepts the continuation. A remote restart keeps its first selection through the permission check. A goal resume waits for terminal cleanup under the same bound. Answering the question records the timestamp of acceptance.
 
 Capture a separate screen at the park decision because exiting can clear the entire alternate screen. Changing shutdown signals would couple presentation to the harness and could interfere with reaping. A separate snapshot lets an unsuccessful park keep its real terminal. Reuse native Codex resume and the Stop hook's persisted three-block budget. Older runs can only recover content still present in their saved screen. A parked owner terminal fits the saved grid to the viewport so the first row, last row and notice survive a smaller window. If the PR is the only remaining work and the Stop lookup cannot finish, the continuation asks the agent to verify its checks. Parking reads the current head before acquiring the launch lock and supplies that signal to the final eligibility check.
 
@@ -118,6 +119,8 @@ The final parking check compares the owner’s saved singleton decision with the
 The SQLite query returning a parked task includes the latest attempt ID in the same snapshot. Admission checks that ID under the launch lock after caller preflight. A message can wait while another turn resumes and parks, so task status alone cannot identify the session the sender observed. Only a matching parked attempt can restore Codex lineage or accept the prompt. Bulk messages, Telegram replies and remote restarts carry the attempt from their first task lookup through dispatch. They check the caller’s current access before acting.
 
 ## Evidence
+
+- The named-subscription admission prototype is a separate plan step. In the combined review, a model or subscription becoming unavailable during admission could leave the controls cleared or accept an obsolete placement. The terminal-settlement delivery retains the existing subscription selection at launch. The follow-up covers a named refusal with the original and changed model, and a subscription losing access before admission.
 
 - Integrating dev `cf492c608` added a distinct goal-resume start. On `7c4bccc2e`, run `e9865414-7746-4b65-a264-73db5d96df42` caught both review findings. Goal resume entered capacity before the reader settled, and a named Continue launched Opus after the owner selected Sonnet.
 

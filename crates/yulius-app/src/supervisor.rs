@@ -2478,16 +2478,6 @@ impl App {
             .sandbox(&task.sandbox_id)
             .await?
             .ok_or(AppError::NotFound)?;
-        // Decide a named Continue before accepting it. A refused subscription leaves the
-        // owner's resting task, archive and question available for another choice.
-        let owner_choice = if owner_continue && let Some(id) = requested.as_ref() {
-            Some((
-                task.model.as_deref(),
-                self.choose_account(task, Some(id)).await?,
-            ))
-        } else {
-            None
-        };
         // Status → Starting (unless a switch drives this launch).
         if task.status != TaskStatus::Switching && task.status != TaskStatus::Starting {
             let next = match task.status {
@@ -2550,13 +2540,9 @@ impl App {
             Some(id) if store.account(&id).await?.is_none() => None,
             other => other,
         };
-        let placement = match owner_choice {
-            Some((model, placement)) if model == task.model.as_deref() && requested.is_some() => {
-                placement
-            }
-            _ => self.choose_account(&task, requested.as_ref()).await?,
-        };
-        let Some(Placed { account, fallback }) = placement else {
+        let Some(Placed { account, fallback }) =
+            self.choose_account(&task, requested.as_ref()).await?
+        else {
             // No subscription has capacity: the task waits before starting, without a process
             // (ROT-010); the resume loop starts it when capacity returns. A turn a limit cut
             // keeps its `limit` pause, so it still resumes past the limit (SPEC-034).
