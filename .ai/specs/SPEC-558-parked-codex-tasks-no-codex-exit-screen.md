@@ -60,7 +60,12 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Defer live PR notices while the session writer is busy
 - [x] Verify restored arms and deliver current ordinary CI and train notices to the owner
 - [x] Report the active singleton and replay its recorded failure for the original owner
-- [ ] Verify candidate status before parking, showing Done or resuming a parked owner
+- [x] Reproduce candidate status across restart on the live and parked PR owner
+- [x] Verify the failed integration candidate before parking its original owner
+- [ ] Order parking and replacement merge requests through run settlement
+- [ ] Deliver the recorded integration failure once to an already parked owner
+- [ ] Hold the original owner’s session and successor while its open delivery cannot be verified
+- [ ] Render verified live integration status in the terminal, sidebar and Task Info
 - [ ] Deliver bounded Codex goal continuation to dev
 - [ ] Recover screens from tasks parked before the upgrade
 
@@ -103,7 +108,30 @@ A live PR notice that finds the terminal writer busy leaves its event unheard. T
 
 The live watcher resolves ordinary CI for the owner at the armed head and reads the active train’s recorded membership. Before delivering advice, it verifies the published head, the current queue request, its CI observations and the original recipient. A human decision or unverifiable observation leaves the event pending.
 
+The final parking check compares the owner’s saved singleton decision with the verified PR head and integration base. A change to the saved merge decision during hosted verification defers the pass. A changed base or published repair retires the old failure for this decision.
+
 ## Evidence
+
+- Independent review approved the parking decision at `9bdbd5bc1e8c6be3b41713e904f4ed21563166d7`. All seven parking controls passed independently on the prior binary with the same candidate behavior. The full product tree for this delivery matches `e740eb5db`. The bounded mutation run and its focused replays continue separately. Vidoc was disabled. The historical Quartio instance needs a release containing the change for a live check.
+
+- The parking decision uses the same Rust product code as `e740eb5db`, independently of how the owner page describes an ordinary CI failure. The parking fixtures cover a matching red candidate, a change during verification, a missing branch, a merged or forked PR, both branch names, a new PR at the same commit and a repaired commit on the original PR. Dropping the PR number or commit comparison caused both replacement controls to time out. The unattended parking fixtures use real Git, SQLite and PTY hosts.
+- The twelve focused cases at `694053c3a` passed. Review traced a separate ordinary CI explanation lost on a subsequent page refresh when the PR already reads behind. The candidate parking slice leaves the existing display policy in place. The one-time owner notice and parked-detail step includes the repeat-read regression and both CI sources.
+
+- With GitHub reporting success on the PR head and an ordinary failed run recorded in SQLite, the base-transition fixture still returned “could not be verified” at `243a4a11a`. The isolated parked-detail change checks the directly verified PR and commit against both sources. The fixture varies the source of the red check and whether the base advances at the second direct read or the final listing.
+- Removing the PR-number and published-head comparisons made both replacement controls time out while waiting for the owner to park. With the checks in place the two owners parked. The six focused merge-admission regressions also passed on the isolated settlement change, including genuine capacity and subscription waits.
+
+- At `e740eb5db`, when the integration branch advanced during an ordinary failure read and GitHub changed the PR to behind with unknown mergeability, task detail said the PR could not be verified. The detail fixture changes those fields during both the direct read and the final branch listing. Separate parking fixtures change only the published head or only the current PR number while the candidate’s tested base stays fixed. Each repaired owner parks.
+- At `2738859c6`, the isolated merge-admission fixture returned `armed: true` after a committed park crossed into WaitingCapacity and then closed. An ordinary capacity pause accepted the same pending merge. These cases belong to the separate settlement step.
+
+- At `ee1f09933`, a person could arm a pending merge after parking won, a subscription switch set the task to Switching, and the run reader consumed the park intent. The regression received `armed: true`. A normal subscription switch accepted the same request. Both switch orders passed on the prototype at `4044de0c9`. Review identified an additional capacity pause before settlement. Merge admission through settlement has a separate plan item.
+
+- On `3eceb717f`, parking accepted a decision for a new base against the previous hosted observation. It also parked while the person's replacement merge request held the arm writer. In the opposite order the request returned `armed: true` after parking had committed its end intent. A separate parked-detail regression returned “could not be verified” for an unchanged ordinarily failing PR head after its base advanced. Each case failed before the fix. The request fixture uses a conventional PR title so it reaches merge admission.
+
+- On the integrated dev baseline `e55073a71`, both restart regressions reached the final parking decision and reported one park when zero were expected. One had a current failed singleton on ordinary green PR #1481. In the other, a replacement arm retired the failed decision at the final park hook. The fixture waits for the eligibility decision after host reattachment.
+
+- PR #1580 landed on `dev` at `742c2a230` from head `655393c1d`. Train run `27629732-7623-4e71-9eb5-2722c4dc1f8d` passed quality, both Rust shards and browser E2E. PR run `193bef34-3c84-482a-abc9-b1c145036270` and dev run `dd1b40cc-3b2f-4fc2-a60f-6b2108924d1b` cover the same tree. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/742c2a230864b016c2502c2f718a74286937dc00)
+
+- Independent review of the combined implementation at `d33f3bb33` found a replacement merge arm could arrive while parking, reading Done, or releasing a session slot. The parking decision is delivered separately. The parked wake and live Done, capacity and dependency paths retain their own plan items.
 
 - Independent review approved `12b1ea674`. All 420 scoped parking, delivery, train, message and PR-watch tests passed on that head with the default stack. Clippy passed for the app and integration targets with warnings denied. The #331 fixture delivers the accepted shard failure once to the reattached author. It preserves a pending human decision and excludes an obsolete candidate. The historical instance was not exercised. A live check needs a disposable task on an instance running the fix.
 

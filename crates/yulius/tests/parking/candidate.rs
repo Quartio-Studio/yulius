@@ -13,6 +13,251 @@ use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::ids::{AttemptId, TaskId};
 
 #[test]
+fn parking_checks_the_saved_candidate_against_the_current_integration_base() -> TestResult {
+    park_after_candidate(false)
+}
+
+#[test]
+fn a_replacement_arm_arriving_at_final_verification_keeps_the_original_owner_live() -> TestResult {
+    park_after_candidate(true)
+}
+
+fn park_after_candidate(rearm: bool) -> TestResult {
+    with_idle_candidate(async |data, app, remote, id, head| {
+        super::past_the_grace(app, &id).await?;
+        if rearm {
+            let path = data.join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+            let db_path = data.join("yulius.db");
+            let arm = serde_json::to_vec(
+                &json!([{"task":id.as_str(), "head":head,"summary":"replacement"}]),
+            )?;
+            expect_park_deferred(app, &id, move || {
+                assert!(std::fs::write(&path, &arm).is_ok());
+                let retired = rusqlite::Connection::open(&db_path).and_then(|db| {
+                    db.execute("UPDATE spans SET detail=json_set(detail, '$.superseded_at', 1) WHERE key='wait@15'", [])
+                });
+                assert!(matches!(retired, Ok(1)));
+            }).await?;
+        } else {
+            expect_park_deferred(app, &id, || {}).await?;
+            let span = app
+                .deps
+                .store
+                .latest_merge_wait(&id)
+                .await?
+                .ok_or("candidate")?;
+            assert!(
+                app.deps
+                    .store
+                    .retire_singleton(&id, &span, app.now())
+                    .await?
+            );
+            let saved = span.detail.ok_or("decision detail")?;
+            let path = data.join("yulius.db");
+            expect_park_deferred(app, &id, move || {
+                let restored = rusqlite::Connection::open(&path).and_then(|db| {
+                    db.execute("UPDATE spans SET detail=?1 WHERE key='wait@15'", [&saved])
+                });
+                assert!(matches!(restored, Ok(1)));
+            })
+            .await?;
+            remote.remote.lock().map_err(|_| "remote")?.take();
+            remote.pulls.lock().map_err(|_| "PR")?[0].base_sha.clear();
+            expect_park_deferred(app, &id, || {}).await?;
+            remote.pulls.lock().map_err(|_| "PR")?[0].base_sha = "next-base".into();
+            super::parked(app, &id).await?;
+        }
+        Ok(())
+    })
+}
+
+#[test]
+fn a_published_repair_on_the_same_base_releases_the_candidate_owner() -> TestResult {
+    with_idle_candidate(async |_, app, remote, id, _| {
+        let task = app.deps.store.task(&id).await?.ok_or("task")?;
+        let tree = Path::new(task.worktree_path.as_deref().ok_or("checkout")?);
+        crate::pr_watch::git(tree, &["commit", "--allow-empty", "-qm", "Repair latency"])?;
+        let head = crate::pr_watch::git(tree, &["rev-parse", "HEAD"])?;
+        let branch = task.branch.as_deref().ok_or("task branch")?;
+        crate::pr_watch::git(
+            tree,
+            &["push", "-q", "origin", &format!("HEAD:refs/heads/{branch}")],
+        )?;
+        set_pull_head(remote, 1481, &head)?;
+        remote.set_checks(&head, ChecksState::Success);
+        let (mut run, job) = crate::pr_watch::run(
+            &task.sandbox_id,
+            "repair-green",
+            &head,
+            RunState::Passed,
+            None,
+            app.now().0,
+        );
+        run.reference = CiRef::PullRequest(1481);
+        app.deps.store.insert_ci_run(&run, &[job]).await?;
+        super::parked(app, &id).await
+    })
+}
+
+#[test]
+fn a_new_pr_on_the_same_head_and_base_releases_the_candidate_owner() -> TestResult {
+    with_idle_candidate(async |_, app, remote, id, _| {
+        let mut current = app.deps.store.delivery(&id).await?.ok_or("delivery")?;
+        current.pr_number = Some(1482);
+        current.updated_at = app.now();
+        assert!(
+            app.deps
+                .store
+                .transition_delivery(&DeliveryStage::PrOpen, &current)
+                .await?
+        );
+        remote.pulls.lock().map_err(|_| "pulls")?[0].number = 1482;
+        super::parked(app, &id).await
+    })
+}
+
+#[test]
+fn an_unrelated_or_merged_pr_releases_the_original_candidate_owner() -> TestResult {
+    for field in ["fork", "merged", "head branch", "base branch"] {
+        with_idle_candidate(async |_, app, remote, id, _| {
+            remote.remote.lock().map_err(|_| "remote")?.take();
+            {
+                let mut pulls = remote.pulls.lock().map_err(|_| "PR")?;
+                match field {
+                    "fork" => pulls[0].from_fork = true,
+                    "merged" => {
+                        pulls[0].merged = true;
+                        pulls[0].state = "closed".into();
+                    }
+                    "head branch" => pulls[0].head = "another-owner".into(),
+                    "base branch" => pulls[0].base = "another-target".into(),
+                    _ => unreachable!(),
+                }
+            }
+            super::parked(app, &id).await
+        })?;
+    }
+    Ok(())
+}
+
+#[test]
+fn an_open_candidate_with_a_missing_branch_defers_the_park() -> TestResult {
+    for missing_head_branch in [true, false] {
+        with_idle_candidate(async |_, app, remote, id, _| {
+            remote.remote.lock().map_err(|_| "remote")?.take();
+            {
+                let mut pulls = remote.pulls.lock().map_err(|_| "PR")?;
+                if missing_head_branch {
+                    pulls[0].head.clear();
+                } else {
+                    pulls[0].base.clear();
+                }
+            }
+            expect_park_deferred(app, &id, || {}).await
+        })?;
+    }
+    Ok(())
+}
+
+fn with_idle_candidate(
+    check: impl AsyncFnOnce(
+        &Path,
+        &Arc<yulius_app::context::App>,
+        &Arc<crate::support::FakeGitHub>,
+        TaskId,
+        String,
+    ) -> TestResult,
+) -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    let case = ColdCandidate::Backdated;
+    let (id, head, original) = rt.block_on(Box::pin(seed_candidate(&data, &case)))?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    let rt = runtime()?;
+    let (app, remote) =
+        rt.block_on(Box::pin(restore_owner(&data, &case, &id, &head, &original)))?;
+    rt.block_on(async {
+        let result = check(&data, &app, &remote, id.clone(), head).await;
+        app.stop_task_now(&id).await?;
+        result
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+#[test]
+fn a_singleton_decided_on_a_new_base_during_the_host_probe_keeps_the_owner_live() -> TestResult {
+    with_idle_candidate(async |data, app, remote, id, _| {
+        let span = app
+            .deps
+            .store
+            .latest_merge_wait(&id)
+            .await?
+            .ok_or("candidate")?;
+        assert!(
+            app.deps
+                .store
+                .retire_singleton(&id, &span, app.now())
+                .await?
+        );
+        let mut decision: serde_json::Value = serde_json::from_str(&span.detail.ok_or("receipt")?)?;
+        decision["singleton"]["base"] = json!("new-tested-base");
+        let saved = decision.to_string();
+        let path = data.join("yulius.db");
+        let remote = remote.clone();
+        expect_park_deferred(app, &id, move || {
+            if let Ok(mut origin) = remote.remote.lock() {
+                origin.take();
+            }
+            if let Ok(mut pulls) = remote.pulls.lock() {
+                pulls[0].base_sha = "new-tested-base".into();
+            }
+            let accepted = rusqlite::Connection::open(&path).and_then(|db| {
+                db.execute("UPDATE spans SET detail=?1 WHERE key='wait@15'", [&saved])
+            });
+            assert!(matches!(accepted, Ok(1)));
+        })
+        .await?;
+        expect_park_deferred(app, &id, || {}).await?;
+        Ok(())
+    })
+}
+
+/// A restarted host can still be reattaching. Require an actual eligibility
+/// decision so an earlier probe that deferred shutdown cannot satisfy the assertion.
+async fn expect_park_deferred(
+    app: &Arc<yulius_app::context::App>,
+    id: &TaskId,
+    change: impl FnOnce() + Send + 'static,
+) -> TestResult {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let checked = Arc::new(AtomicBool::new(false));
+    let reached = checked.clone();
+    yulius_app::race::on(
+        super::Point::ParkPrepared,
+        Path::new(id.as_str()),
+        move || {
+            change();
+            reached.store(true, Ordering::SeqCst);
+        },
+    );
+    let started = std::cell::Cell::new(0);
+    super::wait_for(
+        "the original owner's final park decision",
+        Duration::from_secs(10),
+        || async {
+            started.set(app.park_idle_sessions_now().await);
+            checked.load(Ordering::SeqCst) || started.get() != 0
+        },
+    )
+    .await?;
+    if started.get() != 0 {
+        return Err("original PR owner was parked during final verification".into());
+    }
+    Ok(())
+}
+
+#[test]
 fn an_ordinary_drop_after_rearm_cannot_revive_a_historical_bisection() -> TestResult {
     cold_candidate_case(ColdCandidate::OrdinaryDropAfterRearm)
 }
