@@ -29,7 +29,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use yulius_contracts::api::tasks::{QueueMessage, TaskSummary};
 use yulius_domain::harness::Harness;
-use yulius_domain::ids::TaskId;
+use yulius_domain::ids::{AttemptId, TaskId};
 use yulius_domain::intake::BoxHeld;
 use yulius_domain::task::{Activity, TaskStatus};
 use yulius_domain::task_access::TaskAction;
@@ -42,7 +42,7 @@ use crate::error::{AppError, AppResult};
 use crate::lifecycle::MAX_PROMPT_BYTES;
 use crate::manage::tool_detail;
 use crate::model::TaskRecord;
-use crate::supervisor::{TaskRuntime, trust_prompt_shown};
+use crate::supervisor::{PrNoticeInput, TaskRuntime, trust_prompt_shown};
 use crate::vault::reach::Holder;
 
 /// Longest message, in bytes after cleaning.
@@ -145,13 +145,13 @@ pub fn answer_prompt(login: &str, owner: &str, mine: bool, text: &str) -> String
 
 /// What Yulius types into a session ([`App::type_into_session`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Typed {
+pub(crate) enum Typed<'a> {
     /// A message for the agent, which Claude Code submits as a prompt: from the paste to that
     /// submit it sits in the session's prompt box, and a restart would lose it (SPEC-468
     /// CCF-011).
     Prompt,
     /// The PR watcher reevaluates unheard news on its next pass if the writer is busy.
-    PrNotice,
+    PrNotice(&'a AttemptId),
     /// A command Claude Code runs itself (`/mcp reconnect yulius`): no prompt is submitted,
     /// so nothing of it waits anywhere.
     Command,
@@ -207,7 +207,7 @@ const DRAFT_HOLDS_NOTICE: &str = "Yulius holds a message for this session: text 
     Yulius types its message.";
 
 /// Only these exact stored reasons belong to the shared typing guard.
-fn draft_flag(reason: &AttentionRecord) -> bool {
+pub(crate) fn draft_flag(reason: &AttentionRecord) -> bool {
     [DRAFT_HOLDS_PROBLEM, VISIBLE_DRAFT_PROBLEM]
         .iter()
         .any(|problem| *reason == AttentionRecord::yulius(problem, DRAFT_HOLDS_ACTION))
@@ -700,8 +700,22 @@ impl App {
         &self,
         task: &TaskRecord,
         paste: &[u8],
-        what: Typed,
+        what: Typed<'_>,
         from: Sender,
+    ) -> AppResult<()> {
+        self.type_into_session_if(task, paste, what, from, None::<std::future::Ready<bool>>)
+            .await
+    }
+
+    /// An armed notice verifies its owner after draft lookup. It defers if the draft lock
+    /// is busy, so neither a hosted read under the lock nor a later wait can stale that decision.
+    pub(crate) async fn type_into_session_if(
+        &self,
+        task: &TaskRecord,
+        paste: &[u8],
+        what: Typed<'_>,
+        from: Sender,
+        admit: Option<impl std::future::Future<Output = bool>>,
     ) -> AppResult<()> {
         let runtime = self.existing_runtime(&task.id).ok_or_else(|| {
             AppError::Conflict(format!("task #{} has no live session", task.number))
@@ -739,7 +753,19 @@ impl App {
         // For a screen-based release, serialize the final decision, paste, Enter and mark
         // cleanup with viewer keys and submit hooks (SPEC-537). A key arriving during
         // the lookup above participates in this decision.
-        let mut mark = if attempt.is_some() {
+        let guarded = admit.is_some();
+        if let Some(admit) = admit
+            && !admit.await
+        {
+            return Err(AppError::Conflict(
+                "the armed PR notice is no longer due".into(),
+            ));
+        }
+        let mut mark = if attempt.is_some() && guarded {
+            Some(runtime.draft_mark.try_lock().map_err(|_| {
+                AppError::Conflict("the prompt box changed during PR notice verification".into())
+            })?)
+        } else if attempt.is_some() {
             Some(runtime.draft_mark.lock().await)
         } else {
             None
@@ -870,18 +896,28 @@ impl App {
         // (Claude Code runs the prompt hook some 30 ms after the Enter below, also while a
         // turn runs). A command submits nothing, and a text that could not be typed is nowhere.
         let before = runtime.message_typed_ms.load(Ordering::SeqCst);
-        if matches!(what, Typed::Prompt | Typed::PrNotice) {
+        if matches!(what, Typed::Prompt | Typed::PrNotice(_)) {
             runtime
                 .message_typed_ms
                 .store(self.now().0, Ordering::SeqCst);
         }
         let pasted = match what {
-            Typed::PrNotice => runtime.try_paste_pr_notice(self.now(), paste).await,
+            Typed::PrNotice(attempt) => {
+                runtime
+                    .write_pr_notice(attempt, self.now(), PrNoticeInput::Paste(paste))
+                    .await
+            }
             Typed::Prompt | Typed::Command => self.send_input(&task.id, paste).await,
         };
         if let Err(err) = pasted {
             runtime.message_typed_ms.store(before, Ordering::SeqCst);
             return Err(err);
+        }
+        if matches!(what, Typed::PrNotice(_)) {
+            crate::race::reached(
+                crate::race::Point::PrNoticePasted,
+                Path::new(task.id.as_str()),
+            );
         }
         tokio::time::sleep(SUBMIT_DELAY).await;
         // The submit below carries the owner's draft to the agent with the message: the
@@ -893,7 +929,15 @@ impl App {
             runtime.sent_past_draft.store(true, Ordering::SeqCst);
         }
         // The text is in the prompt box but not sent: said, so a retry does not send it twice.
-        self.send_input(&task.id, b"\r").await.map_err(|err| {
+        let submitted = match what {
+            Typed::PrNotice(attempt) => {
+                runtime
+                    .write_pr_notice(attempt, self.now(), PrNoticeInput::Submit)
+                    .await
+            }
+            Typed::Prompt | Typed::Command => self.send_input(&task.id, b"\r").await,
+        };
+        submitted.map_err(|err| {
             if past_draft {
                 runtime.sent_past_draft.store(false, Ordering::SeqCst);
             }
@@ -944,11 +988,15 @@ impl App {
     /// PR news may retry the exact flag of a waiting message once the person has
     /// left an empty conversation box. Delivery itself judges the key and screen again.
     pub(crate) async fn held_message_flag_outlived(&self, task: &TaskRecord) -> bool {
+        self.held_draft_box_cleared(task)
+            && matches!(self.deps.store.task_attention(&task.id).await, Ok(Some((reason, _))) if draft_flag(&reason))
+    }
+
+    pub(crate) fn held_draft_box_cleared(&self, task: &TaskRecord) -> bool {
         self.typed_recently(&task.id).is_none()
             && self
                 .existing_runtime(&task.id)
                 .is_some_and(|runtime| shows_empty(task.harness, &runtime))
-            && matches!(self.deps.store.task_attention(&task.id).await, Ok(Some((reason, _))) if draft_flag(&reason))
     }
 
     /// Ends the flag that says a message of Yulius's own waits for a person's draft
