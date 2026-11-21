@@ -36,6 +36,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
+- The Linux tunnel custodian preserves final TCP receive queues and drops a lost connection independently. Original sockets transfer after the receiver has their complete identity metadata. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
+
 - 2026-11-20 Browser task lists keep the newest successful snapshot when requests overlap. A task page can recover from its initial load error as soon as the sidebar receives the list.
 - Every task entering Needs You now carries a redacted, actionable notice explaining what happened, what a person needs to do, and where to do it—shown beside the task status (even when stopped or parked), in the attention bar, Needs You lists, notifications, and identically in `tasks_list` and `task_get`—alongside deduplicated timestamped wait-episode history (`task_wait_messages`). Browser handoffs persist across activity transitions, parking, and restarts and clear cleanly when answered, dismissed, superseded, closed, or marked done; untold agent-recoverable CI failures and progressing reruns stay in Working until human action is needed ([ADR-0414](decisions/0414-actionable-needs-you-notices-and-wait-history.md), [SPEC-578](../.ai/specs/SPEC-578-show-an-actionable-message-whenever-a-ta.md)).
 - With a merge-first staging target, the Delivery page's Promote and the automatic promotion
