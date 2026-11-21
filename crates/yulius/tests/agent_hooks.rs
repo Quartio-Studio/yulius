@@ -3032,6 +3032,102 @@ async fn goal_stop_rejects_empty_and_multiline_enters_as_owner_replies() -> Test
     Ok(())
 }
 
+/// The browser splits long terminal input into 8192 UTF-16 units. Each interior
+/// cut of the closing escape must allow the next real Enter to submit the paste.
+#[tokio::test]
+async fn goal_stop_attributes_paste_with_a_split_closing_delimiter() -> TestResult {
+    for cut in 1..6 {
+        let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify dev").await?;
+        assert_eq!(stop_of(&f, Agent::Codex).await?["decision"], "block");
+        let text = "v".repeat(8192 - 6 - cut);
+        let paste = format!("\x1b[200~{text}\x1b[201~");
+        let owner = UserId::parse("u1")?;
+        for frame in paste.as_bytes().chunks(8192) {
+            f.h.app.record_terminal_frame(&f.task, &owner, frame);
+        }
+        f.h.app.record_terminal_frame(&f.task, &owner, b"\r");
+        f.h.app
+            .hook_event(
+                TOKEN,
+                "codex",
+                "UserPromptSubmit",
+                &yulius_contracts::hooks::HookInput {
+                    prompt: Some(text),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await?;
+        assert_eq!(
+            f.h.app
+                .deps
+                .store
+                .task(&f.task)
+                .await?
+                .ok_or("task")?
+                .gate_blocks,
+            0,
+            "the closing delimiter split after byte {cut}"
+        );
+        assert!(!f.h.app.has_draft(&f.task));
+    }
+    Ok(())
+}
+
+/// A pause in typing a multiline prompt changes nothing in the live PTY.
+#[tokio::test]
+async fn goal_stop_preserves_a_multiline_draft_after_a_pause_in_typing() -> TestResult {
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify dev").await?;
+    let reason = stop_of(&f, Agent::Codex).await?["reason"]
+        .as_str()
+        .ok_or("continuation")?
+        .to_owned();
+    let owner = UserId::parse("u1")?;
+    f.h.app.record_terminal_frame(&f.task, &owner, b"Verify\\");
+    f.h.clock.0.fetch_add(5_001, Ordering::SeqCst);
+    f.h.app.record_terminal_frame(&f.task, &owner, b"\r");
+    let submit = |prompt: &str| yulius_contracts::hooks::HookInput {
+        prompt: Some(prompt.to_owned()),
+        ..Default::default()
+    };
+    f.h.app
+        .hook_event(TOKEN, "codex", "UserPromptSubmit", &submit(&reason), None)
+        .await?;
+    assert_eq!(
+        f.h.app
+            .deps
+            .store
+            .task(&f.task)
+            .await?
+            .ok_or("task")?
+            .gate_blocks,
+        1
+    );
+    assert!(f.h.app.has_draft(&f.task));
+    f.h.app.record_terminal_frame(&f.task, &owner, b"dev\r");
+    f.h.app
+        .hook_event(
+            TOKEN,
+            "codex",
+            "UserPromptSubmit",
+            &submit("Verify\ndev"),
+            None,
+        )
+        .await?;
+    assert_eq!(
+        f.h.app
+            .deps
+            .store
+            .task(&f.task)
+            .await?
+            .ok_or("task")?
+            .gate_blocks,
+        0
+    );
+    assert!(!f.h.app.has_draft(&f.task));
+    Ok(())
+}
+
 /// The client has already sent Enter when the next draft reaches Yulius. The HTTP
 /// callback arrives later, carrying the client's send time.
 #[tokio::test]
