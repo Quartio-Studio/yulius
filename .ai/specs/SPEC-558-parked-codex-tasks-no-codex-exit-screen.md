@@ -53,7 +53,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Resolve shared ordinary CI for the original PR owner in the merge queue and wait
 - [x] Report the failing singleton job to its live PR owner
 - [x] Preserve the latest queue decision for each existing task during history cleanup
-- [ ] Recover the recorded singleton decision and its replacement arm
+- [x] Recover the recorded singleton decision and its replacement arm
 - [ ] Keep failed integration candidates with their original owner
 - [ ] Verify candidate status before parking, showing Done or resuming a parked owner
 - [ ] Deliver bounded Codex goal continuation to dev
@@ -93,6 +93,8 @@ The hourly telemetry cleanup retains the latest merge wait for each existing tas
 The queue writes the accepted singleton to the owner’s completed merge wait before releasing the original arm. The receipt carries the redacted reason and exact tested inputs. A reviewed head move preserves its activation time. A new request saves a strictly later activation before retiring the earlier receipt. The queue verifies retirement against the observed row and detail before taking the replacement. A direct merge or already-merged retry also reconciles pending retirement. Unreadable evidence leaves the saved request available to the next pass. The subsequent watcher slice must confirm the current holder and its members independently of a cached source run before sending instructions.
 
 ## Evidence
+
+- Independent review approved `6cfe344d72c1354610ae1985ce1b166ef899e531` and passed 13 scoped cases. The author passed all six targeted regressions at that head and scoped Clippy. SQLite selected `spans_task_merge_wait` for the completed-decision read. Vidoc was disabled. The bounded mutation runs for the full change, completed lookup and hosted merge path started alongside their reviews. Their final counts are pending at submission.
 
 - The person-authenticated HTTP merge returned success on a green synthetic PR while its earlier failure was still current. The person's MCP tool had reconciled the request in its wrapper. Both entry points now use the same successful hosted merge path. The HTTP fixture checks the receipt and saved arm immediately after the response.
 
