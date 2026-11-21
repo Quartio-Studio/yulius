@@ -1406,6 +1406,7 @@ fn codex_new_session_argv_snapshot_and_files() -> TestResult {
     assert_eq!(
         config,
         "cli_auth_credentials_store = \"file\"\ncheck_for_update_on_startup = false\n\n\
+         [notice]\nhide_rate_limit_model_nudge = true\n\n\
          [shell_environment_policy]\nignore_default_excludes = true\nexclude = [\"CODEX_HOME\"]\n\n\
          [projects.\"/data/sandboxes/s1/worktrees/t1\"]\ntrust_level = \"trusted\"\n"
     );
@@ -1482,6 +1483,11 @@ fn codex_resume_argv() -> TestResult {
             .any(|a| a == "--dangerously-bypass-approvals-and-sandbox")
     );
     assert_eq!(plan.session_id.as_deref(), Some(CODEX_SESSION));
+    let config = std::str::from_utf8(&file(&plan, "config.toml")?.contents)?;
+    assert!(
+        config.contains("\n[notice]\nhide_rate_limit_model_nudge = true\n"),
+        "{config}"
+    );
     request.mode = LaunchMode::Resume {
         session_id: CODEX_SESSION.into(),
         prompt: Some("ignored".into()),

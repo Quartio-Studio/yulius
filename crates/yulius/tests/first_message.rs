@@ -126,6 +126,53 @@ pub(crate) async fn start_hosted_with_github(
     socket.set_reuseaddr(true)?;
     socket.bind(SocketAddr::from(([127, 0, 0, 1], port)))?;
     let listener = socket.listen(64)?;
+    start_hosted_on_listener(
+        data,
+        fake,
+        agent,
+        (listener, probe, clock),
+        host,
+        browser,
+        configure,
+    )
+    .await
+}
+
+/// Starts the fixture on a listener the test can keep bound across a server restart.
+pub(crate) async fn start_on_listener(
+    data: &Path,
+    fake: &Path,
+    agent: FakeAgentOptions,
+    listener: tokio::net::TcpListener,
+    probe: Arc<ScriptedUsage>,
+    clock: Arc<dyn yulius_app::ports::Clock>,
+) -> Result<Arc<App>, BoxError> {
+    let (app, _, _) = start_hosted_on_listener(
+        data,
+        fake,
+        agent,
+        (listener, probe, clock),
+        None,
+        None,
+        |_| {},
+    )
+    .await?;
+    Ok(app)
+}
+
+async fn start_hosted_on_listener(
+    data: &Path,
+    fake: &Path,
+    agent: FakeAgentOptions,
+    (listener, probe, clock): (
+        tokio::net::TcpListener,
+        Arc<ScriptedUsage>,
+        Arc<dyn yulius_app::ports::Clock>,
+    ),
+    host: Option<Arc<dyn yulius_app::ports::session::SessionHost>>,
+    browser: Option<Arc<dyn yulius_app::ports::browser::BrowserPort>>,
+    configure: impl FnOnce(&mut AppConfig),
+) -> Result<(Arc<App>, u16, Arc<support::FakeGitHub>), BoxError> {
     let port = listener.local_addr()?.port();
     let url = format!("http://127.0.0.1:{port}");
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
