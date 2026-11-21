@@ -45,7 +45,7 @@ test('a chained task takes messages, and a refused one keeps the text with the r
   await app.open(mock('/s/product/t/7'));
 
   const card = screen.getByRole('region', 'Queued messages');
-  await expect(card).toBeVisible();
+  await firstShown(card);
   // The task started meanwhile (its view has not heard yet): the server refuses.
   await browser.evaluate(() => {
     const task = (window as unknown as MockTasks).__yuliusMock.tasks.find((t) => t.id === 'tsk_product_7');
@@ -63,14 +63,14 @@ test('a chained task takes messages, and a refused one keeps the text with the r
 
 test('a running task has no queued messages card', async ({ app, screen }) => {
   await app.open(mock('/s/studio/t/12'));
-  await expect(screen.getByRole('heading', { level: 1 })).toHaveText(/#12/);
+  await firstShown(screen.getByRole('heading', { level: 1 }), /#12/);
   await expect(screen.getByRole('region', 'Queued messages')).toBeHidden();
 });
 
 test('once the task has started, a pause for capacity brings no card back', async ({ app, browser, screen }) => {
   await app.open(mock('/s/product/t/7'));
   const card = screen.getByRole('region', 'Queued messages');
-  await expect(card).toBeVisible();
+  await firstShown(card);
 
   // It starts — while `starting` the server has no run recorded yet, so the detail read then
   // still says it has not started — then a turn boundary pauses it for capacity, session alive.
@@ -256,7 +256,7 @@ test('a task cancelled while text sits in the queue box takes the card away (#32
 test('a card kept after a start is a plain queue box again when the task waits before running (#324)', async ({ app, browser, screen }) => {
   await app.open(mock('/s/product/t/7'));
   const card = screen.getByRole('region', 'Queued messages');
-  await expect(card).toBeVisible();
+  await firstShown(card);
   await browser.evaluate(() => {
     const task = (window as unknown as MockTasks).__yuliusMock.tasks.find((t) => t.id === 'tsk_product_7');
     if (task) task.started = true;
@@ -282,7 +282,7 @@ test('a card kept after a start is a plain queue box again when the task waits b
 
 test('an older answer applied after a failed newer read keeps the newer status (#316)', async ({ app, browser, screen }) => {
   await app.open(mock('/s/product/t/7'));
-  await expect(screen.getByRole('region', 'Queued messages')).toBeVisible();
+  await firstShown(screen.getByRole('region', 'Queued messages'));
   const reads = () => browser.evaluate(() => (window as unknown as Touching).__yuliusMock.detailReads?.tsk_product_7 ?? 0);
   await browser.evaluate(() => {
     const w = window as unknown as Touching;

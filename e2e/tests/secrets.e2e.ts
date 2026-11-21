@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, firstShown, mock } from './support.ts';
 
 failOnPageErrors();
 
@@ -51,8 +51,8 @@ async function setUpTwoFactor(screen: any, browser: any) {
 // two-factor code.
 test('team secrets are a title, a value and notes, shown after a two-factor code', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/secrets?section=team'));
+  await firstShown(screen.getByText('Shared Gmail'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Secrets');
-  await expect(screen.getByText('Shared Gmail')).toBeVisible();
   expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), TEAM_VALUE)).toBe(false);
   expect(await axeViolations(browser)).toEqual([]);
 
@@ -250,7 +250,7 @@ test('a pasted multi-line key keeps its line breaks as \\n, and a flattened one 
 test('a person allows the hosts an agent asked for', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/secrets?section=agents'));
   const card = browser.locator('.item-card:has-text("VIDOC_API_KEY")');
-  await expect(card.getByText('Task #107 asks to send it to')).toBeVisible();
+  await firstShown(card.getByText('Task #107 asks to send it to'));
   await expect(card.getByText('api.vidoc.test')).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
   // SPEC-483 V5 (ADR-0317): the secret is allowed use by use, so sending it to a new host needs
@@ -285,7 +285,7 @@ test('a person allows the hosts an agent asked for', async ({ app, browser, scre
 // the card's edge: a chip wraps inside the card instead, showing the whole host.
 test('a long bound or requested host wraps inside its card', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/secrets?section=agents'));
-  await expect(screen.getByText('STRIPE_KEY')).toBeVisible();
+  await firstShown(screen.getByText('STRIPE_KEY'));
   const long = 'a-long-subdomain-of-the-runtime.bedrock-runtime.us-east-1.amazonaws.com';
   await browser.evaluate((host: string) => {
     const mocked = (window as any).__yuliusMock;
@@ -332,7 +332,7 @@ const LIST = '/api/sandboxes/sb_studio/agent-secrets';
 test('an agent’s host request shows its Allow on the open page at once', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/secrets?section=agents'));
   const card = browser.locator('.item-card:has-text("OLD_DEPLOY_KEY")');
-  await expect(card.getByText(/Not sent anywhere yet/)).toBeVisible();
+  await firstShown(card.getByText(/Not sent anywhere yet/));
   await browser.evaluate(() => { (window as unknown as Asking).pageKept = true; });
 
   const reads = () => browser.evaluate((path: string) => (window as unknown as Asking).__yuliusMock.asked[path] || 0, LIST);
@@ -421,7 +421,7 @@ test('a live update waits for an answer on its way', async ({ app, browser, scre
 test('a request made while the stream was down shows once it reconnects', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/secrets?section=agents'));
   const card = browser.locator('.item-card:has-text("OLD_DEPLOY_KEY")');
-  await expect(card.getByText(/Not sent anywhere yet/)).toBeVisible();
+  await firstShown(card.getByText(/Not sent anywhere yet/));
   await browser.evaluate(() => {
     const mocked = (window as unknown as Asking).__yuliusMock;
     mocked.goOffline();
@@ -436,7 +436,7 @@ test('a request made while the stream was down shows once it reconnects', async 
 test('a person allows an agent to copy a secret into .env, then revokes it', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/secrets?section=agents'));
   const card = browser.locator('.item-card:has-text("STRIPE_KEY")');
-  await expect(card.getByText(/Task #111 asks to copy its value into the project’s git-ignored \.env/)).toBeVisible();
+  await firstShown(card.getByText(/Task #111 asks to copy its value into the project’s git-ignored \.env/));
   expect(await axeViolations(browser)).toEqual([]);
   // Agents read what a `.env` file holds: the allowance needs the two-factor code (ADR-0317).
   await screen.getByRole('button', 'Allow copying STRIPE_KEY into .env files').click();
@@ -456,7 +456,7 @@ test('a person allows an agent to copy a secret into .env, then revokes it', asy
 test('a person allows a secret for production deploys, then revokes it', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/secrets?section=agents'));
   const card = browser.locator('.item-card:has-text("VIDOC_API_KEY")');
-  await expect(card.getByText(/Production deploys \(CD\) do not get it/)).toBeVisible();
+  await firstShown(card.getByText(/Production deploys \(CD\) do not get it/));
   // Production deploys run the repository's command with the value: the code first (ADR-0317).
   await screen.getByRole('button', 'Let production deploys (CD) get VIDOC_API_KEY').click();
   await expect(screen.getByRole('dialog', 'Set up two-factor')).toBeVisible();
@@ -474,7 +474,7 @@ test('a secret agents use offers no production allowance, and a production secre
   await app.open(mock('/s/studio/secrets?section=agents', '&vault=unlocked'));
   // STRIPE_KEY is sent to api.stripe.com: no button, no warning, and what to do instead.
   const stripe = browser.locator('.item-card:has-text("STRIPE_KEY")');
-  await expect(stripe.getByText(/Production deploys never get a secret agents use/)).toBeVisible();
+  await firstShown(stripe.getByText(/Production deploys never get a secret agents use/));
   await expect(stripe.getByText(/remove its hosts and \.env copies, or add a separate secret/)).toBeVisible();
   await expect(stripe.getByText(/^Not for production$/)).toBeVisible();
   await expect(screen.getByRole('button', 'Let production deploys (CD) get STRIPE_KEY')).toBeHidden();
@@ -508,7 +508,7 @@ test('a secret agents use offers no production allowance, and a production secre
 test('a member sees why a production secret’s requests wait, without a Dismiss to press', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/secrets?section=global', '&role=member'));
   const prod = browser.locator('.item-card:has-text("PROD_API_TOKEN")');
-  await expect(prod.getByText(/production secret: agents never get it/)).toBeVisible();
+  await firstShown(prod.getByText(/production secret: agents never get it/));
   await expect(prod.getByText(/Dismiss the request/)).toBeHidden();
   await expect(screen.getByRole('button', 'Dismiss copying PROD_API_TOKEN into .env files')).toBeHidden();
 });
@@ -647,7 +647,7 @@ test('a shown value stays masked until the eye is pressed, and its box always of
 // worked; long notes wrap inside their box and scroll past 240 px, also at 390 px.
 test('a failed copy shows no check, and long notes wrap and scroll in their box', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/secrets?section=team'));
-  await expect(screen.getByText('Shared Gmail')).toBeVisible();
+  await firstShown(screen.getByText('Shared Gmail'));
   const notes = `${'x'.repeat(400)}\n${Array.from({ length: 30 }, (_, i) => `Recovery code ${i + 1}`).join('\n')}`;
   await browser.evaluate((text: string) => {
     (window as any).__yuliusMock.vault.team[0].notes = text;
@@ -700,7 +700,7 @@ test('a failed copy shows no check, and long notes wrap and scroll in their box'
 // `browserask=0`: exactly the four toasts of this test (no sign-in request 5 s after the start).
 test('toasts in a dialog keep off its Close, also after the window narrows', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/secrets?section=team', '&browserask=0'));
-  await expect(screen.getByText('Shared Gmail')).toBeVisible();
+  await firstShown(screen.getByText('Shared Gmail'));
   // Long notes make the dialog tall, so its Close sits where a fourth toast ends at 390 px.
   const notes = Array.from({ length: 30 }, (_, i) => `Recovery code ${i + 1}`).join('\n');
   await browser.evaluate((text: string) => {
@@ -942,7 +942,7 @@ test('a new agent secret lets agents set it up unless turned off, and secrets be
   // Another sandbox has the team-wide one, not this sandbox's; someone who only reads it adds
   // none of its own.
   await app.open(mock('/s/sandbox-3/secrets?section=team'));
-  await expect(screen.getByText('Shared Gmail')).toBeVisible();
+  await firstShown(screen.getByText('Shared Gmail'));
   await expect(screen.getByText('Studio deploy box')).toBeHidden();
   await expect(screen.getByRole('button', 'Add team secret')).toBeDisabled();
 });
@@ -957,7 +957,7 @@ test('each section adds from the page header and its parts keep their spacing', 
     return parts.slice(1).map((r, i) => Math.round(r.top - parts[i].bottom));
   });
   await app.open(mock('/s/studio/secrets?section=agents'));
-  await expect(screen.getByText('STRIPE_KEY')).toBeVisible();
+  await firstShown(screen.getByText('STRIPE_KEY'));
   expect(await headerButton()).toEqual(['Add agent secret']);
   for (const gap of await gaps()) expect(gap).toBeGreaterThanOrEqual(8);
 
@@ -997,7 +997,7 @@ test('a click outside a dialog closes it; a click or a selection inside does not
 // confirmation and their own two-factor code, and the reset is in the vault's activity.
 test('an administrator resets a lost two-factor from the Users page after their own code', async ({ app, browser, screen }) => {
   await app.open(mock('/admin/users', '&role=admin'));
-  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Users');
+  await firstShown(screen.getByRole('heading', { level: 1 }), 'Users');
   // Instance administrators read the people; admitting and changing them is the superadmin's.
   await expect(screen.getByRole('button', 'Admit user')).toBeHidden();
   await expect(screen.getByRole('checkbox', 'Access for anna-q')).toBeHidden();
@@ -1028,7 +1028,7 @@ test('an administrator resets a lost two-factor from the Users page after their 
 // switched on per project by an administrator; personal ones are the person's alone.
 test('the Project, Global and Personal tabs hold each scope, with a switch for this project', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/secrets'));
-  await expect(screen.getByText('keys and logins agents use without seeing them', { exact: false })).toBeVisible();
+  await firstShown(screen.getByText('keys and logins agents use without seeing them', { exact: false }));
   await expect(screen.getByRole('radio', 'Project')).toHaveAttribute('aria-checked', 'true');
   await expect(screen.getByText('STRIPE_KEY')).toBeVisible();
   await expect(screen.getByText('PROD_API_TOKEN')).toBeHidden();
@@ -1126,7 +1126,7 @@ test('project variables are shown in plain and changed on the Variables tab', as
 test('members who only read a sandbox see its variables but cannot change them', async ({ app, browser, screen }) => {
   await app.open(mock('/s/sandbox-3/secrets?section=variables'));
   const card = browser.locator('.item-card:has-text("APP_REGION")');
-  await expect(card.getByText('eu-west-1')).toBeVisible();
+  await firstShown(card.getByText('eu-west-1'));
   await expect(screen.getByRole('button', 'Add variable').first()).toBeDisabled();
   await expect(screen.getByRole('button', 'Edit APP_REGION')).toBeDisabled();
   await expect(screen.getByRole('button', 'Delete APP_REGION')).toBeDisabled();
@@ -1143,7 +1143,7 @@ const COPY_POST = 'POST /api/sandboxes/sb_studio/agent-secrets/as_prodtoken/copy
 test('a person allows the copy of a production secret an agent asked for', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/secrets?section=global', '&ambient=0'));
   const prod = browser.locator('.item-card:has-text("PROD_API_TOKEN")');
-  await expect(prod.getByText(/production secret: agents never get it/)).toBeVisible();
+  await firstShown(prod.getByText(/production secret: agents never get it/));
   await browser.evaluate(() => (window as unknown as Copying).__yuliusMock.askCopy('PROD_API_TOKEN', 'sb_studio', { name: 'OTHER_COPY', hosts: ['dev.example.test'], requested_by: 'alice’s Superagent', reason: '' }));
   await expect(prod.getByText('alice’s Superagent asks for a copy for agents,')).toBeVisible();
   const first = screen.getByRole('button', 'Copy PROD_API_TOKEN for agents as OTHER_COPY');
@@ -1203,7 +1203,7 @@ test('a person allows the copy of a production secret an agent asked for', async
 test('a member sees an agent’s copy request without Allow copy or Dismiss', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/secrets?section=global', '&role=member&ambient=0'));
   const prod = browser.locator('.item-card:has-text("PROD_API_TOKEN")');
-  await expect(prod.getByText(/production secret: agents never get it/)).toBeVisible();
+  await firstShown(prod.getByText(/production secret: agents never get it/));
   await browser.evaluate(() => (window as unknown as Copying).__yuliusMock.askCopy('PROD_API_TOKEN', 'sb_studio', { name: 'PROD_API_TOKEN_AGENT', hosts: ['dev.example.test'], requested_by: '#18', reason: '' }));
   await expect(prod.getByText('Task #18 asks for a copy for agents,')).toBeVisible();
   await expect(prod.getByText(/A person who manages this secret and this project’s secrets answers it/)).toBeVisible();
@@ -1213,7 +1213,7 @@ test('a member sees an agent’s copy request without Allow copy or Dismiss', as
 
 test('a manager sees why an old interpreter name needs renaming', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/secrets?section=agents'));
-  await expect(screen.getByRole('button', 'Edit STRIPE_KEY')).toBeVisible();
+  await firstShown(screen.getByRole('button', 'Edit STRIPE_KEY'));
   await browser.evaluate(() => {
     const db = (window as any).__yuliusMock;
     db.vault.agent.find((s: MockSecret) => s.id === 'as_stripe').name = 'PYTHONPATH';
