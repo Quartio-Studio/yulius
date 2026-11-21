@@ -26,7 +26,8 @@ Task #565 shows a held-message warning alongside terminal output. The screenshot
 - [x] Reproduce the empty-box warning and specify the correction
 - [x] Prove the false hold and protect genuine drafts with regression tests
 - [ ] Correct the draft signal and verify queued delivery
-- [ ] Review the fix and deliver it to dev
+- [ ] Protect recalled images and recognize the Ultra prompt
+- [ ] Obtain independent approval for delivery to dev
 
 ## Acceptance criteria
 

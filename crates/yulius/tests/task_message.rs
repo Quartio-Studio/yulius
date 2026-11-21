@@ -1793,6 +1793,7 @@ fn clearing_a_codex_draft_releases_pr_news_and_its_warning() -> TestResult {
             "\x1b[?1049h\x1b[1;1H\x1b[J",
             "\x1b[34;1H\x1b[1m›\x1b[22m \x1b[2mAsk Codex to do anything\x1b[0m",
             "\x1b[36;1H  GPT-6.2-Sol default · project",
+            "\x1b[40;1H  \x1b[1m←\x1b[22m for agents · \x1b[1m?\x1b[22m for shortcuts",
             "\x1b[34;3H\x1b[?25h",
         );
         runtime

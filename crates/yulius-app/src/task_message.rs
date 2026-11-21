@@ -1074,10 +1074,27 @@ mod tests {
             "\x1b[?1049h\x1b[2J",
             "\x1b[18;1H\x1b[1m›\x1b[22m \x1b[2mAsk Codex to do anything\x1b[22m",
             "\x1b[20;1H  GPT-6.2-Sol default · project",
+            "\x1b[40;1H  \x1b[1m←\x1b[22m for agents · \x1b[1m?\x1b[22m for shortcuts",
             "\x1b[18;3H\x1b[?25h",
         );
         for (edit, empty) in [
             ("", true),
+            ("\x1b[18;1H\x1b[1m»\x1b[0m\x1b[18;3H", true),
+            (
+                "\x1b[40;1H\x1b[2K  \x1b[1m?\x1b[0m for shortcuts\x1b[18;3H",
+                true,
+            ),
+            // History can restore a remote image independently of the editable text.
+            ("\x1b[16;3H[Image #1]\x1b[40;1H\x1b[2K\x1b[18;3H", false),
+            // A partial repaint can leave the previous empty footer beneath that label.
+            ("\x1b[16;3H[Image #2]\x1b[18;3H", false),
+            (
+                "\x1b[40;1H\x1b[2K  \x1b[1m←\x1b[0m for agentsXYZ\x1b[18;3H",
+                false,
+            ),
+            // When attachment rows are clipped, the empty-only footer hint is still absent.
+            ("\x1b[40;1H\x1b[2K\x1b[18;3H", false),
+            ("\x1b[40;3H←\x1b[18;3H", false),
             ("\x1b[?25l", false),
             ("\x1b[?1049l", false),
             ("\x1b[18;4H", false),
