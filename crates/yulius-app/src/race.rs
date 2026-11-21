@@ -18,6 +18,8 @@ pub enum Point {
     LiveRowPrNews,
     /// The live watch has read an open PR, before returning its advice. Keyed by task ID.
     LivePrFactsRead,
+    /// The armed watcher completed its local publication lookup before final recipient admission.
+    ArmedNoticePublicationRead,
     /// A free arm has been taken by the queue, before its merge is decided.
     FreeArmTaken,
     /// A review starts reading its Git head. Keyed by worktree path.

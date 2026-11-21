@@ -1168,6 +1168,24 @@ impl App {
         .await
     }
 
+    /// The run the queue uses to decide this PR at its exact head.
+    pub(crate) async fn ordinary_pull_run(
+        &self,
+        sandbox: &SandboxRecord,
+        pr: u64,
+        sha: &str,
+    ) -> AppResult<Option<CiRunRecord>> {
+        if !self.config.ci.enabled {
+            return Ok(None);
+        }
+        let runs = self
+            .deps
+            .store
+            .ci_runs_for_pull_head(&sandbox.id, PullHead::Exact(sha))
+            .await?;
+        Ok(run_for_pull_head(&runs, pr).cloned())
+    }
+
     /// The ordinary CI verdict for an armed PR, including its scheduler-shared run.
     pub(crate) async fn ci_gate_for_pull(
         &self,

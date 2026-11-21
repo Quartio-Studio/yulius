@@ -230,6 +230,17 @@ pub(crate) enum Hold {
     Held,
 }
 
+/// The queue instructions and, for an included member, the run that holds its activation.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct WatchedTrain {
+    pub note: QueueNote,
+    pub candidate: Option<(String, Vec<u64>)>,
+}
+
+/// The saved train and arm do not yet provide a verified queue position.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct UnverifiedTrain;
+
 /// What one step of a passed train did.
 enum Step {
     /// The member merged; go on with the next.
@@ -467,12 +478,16 @@ impl App {
     }
 
     fn read_trains(&self, sandbox: &SandboxId) -> SandboxTrains {
+        self.try_read_trains(sandbox).unwrap_or_default()
+    }
+
+    fn try_read_trains(&self, sandbox: &SandboxId) -> std::io::Result<SandboxTrains> {
         let _guard = TRAINS_FILE_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        read_all(&self.trains_path())
+        Ok(read_all(&self.trains_path())?
             .remove(sandbox.as_str())
-            .unwrap_or_default()
+            .unwrap_or_default())
     }
 
     /// Saves `state` for `sandbox` (written whole, then renamed into place); failures are
@@ -482,7 +497,7 @@ impl App {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let path = self.trains_path();
-        let mut all = read_all(&path);
+        let mut all = read_all(&path).unwrap_or_default();
         if state.is_empty() {
             all.remove(sandbox.as_str());
         } else {
@@ -510,6 +525,54 @@ impl App {
             self.read_trains(&task.sandbox_id).train.as_ref(),
             task.id.as_str(),
         )
+    }
+
+    /// Which run and member list belong to this PR's currently armed activation.
+    /// A reusable CI run can have been admitted for a different set of members.
+    pub(crate) fn watched_train(
+        &self,
+        task: &TaskRecord,
+        pr: u64,
+    ) -> Result<Option<WatchedTrain>, UnverifiedTrain> {
+        if !self.config.ci.enabled {
+            return Ok(None);
+        }
+        let crate::agent_wait::ArmedNow::Armed(arm) = self.armed_now(&task.id) else {
+            return Ok(None);
+        };
+        let Some(train) = self
+            .try_read_trains(&task.sandbox_id)
+            .map_err(|_| UnverifiedTrain)?
+            .train
+        else {
+            return Ok(None);
+        };
+        let Some(note) = note_of(&train, task.id.as_str(), Some((&arm.head, arm.armed_at))) else {
+            return Ok(None);
+        };
+        let candidate =
+            if let Some(member) = train.members.iter().find(|m| m.task == task.id.as_str()) {
+                if member.pr != pr || member.armed_at != arm.armed_at {
+                    return Ok(None);
+                }
+                // The queue saves the pushed arm before checkpointing the verified train head.
+                // During that interval, including after restart, a free-slot check-in is stale.
+                if member.verified_head.as_deref().unwrap_or(&member.head) != arm.head {
+                    return Err(UnverifiedTrain);
+                }
+                Some((train.run, numbers(&train.members)))
+            } else {
+                // Left-out PRs wait behind the train without sharing its failure.
+                if !train
+                    .left_out
+                    .iter()
+                    .any(|left| left.task == task.id.as_str() && left.pr == pr)
+                {
+                    return Ok(None);
+                }
+                None
+            };
+        Ok(Some(WatchedTrain { note, candidate }))
     }
 
     /// Whether `task` is a member of its sandbox's live merge train, merged or not: the train
@@ -2125,12 +2188,13 @@ fn dissolved_why(reason: &str) -> yulius_domain::merge_queue::Dissolved {
     }
 }
 
-/// Every sandbox's trains; none when the file is missing or unreadable.
-fn read_all(path: &Path) -> BTreeMap<String, SandboxTrains> {
-    std::fs::read(path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+/// Read the train registry. A missing file means no sandbox has a train.
+fn read_all(path: &Path) -> std::io::Result<BTreeMap<String, SandboxTrains>> {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(std::io::Error::other),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(test)]
