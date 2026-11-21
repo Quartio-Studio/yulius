@@ -117,6 +117,10 @@ The SQLite query returning a parked task includes the latest attempt ID in the s
 
 ## Evidence
 
+- Before changing the exit and resume paths, run `95aa3f86-7b25-4f96-bd59-b410200f5b88` reproduced three failures on the delivered parked dispatch code. Resume accepted a message during screen publication, accepted another while an exit reader held the old run, and a late reader rewrote the old saved screen with output from the replacement run. Both controls passed. An obsolete message was refused and a held successor PR lookup allowed the owner to resume.
+
+- PR #1621 delivered parked attempt selection at dev `dc08c1a23`. PR run `ed3009cd-2971-4ef9-b3f2-61ecd612bd63` and merge train `e5428c1d-eb75-413e-bb5a-c510dc3e54e7` passed. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/dc08c1a230ec2ca90eeb185a58c69801265877d6)
+
 - PR #1621 CI run `c387d03f-e4bc-47df-b485-9d4bdaf5ed0e` failed the workspace Clippy check on two `expect()` calls in the replacement-turn fixture. The same check reproduced both findings locally and passed after the fixture asserted each store result with its error detail. All five dispatch tests that use the fixture passed in run `5bfa3015-04c0-48ba-b8b7-ab198d8c4fea`.
 
 - Independent review approved `60166b3d725bcfc6687b7818782203b50aa1fc3e` against dev `00ff06cbf`. It traced parked messages to the recorded attempt under the launch lock and checked the separate ended-run, capacity and Move paths introduced on dev. Local run `a27d66ee-a845-4982-be86-e9408c6e3c0b` passed 330 of 331 tests with a previously built fake agent. The closed-conversation test timed out after interrupting a resumed Codex turn. The current fixture writes Codex’s `turn_aborted` record for that interrupt.

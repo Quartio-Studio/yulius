@@ -210,6 +210,8 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # at that head become obsolete. After repair, even an owner that passed can show queued.
 # If a parked task resumes and parks again while your message is being prepared,
 # read the current screen and send the message again. Its current decision stays open.
+# If Yulius says the parked screen is still being saved, send the message again after
+# parking finishes. The task keeps its question open and the timed-out message starts no turn.
 # A bulk message lists the changed task under refused. A Telegram reply or remote restart
 # also reports the change so you can check the latest turn.
 # A partial Git overview keeps a known failing PR under Needs you. A complete lookup
