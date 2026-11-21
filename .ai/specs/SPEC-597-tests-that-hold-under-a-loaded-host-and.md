@@ -21,6 +21,7 @@ SPEC-575 already has a durable staging queue, explicit admission through `cd_dep
 - **LHW-002** Identify the affected quartio-v2 test and record the tests, evidence and recommended changes here for the quartio-v2 operator.
 - **LHW-003** The merge receipt guides the agent to submit the staging request when the whole delivery has landed, including with its last step in progress. Intermediate merges continue the plan.
 - **LHW-004** An outstanding staging request identifies the exact revision and whether it waits for the full gate or deployment. A stopped turn waiting for that result reads as working. The existing durable outcome wakes the task on success or failure. Explicit human holds, pauses and ended tasks keep their precedence.
+- **LHW-005** The real-server restart fixture keeps its assigned internal port across both processes and observes readiness from the process it started.
 
 ## Plan
 
@@ -33,12 +34,16 @@ SPEC-575 already has a durable staging queue, explicit admission through `cd_dep
 - [x] Preserve a retried deployment’s outcome when delivery overlaps a previous failure
 - [x] Prove the staging failure and recovery paths and approve their delivery after the CI test merge
 - [x] Package the reviewed staging change with its verification evidence
+- [x] Reproduce the false-ready opaque restart fixture from the merged gate
+- [x] Keep the fixture’s internal port through both server generations and check its own readiness
+- [x] Deliver the verified restart-fixture correction on green CI
 
 ## Acceptance criteria
 
 - **AC-1** A delayed healthy browser and a progressing multi-head fixture reach the original assertions. A missing condition still reports failure within its bound.
 - **AC-2** The quartio-v2 report identifies the observed failure and a way to distinguish a late event from a wrong result.
 - **AC-3** On a final merge the agent receives the next action. Its open step and pending request show a machine wait. An answered request goes back to the agent with the outcome. A genuine request for help still surfaces.
+- **AC-4** A competing listener serving the expected health response cannot pass fixture startup. Both real generations use the same internal port and the original connections deliver the final bytes and FIN in both directions.
 
 ## Test plan
 
@@ -47,6 +52,8 @@ Trace the retained run output to each relevant fixture. Use controlled delays or
 ## Decisions
 
 Deliver the load-sensitive test fixes in the first PR and the staging behavior in subsequent PRs. Keep the request mechanism and staging outcome notifier from SPEC-575. A task can have further slices after a merge, so the agent still decides when the whole delivery has landed. Use durable request state to explain an actual machine wait. For this delivery the owner asks for one staging request after the final merge. The request receipt belongs in the closing summary.
+
+The Linux restart fixture retains a non-listening socket while both child processes take turns listening on the same port. A child must emit its own post-bind message and answer the existing health probe. This also detects a deliberately competing reusable listener. The production listener and tunnel protocol need no change.
 
 ## Quartio-v2 operator handoff
 
@@ -117,3 +124,13 @@ After restoration, both retry regressions passed. Scoped CI-profile nextest pass
 The held-terminal-writer regression failed on the previous notifier. A real resize kept the writer while a decision opened, and the notifier sent one obsolete failure after release. Staging now uses the same immediate, attempt-bound paste as PR notices and rechecks the recipient, human holds and exact outcome before it writes.
 
 Independent review approved `25cf793df`. Scoped `scripts/cargo nextest run --profile ci` passed 93 tests covering staging, the store, merge receipts, goal Stop and live notices. Both held-browser and held-writer fixtures passed again after their test synchronization was simplified. The task list and detail cases passed in the full Chromium run above. Vidoc was disabled.
+
+### Follow-up after the merged gate
+
+Dev run `7df09ccf-8386-45d5-997e-b2e308cc891b` at `af6beca37` failed one of 2,944 tests in shard 1. `opaque_restart::final_bytes_and_fin_during_restart_reach_the_half_closed_peer` received HTTP 404 during CONNECT setup after 0.427 seconds. Shard 2 passed and e2e was cancelled. Staging request `0022a68f-3daf-4e3a-99df-d3cf6436371d` therefore left staging unchanged. The failing CI log identifies the HTTP status but does not identify which process supplied it. In a controlled reproduction the old fixture accepted a competing server’s healthy response and its subsequent CONNECT returned the same HTTP 404. A separate ordinary bind claimed the fixture port before the child listened. Both tests failed on the previous fixture in 0.036 seconds total.
+
+Releasing the bound socket and removing the child-specific bind check made both regressions fail in 0.035 seconds during the manual check. The competing server again returned HTTP 404. Both lines were restored.
+
+CI-profile nextest ran the eight default `opaque_restart::` cases with zero retries. All passed, including the original half-close case in 0.761 seconds. The five opt-in holder cases and strict startup also passed in a disposable Linux container with synthetic subordinate IDs and the installed namespace helpers. The minimal container initially lacked a system CA for the HTTP client. Supplying a public root certificate let the fixtures exercise the actual server.
+
+Scoped Clippy with warnings denied, the repository contracts, the format check and `spec_check` passed. The delivery profile records the green head and staging request against the landed revision.
