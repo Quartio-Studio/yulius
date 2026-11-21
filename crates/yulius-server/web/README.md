@@ -307,6 +307,8 @@ requests of that path wait until `__yuliusMock.release()`, to see a view while i
 the browser panel's picture) or `failpost=<path>`
 (POST requests of that path answer 500, to see an action say it failed).
 
+Add `&codex=1` to the mock URL for a usable Codex subscription when starting tasks with the browser default.
+
 The mock mirrors the real response shapes (it is the UI's offline test bed and
 documentation; the [end-to-end tests](../../../e2e/README.md) run against it). It has sandboxes with admin, write and read access (`studio` with the Studio
 preset, `product` with a custom profile whose `dev-vm` environment has a command, read-only

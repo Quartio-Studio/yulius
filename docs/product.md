@@ -47,6 +47,8 @@ agent it names (`F 2026-11-19 Random harness`,
 superseding the no-draw part of [SPEC-514](../.ai/specs/SPEC-514-make-sure-harnesses-doesnt-change-themse.md)
 / [ADR-0368](decisions/0368-a-tasks-agent-is-set-never-drawn.md)).
 
+The composer and Settings start on Codex default in a browser without a saved model. A saved Random choice or specific model takes precedence. [SPEC-587](../.ai/specs/SPEC-587-codex-should-be-default-for-example-bart.md)
+
 The composer and Settings offer individual Codex and Gemini models grouped by provider. Each model
 shows its supported effort levels. Choosing a model that cannot use the saved effort restores the
 High default. [SPEC-521](../.ai/specs/SPEC-521-i-should-be-able-to-selected-every-model.md)

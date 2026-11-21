@@ -91,7 +91,9 @@ its runs' rollouts. In the web UI, Subscriptions' Add dialog chooses the agent f
 or Codex) and then its way in, a Codex card imports a new `auth.json`, the composer's model menu
 groups explicit model IDs by provider. Each Codex or Gemini choice sends its harness and model,
 and the Codex default choice sends its harness alone. Settings and the composer share the model's
-supported effort levels and browser preferences. An automation chooses the agent of the tasks it
+supported effort levels and browser preferences. A missing or unusable model preference selects
+Codex default, while a saved JSON null selects Random. [Decision 0426](decisions/0426-the-new-task-composer-defaults-to-codex.md)
+An automation chooses the agent of the tasks it
 creates. See [ADR-0372](decisions/0372-model-pickers-use-provider-reasoning-levels.md).
 
 Rotation picks only accounts of the task's provider, so a Codex task moves only between Codex

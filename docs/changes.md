@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- New tasks in the browser default to Codex. Settings and the composer remember explicit model choices, including Random. [SPEC-587](../.ai/specs/SPEC-587-codex-should-be-default-for-example-bart.md)
+
 - CLI and Superagent task creation now defaults to GPT-6.2 Astra at extra high effort, with Ultrafast on ChatGPT Pro 500. [SPEC-583](../.ai/specs/SPEC-583-cli-nad-superagents-should-spawn-tasks-i.md)
 
 - Clearing the Codex prompt lets waiting PR news through after one quiet minute and clears the held-message warning. [SPEC-581](../.ai/specs/SPEC-581-i-keep-getting-this-even-is-nothing-is-t.md)
