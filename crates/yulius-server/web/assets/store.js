@@ -140,8 +140,9 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
 
   async function loadTasks(sandboxId, watching = false) {
     const atStart = state.tasks.get(sandboxId);
-    const read = { sandboxId, changes: new Map(), parked: new Set(), deleted: new Set() };
     const order = ++nextListRead;
+    const read = { sandboxId, order, changes: new Map(), parked: new Set(), deleted: new Set(), unavailable: false };
+    let confirming = false;
     const path = `/api/sandboxes/${enc(sandboxId)}/tasks?archived=false`;
     activeLists.add(read);
     try {
@@ -153,8 +154,14 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       if ([...read.changes].some(([id, task]) => read.parked.has(id) && (!watching || task.archived || task.status !== 'parked'))) {
         const before = read.changes;
         read.changes = new Map();
+        const unavailable = read.unavailable;
+        read.unavailable = false;
+        confirming = true;
         try { list = await api.get(path); }
-        catch { read.changes = new Map([...before, ...read.changes]); }
+        catch {
+          read.changes = new Map([...before, ...read.changes]);
+          read.unavailable ||= unavailable;
+        }
       }
       const current = state.tasks.get(sandboxId);
       if (listOrder.get(current) > order) return current;
@@ -162,10 +169,10 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       for (const task of Array.isArray(list) ? list : []) {
         if (task.archived) continue;
         unverified.delete(task);
-        map.set(task.id, task);
+        map.set(task.id, read.unavailable && task.status === 'parked' ? awaitingVerification(task) : task);
       }
       for (const [id, task] of read.changes) {
-        if (!watching && !read.parked.has(id) && map.get(id)?.status !== 'parked') continue;
+        if (!watching && !confirming && !read.parked.has(id) && map.get(id)?.status !== 'parked') continue;
         if (task.archived) map.delete(id);
         else map.set(id, task);
       }
@@ -187,7 +194,24 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     } catch (error) {
       const current = state.tasks.get(sandboxId);
       if (listOrder.get(current) > order) return current;
-      if (!watching && current === atStart) {
+      if (watching) {
+        for (const older of activeLists) {
+          if (older.sandboxId === sandboxId && older.order < order) older.unavailable = true;
+        }
+        let changed = false;
+        for (const [id, task] of current || []) {
+          if (task.status !== 'parked' || read.changes.has(id)) continue;
+          const updated = awaitingVerification(task);
+          if (updated !== task) {
+            current.set(id, updated);
+            emit('task', updated);
+            changed = true;
+          }
+        }
+        if (changed) { emit('tasks', sandboxId); scheduleCountsRefresh(); }
+        return current;
+      }
+      if (current === atStart) {
         state.taskErrors.set(sandboxId, error);
         emit('tasks', sandboxId);
       }
@@ -384,27 +408,15 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   // overview. An SSE update or list replacement during this read takes precedence.
   async function refreshParkedGroups(sandboxId) {
     const tasks = state.tasks.get(sandboxId);
-    if (!tasks) return;
-    const parked = [...tasks.values()].filter(task => task.status === 'parked');
-    if (!parked.length) return;
-    try {
-      await loadTasks(sandboxId, true);
-    } catch {
-      if (state.tasks.get(sandboxId) !== tasks) return;
-      let changed = false;
-      for (const prior of parked) {
-        if (tasks.get(prior.id) !== prior) continue;
-        const openPr = knownOpenPr(prior, sandboxId, prior.id);
-        unverified.add(prior);
-        if (!openPr || (prior.parked_needs_you && prior.parked_pr?.number === openPr.number)) continue;
-        const updated = { ...prior, parked_needs_you: true, parked_pr: openPr };
-        tasks.set(prior.id, updated);
-        unverified.add(updated);
-        emit('task', updated);
-        changed = true;
-      }
-      if (changed) { emit('tasks', sandboxId); scheduleCountsRefresh(); }
-    }
+    if (tasks && [...tasks.values()].some(task => task.status === 'parked')) await loadTasks(sandboxId, true);
+  }
+
+  function awaitingVerification(task) {
+    const pr = knownOpenPr(task, task.sandbox_id, task.id);
+    const alreadyWaiting = task.parked_needs_you && task.parked_pr?.number === pr?.number;
+    const updated = pr && !alreadyWaiting ? { ...task, parked_needs_you: true, parked_pr: pr } : task;
+    unverified.add(updated);
+    return updated;
   }
 
   async function loadGitOverview(sandboxId) {

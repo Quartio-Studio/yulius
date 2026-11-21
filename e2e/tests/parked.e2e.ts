@@ -1097,3 +1097,93 @@ test('a cold parked snapshot cannot undo a resume and a parked watch preserves a
   });
   expect(seen).toEqual(['running', 'After']);
 });
+
+test('a newer failed watch keeps an open PR unverified after an older list succeeds', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  for (const failureFirst of [false, true]) {
+    const result = await browser.evaluate(async (failureFirst) => {
+      const url = '/assets/store.js';
+      const { createStore } = await import(url);
+      const parked = { sandbox_id: 's', id: 'p', status: 'parked', parked_needs_you: false, parked_pr: { number: 42, open: true } };
+      let release!: () => void, fail!: (error: Error) => void;
+      const older = new Promise<void>(resolve => { release = resolve; });
+      const newer = new Promise<void>((_, reject) => { fail = reject; });
+      let reads = 0;
+      const store = createStore({ get: async (path: string) => {
+        if (path.endsWith('/git')) return { tasks: [] };
+        if (++reads === 2) await older;
+        else if (reads === 3) await newer;
+        return [{ ...parked }];
+      } });
+      await store.loadTasks('s');
+      const explicit = store.loadTasks('s');
+      const stop = store.watchPulls('s');
+      if (!failureFirst) { release(); await explicit; }
+      fail(new Error('verification unavailable'));
+      await new Promise<void>(resolve => {
+        const channel = new MessageChannel();
+        channel.port1.onmessage = () => { channel.port1.close(); channel.port2.close(); resolve(); };
+        channel.port2.postMessage(null);
+      });
+      if (failureFirst) { release(); await explicit; }
+      stop();
+      return store.findTask('p').parked_needs_you;
+    }, failureFirst);
+    expect(result).toBe(true);
+  }
+});
+
+test('a task-list confirmation keeps a live sibling update received during its second read', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const result = await browser.evaluate(async () => {
+    const url = '/assets/store.js';
+    const { createStore } = await import(url);
+    let parked = { sandbox_id: 's', id: 'p', status: 'parked' };
+    const live = { sandbox_id: 's', id: 'r', status: 'running', title: 'Before' };
+    let first!: () => void, second!: () => void, started!: () => void;
+    const initial = new Promise<void>(resolve => { first = resolve; });
+    const confirm = new Promise<void>(resolve => { second = resolve; });
+    const confirming = new Promise<void>(resolve => { started = resolve; });
+    let calls = 0;
+    const store = createStore({ get: async () => {
+      const rows = [parked, live];
+      if (++calls === 2) await initial;
+      else if (calls === 3) { started(); await confirm; }
+      return rows;
+    } });
+    await store.loadTasks('s');
+    const read = store.loadTasks('s');
+    parked = { ...parked, status: 'running' };
+    store.upsertTask(parked);
+    first();
+    await confirming;
+    store.upsertTask({ ...live, title: 'After' });
+    second();
+    await read;
+    return [store.findTask('p').status, store.findTask('r').title, calls];
+  });
+  expect(result).toEqual(['running', 'After', 3]);
+});
+
+test('the parked terminal uses its fresh detail when a step reopens in the same second', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&ambient=0'));
+  type Task = { id: string; stepsList: { status: string }[]; parked_needs_you?: boolean };
+  type Fixture = { __yuliusMock: { tasks: Task[]; touchTask(sid: string, number: number, changes: object): void } };
+  await browser.evaluate(() => {
+    const db = (window as unknown as Fixture).__yuliusMock;
+    const task = db.tasks.find(t => t.id === 'tsk_studio_13')!;
+    db.touchTask('sb_studio', 13, {
+      status: 'parked', activity: 'done', stepsList: task.stepsList.map(step => ({ ...step, status: 'done' })),
+      parked_needs_you: false, parked_pr: { number: 520, open: true },
+    });
+  });
+  await expect(screen.getByRole('region', 'Done').getByRole('link', /Improve the code/)).toBeVisible();
+  await browser.evaluate(() => {
+    const task = (window as unknown as Fixture).__yuliusMock.tasks.find(t => t.id === 'tsk_studio_13')!;
+    task.stepsList[task.stepsList.length - 1].status = 'pending';
+    task.parked_needs_you = true;
+    location.hash = '/s/studio/t/13';
+  });
+  await expect(browser.locator('.step-count')).toHaveText('Step 6/7');
+  await expect(browser.locator('.strip-status')).toHaveText(/Your turn.*parked/);
+});

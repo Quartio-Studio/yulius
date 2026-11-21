@@ -68,6 +68,8 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- Independent review of `0f146b8e3` reproduced three races. A newer failed watch and an older successful list now keep the known open PR under Needs you in either reply order. A sibling event received during a parked resume confirmation now survives. A fresh terminal detail reporting six of seven steps now also shows Your turn when the cached Done row has the same timestamp. Each regression failed before its correction. Five focused store cases and six focused page cases passed in Chromium.
+
 - Three Chromium lifecycle regressions passed after running red. They cover a running task newly parked on a green PR, same-second archive/Undo and a cold snapshot overlapping resume. A fourth regression exposed stale fallback state after successful verification of a replacement PR. Both reply orders now pass. The mutation command reported “No Rust code changed … nothing to mutate”. The browser regressions exercised the changed JavaScript directly. Vidoc was disabled.
 
 - PR #1548 landed in dev at `d54e2f190`. Its integration candidate and the delivery commit passed quality, both test shards and browser e2e. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/d54e2f1909c84093bc2fd0cf2bcba80cac425805)
