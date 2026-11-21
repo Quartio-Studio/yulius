@@ -462,7 +462,7 @@ impl App {
                 self.antigravity_work(&ctx.task.id, sent).await?;
                 Ok(HookReply::Output(HookOutput::default()))
             }
-            events::STOP => self.hook_stop(ctx, input, sent).await,
+            events::STOP => self.hook_stop(ctx, input).await,
             events::PRE_TOOL_USE => Ok(HookReply::Output(self.hook_pre_tool_use(ctx, input).await)),
             events::SUBAGENT_START => {
                 self.review_subagent_started(ctx, input, Timestamp(sent))
@@ -956,6 +956,7 @@ impl App {
             store.update_task(&task.id, &update, self.now()).await?;
         }
         runtime.resumed_turn.store(false, Ordering::SeqCst);
+        runtime.background_agents.store(0, Ordering::SeqCst);
         // The retry's prompt (or a person's) starts the turn an armed retry waited for.
         runtime.goal_retry_armed.store(false, Ordering::SeqCst);
         runtime.turn_began_ms.store(self.now().0, Ordering::SeqCst);
@@ -1015,7 +1016,6 @@ impl App {
         self: &Arc<Self>,
         ctx: &AgentContext,
         input: &HookInput,
-        sent: i64,
     ) -> AppResult<HookReply> {
         let store = &self.deps.store;
         let mut task = &ctx.task;
@@ -1023,7 +1023,23 @@ impl App {
         // so no gate, nudge or goal holds it (SPEC-505 AGY-006).
         let antigravity = ctx.attempt.harness == Harness::Antigravity;
         let failed = antigravity && input.error.is_some();
-        let background = antigravity && !failed && input.fully_idle == Some(false);
+        let reported_background = antigravity && !failed && input.fully_idle == Some(false);
+        // Antigravity sets `fullyIdle: false` for *any* live background task, including `yulius
+        // wait`. Distinguish wait-only parking (idle for the merge queue and shown as waiting on
+        // Yulius) from real background work such as builds or subagents (SPEC-580 AWM-001).
+        let (background, agy_probe_waits) = if reported_background {
+            let active_waits = self.active_waits_of(&task.id);
+            match self.background_probe_now(&task.id).await {
+                Some(found) => {
+                    let waits = found.waits.max(active_waits);
+                    let wait_only = found.shells == 0 && waits > 0;
+                    (!wait_only, waits)
+                }
+                None => (active_waits == 0, active_waits),
+            }
+        } else {
+            (false, 0)
+        };
         // A turn held for capacity stays held while its pause lasts (also across a restart).
         let refreshed;
         let mut preceding_turn = false;
@@ -1253,7 +1269,7 @@ impl App {
 
         // A clean turn end on the same subscription may carry one gentle step nudge (STP-008).
         // It is not a gate block: it is given once and never escalates to "needs attention".
-        if reasons.is_empty() && stays && !failed && !background {
+        if reasons.is_empty() && stays && !failed && !reported_background {
             match self.take_turn_end_nudge(task).await {
                 Ok(Some(text)) => return Ok(HookReply::Output(HookOutput::block(text))),
                 Ok(None) => {}
@@ -1268,13 +1284,34 @@ impl App {
                 };
                 store.update_task(&task.id, &update, self.now()).await?;
             }
+            // Every clean Antigravity Stop ends the model turn (`Activity::Waiting`): non-wait
+            // background work stays tracked in `background_agents`/`background_shells` (preserving
+            // SPEC-528 without leaving `activity = Working`), while wait-only stops clear
+            // `background_shells` and record `background_waits` so the merge queue proceeds
+            // immediately (SPEC-580 AWM-001, AWM-002).
+            if antigravity {
+                let runtime = self.runtime(&task.id);
+                let now_ms = self.now().0;
+                if background {
+                    runtime.background_agents.store(1, Ordering::SeqCst);
+                    if runtime.background_shells.load(Ordering::SeqCst) <= 0 {
+                        runtime.background_shells.store(1, Ordering::SeqCst);
+                        runtime.shells_since_ms.store(now_ms, Ordering::SeqCst);
+                    }
+                } else {
+                    runtime.background_agents.store(0, Ordering::SeqCst);
+                    runtime.background_shells.store(0, Ordering::SeqCst);
+                    runtime.shells_since_ms.store(0, Ordering::SeqCst);
+                    if reported_background && agy_probe_waits > 0 {
+                        runtime
+                            .background_waits
+                            .store(i64::from(agy_probe_waits), Ordering::SeqCst);
+                    }
+                }
+            }
             // Done when the goal is achieved, waiting otherwise (TSK-014), once the goal verdict
             // came while a goal is open (SPEC-079 BGW-005).
-            if background {
-                self.antigravity_work(&task.id, sent).await?;
-            } else {
-                self.clean_stop(task).await?;
-            }
+            self.clean_stop(task).await?;
             return Ok(HookReply::Output(HookOutput::default()));
         }
 
