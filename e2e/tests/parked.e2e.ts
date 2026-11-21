@@ -1386,3 +1386,49 @@ test('an open replacement discovered after a failed watch updates an already wai
   });
   expect(result).toEqual([7, true, 8, 2]);
 });
+
+test('a parked rename preserves a verified Needs you without a PR until a healthy list arrives', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const url = '/assets/store.js', statusUrl = '/assets/status.js';
+    const { createStore } = await import(url);
+    const { taskInfo } = await import(statusUrl);
+    const results = [];
+    for (const cold of [true, false]) {
+      let release!: () => void;
+      const held = new Promise<void>(resolve => { release = resolve; });
+      let calls = 0;
+      const raw = { sandbox_id: 's', id: 'p', status: 'parked', activity: 'done', title: 'Renamed' };
+      const store = createStore({ get: async (path: string) => {
+        if (path.endsWith('/git')) return { tasks: [] };
+        if (++calls === 1) {
+          if (cold) await held;
+          return [{ ...raw, title: 'Before', parked_needs_you: true }];
+        }
+        if (calls === 2) throw new Error('verifier unavailable');
+        return [{ ...raw, parked_needs_you: false }];
+      } });
+      const first = store.loadTasks('s');
+      if (!cold) await first;
+      store.upsertTask(raw);
+      release();
+      await first;
+      let stop;
+      if (!cold) {
+        stop = store.watchPulls('s');
+        await new Promise<void>(resolve => {
+          const channel = new MessageChannel();
+          channel.port1.onmessage = () => { channel.port1.close(); channel.port2.close(); resolve(); };
+          channel.port2.postMessage(null);
+        });
+      }
+      const pending = store.findTask('p');
+      await store.loadTasks('s');
+      results.push([pending.title, taskInfo(pending).group, taskInfo(store.findTask('p')).group]);
+      stop?.();
+      store.stopEvents();
+    }
+    return results;
+  });
+  expect(seen).toEqual([['Renamed', 'needs', 'done'], ['Renamed', 'needs', 'done']]);
+});

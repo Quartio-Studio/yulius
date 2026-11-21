@@ -70,6 +70,8 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- Review of `d3971166f` reproduced an unverified rename discarding Needs you when the prior verifier timed out before finding the PR. Cold and cached rows both showed Done incorrectly. The browser now preserves the title and Needs you across the failed read, then returns to Done on verified recovery. Six focused Chromium cases passed. The wider parked, onboarding and Git scope passed 72 cases on the initial integration. The mutation command found no changed Rust code. Vidoc was disabled.
+
 - PR #1549 landed at `3290ef9ef` after run `852b8619-2b99-4c5c-860a-f333640bba9c` passed quality, both test shards and browser e2e. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/3290ef9efde99bb4eaff888ac511e820bcd12df7)
 - Chromium on that base reproduced four failures with held reads covering an idle sidebar, a lifecycle change during a list read, failed verification after an older list succeeded and a cold-navigation hint. A mounted regression also kept the failing Git chip visible across a newer verified recovery for PR #520 and kept Needs you when the verification named #521. A held Git reply uncovered a stale replacement identity, retaining #7 instead of #8. After correction all eight focused cases passed. The browser watch and bounded confirmation rules are recorded in [ADR-0417](../../docs/decisions/0417-refresh-parked-task-status-alongside-the-git-overview.md).
 

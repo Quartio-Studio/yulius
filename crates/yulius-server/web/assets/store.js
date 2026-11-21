@@ -244,11 +244,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     const pending = [...activeLists].filter(read => read.sandboxId === task.sandbox_id);
     if (pending.some(read => read.deleted.has(task.id))) return;
     const recheck = task.status === 'parked' && !task.archived && typeof task.parked_needs_you !== 'boolean';
-    if (recheck) {
-      const openPr = knownOpenPr(prior, task.sandbox_id, task.id);
-      if (openPr) task = { ...task, parked_pr: openPr, parked_needs_you: true };
-      unverified.add(task);
-    }
+    if (recheck) task = awaitingVerification(task, prior);
     for (const read of pending) {
       if (task.status === 'parked' || prior?.status === 'parked') read.parked.add(task.id);
       read.changes.set(task.id, task);
@@ -439,7 +435,12 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     const prior = task.parked_pr?.open ? task : snapshot ?? task;
     const pr = knownOpenPr(prior, task.sandbox_id, task.id);
     const alreadyWaiting = task.parked_needs_you && task.parked_pr?.open && task.parked_pr.number === pr?.number;
-    const updated = pr && !alreadyWaiting ? { ...task, parked_needs_you: true, parked_pr: pr } : task;
+    let updated = task;
+    if (pr && !alreadyWaiting) updated = { ...task, parked_needs_you: true, parked_pr: pr };
+    else if (snapshot?.parked_needs_you === true && task.parked_needs_you !== true) {
+      // Verification can time out before discovering which PR blocks Done.
+      updated = { ...task, parked_needs_you: true };
+    }
     unverified.add(updated);
     return updated;
   }
