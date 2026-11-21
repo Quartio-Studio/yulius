@@ -7658,3 +7658,415 @@ async fn a_ci_job_binds_the_agent_cli_of_its_join() -> TestResult {
 }
 
 mod planned_install;
+
+async fn github_opening(f: &Fixture, event: &Value, signing_key: &str) -> BoxResult<StatusCode> {
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt as _;
+    let body = serde_json::to_vec(event)?;
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, signing_key.as_bytes());
+    let signature = hex::encode(ring::hmac::sign(&key, &body).as_ref());
+    let req = Request::post("/api/github/webhook")
+        .header("x-github-event", "pull_request")
+        .header("x-hub-signature-256", format!("sha256={signature}"))
+        .body(Body::from(body))?;
+    Ok(f.h.router.clone().oneshot(req).await?.status())
+}
+
+fn opening_event(f: &Fixture) -> BoxResult<Value> {
+    let head = git(&f.work, &["rev-parse", "feat/one"])?;
+    Ok(serde_json::json!({
+        "action":"opened","installation":{"id":7},"number":1,
+        "repository":{"id":1,"full_name":"acme/app"},
+        "pull_request":{"state":"open","created_at":yulius_app::auth::rfc3339(f.h.app.now()),
+            "head":{"ref":"feat/one","sha":head,"repo":{"id":1}},
+            "base":{"ref":"dev","repo":{"id":1}}}
+    }))
+}
+
+#[tokio::test]
+async fn signed_outside_opening_queues_once_before_the_poll() -> TestResult {
+    use yulius_app::ports::store::InstanceStore as _;
+    let f = fixture().await?;
+    let key = "synthetic webhook test key";
+    let app = serde_json::json!({"app_id":1,"slug":"test","client_id":"c","client_secret":"s",
+        "private_key_pem":"k","webhook_secret":key});
+    let sealed = f.h.app.deps.crypto.seal(&serde_json::to_vec(&app)?)?;
+    f.h.store.set_github_app(&sealed, "acme", "org").await?;
+    f.h.store.set_installation(Some(7)).await?;
+    let opened = opening_event(&f)?;
+    let head = git(&f.work, &["rev-parse", "feat/one"])?;
+    let unsigned = call(
+        &f.h.router,
+        Method::POST,
+        "/api/github/webhook",
+        Some(opened.clone()),
+        &Creds::default(),
+    )
+    .await?;
+    assert_eq!(unsigned.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        github_opening(&f, &opened, "wrong").await?,
+        StatusCode::UNAUTHORIZED
+    );
+    for (field, value) in [
+        ("/action", serde_json::json!("closed")),
+        ("/installation/id", serde_json::json!(8)),
+        ("/repository/id", serde_json::json!(2)),
+        ("/repository/full_name", serde_json::json!("acme/other")),
+        ("/pull_request/head/repo", Value::Null),
+        ("/pull_request/head/repo/id", serde_json::json!(2)),
+        ("/pull_request/base/ref", serde_json::json!("main")),
+        (
+            "/pull_request/head/sha",
+            serde_json::json!(git(&f.work, &["rev-parse", "origin/dev"])?),
+        ),
+        (
+            "/pull_request/created_at",
+            serde_json::json!("2000-01-01T00:00:00Z"),
+        ),
+    ] {
+        let mut ignored = opened.clone();
+        *ignored.pointer_mut(field).ok_or("missing event field")? = value;
+        assert!(
+            github_opening(&f, &ignored, key).await?.is_success(),
+            "{field}"
+        );
+        assert!(
+            f.h.store.ci_runs(&f.sandbox.id, 10).await?.is_empty(),
+            "{field}"
+        );
+    }
+    f.h.github.fail_overview_pulls.store(true, Ordering::SeqCst);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let (first, duplicate) = tokio::time::timeout_at(deadline, async {
+        tokio::join!(
+            github_opening(&f, &opened, key),
+            github_opening(&f, &opened, key)
+        )
+    })
+    .await?;
+    assert!(first?.is_success() && duplicate?.is_success());
+    tokio::time::timeout_at(deadline, f.h.github.status_published.notified()).await?;
+    let runs = f.h.store.ci_runs(&f.sandbox.id, 10).await?;
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].reference.key(), "pr/1");
+    assert_eq!(runs[0].sha, head);
+    assert_eq!(runs[0].state, RunState::Queued);
+    let statuses = f.h.github.statuses.lock().map_err(|_| "statuses")?.clone();
+    assert_eq!(statuses.len(), 1);
+    assert_eq!(statuses[0].1.state, "pending");
+    assert_eq!(f.h.github.pull_reads.load(Ordering::SeqCst), 0);
+    f.h.app.ci_dispatch().await;
+    tokio::time::timeout_at(deadline, f.h.github.status_published.notified()).await?;
+    assert!(
+        f.h.store
+            .ci_run(&runs[0].id)
+            .await?
+            .ok_or("PR run")?
+            .started_at
+            .is_some()
+    );
+    f.settle().await?;
+    f.h.github
+        .fail_overview_pulls
+        .store(false, Ordering::SeqCst);
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    assert_eq!(
+        f.h.store.ci_runs_for_sha(&f.sandbox.id, &head).await?.len(),
+        1
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_outside_opening_passes_a_stalled_inventory_and_survives_its_stale_list() -> TestResult {
+    use yulius_app::ports::store::InstanceStore as _;
+    let key = "synthetic manually configured webhook key";
+    let f = fixture_tuned(
+        false,
+        |_| YULIUS_TOML.to_owned(),
+        None,
+        move |config| {
+            config.github_webhook_secret = Some(yulius_app::model::Secret(key.into()));
+        },
+    )
+    .await?;
+    f.h.store.set_installation(Some(7)).await?;
+    let event = opening_event(&f)?;
+    let hold = Arc::new(tokio::sync::Notify::new());
+    f.h.github.pulls.lock().map_err(|_| "PRs")?.clear();
+    f.h.github.hold_overview_list.store(true, Ordering::SeqCst);
+    *f.h.github.pull_list_hold.lock().map_err(|_| "hold")? = Some(hold.clone());
+    let app = Arc::clone(&f.h.app);
+    let sandbox = f.sandbox.clone();
+    let round = tokio::spawn(async move { app.ci_sync_sandbox(&sandbox).await });
+    tokio::time::timeout(WAIT, f.h.github.pull_list_entered.notified()).await?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    assert_eq!(
+        tokio::time::timeout_at(deadline, github_opening(&f, &event, key)).await??,
+        StatusCode::ACCEPTED
+    );
+    tokio::time::timeout_at(deadline, f.h.github.status_published.notified()).await?;
+    let runs = f.h.store.ci_runs(&f.sandbox.id, 10).await?;
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].reference.key(), "pr/1");
+    assert_eq!(
+        f.h.github.pull_reads.load(Ordering::SeqCst),
+        1,
+        "only the held inventory"
+    );
+    hold.notify_one();
+    tokio::time::timeout(WAIT, round).await???;
+    assert_eq!(
+        f.h.store.ci_run(&runs[0].id).await?.ok_or("run")?.state,
+        RunState::Queued
+    );
+    // A later, fresh inventory can reconcile the same absence as a close.
+    *f.h.github.pull_list_hold.lock().map_err(|_| "hold")? = None;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    assert_eq!(
+        f.h.store.ci_run(&runs[0].id).await?.ok_or("run")?.state,
+        RunState::Cancelled
+    );
+    Ok(())
+}
+
+const OPENING_KEY: &str = "synthetic operator key for opening tests";
+
+async fn opening_fixture() -> BoxResult<Fixture> {
+    use yulius_app::ports::store::InstanceStore as _;
+    let f = fixture_tuned(
+        false,
+        |_| YULIUS_TOML.to_owned(),
+        None,
+        |config| {
+            config.github_webhook_secret = Some(yulius_app::model::Secret(OPENING_KEY.into()));
+        },
+    )
+    .await?;
+    f.h.store.set_installation(Some(7)).await?;
+    Ok(f)
+}
+
+#[tokio::test]
+async fn outside_opening_queues_while_inventory_status_is_in_flight() -> TestResult {
+    let f = opening_fixture().await?;
+    f.h.github.pulls.lock().map_err(|_| "PRs")?.clear();
+    let release = Arc::new(tokio::sync::Notify::new());
+    *f.h.github.status_hold.lock().map_err(|_| "hold")? =
+        Some((git(&f.origin, &["rev-parse", "dev"])?, release.clone()));
+    let app = Arc::clone(&f.h.app);
+    let sandbox = f.sandbox.clone();
+    let inventory = tokio::spawn(async move { app.ci_sync_sandbox(&sandbox).await });
+    tokio::time::timeout(WAIT, f.h.github.status_entered.notified()).await?;
+    let opening = opening_event(&f)?;
+    github_opening(&f, &opening, OPENING_KEY).await?;
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        f.h.github.status_published.notified(),
+    )
+    .await?;
+    let runs = f.h.store.ci_runs(&f.sandbox.id, 10).await?;
+    assert!(
+        runs.iter()
+            .any(|r| r.reference.key() == "pr/1" && r.state == RunState::Queued)
+    );
+    *f.h.github.status_hold.lock().map_err(|_| "hold")? = None;
+    release.notify_one();
+    tokio::time::timeout(WAIT, inventory).await???;
+    Ok(())
+}
+
+#[tokio::test]
+async fn outside_opening_waits_for_a_vacant_pr_slot_and_keeps_its_head() -> TestResult {
+    let mut f = opening_fixture().await?;
+    let original = f.h.github.pulls.lock().map_err(|_| "PRs")?[0].clone();
+    // The inventory counts PRs even when some heads share a SHA and verdict.
+    for number in 2..=30 {
+        let branch = format!("feat/capacity-{number}");
+        git(
+            &f.origin,
+            &[
+                "update-ref",
+                &format!("refs/heads/{branch}"),
+                &original.head_sha,
+            ],
+        )?;
+        f.h.github.pulls.lock().map_err(|_| "PRs")?.push(GhPull {
+            number,
+            head: branch,
+            ..original.clone()
+        });
+    }
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    // A new server process sees the same persisted CI state before its first inventory.
+    f.h.app = yulius_app::context::App::new(f.h.app.config.clone(), f.h.app.deps.clone());
+    f.h.router = yulius_server::public_router(f.h.app.clone()).layer(
+        axum::extract::connect_info::MockConnectInfo(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            5000,
+        ))),
+    );
+    // Move only the overflow head to a distinct SHA.
+    git(&f.work, &["checkout", "-b", "feat/overflow"])?;
+    git(&f.work, &["commit", "--allow-empty", "-m", "overflow"])?;
+    git(&f.work, &["push", "origin", "feat/overflow"])?;
+    let sha = git(&f.work, &["rev-parse", "HEAD"])?;
+    let mut event = opening_event(&f)?;
+    event["number"] = 31.into();
+    event["pull_request"]["head"]["ref"] = "feat/overflow".into();
+    event["pull_request"]["head"]["sha"] = sha.clone().into();
+    github_opening(&f, &event, OPENING_KEY).await?;
+    assert_eq!(
+        f.h.github.pull_reads.load(Ordering::SeqCst),
+        1,
+        "restart uses local admission state"
+    );
+    assert!(
+        f.h.store
+            .ci_runs_for_sha(&f.sandbox.id, &sha)
+            .await?
+            .is_empty(),
+        "all 30 slots are occupied"
+    );
+    f.h.github.pulls.lock().map_err(|_| "PRs")?.insert(
+        0,
+        GhPull {
+            number: 31,
+            head: "feat/overflow".into(),
+            head_sha: sha.clone(),
+            ..original
+        },
+    );
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    assert!(
+        f.h.store
+            .ci_runs_for_sha(&f.sandbox.id, &sha)
+            .await?
+            .is_empty(),
+        "reordering open PRs cannot evict an admitted PR"
+    );
+    f.h.github
+        .pulls
+        .lock()
+        .map_err(|_| "PRs")?
+        .retain(|p| p.number != 30);
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let admitted = f.h.store.ci_runs_for_sha(&f.sandbox.id, &sha).await?;
+    assert_eq!(admitted.len(), 1);
+    assert_eq!(admitted[0].reference.key(), "pr/31");
+    assert_eq!(admitted[0].state, RunState::Queued);
+    Ok(())
+}
+
+#[tokio::test]
+async fn outside_opening_bounds_body_readers_and_recovers_after_timeout() -> TestResult {
+    use axum::{
+        body::{Body, Bytes},
+        http::Request,
+    };
+    use tower::ServiceExt as _;
+    let f = opening_fixture().await?;
+    let mut readers = tokio::task::JoinSet::new();
+    let (started, mut ready) = tokio::sync::mpsc::channel(16);
+    for _ in 0..16 {
+        let started = started.clone();
+        let body = Body::from_stream(futures::stream::once(async move {
+            let _ = started.send(()).await;
+            std::future::pending::<Result<Bytes, std::io::Error>>().await
+        }));
+        let request = Request::post("/api/github/webhook")
+            .header("x-hub-signature-256", format!("sha256={}", "00".repeat(32)))
+            .body(body)?;
+        let router = f.h.router.clone();
+        readers.spawn(async move { router.oneshot(request).await.map(|r| r.status()) });
+    }
+    for _ in 0..16 {
+        tokio::time::timeout(WAIT, ready.recv())
+            .await?
+            .ok_or("body reader exited")?;
+    }
+    let opening = opening_event(&f)?;
+    assert_eq!(
+        github_opening(&f, &opening, "wrong key").await?,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    while let Some(response) =
+        tokio::time::timeout(Duration::from_secs(10), readers.join_next()).await?
+    {
+        assert_eq!(response??, StatusCode::REQUEST_TIMEOUT);
+    }
+    assert_eq!(
+        github_opening(&f, &opening, OPENING_KEY).await?,
+        StatusCode::ACCEPTED
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn outside_opening_cannot_commit_after_sandbox_removal() -> TestResult {
+    let mut outcomes = Vec::new();
+    for previously_admitted in [false, true] {
+        let f = opening_fixture().await?;
+        let before: &[u64] = if previously_admitted { &[1] } else { &[] };
+        f.h.store
+            .set_ci_admitted_pulls(&f.sandbox.id, before)
+            .await?;
+        f.h.github.set_perm("alice", "acme/app", perms("admin"));
+        let router = f.h.router.clone();
+        let admin = f.alice.clone();
+        let (finished, removed) = tokio::sync::oneshot::channel();
+        yulius_app::race::on(
+            yulius_app::race::Point::CiSyncPlanned,
+            &f.data.join("sandboxes/s1/repo"),
+            move || {
+                let answer = tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(call(
+                        &router,
+                        Method::DELETE,
+                        "/api/sandboxes/s1",
+                        None,
+                        &admin,
+                    ))
+                });
+                let _ = finished.send(
+                    answer
+                        .map(|reply| reply.status)
+                        .map_err(|err| err.to_string()),
+                );
+            },
+        );
+        let event = opening_event(&f)?;
+        let status = github_opening(&f, &event, OPENING_KEY).await?;
+        assert_eq!(
+            tokio::time::timeout(WAIT, removed).await???,
+            StatusCode::NO_CONTENT
+        );
+        // A delivery can continue after its HTTP acknowledgement. Regaining every permit
+        // proves its scheduling attempt and any resulting status write have ended.
+        tokio::time::timeout(WAIT, async {
+            let mut permits = Vec::new();
+            while permits.len() < 16 {
+                match f.h.app.ci_webhook_permit() {
+                    Ok(permit) => permits.push(permit),
+                    Err(_) => tokio::task::yield_now().await,
+                }
+            }
+        })
+        .await?;
+        outcomes.push((
+            f.h.store.ci_admitted_pulls(&f.sandbox.id).await?,
+            f.h.store.ci_runs(&f.sandbox.id, 10).await?.len(),
+            f.h.github.statuses.lock().map_err(|_| "statuses")?.len(),
+            status,
+        ));
+    }
+    assert_eq!(
+        outcomes,
+        vec![
+            (vec![], 0, 0, StatusCode::ACCEPTED),
+            (vec![1], 0, 0, StatusCode::ACCEPTED),
+        ]
+    );
+    Ok(())
+}
