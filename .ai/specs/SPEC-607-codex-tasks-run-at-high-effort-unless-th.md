@@ -1,6 +1,6 @@
 ---
 yulius-task: 8acbc127-7f7e-4736-84eb-46f1b6476024
-status: in-progress
+status: done
 ---
 
 # SPEC-607 — Codex tasks inherit high effort
@@ -48,7 +48,7 @@ Yulius stores the task effort as an option and resolves it when planning a proce
 
 - [x] Reproduce the stale Antigravity mock contract on dev
 - [x] Verify Antigravity High against the shared default and run every UI contract
-- [ ] Get independent approval for the Antigravity contract correction
+- [x] Get independent approval for the Antigravity contract correction
 
 ## Acceptance criteria
 
@@ -124,3 +124,6 @@ replaces the Astra effort default of SPEC-561. [ADR-0444](../../docs/decisions/0
   assertion fail. Restoring High made all 12 pass again.
 - `npx e2e run antigravity` passed all 11 tests, including creation of
   Gemini 4 Neon and Carbon tasks with inherited High.
+- `scripts/dev quick` passed. Vidoc was disabled.
+- The independent reviewer approved `7b6419ed963f3224e45601d64d159ac25d2d95a5`
+  and independently observed inherited High for both Antigravity models.
