@@ -128,3 +128,5 @@ Review of `8812780fb` found that removing the last two hard links to one 256 KiB
 The task-admission test first failed because upkeep made zero fresh quota measurements after removing the artifact. After the fix it measured once and retried once. With both links in the cache the task started. With an external link the sandbox stayed over quota and the retry preserved the refusal. Fourteen focused Rust tests passed, including ordinary task and queued CI admission. The 21 launcher tests passed.
 
 A CI dispatcher regression showed two full quota measurements after upkeep cleared a store with zero credited bytes. With an empty round it measured once. The dispatcher now reuses the reading upkeep took after a removal.
+
+Review of `e103a27e4` identified a final interrupted state in which the previous round had cleared the last artifact. Only the pending stamp remained. The admission regression reproduced a restored ready stamp and zero quota refreshes. Finishing that pending eviction now reports completion to quota admission even if the current round has no payload left to remove. A store that was already empty and ready reports no cleanup.

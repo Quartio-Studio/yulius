@@ -1791,18 +1791,24 @@ async fn compiler_upkeep_remeasures_quota_before_retrying_a_refused_task() -> Bo
         fn release(&self, _: &SandboxId) {}
     }
 
-    for external in [false, true] {
+    for (interrupted, external) in [(false, false), (false, true), (true, false)] {
         let w = world().await?;
         let task = seed_task(&w.h, "t-quota", "s1", "u-alice", TaskStatus::Running, None).await?;
         let cache = w.root.join("rust-compile-cache");
         let outside = w.root.join("retained");
         std::fs::create_dir(&cache)?;
         std::fs::create_dir(&outside)?;
-        std::fs::write(cache.join(".yulius-mbx-v1"), b"mbx-v1\n")?;
+        let ready = cache.join(".yulius-mbx-v1");
         let artifact = cache.join("artifact");
-        std::fs::write(&artifact, vec![3u8; BIG])?;
         let second = if external { &outside } else { &cache }.join("second-name");
-        std::fs::hard_link(&artifact, &second)?;
+        if interrupted {
+            // An earlier upkeep cleared the final payload before it could publish the ready stamp.
+            std::fs::write(cache.join(".yulius-mbx-pruning"), b"mbx-v1\n")?;
+        } else {
+            std::fs::write(&ready, b"mbx-v1\n")?;
+            std::fs::write(&artifact, vec![3u8; BIG])?;
+            std::fs::hard_link(&artifact, &second)?;
+        }
         let quota = Arc::new(LinkedQuota {
             cache,
             outside,
@@ -1812,6 +1818,7 @@ async fn compiler_upkeep_remeasures_quota_before_retrying_a_refused_task() -> Bo
         });
         assert!(w.h.app.set_isolation(quota.clone()));
         let admission = w.h.app.preflight_start(&task, None).await;
+        assert_eq!(std::fs::read(ready)?, b"mbx-v1\n");
         assert!(!artifact.exists());
         assert_eq!(second.exists(), external);
         assert_eq!(

@@ -234,7 +234,11 @@ fn prune_compile_cache(
     }
     std::fs::rename(&pending, &ready)?;
     store.sync_all()?;
-    Ok(cleared.then(|| before.unshared.saturating_sub(measure(&through).unshared)))
+    // The previous round may have removed the final artifact before it could refresh quota.
+    Ok(
+        (cleared || interrupted)
+            .then(|| before.unshared.saturating_sub(measure(&through).unshared)),
+    )
 }
 
 fn root_entries(worktree: &Path) -> Vec<String> {
