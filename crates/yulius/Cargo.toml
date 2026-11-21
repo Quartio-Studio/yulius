@@ -70,6 +70,7 @@ flate2 = { workspace = true }
 aho-corasick = { workspace = true }
 
 [dev-dependencies]
+ring = { workspace = true }
 yulius-app = { workspace = true, features = ["test-support"] }
 yulius-ptyhost = { workspace = true, features = ["test-support"] }
 yulius-store = { workspace = true, features = ["test-support"] }

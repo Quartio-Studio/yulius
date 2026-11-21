@@ -27,6 +27,8 @@ pub struct AppCredentials {
     pub private_key_pem: Secret,
     /// App slug (used for the installation URL).
     pub slug: String,
+    /// Secret GitHub issued for webhook signatures during manifest conversion.
+    pub webhook_secret: Option<Secret>,
 }
 
 /// Retry bounds for idempotent GET requests (SPEC-002 §9); `max_total` and `base_delay` also
