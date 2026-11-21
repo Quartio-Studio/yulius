@@ -952,7 +952,7 @@ fn plan_codex(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
     // The model and effort on every launch: without them Codex runs the account's default model
     // at its own default effort (SPEC-511 CXD-001).
     let model = request.model.as_deref().unwrap_or(DEFAULT_CODEX_MODEL);
-    let effort = yulius_domain::harness::codex_effort(model, request.effort.as_deref());
+    let effort = yulius_domain::harness::codex_effort(request.effort.as_deref());
     config("model_reasoning_effort", toml_string(effort));
     argv.extend(["-m".into(), model.to_owned()]);
     if request.contained {

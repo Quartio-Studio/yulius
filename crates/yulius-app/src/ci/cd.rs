@@ -2796,9 +2796,10 @@ impl App {
                 self.staging_request(&sandbox, &env, ctx, &head),
             )
             .await?;
+            self.publish_staging_task(&request).await;
             let text = if request.state.is_pending() {
                 format!(
-                    "Staging request {} for revision {} of {}: {}. {}. Yulius tells this session its outcome; meanwhile cd_status shows the queue with its run ids, and cd_deploy again answers with this request.",
+                    "Staging request {} for revision {} of {}: {}. {}. The request is recorded. End this turn. If your final step requires the verdict, leave it in progress. Yulius wakes the task with the outcome. cd_status shows the run ids.",
                     request.id,
                     short_sha(&request.revision),
                     env_label(&env),

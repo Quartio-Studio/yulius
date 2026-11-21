@@ -32,20 +32,27 @@ def linux_process_id(pid, group):
     return None
 
 
-def group_snapshot():
+def group_snapshot(*, require_known=False):
     identity = darwin_process_id if sys.platform == "darwin" else linux_process_id
     # Capture PGID in ps's process table snapshot. A PID that exits before
     # its identity is read still contributes a group with unknown membership.
     args = ["/bin/ps", "-A", "-o", "pid=,pgid=,stat="]
     with tempfile.TemporaryFile() as listing:
-        subprocess.run(args, stdout=listing, check=True, timeout=1)
+        observer = subprocess.Popen(args, stdout=listing)
+        try:
+            if observer.wait(timeout=1):
+                raise RuntimeError("process listing failed")
+        except subprocess.TimeoutExpired:
+            observer.kill()
+            observer.wait(timeout=1)
+            raise
         if listing.tell() > 16 * 1024 * 1024:
             raise RuntimeError("process group snapshot exceeded 16 MiB")
         listing.seek(0)
         groups = {}
         for row in listing:
             pid, group, state = row.split()
-            if state.startswith(b"Z"):
+            if int(pid) == observer.pid or state.startswith(b"Z"):
                 continue
             group = int(group)
             if group == 0:  # Kernel tasks cannot belong to a user build.
@@ -54,7 +61,9 @@ def group_snapshot():
             try:
                 ident = identity(int(pid), group)
             except (ProcessLookupError, FileNotFoundError, PermissionError):
-                continue
+                ident = None
+            if ident is None and require_known:
+                raise RuntimeError("cannot identify a process in the shutdown snapshot")
             if ident is not None:
                 members.append(str(ident))
     if not groups:

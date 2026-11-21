@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 use yulius_contracts::api::cd::CdDeploy;
 use yulius_contracts::api::tasks::ContinueTask;
 use yulius_contracts::mcp::ToolDescriptor;
+use yulius_domain::harness::DEFAULT_CODEX_EFFORT;
 use yulius_domain::permission::Action;
 use yulius_domain::task::TaskStatus;
 
@@ -386,9 +387,13 @@ pub(crate) fn descriptors() -> Vec<ToolDescriptor> {
             "Set a task's model, effort or both (\"use Sonnet for #12\", \"#12 at high effort\"); default goes back to the instance's default. It is stored with the task and its session takes it at its next start: a task that has not started runs with it, a running session keeps its model until then (task_switch starts it again now, with the new one), an ended task takes it when continued. The task's owner only.",
             {
                 let mut properties = task_ref.clone();
-                properties["model"] =
-                    json!({"type": "string", "description": "A Claude model id, or default"});
-                properties["effort"] = json!({"type": "string", "description": "low, medium, high, xhigh or max, or default"});
+                properties["model"] = json!({"type": "string", "description": "A model id for the task's agent, or default"});
+                properties["effort"] = json!({
+                    "type": "string",
+                    "description": format!(
+                        "Effort supported by the model. GPT-6.2 Astra and Sol accept low, medium, high, xhigh, max and ultra. Use default ({DEFAULT_CODEX_EFFORT} for Codex) to clear the override."
+                    )
+                });
                 properties
             },
             &[],

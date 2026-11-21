@@ -227,7 +227,6 @@ impl App {
         // later pull request, and the answer names them (SPEC-484 PLN-002, PLN-003). While the
         // merge is armed their work waits: a commit on the branch drops it.
         let steps = self.deps.store.steps(&ctx.task.id).await?;
-        let ahead = crate::delivery::steps_ahead_note(&steps);
         let armed_ahead = crate::delivery::steps_ahead_armed_note(&steps);
         // The agent hears this call's own answer: an earlier armed merge's outcome is old news.
         self.forget_merge_outcome(&ctx.task);
@@ -329,7 +328,7 @@ impl App {
                 (Some(number), Ok(Some(sandbox))) => {
                     format!(
                         " {}",
-                        self.merged_note(&ctx.task, &sandbox, number, false).await
+                        self.merged_note(&ctx.task, &sandbox, number, true).await
                     )
                 }
                 _ => String::new(),
@@ -489,10 +488,13 @@ impl App {
             ),
         )
         .await;
+        let next = self
+            .after_merge_of(&ctx.task, &sandbox, merged.number)
+            .await;
         Ok(json!({
             "merged": true,
             "delivery": merged.view,
-            "next": format!("{}.{ahead}", merged.receipt),
+            "next": format!("{}. {next}", merged.receipt),
         }))
     }
 

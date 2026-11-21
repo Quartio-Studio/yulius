@@ -188,6 +188,9 @@ export function statusInfo(task) {
     // failed) the next move is the user's; with nothing open it answered (SPEC-429);
     // done: the goal is achieved and the turn ended — Done once no background shell is left.
     if (activity === 'needs_attention') return { glyph: '!', icon: 'st-attention', tone: 'attention', label: 'Needs your action', group: 'needs' };
+    if (task.staging_wait && (activity === 'waiting' || activity === 'done')) {
+      return { ...WAITING_ON_YULIUS, label: task.staging_wait, detail: task.staging_wait, staging: true };
+    }
     if (activity === 'done') {
       const shells = backgroundShells(task);
       if (shells) return stillWorking(shells, task.background_shells_since);
@@ -326,6 +329,7 @@ export function activityLine(task, info = statusInfo(task)) {
   if (notice && (notice.happened || notice.action)) {
     return [notice.happened, notice.action].filter(Boolean).join(' · ').replaceAll('`', '');
   }
+  if (info.staging && info.group === 'working' && !info.paused) return task.staging_wait;
   if (task.status === 'parked') return PARKED_LINE;
   if (info.paused) return pauseLine(info.paused);
   if (info.request) return info.request.reason || 'Do something in the sandbox browser';
@@ -401,10 +405,10 @@ export function taskInfo(task, actionRequests, pr) {
   // A parked task is shown where it was, as its idle run would be, marked parked (SPEC-512 PRK-004).
   if (task.status === 'parked') {
     const shown = parkedWorkStatus(task, taskInfo(asIdleRun(task), actionRequests, pr));
-    // Nothing of it goes on by itself: what would keep a running agent busy (its checks, a
+    // Staging wakes a parked agent. Other work that would keep a running agent busy (its checks, a
     // conflict it is told of, a CI run to run again) is a person's now, never Working (review
     // round 1 of SPEC-512 part 1; the server's `parked_group`).
-    const waits = shown.group === 'working' ? { icon: 'st-attention', tone: 'attention', group: 'needs' } : {};
+    const waits = shown.group === 'working' && !shown.staging ? { icon: 'st-attention', tone: 'attention', group: 'needs' } : {};
     const merged = { ...shown, ...waits, label: `${shown.label} · parked`, parked: true };
     if (merged.group === 'needs' && task.needs_you_notice) {
       merged.notice = task.needs_you_notice;
@@ -459,6 +463,7 @@ function taskInfoOf(task, actionRequests, pr) {
   // failing checks still need you. The server counts the same way (`AttentionFacts` in
   // yulius-domain).
   const finished = task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done');
+  if (finished && info.staging) return { ...info, pr };
   if (pr && finished && (pr.state === 'open' || pr.state === 'merged')) {
     if (pr.state === 'open' && pr.checks === 'failure') {
       // Failing checks are the person's only once the agent stopped. While its background work

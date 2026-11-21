@@ -4748,6 +4748,18 @@ impl HeldBrowserLookup {
         }
     }
 
+    pub(super) fn hold_lookup_for(
+        &self,
+        reader: tokio::task::Id,
+    ) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
+        if let Some(target) = &self.publication_reader {
+            *target
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reader);
+        }
+        (self.entered.clone(), self.release.clone())
+    }
+
     pub(super) fn hold_publication_lookup(
         &self,
         task: &TaskId,
