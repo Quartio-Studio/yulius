@@ -404,7 +404,7 @@ pub(crate) type LoadReading = (i64, Option<(u64, u64)>);
 #[derive(Default)]
 struct SandboxSync {
     inventory: tokio::sync::Mutex<()>,
-    schedule: tokio::sync::Mutex<()>,
+    schedule: tokio::sync::Mutex<opening::PullWindow>,
 }
 
 /// Process-local CI state.
@@ -1316,6 +1316,23 @@ impl App {
         by: &str,
         queued_at: Timestamp,
     ) -> AppResult<CiRunRecord> {
+        let run = self
+            .ci_record_placed(sandbox, reference, sha, gate, by, queued_at)
+            .await?;
+        self.ci_publish(&run.id).await;
+        self.ci_wake();
+        Ok(run)
+    }
+
+    async fn ci_record_placed(
+        &self,
+        sandbox: &SandboxRecord,
+        reference: CiRef,
+        sha: &str,
+        gate: &Gate,
+        by: &str,
+        queued_at: Timestamp,
+    ) -> AppResult<CiRunRecord> {
         let run = CiRunRecord {
             id: self.deps.crypto.new_id(),
             sandbox_id: sandbox.id.clone(),
@@ -1439,8 +1456,6 @@ impl App {
         {
             ended.push(sandbox.id.clone());
         }
-        self.ci_publish(&run.id).await;
-        self.ci_wake();
         Ok(run)
     }
 
@@ -1595,12 +1610,7 @@ impl App {
         // A playground has no GitHub (SPEC-163 PCI-001): no token and no pull request; its own
         // `origin` is fetched, and its tasks' heads are tested when they deliver.
         let playground = sandbox.is_playground();
-        let before_listing = self
-            .deps
-            .store
-            .ci_planning_runs(&sandbox.id, 1)
-            .await?
-            .pop();
+        lock.schedule.lock().await.since_listing.clear();
         let pulls = if playground {
             Ok(Vec::new())
         } else {
@@ -1610,7 +1620,28 @@ impl App {
                 .list_pulls(&token, &sandbox.repo_owner, &sandbox.repo_name, None)
                 .await
         };
-        let _schedule = lock.schedule.lock().await;
+        let mut publications = Vec::new();
+        let mut window = lock.schedule.lock().await;
+        let result = self
+            .ci_record_inventory(sandbox, pulls, &mut window, &mut publications)
+            .await;
+        drop(window);
+        for run in publications {
+            self.ci_publish(&run).await;
+            self.ci_wake();
+        }
+        result
+    }
+
+    async fn ci_record_inventory(
+        &self,
+        sandbox: &SandboxRecord,
+        pulls: AppResult<Vec<crate::ports::github::GhPull>>,
+        window: &mut opening::PullWindow,
+        publications: &mut Vec<String>,
+    ) -> AppResult<()> {
+        let repo = self.sandbox_repo(&sandbox.id);
+        let playground = sandbox.is_playground();
         self.dlv_refresh_clone(sandbox).await?;
         self.ci_forget_gate(&sandbox.id);
         let view = self.ci_gate(sandbox).await;
@@ -1643,24 +1674,23 @@ impl App {
         // A fork's pull request is never tested (ADR-0116): its author has no push access, and
         // its head can still be in the clone (an agent fetched `pull/N/head` to review it), so
         // GitHub's word that it comes from another repository decides, not the clone (#842).
-        for pull in pulls?
+        let eligible = pulls?
             .into_iter()
             .filter(|p| p.state == "open" && p.base == profile.integration_branch && !p.from_fork)
-            .take(MAX_PULLS_TESTED)
-        {
+            .collect::<Vec<_>>();
+        window.restore(self, sandbox).await?;
+        window.reconcile(&eligible);
+        for (number, sha) in &window.heads {
             // A head not in the clone (not fetched yet) is tested at a later round.
-            if !matches!(
-                self.deps.git.resolve_commit(&repo, &pull.head_sha).await,
-                Ok(Some(_))
-            ) {
+            if !matches!(self.deps.git.resolve_commit(&repo, sha).await, Ok(Some(_))) {
                 continue;
             }
-            let gate = self.ci_gate_for_head(sandbox, &view, &pull.head_sha).await;
+            let gate = self.ci_gate_for_head(sandbox, &view, sha).await;
             if let Some(gate) = gate {
                 targets.push((
                     Target {
-                        reference: CiRef::PullRequest(pull.number),
-                        sha: pull.head_sha.clone(),
+                        reference: CiRef::PullRequest(*number),
+                        sha: sha.clone(),
                     },
                     gate,
                 ));
@@ -1672,25 +1702,7 @@ impl App {
             .ci_planning_runs(&sandbox.id, PLAN_RUNS)
             .await?;
         let facts = ordinary_run_facts(&runs, view.problem.is_none());
-        let mut only_targets: Vec<Target> = targets.iter().map(|(t, _)| t.clone()).collect();
-        // An opening can arrive after GitHub took the snapshot that produced this list.
-        // Preserve the webhook's exact target for this round, including an opening the
-        // snapshot omitted. The next inventory reconciles it normally.
-        for run in runs
-            .iter()
-            .take_while(|run| {
-                before_listing
-                    .as_ref()
-                    .is_none_or(|before| before.id != run.id)
-            })
-            .filter(|run| run.requested_by == opening::WEBHOOK_ACTOR)
-        {
-            only_targets.retain(|target| target.reference != run.reference);
-            only_targets.push(Target {
-                reference: run.reference.clone(),
-                sha: run.sha.clone(),
-            });
-        }
+        let only_targets: Vec<Target> = targets.iter().map(|(t, _)| t.clone()).collect();
         let plan = dom::plan(&only_targets, &facts);
         crate::race::reached(
             crate::race::Point::CiSyncPlanned,
@@ -1713,7 +1725,10 @@ impl App {
                 Some(sha) => format!("superseded by {}", short(&sha)),
                 None => "its pull request or branch is gone".to_owned(),
             };
-            if let Err(err) = self.ci_cancel(&run_id, &reason).await {
+            if let Err(err) = self
+                .ci_record_cancellation(&run_id, &reason, publications)
+                .await
+            {
                 tracing::warn!(error = %err, run = %run_id, "superseding a CI run failed");
             }
         }
@@ -1723,26 +1738,28 @@ impl App {
                 // up-to-date pull request) reuses that result instead of running again: every
                 // merge used to cost a second 12-20 minute run in the sandbox's one lane.
                 if matches!(target.reference, CiRef::Branch(_))
-                    && self
-                        .ci_reuse_tree(sandbox, &target, gate, &runs)
+                    && let Some(id) = self
+                        .ci_record_reused_tree(sandbox, &target, gate, &runs)
                         .await?
-                        .is_some()
                 {
+                    publications.push(id);
                     continue;
                 }
                 let place = places
                     .get(&target.reference.key())
                     .copied()
                     .unwrap_or_else(|| self.now());
-                self.ci_queue_placed(
-                    sandbox,
-                    target.reference.clone(),
-                    &target.sha,
-                    gate,
-                    "yulius",
-                    place,
-                )
-                .await?;
+                let queued = self
+                    .ci_record_placed(
+                        sandbox,
+                        target.reference.clone(),
+                        &target.sha,
+                        gate,
+                        "yulius",
+                        place,
+                    )
+                    .await?;
+                publications.push(queued.id);
             }
         }
         Ok(())
@@ -1775,15 +1792,19 @@ impl App {
             reference,
             sha: sha.to_owned(),
         };
-        let Some(id) = self.ci_reuse_tree(sandbox, &target, gate, &runs).await? else {
+        let Some(id) = self
+            .ci_record_reused_tree(sandbox, &target, gate, &runs)
+            .await?
+        else {
             return Ok(None);
         };
+        self.ci_publish(&id).await;
         self.deps.store.ci_run(&id).await
     }
 
     /// Records a passed run for `target` when a recent passed run tested a commit with the same
     /// tree (and therefore the same jobs); its id, or `None` when there is none.
-    async fn ci_reuse_tree(
+    async fn ci_record_reused_tree(
         &self,
         sandbox: &SandboxRecord,
         target: &Target,
@@ -1874,7 +1895,6 @@ impl App {
             .collect();
         self.deps.store.insert_ci_run(&run, &jobs).await?;
         tracing::info!(sandbox = %sandbox.slug, run = %run.id, sha = %short(&target.sha), reused = %short(&source.sha), "CI result reused for the same tree");
-        self.ci_publish(&run.id).await;
         Ok(Some(run.id))
     }
 
@@ -1884,6 +1904,22 @@ impl App {
     /// # Errors
     /// Store failures.
     pub(crate) async fn ci_cancel(&self, run_id: &str, reason: &str) -> AppResult<bool> {
+        let mut publications = Vec::new();
+        let changed = self
+            .ci_record_cancellation(run_id, reason, &mut publications)
+            .await?;
+        for id in publications {
+            self.ci_publish(&id).await;
+        }
+        Ok(changed)
+    }
+
+    async fn ci_record_cancellation(
+        &self,
+        run_id: &str,
+        reason: &str,
+        publications: &mut Vec<String>,
+    ) -> AppResult<bool> {
         let Some(run) = self.deps.store.ci_run(run_id).await? else {
             return Err(AppError::NotFound);
         };
@@ -1903,7 +1939,7 @@ impl App {
                     return Ok(false);
                 }
                 self.ci_cancel_jobs(run_id, reason).await?;
-                self.ci_publish(run_id).await;
+                publications.push(run_id.to_owned());
                 Ok(true)
             }
             RunState::Running => {
@@ -1929,7 +1965,7 @@ impl App {
                     .store
                     .transition_ci_run(run_id, &[RunState::Running], RunState::Cancelled, &update)
                     .await?;
-                self.ci_publish(run_id).await;
+                publications.push(run_id.to_owned());
                 Ok(changed)
             }
             _ => Ok(false),

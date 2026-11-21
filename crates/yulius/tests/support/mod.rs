@@ -69,6 +69,9 @@ pub struct FakeGitHub {
     pub hold_overview_list: std::sync::atomic::AtomicBool,
     pub pull_list_hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
     pub pull_list_entered: tokio::sync::Notify,
+    /// Hold publication for just this SHA.
+    pub status_hold: Mutex<Option<(String, Arc<tokio::sync::Notify>)>>,
+    pub status_entered: tokio::sync::Notify,
     pub no_installation: std::sync::atomic::AtomicBool,
     /// The branch of every `branch_pulls` call, in order: one GitHub request each (the hygiene
     /// scan's `MAX_PULL_LOOKUPS` bound).
@@ -749,6 +752,13 @@ impl GitHubPort for FakeGitHub {
         sha: &str,
         status: &NewCommitStatus,
     ) -> AppResult<()> {
+        let hold = self.status_hold.lock().map_err(AppError::internal)?.clone();
+        if let Some((held_sha, release)) = hold
+            && held_sha == sha
+        {
+            self.status_entered.notify_one();
+            release.notified().await;
+        }
         if self.statuses_forbidden.load(Ordering::SeqCst) {
             return Err(AppError::Forbidden(STATUS_PERMISSION_MISSING.to_owned()));
         }

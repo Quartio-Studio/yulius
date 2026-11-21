@@ -1,16 +1,19 @@
 //! Queue a signed opening without asking GitHub to list or read pull requests (SPEC-606).
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::sync::OwnedSemaphorePermit;
 use yulius_domain::ci::{self, CiRef, Target};
 use yulius_domain::time::parse_rfc3339;
 
-use super::{PLAN_RUNS, ordinary_run_facts};
+use super::{MAX_PULLS_TESTED, PLAN_RUNS, ordinary_run_facts};
 use crate::context::App;
 use crate::delivery::delivery_profile;
 use crate::error::{AppError, AppResult};
 use crate::model::SandboxRecord;
+use crate::ports::github::GhPull;
 
 pub(super) const WEBHOOK_ACTOR: &str = "GitHub webhook";
 
@@ -34,13 +37,76 @@ pub struct PullOpening {
     pub created_at: String,
 }
 
+/// Admitted open PRs in stable order. Openings observed during a REST request take
+/// precedence over its older snapshot. Both collections are bounded by MAX_PULLS_TESTED.
+#[derive(Default)]
+pub(super) struct PullWindow {
+    pub(super) heads: Vec<(u64, String)>,
+    pub(super) since_listing: HashSet<u64>,
+    restored: bool,
+}
+
+impl PullWindow {
+    fn has_room(&self, number: u64) -> bool {
+        self.heads.len() < MAX_PULLS_TESTED || self.heads.iter().any(|(n, _)| *n == number)
+    }
+
+    fn admit(&mut self, number: u64, sha: &str) {
+        if let Some((_, head)) = self.heads.iter_mut().find(|(n, _)| *n == number) {
+            sha.clone_into(head);
+        } else if self.heads.len() < MAX_PULLS_TESTED {
+            self.heads.push((number, sha.to_owned()));
+        }
+    }
+
+    pub(super) fn reconcile(&mut self, pulls: &[GhPull]) {
+        self.heads.retain(|(n, _)| {
+            self.since_listing.contains(n) || pulls.iter().any(|p| p.number == *n)
+        });
+        for pull in pulls {
+            if !self.since_listing.contains(&pull.number) {
+                self.admit(pull.number, &pull.head_sha);
+            }
+        }
+    }
+
+    pub(super) async fn restore(&mut self, app: &App, sandbox: &SandboxRecord) -> AppResult<()> {
+        if !self.restored {
+            for run in app.deps.store.active_ci_runs().await? {
+                if run.sandbox_id == sandbox.id
+                    && let CiRef::PullRequest(number) = run.reference
+                {
+                    self.admit(number, &run.sha);
+                }
+            }
+            self.restored = true;
+        }
+        Ok(())
+    }
+}
+
 impl App {
+    /// Reserves one delivery from the first HTTP body read through its scheduling attempt.
+    ///
+    /// # Errors
+    /// All delivery slots are occupied.
+    pub fn ci_webhook_permit(&self) -> AppResult<OwnedSemaphorePermit> {
+        self.webhook_slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| AppError::Capacity("CI is handling other GitHub deliveries".into()))
+    }
+
     /// Admit a fresh opening for this installation. The periodic sync recovers a missed event,
     /// busy server or failed fetch. Git and CI continue after GitHub's HTTP request ends.
     ///
     /// # Errors
     /// Store failures or the bounded webhook worker pool being full.
-    pub async fn ci_pull_opened(self: &Arc<Self>, opening: PullOpening) -> AppResult<()> {
+    pub async fn ci_pull_opened(
+        self: &Arc<Self>,
+        opening: PullOpening,
+        permit: OwnedSemaphorePermit,
+    ) -> AppResult<()> {
         let opened_at = parse_rfc3339(&opening.created_at)
             .ok_or_else(|| AppError::Invalid("invalid pull request opening time".into()))?;
         if !self.config.ci.enabled
@@ -68,11 +134,6 @@ impl App {
         {
             return Ok(());
         }
-        let permit = self
-            .webhook_slots
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| AppError::Capacity("CI is handling other GitHub deliveries".into()))?;
         let app = Arc::clone(self);
         let worker = tokio::spawn(async move {
             let _permit = permit;
@@ -96,7 +157,8 @@ impl App {
         opening: &PullOpening,
     ) -> AppResult<()> {
         let lock = self.ci_sync_lock(&sandbox.id);
-        let Ok(_guard) = tokio::time::timeout(Duration::from_secs(60), lock.schedule.lock()).await
+        let Ok(mut window) =
+            tokio::time::timeout(Duration::from_secs(60), lock.schedule.lock()).await
         else {
             return Err(AppError::Capacity("the sandbox CI sync is busy".into()));
         };
@@ -108,6 +170,10 @@ impl App {
             || sandbox.github_repo_id != Some(opening.repo_id)
             || delivery_profile(&sandbox).integration_branch != opening.base
         {
+            return Ok(());
+        }
+        window.restore(self, &sandbox).await?;
+        if !window.has_room(opening.number) {
             return Ok(());
         }
         self.dlv_refresh_clone(&sandbox).await?;
@@ -135,20 +201,27 @@ impl App {
             .ci_planning_runs(&sandbox.id, PLAN_RUNS)
             .await?;
         let facts = ordinary_run_facts(&runs, view.problem.is_none());
+        window.admit(opening.number, &opening.sha);
+        window.since_listing.insert(opening.number);
         // Only the full inventory can supersede runs. This event describes one target.
         if !ci::plan(std::slice::from_ref(&target), &facts)
             .queue
             .is_empty()
             && let Some(gate) = self.ci_gate_for_head(&sandbox, &view, &target.sha).await
         {
-            self.ci_queue(
-                &sandbox,
-                target.reference,
-                &target.sha,
-                &gate,
-                WEBHOOK_ACTOR,
-            )
-            .await?;
+            let run = self
+                .ci_record_placed(
+                    &sandbox,
+                    target.reference,
+                    &target.sha,
+                    &gate,
+                    WEBHOOK_ACTOR,
+                    self.now(),
+                )
+                .await?;
+            drop(window);
+            self.ci_publish(&run.id).await;
+            self.ci_wake();
         }
         Ok(())
     }
