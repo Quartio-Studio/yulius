@@ -1018,6 +1018,8 @@ The merge-first environment changes only through its staging queue (ADR-0411):
 - The request needs the task's owner to have write access, a merged landing and no pending or
   blocked step.
 - Its outcome is typed into the task's session once.
+- `delivery_status` of a task whose work merged has `staging`: the due request with the
+  `cd_deploy` call, or the newest request's state, run ids and next step (MFS-013).
 - `GET …/cd` lists the queue as the environment's `staging` (`verified`: the revision it serves,
   `requests`: the newest, each with `task_number`, `revision`, `state`, `ci_run_id`,
   `cd_run_id`, `note`).

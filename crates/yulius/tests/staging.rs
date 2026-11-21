@@ -1262,7 +1262,8 @@ async fn delivery_status_asks_a_merged_task_for_its_staging_request() -> TestRes
             "Staging ([cd.staging], merge-first): your merged revision {short} has no staging \
              request. Once your whole delivery merged (no steps open), ask once with cd_deploy \
              {{\"environment\":\"staging\"}}: Yulius runs the full gate on that revision, then \
-             deploys it and tells you the outcome."
+             deploys it (or answers included when staging already contains it) and tells you \
+             the outcome."
         )),
         "{asks}"
     );
@@ -1288,6 +1289,53 @@ async fn delivery_status_asks_a_merged_task_for_its_staging_request() -> TestRes
     land(&plain, "t2", "two.txt").await?;
     let none = delivery_text(&plain, "t2").await?;
     assert!(!none.contains("Staging"), "{none}");
+    Ok(())
+}
+
+/// SPEC-575 MFS-013 (review round 1 of MFS-013): after a failed gate the line says how to go on,
+/// and once the fix merged it names the fix's revision as due, then the newer request.
+#[tokio::test]
+async fn delivery_status_after_a_failed_gate_names_the_fix() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "t1").await?;
+    let r1 = land(&f, "t1", "one.txt").await?;
+    let ci1 = gate(&f, &r1, RunState::Failed).await?;
+    let failing = ask(&f, "t1").await?;
+    settle(&f).await?;
+    let id1 = failing["id"].as_str().ok_or("id")?;
+    assert_eq!(request(&f, id1).await?.state, StagingState::GateFailed);
+    let failed = delivery_text(&f, "t1").await?;
+    assert!(
+        failed.contains(&format!(
+            "request {id1} for revision {} is gate_failed, CI run {ci1}",
+            &r1[..12]
+        )) && failed.contains(
+            "fix it forward on this branch, merge with delivery_merge, then cd_deploy again"
+        ),
+        "{failed}"
+    );
+    let r2 = land(&f, "t1", "fix.txt").await?;
+    let due = delivery_text(&f, "t1").await?;
+    assert!(
+        due.contains(&format!(
+            "your merged revision {} has no staging request",
+            &r2[..12]
+        )),
+        "{due}"
+    );
+    gate(&f, &r2, RunState::Passed).await?;
+    let fixed = ask(&f, "t1").await?;
+    settle(&f).await?;
+    let id2 = fixed["id"].as_str().ok_or("id")?;
+    assert_ne!(id1, id2);
+    let verified = delivery_text(&f, "t1").await?;
+    assert!(
+        verified.contains(&format!(
+            "request {id2} for revision {} is verified",
+            &r2[..12]
+        )),
+        "{verified}"
+    );
     Ok(())
 }
 
