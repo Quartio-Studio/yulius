@@ -560,13 +560,20 @@ impl App {
     /// Tasks with a pending request for a person to act in the sandbox's browser (BRW-004), read
     /// from its tabs: none while the browser does not run.
     pub(crate) async fn browser_tab_requests(&self, sandbox: &SandboxId) -> HashSet<String> {
-        match self.deps.browser.running(sandbox).await {
-            Some(session) => session
+        // Task views are also published inside the five-second Stop hook. Browser startup
+        // holds the sandbox's browser lock and can take much longer than that hook's deadline.
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            self.deps.browser.running(sandbox),
+        )
+        .await
+        {
+            Ok(Some(session)) => session
                 .tabs()
                 .into_iter()
                 .filter_map(|tab| tab.action_requested.and_then(|request| request.task_id))
                 .collect(),
-            None => HashSet::new(),
+            Ok(None) | Err(_) => HashSet::new(),
         }
     }
 

@@ -405,7 +405,10 @@ impl App {
                 ),
                 None => format!("{verb} unfinished steps in its plan ({open_count} open)."),
             };
-            let action = if task.status == TaskStatus::Parked {
+            let blocked = next_step.filter(|_| open.iter().all(|step| step.status == "blocked"));
+            let action = if blocked.is_some() {
+                "Resolve the recorded dependency so the agent can finish this step."
+            } else if task.status == TaskStatus::Parked {
                 "Open the task and resume it to continue the remaining plan steps, or close it if done."
             } else {
                 "Open the task and tell the agent to continue the remaining plan steps, or close it if done."
@@ -414,7 +417,7 @@ impl App {
                 source: "system".to_owned(),
                 episode: format!("plan_open:{open_count}:{episode_at_ms}"),
                 happened,
-                problem: None,
+                problem: blocked.and_then(|step| step.note.clone()),
                 action: action.to_owned(),
                 link: task_link,
                 decision: false,

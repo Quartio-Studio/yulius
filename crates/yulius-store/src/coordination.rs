@@ -57,6 +57,24 @@ fn message_from_row(row: &Row<'_>) -> rusqlite::Result<MessageRecord> {
     })
 }
 
+/// Completing a previously open step proves progress in a running goal's continuation.
+fn reset_goal_attempts_on_progress(
+    tx: &rusqlite::Transaction<'_>,
+    task: &str,
+    previous: Option<&str>,
+    next: &str,
+) -> rusqlite::Result<()> {
+    if matches!(next, "done" | "skipped")
+        && matches!(previous, Some("pending" | "in_progress" | "blocked"))
+    {
+        tx.execute(
+            "UPDATE tasks SET gate_blocks = 0 WHERE id = ?1 AND mode = 'goal' AND gate_blocks != 0",
+            [task],
+        )?;
+    }
+    Ok(())
+}
+
 /// Keeps how many steps `task`'s plan has now as its first size, once a step of it is finished
 /// and no first size is kept yet (SPEC-484 PLN-009): in the transaction of the step write, so
 /// the number is the plan as that write left it.
@@ -147,6 +165,7 @@ impl CoordinationStore for SqliteStore {
                 .map_err(db)?;
                 let previous = old.get(s.id.as_str());
                 if previous.map(String::as_str) != Some(s.status.as_str()) {
+                    reset_goal_attempts_on_progress(&tx, &task, previous.map(String::as_str), &s.status).map_err(db)?;
                     tx.execute(
                         "INSERT INTO step_events (step_id, task_id, at, actor, from_status, to_status, note) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                         params![s.id.as_str(), task, at.0, actor, previous, s.status, s.note],
@@ -275,6 +294,7 @@ impl CoordinationStore for SqliteStore {
                 params![id, current.task_id.as_str(), at.0, actor, current.status, status, note],
             )
             .map_err(db)?;
+            reset_goal_attempts_on_progress(&tx, current.task_id.as_str(), Some(&current.status), &status).map_err(db)?;
             let updated = tx.query_row(&format!("SELECT {STEP_COLS} FROM steps WHERE id = ?1"), [&id], step_from_row).map_err(db)?;
             keep_first_plan_size(&tx, current.task_id.as_str()).map_err(db)?;
             tx.commit().map_err(db)?;

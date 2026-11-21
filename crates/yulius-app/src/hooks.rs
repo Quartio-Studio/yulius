@@ -30,6 +30,9 @@ use crate::ports::store::TaskFieldUpdate;
 
 /// Consecutive Stop-hook blocks per turn before the task needs attention (AC-DSC-3).
 pub const MAX_GATE_BLOCKS: u32 = 3;
+
+/// Identifies a carried Stop instruction when a new run submits its launch prompt.
+pub(crate) const GOAL_CONTINUATION: &str = "Continue the authorized goal. ";
 /// Largest repository document read for the briefing or the gate.
 const MAX_DOC_BYTES: u64 = 256 * 1024;
 /// Largest number of decision records read.
@@ -955,7 +958,13 @@ impl App {
         }
         // As it is now: a Stop of the turn before may have settled it since it was read.
         let task = store.task(&ctx.task.id).await?.ok_or(AppError::NotFound)?;
-        if task.gate_blocks != 0 {
+        if task.gate_blocks != 0
+            && !(task.mode == TaskMode::Goal
+                && input
+                    .prompt
+                    .as_deref()
+                    .is_some_and(|prompt| prompt.starts_with(GOAL_CONTINUATION)))
+        {
             let update = TaskFieldUpdate {
                 gate_blocks: Some(0),
                 ..TaskFieldUpdate::default()
@@ -1003,7 +1012,11 @@ impl App {
     /// A clean goal turn continues declared work unless another actor already owns the next action.
     async fn stop_gate(&self, task: &TaskRecord, reported_background: bool) -> AppResult<StopGate> {
         if let Some(reason) = self.spec_gate(task).await? {
-            return Ok(StopGate::Continue(reason));
+            return Ok(StopGate::Continue(if task.mode == TaskMode::Goal {
+                format!("{GOAL_CONTINUATION}{reason}")
+            } else {
+                reason
+            }));
         }
         if task.mode != TaskMode::Goal {
             return Ok(StopGate::Pass);
@@ -1013,12 +1026,17 @@ impl App {
         }
         let store = &self.deps.store;
         let steps = crate::discipline::step_states(&store.steps(&task.id).await?, &[]);
-        let reason = if let Some((_, next)) = yulius_domain::steps::ahead(&steps) {
+        let reason = if let Some(index) = yulius_domain::steps::current(&steps) {
+            let next = &steps[index].title;
             format!(
-                "Continue the authorized goal. The next unfinished step is \"{next}\". Record the evidence and update the step when its work is complete."
+                "{GOAL_CONTINUATION}The next unfinished step is \"{next}\". Record the evidence and update the step when its work is complete."
             )
+        } else if steps.iter().any(|step| !step.status.is_resolved()) {
+            return Ok(StopGate::Handoff);
         } else if self.read_spec_unfinished(&task.id).await? {
-            "Continue the authorized goal. The spec still declares unfinished work. Check its acceptance criteria, complete any remaining work and record the evidence.".to_owned()
+            format!(
+                "{GOAL_CONTINUATION}The spec still declares unfinished work. Check its acceptance criteria, complete any remaining work and record the evidence."
+            )
         } else {
             return Ok(StopGate::Pass);
         };
@@ -1026,10 +1044,6 @@ impl App {
         if task.activity == Some(Activity::NeedsAttention)
             || store.task_needs_you(&task.id).await?.is_some()
             || store.pending_hold(&task.id).await?.is_some()
-            || self
-                .browser_tab_requests(&task.sandbox_id)
-                .await
-                .contains(task.id.as_str())
             || self.is_paused(task).await
             || self.active_waits_of(&task.id) > 0
         {
@@ -1039,12 +1053,16 @@ impl App {
         // confirmed work owns a wake. An unavailable probe can safely continue this same
         // turn; the separate rotation decision still requires proof before moving a run.
         let budget = std::time::Duration::from_millis(750);
-        let (background, delivery) = tokio::join!(
+        let (background, delivery, browser) = tokio::join!(
             tokio::time::timeout(budget, self.background_or_wait_now(&task.id)),
-            tokio::time::timeout(budget, self.pr_news_due(task))
+            tokio::time::timeout(budget, self.pr_news_due(task)),
+            self.browser_tab_requests(&task.sandbox_id)
         );
         Ok(
-            if matches!(background, Ok(Some(true))) || delivery.unwrap_or(false) {
+            if matches!(background, Ok(Some(true)))
+                || delivery.unwrap_or(false)
+                || browser.contains(task.id.as_str())
+            {
                 StopGate::Handoff
             } else {
                 StopGate::Continue(reason)
@@ -1123,8 +1141,16 @@ impl App {
         if opening && task.mode == TaskMode::Goal {
             return Ok(HookReply::Output(HookOutput::default()));
         }
-        if let Err(err) = self.sync_steps_from_spec(task).await {
-            tracing::warn!(error = %err, task = %task.id, "step sync from the spec failed");
+        let synced;
+        match self.sync_steps_from_spec(task).await {
+            Ok(true) => {
+                synced = store.task(&task.id).await?.ok_or(AppError::NotFound)?;
+                task = &synced;
+            }
+            Ok(false) => {}
+            Err(err) => {
+                tracing::warn!(error = %err, task = %task.id, "step sync from the spec failed")
+            }
         }
         let gate = if failed {
             StopGate::Handoff
@@ -1151,6 +1177,29 @@ impl App {
             } else {
                 HookReply::Output(HookOutput::default())
             });
+        }
+
+        if let Some(reason) = &reason
+            && task.gate_blocks >= MAX_GATE_BLOCKS
+        {
+            let stopped = format!(
+                "stopped {MAX_GATE_BLOCKS} times without fixing: {}",
+                reason.chars().take(300).collect::<String>()
+            );
+            // Said by the task itself, for whoever opens it later (SPEC-472), and in its
+            // terminal for the viewers there now.
+            self.flag_attention(
+                &task.id,
+                crate::attention::AttentionRecord::yulius(
+                    &format!("The agent {stopped}"),
+                    "Tell it how to go on, in the terminal.",
+                ),
+            )
+            .await?;
+            self.runtime(&task.id)
+                .hub
+                .notice(format!("Yulius: the agent {stopped}"));
+            return Ok(HookReply::Output(HookOutput::default()));
         }
 
         // The turn boundary: stay, move to another subscription, or pause (ROT-003, ROT-010).
@@ -1323,7 +1372,7 @@ impl App {
                 return Ok(self.hold_for(&task.id));
             }
             (Decision::Wait { .. }, _) if continues => {
-                self.pause_task(&task.id, PauseKind::Turn, current, None)
+                self.pause_task(&task.id, PauseKind::Turn, current, continuation.cloned())
                     .await?;
                 return Ok(self.hold_for(&task.id));
             }
@@ -1398,32 +1447,11 @@ impl App {
             return Ok(HookReply::Output(HookOutput::default()));
         };
 
-        if task.gate_blocks >= MAX_GATE_BLOCKS {
-            let stopped = format!(
-                "stopped {MAX_GATE_BLOCKS} times without fixing: {}",
-                reason.chars().take(300).collect::<String>()
-            );
-            // Said by the task itself, for whoever opens it later (SPEC-472), and in its
-            // terminal for the viewers there now.
-            self.flag_attention(
-                &task.id,
-                crate::attention::AttentionRecord::yulius(
-                    &format!("The agent {stopped}"),
-                    "Tell it how to go on, in the terminal.",
-                ),
-            )
-            .await?;
-            self.runtime(&task.id)
-                .hub
-                .notice(format!("Yulius: the agent {stopped}"));
-            return Ok(HookReply::Output(HookOutput::default()));
-        }
         let update = TaskFieldUpdate {
             gate_blocks: Some(task.gate_blocks + 1),
             ..TaskFieldUpdate::default()
         };
         store.update_task(&task.id, &update, self.now()).await?;
-        self.publish_task(&task.id).await;
         Ok(HookReply::Output(HookOutput::block(reason)))
     }
 

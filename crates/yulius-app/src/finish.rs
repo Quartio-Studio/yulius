@@ -704,8 +704,18 @@ impl App {
         runtime
             .turn_closed_ms
             .fetch_max(self.now().0, Ordering::SeqCst);
-        let next = Activity::after_clean_turn(achieved);
-        self.set_task_activity(task, next).await?;
+        let next = if !achieved
+            && task.mode == crate::model::TaskMode::Goal
+            && task.activity == Some(Activity::NeedsAttention)
+        {
+            // A Stop alone does not answer the question. A prompt or the permission's
+            // normal answer path clears the flag, including its original reason.
+            Activity::NeedsAttention
+        } else {
+            let settled = Activity::after_clean_turn(achieved);
+            self.set_task_activity(task, settled).await?;
+            settled
+        };
         let (app, task_id) = (Arc::clone(self), task.id.clone());
         tokio::spawn(async move {
             // The background work first: chains and the queue read it.

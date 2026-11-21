@@ -926,6 +926,11 @@ impl App {
                     }
                     // The start ends the pause once it is made or waits in the queue
                     // (`start_run`); one that is refused (the queue is full) leaves it open.
+                    let prompt = if pause.kind == PauseKind::Turn {
+                        self.stop_continuation(&task).await
+                    } else {
+                        pause.continuation.clone()
+                    };
                     let start = match store.provider_sessions(&task.id).await {
                         Ok(_)
                             if pause.kind == PauseKind::Prompt
@@ -936,12 +941,8 @@ impl App {
                         Ok(lineage) if !lineage.is_empty() && pause.kind == PauseKind::Limit => {
                             RunStart::AfterLimit
                         }
-                        Ok(lineage) if !lineage.is_empty() => RunStart::Resume {
-                            prompt: pause.continuation.clone(),
-                        },
-                        Ok(_) => RunStart::Fresh {
-                            prompt: pause.continuation.clone(),
-                        },
+                        Ok(lineage) if !lineage.is_empty() => RunStart::Resume { prompt },
+                        Ok(_) => RunStart::Fresh { prompt },
                         Err(err) => {
                             tracing::warn!(error = %err, task = %task.id, "cannot select a session for the capacity retry");
                             return Resume::Waiting(None);
@@ -984,7 +985,12 @@ impl App {
         self.end_pause(&task.id, "released").await;
         if let Ok(next) = task.status.apply(TaskEvent::CapacityReturned) {
             let activity = match pause.kind {
-                PauseKind::Turn => Activity::Waiting,
+                PauseKind::Turn
+                    if pause.continuation.is_none()
+                        && self.stop_continuation(task).await.is_none() =>
+                {
+                    Activity::Waiting
+                }
                 _ => Activity::Working,
             };
             let _ = store

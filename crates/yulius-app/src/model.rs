@@ -712,8 +712,7 @@ pub struct PauseRecord {
     pub kind: PauseKind,
     /// The account the paused process runs on (`None` without a process).
     pub account_id: Option<AccountId>,
-    /// Text for the resumed session when it resumes on another account: the held prompt
-    /// (`prompt`); `None` otherwise.
+    /// The held prompt or a Stop continuation owed to a turn held for capacity.
     pub continuation: Option<String>,
     /// A prompt entered while a previous turn still ran: that turn's Stop cannot end the hold.
     pub during_turn: bool,

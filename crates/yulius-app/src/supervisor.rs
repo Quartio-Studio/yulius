@@ -2653,6 +2653,24 @@ impl App {
         // attached and watched, and must not be forgotten then (#243).
         runtime.session_started.store(false, Ordering::SeqCst);
         runtime.spawned_ms.store(self.now().0, Ordering::SeqCst);
+        // A Stop that moved or waited for capacity never returned a block to its old
+        // process. Charge its continuation here, after admission and before the new
+        // process can submit it. A queued start or a capacity poll spends no attempt.
+        if task.mode == TaskMode::Goal
+            && matches!(&start, RunStart::Fresh { prompt: Some(prompt) } | RunStart::Resume { prompt: Some(prompt) }
+                if prompt.starts_with(crate::hooks::GOAL_CONTINUATION))
+        {
+            store
+                .update_task(
+                    &task.id,
+                    &TaskFieldUpdate {
+                        gate_blocks: Some(task.gate_blocks.saturating_add(1)),
+                        ..TaskFieldUpdate::default()
+                    },
+                    self.now(),
+                )
+                .await?;
+        }
         let size = runtime.hub.size();
         let spawned = match self
             .deps

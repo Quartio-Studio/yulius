@@ -21,7 +21,7 @@ Earlier user requests establish the ownership rule. Task #534 concerned automate
 
 - GCT-001. At a clean Stop of a live goal-mode task, continue actionable plan work or an unfinished spec under the existing authorization. Apply the rule across harnesses, including when the remaining step is post-merge verification. Preserve prompt-mode turn boundaries and the native goal evaluator.
 - GCT-002. An outstanding human decision, a pause, an active background operation, or delivery news that already owns the next turn takes precedence over a continuation for declared work. The existing spec-format gate still checks required artifacts. A failed Antigravity turn uses its existing error path. Completion requires the normal evidence and step updates.
-- GCT-003. Use the existing persisted Stop retry limit. When continuations are exhausted, expose the unsuccessful attempts and remaining work. A clean stop with finished work releases the turn.
+- GCT-003. Use the existing persisted Stop retry limit. When continuations are exhausted, expose the unsuccessful attempts and remaining work. A completed step restores the attempt budget. A subscription move or a capacity wait preserves it. A plan whose remaining steps are explicitly blocked shows the recorded dependency. A clean stop with finished work releases the turn.
 
 ## Plan
 
@@ -47,8 +47,8 @@ Exercise the real HTTP hook and task query using isolated SQLite and Git fixture
 
 Make the continuation decision where the agent can act on it, at the shared Stop hook. Sidebar and notification consumers can continue to report the task's actual state. Use the existing hook retry limit, delivery wake and human-request records. The earlier Codex prototype in #540 informed the ownership checks. Only a confirmed background operation or pending delivery wake takes ownership. A missing process observation permits the bounded continuation in the existing session. Rotation retains its separate evidence requirement before moving that session. PR-only recovery and parked-session repair have their own delivery paths.
 
-
 ## Evidence
 
+- Independent review at `6ed3c8612` requested changes. Eight regressions failed on that implementation. A capacity release published Waiting, a busy browser exceeded the hook deadline, and a Stop erased a worker permission. A blocked step consumed an attempt. Finishing a step left the previous retry budget exhausted. A proactive move hid the exhaustion explanation, reset the durable counter and allowed its launch prompt to reset it again.
 - On dev revision `86eb47202`, `cargo test -p yulius --test main agent_hooks::goal_stop_` returned three failures. The post-merge case reproduced the screenshot's notice and its wait-history entry. The unfinished-spec case and the case where a machine wait had ended both returned an empty Stop answer. The explicit permission request and held scope decision retained their owner.
 - On the first implementation the verification case passed for all three harnesses. The unavailable-host regression returned an empty Stop answer. It exercises a live attempt with a recorded child PID and a host that cannot read the process tree.
