@@ -74,6 +74,8 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- Review at `59552a705` found that an older list could omit the row before terminal detail reported its archive. Chromium reproduced zero notifications in that order, compared with Archive and Restored when detail answered first. The store now notifies the terminal of the first observed archive in both orders and updates the list and counts when it removes a row. An additional red/green regression verifies that a repeated archive confirmation outranks an older Undo without sending a duplicate archive notice.
+
 - At `ebd074bfa`, Undo from a newer task list restored the sidebar but left the mounted terminal archived in two reply schedules. A second regression reproduced Undo from the detail read that archive publication starts. That read left the sidebar empty. A list now notifies subscribers when a row returns, and the terminal can verify Undo using its archived starting summary. A deletion during that read or a newer empty list keeps the row out of the active list.
 
 - On the merged #1554 code, eight of nine resume and archive regression cases failed. A separate test for concurrent terminal reads also failed in both orders. The updated store publishes the resumed public task summary and removes an archived task from the active list. Pending reads retain the archive order until they complete. Thirteen controlled Chromium cases passed, including older parked and capacity lists, failed confirmation, a genuine Undo, and preservation of an owner decision. Two mounted terminal tests verify the sidebar when a resume or archive event was missed.

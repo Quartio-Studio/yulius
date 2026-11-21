@@ -333,8 +333,10 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       for (const pending of activeDetails) {
         if (pending.row?.id === row.id) pending.row = updated;
       }
-      if (map.delete(row.id)) {
-        emit('task', updated);
+      const removed = map.delete(row.id);
+      // A list can omit the row before the terminal learns why it vanished.
+      if (removed || !row.archived) emit('task', updated);
+      if (removed) {
         emit('tasks', row.sandbox_id);
         scheduleCountsRefresh();
       }
@@ -397,8 +399,8 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       release();
       const map = state.tasks.get(detail.sandbox_id);
       if (!map || read.row === null) return view;
-      // Only a row actually visible at request start can survive omission by
-      // an older list. Archive/delete invalidates that reference synchronously.
+      // Retain the observed task across an older list omission. A removal
+      // event invalidates the reference before any pending detail can publish.
       const retained = read.row?.id === detail.id ? read.row : null;
       const listed = map.get(detail.id);
       const listVersion = listOrder.get(map) ?? 0;
@@ -406,7 +408,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       const crossedPark = startingRow && startingRow.status !== detail.status &&
         (startingRow.status === 'parked' || detail.status === 'parked');
       const undo = startingRow?.archived && !detail.archived;
-      const row = laterEvent ? retained : listed ?? ((crossedPark || undo) && listVersion < order ? retained : null);
+      const row = laterEvent ? retained : listed ?? ((crossedPark || startingRow?.archived) && listVersion < order ? retained : null);
       if (!row) return undo ? { ...view, ...lifecycleSummary(startingRow, startingRow) } : view;
       if (!startingRow?.archived && detail.status !== 'parked' && row.status !== 'parked' && startingRow?.status !== 'parked') return view;
       const transition = detail.archived || row.archived || undo || crossedPark || row.status !== detail.status;

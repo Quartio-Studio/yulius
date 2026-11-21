@@ -2816,3 +2816,68 @@ test('a terminal detail begun by archive publication can observe Undo until a ne
   });
   expect(seen).toEqual(['Restored', null, null]);
 });
+
+test('an older empty list preserves the terminal archive notification and its follow-up Undo', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const results = [];
+    for (const listFirst of [true, false]) {
+      const parked = { id: 'p', sandbox_id: 's', status: 'parked', archived: false };
+      const archive = { ...parked, status: 'closed', archived: true };
+      const undo = { ...archive, archived: false };
+      const held = Promise.withResolvers<void>();
+      let reads = 0, terminal = parked;
+      const store = createStore({ get: async () => {
+        if (++reads === 1) return [parked];
+        await held.promise;
+        return [];
+      } });
+      const notifications: boolean[] = [];
+      let follow: ((detail: typeof undo) => typeof undo) | undefined;
+      store.on('task', (row: typeof parked) => {
+        terminal = row;
+        notifications.push(row.archived);
+        if (row.archived) follow = store.beginParkedDetail({ ...row });
+      });
+      await store.loadTasks('s');
+      const list = store.loadTasks('s', true);
+      const publish = store.beginParkedDetail(parked);
+      if (!listFirst) terminal = publish(archive, terminal);
+      held.resolve(); await list;
+      if (listFirst) terminal = publish(archive, terminal);
+      if (follow) terminal = follow(undo);
+      results.push([notifications, terminal.archived, store.findTask('p')?.status ?? null]);
+    }
+    return results;
+  });
+  const restored = [[true, false], false, 'closed'];
+  expect(seen).toEqual([restored, restored]);
+});
+
+test('a later archive confirmation outranks an older Undo without notifying twice about the same archive', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const results = [];
+    for (const laterFirst of [true, false]) {
+      const parked = { id: 'p', sandbox_id: 's', status: 'parked', archived: false };
+      const archived = { ...parked, status: 'closed', archived: true };
+      const undo = { ...archived, archived: false };
+      const store = createStore({ get: async () => [parked] });
+      await store.loadTasks('s');
+      const notices: boolean[] = [];
+      store.on('task', (t: typeof archived) => notices.push(t.archived));
+      store.beginParkedDetail(parked)(archived);
+      const older = store.beginParkedDetail({ ...archived });
+      const later = store.beginParkedDetail({ ...archived });
+      if (laterFirst) { later(archived); older(undo); }
+      else { older(undo); later(archived); }
+      results.push([!!store.findTask('p'), notices]);
+    }
+    return results;
+  });
+  expect(seen).toEqual([[false, [true]], [false, [true, false, true]]]);
+});
