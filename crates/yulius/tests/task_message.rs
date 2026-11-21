@@ -1908,15 +1908,20 @@ fn the_codex_rate_limit_picker_holds_enter_when_resize_crops_out_the_picker() ->
             assert!(screen(&drawn.0, &drawn.1).contains("Approaching rate limits"));
             drawn.0.runtime(&drawn.1).hub.resize(120, 24);
             assert!(!screen(&drawn.0, &drawn.1).contains("Approaching rate limits"));
+            paint_codex(
+                &drawn.0,
+                &drawn.1,
+                "\x1b[H\x1b[J\x1b[18;1H  Approaching rate limits",
+            );
         });
         let bounds = WatchBounds::default();
         assert!(
             app.watch_prs(&bounds).await.is_empty(),
-            "cropped picker kept Enter out"
+            "the partial repaint kept Enter out"
         );
         assert!(
             app.watch_prs(&bounds).await.is_empty(),
-            "still waiting for repaint"
+            "the incomplete repaint still holds the notice"
         );
         paint_codex(&app, &id, "\x1b[H\x1b[J");
         assert!(

@@ -714,7 +714,7 @@ impl TaskRuntime {
                     .into(),
             )),
             None => Err(AppError::Conflict(
-                "the Codex terminal is waiting for a repaint before it can take this message"
+                "the Codex terminal is waiting for a visible input cursor before it can take this message"
                     .into(),
             )),
         }

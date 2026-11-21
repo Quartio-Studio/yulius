@@ -28,7 +28,7 @@ On 21 November 2026 around 21:30–21:40 UTC, Codex 0.170.0 showed an “Approac
 - [x] Specify how Codex keeps the task’s model
 - [x] Suppress the model switch reminder in new and resumed Codex sessions
 - [x] Protect automated messages while the Codex reminder is visible
-- [ ] Hold Codex input until a resized terminal repaints
+- [x] Hold Codex input until a resized terminal repaints
 - [ ] Verify the behavior and obtain independent approval
 
 ## Acceptance criteria
@@ -36,7 +36,7 @@ On 21 November 2026 around 21:30–21:40 UTC, Codex 0.170.0 showed an “Approac
 - **AC-1 (CMN-001)** New and resumed plans contain the boolean under `[notice]`. Codex 0.170.0 reads it in strict mode.
 - **AC-2 (CMN-002, CMN-003)** Replay the incident screen with the switch option focused. A tool message is refused and a pending PR notice stays pending. No paste or Enter goes to the picker. Repeat with the title wrapped in a 20-column terminal. After dismissal, the watch delivers its notice once.
 - **AC-3 (CMN-002, CMN-003)** Show the picker after the paste. The pending Enter is withheld. Dismissing the picker onto retained text still holds new input. This applies even if a server restart interrupted delivery before Enter. A repaint showing an empty composer allows the next pass to send it. A failed record leaves the paste out. Ordinary conversation text mentioning rate limits does not cause a hold.
-- **AC-4 (CMN-002, CMN-003)** Shrink a terminal between paste and Enter so its existing grid crops out the picker. The watcher holds the submit until a fresh repaint at the new size establishes an empty composer.
+- **AC-4 (CMN-002, CMN-003)** Shrink a terminal between paste and Enter so its existing grid crops out the picker. The watcher holds the submit even if the erase and title have arrived in the first PTY read when it checks. A focused empty composer at the new size releases the notice.
 
 ## Test plan
 
@@ -59,3 +59,5 @@ Extend the launch assertions for both launch modes. Run the pinned native CLI ag
 - On `a3d2b5e50`, the scoped integration run passed all 169 Codex, task message, first message, context, intake and armed PR notice cases. Clippy passed for `yulius`, `yulius-app` and `yulius-harness` with all targets and features and warnings denied. The quick checks passed. Vidoc reported disabled.
 - Review of `a3d2b5e50` found that a server could stop after paste but before Enter recorded the hold. On that head, the new regression cancelled the watch at its paste boundary, restarted the server and observed a new message accepted behind the retained draft. Forcing the record to fail also let a message through on that head. Both cases failed before the change to record before pasting.
 - On `21c97081d`, 27 launch and 172 scoped integration tests passed, including all six picker cases. Targeted Clippy and quick checks passed. Review then identified a grid resize between paste and Enter. The new regression failed on that head because the watch reported delivery after the resize cropped out the picker and before the terminal repainted.
+- On `647b66a1a`, all seven picker regressions and all 27 launch tests passed. In the new case neither the cropped grid nor an erase released the notice. A complete composer repaint at the smaller dimensions released it once.
+- The focused review found that a partial redraw can have erased the old grid and drawn the title while the question and switch row are still in transit. The new hub test failed on `647b66a1a` with `Some(false)` in that state. The updated PTY regression inserts this partial draw before the first Enter check.
