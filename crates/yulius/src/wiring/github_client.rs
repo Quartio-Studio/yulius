@@ -626,6 +626,20 @@ impl GitHubPort for GitHubAdapter {
         Ok(outcome.sha)
     }
 
+    async fn create_branch(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo_name: &str,
+        branch: &str,
+        sha: &str,
+    ) -> AppResult<()> {
+        self.plain
+            .create_branch_ref(&gh(token), owner, repo_name, branch, sha)
+            .await
+            .map_err(map_err)
+    }
+
     async fn fast_forward(
         &self,
         token: &Secret,

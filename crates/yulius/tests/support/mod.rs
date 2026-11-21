@@ -78,6 +78,14 @@ pub struct FakeGitHub {
     pub guarded_branches: Mutex<Vec<String>>,
     /// A PR retargeted at GitHub after the client observed it and before the merge lands.
     pub retarget_on_merge: Mutex<Option<String>>,
+    /// A concurrent GitHub write to the base immediately before merging a pull request.
+    pub advance_base_on_merge: Mutex<Option<String>>,
+    /// Another release request creates the same ref before the provider answers the POST.
+    pub concurrent_release_ref: std::sync::atomic::AtomicBool,
+    /// Return the selected source SHA in place of the actual merge commit once.
+    pub report_source_as_merge: std::sync::atomic::AtomicBool,
+    /// Refuse one production head read following a pinned release merge.
+    pub fail_pinned_merge_read: std::sync::atomic::AtomicBool,
     /// GitHub accepted the merge, but reading the closed PR fails until it recovers.
     pub fail_merged_reads: std::sync::atomic::AtomicBool,
     /// Metadata confirms a merge while the branch listing still has the open PR.
@@ -641,6 +649,16 @@ impl GitHubPort for FakeGitHub {
         let remote = self
             .remote()
             .ok_or_else(|| AppError::Upstream("no remote".into()))?;
+        if let Some(new_base) = self
+            .advance_base_on_merge
+            .lock()
+            .map_err(AppError::internal)?
+            .take()
+        {
+            remote
+                .fast_forward(&pull.base, &new_base)
+                .map_err(AppError::Upstream)?;
+        }
         if self.strict.load(Ordering::SeqCst) {
             let base = remote.branch_sha(&pull.base).unwrap_or_default();
             if remote.contains(&base, &pull.head_sha) != Some(true) {
@@ -674,7 +692,30 @@ impl GitHubPort for FakeGitHub {
             p.merge_commit_sha = Some(sha.clone());
         }
         self.record(token, format!("merge_pull #{number} {method}"));
+        if self.report_source_as_merge.swap(false, Ordering::SeqCst) {
+            return Ok(pull.head_sha);
+        }
         Ok(sha)
+    }
+    async fn create_branch(
+        &self,
+        _: &Secret,
+        _: &str,
+        _: &str,
+        branch: &str,
+        sha: &str,
+    ) -> AppResult<()> {
+        let remote = self
+            .remote()
+            .ok_or_else(|| AppError::Upstream("no remote".into()))?;
+        if self.concurrent_release_ref.swap(false, Ordering::SeqCst) {
+            remote
+                .create_branch(branch, sha)
+                .map_err(AppError::Conflict)?;
+        }
+        remote
+            .create_branch(branch, sha)
+            .map_err(AppError::Conflict)
     }
     async fn fast_forward(
         &self,
@@ -753,6 +794,21 @@ impl GitHubPort for FakeGitHub {
         _: &str,
         branch: &str,
     ) -> AppResult<Option<String>> {
+        if self.fail_pinned_merge_read.load(Ordering::SeqCst)
+            && self
+                .pulls
+                .lock()
+                .map_err(AppError::internal)?
+                .iter()
+                .any(|pull| {
+                    pull.merged && pull.base == branch && pull.head.starts_with("yulius/release/")
+                })
+            && self.fail_pinned_merge_read.swap(false, Ordering::SeqCst)
+        {
+            return Err(AppError::Upstream(
+                "production head temporarily unavailable".into(),
+            ));
+        }
         Ok(self.remote().and_then(|r| r.branch_sha(branch)))
     }
 }
@@ -1297,6 +1353,10 @@ pub trait FakeRemote: Send + Sync {
         method: &str,
         message: &str,
     ) -> Result<String, String>;
+    /// Creates a branch only if it does not exist.
+    fn create_branch(&self, _branch: &str, _sha: &str) -> Result<(), String> {
+        Err("creating a branch is unavailable".into())
+    }
     /// Moves `branch` to `sha` only as a fast-forward.
     fn fast_forward(&self, branch: &str, sha: &str) -> Result<(), String>;
     /// Deletes `branch`; `false` when it did not exist.
