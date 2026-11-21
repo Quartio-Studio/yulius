@@ -378,7 +378,8 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       const listed = map.get(detail.id);
       const listVersion = listOrder.get(map) ?? 0;
       const laterEvent = rowOrder.get(retained) > Math.max(listVersion, rowOrder.get(listed) ?? 0);
-      const row = laterEvent ? retained : listed ?? (listVersion < order ? retained : null);
+      const crossedPark = startingRow?.status !== detail.status && (startingRow?.status === 'parked' || detail.status === 'parked');
+      const row = laterEvent ? retained : listed ?? (crossedPark && listVersion < order ? retained : null);
       if (!row || (detail.status !== 'parked' && row.status !== 'parked' && startingRow?.status !== 'parked')) return view;
       const transition = row.status !== 'parked' || detail.status !== 'parked' ||
         (startingRow && startingRow.status !== detail.status);
@@ -439,6 +440,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     recordVerification(task, order);
     if (recheck) task = awaitingVerification(task, prior, order);
     rowOrder.set(task, order);
+    if (task.status !== 'parked' && detailResumes.has(prior)) detailResumes.add(task);
     // A live list can replace a newer live event before a detail reveals that
     // the task crossed a park. Keep that event with the outstanding read.
     for (const read of activeDetails) if (read.row?.id === task.id) read.row = task;

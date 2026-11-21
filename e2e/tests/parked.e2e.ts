@@ -2370,9 +2370,9 @@ test('an older empty list cannot drop a missed park or resume that detail has pu
     const results = [];
     for (const [status, listFirst, removal] of [
       ['parked', true, 'none'], ['parked', false, 'none'], ['running', true, 'none'], ['running', false, 'none'],
-      ['parked', true, 'archive'], ['parked', true, 'delete'], ['parked', true, 'newer list'],
+      ['parked', true, 'archive'], ['parked', true, 'delete'], ['parked', true, 'newer list'], ['parked', true, 'still parked'], ['parked', false, 'still parked'],
     ] as const) {
-      const before = { id: 'p', sandbox_id: 's', status: status === 'parked' ? 'running' : 'parked', title: 'Before' };
+      const before = { id: 'p', sandbox_id: 's', status: status === 'parked' && removal !== 'still parked' ? 'running' : 'parked', title: 'Before' };
       const held = Promise.withResolvers<void>();
       let reads = 0;
       const store = createStore({ get: async () => {
@@ -2398,7 +2398,7 @@ test('an older empty list cannot drop a missed park or resume that detail has pu
   });
   const park = ['parked', 'After', 'second', false], resume = ['running', 'After', 'second', false];
   const removed = [null, null, null, false];
-  expect(seen).toEqual([park, park, resume, resume, removed, removed, removed]);
+  expect(seen).toEqual([park, park, resume, resume, removed, removed, removed, removed, removed]);
 });
 
 test('a live update after a missed resume survives an older explicit list and failed confirmation', async ({ app, browser }) => {
@@ -2534,7 +2534,7 @@ test('a newer watched list notifies the terminal when it supersedes a detail-dis
     const module = '/assets/store.js';
     const { createStore } = await import(module);
     const results = [];
-    for (const listFirst of [false, true]) {
+    for (const [listFirst, rename] of [[false, false], [true, false], [false, true], [true, true]]) {
       const parked = { id: 'p', sandbox_id: 's', status: 'parked', activity: 'done' };
       const running = { ...parked, status: 'running', activity: 'working' };
       const waiting = { ...parked, status: 'waiting_capacity', activity: 'waiting' };
@@ -2548,8 +2548,10 @@ test('a newer watched list notifies the terminal when it supersedes a detail-dis
       await store.loadTasks('s');
       store.on('task', (row: typeof parked) => { terminal = row; });
       const publish = store.beginParkedDetail(parked);
+      if (rename && !listFirst) terminal = publish(running, terminal);
+      if (rename) store.upsertTask({ ...running, title: 'Renamed' });
       const newerList = store.loadTasks('s', true);
-      if (!listFirst) terminal = publish(running, terminal);
+      if (!rename && !listFirst) terminal = publish(running, terminal);
       held.resolve(); await newerList;
       if (listFirst) terminal = publish(running, terminal);
       const row = store.findTask('p');
@@ -2558,5 +2560,5 @@ test('a newer watched list notifies the terminal when it supersedes a detail-dis
     return results;
   });
   const waiting = ['waiting_capacity', 'waiting', 'waiting_capacity', 'waiting'];
-  expect(seen).toEqual([waiting, waiting]);
+  expect(seen).toEqual([waiting, waiting, waiting, waiting]);
 });
