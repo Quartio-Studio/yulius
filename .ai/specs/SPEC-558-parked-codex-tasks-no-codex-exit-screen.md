@@ -115,6 +115,8 @@ A Stop can settle a task while its reaped run is still finalizing. Continue wait
 
 ## Evidence
 
+- At `f42ae9dc0`, all 17 focused nextest cases passed in run `7af47f2e-6d96-43f5-9b4e-b49c6c9ffa42`. The three review regressions had all failed on `ceea0550e`. The passing cases cover queued and capacity-delayed continuations, both reader orderings, a later Archive, timeout and retry, ordinary parked messages, escalation, switches and orphaned attempts. The real PTY ran a local fake agent. Vidoc was disabled.
+
 - Independent review of `ceea0550e` found two owner-state races. Three public Continue regressions failed on that implementation. A held live run and a run reaped after the owner submitted Continue both produced conflicts after the task had been unarchived. An Archive accepted while Continue was waiting instead let Continue succeed. The supervisor now checks the original status and archive timestamp under the launch lock after its single settlement check.
 
 - A further regression caught the first timeout implementation unarchiving the stopped task. The test now checks the archive and the outstanding decision both after the conflict and after a successful retry.

@@ -1457,7 +1457,14 @@ impl<'a> Move<'a> {
                 .lines
                 .iter()
                 .any(|l| l.outcome == HostOutcome::Changed);
-            self.call("reverse proxy", &Request::Proxy { changed })?;
+            // Port 443 is asked for the host the carried site serves after the move.
+            let https = self
+                .state
+                .new_url
+                .as_deref()
+                .filter(|url| url.starts_with("https://"))
+                .and_then(profile::host_of);
+            self.call("reverse proxy", &Request::Proxy { changed, https })?;
         }
         // The unit's drop-in, the binary's owner and the sandbox base: the host is proven ready
         // while the old instance still runs, not found wanting after the copy.
