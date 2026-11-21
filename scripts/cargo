@@ -12,9 +12,35 @@ root = Path(__file__).resolve().parent.parent
 args = sys.argv[1:]
 os.environ["PATH"] = str(root / ".tools/bin") + os.pathsep + os.environ.get("PATH", "")
 
+def validate_scratch_args(args):
+    import tomllib
+    cargo_args = iter(args)
+    for arg in cargo_args:
+        key, separator, value = arg.partition("=")
+        if arg == "--":
+            break
+        if key in {"--target-dir", "--build-dir"}:
+            sys.exit(f"--scratch-target owns Cargo's output directories; remove {key}")
+        if key == "--config":
+            if not separator:
+                value = next(cargo_args, "")
+            try:
+                config = tomllib.loads(value)
+            except tomllib.TOMLDecodeError:
+                try:
+                    with open(value, "rb") as source:
+                        config = tomllib.load(source)
+                except (OSError, tomllib.TOMLDecodeError):
+                    continue  # Cargo diagnoses malformed or missing configurations.
+            build = config.get("build", {})
+            if isinstance(build, dict) and {"target-dir", "build-dir"} & build.keys():
+                sys.exit("--scratch-target owns Cargo's output directories; remove the --config output override")
+
+
 scratch_target = args[:1] == ["--scratch-target"]
 if scratch_target:
     args = args[1:]
+    validate_scratch_args(args)
 
 
 def run_build(command, env, lease=None):
@@ -24,7 +50,7 @@ def run_build(command, env, lease=None):
     parent.mkdir(exist_ok=True, parents=True)
     build = tempfile.mkdtemp(prefix="cargo-", dir=parent)
     try:
-        result = run_session(command, dict(env, CARGO_TARGET_DIR=build), lease, disposable=True)
+        result = run_session(command, dict(env, CARGO_TARGET_DIR=build, CARGO_BUILD_BUILD_DIR=build, CARGO_BUILD_TARGET_DIR=build), lease, disposable=True)
     except UnreapedBuild as error:
         # The containing session can reclaim this target once its processes end.
         raise UnreapedBuild(f"{error}; retained build target {build}") from error
@@ -38,6 +64,10 @@ def run_build(command, env, lease=None):
 def remove_target(build, parent):
     try:
         shutil.rmtree(build)
+    except FileNotFoundError:
+        if os.path.lexists(build):
+            raise
+        # cargo clean can remove the allocated root itself.
     except PermissionError:
         # TemporaryDirectory's cleanup also handles owner-read-only dependencies.
         with tempfile.TemporaryDirectory(prefix="cargo-clean-", dir=parent) as disposal:

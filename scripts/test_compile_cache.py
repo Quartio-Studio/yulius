@@ -67,6 +67,32 @@ class CompileCache(unittest.TestCase):
             self.assertEqual(target.parent, parent)
             self.assertFalse(target.exists())
 
+    def test_disposable_real_cargo_owns_both_output_directories(self):
+        self.create_fixture(self.task, 'fn main() { println!("{}", std::env::args().nth(1).unwrap()); }')
+        cargo = Path(subprocess.check_output(["rustup", "which", "cargo"], text=True).strip())
+        env = self.cargo_env(self.sandbox / "home", cargo)
+        outside = self.sandbox / "outside"
+        parent = self.sandbox / "scratch"
+        env.update(YULIUS_BUILD_SCRATCH=str(parent), CARGO_BUILD_BUILD_DIR=str(outside),
+                   RUSTC=str(cargo.with_name("rustc")))
+        settings = self.task / "elsewhere.toml"
+        settings.write_text(f'[build]\nbuild-dir = "{outside}"')
+        for args, expected in [(["clean", "--offline"], 0),
+                               (["run", "--quiet", "--offline", "--", "--target-dir"], 0),
+                               (["build", "--offline", "--target-dir=" + str(outside)], 1),
+                               (["build", "--offline", "--target-dir", str(outside)], 1),
+                               (["build", "--config", f'build.build-dir="{outside}"'], 1),
+                               (["build", "--config=" + str(settings)], 1),
+                               (["check", "--offline", "--config", "build.jobs=1"], 0)]:
+            with self.subTest(args=args):
+                result = subprocess.run([self.task / "scripts/cargo", "--scratch-target", *args],
+                                        cwd=self.task, env=env, capture_output=True, text=True, timeout=20)
+                self.assertEqual(result.returncode, expected, result.stderr)
+                if args[0] == "run":
+                    self.assertEqual(result.stdout.strip(), "--target-dir")
+                self.assertFalse(outside.exists(), "intermediate artifacts escaped disk scratch")
+                self.assertFalse(list(parent.iterdir()))
+
     def test_unconfirmed_shutdown_retains_its_target_and_runs_cargo_once(self):
         root = self.sandbox / "scratch"
         env = self.caller_fixture("from pathlib import Path\n"
@@ -198,6 +224,19 @@ Path(os.environ['CARGO_TARGET_DIR'], 'keep').touch()
             (cache / ".yulius-mbx-v1").write_bytes(contents)
             result = self.launch(self.task, self.sandbox / "home", "print('unexpected cache')")
             self.assertEqual(result.stdout, "")
+
+    def test_unfinished_eviction_uses_cargo_until_upkeep_finishes(self):
+        home = self.sandbox / "home"
+        cache = self.sandbox / "rust-compile-cache"
+        dispatch = "print('cached', flush=True); os.execv(os.environ['CARGO'], [os.environ['CARGO'], *sys.argv[1:]])"
+        self.assertEqual(self.launch(self.task, home, dispatch).stdout.strip(), "cached")
+        pending = cache / ".yulius-mbx-pruning"
+        ready = cache / ".yulius-mbx-v1"
+        ready.rename(pending)
+        self.assertEqual(self.launch(self.task, home, dispatch).stdout, "")
+        self.assertEqual(self.record.read_text().splitlines(), ["build", "build"])
+        pending.rename(ready)
+        self.assertEqual(self.launch(self.task, home, dispatch).stdout.strip(), "cached")
 
     def test_interrupted_publication_leaves_the_next_launcher_able_to_initialize(self):
         from unittest.mock import patch
@@ -407,6 +446,47 @@ signal.pause()
                     os.waitpid(pid, 0)
                 if terminal is not None:
                     os.close(terminal)
+
+    def test_terminal_suspends_and_resumes_the_disposable_build(self):
+        import pty
+        import select
+        import signal
+        import time
+        env = self.caller_fixture("print('ready',flush=True); print('received '+input(),flush=True)")
+        target_root = self.sandbox / "scratch"
+        env["YULIUS_BUILD_SCRATCH"] = str(target_root)
+        pid, terminal = pty.fork()
+        if pid == 0:
+            os.execve(self.task / "scripts/cargo", ["cargo", "--scratch-target", "run"], env)
+        reaped = False
+        try:
+            self.assertTrue(select.select([terminal], [], [], 5)[0])
+            self.assertIn(b"ready", os.read(terminal, 4096))
+            os.write(terminal, b'\x1a')
+            deadline = time.monotonic() + 3
+            while True:
+                child, status = os.waitpid(pid, os.WUNTRACED | os.WNOHANG)
+                if child:
+                    self.assertTrue(os.WIFSTOPPED(status), status)
+                    break
+                self.assertLess(time.monotonic(), deadline, "wrapper never suspended with Cargo")
+                time.sleep(0.01)
+            os.kill(pid, signal.SIGCONT)
+            os.write(terminal, b"X\n")
+            received = b""
+            while b"received X" not in received:
+                self.assertTrue(select.select([terminal], [], [], 5)[0])
+                received += os.read(terminal, 4096)
+            _, status = os.waitpid(pid, 0)
+            reaped = True
+            self.assertEqual(os.waitstatus_to_exitcode(status), 0)
+            self.assertFalse(list(target_root.iterdir()))
+        finally:
+            if not reaped:
+                os.kill(pid, signal.SIGCONT)
+                os.kill(pid, signal.SIGTERM)
+                os.waitpid(pid, 0)
+            os.close(terminal)
 
     def check_foreground_terminal(self, redirect_stdin, scratch=False):
         import pty

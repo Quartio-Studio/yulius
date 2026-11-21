@@ -118,11 +118,18 @@ def stop_build_group(group, requested=None):
         raise UnreapedBuild(f"build group {group} still has live workers after SIGKILL")
 
 
-def observe_build_exit(pid):
+def observe_build_exit(pid, suspend=None):
     """Observe exit while the unreaped leader still pins the process group."""
     if hasattr(os, "waitid"):
-        os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT)
-        return
+        events = os.WEXITED | os.WNOWAIT
+        if suspend is not None:
+            events |= os.WSTOPPED
+        while True:
+            event = os.waitid(os.P_PID, pid, events)
+            if event.si_code != os.CLD_STOPPED:
+                return
+            os.waitid(os.P_PID, pid, os.WSTOPPED | os.WNOHANG)
+            suspend()
     # Python 3.11 and 3.12 on macOS expose kqueue but not waitid.
     import select
     with select.kqueue() as events:
@@ -130,9 +137,21 @@ def observe_build_exit(pid):
                                    flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
                                    fflags=select.KQ_NOTE_EXIT)
         try:
-            event, = events.control([exit_event], 1, None)
-            if event.flags & select.KQ_EV_ERROR and event.data != errno.ESRCH:
-                raise OSError(event.data, os.strerror(event.data))
+            changes = [exit_event]
+            while True:
+                observed = events.control(changes, 1, 0.2 if suspend else None)
+                changes = []
+                if observed:
+                    event, = observed
+                    if event.flags & select.KQ_EV_ERROR and event.data != errno.ESRCH:
+                        raise OSError(event.data, os.strerror(event.data))
+                    return
+                # kqueue reports process exit, but Darwin's EVFILT_PROC has
+                # no stop event. The waitable child pins this PID across ps.
+                state = subprocess.run(["/bin/ps", "-p", str(pid), "-o", "stat="],
+                                       capture_output=True, timeout=1)
+                if state.stdout.strip().startswith(b"T"):
+                    suspend()
         except ProcessLookupError:
             pass  # The child had already exited before registration.
 
@@ -188,6 +207,19 @@ def run_session(command, env, lease=None, *, disposable=False):
         finally:
             signal.signal(signal.SIGTTOU, previous_ttou)
 
+    def suspend():
+        # Let the shell see its job stop. On fg it returns the terminal to
+        # our group before continuing us. A bg resume must leave it there.
+        if os.tcgetpgrp(terminal) == child.pid:
+            foreground(os.getpgrp())
+        os.kill(os.getpid(), signal.SIGSTOP)
+        if os.tcgetpgrp(terminal) == os.getpgrp():
+            foreground(child.pid)
+        try:
+            os.killpg(child.pid, signal.SIGCONT)
+        except ProcessLookupError:
+            pass
+
     signals = (signal.SIGHUP, signal.SIGINT, signal.SIGQUIT, signal.SIGTERM)
     previous = {sig: signal.signal(sig, cancel) for sig in signals}
     try:
@@ -206,7 +238,7 @@ def run_session(command, env, lease=None, *, disposable=False):
             raise Cancelled
         # Terminal Ctrl-C goes straight to the foreground group. Cargo may
         # report a signal or translate it to an ordinary exit code.
-        observe_build_exit(child.pid)
+        observe_build_exit(child.pid, suspend if terminal is not None else None)
         if disposable:
             stop_build_group(child.pid)
         # The last group operation precedes reaping. A delayed cancellation must
@@ -234,7 +266,8 @@ def run_session(command, env, lease=None, *, disposable=False):
         try:
             if terminal is not None:
                 try:
-                    foreground(os.getpgrp())
+                    if child is not None and os.tcgetpgrp(terminal) == child.pid:
+                        foreground(os.getpgrp())
                 finally:
                     os.close(terminal)
         except OSError as error:
