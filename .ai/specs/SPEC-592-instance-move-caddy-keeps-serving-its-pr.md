@@ -55,15 +55,15 @@ after the start (`after()` in `migrate.rs`, MIG-039) stays as it is.
   that Caddy was reloaded and what port 443 answered.
 - **CKS-005** `Request::Proxy` carries the host name to ask as `https: Option<String>`
   (`#[serde(default)]`); a name that is not a plain DNS name (letters, digits, `.` and `-`) is
-  not asked and the step says why.
+  not asked: the step fails saying why, before it runs anything.
 
 ## Plan
 
 - [x] Read the move's proxy step, its caller and tests, and write the spec
-- [ ] Failing fake-host tests: unchanged files still reload; reload fails; HTTPS refused
-- [ ] Proxy step reloads Caddy and checks HTTPS on 443 on the new host
-- [ ] The old host passes the public host name; flow tests updated
-- [ ] ADR, docs/operations.md and docs/changes.md updated
+- [x] Failing fake-host tests: unchanged files still reload; reload fails; HTTPS refused
+- [x] Proxy step reloads Caddy and checks HTTPS on 443 on the new host
+- [x] The old host passes the public host name; flow tests updated
+- [x] ADR, docs/operations.md and docs/changes.md updated
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Evidence recorded and the spec finished for green-CI delivery
 

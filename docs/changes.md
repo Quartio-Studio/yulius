@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- An instance move now reloads the new host's Caddy with the carried Caddyfile on every pass (restart if the reload fails) and asks that host's port 443 for the public host before it reports the reverse proxy done, stopping with the fix when nothing answers there. Before, a Caddy the package had started with its default `:80` site kept serving it until a person ran `systemctl reload caddy`. [SPEC-592](../.ai/specs/SPEC-592-instance-move-caddy-keeps-serving-its-pr.md), [ADR-0431](decisions/0431-the-move-reloads-caddy-and-asks-its-own-port-443.md)
 - Finished parked tasks with a recorded merge stay under Done when GitHub cannot check for a follow-up PR. Existing false waits resolve on refresh, and known open replacements still show their checks. [SPEC-585](../.ai/specs/SPEC-585-i-got-this-everywhere-fix.md)
 - Parking keeps the original PR owner live when its recorded integration candidate failed on the current head and base, or the queue decision changes during verification (SPEC-558).
 - Agents now fix findings and obtain independent re-review through approval without asking the task owner to authorize another round. [SPEC-588](../.ai/specs/SPEC-588-it-shouldn-t-ask-me-for-this-agents-must.md)

@@ -1986,7 +1986,14 @@ record of the installed commit, the move helper's units when the old host has th
 URL and host name are replaced; environment and key files travel as they are, and the plan names
 one that mentions the old host, for you to edit; Caddy's directory
 and drop-ins for the new host name, validated and started, so its certificate is there before the
-cutover; ufw's rules (enabled at the very end); and `host setup` up to the sandbox base. Limits pinned in the unit travel unchanged and
+cutover. Caddy is reloaded with the carried Caddyfile on every pass, even when the files were
+already there (the package starts Caddy with its default site before they are copied); a failed
+reload falls back to `systemctl restart caddy`. Then the new host's own port 443 is asked for the
+public host (`curl --resolve <host>:443:127.0.0.1`): any HTTP answer passes, a failed TLS
+handshake is said (no certificate yet while the name still leads to the old host), and a port that
+refuses after one more restart stops the move with the fix (`systemctl restart caddy`,
+`journalctl -u caddy -n 50`) ([SPEC-592](../.ai/specs/SPEC-592-instance-move-caddy-keeps-serving-its-pr.md));
+ufw's rules (enabled at the very end); and `host setup` up to the sandbox base. Limits pinned in the unit travel unchanged and
 are named; the new instance re-sizes those that no longer fit (SPEC-459).
 
 **Copy** (the old instance still runs). The data directory is copied into a staged copy on the
