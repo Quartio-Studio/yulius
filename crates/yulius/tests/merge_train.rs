@@ -1163,7 +1163,14 @@ async fn the_owners_ordinary_failure_wins_during_singleton_verification() -> Tes
     reused_singleton(SingletonChange::Ordinary).await
 }
 
+#[tokio::test]
+async fn a_base_advance_during_singleton_verification_keeps_the_arm_and_no_drop_span() -> TestResult
+{
+    reused_singleton(SingletonChange::BaseDuringRead).await
+}
+
 enum SingletonChange {
+    BaseDuringRead,
     Ordinary,
     None,
     Base,
@@ -1195,7 +1202,8 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
     .await?;
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
     let failure = format!(
-        "FAIL [0.292s] (1/1) search latency\n  stderr ───\n    thread panicked at search.rs\n    search took 292.1 ms, limit 200 ms ({secret})\n    {} beyond-limit",
+        "FAIL [0.292s] (1/1) search latency{}\n  stderr ───\n    thread panicked at search.rs\n    search took 292.1 ms, limit 200 ms ({secret})\n    {} beyond-limit",
+        "s".repeat(600),
         "x".repeat(512)
     );
     let (mut red, mut job) =
@@ -1204,7 +1212,26 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
     job.name = "shard 2".into();
     job.state = RunState::Running;
     let job_id = job.id.clone();
-    app.deps.store.insert_ci_run(&red, &[job]).await?;
+    let mut sibling = job.clone();
+    sibling.id = "prior-train-sibling".into();
+    sibling.name = "shard 1".into();
+    job.ordinal = 1;
+    app.deps.store.insert_ci_run(&red, &[sibling, job]).await?;
+    assert!(
+        app.deps
+            .store
+            .transition_ci_job(
+                "prior-train-sibling",
+                &[RunState::Running],
+                RunState::Cancelled,
+                &yulius_app::ci::CiJobUpdate {
+                    reason: Some("stopped early: job shard 2 failed".into()),
+                    failures: Some(format!("FAIL [0.002s] (1/1) partial {}\n", "p".repeat(600))),
+                    ..Default::default()
+                }
+            )
+            .await?
+    );
     assert!(
         app.deps
             .store
@@ -1223,7 +1250,10 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
             .await?
     );
     app.merge_armed(&f.sandbox).await;
-    if matches!(change, SingletonChange::Ordinary) {
+    if matches!(
+        change,
+        SingletonChange::Ordinary | SingletonChange::BaseDuringRead
+    ) {
         let hold = Arc::new(tokio::sync::Notify::new());
         *f.h.github.pull_read_hold.lock().map_err(|_| "hold")? = Some(hold.clone());
         let change_run = async {
@@ -1232,16 +1262,24 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
                 f.h.github.pull_read_entered.notified(),
             )
             .await?;
-            let (mut failed, job) = crate::pr_watch::run(
-                &f.sandbox,
-                "ordinary-rerun",
-                &head,
-                RunState::Failed,
-                None,
-                app.now().0 + 1,
-            );
-            failed.reference = CiRef::PullRequest(1);
-            let written = app.deps.store.insert_ci_run(&failed, &[job]).await;
+            let written = async {
+                if matches!(change, SingletonChange::BaseDuringRead) {
+                    f.advance_dev("late-base.txt")?;
+                } else {
+                    let (mut failed, job) = crate::pr_watch::run(
+                        &f.sandbox,
+                        "ordinary-rerun",
+                        &head,
+                        RunState::Failed,
+                        None,
+                        app.now().0 + 1,
+                    );
+                    failed.reference = CiRef::PullRequest(1);
+                    app.deps.store.insert_ci_run(&failed, &[job]).await?;
+                }
+                Ok::<_, Box<dyn std::error::Error>>(())
+            }
+            .await;
             *f.h.github.pull_read_hold.lock().map_err(|_| "hold")? = None;
             hold.notify_one();
             written?;
@@ -1253,6 +1291,20 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
         .await?;
         changed?;
         let state = f.wait(1, &worktree).await?;
+        if matches!(change, SingletonChange::BaseDuringRead) {
+            assert_eq!(state["merge_armed"], true, "{state}");
+            let spans = app
+                .deps
+                .store
+                .subject_spans(&f.sandbox, SubjectKind::Task, "t1", 100)
+                .await?;
+            assert!(
+                !spans
+                    .iter()
+                    .any(|s| s.name == "merge_armed" && s.outcome.as_deref() == Some("dropped"))
+            );
+            return Ok(());
+        }
         let outcome = state["merge_outcome"].as_str().ok_or("ordinary outcome")?;
         assert!(
             outcome.contains("checks") && !outcome.contains("prior-train"),
@@ -1270,7 +1322,9 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
                 git(&worktree, &["commit", "--allow-empty", "-qm", "later head"])?;
                 git(&worktree, &["push", "-q", "origin", "HEAD"])?;
             }
-            SingletonChange::None | SingletonChange::Ordinary => unreachable!(),
+            SingletonChange::None | SingletonChange::Ordinary | SingletonChange::BaseDuringRead => {
+                unreachable!()
+            }
         }
         app.merge_armed(&f.sandbox).await;
         let state = f.wait(1, &worktree).await?;

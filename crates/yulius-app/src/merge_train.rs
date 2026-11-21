@@ -279,6 +279,17 @@ pub(crate) struct FailedSingleton {
     run: String,
 }
 
+/// Fold redacted CI text to a bounded line that can be typed into the owner's terminal.
+fn diagnostic_excerpt(text: &str, limit: usize) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(limit)
+        .collect()
+}
+
 /// The instructions an owner gets when their head failed on top of the integration base.
 fn singleton_failure(pr: u64, head: &str, integration: &str, run: &str) -> String {
     format!(
@@ -795,24 +806,36 @@ impl App {
         run: &str,
     ) -> String {
         let mut text = singleton_failure(member.pr, &member.head, integration, run);
-        if let Ok(jobs) = self.deps.store.ci_jobs(run, true).await
-            && !jobs.is_empty()
-        {
-            let summary = crate::pr_watch::failed_jobs(&jobs);
-            // Only retained test failures, never the general CI output. Redact before
-            // truncating so a secret crossing the display limit cannot leak a prefix.
-            let excerpt = jobs
-                .iter()
-                .filter(|job| job.state == RunState::Failed)
-                .filter_map(|job| job.failures.as_deref())
-                .next()
-                .unwrap_or_default();
-            let reason = self
-                .redact_for_sandbox(&sandbox.id, &format!("{summary}. {excerpt}"))
-                .await;
-            let compact = reason.split_whitespace().collect::<Vec<_>>().join(" ");
+        let Ok(jobs) = self.deps.store.ci_jobs(run, true).await else {
+            return text;
+        };
+        let mut failed = jobs.iter().filter(|job| job.state == RunState::Failed);
+        let Some(job) = failed
+            .clone()
+            .find(|job| {
+                job.failures
+                    .as_deref()
+                    .is_some_and(|s| !s.trim().is_empty())
+            })
+            .or_else(|| failed.next())
+        else {
+            return text;
+        };
+        let label = crate::pr_watch::failed_jobs(std::slice::from_ref(job));
+        let kept = job.failures.as_deref().unwrap_or_default();
+        // The scanner keeps the test header before its output. The label already names
+        // the test; reserve the excerpt for the diagnostic even when its name is long.
+        let retained = self.redact_for_sandbox(&sandbox.id, kept).await;
+        let body = retained
+            .split_once('\n')
+            .map_or(retained.as_str(), |(_, body)| body);
+        let label = self.redact_for_sandbox(&sandbox.id, &label).await;
+        text.push(' ');
+        text.push_str(&diagnostic_excerpt(&label, 128));
+        let excerpt = diagnostic_excerpt(body, 383);
+        if !excerpt.is_empty() {
             text.push(' ');
-            text.extend(compact.chars().filter(|c| !c.is_control()).take(512));
+            text.push_str(&excerpt);
         }
         text
     }
@@ -829,12 +852,12 @@ impl App {
     ) -> bool {
         let confirm = async {
             let token = self.dlv_installation_token(sandbox).await.ok()?;
-            let github = &self.deps.github;
-            let (pull, tip) = tokio::try_join!(
-                github.get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, member.pr),
-                github.branch_sha(&token, &sandbox.repo_owner, &sandbox.repo_name, integration)
-            )
-            .ok()?;
+            let pull = self
+                .deps
+                .github
+                .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, member.pr)
+                .await
+                .ok()?;
             let delivery = self.deps.store.delivery(task).await.ok()??;
             Some(
                 delivery.stage == DeliveryStage::PrOpen
@@ -845,7 +868,7 @@ impl App {
                     && !pull.from_fork
                     && pull.base == integration
                     && pull.head_sha == member.head
-                    && tip.as_deref() == Some(base),
+                    && pull.base_sha == base,
             )
         };
         matches!(

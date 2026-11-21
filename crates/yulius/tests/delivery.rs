@@ -8184,6 +8184,7 @@ async fn the_branch_policy_gates_every_merge() -> TestResult {
         state: "open".into(),
         merged: false,
         base: "main".into(),
+        base_sha: String::new(),
         head: "dev".into(),
         head_sha: head.clone(),
         mergeable: None,

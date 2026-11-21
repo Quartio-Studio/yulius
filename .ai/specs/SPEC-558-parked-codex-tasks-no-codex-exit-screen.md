@@ -80,6 +80,8 @@ The merge queue owns the decision that a singleton failed on the integration bas
 
 ## Evidence
 
+- At `ff8fc21da` a `dev` advance during the final held PR read still dropped the singleton arm. Five hundred characters of a cancelled sibling’s partial test name also displaced the failing shard from the owner’s diagnostic. Both review regressions failed. The queue now reads both SHAs from the same hosted PR response and reserves diagnostic space for the failed job.
+
 - The hosted-input regressions originally delivered the obsolete failure after a base advance, a PR retarget or a head change. A held PR read also reproduced the singleton verdict saying the ordinary head passed while its new ordinary CI run was already red.
 
 - The queue regression rebuilt singleton PR #1 with the tree of an earlier failed run for PRs #8 and #9. Before the change its owner received the source run ID and repair instructions but neither the failing shard nor the latency measurement.
