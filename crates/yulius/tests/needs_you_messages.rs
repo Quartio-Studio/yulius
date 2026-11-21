@@ -986,3 +986,268 @@ async fn parked_task_with_merged_pr_does_not_record_phantom_wait_history() -> Te
     );
     Ok(())
 }
+
+/// SPEC-578 (merge review findings #1 & #4): a parked task's HTTP `list_tasks`/`task_detail` and
+/// MCP `tasks_list`/`task_get` must agree on the verified parked PR failure notice and avoid
+/// thrashing `task_wait_messages` both when `observed_pulls` is cold and when `observed_pulls`
+/// still holds a stale merged observation while GitHub has a newer open failing PR.
+#[tokio::test]
+async fn parked_http_and_mcp_agree_on_cold_and_stale_observed_pulls() -> TestResult {
+    use yulius_app::ports::store::InstanceStore as _;
+    let h = harness()?;
+    h.store.init_instance("https://yulius.test", "x").await?;
+    let cfg = json!({"app_id": 1, "slug": "yulius-test", "client_id": "c",
+        "client_secret": "s", "private_key_pem": "k", "webhook_secret": null});
+    let sealed = h.app.deps.crypto.seal(cfg.to_string().as_bytes())?;
+    h.store.set_github_app(&sealed, "acme", "org").await?;
+    h.store.set_installation(Some(7)).await?;
+    let _alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "yulius", "u-alice").await?;
+    h.github.set_perm("alice", "acme/yulius", perms("write"));
+    seed_task(&h, "t1", "s1", "u-alice", TaskStatus::Parked, None).await?;
+    let task_id = TaskId::parse("t1")?;
+    let branch = h
+        .store
+        .task(&task_id)
+        .await?
+        .and_then(|t| t.branch)
+        .unwrap_or_else(|| "feat/t1".to_owned());
+    h.store
+        .set_activity(&task_id, Some(Activity::Done), Timestamp(1_000))
+        .await?;
+    // Cold `observed_pulls` and no `delivery` row: only `parked_status` verifies PR #1536.
+    {
+        let mut pulls = h.github.pulls.lock().map_err(|_| "pulls")?;
+        pulls.push(GhPull {
+            number: 1536,
+            html_url: "https://github.com/acme/yulius/pull/1536".into(),
+            title: "Failing parked PR".into(),
+            state: "open".into(),
+            merged: false,
+            base: "dev".into(),
+            head: branch.clone(),
+            head_sha: "sha1536".into(),
+            mergeable: Some(true),
+            behind: false,
+            from_fork: false,
+            merge_commit_sha: None,
+        });
+    }
+    h.github
+        .set_checks("sha1536", yulius_app::ports::github::ChecksState::Failure);
+
+    let owner = auth_ctx(&h, "u-alice").await?;
+    let caller = remote_caller("s1", "u-alice")?;
+
+    let http_list = h.app.list_tasks(&owner, "s1", false).await?;
+    let http_row = http_list
+        .iter()
+        .find(|t| t.id == "t1")
+        .ok_or("http list row")?;
+    let http_detail = h.app.task_detail(&owner, "t1").await?;
+    let mcp_get = h
+        .app
+        .tool_task_get(&caller, &json!({"task_id": "t1"}))
+        .await?;
+    let mcp_list = h
+        .app
+        .tool_tasks_list(&caller, &json!({"scope": "needs_you"}))
+        .await?;
+    let mcp_row = mcp_list["tasks"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|r| r["task_id"] == "t1"))
+        .ok_or("mcp list row")?;
+
+    let expected_happened = "The task is parked and pull request #1536 checks are failing.";
+    assert_eq!(http_row.parked_needs_you, Some(true));
+    assert_eq!(http_detail.summary.parked_needs_you, Some(true));
+    assert_eq!(
+        http_row
+            .needs_you_notice
+            .as_ref()
+            .map(|n| n.happened.as_str()),
+        Some(expected_happened)
+    );
+    assert_eq!(
+        http_detail
+            .summary
+            .needs_you_notice
+            .as_ref()
+            .map(|n| n.happened.as_str()),
+        Some(expected_happened)
+    );
+    assert_eq!(mcp_get["shows"], "needs_you");
+    assert_eq!(
+        mcp_get["needs_you_notice"]["happened"].as_str(),
+        Some(expected_happened)
+    );
+    assert_eq!(
+        mcp_row["needs_you_notice"]["happened"].as_str(),
+        Some(expected_happened)
+    );
+    assert_eq!(
+        serde_json::to_value(&http_detail.summary.needs_you_notice)?,
+        mcp_get["needs_you_notice"],
+        "HTTP and MCP notices must match identically on cold observed_pulls"
+    );
+    // Re-read HTTP detail after MCP calls: wait history must stay a single open episode (no thrash).
+    let after_alternate = h.app.task_detail(&owner, "t1").await?;
+    assert_eq!(
+        after_alternate.wait_history.len(),
+        1,
+        "alternating HTTP and MCP reads must keep one wait_history episode: {:?}",
+        after_alternate.wait_history
+    );
+    assert!(after_alternate.wait_history[0].resolved_at.is_none());
+
+    // Phase B: warm `observed_pulls` with a merged PR #1536, then replace GitHub with a newer open
+    // failing PR #1537 without refreshing `observed_pulls` (stale green/merged cache).
+    {
+        let mut pulls = h.github.pulls.lock().map_err(|_| "pulls")?;
+        pulls[0].state = "closed".into();
+        pulls[0].merged = true;
+        pulls[0].merge_commit_sha = Some("merge1536".into());
+    }
+    let _ = h.app.git_overview(&owner, "s1").await?;
+    {
+        let mut pulls = h.github.pulls.lock().map_err(|_| "pulls")?;
+        pulls.push(GhPull {
+            number: 1537,
+            html_url: "https://github.com/acme/yulius/pull/1537".into(),
+            title: "Follow-up failing PR".into(),
+            state: "open".into(),
+            merged: false,
+            base: "dev".into(),
+            head: branch,
+            head_sha: "sha1537".into(),
+            mergeable: Some(true),
+            behind: false,
+            from_fork: false,
+            merge_commit_sha: None,
+        });
+    }
+    h.github
+        .set_checks("sha1537", yulius_app::ports::github::ChecksState::Failure);
+
+    let stale_detail = h.app.task_detail(&owner, "t1").await?;
+    let stale_mcp = h
+        .app
+        .tool_task_get(&caller, &json!({"task_id": "t1"}))
+        .await?;
+    let expected_1537 = "The task is parked and pull request #1537 checks are failing.";
+    assert_eq!(stale_detail.summary.parked_needs_you, Some(true));
+    assert_eq!(
+        stale_detail
+            .summary
+            .needs_you_notice
+            .as_ref()
+            .map(|n| n.happened.as_str()),
+        Some(expected_1537)
+    );
+    assert_eq!(
+        serde_json::to_value(&stale_detail.summary.needs_you_notice)?,
+        stale_mcp["needs_you_notice"]
+    );
+    assert_eq!(stale_detail.wait_history.len(), 2);
+    assert!(stale_detail.wait_history[0].resolved_at.is_none());
+    assert_eq!(stale_detail.wait_history[0].happened, expected_1537);
+    assert!(stale_detail.wait_history[1].resolved_at.is_some());
+    Ok(())
+}
+
+/// SPEC-578 (merge review finding #2): when a `needs_you` request is recorded on a parked task
+/// right after `parked_status` returned `Done`, `task_get` must merge the late request into its
+/// notice and `task_wait_messages` sync instead of returning `shows == "needs_you"` with no notice
+/// or resolving the wait history.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn parked_mcp_late_needs_you_after_done_parked_status_populates_notice_and_history()
+-> TestResult {
+    use std::sync::Arc;
+    use yulius_app::needs_you::{Named, NeedsYouRecord};
+    use yulius_app::ports::store::InstanceStore as _;
+    use yulius_app::ports::store_ext::NeedsYouStore as _;
+
+    let h = harness()?;
+    h.store.init_instance("https://yulius.test", "x").await?;
+    let cfg = json!({"app_id": 1, "slug": "yulius-test", "client_id": "c",
+        "client_secret": "s", "private_key_pem": "k", "webhook_secret": null});
+    let sealed = h.app.deps.crypto.seal(cfg.to_string().as_bytes())?;
+    h.store.set_github_app(&sealed, "acme", "org").await?;
+    h.store.set_installation(Some(7)).await?;
+    let _alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "yulius", "u-alice").await?;
+    h.github.set_perm("alice", "acme/yulius", perms("write"));
+    seed_task(&h, "t1", "s1", "u-alice", TaskStatus::Parked, None).await?;
+    let task_id = TaskId::parse("t1")?;
+    let branch = h
+        .store
+        .task(&task_id)
+        .await?
+        .and_then(|t| t.branch)
+        .unwrap_or_else(|| "feat/t1".to_owned());
+    h.store
+        .set_activity(&task_id, Some(Activity::Done), Timestamp(1_000))
+        .await?;
+    {
+        let mut pulls = h.github.pulls.lock().map_err(|_| "pulls")?;
+        pulls.push(GhPull {
+            number: 1536,
+            html_url: "https://github.com/acme/yulius/pull/1536".into(),
+            title: "Already merged".into(),
+            state: "closed".into(),
+            merged: true,
+            base: "dev".into(),
+            head: branch,
+            head_sha: "sha1536".into(),
+            mergeable: Some(true),
+            behind: false,
+            from_fork: false,
+            merge_commit_sha: Some("merge1536".into()),
+        });
+    }
+
+    let caller = remote_caller("s1", "u-alice")?;
+    let app = Arc::clone(&h.app);
+    let args = json!({"task_id": "t1"});
+    let (at, resume) = crate::support::hold_point(yulius_app::race::Point::ParkedStatusRead, "t1");
+    let read = tokio::spawn(async move { app.tool_task_get(&caller, &args).await });
+    crate::support::point_reached(at).await?;
+
+    // Persist a genuine `needs_you` request after `parked_status` has already read `Done`.
+    let req = NeedsYouRecord {
+        action: "Approve the production migration window.".into(),
+        happened: Some("Post-merge migration awaits approval.".into()),
+        problem: None,
+        decision: false,
+        link: None,
+        at: 2_000,
+        cause: None,
+        named: Named::default(),
+    };
+    h.store
+        .set_task_needs_you(&task_id, Some(&req), Timestamp(2_000))
+        .await?;
+    resume.send(())?;
+
+    let row = read.await??;
+    assert_eq!(row["shows"], "needs_you", "{row}");
+    assert!(row.get("needs_you").is_some(), "{row}");
+    assert_eq!(
+        row["needs_you_notice"]["happened"].as_str(),
+        Some("Post-merge migration awaits approval."),
+        "late needs_you must populate needs_you_notice: {row}"
+    );
+    assert_eq!(
+        row["needs_you_notice"]["action"].as_str(),
+        Some("Approve the production migration window.")
+    );
+    let history = row["wait_history"]
+        .as_array()
+        .ok_or("wait_history missing on late needs_you")?;
+    assert_eq!(history.len(), 1, "{history:?}");
+    assert!(
+        history[0]["resolved_at"].is_null(),
+        "late needs_you wait history must remain open: {history:?}"
+    );
+    Ok(())
+}

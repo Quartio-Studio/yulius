@@ -3653,7 +3653,7 @@ async fn a_parked_task_names_the_ordinary_ci_failure_on_the_older_open_pr() -> T
     assert_eq!(brief["parked_pr"], json!({"number":1461,"open":true}));
     assert_eq!(
         brief["wait_reason"],
-        "The task is parked and its pull request checks are failing."
+        "The task is parked and pull request #1461 checks are failing."
     );
     f.h.github
         .set_checks("abc123", yulius_app::ports::github::ChecksState::Pending);
@@ -3662,7 +3662,7 @@ async fn a_parked_task_names_the_ordinary_ci_failure_on_the_older_open_pr() -> T
         .await?;
     assert_eq!(
         pending["wait_reason"],
-        "The task is parked and its pull request checks are failing."
+        "The task is parked and pull request #1461 checks are failing."
     );
     f.h.github
         .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
@@ -3685,7 +3685,7 @@ async fn a_parked_task_names_the_ordinary_ci_failure_on_the_older_open_pr() -> T
     assert_eq!(row["parked_pr"], json!({"number":1461,"open":true}));
     assert_eq!(
         row["wait_reason"],
-        "The task is parked and its pull request checks are failing."
+        "The task is parked and pull request #1461 checks are failing."
     );
     let unavailable = serde_json::to_value(app.task_detail(&owner, f.task.as_str()).await?)?;
     assert_eq!(unavailable["parked_needs_you"], true);

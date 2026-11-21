@@ -746,16 +746,17 @@ impl App {
             .task_summary_with(task, project, &steps, requested, false)
             .await?;
         if let Some(read) = status {
-            let parked_needs_you = read.facts.needs_you()
-                || summary.spec_unfinished
-                || summary.goal_unfinished
-                || summary.needs_you.is_some()
-                || summary.held_prompt.is_some();
-            summary.parked_needs_you = Some(parked_needs_you);
+            let mut effective = read.facts;
+            effective.plan_open = crate::sandboxes::plan_open(&steps);
+            effective.spec_unfinished |= summary.spec_unfinished;
+            effective.goal_unfinished |= summary.goal_unfinished;
+            effective.browser_request |= summary.needs_you.is_some();
+            effective.held_prompt |= summary.held_prompt.is_some();
+            summary.parked_needs_you = Some(effective.needs_you());
             summary.parked_pr = read.pr;
-            if !parked_needs_you && summary.needs_you.is_none() {
-                summary.needs_you_notice = None;
-            }
+            summary.needs_you_notice = self
+                .resolve_needs_you_notice_with_pr(task, &effective, read.pr.map(|pr| pr.number))
+                .await;
         }
         if sync_wait && task.archived_at.is_none() && !task.status.is_resting() {
             self.sync_wait_message(task, summary.needs_you_notice.as_ref())

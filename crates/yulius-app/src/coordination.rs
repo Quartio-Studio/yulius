@@ -165,7 +165,7 @@ impl App {
             facts.plan_open = crate::sandboxes::plan_open(&steps);
         }
         let mut brief = self
-            .task_brief_with_steps(task, facts, person, &steps)
+            .task_brief_with_steps(task, facts, person, &steps, pr.map(|pr| pr.number))
             .await?;
         if let Some(pr) = pr {
             brief["parked_pr"] = json!(pr);
@@ -187,6 +187,7 @@ impl App {
         mut facts: AttentionFacts,
         person: bool,
         steps: &[StepRecord],
+        pr_hint: Option<u64>,
     ) -> AppResult<Value> {
         let mut brief = self.task_brief_plain(task, steps).await?;
         // Where the task list shows it, and why it waits for a person or is held (SPEC-487
@@ -197,7 +198,7 @@ impl App {
         brief["model"] = json!(task.model);
         brief["effort"] = json!(task.effort);
         if let Some(fields) = brief.as_object_mut() {
-            let question = self.waits_why(task, person, &facts).await;
+            let question = self.waits_why(task, person, &facts, pr_hint).await;
             if task.status == TaskStatus::Parked {
                 facts.browser_request |= question.contains_key("needs_you");
                 facts.held_prompt |= question.contains_key("held_prompt");
@@ -343,7 +344,7 @@ impl App {
                     if facts.needs_you() {
                         let steps = self.deps.store.steps(&task.id).await?;
                         rows.push(
-                            self.task_brief_with_steps(task, facts, person, &steps)
+                            self.task_brief_with_steps(task, facts, person, &steps, None)
                                 .await?,
                         );
                     }

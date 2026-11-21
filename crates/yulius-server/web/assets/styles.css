@@ -1218,7 +1218,7 @@ button.notif-open:hover, button.notif-open:focus-visible { color: var(--text); }
 .attention-row:has(> .needs-you-text), .needs-you-text, .needs-you-parts { background: inherit; }
 :is(.attention-bar, .attention-row):has(> .needs-you-text) { align-items: flex-start; }
 :is(.attention-bar, .attention-row):has(> .needs-you-text) > .icon { margin-top: 2px; }
-.needs-you-head { display: block; margin-bottom: 4px; }
+.needs-you-title { display: flex; flex-wrap: wrap; align-items: baseline; margin-bottom: 4px; }
 /* Long context scrolls inside the list; the to-do stays at its foot, in view. */
 .needs-you-parts { display: flex; flex-direction: column; gap: 4px; margin: 0; max-height: min(20em, 45vh); overflow-y: auto; overscroll-behavior: contain; border-radius: var(--radius-sm); }
 .needs-you-parts:focus-visible { box-shadow: var(--focus); outline: none; }

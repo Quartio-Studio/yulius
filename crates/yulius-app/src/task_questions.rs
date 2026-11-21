@@ -135,11 +135,23 @@ impl App {
     ///
     /// Never includes a held prompt's typed excerpt so it is safe across all callers
     /// (including task agents).
-    #[allow(clippy::too_many_lines)]
     pub(crate) async fn resolve_needs_you_notice(
         &self,
         task: &TaskRecord,
         facts: &AttentionFacts,
+    ) -> Option<NeedsYouNoticeView> {
+        self.resolve_needs_you_notice_with_pr(task, facts, None)
+            .await
+    }
+
+    /// Like [`Self::resolve_needs_you_notice`], with an optional verified pull request number
+    /// (e.g. from `parked_status`) used when `observed_pulls` and `delivery` lack it (SPEC-578).
+    #[allow(clippy::too_many_lines)]
+    pub(crate) async fn resolve_needs_you_notice_with_pr(
+        &self,
+        task: &TaskRecord,
+        facts: &AttentionFacts,
+        pr_hint: Option<u64>,
     ) -> Option<NeedsYouNoticeView> {
         if facts.group() != TaskGroup::NeedsYou {
             return None;
@@ -277,11 +289,13 @@ impl App {
                 at_ms: episode_at_ms,
             }
         } else if facts.pull == Some(PullSignal::Failing) {
-            let pr_num = self
-                .observed_pulls
-                .known_pull(&task.sandbox_id, &task.id)
-                .flatten()
-                .map(|obs| obs.number)
+            let pr_num = pr_hint
+                .or_else(|| {
+                    self.observed_pulls
+                        .known_pull(&task.sandbox_id, &task.id)
+                        .flatten()
+                        .map(|obs| obs.number)
+                })
                 .or(match store.delivery(&task.id).await.ok().flatten() {
                     Some(rec) => rec.pr_number,
                     None => None,
@@ -292,7 +306,8 @@ impl App {
                 "The agent stopped and"
             };
             if let Some(pr) = pr_num {
-                if let Some(run) = self.latest_pr_ci_run(&task.sandbox_id, pr).await
+                if self.config.ci.enabled
+                    && let Some(run) = self.latest_pr_ci_run(&task.sandbox_id, pr).await
                     && matches!(run.state, RunState::Failed | RunState::Error)
                 {
                     let jobs = store.ci_jobs(&run.id, true).await.unwrap_or_default();
@@ -643,6 +658,7 @@ impl App {
         task: &TaskRecord,
         person: bool,
         facts: &AttentionFacts,
+        pr_hint: Option<u64>,
     ) -> serde_json::Map<String, Value> {
         // What the task's summary shows, also for a task that ended: a prompt held before its
         // end is still decided on its card.
@@ -710,7 +726,14 @@ impl App {
             );
         }
         drop(add);
-        let notice = self.resolve_needs_you_notice(task, facts).await;
+        // Merge any request or held prompt that arrived after `facts` was computed (e.g. after
+        // `parked_status`) so `needs_you_notice` and `task_wait_messages` agree with `shows`.
+        let mut effective = *facts;
+        effective.browser_request |= why.contains_key("needs_you");
+        effective.held_prompt |= why.contains_key("held_prompt");
+        let notice = self
+            .resolve_needs_you_notice_with_pr(task, &effective, pr_hint)
+            .await;
         self.sync_wait_message(task, notice.as_ref()).await;
         if let Some(notice) = notice {
             if !why.contains_key("needs_you")
