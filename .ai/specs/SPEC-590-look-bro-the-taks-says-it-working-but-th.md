@@ -33,6 +33,7 @@ The page's Continue action and the Superagent's `task_restart` share `continue_t
 - [x] Verify and independently review the fix
 - [x] Check the final account move correction with mutation testing
 - [x] Record verification evidence for the merge queue
+- [x] Verify the CI timeout and worker recovery corrections on the integrated head
 
 ## Acceptance criteria
 
@@ -84,3 +85,9 @@ Four account-move controls passed in run `e84d9581-55d4-4776-9867-62cdcda21dbc`,
 On the final account Move correction, the last counts available before the session restarted were 69 listed, 7 caught, 1 missed, 0 timed out and 54 unviable. The final outcome of the other 7 was unavailable after restart. The missed variant dropped a held operator prompt. A focused repeat with the held-prompt and replacement-run controls caught all 7 prompt and switch-outcome variants, including that one.
 
 After resuming the verification session, a focused run on the three remaining switch conditions passed its seven unmutated regression checks, caught two variants and found the third unviable. All observed missed variants have failing regression coverage.
+
+The first pull request CI run `bb2385d2-2faa-45cb-b16a-3bddd82d17be` exposed three timing-sensitive integration tests. Two merge-train scenarios exhausted their fixture-wide 100-second bound. The branch incorporated the scheduling correction for these exact tests from [PR #1608](https://github.com/Quartio-Studio/yulius/pull/1608). The parked-delivery test expected a healthy status as soon as its blocked Git workers were released. Yulius CI also saw this failure on PR #1581 and quarantined it in [issue #1614](https://github.com/Quartio-Studio/yulius/issues/1614).
+
+Run `0451c7fe-5fcd-4114-a96d-90ce125f2f07` reproduced the parked-delivery assertion by holding Git workers between release and completion. The corrected test checks the pessimistic status during that interval, waits for the worker pool to regain its permits, and reads the healthy status once.
+
+On the integrated branch, CI-profile nextest run `49930f14-8fbf-4574-9735-c330ad743a98` passed all six selected tests. These included all three CI failures, a parked conflict-read control and the two primary Codex restart and activity regressions. The quarantined worker-recovery test ran explicitly in this verification.

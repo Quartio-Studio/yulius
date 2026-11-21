@@ -5415,6 +5415,8 @@ async fn overlapping_parked_status_reads_bound_git_workers_after_timeouts() -> T
     let task = f.h.store.task(&id).await?.ok_or("task")?;
     let mut config = f.h.app.config.clone();
     config.ci.enabled = false;
+    // Allow an uncontended local Git read to finish on a busy CI host. Held reads still time out.
+    config.parked_pr_read_ms = 5_000;
     let app = yulius_app::context::App::new(config, f.h.app.deps.clone());
     *f.h.github.remote.lock().map_err(|_| "remote")? = None;
     f.h.github.set_checks(&head, ChecksState::Success);
@@ -5436,13 +5438,26 @@ async fn overlapping_parked_status_reads_bound_git_workers_after_timeouts() -> T
     }
     .await;
     let started = hold.started.load(std::sync::atomic::Ordering::SeqCst);
-    *f.git.parked_git_hold.lock().map_err(|_| "git hold")? = None;
     hold.released.close();
     checked?;
     assert!(
         (1..=8).contains(&started),
         "{started} Git workers started before any finished"
     );
+    // The native work received its release and is still finishing. Its permits remain in use.
+    let draining = app
+        .task_detail(&owner, task.id.as_str())
+        .await?
+        .summary
+        .parked_needs_you;
+    *f.git.parked_git_hold.lock().map_err(|_| "git hold")? = None;
+    hold.finishing.close();
+    assert_eq!(draining, Some(true));
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        app.wait_for_parked_git_workers_for_test(),
+    )
+    .await??;
     assert_eq!(
         app.task_detail(&owner, task.id.as_str())
             .await?
@@ -5450,7 +5465,6 @@ async fn overlapping_parked_status_reads_bound_git_workers_after_timeouts() -> T
             .parked_needs_you,
         Some(false)
     );
-    hold.finishing.close();
     Ok(())
 }
 
