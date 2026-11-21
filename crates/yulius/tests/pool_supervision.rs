@@ -562,6 +562,45 @@ fn one_exhausted_subscription_pauses_at_the_boundary_and_resumes_in_place() -> T
     Ok(())
 }
 
+async fn legacy_goal_hold(
+    app: &Arc<App>,
+    sandbox: &SandboxId,
+    user: &UserId,
+) -> Result<TaskId, Box<dyn std::error::Error>> {
+    let task = app
+        .create_task_internal(NewTask {
+            sandbox: sandbox.clone(),
+            created_by: user.clone(),
+            prompt: "Check delivery".into(),
+            harness: Harness::ClaudeCode,
+            title: Some("Verification".into()),
+            workflow_id: None,
+            steps: vec!["Verify dev".into()],
+            model: None,
+            effort: None,
+            origin: TaskOrigin::Ui,
+            automation_run: None,
+            start: false,
+            mode: yulius_app::model::TaskMode::Goal,
+            supertask: false,
+        })
+        .await?;
+    let id = &task.id;
+    app.deps
+        .store
+        .transition_task(
+            id,
+            Some(task.status),
+            TaskStatus::WaitingCapacity,
+            None,
+            app.now(),
+        )
+        .await?;
+    app.pause_task(id, PauseKind::Turn, None, None).await?;
+    assert!(app.deps.store.live_attempt(id).await?.is_none());
+    Ok(task.id)
+}
+
 /// A persisted turn hold written before turn continuations were carried. There is no
 /// surviving process to poll Stop after capacity returns.
 #[test]
@@ -572,37 +611,7 @@ fn a_goal_continuation_recovers_a_process_free_capacity_hold() -> TestResult {
     rt.block_on(async {
         let app = build(&data, &fake, Arc::new(ScriptedUsage::default()))?;
         let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
-        let task = app
-            .create_task_internal(NewTask {
-                sandbox,
-                created_by: user,
-                prompt: "Check delivery".into(),
-                harness: Harness::ClaudeCode,
-                title: Some("Verification".into()),
-                workflow_id: None,
-                steps: vec!["Verify dev".into()],
-                model: None,
-                effort: None,
-                origin: TaskOrigin::Ui,
-                automation_run: None,
-                start: false,
-                mode: yulius_app::model::TaskMode::Goal,
-                supertask: false,
-            })
-            .await?;
-        let id = &task.id;
-        app.deps
-            .store
-            .transition_task(
-                id,
-                Some(task.status),
-                TaskStatus::WaitingCapacity,
-                None,
-                app.now(),
-            )
-            .await?;
-        app.pause_task(id, PauseKind::Turn, None, None).await?;
-        assert!(app.deps.store.live_attempt(id).await?.is_none());
+        let id = &legacy_goal_hold(&app, &sandbox, &user).await?;
         app.resume_round().await;
         let run = app
             .deps
@@ -627,6 +636,63 @@ fn a_goal_continuation_recovers_a_process_free_capacity_hold() -> TestResult {
     Ok(())
 }
 
+/// Admission can queue a held turn after capacity returns. The queued start preserves
+/// the verification prompt and resumes the previous session when the task has one.
+#[test]
+fn a_goal_continuation_queued_after_a_hold_preserves_session_lineage() -> TestResult {
+    use yulius_app::model::{ProviderSessionRecord, QueuedStartKind};
+
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_one_slot(
+            &data,
+            &fake,
+            Arc::new(ScriptedUsage::default()),
+            FakeAgentOptions::default(),
+        )?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let holder = slot_holder(&app, &sandbox, &user).await?;
+        for kind in [QueuedStartKind::Fresh, QueuedStartKind::Resume] {
+            let id = legacy_goal_hold(&app, &sandbox, &user).await?;
+            if kind == QueuedStartKind::Resume {
+                app.deps
+                    .store
+                    .upsert_provider_session(&ProviderSessionRecord {
+                        id: "verified-session".into(),
+                        sandbox_id: sandbox.clone(),
+                        task_id: id.clone(),
+                        harness: Harness::ClaudeCode,
+                        session_id: "prior-session".into(),
+                        transcript_ref: None,
+                        origin: "imported".into(),
+                        first_seen: app.now(),
+                        last_seen: app.now(),
+                    })
+                    .await?;
+            }
+            app.resume_round().await;
+            let queued = app
+                .deps
+                .store
+                .queued_start(&id)
+                .await?
+                .ok_or("queued continuation")?;
+            assert_eq!(queued.kind, kind);
+            let prompt = queued.prompt.ok_or("verification prompt")?;
+            assert!(
+                prompt.contains("Continue the authorized goal.") && prompt.contains("Verify dev")
+            );
+            stop(&app, &id).await?;
+        }
+        stop(&app, &holder).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// A gate prompt carried to another process spends one of the goal's bounded attempts.
 #[test]
 fn a_goal_continuation_delivered_by_a_move_counts_once() -> TestResult {
@@ -638,7 +704,7 @@ fn a_goal_continuation_delivered_by_a_move_counts_once() -> TestResult {
         let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
         let id = app.create_task_internal(NewTask {
             sandbox, created_by: user, prompt: "Verify dev".into(), harness: Harness::ClaudeCode,
-            title: Some("Verification".into()), workflow_id: None, steps: Vec::new(),
+            title: Some("Verification".into()), workflow_id: None, steps: vec!["Verify dev".into()],
             model: None, effort: None, origin: TaskOrigin::Ui, automation_run: None, start: true,
             mode: yulius_app::model::TaskMode::Goal, supertask: false,
         }).await?.id;
