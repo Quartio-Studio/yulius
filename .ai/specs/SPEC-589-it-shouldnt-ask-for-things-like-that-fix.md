@@ -28,7 +28,7 @@ Earlier user requests establish the ownership rule. Task #534 concerned automate
 - [x] Trace the reported handoff against earlier continuation requests
 - [x] Reproduce the incorrect handoff in regression tests
 - [x] Route unfinished work to its automatic continuation owner
-- [ ] Preserve goal continuation through capacity recovery and a busy browser
+- [x] Preserve goal continuation through capacity recovery and a busy browser
 - [ ] Verify the fix and obtain independent approval
 
 ## Acceptance criteria
@@ -50,5 +50,11 @@ Make the continuation decision where the agent can act on it, at the shared Stop
 ## Evidence
 
 - Independent review at `6ed3c8612` requested changes. Eight regressions failed on that implementation. A capacity release published Waiting, a busy browser exceeded the hook deadline, and a Stop erased a worker permission. A blocked step consumed an attempt. Finishing a step left the previous retry budget exhausted. A proactive move hid the exhaustion explanation, reset the durable counter and allowed its launch prompt to reset it again.
+- Review finding 1. The turn hold now carries its continuation. An in-place release publishes Working, and a process-free restart reconstructs the current next action even for older holds without text. The subscription and subprocess fixtures exercise each recovery path.
+- Review finding 2. Live browser observations during Stop share a deadline, including task-view reads during spec and step synchronization. Updating only the internal retry count needs no publication. The HTTP fixture holds each lookup in turn.
+- Review finding 3. An unfinished goal's clean Stop preserves an outstanding permission and its original question until the answer arrives. The worker permission fixture checks the durable activity and question text.
+- Review finding 4. Only pending and in-progress steps receive a continuation. A plan containing only blocked work shows the recorded dependency and spends no attempt. The blocked-step fixture checks both.
+- Review finding 5. Exhaustion is explained before proactive rotation. A carried continuation spends an attempt when admitted for launch, and its own submit hook preserves the count across the move. Completing a previously open step resets the count in the same transaction that records progress. The tests exercise an actual subprocess move, its prompt, exhaustion and both plan update APIs.
+- The eight review regressions passed with the eight original continuation controls. A process-free legacy hold also recovered its verification instruction in a real subprocess. Two further assertions failed on the integrated head: a stale Waiting row still showed the generic notice after a block, and an exhausted goal used the prompt-mode instruction to tell the agent how to go on. The continuation now conditionally restores Working and the exhaustion notice names the attempts and points to their record.
 - On dev revision `86eb47202`, `cargo test -p yulius --test main agent_hooks::goal_stop_` returned three failures. The post-merge case reproduced the screenshot's notice and its wait-history entry. The unfinished-spec case and the case where a machine wait had ended both returned an empty Stop answer. The explicit permission request and held scope decision retained their owner.
 - On the first implementation the verification case passed for all three harnesses. The unavailable-host regression returned an empty Stop answer. It exercises a live attempt with a recorded child PID and a host that cannot read the process tree.

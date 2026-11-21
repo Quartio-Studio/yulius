@@ -31,6 +31,11 @@ use crate::ports::store::TaskFieldUpdate;
 /// Consecutive Stop-hook blocks per turn before the task needs attention (AC-DSC-3).
 pub const MAX_GATE_BLOCKS: u32 = 3;
 
+tokio::task_local! {
+    /// Deadline for live browser observations made while answering one Stop hook.
+    pub(crate) static STOP_BROWSER_DEADLINE: tokio::time::Instant;
+}
+
 /// Identifies a carried Stop instruction when a new run submits its launch prompt.
 pub(crate) const GOAL_CONTINUATION: &str = "Continue the authorized goal. ";
 /// Largest repository document read for the briefing or the gate.
@@ -237,7 +242,13 @@ impl App {
             attempt: ctx.attempt,
         };
         let _in_flight = crate::finish::StopInFlight::enter(&runtime);
-        let reply = self.answer_hook(&ctx, event, input, sent, input_seq).await;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(750);
+        let reply = STOP_BROWSER_DEADLINE
+            .scope(
+                deadline,
+                self.answer_hook(&ctx, event, input, sent, input_seq),
+            )
+            .await;
         // Only the live run's answers count: a late one of a run a switch ended is not this
         // session's (SPEC-290 GDW-001).
         let live = matches!(
@@ -1056,12 +1067,12 @@ impl App {
         let (background, delivery, browser) = tokio::join!(
             tokio::time::timeout(budget, self.background_or_wait_now(&task.id)),
             tokio::time::timeout(budget, self.pr_news_due(task)),
-            self.browser_tab_requests(&task.sandbox_id)
+            tokio::time::timeout(budget, self.browser_tab_requests(&task.sandbox_id))
         );
         Ok(
             if matches!(background, Ok(Some(true)))
                 || delivery.unwrap_or(false)
-                || browser.contains(task.id.as_str())
+                || browser.is_ok_and(|tasks| tasks.contains(task.id.as_str()))
             {
                 StopGate::Handoff
             } else {
@@ -1182,18 +1193,28 @@ impl App {
         if let Some(reason) = &reason
             && task.gate_blocks >= MAX_GATE_BLOCKS
         {
-            let stopped = format!(
-                "stopped {MAX_GATE_BLOCKS} times without fixing: {}",
-                reason.chars().take(300).collect::<String>()
-            );
+            let (stopped, action) = if let Some(work) = reason.strip_prefix(GOAL_CONTINUATION) {
+                (
+                    format!(
+                        "could not finish after {MAX_GATE_BLOCKS} automatic attempts. {}",
+                        work.chars().take(300).collect::<String>()
+                    ),
+                    "Review the last attempt in the task terminal to identify what blocked completion.",
+                )
+            } else {
+                (
+                    format!(
+                        "stopped {MAX_GATE_BLOCKS} times without fixing: {}",
+                        reason.chars().take(300).collect::<String>()
+                    ),
+                    "Tell it how to go on, in the terminal.",
+                )
+            };
             // Said by the task itself, for whoever opens it later (SPEC-472), and in its
             // terminal for the viewers there now.
             self.flag_attention(
                 &task.id,
-                crate::attention::AttentionRecord::yulius(
-                    &format!("The agent {stopped}"),
-                    "Tell it how to go on, in the terminal.",
-                ),
+                crate::attention::AttentionRecord::yulius(&format!("The agent {stopped}"), action),
             )
             .await?;
             self.runtime(&task.id)
@@ -1452,6 +1473,25 @@ impl App {
             ..TaskFieldUpdate::default()
         };
         store.update_task(&task.id, &update, self.now()).await?;
+        // A previously missed submit or an older capacity release can leave the row idle.
+        // Only recover that same idle state; a permission raised meanwhile keeps its flag.
+        if task.mode == TaskMode::Goal
+            && !matches!(
+                task.activity,
+                Some(Activity::Working | Activity::NeedsAttention)
+            )
+            && let Some(times) = store.task_times(&task.id).await?
+            && store
+                .set_activity_from(
+                    &task.id,
+                    (task.activity, times.state_at),
+                    Some(Activity::Working),
+                    self.now(),
+                )
+                .await?
+        {
+            self.publish_task(&task.id).await;
+        }
         Ok(HookReply::Output(HookOutput::block(reason)))
     }
 

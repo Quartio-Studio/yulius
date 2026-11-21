@@ -2156,6 +2156,10 @@ async fn goal_stop_continues_unfinished_spec_then_explains_the_retry_limit() -> 
         problem.contains("3") && problem.contains("spec"),
         "{problem}"
     );
+    assert_eq!(
+        brief["attention"]["action"],
+        "Review the last attempt in the task terminal to identify what blocked completion."
+    );
     Ok(())
 }
 
@@ -2209,6 +2213,29 @@ async fn goal_stop_after_an_antigravity_model_error_ends_the_turn() -> TestResul
     )
     .await?;
     assert_eq!(activity(&f).await?, Some(Activity::Waiting));
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_restores_working_when_the_turn_was_last_seen_waiting() -> TestResult {
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify dev").await?;
+    f.h.app
+        .deps
+        .store
+        .set_activity(&f.task, Some(Activity::Waiting), f.h.app.now())
+        .await?;
+    assert_eq!(stop_of(&f, Agent::Codex).await?["decision"], "block");
+    let brief = task_brief(&f).await?;
+    assert_eq!(brief["shows"], "working");
+    assert!(brief["needs_you_notice"].is_null());
+    assert!(
+        f.h.app
+            .deps
+            .store
+            .task_wait_messages(&f.task, 1)
+            .await?
+            .is_empty()
+    );
     Ok(())
 }
 
@@ -2366,7 +2393,6 @@ async fn goal_stop_answers_within_the_hook_deadline_while_browser_startup_is_hel
     for hold_first in [true, false] {
         let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify checkout").await?;
         let browser = Arc::new(crate::delivery::HeldBrowserLookup::default());
-        let (_entered, _release) = browser.hold_second_lookup();
         if hold_first {
             browser.running(&f.sandbox).await;
         }
