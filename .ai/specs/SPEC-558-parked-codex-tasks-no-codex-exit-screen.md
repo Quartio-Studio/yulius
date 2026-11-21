@@ -84,6 +84,8 @@ The pending shared-head work addresses the following contract. Yulius CI schedul
 
 ## Evidence
 
+- PR #1561 CI run `031a2785-9e3f-4963-9133-641cab097cc3` passed quality and both Rust shards. Chromium failed before the first Take control click because a detail refresh had already rendered Request control. A forced refresh reproduced the missing button. The fixture now opens the confirmation before changing the mock owner’s policy, then checks the refusal toast and the Request control action. All 17 ownership tests passed alone and in the nine-worker full suite. That suite reported 1,295 passes, one skip and one failure in the separately tracked startup fixture. [Ownership fixture #1558](https://github.com/Quartio-Studio/yulius/issues/1558) · [Startup fixture #1551](https://github.com/Quartio-Studio/yulius/issues/1551)
+
 - Independent review approved scheduler recovery at `28b031c73`. All 422 scoped Rust tests passed. The reviewer ran the three new regressions and verified migration 0081 on populated SQLite tables. The query used the sandbox admission index without a temporary sort. Repository contracts, formatting, Clippy and spec validation passed. The mutation run reported `19 listed, 7 caught, 0 missed, 0 timed out, 12 unviable, 0 not reached` in 384 seconds. Vidoc was disabled.
 
 - A database regression put the most recently admitted refusal behind two older records in queue priority. A two-record priority window returned the old pass and an unrelated run. The admission window returns the refusal and the pass. Migration 0081 indexes existing sandbox CI rows for this read.
