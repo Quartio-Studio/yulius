@@ -2240,7 +2240,7 @@ impl App {
                 self.settle_resting_run(
                     task_id,
                     selected,
-                    matches!(start, RunStart::Resume { .. }),
+                    matches!(start, RunStart::Resume { .. } | RunStart::GoalResume { .. }),
                 )
                 .await?;
             }
@@ -2481,7 +2481,10 @@ impl App {
         // Decide a named Continue before accepting it. A refused subscription leaves the
         // owner's resting task, archive and question available for another choice.
         let owner_choice = if owner_continue && let Some(id) = requested.as_ref() {
-            Some(self.choose_account(task, Some(id)).await?)
+            Some((
+                task.model.as_deref(),
+                self.choose_account(task, Some(id)).await?,
+            ))
         } else {
             None
         };
@@ -2548,8 +2551,10 @@ impl App {
             other => other,
         };
         let placement = match owner_choice {
-            Some(placement) => placement,
-            None => self.choose_account(&task, requested.as_ref()).await?,
+            Some((model, placement)) if model == task.model.as_deref() && requested.is_some() => {
+                placement
+            }
+            _ => self.choose_account(&task, requested.as_ref()).await?,
         };
         let Some(Placed { account, fallback }) = placement else {
             // No subscription has capacity: the task waits before starting, without a process

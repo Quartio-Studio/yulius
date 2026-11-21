@@ -259,6 +259,7 @@ fn superseded_owner_continue(archive_at_claim: bool) -> TestResult {
 enum ContinuedOwner {
     Queued,
     WaitingCapacity,
+    GoalWaitingCapacity,
     SettlementTimeout,
     ArchivedDuringWait,
 }
@@ -271,6 +272,11 @@ fn a_queued_continue_waits_for_the_reaped_park_reader() -> TestResult {
 #[test]
 fn a_capacity_delayed_continue_waits_for_the_reaped_park_reader() -> TestResult {
     continue_during_park_settlement(ContinuedOwner::WaitingCapacity)
+}
+
+#[test]
+fn a_goal_resume_waits_for_the_reaped_park_reader() -> TestResult {
+    continue_during_park_settlement(ContinuedOwner::GoalWaitingCapacity)
 }
 
 #[test]
@@ -460,15 +466,19 @@ async fn exercise_continue_during_park(data: &Path, case: ContinuedOwner) -> Tes
     let owner = ctx.clone();
     let req = serde_json::from_value(json!({}))?;
     let mut continuing = tokio::spawn(async move {
-        if case == ContinuedOwner::WaitingCapacity {
+        if matches!(
+            case,
+            ContinuedOwner::WaitingCapacity | ContinuedOwner::GoalWaitingCapacity
+        ) {
             // Restart and onboarding also resume directly through the supervisor.
-            continuing_app
-                .start_run(
-                    &continuing_id,
-                    yulius_app::supervisor::RunStart::Resume { prompt: None },
-                    None,
-                )
-                .await
+            let start = if case == ContinuedOwner::GoalWaitingCapacity {
+                yulius_app::supervisor::RunStart::GoalResume {
+                    prompt: "Finish the remaining steps".into(),
+                }
+            } else {
+                yulius_app::supervisor::RunStart::Resume { prompt: None }
+            };
+            continuing_app.start_run(&continuing_id, start, None).await
         } else {
             continuing_app
                 .continue_task(&owner, continuing_id.as_str(), &req)
