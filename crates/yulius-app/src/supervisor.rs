@@ -1967,16 +1967,11 @@ impl App {
         Ok(accounts
             .iter()
             .filter(|a| a.credential.is_some())
-            .map(|a| AccountView {
-                id: a.id.clone(),
-                provider: a.provider,
-                healthy: a.status.healthy(),
-                usage: a
-                    .usage_json
-                    .as_deref()
-                    .map(usage_json::from_json)
-                    .unwrap_or_default(),
-                in_use: crate::accounts::in_use_count(&a.id, &live),
+            .map(|account| {
+                crate::capacity::rotation_view(
+                    account,
+                    crate::accounts::in_use_count(&account.id, &live),
+                )
             })
             .collect())
     }
@@ -2364,7 +2359,9 @@ impl App {
                         .filter(|_| task.status.is_resting() || moving_pause);
                     let kept = start.kept(chosen);
                     let queued = if owner_continue {
-                        self.claim_owner_continuation(&task, Some(&kept)).await?
+                        self.claim_owner_continuation(&task, Some(&kept), chosen)
+                            .await?
+                            .is_some()
                     } else {
                         self.deps
                             .store
@@ -2465,13 +2462,14 @@ impl App {
         &self,
         task: &TaskRecord,
         queue: Option<&QueuedStart>,
-    ) -> AppResult<bool> {
+        requested: Option<&AccountId>,
+    ) -> AppResult<Option<crate::capacity::ContinuationAdmission>> {
         let accepted = self
             .deps
             .store
-            .claim_continuation(task, queue, self.now())
+            .claim_continuation(task, queue, requested, self.now())
             .await?;
-        if accepted {
+        if accepted.is_some() {
             // A resting owner's Continue clears only this task's browser actions (SPEC-494).
             self.clear_task_browser_actions(&task.sandbox_id, &task.id, None)
                 .await;
@@ -2494,6 +2492,7 @@ impl App {
             .sandbox(&task.sandbox_id)
             .await?
             .ok_or(AppError::NotFound)?;
+        let mut admission = None;
         // Status → Starting (unless a switch drives this launch).
         if task.status != TaskStatus::Switching && task.status != TaskStatus::Starting {
             let next = match task.status {
@@ -2520,7 +2519,10 @@ impl App {
                 Path::new(task.id.as_str()),
             );
             let claimed = if owner_continue {
-                self.claim_owner_continuation(task, None).await?
+                admission = self
+                    .claim_owner_continuation(task, None, requested.as_ref())
+                    .await?;
+                admission.is_some()
             } else {
                 store
                     .transition_task(&task.id, Some(task.status), next, None, self.now())
@@ -2546,19 +2548,31 @@ impl App {
         if let Ok(Some(fresh)) = store.task(&task.id).await {
             self.allocate_spec_path(&fresh, &worktree).await;
         }
-        let task = store.task(&task.id).await?.ok_or(AppError::NotFound)?;
+        let mut task = store.task(&task.id).await?.ok_or(AppError::NotFound)?;
         let lineage = store.provider_sessions(&task.id).await?;
         let previous = lineage.last().cloned();
         let harness = task.harness;
-        // A subscription asked for and removed since (after the switch's preflight) is no choice
-        // any more: the pool chooses, as for a launch that chose it just before (SPEC-447).
-        let requested = match requested {
-            Some(id) if store.account(&id).await?.is_none() => None,
-            other => other,
-        };
-        let Some(Placed { account, fallback }) =
+        let placement = if let Some(crate::capacity::ContinuationAdmission::Named {
+            account,
+            model,
+            fallback,
+        }) = admission
+        {
+            // A later model edit is for the next start. This run uses the accepted placement.
+            task.model = model;
+            Some(Placed {
+                account: *account,
+                fallback,
+            })
+        } else {
+            // If a subscription disappeared after a switch's preflight, the pool chooses again (SPEC-447).
+            let requested = match requested {
+                Some(id) if store.account(&id).await?.is_none() => None,
+                other => other,
+            };
             self.choose_account(&task, requested.as_ref()).await?
-        else {
+        };
+        let Some(Placed { account, fallback }) = placement else {
             // No subscription has capacity: the task waits before starting, without a process
             // (ROT-010); the resume loop starts it when capacity returns. A turn a limit cut
             // keeps its `limit` pause, so it still resumes past the limit (SPEC-034).
@@ -8419,7 +8433,7 @@ pub(crate) fn model_change_notice(own: &str, before: Option<&str>, model: &str) 
 
 /// Why a person's choice of subscription cannot take the task, in one plain sentence naming it
 /// (SPEC-447 MOV-002).
-fn refused_choice(
+pub(crate) fn refused_choice(
     label: Option<&str>,
     provider: yulius_domain::harness::Provider,
     reason: &rotation::DecisionReason,

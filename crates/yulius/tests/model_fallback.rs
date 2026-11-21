@@ -293,6 +293,146 @@ fn a_limit_on_the_fallback_binds_the_fallback_model() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn a_named_continue_uses_the_model_changed_during_admission() -> TestResult {
+    named_continue_during_change(NamedChange::AvailableModel)
+}
+
+#[test]
+fn a_named_continue_preserves_owner_controls_when_the_new_model_is_exhausted() -> TestResult {
+    named_continue_during_change(NamedChange::ExhaustedModel)
+}
+
+#[test]
+fn a_named_continue_preserves_owner_controls_when_the_account_needs_login() -> TestResult {
+    named_continue_during_change(NamedChange::Relogin)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NamedChange {
+    AvailableModel,
+    ExhaustedModel,
+    Relogin,
+}
+
+fn named_continue_during_change(change: NamedChange) -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    let result = rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let app = build_with(
+            &data,
+            &fake,
+            probe,
+            FakeAgentOptions {
+                transcript: true,
+                ..Default::default()
+            },
+        )?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        store_usage(&app, "a-first", true).await?;
+        let id = task_of_model(&app, &sandbox, &user, "Continue on Sonnet", Some(FABLE)).await?;
+        ready(&app, &id).await?;
+        assert_eq!(
+            launched(&app, &id).await?,
+            [(asked_for(OPUS), Some(OPUS.to_owned()))]
+        );
+        stop(&app, &id).await?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("owner")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        if change != NamedChange::AvailableModel {
+            app.archive_task(&ctx, id.as_str(), true).await?;
+        }
+        crate::parking::ask(&app, &id).await?;
+        let selected = app.deps.store.task(&id).await?.ok_or("stopped task")?;
+        if change == NamedChange::ExhaustedModel {
+            let full = json!({"weekly_sonnet": {"used_percent":100.0, "window_minutes":10080,
+                "resets_at": app.now().plus_millis(3600000).0}});
+            app.deps
+                .store
+                .set_account_state(
+                    &AccountId::parse("a-first")?,
+                    AccountStatus::Ok,
+                    Some(&full.to_string()),
+                    None,
+                    app.now(),
+                )
+                .await?;
+        }
+        let sonnet = "claude-sonnet-5-5";
+        let settings = app.clone();
+        let owner = ctx.clone();
+        let target = id.clone();
+        let handle = tokio::runtime::Handle::current();
+        yulius_app::race::on(
+            yulius_app::race::Point::StartClaimReady,
+            std::path::Path::new(id.as_str()),
+            move || {
+                let edited = tokio::task::block_in_place(|| {
+                    handle.block_on(async {
+                        if change == NamedChange::Relogin {
+                            settings
+                                .deps
+                                .store
+                                .set_account_state(
+                                    &AccountId::parse("a-first")?,
+                                    AccountStatus::Relogin,
+                                    None,
+                                    None,
+                                    settings.now(),
+                                )
+                                .await?;
+                        } else {
+                            settings
+                                .set_task_model(&owner, target.as_str(), Some(sonnet), None)
+                                .await?;
+                        }
+                        Ok::<_, Box<dyn std::error::Error>>(())
+                    })
+                });
+                assert!(edited.is_ok(), "{edited:?}");
+            },
+        );
+        let admission = app
+            .continue_task(
+                &ctx,
+                id.as_str(),
+                &ContinueTask {
+                    account_id: Some("a-first".into()),
+                    prompt: None,
+                },
+            )
+            .await;
+        if change != NamedChange::AvailableModel {
+            assert!(
+                matches!(admission, Err(yulius_app::error::AppError::Capacity(_))),
+                "{admission:?}"
+            );
+            let kept = app.deps.store.task(&id).await?.ok_or("resting owner")?;
+            assert_eq!(kept.status, selected.status);
+            assert_eq!(kept.archived_at, selected.archived_at);
+            assert!(app.deps.store.task_needs_you(&id).await?.is_some());
+            assert_eq!(app.deps.store.attempts(&id).await?.len(), 1);
+            return Ok(());
+        }
+        admission?;
+        ready(&app, &id).await?;
+        assert_eq!(
+            launched(&app, &id).await?.last(),
+            Some(&(asked_for(sonnet), Some(sonnet.to_owned())))
+        );
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    });
+    rt.shutdown_timeout(Duration::from_secs(5));
+    result
+}
+
 /// AC-3 and AC-4: with Fable used up on every subscription a new task of a Fable model starts on
 /// Opus 5.5 at once, and a task set to another model is launched as it is set. Once a
 /// subscription can run Fable again, the run on the fallback is left alone; the task's next

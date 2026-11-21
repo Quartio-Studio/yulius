@@ -760,8 +760,9 @@ mod tests {
         let selected = store.task(&task).await?.ok_or("ended task")?;
         assert!(
             store
-                .claim_continuation(&selected, None, Timestamp(5400))
+                .claim_continuation(&selected, None, None, Timestamp(5400))
                 .await?
+                .is_some()
         );
         let after = spans(&store, SubjectKind::Task, "t1").await?;
         let answered = after

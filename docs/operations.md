@@ -214,6 +214,8 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # parking finishes. The task keeps its question open and the timed-out message starts no turn.
 # If you stopped the task during parking and Continue says the previous session is still
 # settling, retry after terminal exit. The settlement timeout preserves the archive and question.
+# If Continue on a named subscription reports that it needs a new sign-in or has no room
+# for the model, the task keeps its archive and question. You can choose another subscription.
 # A bulk message lists the changed task under refused. A Telegram reply or remote restart
 # also reports the change so you can check the latest turn.
 # A partial Git overview keeps a known failing PR under Needs you. A complete lookup
