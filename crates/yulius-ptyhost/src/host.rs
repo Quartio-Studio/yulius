@@ -105,7 +105,7 @@ pub fn run_host(run_dir: &Path) -> Result<(), HostError> {
     let run_dir = absolute.as_path();
     // Taken first: a run directory removed while the host starts is still detected as orphaned.
     let identity = dir_identity(run_dir);
-    let launch = load_launch(run_dir)?;
+    let mut launch = load_launch(run_dir)?;
     let attempt = launch.attempt_id.clone();
     let fail = |reason, error| record_failure(run_dir, &attempt, reason, error);
     // A run of an isolated sandbox joins its holder before anything else, while this process
@@ -130,6 +130,11 @@ pub fn run_host(run_dir: &Path) -> Result<(), HostError> {
         .map_err(io_error("chmod pty.sock"))
         .map_err(|e| fail(ExitReason::HostError, e))?;
 
+    // Keep build trees inside the measured sandbox filesystem. The guard outlives
+    // the child and reclaims alternate targets even if their command was interrupted.
+    let scratch = attach_build_scratch(&launch.containment, &mut launch.env)
+        .map_err(io_error("create build scratch"))
+        .map_err(|e| fail(ExitReason::SpawnFailed, e))?;
     let command = prepare_command(&launch).map_err(|e| fail(ExitReason::SpawnFailed, e))?;
     let size = PtySize {
         rows: launch.rows,
@@ -173,7 +178,34 @@ pub fn run_host(run_dir: &Path) -> Result<(), HostError> {
         });
     }
     let linger = Duration::from_millis(u64::from(launch.linger_ms));
-    wait_for_completion(&shared, linger)
+    wait_for_completion(&shared, linger)?;
+    if let Some(scratch) = scratch {
+        scratch.close().map_err(io_error("remove build scratch"))?;
+    }
+    Ok(())
+}
+
+fn attach_build_scratch(
+    containment: &Containment,
+    env: &mut std::collections::BTreeMap<String, String>,
+) -> io::Result<Option<tempfile::TempDir>> {
+    let Containment::Bubblewrap(spec) = containment else {
+        return Ok(None);
+    };
+    if !env.contains_key("YULIUS_TASK_WORKTREE") && !env.contains_key("YULIUS_CI_RUN") {
+        return Ok(None);
+    }
+    // The existing sandbox bind exposes this path to the contained child.
+    // Never add a host bind for a child-selected path in a writable sandbox.
+    let scratch = tempfile::Builder::new()
+        .prefix("build-")
+        .permissions(Permissions::from_mode(0o700))
+        .tempdir_in(&spec.sandbox_root)?;
+    env.insert(
+        "YULIUS_BUILD_SCRATCH".into(),
+        scratch.path().display().to_string(),
+    );
+    Ok(Some(scratch))
 }
 
 fn load_launch(run_dir: &Path) -> Result<LaunchSpec, HostError> {
@@ -1218,6 +1250,36 @@ mod tests {
     /// ADR-0314: the program is taken from the first absolute directory of the host's `PATH`
     /// that holds an executable file of its name; a relative directory (the run's working
     /// folder), a file that is not executable and a directory of that name are passed over.
+    #[test]
+    fn each_agent_and_ci_run_owns_only_its_build_scratch() -> io::Result<()> {
+        let root = tempfile::tempdir()?;
+        let mut spec: yulius_contracts::ptyhost::BubblewrapSpec =
+            serde_json::from_str(r#"{"sandbox_root":"/s","home":"/s/home"}"#)?;
+        spec.sandbox_root = root.path().display().to_string();
+        let contained = Containment::Bubblewrap(spec);
+        let mut env = std::collections::BTreeMap::new();
+        assert!(attach_build_scratch(&contained, &mut env)?.is_none());
+        let mut active = Vec::new();
+        for key in ["YULIUS_CI_RUN", "YULIUS_TASK_WORKTREE"] {
+            let mut env = std::collections::BTreeMap::from([(key.into(), "one".into())]);
+            assert!(attach_build_scratch(&Containment::None, &mut env)?.is_none());
+            let owned = attach_build_scratch(&contained, &mut env)?
+                .ok_or_else(|| io::Error::other("missing scratch"))?;
+            let path = PathBuf::from(&env["YULIUS_BUILD_SCRATCH"]);
+            assert_eq!(path, owned.path());
+            assert_eq!(path.parent(), Some(root.path()));
+            fs::write(path.join("target"), b"artifact")?;
+            active.push((owned, path));
+        }
+        assert_ne!(active[0].1, active[1].1);
+        for (owned, path) in active {
+            assert!(path.join("target").is_file());
+            owned.close()?;
+            assert!(!path.exists());
+        }
+        Ok(())
+    }
+
     #[test]
     fn a_host_program_is_an_executable_file_in_an_absolute_directory()
     -> Result<(), Box<dyn std::error::Error>> {

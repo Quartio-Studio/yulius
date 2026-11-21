@@ -10,6 +10,8 @@ FST-005, task #488: the run starts with the first review and runs beside it, a l
 is run on its own lines, and the jobs follow the mutants listed and the budget in place of "2
 jobs" below (see Amendment).
 
+The current scope, scratch ownership and worker and time ceilings are specified in [ADR-0439](0439-build-scratch-and-mutation-budgets.md).
+
 ## Context
 
 Review rounds blocked on test strength: a test that could not fail, an assertion too weak to

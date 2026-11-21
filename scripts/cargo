@@ -12,6 +12,19 @@ root = Path(__file__).resolve().parent.parent
 args = sys.argv[1:]
 os.environ["PATH"] = str(root / ".tools/bin") + os.pathsep + os.environ.get("PATH", "")
 
+# A disposable target is owned by this invocation. In an older/local session
+# the checkout's target directory provides the disk fallback.
+if args[:1] == ["--scratch-target"]:
+    import subprocess
+    parent = Path(os.environ.get("YULIUS_BUILD_SCRATCH", root / "target"))
+    parent.mkdir(exist_ok=True, parents=True)
+    with tempfile.TemporaryDirectory(prefix="cargo-", dir=parent) as build:
+        command = [__file__, *args[1:]]
+        env = dict(os.environ, CARGO_TARGET_DIR=build)
+        # Interactive Cargo commands retain their foreground terminal.
+        status = subprocess.call(command, env=env) if sys.stdin.isatty() else run_session(command, env)
+    sys.exit(status if status >= 0 else 128 - status)
+
 
 def plain(cargo):
     os.environ["CARGO"] = cargo

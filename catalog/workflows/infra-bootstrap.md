@@ -17,7 +17,7 @@ order: 60
 
 ## Instructions
 
-Follow `infra-bootstrap` for the content and `delivery-pipeline` for the delivery.
+Install the change-sized mutation budgets and disk scratch rule from `infra-bootstrap` in the project guidance and tooling. Follow `infra-bootstrap` for the content and `delivery-pipeline` for the delivery.
 
 - Respect what exists: map existing scripts, tests and docs instead of replacing them, and pick
   what is state of the art for this stack. Every choice gets an ADR.

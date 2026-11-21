@@ -150,6 +150,8 @@ about the key or its quota. A superadmin can switch Vidoc off the same way for e
 instance, keeping the key (the Instance page's Vidoc card; [ADR-0242](docs/decisions/0242-a-superadmin-switches-vidoc-off-for-the-whole-instance.md)). Other projects run the same scanner
 as `yulius security-scan`.
 
+Mutation testing uses `scripts/dev mutants`. Default to changed lines, one worker and 10 minutes. At 16 listed changed-line mutants, or for an authorization, persistence or process lifecycle change, allow touched-file scope, up to two workers and 30 minutes. Cap each mutant at 300 seconds and respect CPU and memory limits. Declare the risk and run its affected integration tests. Record the base, scope, trigger, budgets, baseline and every outcome, including misses, timeouts and unreached mutants. Use run-owned disk scratch for workspace copies and disposable build targets, and remove them when the command ends. For a disposable target use `scripts/cargo --scratch-target`. See [Development](docs/engineering/development.md#mutation-testing) for the risk and scope options.
+
 Web UI changes: also run the end-to-end suite, `cd e2e && npm ci --ignore-scripts && npx e2e run`
 (Node 24.8+, test-only; see [e2e/README.md](e2e/README.md)).
 

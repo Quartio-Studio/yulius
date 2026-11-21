@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- Mutation builds and disposable Cargo targets use disk scratch, ordinary session `/tmp` is capped at 1 GiB, and mutation review budgets follow change size and risk. [SPEC-600](../.ai/specs/SPEC-600-mutation-testing-sized-to-the-change-wit.md)
+
 - Resuming a parked task waits for its old screen to finish saving. If that takes too long, Yulius asks the sender to retry and keeps the outstanding question open. [SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
 
 - A message prepared for an earlier parked attempt asks the sender to try again if another turn resumes and parks first. The new turn keeps its own outstanding decision. [SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)

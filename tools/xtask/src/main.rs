@@ -24,9 +24,10 @@ const HELP: &str = "Yulius engineering commands (scripts/dev <command>)
             --all scans the whole repository (needs a Vidoc key; not in ci)
   mutants   Mutation-test the Rust lines the branch changed, beside the first review (SPEC-506):
             --base REF (origin/<integration branch>; the reviewed head for a fix's lines),
-            --minutes N (30), --mutant-seconds N (300), --jobs N (one per 8 mutants, 2 to 7,
-            at most a third of $YULIUS_CPUS; 2 without it), --tests FILTER (the product's tests
-            to run in place of those the branch changed); the last line is the summary for the
+            --scope lines|files, --risk authorization|persistence|lifecycle. Below 16 listed
+            changed-line mutants use 10 minutes and one job. At 16 or a declared risk allow file
+            scope, 30 minutes and two jobs. --minutes N, --mutant-seconds N (300), --jobs N and
+            --tests FILTER narrow the run. The last line is the summary for the
             spec's Evidence";
 
 /// The line that names a stage of a Yulius CI job (SPEC-137): Yulius times the stage from when

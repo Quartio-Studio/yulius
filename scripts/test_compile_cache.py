@@ -53,6 +53,20 @@ class CompileCache(unittest.TestCase):
         return subprocess.run([tree / "scripts/cargo", "build"], cwd=tree, env=env,
                               start_new_session=True, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
 
+    def test_disposable_target_is_removed_after_success_or_failure(self):
+        self.cargo.write_text('#!/bin/sh\necho "$CARGO_TARGET_DIR"\ntouch "$CARGO_TARGET_DIR/artifact"\nexit "$CARGO_RESULT"\n')
+        env = self.cargo_env(self.sandbox / "home", self.cargo)
+        for status, parent in ((0, self.task / "target"), (7, self.sandbox / "run-scratch")):
+            env.pop("YULIUS_BUILD_SCRATCH", None)
+            if status:
+                env["YULIUS_BUILD_SCRATCH"] = str(parent)
+            result = subprocess.run([self.task / "scripts/cargo", "--scratch-target", "check"],
+                                    env=dict(env, CARGO_RESULT=str(status)), capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, status, result.stderr)
+            target = Path(result.stdout.strip())
+            self.assertEqual(target.parent, parent)
+            self.assertFalse(target.exists())
+
     def test_worktree_and_ci_lane_share_only_their_sandbox_store(self):
         import_script = ("print(__import__('json').dumps([os.environ['MBX_CACHE_DIR'], os.getcwd()]), flush=True)\n"
                          "os.execv(os.environ['CARGO'], [os.environ['CARGO'], *sys.argv[1:]])")

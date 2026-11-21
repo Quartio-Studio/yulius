@@ -54,7 +54,7 @@ def open_store(cache, checkout):
         os.close(directory)
 
 
-def run_session(command, env, lease):
+def run_session(command, env, lease=None):
     """Forward cancellation to the whole Cargo command, escalating any surviving descendants."""
     child = None
     requested = None
@@ -71,7 +71,7 @@ def run_session(command, env, lease):
     signals = (signal.SIGHUP, signal.SIGINT, signal.SIGQUIT, signal.SIGTERM)
     previous = {sig: signal.signal(sig, cancel) for sig in signals}
     try:
-        child = subprocess.Popen(command, env=env, pass_fds=(lease,), process_group=0)
+        child = subprocess.Popen(command, env=env, pass_fds=() if lease is None else (lease,), process_group=0)
         if requested is not None:
             raise Cancelled
         return child.wait()

@@ -157,6 +157,13 @@ mod linux {
             attempt_id: "att-bwrap".into(),
             task_id: "task-bwrap".into(),
             argv: vec![
+                "/bin/sh".into(),
+                "-ec".into(),
+                r#"test "$(df -B1 --output=size /tmp | tr -cd 0-9)" = 1073741824
+touch "$YULIUS_BUILD_SCRATCH/child-target"
+exec "$@""#
+                    .into(),
+                "fixture".into(),
                 fake.to_string_lossy().into_owned(),
                 "--session-id".into(),
                 "contained".into(),
@@ -167,6 +174,7 @@ mod linux {
             env: BTreeMap::from([
                 ("PATH".into(), "/usr/bin:/bin".into()),
                 ("TERM".into(), "xterm-256color".into()),
+                ("YULIUS_TASK_WORKTREE".into(), root.clone()),
             ]),
             secret_env_names: Vec::new(),
             cols: 80,
@@ -199,6 +207,10 @@ mod linux {
         let mut screen = vt100::Parser::new(welcome.rows, welcome.cols, 0);
         screen.process(&snapshot.ok_or("snapshot missing")?.bytes);
         let mut output = screen.screen().contents();
+        let disk = std::fs::read_dir(sandbox.path())?
+            .filter_map(Result::ok)
+            .find(|e| e.file_name().to_string_lossy().starts_with("build-"));
+        let disk = disk.ok_or("missing run-owned build directory")?.path();
         let run_dir_text = run_dir.to_string_lossy().into_owned();
         client
             .send(ClientFrame::Input(
@@ -229,6 +241,7 @@ mod linux {
         let exit = exit.ok_or("no exit frame")?;
         assert_eq!((exit.reason, exit.code), (ExitReason::Exited, Some(0)));
         tokio::time::timeout(Duration::from_secs(10), host.wait()).await?;
+        assert!(!disk.exists(), "build scratch survived host completion");
         // The run directory is outside the sandbox and must not be visible inside it.
         let inside = Command::new("bwrap")
             .args(

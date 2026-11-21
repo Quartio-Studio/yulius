@@ -13,5 +13,6 @@ workspace = true
 [package.metadata.yulius]
 layer = "tooling"
 
-[dev-dependencies]
+[dependencies]
+signal-hook.workspace = true
 tempfile.workspace = true

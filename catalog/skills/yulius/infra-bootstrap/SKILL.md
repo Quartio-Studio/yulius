@@ -34,6 +34,7 @@ example when it starts deploying for real), and record every change as a decisio
 ## Steps (each one a pull request of similar effort)
 
 1. **Gate and tests.** Add or complete:
+   - document the following mutation policy in AGENTS.md and apply it to the project’s mutation entry point. Default to changed lines, one worker and 10 minutes. At 16 listed changed-line mutants, or for an authorization, persistence or process lifecycle change, allow touched-file scope, up to two workers and 30 minutes. Cap each mutant at 300 seconds and respect CPU and memory limits. Declare the risk and run its affected integration tests. Record the base, scope, trigger, budgets, baseline and every outcome, including misses, timeouts and unreached mutants. Use run-owned disk scratch for workspace copies and disposable build targets, and remove them when the command ends. On Yulius, allocate each temporary build directory under `$YULIUS_BUILD_SCRATCH`, with a checkout-local build directory as the fallback. Keep the tool’s workspace baseline and its test filter identical for mutants.
    - formatting check and linter with warnings as errors, type checking where the language has it;
    - a dead-code and unused-dependency check, cheap and with few false positives, pinned and with
      its allowlist committed (skill `dead-code-cleanup` names each language's tools, for example

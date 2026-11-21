@@ -48,7 +48,7 @@ On the instance, bootstrap installs the optional pinned mbx executable. A fresh 
 | `scripts/dev deps` | cargo-deny advisories/licenses/bans/sources and cargo-shear (unused crate and workspace dependencies) |
 | `scripts/dev ci` | doctor, quick, check, lint, macos, test, deps, then rustdoc with warnings denied; the checker's Python tests run beside the gates after quick, their output in a `checker-tests` stage at the end (ADR-0363) |
 | `scripts/dev checks` | `ci` without its tests: Yulius CI's `quality` job, beside the `test` shards |
-| `scripts/dev mutants` | One bounded mutation run of the Rust lines the branch changed (pinned cargo-mutants; ADR-0347): 30 min in all, 300 s a mutant, by default one job per 8 mutants listed (2 to 7, at most a third of `YULIUS_CPUS`, one per 12 GB of `YULIUS_MEMORY_MB`; 2 without a budget), within `YULIUS_CPUS` CPUs; the product's tests narrowed to those the branch changed. Started with the first review and run beside it, its summary line in the Evidence; `--base <reviewed head>` for a later fix's lines alone (SPEC-506); not part of `ci` |
+| `scripts/dev mutants` | Mutation-test changed Rust lines with the budget in [Mutation testing](#mutation-testing). Run alongside review. |
 | `scripts/dev security` | Vidoc's vidoc-1 scan of the files the branch's commits changed since `dev` (`--all`: the whole repository); fails on open medium findings in the changed lines and on open critical or high findings, exit 2 when it could not run, exit 3 when incomplete. Needs a key and the network; not part of `ci`, but Yulius CI runs it as the `security` job on pull request heads |
 
 Use `scripts/dev check`, `scripts/dev lint` or `scripts/dev test` during iteration.
@@ -308,6 +308,12 @@ steps are skipped). [Git delivery](git.md) defines promotion checks and post-mer
 ## Mutation testing
 
 Mutation testing runs beside the review: when you ask for a pull request's first review, start the project's mutation command in the background and let the reviewer read meanwhile; when it ends, put its summary line in the spec's Evidence and fix each missed mutant test-first before the merge. After a later round's fix, run it on that fix's lines alone. A project without one undoes by hand the few lines its new tests are meant to hold and says what failed. The reviewer may undo a single line it doubts and runs no campaign of its own. Nobody writes a mutation script by hand. A test that cannot fail is still fixed in the same pull request (ADR-0141). Here the command is `scripts/dev mutants`.
+
+Default to changed lines, one worker and 10 minutes. At 16 listed changed-line mutants, or for an authorization, persistence or process lifecycle change, allow touched-file scope, up to two workers and 30 minutes. Cap each mutant at 300 seconds and respect CPU and memory limits. Declare the risk and run its affected integration tests. Record the base, scope, trigger, budgets, baseline and every outcome, including misses, timeouts and unreached mutants. Use run-owned disk scratch for workspace copies and disposable build targets, and remove them when the command ends.
+
+Run `scripts/dev mutants --risk lifecycle` when changing subprocess ownership or cancellation. The other risk values are `authorization` and `persistence`. Risk selects every product integration test by default. Use `--tests FILTER` to name the affected integration tests and record the filter in Evidence. Add `--scope files` to include all lines of the touched Rust files when the size or risk threshold permits it. `--minutes` and `--jobs` can lower the applicable limits. Use `--base <reviewed-head>` for a subsequent fix.
+
+For a disposable Cargo target use `scripts/cargo --scratch-target <cargo arguments>`. Contained agents and CI jobs receive `YULIUS_BUILD_SCRATCH`. Older sessions and local checkouts use their checkout's target directory. Each invocation removes its disposable target. The separate 1 GiB session tmpfs returns ENOSPC when full.
 
 The unmutated baseline runs the same workspace tests and nextest filter as each mutant.
 A baseline failure stops the campaign. Read `target/mutants/mutants.out/log/baseline.log`

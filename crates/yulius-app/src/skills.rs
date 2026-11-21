@@ -1360,6 +1360,26 @@ mod tests {
             Ok(normal(&fs::read_to_string(root.join(rel))?))
         };
         for rel in [
+            "AGENTS.md",
+            "docs/engineering/development.md",
+            ".apm/skills/yulius-review/SKILL.md",
+            ".apm/skills/yulius-verify/SKILL.md",
+            "catalog/skills/open-mercato/om-code-review/SKILL.md",
+            "catalog/skills/superpowers/test-driven-development/SKILL.md",
+            "catalog/skills/yulius/delivery-pipeline/SKILL.md",
+            "catalog/skills/yulius/infra-bootstrap/SKILL.md",
+        ] {
+            let guide = read(rel)?;
+            for requirement in [
+                "one worker and 10 minutes",
+                "16 listed changed-line mutants",
+                "two workers and 30 minutes",
+                "run-owned disk scratch",
+            ] {
+                assert!(guide.contains(requirement), "{rel} lacks {requirement}");
+            }
+        }
+        for rel in [
             "catalog/skills/open-mercato/om-code-review/SKILL.md",
             "catalog/skills/yulius/delivery-pipeline/SKILL.md",
             "catalog/skills/superpowers/test-driven-development/SKILL.md",
