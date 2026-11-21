@@ -332,6 +332,15 @@ pub trait TaskStore: Send + Sync {
         activity: Option<Activity>,
         at: Timestamp,
     ) -> AppResult<bool>;
+    /// Starts an idle move only while its observed activity, update time and live attempt
+    /// still match. A lost claim leaves the task and attempt in place (SPEC-611).
+    async fn claim_idle_switch(
+        &self,
+        id: &TaskId,
+        from: (Activity, Timestamp),
+        attempt: &AttemptId,
+        at: Timestamp,
+    ) -> AppResult<bool>;
     /// Sets activity while running; the state's time moves only when it changes (SPEC-087).
     async fn set_activity(
         &self,

@@ -84,6 +84,9 @@ pub struct CdEnvironment {
 /// A merge-first staging target's queue (SPEC-575, ADR-0411).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CdStaging {
+    /// Instance-wide GitHub wait while the App is rate limited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_wait: Option<String>,
     /// The revision staging last deployed and verified, if any.
     #[serde(default)]
     pub verified: Option<String>,

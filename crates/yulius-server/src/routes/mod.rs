@@ -13,6 +13,7 @@ mod digest;
 mod events;
 mod files;
 mod git;
+mod github_webhook;
 mod guests;
 mod handoffs;
 mod imports;
@@ -53,6 +54,7 @@ pub fn public() -> Router<AppState> {
         .merge(secrets::public())
         .merge(variables::public())
         .merge(guests::public())
+        .route("/api/github/webhook", post(github_webhook::receive))
         .route("/healthz", get(|| async { "ok" }))
         .route("/api/setup/status", get(setup_auth::setup_status))
         .route("/api/setup", post(setup_auth::setup))
@@ -243,6 +245,7 @@ pub fn public() -> Router<AppState> {
         .route("/api/analytics/merge-queue", get(analytics::merge_queue))
         .route("/api/analytics/docker", get(analytics::docker))
         .route("/api/analytics/ci-load", get(analytics::ci_load))
+        .route("/api/status/github-reset", get(status::github_reset))
         .route("/api/status", get(status::status))
         .route("/api/disk", get(status::disk))
         .route("/api/connections", get(status::connections))

@@ -11,8 +11,8 @@
 //! task delivers, that task's head merged into it (`task/<n>`, SPEC-163); nothing is published.
 //!
 //! Ownership and bounds (RUN-001..003):
-//! - the **sync loop** (every [`CiSettings::poll`]) fetches each sandbox clone, lists open pull
-//!   requests, plans with [`yulius_domain::ci::plan`]: queues new heads and cancels runs whose
+//! - the **sync loop** (every [`CiSettings::poll`]) lists open pull requests, fetches each
+//!   sandbox clone and plans with [`yulius_domain::ci::plan`]: queues new heads and cancels runs whose
 //!   reference moved (superseded) or disappeared;
 //! - the **dispatcher** starts the oldest queued run of each sandbox that has none executing
 //!   (up to [`CiSettings::lanes`] runs per sandbox at a time, each lane with its own persistent
@@ -41,6 +41,8 @@ mod findings;
 mod flaky;
 pub use flaky::Noted;
 pub mod hygiene;
+mod opening;
+pub use opening::PullOpening;
 pub(crate) mod playground;
 mod prove;
 mod rollback;
@@ -397,6 +399,15 @@ impl Drop for CiClaim {
 /// (SPEC-497).
 pub(crate) type LoadReading = (i64, Option<(u64, u64)>);
 
+/// A REST inventory can wait on GitHub while a signed opening schedules its own head.
+/// Full inventories stay ordered, and every writer of an ordinary scheduling plan is serialized.
+#[derive(Default)]
+struct SandboxSync {
+    inventory: tokio::sync::Mutex<()>,
+    // Only observations since the current REST inventory started are process-local.
+    schedule: tokio::sync::Mutex<HashMap<u64, String>>,
+}
+
 /// Process-local CI state.
 #[derive(Default)]
 pub struct CiState {
@@ -430,7 +441,7 @@ pub struct CiState {
     pub(crate) hygiene_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// One CI sync of a sandbox at a time (the 60 s loop, a person's sync, a review's start):
     /// each reads the runs before it queues, so two at once would queue one head twice.
-    sync_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    sync_locks: Mutex<HashMap<String, Arc<SandboxSync>>>,
     /// One quarantine of a sandbox decided at a time (SPEC-497 OFC-002): two jobs failing the
     /// same test at once would each file an issue for it (review round 1); per sandbox, so a
     /// slow GitHub holds only that project's job ends (review round 2).
@@ -817,6 +828,25 @@ fn gate_view(gate: &Gate) -> CiGate {
 }
 
 impl App {
+    fn ci_run_view(
+        &self,
+        sandbox: &SandboxRecord,
+        run: &CiRunRecord,
+        jobs: &[CiJobRecord],
+        output: bool,
+    ) -> CiRun {
+        let mut view = run_view(run, jobs, output);
+        if !sandbox.is_playground()
+            && run.status_for != Some(run.state)
+            && run.status_attempts < STATUS_MAX_ATTEMPTS
+            && !matches!(run.reference, CiRef::Train(_))
+            && let Some(wait) = self.github_wait()
+        {
+            view.status = wait;
+        }
+        view
+    }
+
     /// The turn of `job` in `sandbox`, for an `exclusive` job (SPEC-435 JTL-001), and the entry
     /// that forgets it once nobody holds or waits for it: drop that after the turn.
     fn ci_turn(
@@ -1306,6 +1336,23 @@ impl App {
         by: &str,
         queued_at: Timestamp,
     ) -> AppResult<CiRunRecord> {
+        let run = self
+            .ci_record_placed(sandbox, reference, sha, gate, by, queued_at)
+            .await?;
+        self.ci_publish(&run.id).await;
+        self.ci_wake();
+        Ok(run)
+    }
+
+    async fn ci_record_placed(
+        &self,
+        sandbox: &SandboxRecord,
+        reference: CiRef,
+        sha: &str,
+        gate: &Gate,
+        by: &str,
+        queued_at: Timestamp,
+    ) -> AppResult<CiRunRecord> {
         let run = CiRunRecord {
             id: self.deps.crypto.new_id(),
             sandbox_id: sandbox.id.clone(),
@@ -1429,8 +1476,6 @@ impl App {
         {
             ended.push(sandbox.id.clone());
         }
-        self.ci_publish(&run.id).await;
-        self.ci_wake();
         Ok(run)
     }
 
@@ -1560,21 +1605,24 @@ impl App {
             .flatten()
     }
 
+    fn ci_sync_lock(&self, sandbox: &SandboxId) -> Arc<SandboxSync> {
+        // Nothing panics while the map is held; a poisoned map is still the one map.
+        self.ci
+            .sync_locks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(sandbox.as_str().to_owned())
+            .or_default()
+            .clone()
+    }
+
     /// One scheduling round for a sandbox: fetch, read the heads, queue and supersede.
     ///
     /// # Errors
     /// GitHub or Git failures (the round is retried at the next poll).
     pub async fn ci_sync_sandbox(&self, sandbox: &SandboxRecord) -> AppResult<()> {
-        // Nothing panics while the map is held; a poisoned map is still the one map.
-        let lock = self
-            .ci
-            .sync_locks
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .entry(sandbox.id.as_str().to_owned())
-            .or_default()
-            .clone();
-        let _one_at_a_time = lock.lock().await;
+        let lock = self.ci_sync_lock(&sandbox.id);
+        let _inventory = lock.inventory.lock().await;
         let repo = self.sandbox_repo(&sandbox.id);
         if sandbox.removed_at.is_some() || !repo.join(".git").exists() {
             return Ok(());
@@ -1582,11 +1630,38 @@ impl App {
         // A playground has no GitHub (SPEC-163 PCI-001): no token and no pull request; its own
         // `origin` is fetched, and its tasks' heads are tested when they deliver.
         let playground = sandbox.is_playground();
-        let token = if playground {
-            None
+        lock.schedule.lock().await.clear();
+        let pulls = if playground {
+            Ok(Vec::new())
         } else {
-            Some(self.dlv_installation_token(sandbox).await?)
+            let token = self.dlv_installation_token(sandbox).await?;
+            self.deps
+                .github
+                .list_pulls(&token, &sandbox.repo_owner, &sandbox.repo_name, None)
+                .await
         };
+        let mut publications = Vec::new();
+        let openings = lock.schedule.lock().await;
+        let result = self
+            .ci_record_inventory(sandbox, pulls, &openings, &mut publications)
+            .await;
+        drop(openings);
+        for run in publications {
+            self.ci_publish(&run).await;
+            self.ci_wake();
+        }
+        result
+    }
+
+    async fn ci_record_inventory(
+        &self,
+        sandbox: &SandboxRecord,
+        pulls: AppResult<Vec<crate::ports::github::GhPull>>,
+        openings: &HashMap<u64, String>,
+        publications: &mut Vec<String>,
+    ) -> AppResult<()> {
+        let repo = self.sandbox_repo(&sandbox.id);
+        let playground = sandbox.is_playground();
         self.dlv_refresh_clone(sandbox).await?;
         self.ci_forget_gate(&sandbox.id);
         let view = self.ci_gate(sandbox).await;
@@ -1616,36 +1691,31 @@ impl App {
                 }
             }
         }
-        let pulls = match &token {
-            Some(token) => {
-                self.deps
-                    .github
-                    .list_pulls(token, &sandbox.repo_owner, &sandbox.repo_name, None)
-                    .await?
-            }
-            None => Vec::new(),
-        };
         // A fork's pull request is never tested (ADR-0116): its author has no push access, and
         // its head can still be in the clone (an agent fetched `pull/N/head` to review it), so
         // GitHub's word that it comes from another repository decides, not the clone (#842).
-        for pull in pulls
+        let eligible = pulls?
             .into_iter()
             .filter(|p| p.state == "open" && p.base == profile.integration_branch && !p.from_fork)
-            .take(MAX_PULLS_TESTED)
-        {
+            .collect::<Vec<_>>();
+        let store = &self.deps.store;
+        let admitted = store.ci_admitted_pulls(&sandbox.id).await?;
+        let heads = opening::inventory_heads(&admitted, &eligible, openings);
+        let numbers: Vec<_> = heads.iter().map(|(number, _)| *number).collect();
+        if numbers != admitted {
+            store.set_ci_admitted_pulls(&sandbox.id, &numbers).await?;
+        }
+        for (number, sha) in &heads {
             // A head not in the clone (not fetched yet) is tested at a later round.
-            if !matches!(
-                self.deps.git.resolve_commit(&repo, &pull.head_sha).await,
-                Ok(Some(_))
-            ) {
+            if !matches!(self.deps.git.resolve_commit(&repo, sha).await, Ok(Some(_))) {
                 continue;
             }
-            let gate = self.ci_gate_for_head(sandbox, &view, &pull.head_sha).await;
+            let gate = self.ci_gate_for_head(sandbox, &view, sha).await;
             if let Some(gate) = gate {
                 targets.push((
                     Target {
-                        reference: CiRef::PullRequest(pull.number),
-                        sha: pull.head_sha.clone(),
+                        reference: CiRef::PullRequest(*number),
+                        sha: sha.clone(),
                     },
                     gate,
                 ));
@@ -1680,7 +1750,10 @@ impl App {
                 Some(sha) => format!("superseded by {}", short(&sha)),
                 None => "its pull request or branch is gone".to_owned(),
             };
-            if let Err(err) = self.ci_cancel(&run_id, &reason).await {
+            if let Err(err) = self
+                .ci_record_cancellation(&run_id, &reason, publications)
+                .await
+            {
                 tracing::warn!(error = %err, run = %run_id, "superseding a CI run failed");
             }
         }
@@ -1690,26 +1763,28 @@ impl App {
                 // up-to-date pull request) reuses that result instead of running again: every
                 // merge used to cost a second 12-20 minute run in the sandbox's one lane.
                 if matches!(target.reference, CiRef::Branch(_))
-                    && self
-                        .ci_reuse_tree(sandbox, &target, gate, &runs)
+                    && let Some(id) = self
+                        .ci_record_reused_tree(sandbox, &target, gate, &runs)
                         .await?
-                        .is_some()
                 {
+                    publications.push(id);
                     continue;
                 }
                 let place = places
                     .get(&target.reference.key())
                     .copied()
                     .unwrap_or_else(|| self.now());
-                self.ci_queue_placed(
-                    sandbox,
-                    target.reference.clone(),
-                    &target.sha,
-                    gate,
-                    "yulius",
-                    place,
-                )
-                .await?;
+                let queued = self
+                    .ci_record_placed(
+                        sandbox,
+                        target.reference.clone(),
+                        &target.sha,
+                        gate,
+                        "yulius",
+                        place,
+                    )
+                    .await?;
+                publications.push(queued.id);
             }
         }
         Ok(())
@@ -1742,15 +1817,19 @@ impl App {
             reference,
             sha: sha.to_owned(),
         };
-        let Some(id) = self.ci_reuse_tree(sandbox, &target, gate, &runs).await? else {
+        let Some(id) = self
+            .ci_record_reused_tree(sandbox, &target, gate, &runs)
+            .await?
+        else {
             return Ok(None);
         };
+        self.ci_publish(&id).await;
         self.deps.store.ci_run(&id).await
     }
 
     /// Records a passed run for `target` when a recent passed run tested a commit with the same
     /// tree (and therefore the same jobs); its id, or `None` when there is none.
-    async fn ci_reuse_tree(
+    async fn ci_record_reused_tree(
         &self,
         sandbox: &SandboxRecord,
         target: &Target,
@@ -1841,7 +1920,6 @@ impl App {
             .collect();
         self.deps.store.insert_ci_run(&run, &jobs).await?;
         tracing::info!(sandbox = %sandbox.slug, run = %run.id, sha = %short(&target.sha), reused = %short(&source.sha), "CI result reused for the same tree");
-        self.ci_publish(&run.id).await;
         Ok(Some(run.id))
     }
 
@@ -1851,6 +1929,22 @@ impl App {
     /// # Errors
     /// Store failures.
     pub(crate) async fn ci_cancel(&self, run_id: &str, reason: &str) -> AppResult<bool> {
+        let mut publications = Vec::new();
+        let changed = self
+            .ci_record_cancellation(run_id, reason, &mut publications)
+            .await?;
+        for id in publications {
+            self.ci_publish(&id).await;
+        }
+        Ok(changed)
+    }
+
+    async fn ci_record_cancellation(
+        &self,
+        run_id: &str,
+        reason: &str,
+        publications: &mut Vec<String>,
+    ) -> AppResult<bool> {
         let Some(run) = self.deps.store.ci_run(run_id).await? else {
             return Err(AppError::NotFound);
         };
@@ -1870,7 +1964,7 @@ impl App {
                     return Ok(false);
                 }
                 self.ci_cancel_jobs(run_id, reason).await?;
-                self.ci_publish(run_id).await;
+                publications.push(run_id.to_owned());
                 Ok(true)
             }
             RunState::Running => {
@@ -1896,7 +1990,7 @@ impl App {
                     .store
                     .transition_ci_run(run_id, &[RunState::Running], RunState::Cancelled, &update)
                     .await?;
-                self.ci_publish(run_id).await;
+                publications.push(run_id.to_owned());
                 Ok(changed)
             }
             _ => Ok(false),
@@ -1960,6 +2054,10 @@ impl App {
                 .record_ci_status(run_id, None, Some(PLAYGROUND_STATUS_NOTE))
                 .await;
         }
+        // A known App-wide wait must not spend this status's bounded recovery attempts.
+        if self.deps.github.rate_limit_reset().is_some() {
+            return Ok(());
+        }
         let jobs = store.ci_jobs(run_id, false).await?;
         let failed = jobs.iter().find(|j| j.state == RunState::Failed);
         let summary = RunSummary {
@@ -1976,6 +2074,7 @@ impl App {
         let status = dom::commit_status(run.state, summary);
         let token = match self.dlv_installation_token(&sandbox).await {
             Ok(token) => token,
+            Err(err) if self.deps.github.rate_limit_reset().is_some() => return Err(err),
             Err(err) => {
                 let note = format!("not published: {}", err.public_message());
                 store.record_ci_status(run_id, None, Some(&note)).await?;
@@ -2004,6 +2103,7 @@ impl App {
             .await
         {
             Ok(()) => store.record_ci_status(run_id, Some(run.state), None).await,
+            Err(err) if self.deps.github.rate_limit_reset().is_some() => Err(err),
             Err(err) => {
                 let note = match &err {
                     AppError::Forbidden(message) => format!("not published: {message}"),
@@ -2279,7 +2379,7 @@ impl App {
         let mut runs = Vec::with_capacity(records.len());
         for run in &records {
             let jobs = self.deps.store.ci_jobs(&run.id, false).await?;
-            runs.push(run_view(run, &jobs, false));
+            runs.push(self.ci_run_view(&sandbox, run, &jobs, false));
         }
         let admin = level >= AccessLevel::Admin || ctx.user.is_superadmin;
         let status_access = records
@@ -2317,7 +2417,7 @@ impl App {
         let (sandbox, _) = self.ci_sandbox(ctx, sandbox_id, Action::View).await?;
         let run = self.ci_run_of(&sandbox, run_id).await?;
         let jobs = self.deps.store.ci_jobs(&run.id, true).await?;
-        Ok(run_view(&run, &jobs, true))
+        Ok(self.ci_run_view(&sandbox, &run, &jobs, true))
     }
 
     /// `POST /api/sandboxes/{sid}/ci/runs/{rid}/cancel`.

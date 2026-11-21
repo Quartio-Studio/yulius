@@ -122,7 +122,11 @@ impl App {
             }
             train
         });
-        Ok(json!({"armed": armed, "train": train}))
+        let mut queue = json!({"armed": armed, "train": train});
+        if let Some(wait) = self.github_wait() {
+            queue["github_wait"] = json!(wait);
+        }
+        Ok(queue)
     }
 
     /// Merges task `id`'s pull request for its owner (MRG-003), as the page's Merge does once

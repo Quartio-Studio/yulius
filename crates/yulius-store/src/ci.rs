@@ -156,33 +156,73 @@ fn select_runs(
 
 #[async_trait]
 impl CiStore for SqliteStore {
+    async fn ci_admitted_pulls(&self, sandbox: &SandboxId) -> AppResult<Vec<u64>> {
+        let sandbox = sandbox.as_str().to_owned();
+        self.call(move |c| {
+            let numbers: String = c
+                .query_row(
+                    "SELECT ci_open_pulls FROM sandboxes WHERE id = ?1",
+                    [sandbox],
+                    |row| row.get(0),
+                )
+                .map_err(db)?;
+            serde_json::from_str(&numbers).map_err(AppError::internal)
+        })
+        .await
+    }
+
+    async fn set_ci_admitted_pulls(&self, sandbox: &SandboxId, numbers: &[u64]) -> AppResult<()> {
+        let sandbox = sandbox.as_str().to_owned();
+        let numbers = serde_json::to_string(numbers).map_err(AppError::internal)?;
+        self.call(move |c| {
+            let changed = c
+                .execute(
+                    "UPDATE sandboxes SET ci_open_pulls = ?2 WHERE id = ?1 AND removed_at IS NULL",
+                    params![sandbox, numbers],
+                )
+                .map_err(db)?;
+            if changed == 0 {
+                return Err(AppError::NotFound);
+            }
+            Ok(())
+        })
+        .await
+    }
+
     async fn insert_ci_run(&self, run: &CiRunRecord, jobs: &[CiJobRecord]) -> AppResult<()> {
         let (run, jobs) = (run.clone(), jobs.to_vec());
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
-            tx.execute(
-                &format!(
-                    "INSERT INTO ci_runs ({RUN_COLS}) VALUES ({})",
-                    placeholders(1, 14)
-                ),
-                params![
-                    run.id,
-                    run.sandbox_id.as_str(),
-                    run.reference.key(),
-                    run.sha,
-                    run.source.as_str(),
-                    run.state.as_str(),
-                    run.reason,
-                    run.requested_by,
-                    run.status_for.map(RunState::as_str),
-                    run.status_note,
-                    i64::from(run.status_attempts),
-                    run.queued_at.0,
-                    run.started_at.map(|t| t.0),
-                    run.ended_at.map(|t| t.0),
-                ],
-            )
-            .map_err(db)?;
+            // Removal keeps the sandbox row. Its cleanup can already have taken a snapshot
+            // of active runs while this producer was waiting for Git.
+            let inserted = tx
+                .execute(
+                    &format!(
+                        "INSERT INTO ci_runs ({RUN_COLS}) SELECT {} WHERE NOT EXISTS \
+                     (SELECT 1 FROM sandboxes WHERE id = ?2 AND removed_at IS NOT NULL)",
+                        placeholders(1, 14)
+                    ),
+                    params![
+                        run.id,
+                        run.sandbox_id.as_str(),
+                        run.reference.key(),
+                        run.sha,
+                        run.source.as_str(),
+                        run.state.as_str(),
+                        run.reason,
+                        run.requested_by,
+                        run.status_for.map(RunState::as_str),
+                        run.status_note,
+                        i64::from(run.status_attempts),
+                        run.queued_at.0,
+                        run.started_at.map(|t| t.0),
+                        run.ended_at.map(|t| t.0),
+                    ],
+                )
+                .map_err(db)?;
+            if inserted == 0 {
+                return Err(AppError::NotFound);
+            }
             for job in &jobs {
                 tx.execute(
                     &format!(

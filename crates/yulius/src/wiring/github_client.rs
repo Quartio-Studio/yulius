@@ -37,6 +37,17 @@ impl GitHubAdapter {
         })
     }
 
+    fn for_token(&self, token: &Secret) -> Arc<GitHubClient> {
+        if !token.is_github_installation() {
+            return Arc::clone(&self.plain);
+        }
+        self.cached
+            .lock()
+            .ok()
+            .and_then(|cached| cached.as_ref().map(|(_, client)| Arc::clone(client)))
+            .unwrap_or_else(|| Arc::clone(&self.plain))
+    }
+
     fn client(&self, app: &GitHubAppConfig) -> AppResult<Arc<GitHubClient>> {
         let mut cached = self
             .cached
@@ -54,6 +65,7 @@ impl GitHubAdapter {
             client_secret: GhSecret::new(app.client_secret.clone()),
             private_key_pem: GhSecret::new(app.private_key_pem.clone()),
             slug: app.slug.clone(),
+            webhook_secret: None,
         });
         let client = Arc::new(GitHubClient::new(config).map_err(map_err)?);
         *cached = Some((app.app_id, client.clone()));
@@ -68,6 +80,19 @@ fn map_err(err: GitHubError) -> AppError {
         GitHubError::Conflict { .. }
         | GitHubError::NotFastForward
         | GitHubError::NotMergeable { .. } => AppError::Conflict(err.to_string()),
+        GitHubError::RateLimited {
+            retry_after: Some(wait),
+        } => {
+            let now = yulius_github::Clock::now(&yulius_github::SystemClock);
+            let reset = yulius_domain::time::Timestamp(
+                now.0
+                    .saturating_add(i64::try_from(wait.as_millis()).unwrap_or(i64::MAX)),
+            );
+            AppError::Upstream(format!(
+                "GitHub rate limit reached. Waiting until {}.",
+                yulius_domain::time::format_rfc3339(reset)
+            ))
+        }
         other => AppError::Upstream(format!("GitHub: {other}")),
     }
 }
@@ -163,6 +188,10 @@ fn merge_method(text: &str) -> AppResult<MergeMethod> {
 
 #[async_trait]
 impl GitHubPort for GitHubAdapter {
+    fn rate_limit_reset(&self) -> Option<yulius_domain::time::Timestamp> {
+        self.cached.lock().ok()?.as_ref()?.1.rate_limit_reset()
+    }
+
     fn authorize_url(
         &self,
         app: &GitHubAppConfig,
@@ -246,7 +275,11 @@ impl GitHubPort for GitHubAdapter {
     }
 
     async fn current_user(&self, token: &Secret) -> AppResult<GhUser> {
-        let u = self.plain.current_user(&gh(token)).await.map_err(map_err)?;
+        let u = self
+            .for_token(token)
+            .current_user(&gh(token))
+            .await
+            .map_err(map_err)?;
         Ok(GhUser {
             id: u.id,
             login: u.login,
@@ -257,7 +290,7 @@ impl GitHubPort for GitHubAdapter {
 
     async fn repo_access(&self, token: &Secret, owner: &str, name: &str) -> AppResult<RepoAccess> {
         match self
-            .plain
+            .for_token(token)
             .repo_permissions(&gh(token), owner, name)
             .await
             .map_err(map_err)?
@@ -294,7 +327,7 @@ impl GitHubPort for GitHubAdapter {
             .create_installation_token(installation_id)
             .await
             .map_err(map_err)?;
-        Ok(app_secret(&t.token))
+        Ok(Secret::github_installation(t.token.expose().to_owned()))
     }
 
     async fn repository_token(
@@ -308,7 +341,7 @@ impl GitHubPort for GitHubAdapter {
             .create_repository_token(installation_id, repo)
             .await
             .map_err(map_err)?;
-        Ok(app_secret(&t.token))
+        Ok(Secret::github_installation(t.token.expose().to_owned()))
     }
 
     async fn agent_token(
@@ -322,7 +355,7 @@ impl GitHubPort for GitHubAdapter {
             .create_agent_token(installation_id, repo)
             .await
             .map_err(map_err)?;
-        Ok(app_secret(&t.token))
+        Ok(Secret::github_installation(t.token.expose().to_owned()))
     }
 
     async fn installation_repos(
@@ -351,9 +384,13 @@ impl GitHubPort for GitHubAdapter {
         let mut spec = CreateRepo::private(name);
         spec.description = (!description.is_empty()).then(|| description.to_owned());
         let created = if owner_is_org {
-            self.plain.create_org_repo(&gh(token), owner, &spec).await
+            self.for_token(token)
+                .create_org_repo(&gh(token), owner, &spec)
+                .await
         } else {
-            self.plain.create_user_repo(&gh(token), &spec).await
+            self.for_token(token)
+                .create_user_repo(&gh(token), &spec)
+                .await
         };
         Ok(repo(created.map_err(map_creation)?))
     }
@@ -366,7 +403,7 @@ impl GitHubPort for GitHubAdapter {
         branch: &str,
     ) -> AppResult<BranchGuard> {
         let guard = self
-            .plain
+            .for_token(token)
             .branch_guard(&gh(token), owner, name, branch)
             .await
             .map_err(map_err)?;
@@ -397,7 +434,7 @@ impl GitHubPort for GitHubAdapter {
             block_deletion: true,
             restrict_updates: request.restrict_updates,
         };
-        self.plain
+        self.for_token(token)
             .create_branch_ruleset(&gh(token), owner, name, &spec)
             .await
             .map(|_| ())
@@ -448,6 +485,7 @@ impl GitHubPort for GitHubAdapter {
             client_id: c.client_id,
             client_secret: c.client_secret.expose().to_owned(),
             private_key_pem: c.private_key_pem.expose().to_owned(),
+            webhook_secret: c.webhook_secret.map(|s| s.expose().to_owned()),
         })
     }
 
@@ -464,7 +502,7 @@ impl GitHubPort for GitHubAdapter {
             labels: issue.labels.clone(),
         };
         let opened = self
-            .plain
+            .for_token(token)
             .create_issue(&gh(token), owner, repo_name, &spec)
             .await
             .map_err(map_err)?;
@@ -481,7 +519,7 @@ impl GitHubPort for GitHubAdapter {
         repo_name: &str,
         number: u64,
     ) -> AppResult<bool> {
-        self.plain
+        self.for_token(token)
             .issue_open(&gh(token), owner, repo_name, number)
             .await
             .map_err(map_err)
@@ -496,7 +534,7 @@ impl GitHubPort for GitHubAdapter {
         open: bool,
         comment: &str,
     ) -> AppResult<bool> {
-        self.plain
+        self.for_token(token)
             .set_issue_state(&gh(token), owner, repo_name, number, open, comment)
             .await
             .map_err(map_err)
@@ -516,7 +554,7 @@ impl GitHubPort for GitHubAdapter {
             body: new.body.clone(),
         };
         Ok(pull(
-            self.plain
+            self.for_token(token)
                 .create_pull(&gh(token), owner, repo_name, &spec)
                 .await
                 .map_err(map_err)?,
@@ -531,7 +569,7 @@ impl GitHubPort for GitHubAdapter {
         number: u64,
     ) -> AppResult<GhPull> {
         Ok(pull(
-            self.plain
+            self.for_token(token)
                 .get_pull(&gh(token), owner, repo_name, number)
                 .await
                 .map_err(map_err)?,
@@ -546,7 +584,7 @@ impl GitHubPort for GitHubAdapter {
         number: u64,
         title: &str,
     ) -> AppResult<()> {
-        self.plain
+        self.for_token(token)
             .update_pull_title(&gh(token), owner, repo_name, number, title)
             .await
             .map(|_| ())
@@ -561,7 +599,7 @@ impl GitHubPort for GitHubAdapter {
         head: Option<&str>,
     ) -> AppResult<Vec<GhPull>> {
         Ok(self
-            .plain
+            .for_token(token)
             .list_pulls(&gh(token), owner, repo_name, PullFilter::Open, head)
             .await
             .map_err(map_err)?
@@ -578,7 +616,7 @@ impl GitHubPort for GitHubAdapter {
         sha: &str,
     ) -> AppResult<ChecksReport> {
         let report = self
-            .plain
+            .for_token(token)
             .check_status(&gh(token), owner, repo_name, sha)
             .await
             .map_err(map_err)?;
@@ -612,7 +650,7 @@ impl GitHubPort for GitHubAdapter {
         expected_head: &str,
     ) -> AppResult<String> {
         let outcome = self
-            .plain
+            .for_token(token)
             .merge_pull(
                 &gh(token),
                 owner,
@@ -634,7 +672,7 @@ impl GitHubPort for GitHubAdapter {
         branch: &str,
         sha: &str,
     ) -> AppResult<()> {
-        self.plain
+        self.for_token(token)
             .create_branch_ref(&gh(token), owner, repo_name, branch, sha)
             .await
             .map_err(map_err)
@@ -648,7 +686,7 @@ impl GitHubPort for GitHubAdapter {
         branch: &str,
         sha: &str,
     ) -> AppResult<()> {
-        self.plain
+        self.for_token(token)
             .fast_forward_ref(&gh(token), owner, repo_name, branch, sha)
             .await
             .map_err(map_err)
@@ -669,7 +707,7 @@ impl GitHubPort for GitHubAdapter {
             target_url: status.target_url.clone(),
         };
         match self
-            .plain
+            .for_token(token)
             .create_commit_status(&gh(token), owner, repo_name, sha, &status)
             .await
         {
@@ -692,7 +730,7 @@ impl GitHubPort for GitHubAdapter {
         repo_name: &str,
         branch: &str,
     ) -> AppResult<bool> {
-        self.plain
+        self.for_token(token)
             .delete_branch(&gh(token), owner, repo_name, branch)
             .await
             .map_err(map_err)
@@ -706,7 +744,7 @@ impl GitHubPort for GitHubAdapter {
         branch: &str,
     ) -> AppResult<Vec<GhPull>> {
         let mut pulls: Vec<GhPull> = self
-            .plain
+            .for_token(token)
             .list_pulls(&gh(token), owner, repo_name, PullFilter::All, Some(branch))
             .await
             .map_err(map_err)?
@@ -724,7 +762,7 @@ impl GitHubPort for GitHubAdapter {
         repo_name: &str,
         branch: &str,
     ) -> AppResult<Option<String>> {
-        self.plain
+        self.for_token(token)
             .branch_head(&gh(token), owner, repo_name, branch)
             .await
             .map_err(map_err)

@@ -50,6 +50,7 @@ async fn world() -> Result<World, Box<dyn std::error::Error>> {
         client_id: credentials.client_id.clone(),
         client_secret: credentials.client_secret.expose().to_owned(),
         private_key_pem: credentials.private_key_pem.expose().to_owned(),
+        webhook_secret: None,
     };
     Ok(World {
         fake,
@@ -323,5 +324,43 @@ async fn the_adapter_reads_branch_heads_from_github() -> TestResult {
         .branch_sha(&installation, "acme", "app", "release")
         .await?;
     assert_eq!(prefix, None);
+    Ok(())
+}
+
+#[tokio::test]
+async fn only_an_installation_token_reports_the_instances_github_wait() -> TestResult {
+    let world = world().await?;
+    let installed = world
+        .adapter
+        .installation_token(&world.app, world.installation)
+        .await?;
+    // Enough repository-scoped credentials to displace the original cache entry.
+    for i in 0..65 {
+        let name = format!("repo-{i}");
+        world.fake.add_repo("acme", &name, true);
+        world
+            .adapter
+            .repository_token(&world.app, world.installation, &name)
+            .await?;
+    }
+    world.fake.inject_fault(
+        FakeFault::new("GET", "/repos/acme/app/pulls", 429, 2).header("retry-after", "904"),
+    );
+    assert!(
+        world
+            .adapter
+            .list_pulls(&world.admin, "acme", "app", None)
+            .await
+            .is_err()
+    );
+    assert!(world.adapter.rate_limit_reset().is_none());
+    assert!(
+        world
+            .adapter
+            .list_pulls(&installed, "acme", "app", None)
+            .await
+            .is_err()
+    );
+    assert!(world.adapter.rate_limit_reset().is_some());
     Ok(())
 }

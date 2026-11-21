@@ -1088,13 +1088,14 @@ impl App {
         })
     }
 
-    /// Prefer rounds in progress. A finished delivery can also show its merged review.
+    /// Prefer current rounds. Codex delivery can also show the review of its landed PR.
     pub(crate) async fn review_round_views(
         &self,
         delivery: &crate::delivery::DeliveryRecord,
+        harness: Harness,
     ) -> Vec<yulius_contracts::api::git::ReviewRoundView> {
         let store = &self.deps.store;
-        let rounds = if crate::delivery::past_merge(&delivery.stage) {
+        let rounds = if harness == Harness::Codex && crate::delivery::past_merge(&delivery.stage) {
             store
                 .delivery_review_rounds(&delivery.task_id, delivery.pr_number)
                 .await

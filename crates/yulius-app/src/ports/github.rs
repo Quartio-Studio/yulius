@@ -21,6 +21,8 @@ pub struct GitHubAppConfig {
     pub client_secret: String,
     /// PEM private key for App JWTs.
     pub private_key_pem: String,
+    /// HMAC key from manifest conversion, absent for older Apps.
+    pub webhook_secret: Option<String>,
 }
 
 impl std::fmt::Debug for GitHubAppConfig {
@@ -293,6 +295,11 @@ pub struct GhIssue {
 /// GitHub operations used by the application.
 #[async_trait]
 pub trait GitHubPort: Send + Sync {
+    /// Active reset deadline of the instance's GitHub App.
+    fn rate_limit_reset(&self) -> Option<Timestamp> {
+        None
+    }
+
     /// OAuth authorization URL for user sign-in; `select_account` makes GitHub show its account
     /// picker (to continue with another GitHub account than the one signed in to github.com).
     fn authorize_url(
