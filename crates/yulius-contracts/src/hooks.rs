@@ -57,6 +57,9 @@ pub fn edited_file_field(tool: &str) -> Option<&'static str> {
 /// (SPEC-346 LPH-001).
 pub const SENT_AT_HEADER: &str = "x-yulius-hook-sent-ms";
 
+/// Client-generated identity shared by every HTTP exchange of one submit invocation.
+pub const INVOCATION_HEADER: &str = "x-yulius-hook-invocation";
+
 /// `SessionEnd` reasons (Claude Code 2.1.292): the person left the session (`/exit`, Ctrl+C
 /// twice, Ctrl+D) — `prompt_input_exit`; `/clear` started a new conversation in the same
 /// process; `logout`; `resume` (another session was resumed in the same process); anything else
@@ -75,6 +78,9 @@ pub mod session_end {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HookInput {
+    /// Submit invocation from the transport header. The provider JSON cannot set it.
+    #[serde(skip)]
+    pub invocation: Option<u128>,
     /// Provider session id.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,

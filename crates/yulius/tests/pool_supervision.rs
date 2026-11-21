@@ -562,6 +562,924 @@ fn one_exhausted_subscription_pauses_at_the_boundary_and_resumes_in_place() -> T
     Ok(())
 }
 
+async fn legacy_goal_hold(
+    app: &Arc<App>,
+    sandbox: &SandboxId,
+    user: &UserId,
+) -> Result<TaskId, Box<dyn std::error::Error>> {
+    goal_hold_for(app, sandbox, user, Harness::ClaudeCode).await
+}
+
+async fn goal_hold_for(
+    app: &Arc<App>,
+    sandbox: &SandboxId,
+    user: &UserId,
+    harness: Harness,
+) -> Result<TaskId, Box<dyn std::error::Error>> {
+    let task = app
+        .create_task_internal(NewTask {
+            sandbox: sandbox.clone(),
+            created_by: user.clone(),
+            prompt: "Check delivery".into(),
+            harness,
+            title: Some("Verification".into()),
+            workflow_id: None,
+            steps: vec!["Verify dev".into()],
+            model: None,
+            effort: None,
+            origin: TaskOrigin::Ui,
+            automation_run: None,
+            start: false,
+            mode: yulius_app::model::TaskMode::Goal,
+            supertask: false,
+        })
+        .await?;
+    let id = &task.id;
+    app.deps
+        .store
+        .transition_task(
+            id,
+            Some(task.status),
+            TaskStatus::WaitingCapacity,
+            None,
+            app.now(),
+        )
+        .await?;
+    app.pause_task(id, PauseKind::Turn, None, None).await?;
+    assert!(app.deps.store.live_attempt(id).await?.is_none());
+    Ok(task.id)
+}
+
+/// A persisted turn hold written before turn continuations were carried. There is no
+/// surviving process to poll Stop after capacity returns.
+#[test]
+fn a_goal_continuation_recovers_a_process_free_capacity_hold() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build(&data, &fake, Arc::new(ScriptedUsage::default()))?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let id = &legacy_goal_hold(&app, &sandbox, &user).await?;
+        app.resume_round().await;
+        let run = app
+            .deps
+            .store
+            .live_attempt(id)
+            .await?
+            .ok_or("resumed run")?;
+        wait_for("the resumed launch", Duration::from_secs(30), || async {
+            Path::new(&run.run_dir).join("fake-launch.txt").is_file()
+        })
+        .await?;
+        let launch = std::fs::read_to_string(Path::new(&run.run_dir).join("fake-launch.txt"))?;
+        assert!(
+            launch.contains("Continue the authorized goal.") && launch.contains("Verify dev"),
+            "{launch}"
+        );
+        assert_eq!(app.deps.store.task(id).await?.ok_or("task")?.gate_blocks, 1);
+
+        // The next held turn has a live process. Move it to the newly available
+        // subscription and charge the instruction delivered to the replacement.
+        let first = run.account_id.ok_or("first subscription")?;
+        let second = add_account(&app, "b-second").await?;
+        let limited = serde_json::json!({"primary":{"used_percent":98.0, "window_minutes":300,
+            "resets_at":app.now().plus_millis(HOUR).0}})
+        .to_string();
+        app.deps
+            .store
+            .set_account_state(&first, AccountStatus::Ok, Some(&limited), None, app.now())
+            .await?;
+        app.deps
+            .store
+            .set_account_state(
+                &second,
+                AccountStatus::Ok,
+                Some(r#"{"primary":{"used_percent":5.0,"window_minutes":300}}"#),
+                None,
+                app.now(),
+            )
+            .await?;
+        app.pause_task(id, PauseKind::Turn, Some(first), None)
+            .await?;
+        Box::pin(app.resume_round()).await;
+        let moved = app
+            .deps
+            .store
+            .live_attempt(id)
+            .await?
+            .ok_or("replacement")?;
+        assert_eq!(moved.account_id, Some(second));
+        let replacement =
+            std::fs::read_to_string(Path::new(&moved.run_dir).join("fake-launch.txt"))?;
+        assert!(
+            replacement.contains("Continue the authorized goal.")
+                && replacement.contains("Verify dev"),
+            "the replacement must receive the unfinished opening turn: {replacement}"
+        );
+        assert_eq!(app.deps.store.task(id).await?.ok_or("task")?.gate_blocks, 2);
+        stop(&app, id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// Admission can queue a held turn after capacity returns. The queued start preserves
+/// the verification prompt and resumes the previous session when the task has one.
+#[test]
+fn a_goal_continuation_queued_after_a_hold_preserves_session_lineage() -> TestResult {
+    use yulius_app::model::{ProviderSessionRecord, QueuedStartKind};
+
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_one_slot(
+            &data,
+            &fake,
+            Arc::new(ScriptedUsage::default()),
+            FakeAgentOptions::default(),
+        )?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let holder = slot_holder(&app, &sandbox, &user).await?;
+        for kind in [QueuedStartKind::Fresh, QueuedStartKind::Resume] {
+            let id = legacy_goal_hold(&app, &sandbox, &user).await?;
+            if kind == QueuedStartKind::Resume {
+                app.deps
+                    .store
+                    .upsert_provider_session(&ProviderSessionRecord {
+                        id: "verified-session".into(),
+                        sandbox_id: sandbox.clone(),
+                        task_id: id.clone(),
+                        harness: Harness::ClaudeCode,
+                        session_id: "prior-session".into(),
+                        transcript_ref: None,
+                        origin: "imported".into(),
+                        first_seen: app.now(),
+                        last_seen: app.now(),
+                    })
+                    .await?;
+            }
+            app.resume_round().await;
+            let queued = app
+                .deps
+                .store
+                .queued_start(&id)
+                .await?
+                .ok_or("queued continuation")?;
+            assert_eq!(
+                queued.kind.as_str(),
+                if kind == QueuedStartKind::Fresh {
+                    "goal_fresh"
+                } else {
+                    "goal_resume"
+                }
+            );
+            let prompt = queued.prompt.ok_or("verification prompt")?;
+            assert!(
+                prompt.contains("Continue the authorized goal.") && prompt.contains("Verify dev")
+            );
+            stop(&app, &id).await?;
+        }
+        let id = legacy_goal_hold(&app, &sandbox, &user).await?;
+        let owner = "Continue the authorized goal. Check the revised fixture";
+        assert!(
+            app.deps
+                .store
+                .update_open_pause(&id, PauseKind::Prompt, Some(owner))
+                .await?
+        );
+        app.resume_round().await;
+        let queued = app
+            .deps
+            .store
+            .queued_start(&id)
+            .await?
+            .ok_or("queued owner prompt")?;
+        assert_eq!(queued.kind, QueuedStartKind::Fresh);
+        assert_eq!(queued.prompt.as_deref(), Some(owner));
+        stop(&app, &id).await?;
+        stop(&app, &holder).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+#[test]
+fn a_manual_move_delivers_saved_fresh_and_resumed_goals_across_harnesses() -> TestResult {
+    use yulius_app::model::ProviderSessionRecord;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(Box::pin(async {
+        let app = build(&data, &fake, Arc::new(ScriptedUsage::default()))?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let google = crate::antigravity::add_google_account(
+            &app,
+            "a-google",
+            &crate::antigravity::api_key()?,
+        )
+        .await?;
+        let store = &app.deps.store;
+        let ctx = AuthContext {
+            user: store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        for (harness, account) in [
+            (Harness::ClaudeCode, AccountId::parse("a-first")?),
+            (Harness::Antigravity, google),
+        ] {
+            for (pause_kind, launch_kind) in [
+                (PauseKind::GoalFreshStart, LaunchKind::New),
+                (PauseKind::GoalResumeStart, LaunchKind::Resume),
+            ] {
+                let id = goal_hold_for(&app, &sandbox, &user, harness).await?;
+                let prompt = "Continue the authorized goal. Verify the accepted revision";
+                assert!(
+                    store
+                        .update_open_pause(&id, pause_kind, Some(prompt))
+                        .await?
+                );
+                store
+                    .upsert_provider_session(&ProviderSessionRecord {
+                        id: format!("session-{id}"),
+                        sandbox_id: sandbox.clone(),
+                        task_id: id.clone(),
+                        harness,
+                        session_id: format!("prior-{id}"),
+                        transcript_ref: None,
+                        origin: "imported".into(),
+                        first_seen: app.now(),
+                        last_seen: app.now(),
+                    })
+                    .await?;
+                app.switch_task(
+                    &ctx,
+                    id.as_str(),
+                    &yulius_contracts::api::tasks::ContinueTask {
+                        account_id: Some(account.to_string()),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+                let run = store.live_attempt(&id).await?.ok_or("replacement run")?;
+                assert_eq!(run.launch_kind, launch_kind, "{harness:?}");
+                let launch = Path::new(&run.run_dir).join("fake-launch.txt");
+                wait_for(
+                    "the moved goal instruction",
+                    Duration::from_secs(30),
+                    || async {
+                        std::fs::read_to_string(&launch).is_ok_and(|text| text.contains(prompt))
+                    },
+                )
+                .await?;
+                assert_eq!(task(&app, &id).await?.gate_blocks, 1);
+                stop(&app, &id).await?;
+            }
+        }
+        Ok::<_, Box<dyn std::error::Error>>(())
+    }))?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// A native goal Stop authenticated before a subscription change arrives after the
+/// replacement has submitted its opening turn. Its verdict deadline belongs to the old run.
+#[test]
+fn a_late_native_goal_stop_cannot_settle_a_replacement_turn() -> TestResult {
+    check_replaced_goal_stop(yulius_app::race::Point::StopClean)
+}
+
+#[test]
+fn a_claimed_native_goal_verdict_cannot_settle_a_replacement_turn() -> TestResult {
+    check_replaced_goal_stop(yulius_app::race::Point::GoalVerdictReady)
+}
+
+fn check_replaced_goal_stop(point: yulius_app::race::Point) -> TestResult {
+    use yulius_domain::task::Activity;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(Box::pin(async {
+        let app = build_with(
+            &data,
+            &fake,
+            Arc::new(ScriptedUsage::default()),
+            FakeAgentOptions::default(),
+        )?;
+        let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
+        let id = start_verification_goal(&app, sandbox, user).await?;
+        let limit = Duration::from_secs(30);
+        wait_for("the first goal run", limit, || async {
+            screen(&app, &id).contains("FAKE-AGENT READY")
+        })
+        .await?;
+        let first = app.deps.store.live_attempt(&id).await?.ok_or("first run")?;
+        bind_goal_hook(&app, &data, &first.id, "test-old-goal-stop")?;
+        let (arrived, parked) = tokio::sync::oneshot::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        yulius_app::race::on(point, Path::new(id.as_str()), move || {
+            let _ = arrived.send(());
+            let _ = tokio::task::block_in_place(|| blocked.recv_timeout(limit));
+        });
+        let old_stop = tokio::spawn({
+            let app = app.clone();
+            async move {
+                app.hook_event(
+                    "test-old-goal-stop",
+                    "claude",
+                    "Stop",
+                    &Default::default(),
+                    None,
+                )
+                .await
+            }
+        });
+        tokio::time::timeout(limit, parked).await??;
+        let prompt = "Continue the authorized goal. Verify dev";
+        app.switch_with(
+            &id,
+            Some(AccountId::parse("b-second")?),
+            "Capacity",
+            yulius_app::supervisor::RunStart::GoalResume {
+                prompt: prompt.into(),
+            },
+        )
+        .await?;
+        let replacement = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("replacement run")?;
+        assert_ne!(first.id, replacement.id);
+        bind_goal_hook(&app, &data, &replacement.id, "test-replacement-submit")?;
+        app.hook_event(
+            "test-replacement-submit",
+            "claude",
+            "UserPromptSubmit",
+            &yulius_contracts::hooks::HookInput {
+                prompt: Some(prompt.into()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await?;
+        assert_eq!(task(&app, &id).await?.activity, Some(Activity::Working));
+        release.send(())?;
+        old_stop.await??;
+        let ended = wait_for(
+            "an old Stop settling the replacement",
+            yulius_app::finish::GOAL_VERDICT_WAIT + Duration::from_secs(2),
+            || async {
+                task(&app, &id)
+                    .await
+                    .is_ok_and(|task| task.activity != Some(Activity::Working))
+            },
+        )
+        .await;
+        let current = task(&app, &id).await?;
+        assert!(
+            ended.is_err(),
+            "the old Stop changed the replacement to {:?}",
+            current.activity
+        );
+        assert_eq!(current.activity, Some(Activity::Working));
+        assert_eq!(current.gate_blocks, 1);
+        stop(&app, &id).await
+    }))?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+async fn start_verification_goal(
+    app: &Arc<App>,
+    sandbox: SandboxId,
+    user: UserId,
+) -> Result<TaskId, Box<dyn std::error::Error>> {
+    Ok(app
+        .create_task_internal(NewTask {
+            sandbox,
+            created_by: user,
+            prompt: "Check delivery".into(),
+            harness: Harness::ClaudeCode,
+            title: Some("Verify checkout".into()),
+            workflow_id: None,
+            steps: vec!["Verify dev".into()],
+            model: None,
+            effort: None,
+            origin: TaskOrigin::Ui,
+            automation_run: None,
+            start: true,
+            mode: yulius_app::model::TaskMode::Goal,
+            supertask: false,
+        })
+        .await?
+        .id)
+}
+
+fn bind_goal_hook(
+    app: &App,
+    data: &Path,
+    attempt: &yulius_domain::ids::AttemptId,
+    token: &str,
+) -> TestResult {
+    rusqlite::Connection::open(data.join("yulius.db"))?.execute(
+        "UPDATE attempts SET token_hash = ?1 WHERE id = ?2",
+        rusqlite::params![
+            app.deps.crypto.sha256_hex(token.as_bytes()),
+            attempt.as_str()
+        ],
+    )?;
+    Ok(())
+}
+
+async fn write_native_goal(
+    app: &Arc<App>,
+    data: &Path,
+    id: &TaskId,
+    attempt: &yulius_app::model::AttemptRecord,
+    met: bool,
+) -> TestResult {
+    use std::io::Write;
+    let task = task(app, id).await?;
+    let path = app.deps.harness.claude_transcript(
+        &data
+            .join("sandboxes")
+            .join(task.sandbox_id.as_str())
+            .join("home"),
+        Path::new(&task.worktree_path.ok_or("worktree")?),
+        attempt.provider_session_id.as_deref().ok_or("session")?,
+    );
+    std::fs::create_dir_all(path.parent().ok_or("transcript directory")?)?;
+    let mut transcript = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(path)?;
+    writeln!(
+        transcript,
+        "{}",
+        serde_json::json!({"type":"attachment","attachment":{"type":"goal_status","met":met,"sentinel":!met,"condition":"Verify dev"}})
+    )?;
+    Ok(())
+}
+
+#[test]
+fn a_delayed_native_met_cannot_complete_a_replacement_goal() -> TestResult {
+    check_delayed_native_met(true)
+}
+
+#[test]
+fn a_native_met_after_its_verdict_timeout_completes_the_goal() -> TestResult {
+    check_delayed_native_met(false)
+}
+
+fn check_delayed_native_met(replace: bool) -> TestResult {
+    use yulius_app::race::{self, Point};
+    use yulius_domain::task::Activity;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(Box::pin(async {
+        let app = build_with(
+            &data,
+            &fake,
+            Arc::new(ScriptedUsage::default()),
+            FakeAgentOptions::default(),
+        )?;
+        let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
+        let id = start_verification_goal(&app, sandbox, user).await?;
+        let limit = Duration::from_secs(35);
+        wait_for("first run", limit, || async {
+            screen(&app, &id).contains("FAKE-AGENT READY")
+        })
+        .await?;
+        let first = app.deps.store.live_attempt(&id).await?.ok_or("first run")?;
+        bind_goal_hook(&app, &data, &first.id, "test-first-stop")?;
+        app.hook_event(
+            "test-first-stop",
+            "claude",
+            "Stop",
+            &Default::default(),
+            None,
+        )
+        .await?;
+        let (arrived, parked) = tokio::sync::oneshot::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let (applied, finished) = tokio::sync::oneshot::channel();
+        race::on(
+            Point::NativeVerdictRead,
+            Path::new(first.id.as_str()),
+            move || {
+                let _ = arrived.send(());
+                let _ = tokio::task::block_in_place(|| blocked.recv_timeout(limit));
+            },
+        );
+        race::on(
+            Point::NativeVerdictChecked,
+            Path::new(first.id.as_str()),
+            move || {
+                let _ = applied.send(());
+            },
+        );
+        write_native_goal(&app, &data, &id, &first, true).await?;
+        tokio::time::timeout(Duration::from_secs(12), parked).await??;
+        if replace {
+            let prompt = "Continue the authorized goal. Verify dev";
+            app.switch_with(
+                &id,
+                Some(AccountId::parse("b-second")?),
+                "Capacity",
+                yulius_app::supervisor::RunStart::GoalFresh {
+                    prompt: prompt.into(),
+                },
+            )
+            .await?;
+            let second = app
+                .deps
+                .store
+                .live_attempt(&id)
+                .await?
+                .ok_or("replacement run")?;
+            assert_ne!(first.id, second.id);
+            assert_ne!(first.provider_session_id, second.provider_session_id);
+            bind_goal_hook(&app, &data, &second.id, "test-replacement-stop")?;
+            app.hook_event(
+                "test-replacement-stop",
+                "claude",
+                "UserPromptSubmit",
+                &yulius_contracts::hooks::HookInput {
+                    prompt: Some(prompt.into()),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await?;
+            app.hook_event(
+                "test-replacement-stop",
+                "claude",
+                "Stop",
+                &Default::default(),
+                None,
+            )
+            .await?;
+            write_native_goal(&app, &data, &id, &second, false).await?;
+            wait_for("replacement's own open goal", limit, || async {
+                app.goal_is_open(&id)
+            })
+            .await?;
+        } else {
+            wait_for("timeout settlement", limit, || async {
+                task(&app, &id)
+                    .await
+                    .is_ok_and(|task| task.activity == Some(Activity::Waiting))
+            })
+            .await?;
+        }
+        release.send(())?;
+        tokio::time::timeout(limit, finished).await??;
+        if replace {
+            app.hook_event(
+                "test-replacement-stop",
+                "claude",
+                "Stop",
+                &Default::default(),
+                None,
+            )
+            .await?;
+            assert_eq!(
+                task(&app, &id).await?.activity,
+                Some(Activity::Working),
+                "the replacement is still evaluating its own goal"
+            );
+        } else {
+            assert_eq!(
+                task(&app, &id).await?.activity,
+                Some(Activity::Done),
+                "the live goal's Met must settle it after the timeout"
+            );
+        }
+        stop(&app, &id).await
+    }))?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// A gate prompt carried to another process spends one of the goal's bounded attempts.
+#[test]
+fn a_goal_continuation_delivered_by_a_move_counts_once() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build(&data, &fake, Arc::new(ScriptedUsage::default()))?;
+        let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
+        let id = app.create_task_internal(NewTask {
+            sandbox, created_by: user, prompt: "Verify dev".into(), harness: Harness::ClaudeCode,
+            title: Some("Verification".into()), workflow_id: None, steps: vec!["Build checkout".into(), "Verify dev".into()],
+            model: None, effort: None, origin: TaskOrigin::Ui, automation_run: None, start: true,
+            mode: yulius_app::model::TaskMode::Goal, supertask: false,
+        }).await?.id;
+        wait_for("the run", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("FAKE-AGENT READY")
+        }).await?;
+        app.deps.store.update_task(&id, &yulius_app::ports::store::TaskFieldUpdate {
+            gate_blocks: Some(2),
+            ..Default::default()
+        }, app.now()).await?;
+        let prompt = "Continue the authorized goal. The next unfinished step is \"Verify dev\". Record the evidence and update the step when its work is complete.";
+        let step = app.deps.store.steps(&id).await?.into_iter().next().ok_or("step")?;
+        let (recorded, receiving) = tokio::sync::oneshot::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        yulius_app::race::on(yulius_app::race::Point::RunRecorded, Path::new(id.as_str()), move || {
+            let _ = recorded.send(());
+            let _ = tokio::task::block_in_place(|| blocked.recv_timeout(Duration::from_secs(30)));
+        });
+        let progress = async {
+            receiving.await?;
+            app.deps.store.update_step(&step.id, "done", Some("Verified"), "worker", app.now()).await?;
+            assert_eq!(task(&app, &id).await?.gate_blocks, 0);
+            release.send(())?;
+            Ok::<_, Box<dyn std::error::Error>>(())
+        };
+        let account = AccountId::parse("b-second")?;
+        let (moved, progressed) = tokio::join!(tokio::spawn({
+            let app = app.clone();
+            let id = id.clone();
+            async move { app.switch_with(&id, Some(account), "Capacity",
+                yulius_app::supervisor::RunStart::GoalResume { prompt: prompt.to_owned() }).await }
+        }), progress);
+        moved??;
+        progressed?;
+        let second = app.deps.store.live_attempt(&id).await?.ok_or("resumed run")?;
+        wait_for("the resumed launch", Duration::from_secs(30), || async {
+            std::fs::read_to_string(Path::new(&second.run_dir).join("fake-launch.txt"))
+                .is_ok_and(|launch| launch.contains("Verify dev"))
+        }).await?;
+        assert_eq!(task(&app, &id).await?.gate_blocks, 1, "the attempt follows the completed step");
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+async fn check_held_owner_prompt(
+    app: &Arc<App>,
+    id: &TaskId,
+    ctx: &AuthContext,
+    token: &str,
+) -> TestResult {
+    // An accepted viewer instruction held for capacity belongs to the new work even
+    // when it is delivered by a replacement process with an empty prompt box.
+    let store = &app.deps.store;
+    store
+        .update_task(
+            id,
+            &yulius_app::ports::store::TaskFieldUpdate {
+                gate_blocks: Some(3),
+                ..Default::default()
+            },
+            app.now(),
+        )
+        .await?;
+    let limited = serde_json::json!({"primary": {"used_percent": 98.0,
+            "window_minutes": 300, "resets_at": app.now().plus_millis(HOUR).0}})
+    .to_string();
+    for account in ["a-first", "b-second"] {
+        store
+            .set_account_state(
+                &AccountId::parse(account)?,
+                AccountStatus::Ok,
+                Some(&limited),
+                None,
+                app.now(),
+            )
+            .await?;
+    }
+    let fresh = "Continue the authorized goal. Verify the corrected revision";
+    let terminal = app.terminal_open(ctx, id.as_str(), None).await?;
+    app.terminal_input(ctx, &terminal, format!("{fresh}\r").as_bytes(), false)
+        .await?;
+    assert!(matches!(
+        app.hook_event(
+            token,
+            "claude",
+            "UserPromptSubmit",
+            &yulius_contracts::hooks::HookInput {
+                prompt: Some(fresh.into()),
+                invocation: Some(19),
+                ..Default::default()
+            },
+            None
+        )
+        .await?,
+        yulius_app::hooks::HookReply::Hold { .. }
+    ));
+    store
+        .set_account_state(
+            &AccountId::parse("a-first")?,
+            AccountStatus::Ok,
+            Some(r#"{"primary":{"used_percent":5.0,"window_minutes":300}}"#),
+            None,
+            app.now(),
+        )
+        .await?;
+    Box::pin(app.resume_round()).await;
+    wait_for(
+        "the new owner instruction on the returned subscription",
+        Duration::from_secs(30),
+        || async {
+            store
+                .live_attempt(id)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|run| {
+                    run.account_id
+                        .as_ref()
+                        .is_some_and(|account| account.as_str() == "a-first")
+                        && std::fs::read_to_string(Path::new(&run.run_dir).join("fake-launch.txt"))
+                            .is_ok_and(|launch| launch.contains(fresh))
+                })
+        },
+    )
+    .await?;
+    assert_eq!(
+        task(app, id).await?.gate_blocks,
+        0,
+        "the held owner instruction"
+    );
+    Ok(())
+}
+
+/// Moving an already-working goal through the owner's Switch action carries its turn.
+#[test]
+fn a_goal_continuation_budget_survives_a_public_subscription_switch() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(Box::pin(async {
+        let app = build(&data, &fake, Arc::new(ScriptedUsage::default()))?;
+        let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
+        let id = legacy_goal_hold(&app, &sandbox, &user).await?;
+        Box::pin(app.resume_round()).await;
+        wait_for("the run", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("FAKE-AGENT READY")
+        })
+        .await?;
+        app.deps
+            .store
+            .set_activity(&id, Some(yulius_domain::task::Activity::Working), app.now())
+            .await?;
+        app.deps
+            .store
+            .update_task(
+                &id,
+                &yulius_app::ports::store::TaskFieldUpdate {
+                    gate_blocks: Some(2),
+                    ..Default::default()
+                },
+                app.now(),
+            )
+            .await?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        Box::pin(app.switch_task(
+            &ctx,
+            id.as_str(),
+            &yulius_contracts::api::tasks::ContinueTask {
+                account_id: Some("b-second".into()),
+                ..Default::default()
+            },
+        ))
+        .await?;
+        let moved = app.deps.store.live_attempt(&id).await?.ok_or("moved run")?;
+        let prompt = "Continue the task exactly where you left off.";
+        let launch = std::fs::read_to_string(Path::new(&moved.run_dir).join("fake-launch.txt"))?;
+        assert!(launch.contains(prompt), "{launch}");
+        // Only this synthetic attempt's hook credential, as in the parking fixtures.
+        let token = "test-moved-goal-submit";
+        rusqlite::Connection::open(data.join("yulius.db"))?.execute(
+            "UPDATE attempts SET token_hash = ?1 WHERE id = ?2",
+            rusqlite::params![
+                app.deps.crypto.sha256_hex(token.as_bytes()),
+                moved.id.as_str()
+            ],
+        )?;
+        let submit = |prompt: &str| yulius_contracts::hooks::HookInput {
+            prompt: Some(prompt.into()),
+            ..Default::default()
+        };
+        app.hook_event(token, "claude", "UserPromptSubmit", &submit(prompt), None)
+            .await?;
+        assert_eq!(task(&app, &id).await?.gate_blocks, 2);
+        // The resumed session finishes its opening turn before Yulius types its native goal.
+        app.hook_event(token, "claude", "Stop", &Default::default(), None)
+            .await?;
+        app.hook_event(token, "claude", "SessionStart", &Default::default(), None)
+            .await?;
+        let transcript = app.deps.harness.claude_transcript(
+            &data.join("sandboxes").join(sandbox.as_str()).join("home"),
+            Path::new(&task(&app, &id).await?.worktree_path.ok_or("worktree")?),
+            moved.provider_session_id.as_deref().ok_or("session")?,
+        );
+        let restored = || {
+            std::fs::read_to_string(&transcript)
+                .ok()?
+                .lines()
+                .rev()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .find_map(|record| {
+                    record["attachment"]["condition"]
+                        .as_str()
+                        .map(|condition| format!("/goal {condition}"))
+                })
+        };
+        wait_for(
+            "the restored native goal",
+            Duration::from_secs(30),
+            || async { screen(&app, &id).contains("GOAL SET") && restored().is_some() },
+        )
+        .await?;
+        let command = restored().ok_or("goal command")?;
+        app.hook_event(token, "claude", "UserPromptSubmit", &submit(&command), None)
+            .await?;
+        assert_eq!(
+            task(&app, &id).await?.gate_blocks,
+            2,
+            "automatic native goal restoration"
+        );
+        let terminal = app.terminal_open(&ctx, id.as_str(), None).await?;
+        Box::pin(app.terminal_input(&ctx, &terminal, prompt.as_bytes(), false)).await?;
+        app.hook_event(token, "claude", "UserPromptSubmit", &submit(&command), None)
+            .await?;
+        assert!(app.has_draft(&id));
+        assert_eq!(task(&app, &id).await?.gate_blocks, 2);
+        Box::pin(app.terminal_input(&ctx, &terminal, b"\r", false)).await?;
+        app.hook_event(token, "claude", "UserPromptSubmit", &submit(prompt), None)
+            .await?;
+        assert_eq!(task(&app, &id).await?.gate_blocks, 0);
+        Box::pin(check_held_owner_prompt(&app, &id, &ctx, token)).await?;
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    }))?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+#[test]
+fn a_goal_continuation_budget_resets_when_an_owners_message_is_delivered() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build(&data, &fake, Arc::new(ScriptedUsage::default()))?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let id = legacy_goal_hold(&app, &sandbox, &user).await?;
+        app.resume_round().await;
+        wait_for("the run", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("FAKE-AGENT READY")
+        })
+        .await?;
+        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
+        let token = "test-owner-message";
+        rusqlite::Connection::open(data.join("yulius.db"))?.execute(
+            "UPDATE attempts SET token_hash = ?1 WHERE id = ?2",
+            rusqlite::params![
+                app.deps.crypto.sha256_hex(token.as_bytes()),
+                attempt.id.as_str()
+            ],
+        )?;
+        app.hook_event(token, "claude", "SessionStart", &Default::default(), None)
+            .await?;
+        assert_eq!(task(&app, &id).await?.gate_blocks, 1);
+        let caller = crate::task_message::superagent(&sandbox, &user, "admin");
+        let sent = app
+            .tool_task_message(
+                &caller,
+                &serde_json::json!({
+                    "task_id": id.as_str(), "text": "Verify the corrected revision"
+                }),
+            )
+            .await?;
+        assert_eq!(sent["delivered"], "sent");
+        assert_eq!(task(&app, &id).await?.gate_blocks, 0);
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// AC-ROT-11: every subscription exhausted → new tasks wait before starting (no process); a
 /// subscription added later resumes them oldest first, one stagger apart, on it.
 #[test]

@@ -42,7 +42,8 @@ fn transition(
                COALESCE(closed_at, ?3) ELSE ?3 END, \
              queued_at = CASE WHEN ?4 IS NOT NULL THEN ?4 WHEN ?1 = 'queued' THEN queued_at ELSE NULL END, \
              queued_start = CASE WHEN ?1 = 'queued' THEN queued_start ELSE NULL END, \
-             gate_blocks = CASE WHEN ?1 = 'running' THEN gate_blocks ELSE 0 END \
+             gate_blocks = CASE WHEN ?1 = 'running' OR (mode = 'goal' AND \
+               ?1 IN ('switching', 'waiting_capacity', 'starting', 'queued')) THEN gate_blocks ELSE 0 END \
              WHERE id = ?5 AND (?6 IS NULL OR status = ?6)",
             params![
                 next.as_str(),
@@ -1191,6 +1192,20 @@ impl TaskStore for SqliteStore {
             Ok(true)
         })
         .await
+    }
+
+    async fn consume_stop_attempt(
+        &self,
+        id: &TaskId,
+        ceiling: u32,
+        at: Timestamp,
+    ) -> AppResult<()> {
+        let id = id.as_str().to_owned();
+        self.call(move |c| {
+            c.execute("UPDATE tasks SET gate_blocks = MIN(gate_blocks + 1, ?2), updated_at = ?3 WHERE id = ?1",
+                params![id, ceiling, at.0]).map_err(db)?;
+            Ok(())
+        }).await
     }
 
     async fn update_task(&self, id: &TaskId, u: &TaskFieldUpdate, at: Timestamp) -> AppResult<()> {

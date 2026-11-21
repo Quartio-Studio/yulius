@@ -321,6 +321,11 @@ async fn an_exhausted_pool_holds_the_turn_until_capacity_returns() -> TestResult
     advance(&h, 2 * HOUR + 1_000);
     let _ = restarted.resume_round().await;
     assert_eq!(status(&h, &task).await?, TaskStatus::Running);
+    assert_eq!(
+        h.store.task(&task).await?.ok_or("released task")?.activity,
+        Some(yulius_domain::task::Activity::Waiting),
+        "the native goal has no carried plan work"
+    );
     assert!(h.store.open_pause(&task).await?.is_none());
     let (code, _, body) = hook(&internal, "Stop", json!({})).await?;
     assert_eq!(code, 200, "the held turn goes on: {body}");
@@ -339,7 +344,7 @@ async fn an_exhausted_pool_holds_the_turn_until_capacity_returns() -> TestResult
 /// first message and its turns end it), so with every Codex subscription used up its Stop is not
 /// held as a goal's would be: the turn ends, and its next prompt waits for capacity instead.
 #[tokio::test]
-async fn a_codex_goal_tasks_stop_is_not_held_for_capacity() -> TestResult {
+async fn a_codex_goal_stop_is_held_only_for_actionable_work() -> TestResult {
     let h = harness()?;
     seed(&h).await?;
     let t0 = now(&h);
@@ -385,6 +390,61 @@ async fn a_codex_goal_tasks_stop_is_not_held_for_capacity() -> TestResult {
     assert_eq!(code, 200, "{body}");
     assert_ne!(status(&h, &task).await?, TaskStatus::WaitingCapacity);
     assert!(h.store.open_pause(&task).await?.is_none());
+    // An already running turn can reach its Stop after the pool ran out.
+    h.app
+        .deps
+        .store
+        .set_activity(&task, Some(yulius_domain::task::Activity::Working), now(&h))
+        .await?;
+    let ctx = h.app.agent_context(TOKEN).await?;
+    h.app
+        .tool_steps_set(
+            &ctx,
+            &json!({"steps":[{"title":"Verify dev", "status":"in_progress"}]}),
+        )
+        .await?;
+    let (code, _, _) = hook_of(&h.internal, "codex", "Stop", json!({})).await?;
+    assert_eq!(code, 202);
+    assert!(
+        h.app
+            .deps
+            .store
+            .task_wait_messages(&task, 1)
+            .await?
+            .is_empty()
+    );
+    let held = h.store.open_pause(&task).await?.ok_or("turn hold")?;
+    assert!(
+        held.continuation
+            .as_deref()
+            .is_some_and(|s| s.contains("Verify dev"))
+    );
+    // The same in-place recovery works for a hold persisted by an earlier server.
+    assert!(
+        h.store
+            .update_open_pause(&task, PauseKind::Turn, None)
+            .await?
+    );
+    advance(&h, 2 * HOUR + 1_000);
+    h.app.resume_round().await;
+    let released = h.store.task(&task).await?.ok_or("released task")?;
+    assert_eq!(
+        released.activity,
+        Some(yulius_domain::task::Activity::Working)
+    );
+    let summary = h.app.task_summary(&released).await?;
+    assert!(summary.needs_you_notice.is_none());
+    let (code, _, body) = hook_of(&h.internal, "codex", "Stop", json!({})).await?;
+    assert_eq!(code, 200);
+    assert_eq!(body["decision"], "block");
+    assert!(
+        h.app
+            .deps
+            .store
+            .task_wait_messages(&task, 1)
+            .await?
+            .is_empty()
+    );
     Ok(())
 }
 

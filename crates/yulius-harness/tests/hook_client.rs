@@ -381,10 +381,10 @@ fn a_held_hook_asks_again_and_prints_only_the_final_answer() -> TestResult {
         ],
     );
     let mut output = Vec::new();
-    let payload = br#"{"hook_event_name":"Stop"}"#;
+    let payload = br#"{"hook_event_name":"UserPromptSubmit"}"#;
     let code = run_hook_with(
         "claude",
-        "Stop",
+        "UserPromptSubmit",
         &mut &payload[..],
         &mut output,
         &env_with(url, Some("t")),
@@ -399,6 +399,16 @@ fn a_held_hook_asks_again_and_prints_only_the_final_answer() -> TestResult {
     assert!(
         requests.iter().all(|r| r.body == payload),
         "the same payload"
+    );
+    let invocation = requests[0]
+        .headers
+        .get("x-yulius-hook-invocation")
+        .ok_or("missing submit invocation")?;
+    assert_eq!(invocation.len(), 32);
+    assert!(
+        requests
+            .iter()
+            .all(|r| r.headers.get("x-yulius-hook-invocation") == Some(invocation))
     );
     Ok(())
 }

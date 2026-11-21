@@ -6,7 +6,7 @@
 //! - every attempt records exactly one terminal outcome;
 //! - a record that says "running" is never respawned automatically after a restart.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -174,8 +174,25 @@ pub(crate) struct DraftMark {
     /// Recovery observed the durable first-key time but cannot date the latest key.
     pub(crate) recovered_at: Option<i64>,
     pub(crate) written: bool,
-    /// The submit's wall time and the viewer input sequence at its first request.
-    pub(crate) submit: (i64, u64),
+    /// Wall time, viewer key sequence and owner attribution at the first submit request.
+    pub(crate) submit: (i64, u64, bool),
+}
+
+/// Bounded run-local evidence for directly issued instructions and submit retries.
+#[derive(Default)]
+struct PromptReceipts {
+    issued: VecDeque<IssuedPrompt>,
+    invocations: VecDeque<SubmitInvocation>,
+}
+
+struct SubmitInvocation {
+    id: u128,
+    held_owner: Option<(i64, u64)>,
+}
+
+struct IssuedPrompt {
+    digest: [u8; 32],
+    pending: u16,
 }
 
 /// Runtime state of one task with a hub that outlives individual runs.
@@ -258,6 +275,9 @@ pub struct TaskRuntime {
     /// DRF-009). The guard orders a key's timestamp and file write with the submit hook's
     /// check and file removal (SPEC-537).
     pub(crate) draft_mark: tokio::sync::Mutex<DraftMark>,
+    pub(crate) viewer_prompt: Mutex<crate::terminal::ViewerPrompt>,
+    /// Fingerprints of recent instructions Yulius emitted to this session.
+    prompt_receipts: Mutex<PromptReceipts>,
     /// Sequence of the last viewer input in this run. Before the first, only the durable
     /// mark identifies a possible draft, and a prompt may predate it (DRF-009).
     pub(crate) typed_seq: AtomicU64,
@@ -636,6 +656,10 @@ impl TaskRuntime {
         self.box_emptied_ms.store(now_ms, Ordering::SeqCst);
         // Its folder is new: no draft is marked there (SPEC-480 DRF-009).
         *mark = DraftMark::default();
+        *self
+            .viewer_prompt
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Default::default();
         self.typed_seq.store(0, Ordering::SeqCst);
         self.emptied_seq.store(0, Ordering::SeqCst);
         self.sent_past_draft.store(false, Ordering::SeqCst);
@@ -723,6 +747,8 @@ impl TaskRuntime {
             box_emptied_ms: AtomicI64::new(0),
             draft_told_ms: AtomicI64::new(0),
             draft_mark: tokio::sync::Mutex::default(),
+            viewer_prompt: Mutex::default(),
+            prompt_receipts: Mutex::default(),
             typed_seq: AtomicU64::new(0),
             sent_past_draft: AtomicBool::new(false),
             emptied_seq: AtomicU64::new(0),
@@ -894,6 +920,16 @@ pub enum RunStart {
         /// Continuation prompt.
         prompt: Option<String>,
     },
+    /// A fresh session carrying an automatic goal Stop instruction.
+    GoalFresh {
+        /// Instruction issued by the goal's Stop gate.
+        prompt: String,
+    },
+    /// A resumed session carrying an automatic goal Stop instruction.
+    GoalResume {
+        /// Instruction issued by the goal's Stop gate.
+        prompt: String,
+    },
     /// Resume the latest provider session past the usage limit that cut its turn (SPEC-034):
     /// the transcript steps back over the limit and the agent redoes the lost turn by itself,
     /// with nothing typed or sent.
@@ -901,17 +937,50 @@ pub enum RunStart {
 }
 
 impl RunStart {
+    fn prompt(&self) -> Option<&str> {
+        match self {
+            Self::Fresh { prompt } | Self::Resume { prompt } => prompt.as_deref(),
+            Self::GoalFresh { prompt } | Self::GoalResume { prompt } => Some(prompt),
+            Self::AfterLimit => None,
+        }
+    }
+
+    /// Mark a prompt supplied by the goal's Stop gate, where its source is known.
+    pub(crate) fn with_goal_continuation(self, issued_by_goal: bool) -> Self {
+        match (self, issued_by_goal) {
+            (
+                Self::Fresh {
+                    prompt: Some(prompt),
+                },
+                true,
+            ) => Self::GoalFresh {
+                prompt: crate::hooks::retained_goal_instruction(Some(prompt)),
+            },
+            (
+                Self::Resume {
+                    prompt: Some(prompt),
+                },
+                true,
+            ) => Self::GoalResume {
+                prompt: crate::hooks::retained_goal_instruction(Some(prompt)),
+            },
+            (start, _) => start,
+        }
+    }
+
     /// This start for `account`, as the queue keeps it for a task whose start has to wait
     /// (SPEC-483 QST-001).
     fn kept(&self, account: Option<&AccountId>) -> QueuedStart {
-        let (kind, prompt) = match self {
-            Self::Fresh { prompt } => (QueuedStartKind::Fresh, prompt.clone()),
-            Self::Resume { prompt } => (QueuedStartKind::Resume, prompt.clone()),
-            Self::AfterLimit => (QueuedStartKind::AfterLimit, None),
+        let kind = match self {
+            Self::Fresh { .. } => QueuedStartKind::Fresh,
+            Self::Resume { .. } => QueuedStartKind::Resume,
+            Self::GoalFresh { .. } => QueuedStartKind::GoalFresh,
+            Self::GoalResume { .. } => QueuedStartKind::GoalResume,
+            Self::AfterLimit => QueuedStartKind::AfterLimit,
         };
         QueuedStart {
             kind,
-            prompt,
+            prompt: self.prompt().map(str::to_owned),
             account_id: account.cloned(),
         }
     }
@@ -924,6 +993,12 @@ impl RunStart {
             },
             QueuedStartKind::Resume => Self::Resume {
                 prompt: kept.prompt,
+            },
+            QueuedStartKind::GoalFresh => Self::GoalFresh {
+                prompt: crate::hooks::retained_goal_instruction(kept.prompt),
+            },
+            QueuedStartKind::GoalResume => Self::GoalResume {
+                prompt: crate::hooks::retained_goal_instruction(kept.prompt),
             },
             QueuedStartKind::AfterLimit => Self::AfterLimit,
         };
@@ -970,12 +1045,19 @@ const LIVE_WITH_A_RUN: [TaskStatus; 4] = [
     TaskStatus::Running,
 ];
 
+#[derive(Clone, Copy)]
+struct ViewerSubmission {
+    time: i64,
+    sequence: u64,
+    enter: crate::terminal::ViewerEnter,
+}
+
 /// Supervisor-owned per-process state.
 #[derive(Default)]
 pub struct SupervisorState {
-    /// Viewer input order across runs. A hook reads it before looking up its run, so a key
-    /// arriving during that lookup wins a tie in the wall clock (SPEC-537).
-    pub(crate) input_seq: AtomicU64,
+    /// Viewer Enter events awaiting the provider's submit callback. Contains only timing, order and provenance evidence.
+    viewer_submits: Mutex<HashMap<TaskId, VecDeque<ViewerSubmission>>>,
+    input_seq: AtomicU64,
     runtimes: Mutex<HashMap<TaskId, Arc<TaskRuntime>>>,
     /// Shared, so an install on the blocking pool can own its guard (SPEC-507 SKR-005).
     launch: Arc<tokio::sync::Mutex<()>>,
@@ -1122,6 +1204,11 @@ impl PendingGoal {
             Self::Typed => "Yulius restarted before it set this task's goal",
         }
     }
+}
+
+/// The run was given a native goal whose submission its watcher has yet to confirm.
+pub(crate) fn native_goal_pending(run_dir: &Path) -> bool {
+    PendingGoal::Launch.pending(run_dir) || PendingGoal::Typed.pending(run_dir)
 }
 
 /// Why a task has no goal when a person typed before Yulius could type it.
@@ -1565,8 +1652,183 @@ impl App {
         self.capacity_changed();
     }
 
+    /// A delivery records its actual bytes before the provider can acknowledge it.
+    /// This disambiguates its callback from an owner editing or recalling a prompt.
+    pub(crate) fn note_issued_prompt(&self, task: &TaskId, text: &[u8]) {
+        use sha2::Digest;
+        let digest = sha2::Sha256::digest(text).into();
+        let runtime = self.runtime(task);
+        let mut receipts = runtime
+            .prompt_receipts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let issued = &mut receipts.issued;
+        const LIMIT: usize = 16;
+        let pending = issued
+            .iter()
+            .position(|p| p.digest == digest)
+            .and_then(|index| issued.remove(index))
+            .map_or(1, |p| p.pending.saturating_add(1));
+        if issued.len() == LIMIT {
+            issued.pop_front();
+        }
+        issued.push_back(IssuedPrompt { digest, pending });
+    }
+
+    pub(crate) fn record_viewer_key(
+        &self,
+        task: &TaskId,
+        at: i64,
+        enter: crate::terminal::ViewerEnter,
+    ) -> u64 {
+        let seq = self.supervisor.input_seq.fetch_add(1, Ordering::SeqCst) + 1;
+        if enter.may_submit() {
+            let mut submits = self
+                .supervisor
+                .viewer_submits
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let pending = submits.entry(task.clone()).or_default();
+            // Keep the first unacknowledged Enter and the most recent submissions.
+            const MAX_PENDING_SUBMITS: usize = 256;
+            if pending.len() == MAX_PENDING_SUBMITS {
+                pending.remove(1);
+            }
+            pending.push_back(ViewerSubmission {
+                time: at,
+                sequence: seq,
+                enter,
+            });
+        }
+        seq
+    }
+
+    pub(crate) fn viewer_input_sequence(&self) -> u64 {
+        self.supervisor.input_seq.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn retract_viewer_submit(&self, task: &TaskId, seq: u64) {
+        let mut submits = self
+            .supervisor
+            .viewer_submits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(pending) = submits.get_mut(task) {
+            pending.retain(|key| key.sequence != seq);
+            if pending.is_empty() {
+                submits.remove(task);
+            }
+        }
+    }
+
+    pub(crate) fn viewer_submit_at(
+        &self,
+        task: &TaskId,
+        sent: i64,
+        sequence: u64,
+        prompt: &[u8],
+        invocation: Option<u128>,
+    ) -> Option<(i64, u64)> {
+        use crate::terminal::ViewerEnter;
+        use sha2::Digest;
+        let digest: [u8; 32] = sha2::Sha256::digest(prompt).into();
+        let runtime = self.runtime(task);
+        let mut submits = self
+            .supervisor
+            .viewer_submits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut eligible = submits.get(task).into_iter().flatten().filter(|key| {
+            key.sequence <= sequence
+                && key.time <= sent
+                && sent.saturating_sub(key.time) <= yulius_domain::intake::TYPED_WINDOW_MS
+        });
+        let mut receipts = runtime
+            .prompt_receipts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(id) = invocation {
+            // A replay cannot acknowledge another owner's Enter, even if the words match.
+            if let Some(previous) = receipts
+                .invocations
+                .iter_mut()
+                .find(|request| request.id == id)
+            {
+                return previous.held_owner.take();
+            }
+            const LIMIT: usize = 128;
+            if receipts.invocations.len() == LIMIT {
+                receipts.invocations.pop_front();
+            }
+            receipts.invocations.push_back(SubmitInvocation {
+                id,
+                held_owner: None,
+            });
+        }
+        let direct = eligible
+            .clone()
+            .find(|key| key.enter == ViewerEnter::Submitted(digest));
+        // An invocation with different identity may submit an edited copy of an
+        // acknowledged instruction. Older clients need direct input evidence for a copy.
+        let owner =
+            if direct.is_some() {
+                direct
+            } else if let Some(issued) = receipts.issued.iter_mut().find(|issued| {
+                issued.digest == digest && (invocation.is_none() || issued.pending > 0)
+            }) {
+                issued.pending = issued.pending.saturating_sub(1);
+                None
+            } else {
+                eligible.next()
+            };
+        let owner = owner.map(|key| (key.time, key.sequence));
+        if let (Some(_), Some((_, seq))) = (invocation, owner)
+            && let Some(pending) = submits.get_mut(task)
+        {
+            // Transfer the Enter to its invocation before another callback can claim it.
+            // A held invocation retains the selected key for its own release.
+            pending.retain(|key| key.sequence != seq);
+            if pending.is_empty() {
+                submits.remove(task);
+            }
+        }
+        owner
+    }
+
+    /// The release of a held submit acknowledges the original Enter, even if
+    /// another invocation was processed while the subscription was unavailable.
+    pub(crate) fn keep_held_owner(&self, task: &TaskId, id: u128, owner: (i64, u64)) {
+        let runtime = self.runtime(task);
+        let mut receipts = runtime
+            .prompt_receipts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(request) = receipts
+            .invocations
+            .iter_mut()
+            .find(|request| request.id == id)
+        {
+            request.held_owner = Some(owner);
+        }
+    }
+
+    pub(crate) fn consume_viewer_submits(&self, task: &TaskId, through: u64) {
+        let mut keys = self
+            .supervisor
+            .viewer_submits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(pending) = keys.get_mut(task) {
+            pending.retain(|key| key.sequence > through);
+            if pending.is_empty() {
+                keys.remove(task);
+            }
+        }
+    }
+
     /// Drops a deleted task's runtime state.
     pub(crate) fn forget_runtime(&self, task: &TaskId) {
+        self.consume_viewer_submits(task, u64::MAX);
         if let Ok(mut map) = self.supervisor.runtimes.lock() {
             map.remove(task);
         }
@@ -2046,7 +2308,7 @@ impl App {
             // ended. Only Continue authorizes a fresh start from the observed resting state.
             if matches!(condition, StartCondition::Any)
                 && task.status.is_resting()
-                && matches!(start, RunStart::Fresh { .. })
+                && matches!(start, RunStart::Fresh { .. } | RunStart::GoalFresh { .. })
             {
                 tracing::info!(
                     task = %task.id,
@@ -2261,7 +2523,10 @@ impl App {
             }
             self.publish_task(&task.id).await;
         }
-        if matches!(start, RunStart::Resume { .. } | RunStart::AfterLimit) {
+        if matches!(
+            start,
+            RunStart::Resume { .. } | RunStart::GoalResume { .. } | RunStart::AfterLimit
+        ) {
             // Imported sessions get a native transcript and a worktree from the imported state.
             self.prepare_imported_resume(&task.id).await?;
         }
@@ -2291,6 +2556,10 @@ impl App {
             // (ROT-010); the resume loop starts it when capacity returns. A turn a limit cut
             // keeps its `limit` pause, so it still resumes past the limit (SPEC-034).
             let (kind, continuation) = match &start {
+                RunStart::GoalFresh { prompt } => (PauseKind::GoalFreshStart, Some(prompt.clone())),
+                RunStart::GoalResume { prompt } => {
+                    (PauseKind::GoalResumeStart, Some(prompt.clone()))
+                }
                 RunStart::AfterLimit => (PauseKind::Limit, None),
                 RunStart::Fresh { prompt } if harness == Harness::Codex => {
                     (PauseKind::FreshStart, prompt.clone())
@@ -2366,12 +2635,13 @@ impl App {
         // here, or runs again for another subscription, still tells its session. A fresh
         // session has none: a run is resumed in its own session only.
         let unfinished = match (&start, &previous) {
-            (RunStart::Resume { .. } | RunStart::AfterLimit, Some(_)) => {
-                self.runtime(&task.id).with_workflows(|workflows| {
-                    workflows.relaunched();
-                    workflows.runs()
-                })
-            }
+            (
+                RunStart::Resume { .. } | RunStart::GoalResume { .. } | RunStart::AfterLimit,
+                Some(_),
+            ) => self.runtime(&task.id).with_workflows(|workflows| {
+                workflows.relaunched();
+                workflows.runs()
+            }),
             _ => {
                 self.runtime(&task.id)
                     .with_workflows(|workflows| *workflows = Default::default());
@@ -2383,7 +2653,10 @@ impl App {
         // Only while its round is still open; a session that starts afresh has none (review
         // round 1 of fix 7).
         let reviewer = match (&start, &previous) {
-            (RunStart::Resume { .. } | RunStart::AfterLimit, Some(_)) => {
+            (
+                RunStart::Resume { .. } | RunStart::GoalResume { .. } | RunStart::AfterLimit,
+                Some(_),
+            ) => {
                 let cut = self.runtime(&task.id).cut_off_reviewer.lock().await.clone();
                 match cut {
                     Some(cut) => {
@@ -2414,10 +2687,10 @@ impl App {
         };
         let told = !unfinished.is_empty() || reviewer.is_some();
         let (mode, launch_kind) = match (&start, &previous) {
-            (RunStart::Resume { prompt }, Some(prev)) => (
+            (RunStart::Resume { .. } | RunStart::GoalResume { .. }, Some(prev)) => (
                 SessionMode::Resume {
                     session_id: prev.session_id.clone(),
-                    prompt: resumes(prompt.as_deref()),
+                    prompt: resumes(start.prompt()),
                     continue_interrupted: false,
                 },
                 LaunchKind::Resume,
@@ -2431,12 +2704,12 @@ impl App {
                 LaunchKind::Resume,
             ),
             // Without a recorded session there is nothing to resume: the task starts afresh.
-            (RunStart::Resume { .. } | RunStart::AfterLimit, None)
-            | (RunStart::Fresh { .. }, _) => {
-                let prompt = match &start {
-                    RunStart::Resume { prompt } | RunStart::Fresh { prompt } => prompt.clone(),
-                    RunStart::AfterLimit => None,
-                };
+            (
+                RunStart::Resume { .. } | RunStart::GoalResume { .. } | RunStart::AfterLimit,
+                None,
+            )
+            | (RunStart::Fresh { .. } | RunStart::GoalFresh { .. }, _) => {
+                let prompt = start.prompt().map(str::to_owned);
                 // In goal mode the task starts with its `/goal` as the launch prompt: the whole
                 // request, each attached file at its place, and the definition of done in one
                 // first message, with nothing typed (SPEC-011, SPEC-117, SPEC-212). Otherwise the
@@ -2485,6 +2758,17 @@ impl App {
                 )
             }
         };
+        if task.mode == TaskMode::Goal {
+            *self
+                .runtime(&task.id)
+                .prompt_receipts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = PromptReceipts::default();
+            let (SessionMode::New { prompt, .. } | SessionMode::Resume { prompt, .. }) = &mode;
+            if let Some(prompt) = prompt {
+                self.note_issued_prompt(&task.id, prompt.as_bytes());
+            }
+        }
         let activity = match (harness, &mode) {
             (
                 Harness::Codex,
@@ -2842,6 +3126,19 @@ impl App {
         // attached and watched, and must not be forgotten then (#243).
         runtime.session_started.store(false, Ordering::SeqCst);
         runtime.spawned_ms.store(self.now().0, Ordering::SeqCst);
+        // A Stop that moved or waited for capacity never returned a block to its old
+        // process. Charge its continuation here, after admission and before the new
+        // process can submit it. A queued start or a capacity poll spends no attempt.
+        if task.mode == TaskMode::Goal
+            && matches!(
+                start,
+                RunStart::GoalFresh { .. } | RunStart::GoalResume { .. }
+            )
+        {
+            store
+                .consume_stop_attempt(&task.id, crate::hooks::MAX_GATE_BLOCKS, self.now())
+                .await?;
+        }
         let size = runtime.hub.size();
         let spawned = match self
             .deps
@@ -2918,6 +3215,7 @@ impl App {
         // Typing from now on, once viewers can write to this run, is a person's draft in it
         // (SPEC-068): its prompt box starts empty (SPEC-468 CCF-010).
         let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
+        self.consume_viewer_submits(&task.id, u64::MAX);
         runtime.run_starts(self.now().0).await;
         self.attach_run(&task.id, &attempt, &host_token).await?;
         runtime.hub.state_changed();
@@ -3525,6 +3823,7 @@ impl App {
             crate::race::reached(crate::race::Point::LineTyped, Path::new(task_id.as_str()));
             // A separate Enter, so the TUI sees typed text first and then a submit.
             tokio::time::sleep(Duration::from_millis(300)).await;
+            app.note_issued_prompt(task_id, command.as_bytes());
             if let Err(err) = app.send_input(task_id, b"\r").await {
                 tracing::warn!(task = %task_id, error = %err, "could not submit the task goal");
                 return false;
@@ -5584,7 +5883,11 @@ impl App {
             .await
     }
 
-    pub(crate) async fn switch_with(
+    /// Switches a live task with an explicitly selected session start.
+    ///
+    /// # Errors
+    /// Refuses an unavailable account or a task that cannot switch.
+    pub async fn switch_with(
         self: &Arc<Self>,
         task_id: &TaskId,
         account: Option<AccountId>,
@@ -5731,7 +6034,7 @@ impl App {
         // The policy may pick the same subscription (a limit that reset): no "another" then.
         let elsewhere = account.is_some()
             && attempt.as_ref().map(|a| a.account_id.as_ref()) != Some(account.as_ref());
-        let fresh = matches!(start, RunStart::Fresh { .. });
+        let fresh = matches!(start, RunStart::Fresh { .. } | RunStart::GoalFresh { .. });
         // A restart for a newer Claude Code says that, in its one line (SPEC-461 CCM-013).
         let for_claude_code = reason == crate::claude_code::MOVE_REASON;
         if for_claude_code {
@@ -6367,6 +6670,13 @@ impl App {
                     runtime.typed_at_ms.fetch_max(drafted, Ordering::SeqCst);
                     mark.written = true;
                     mark.recovered_at = Some(self.now().0);
+                    if runtime.typed_seq.load(Ordering::SeqCst) == 0 {
+                        runtime
+                            .viewer_prompt
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .restored();
+                    }
                 }
             }
             if let Some(task) = store.task(&attempt.task_id).await? {
@@ -6741,13 +7051,15 @@ impl App {
             }
         }
         let runtime = self.runtime(&task.id);
+        // A verdict either commits before the new run installs its state, or sees the new owner.
+        let _order = runtime.turn_order.lock().await;
+        runtime
+            .replace_goal_unfinished(goal.map_or(unfinished, crate::finish::goal_unfinished))
+            .await;
         runtime.goal_open.store(
             goal.is_some_and(crate::finish::goal_stays_open),
             Ordering::SeqCst,
         );
-        runtime
-            .replace_goal_unfinished(goal.map_or(unfinished, crate::finish::goal_unfinished))
-            .await;
         runtime.goal_achieved.store(false, Ordering::SeqCst);
         runtime.goal_submitted.store(false, Ordering::SeqCst);
         runtime.verdict_stop_ms.clear();
@@ -7277,7 +7589,13 @@ impl App {
                 runtime.end_turn();
                 self.turn_interrupted(task_id, at).await;
             }
-            Observation::Goal(outcome, at) => self.goal_observed(task_id, outcome, at).await,
+            Observation::Goal(outcome, at) => {
+                self.goal_observed(task_id, &attempt.id, outcome, at).await;
+                crate::race::reached(
+                    crate::race::Point::NativeVerdictChecked,
+                    Path::new(attempt.id.as_str()),
+                );
+            }
             Observation::TurnEnded {
                 background_agents,
                 at,
@@ -7290,7 +7608,7 @@ impl App {
                 runtime.with_queue(yulius_domain::agent_cli::Queue::turn_closed);
                 self.background_agents_observed(task_id, background_agents.unwrap_or(0))
                     .await;
-                self.turn_record_seen(task_id, at).await;
+                self.turn_record_seen(task_id, &attempt.id, at).await;
             }
             Observation::AgentWork { at } => {
                 runtime.goal_retry_armed.store(false, Ordering::SeqCst);
@@ -7303,7 +7621,7 @@ impl App {
                 runtime.at_limit.store(false, Ordering::SeqCst);
                 // The agent works: a goal pause before it asks nobody any more (SPEC-469).
                 self.goal_pause_overtaken(task_id).await;
-                self.agent_worked(task_id, at).await;
+                self.agent_worked(task_id, &attempt.id, at).await;
             }
             Observation::GoalRetry { armed, notice } => {
                 self.goal_retry_observed(task_id, armed, &notice).await;

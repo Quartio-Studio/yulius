@@ -4726,6 +4726,7 @@ async fn answer_with_a_successor(f: &Fixture) -> BoxResult<(TaskId, TaskId)> {
 /// Chromium startup can hold the final lookup for outstanding browser decisions.
 #[derive(Default)]
 pub(super) struct HeldBrowserLookup {
+    session: Option<Arc<dyn BrowserSession>>,
     publication_reader: Option<Arc<std::sync::Mutex<Option<tokio::task::Id>>>>,
     calls: std::sync::atomic::AtomicUsize,
     entered: Arc<tokio::sync::Notify>,
@@ -4733,6 +4734,13 @@ pub(super) struct HeldBrowserLookup {
 }
 
 impl HeldBrowserLookup {
+    pub(super) fn with_session(session: Arc<dyn BrowserSession>) -> Self {
+        Self {
+            session: Some(session),
+            ..Self::default()
+        }
+    }
+
     pub(super) fn for_publication() -> Self {
         Self {
             publication_reader: Some(Arc::default()),
@@ -4797,7 +4805,7 @@ impl BrowserPort for HeldBrowserLookup {
             self.entered.notify_one();
             self.release.notified().await;
         }
-        None
+        self.session.clone()
     }
 
     async fn reap_idle(&self) -> Vec<SandboxId> {

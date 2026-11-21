@@ -539,6 +539,9 @@ pub trait TaskStore: Send + Sync {
         update: &TaskFieldUpdate,
         at: Timestamp,
     ) -> AppResult<()>;
+    /// Atomically charge one delivered Stop continuation against the current budget.
+    async fn consume_stop_attempt(&self, id: &TaskId, ceiling: u32, at: Timestamp)
+    -> AppResult<()>;
     /// Deletes a task and everything recorded for it (attempts, lineage, steps, messages to or
     /// from it, metrics, feedback, delivery, switch decisions, claims, its chain link and held
     /// prompts); references from automation runs, sandbox onboarding, chained successors and
