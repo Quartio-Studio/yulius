@@ -1,5 +1,6 @@
 import { test, type Browser, type Screen } from '@e2e-dev/web';
 import { expect } from 'e2e';
+import { surface } from '../chromium.ts';
 import { failOnPageErrors, mock, promptText } from './support.ts';
 
 failOnPageErrors();
@@ -499,4 +500,38 @@ test('a task that finishes starting while another draft is open leaves that edit
   await expect.poll(() => promptText(browser)).toBe('Keep writing here');
   await browser.reload();
   await expect.poll(() => promptText(browser)).toBe('Keep writing here');
+});
+
+
+test('discarding an open draft in another tab retires its pending upload and unmount write', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await screen.getByRole('textbox', 'Task prompt').fill('Discard from either tab');
+  await expect.poll(() => storedDraft(browser)).toMatchObject({ text: 'Discard from either tab' });
+  const tab = await surface.page().context().newPage();
+  try {
+    await tab.goto(surface.page().url());
+    await tab.getByRole('textbox', { name: 'Task prompt' }).waitFor();
+    await browser.evaluate(() => {
+      const w = window as unknown as Holding;
+      w.__yuliusMock.holdUpload = new Promise<void>((resolve) => { w.__release = resolve; });
+    });
+    await drop(browser, [['late.pdf', 'pdf', 'application/pdf']]);
+    await expect(browser.locator('.composer-box .upload-text')).toHaveText(/Uploading late.pdf/);
+    await browser.evaluate(() => { (window as unknown as { uploadStatus: Element | null }).uploadStatus = document.querySelector('.composer-box .upload-text'); });
+
+    await tab.getByRole('button', { name: 'Drafts', exact: true }).click();
+    await tab.getByRole('menuitem', { name: 'Discard current draft' }).click();
+    await tab.getByRole('button', { name: 'Discard draft', exact: true }).click();
+    await expect.poll(() => storedDrafts(browser)).toHaveLength(0);
+    await browser.evaluate(() => (window as unknown as Holding).__release!());
+    await expect.poll(() => browser.evaluate(() => (window as unknown as { uploadStatus: Element }).uploadStatus.textContent)).toBe('Added late.pdf');
+
+    await screen.getByRole('button', 'New draft').click();
+    expect(await storedDrafts(browser)).toEqual([]);
+    await browser.reload();
+    await expect.poll(() => promptText(browser)).toBe('');
+    await expect.poll(() => attachmentNames(browser)).toEqual([]);
+  } finally {
+    await tab.close();
+  }
 });
