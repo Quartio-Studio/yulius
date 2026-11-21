@@ -32,8 +32,8 @@ merges it. Its steps:
    of merged, archived or deleted tasks.
 6. Yulius CI runs every new `dev` commit; a task's work ends at `dev`. Deploying dev is a task's
    only when it asks (`cd_deploy`). Where `dev` has a merge-first staging target, as Yulius's own
-   `[cd.dev]` (ADR-0436), the work ends once the task's staging request was answered: it asks with
-   `cd_deploy` when `delivery_status` says so, and fixes a `gate_failed` forward.
+   `[cd.dev]` (ADR-0436), the task asks once with `cd_deploy` when `delivery_status` says so.
+   After asking, the task is done. Yulius reports a failed gate, deployment or verification for a fix forward.
 7. **Promotion is a person's** ([ADR-0110](../decisions/0110-only-a-person-deploys-production.md)):
    an administrator promotes on the CD page, typing the project's slug. Yulius then opens the
    promotion pull request into `main` from the confirmed, verified dev revision. When a newer
