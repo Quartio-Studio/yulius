@@ -354,7 +354,8 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       if (rowOrder.get(row) > order) {
         // Preserve the newer event's work and decisions. An older detail may
         // still identify the open PR that an unverified update could not name.
-        const supplement = !transition && unverified.has(row) && (verifiedGroup.get(row)?.order ?? 0) < order;
+        const supplement = row.status === 'parked' && detail.status === 'parked' && !detail.archived &&
+          unverified.has(row) && (verifiedGroup.get(row)?.order ?? 0) < order;
         const latest = supplement ? publishParkedRow(map, row, awaitingVerification(row, detail)) : row;
         return { ...view, ...(transition ? lifecycleSummary(latest, latest) : parkedFacts(latest)) };
       }

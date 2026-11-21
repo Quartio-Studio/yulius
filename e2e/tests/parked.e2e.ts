@@ -2511,3 +2511,37 @@ test('a missed park keeps the PR discovered by an older list across a newer fail
   });
   expect(seen).toEqual([['New title', 'parked', true, 42], ['New title', 'parked', true, 42]]);
 });
+
+test('an unverified park event retains the owner action and the PR identified by overlapping terminal detail', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const module = '/assets/store.js', statusModule = '/assets/status.js';
+    const { createStore } = await import(module);
+    const { taskInfo } = await import(statusModule);
+    const results = [];
+    for (const owner of [false, true]) {
+      for (const eventFirst of [true, false]) {
+        const running = { id: 'p', sandbox_id: 's', status: 'running', activity: 'done', title: 'Before' };
+        const detail = { ...running, status: 'parked', parked_needs_you: true, parked_pr: { number: 42, open: true } };
+        const event = { ...running, status: 'parked', title: 'Renamed', needs_you: owner ? { action: 'Choose a version' } : null };
+        let reads = 0;
+        const store = createStore({ get: async () => {
+          if (++reads === 1) return [running];
+          throw new Error('verification unavailable');
+        } });
+        await store.loadTasks('s');
+        const publish = store.beginParkedDetail(running);
+        if (!eventFirst) publish(detail);
+        store.upsertTask(event);
+        await store.loadTasks('s', true);
+        if (eventFirst) publish(detail);
+        const row = store.findTask('p');
+        results.push([row.title, row.parked_pr?.number, row.parked_needs_you, taskInfo(row).group, taskInfo(row).needsYou?.action ?? null]);
+      }
+    }
+    return results;
+  });
+  const red = ['Renamed', 42, true, 'needs', null];
+  const requested = ['Renamed', 42, true, 'needs', 'Choose a version'];
+  expect(seen).toEqual([red, red, requested, requested]);
+});

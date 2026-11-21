@@ -73,6 +73,8 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- Review at `74549c9ff` reproduced a park event arriving during a terminal read begun while the task was running. When subsequent verification failed, the event-first order kept the owner’s rename but lost the older detail’s open PR. The regression checks both orders and a genuine owner decision. A late detail can now supply that PR to the unverified parked row while preserving the event’s public fields.
+
 - Review at `3197dc49b` reproduced an archived row reappearing when a list confirmation failed and replayed an earlier rename. The regression checks the removal as well as the opposite case with a later Undo. A second regression returned the same lifecycle detail and PR-bearing list in both orders after the watch failed. One order lost open PR #42 and showed Done, and the other kept the older title. Lifecycle replay now keeps the PR evidence when the list supplies it, and recognises a transition from the status at the start of the detail read.
 
 - On the merged #1553 base, all ten missed lifecycle Chromium cases failed. A held empty list also removed a task whose newer detail had observed its park or resume. The terminal now publishes public lifecycle fields to the existing row and carries a transition across older list reads. The active list shows the resumed subscription ID and shell activity, and excludes run history, the request and the account email. A further test reproduced a later live rename lost after a missed resume during an explicit list read. Tracking the crossed park retains the event if confirmation fails.
