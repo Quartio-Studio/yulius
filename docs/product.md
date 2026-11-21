@@ -389,7 +389,7 @@ watching, steering and unblocking.
   the third, and Opus 5.5 when the task's subscription cannot run Fable then; each round is
   recorded with its reviewer, its model and its verdict. Continuing a reviewer after it reports
   counts as a new round in the Review card (SPEC-565). Codex tasks request GPT-6.2 Astra for every
-  review round, and their named review subagents populate task delivery and the Review
+  review round, and their named review subagents populate the same delivery history and Review
   card. Antigravity tasks request Gemini 4 Neon (High).
   Task intake splits mixed requests, holds scope changes and chains
   dependent tasks, also by a logical rule such as "#12 done and #13 done", which the composer
