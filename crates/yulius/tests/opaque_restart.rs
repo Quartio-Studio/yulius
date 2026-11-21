@@ -138,6 +138,23 @@ async fn live_holder(data: &Path, port: u16) -> Result<Holder, Error> {
     })
 }
 
+// Upkeep persists a new network-helper PID without replacing the holder or its Unix forward.
+fn record_fixture_helper(data: &Path) -> Result<Child, Error> {
+    use yulius_contracts::sandbox::HolderRecord;
+    use yulius_sandbox::holder::{StatePaths, write_json};
+
+    let path = StatePaths::new(data.join("runtime/sandboxes/s1")).record();
+    let mut record: HolderRecord = serde_json::from_slice(&std::fs::read(&path)?)?;
+    let child = Command::new("/bin/cat")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()?;
+    record.slirp_pid = Some(child.id().ok_or("fixture helper exited")?);
+    write_json(&path, &record)?;
+    Ok(child)
+}
+
 async fn holder_for(
     route: Route,
     data: &Path,
@@ -277,6 +294,7 @@ async fn check_restart(route: Route) -> Result<(), Error> {
         let dir = tempfile::tempdir()?;
         let holder = holder_for(route, dir.path(), internal).await?;
         let endpoint = holder.as_ref().map_or(internal, |h| h.address);
+        let mut helper = holder.as_ref().map(|_| record_fixture_helper(dir.path())).transpose()?;
         let mut first = start(dir.path(), internal, route).await?;
         let first_pid = first.id();
         assert!(!std::fs::read_to_string(dir.path().join("fixture-serve.log"))?
@@ -284,6 +302,11 @@ async fn check_restart(route: Route) -> Result<(), Error> {
         // A previous successful handoff leaves its private service directory in place.
         std::fs::DirBuilder::new().mode(0o700).create(dir.path().join("tunnel-handoff"))?;
         seed(dir.path())?;
+        if let Some(old) = helper.as_mut() {
+            let replacement = record_fixture_helper(dir.path())?;
+            old.kill().await?;
+            *old = replacement;
+        }
         let mut client = BufReader::new(TcpStream::connect(endpoint).await?);
         let auth = base64::engine::general_purpose::STANDARD.encode(format!("fixture:{TOKEN}"));
         let header_padding = "x".repeat(20 * 1024);
@@ -315,7 +338,11 @@ async fn check_restart(route: Route) -> Result<(), Error> {
         peer.shutdown().await?;
         assert_eq!(client.read_u32().await?.to_be_bytes(), *b"LAST");
         assert_eq!(client.read(&mut [0]).await?, 0);
-        stop(&mut next).await
+        stop(&mut next).await?;
+        if let Some(mut helper) = helper {
+            helper.kill().await?;
+        }
+        Ok(())
     }).await?
 }
 

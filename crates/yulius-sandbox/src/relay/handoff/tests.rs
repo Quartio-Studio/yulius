@@ -79,7 +79,7 @@ async fn startup_reserves_the_old_places_in_order_and_retains_idle_activity() ->
         let now = monotonic_ms();
         let expires = now + 5_000;
         let (newer, new_link, _new_client, _new_peer) = record(&holder, 17, now, expires).await?;
-        let old_activity = now.saturating_sub(301_000);
+        let old_activity = now.saturating_sub(1);
         let (older, old_link, _old_client, _old_peer) =
             record(&holder, 3, old_activity, expires).await?;
         hub.restore(&holder.sandbox, new_link, newer, || Ok(()))?;
@@ -105,10 +105,21 @@ async fn startup_reserves_the_old_places_in_order_and_retains_idle_activity() ->
         assert_eq!(oldest.place.activity.last(), old_activity);
         assert_eq!(active.place.activity.last(), now);
         assert_eq!(oldest.expires, expires);
-        let (_fresh, _ended, idle) = places
-            .admit()
-            .ok_or_else(|| io::Error::other("idle place"))?;
-        assert!(idle.is_some_and(|elapsed| elapsed >= 300_000));
+        // Advance the admission table's clock to the exact floor, even on a newly booted host.
+        let admit_at = |time| {
+            let (end, _) = oneshot::channel();
+            places
+                .table
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .connections
+                .admit((), Control::new(end), time)
+        };
+        let boundary = old_activity + 300_000;
+        assert!(admit_at(boundary - 1).is_err());
+        active.place.activity.touch(boundary - 1);
+        let evicted = admit_at(boundary).map_err(io::Error::other)?.evicted;
+        assert_eq!(evicted.map(|old| old.idle_ms), Some(300_000));
         assert_eq!(
             oldest.evicted.try_recv(),
             Err(oneshot::error::TryRecvError::Closed)
@@ -117,7 +128,7 @@ async fn startup_reserves_the_old_places_in_order_and_retains_idle_activity() ->
             active.evicted.try_recv(),
             Err(oneshot::error::TryRecvError::Empty)
         );
-        assert!(places.admit().is_none());
+        assert!(admit_at(boundary).is_err());
         drop(active);
         assert!(places.admit().is_some());
         Ok(())
@@ -137,7 +148,8 @@ async fn a_half_closed_holder_drains_the_terminal_internal_receive_queue() -> io
 
 async fn check_captured_relay(final_reply: bool) -> io::Result<()> {
     tokio::time::timeout(Duration::from_secs(5), async {
-        let holder = holder()?;
+        let mut holder = holder()?;
+        holder.slirp_pid = Some(41);
         let hub = Arc::new(OutboundRelays::default());
         let dir = tempfile::tempdir()?;
         let address = dir.path().join("out.sock");
@@ -177,11 +189,14 @@ async fn check_captured_relay(final_reply: bool) -> io::Result<()> {
         let next = Arc::new(OutboundRelays::default());
         next.defer();
         let next_address = dir.path().join("replacement.sock");
+        // Upkeep may replace slirp4netns while this holder and its Unix forward keep running.
+        let mut refreshed = holder.clone();
+        refreshed.slirp_pid = Some(42);
         let replacement = tokio::spawn(next.serve(
             UnixListener::bind(&next_address)?,
             targets,
             holder.sandbox.clone(),
-            holder.clone(),
+            refreshed,
             health,
         ));
         peer.write_all(b"down").await?;

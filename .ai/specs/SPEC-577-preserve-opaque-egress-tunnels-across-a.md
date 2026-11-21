@@ -502,3 +502,20 @@ without adoption support or a remote peer that times out can end a tunnel.
   server-wiring tests passed, including a mixed batch that arrived out of order.
   Each retained copy had both original internal endpoints and a common deadline.
   Dropping unmatched records closed their original external peers.
+- Independent holder review at `8637b3b97` passed the nine restart fixtures and
+  reproduced a connection loss after a surviving holder's network helper changed PID.
+  The manager persists that PID during upkeep without replacing the Unix forward.
+  The new native regression uses two fixture-owned helper processes, updates the saved
+  PID before opening CONNECT, and then restarts the server. The original client received
+  EOF on the reviewed server in 0.52 seconds. Restoration now tolerates a changed helper
+  PID while checking the holder's generation, boot and live namespaces. All nine
+  restart tests and 934 domain, sandbox and egress tests passed after the correction.
+- The reviewer also found that the idle-eviction test assumed five minutes of host uptime.
+  An isolated monotonic clock starting one second after boot reproduced the failure at
+  the idle-place assertion. The corrected test drives the restored table to one millisecond
+  before the five-minute floor, then to its boundary. It checks that the active peer stays
+  admitted. All four holder relay tests passed with the young clock.
+- A distinct-binary upgrade in the holder fixture used the same HTTP/1.1 CONNECT and TLS
+  session through both server processes. The HTTP/2 origin accepted once, delivered
+  the gap bytes, accepted more request bytes and sent the final reply. Both binaries
+  supported the namespace handoff format.

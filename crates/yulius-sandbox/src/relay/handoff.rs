@@ -223,7 +223,9 @@ impl Saved {
         {
             return Err(invalid());
         }
-        let (owner, copy_state) = Owner::decode(&pair.state)?;
+        let (mut owner, copy_state) = Owner::decode(&pair.state)?;
+        // Upkeep can replace slirp4netns without replacing this holder or its outbound relay.
+        owner.holder.slirp_pid = holder.slirp_pid;
         let now = monotonic_ms();
         let expires = pair.expires.ok_or_else(invalid)?;
         if owner.holder != *holder
