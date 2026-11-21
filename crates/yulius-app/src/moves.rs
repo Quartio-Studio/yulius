@@ -18,7 +18,7 @@ use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::{PauseKind, TaskRecord};
 use crate::needs_you::NeedsYouRecord;
-use crate::supervisor::{CONTINUE_TASK_PROMPT, RunStart};
+use crate::supervisor::{CONTINUE_TASK_PROMPT, RunStart, SwitchCondition};
 
 /// What a task of `provider` with nothing usable left is asked for (MOV-006). The request ends by
 /// itself when the task gets a subscription again.
@@ -178,6 +178,21 @@ impl App {
         let store = &self.deps.store;
         let observed = store.open_pause_with_process(task_id).await?;
         let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
+        let idle_codex = if let Some(activity) = task.activity.filter(|activity| {
+            task.harness == Harness::Codex
+                && task.status == TaskStatus::Running
+                && activity.is_idle()
+        }) {
+            let attempt = store.live_attempt(task_id).await?.ok_or_else(|| {
+                AppError::Conflict("the idle session changed during the move".into())
+            })?;
+            Some(SwitchCondition::IdleCodex {
+                from: (activity, task.updated_at),
+                attempt: attempt.id,
+            })
+        } else {
+            None
+        };
         crate::race::reached(
             crate::race::Point::MovePauseRead,
             std::path::Path::new(task_id.as_str()),
@@ -202,11 +217,10 @@ impl App {
             return self
                 .switch_from(
                     task_id,
-                    Some(TaskStatus::WaitingCapacity),
                     account,
                     reason,
                     start,
-                    Some(pause),
+                    SwitchCondition::Paused(pause),
                 )
                 .await;
         }
@@ -232,13 +246,14 @@ impl App {
             }
             _ => None,
         };
-        self.switch_with(
-            task_id,
-            account,
-            reason,
-            RunStart::Resume { prompt }.with_goal_continuation(goal_stop),
-        )
-        .await
+        let start = RunStart::Resume { prompt }.with_goal_continuation(goal_stop);
+        let condition = if matches!(start, RunStart::Resume { prompt: None }) {
+            idle_codex.unwrap_or(SwitchCondition::Any)
+        } else {
+            SwitchCondition::Any
+        };
+        self.switch_from(task_id, account, reason, start, condition)
+            .await
     }
 
     /// Says in the task's terminal, in one line, why it left its subscription and where it went

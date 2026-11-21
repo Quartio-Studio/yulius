@@ -14,6 +14,8 @@ Rank eligible Codex subscriptions by the remaining percentage in their tightest 
 
 When a subscription move reopens a live idle Codex conversation, carry its saved activity into the replacement launch regardless of the task's mode. The final launch mode determines whether work starts so a resumed reviewer or continuation still shows Working.
 
+An idle move claims the observed state and live attempt before it ends the session. A new turn that changes the state before that claim keeps its attempt and the earlier move returns a conflict.
+
 ## Alternatives
 
 A warning threshold alone would still give reset urgency priority within each group. A hard 10% eligibility threshold would leave work waiting when the pool still has usable quota. Inferring idle state from the terminal would require recognizing Codex's presentation and could lag behind the actual launch.

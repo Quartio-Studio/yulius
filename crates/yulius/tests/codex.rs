@@ -295,6 +295,64 @@ fn moving_a_finished_codex_goal_task_preserves_its_idle_activity() -> TestResult
 }
 
 #[test]
+fn a_codex_turn_started_during_move_classification_survives() -> TestResult {
+    codex_turn_overtakes_idle_move(yulius_app::race::Point::MovePauseRead)
+}
+
+#[test]
+fn a_codex_turn_started_during_switch_preflight_survives() -> TestResult {
+    codex_turn_overtakes_idle_move(yulius_app::race::Point::SwitchPrepared)
+}
+
+fn codex_turn_overtakes_idle_move(point: yulius_app::race::Point) -> TestResult {
+    let (_dir, data) = temp()?;
+    runtime()?.block_on(async {
+        let (app, _, user, id, _) = restart_fixture_in(&data, TaskMode::Goal).await?;
+        let ctx = admin_ctx(&app, &user).await?;
+        app.close_task_and_wait(&id).await?;
+        app.continue_task(&ctx, id.as_str(), &Default::default())
+            .await?;
+        let store = &app.deps.store;
+        store
+            .set_activity(&id, Some(Activity::Done), app.now())
+            .await?;
+        let original = store.live_attempt(&id).await?.ok_or("idle run")?;
+        let alternate =
+            add_codex_account(&app, "alternate", &codex_auth("2026-11-01T10:00:00Z")).await?;
+        let (reached, release) = support::hold_point(point, id.as_str());
+        let moving = {
+            let (app, id) = (Arc::clone(&app), id.clone());
+            tokio::spawn(async move {
+                app.switch_task_for_person(&ctx, id.as_str(), Some(alternate.as_str()))
+                    .await
+            })
+        };
+        support::point_reached(reached).await?;
+        app.send_input(&id, b"/work 60000 New turn during switch\r")
+            .await?;
+        wait_for("the new Codex turn", Duration::from_secs(30), || async {
+            screen_contains(&app, &id, "WORKING").await
+                && task(&app, &id)
+                    .await
+                    .is_ok_and(|task| task.activity == Some(Activity::Working))
+        })
+        .await?;
+        release.send(())?;
+        let moved = moving.await?;
+        let current = store.live_attempt(&id).await?.ok_or("current run")?;
+        let activity = task(&app, &id).await?.activity;
+        support::stop_tasks(&app, &[&id]).await?;
+        assert!(
+            matches!(moved, Err(yulius_app::error::AppError::Conflict(_))),
+            "{moved:?}"
+        );
+        assert_eq!(current.id, original.id);
+        assert_eq!(activity, Some(Activity::Working));
+        Ok(())
+    })
+}
+
+#[test]
 fn moving_an_idle_codex_session_with_a_pending_reviewer_starts_a_turn() -> TestResult {
     let (_dir, data) = temp()?;
     runtime()?.block_on(async {
