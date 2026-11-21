@@ -78,11 +78,11 @@ class CompileCache(unittest.TestCase):
         settings = self.task / "elsewhere.toml"
         settings.write_text(f'[build]\nbuild-dir = "{outside}"')
         for args, expected in [(["clean", "--offline"], 0),
-                               (["run", "--quiet", "--offline", "--", "--target-dir"], 0),
+                               (["run", "--quiet", "--offline", "--config", "build.jobs=1", "--", "--target-dir"], 0),
                                (["build", "--offline", "--target-dir=" + str(outside)], 1),
                                (["build", "--offline", "--target-dir", str(outside)], 1),
-                               (["build", "--config", f'build.build-dir="{outside}"'], 1),
-                               (["build", "--config=" + str(settings)], 1),
+                               (["build", "--config", f'build.build-dir="{outside}"'], 0),
+                               (["build", "--config=" + str(settings)], 0),
                                (["check", "--offline", "--config", "build.jobs=1"], 0)]:
             with self.subTest(args=args):
                 result = subprocess.run([self.task / "scripts/cargo", "--scratch-target", *args],
@@ -92,6 +92,26 @@ class CompileCache(unittest.TestCase):
                     self.assertEqual(result.stdout.strip(), "--target-dir")
                 self.assertFalse(outside.exists(), "intermediate artifacts escaped disk scratch")
                 self.assertFalse(list(parent.iterdir()))
+
+    def test_config_files_cannot_redirect_disposable_cargo_outputs(self):
+        self.create_fixture(self.task, "fn main() {}")
+        cargo = Path(subprocess.check_output(["rustup", "which", "cargo"], text=True).strip())
+        env = self.cargo_env(self.sandbox / "home", cargo)
+        env.update(YULIUS_BUILD_SCRATCH=str(self.sandbox / "scratch"), RUSTC=str(cargo.with_name("rustc")))
+        for name, content in [
+            ("bom.toml", '\ufeff[build]\nbuild-dir = "{outside}"'),
+            ("table.toml", 'build = {{\n build-dir = "{outside}",\n}}'),
+            ("common=1", '[build]\nbuild-dir = "{outside}"'),
+        ]:
+            with self.subTest(config=name):
+                outside = self.sandbox / ("outside-" + name)
+                (self.task / name).write_text(content.format(outside=outside))
+                result = subprocess.run([self.task / "scripts/cargo", "--scratch-target", "build", "--offline",
+                                         "--config", name], cwd=self.task, env=env, capture_output=True,
+                                        text=True, timeout=15)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(outside.exists(), "Cargo wrote intermediates outside scratch")
+                self.assertFalse(list((self.sandbox / "scratch").iterdir()))
 
     def test_disposable_build_rejects_an_alias_with_external_outputs(self):
         self.create_fixture(self.task, "fn main() {}")
