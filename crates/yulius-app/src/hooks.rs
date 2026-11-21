@@ -226,9 +226,7 @@ impl App {
             .map_or(now, |sent| sent.min(now));
         let keys = (event == events::USER_PROMPT_SUBMIT).then(|| self.viewer_keys_at_submit(sent));
         let ctx = self.agent_context(token).await?;
-        let key = keys
-            .and_then(|keys| keys.get(&ctx.task.id).copied())
-            .unwrap_or_default();
+        let key = keys.and_then(|keys| keys.get(&ctx.task.id).copied());
         if ctx.attempt.harness != harness {
             return Err(AppError::Unauthenticated);
         }
@@ -393,7 +391,7 @@ impl App {
         event: &str,
         input: &HookInput,
         sent: i64,
-        key: (i64, u64),
+        key: Option<(i64, u64)>,
     ) -> AppResult<HookReply> {
         if event != events::USER_PROMPT_SUBMIT {
             return self
@@ -419,13 +417,12 @@ impl App {
         let submitted = if from_box {
             let mut mark = runtime.draft_mark.lock().await;
             if !sent_again {
-                let (typed, seq) = key;
                 let emptied = runtime.box_emptied_ms.load(Ordering::SeqCst);
-                let viewer_input = seq != 0
-                    && typed <= sent
-                    && (typed > emptied
-                        || (typed == emptied && seq > runtime.emptied_seq.load(Ordering::SeqCst)));
-                mark.submit = (sent, seq, viewer_input);
+                let viewer_input = key.is_some_and(|(typed, seq)| {
+                    typed > emptied
+                        || (typed == emptied && seq > runtime.emptied_seq.load(Ordering::SeqCst))
+                });
+                mark.submit = (sent, key.map_or(0, |(_, seq)| seq), viewer_input);
             }
             Some(mark.submit)
         } else {
