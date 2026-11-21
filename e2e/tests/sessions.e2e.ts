@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock, openSuperagent } from './support.ts';
+import { axeViolations, failOnPageErrors, firstShown, mock, openSuperagent } from './support.ts';
 
 failOnPageErrors();
 
@@ -70,7 +70,7 @@ test('a session opens read-only with messages, tool calls and diffs, and continu
 test('a session reads as Claude Code’s TUI: prompts, messages, calls with results and diffs', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/sessions/ses_imp_checkout'));
   const transcript = screen.getByRole('list', 'Transcript');
-  await expect(transcript.getByText('Add Stripe checkout to the cart page. Use the test keys from .env.')).toBeVisible();
+  await firstShown(transcript.getByText('Add Stripe checkout to the cart page. Use the test keys from .env.'));
   expect(await browser.evaluate(() => getComputedStyle(document.querySelector('.ss-tui')!).fontFamily)).toMatch(/IBM Plex Mono/);
   const line = (n: number) => browser.locator('.ss-tui .ss-entries > li').nth(n);
   await expect(line(0)).toContainText(/^\s*Prompt\s*>\s*Add Stripe checkout/);
@@ -105,7 +105,7 @@ test('a session reads as Claude Code’s TUI: prompts, messages, calls with resu
 
 test('a failed call is marked in the TUI’s error colour and says error', async ({ app, browser }) => {
   await app.open(mock('/s/studio/sessions/ses_imp_flaky'));
-  await expect(browser.locator('.ss-sidechain.ss-assistant > .sr-only')).toHaveText('Claude (subagent)');
+  await firstShown(browser.locator('.ss-sidechain.ss-assistant > .sr-only'), 'Claude (subagent)');
   const failed = browser.locator('.ss-tui details.ss-tool.ss-tool-error > summary').filter({ hasText: 'npx playwright test login' });
   await expect(failed).toContainText(/⏺\s*Bash\(npx playwright test login\).*error/s);
   await expect(failed).toContainText(/⎿\s*Error: Timed out 5000ms/);
@@ -350,7 +350,7 @@ test('a skill body shows as one folded line that opens on demand; the Stop hook 
 // is a session not a task" — still at least WCAG AA for text, in both themes.
 test('a session is faded in both themes: less contrast and saturation than a live terminal, still AA', async ({ app, browser }) => {
   await app.open(mock('/s/studio/sessions/ses_imp_flaky'));
-  await expect(browser.locator('.ss-tui')).toBeVisible();
+  await firstShown(browser.locator('.ss-tui'));
   for (const theme of ['dark', 'light']) {
     const m = await browser.evaluate((name) => {
       document.documentElement.setAttribute('data-theme', name);
@@ -394,7 +394,7 @@ test('a session is faded in both themes: less contrast and saturation than a liv
 test('a session ends with a locked prompt box and has a spider web in its corner', async ({ app, browser }) => {
   await app.open(mock('/s/studio/sessions/ses_imp_checkout'));
   const locked = browser.locator('.ss-tui .ss-locked');
-  await expect(locked).toHaveText(/>\s*Read-only session · nothing can be sent/);
+  await firstShown(locked, />\s*Read-only session · nothing can be sent/);
   expect(await browser.evaluate(() => {
     const box = document.querySelector('.ss-tui .ss-locked')!;
     return [box.matches(':last-child'), box.closest('button, a, [tabindex], [contenteditable]') === null];
@@ -435,7 +435,7 @@ test('a session ends with a locked prompt box and has a spider web in its corner
 test('the spider web sticks to the top of the view while the session scrolls', async ({ app, browser }) => {
   await browser.setViewport({ width: 1280, height: 420 });
   await app.open(mock('/s/studio/sessions/ses_imp_checkout'));
-  await expect(browser.locator('.ss-tui .ss-locked')).toBeVisible();
+  await firstShown(browser.locator('.ss-tui .ss-locked'));
   const place = () => browser.evaluate(() => {
     const page = document.querySelector<HTMLElement>('.ss-page')!;
     const wellEl = document.querySelector('.ss-tui')!;
@@ -502,7 +502,7 @@ test('the spider web sticks to the top of the view while the session scrolls', a
 // where SPEC-075 drew it, and keeps still for people who asked for reduced motion.
 test('the spider climbs its thread and drops back, and keeps still under reduced motion', async ({ app, browser }) => {
   await app.open(mock('/s/studio/sessions/ses_imp_checkout'));
-  await expect(browser.locator('.ss-tui .ss-locked')).toBeVisible();
+  await firstShown(browser.locator('.ss-tui .ss-locked'));
   // Seek every animation of the spider to a fraction of its loop and measure it in pixels.
   const at = (fraction: number) => browser.evaluate((f) => {
     const svg = document.querySelector('.ss-tui > svg.ss-web')!;
@@ -555,7 +555,7 @@ test('the spider climbs its thread and drops back, and keeps still under reduced
 test('a cockroach runs across the visible part of the session now and then (unit, in the page)', async ({ app, browser }) => {
   await browser.setViewport({ width: 1280, height: 420 });
   await app.open(mock('/s/studio/sessions/ses_imp_checkout'));
-  await expect(browser.locator('.ss-tui .ss-locked')).toBeVisible();
+  await firstShown(browser.locator('.ss-tui .ss-locked'));
   const result = await browser.evaluate(async () => {
     const url = '/assets/pages/sessions.js';
     const { cockroachDelay, runCockroach, scheduleCockroaches } = await import(url);
@@ -684,7 +684,7 @@ const recordTimers = (reduce: boolean) => {
 test('the session view sends cockroaches now and then and stops when it is left', async ({ app, browser, screen }) => {
   await browser.addInitScript(recordTimers, false);
   await app.open(mock('/s/studio/sessions/ses_imp_checkout'));
-  await expect(browser.locator('.ss-tui .ss-locked')).toBeVisible();
+  await firstShown(browser.locator('.ss-tui .ss-locked'));
   const timers = () => browser.evaluate(() => (window as unknown as { roachTimers: { ms: number; cleared: boolean }[] }).roachTimers.map((t) => ({ ms: t.ms, cleared: t.cleared })));
   await expect.poll(async () => (await timers()).length).toBe(1);
   const [first] = await timers();
@@ -711,7 +711,7 @@ test('the session view sends cockroaches now and then and stops when it is left'
 test('no cockroach runs under reduced motion', async ({ app, browser }) => {
   await browser.addInitScript(recordTimers, true);
   await app.open(mock('/s/studio/sessions/ses_imp_checkout'));
-  await expect(browser.locator('.ss-tui .ss-locked')).toBeVisible();
+  await firstShown(browser.locator('.ss-tui .ss-locked'));
   await expect.poll(() => browser.evaluate(() => (window as unknown as { roachTimers: unknown[] }).roachTimers.length)).toBeGreaterThan(0);
   const ran = await browser.evaluate(async () => {
     const [first] = (window as unknown as { roachTimers: { fn: () => void; id: number }[] }).roachTimers;
@@ -732,7 +732,7 @@ test('no cockroach runs under reduced motion', async ({ app, browser }) => {
 test('a session fills the content area edge to edge, beside the Superagent and on a phone', async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 1920, height: 1000 });
   await app.open(mock('/s/studio/sessions/ses_imp_checkout'));
-  await expect(browser.locator('.ss-tui .ss-locked')).toBeVisible();
+  await firstShown(browser.locator('.ss-tui .ss-locked'));
   const fit = () => browser.evaluate(() => {
     const page = document.querySelector<HTMLElement>('.ss-page')!;
     const well = document.querySelector('.ss-tui')!;
@@ -793,7 +793,7 @@ test('a session fills the content area edge to edge, beside the Superagent and o
 // target are drawn inside the box, where they stay visible (WCAG 2.4.7).
 test('a folded call shows its keyboard focus inside the entry, and the search target too', async ({ app, browser }) => {
   await app.open(mock('/s/studio/sessions/ses_imp_checkout?line=5'));
-  await expect(browser.locator('.ss-target')).toBeVisible();
+  await firstShown(browser.locator('.ss-target'));
   await browser.locator('.ss-tui details.ss-tool > summary').filter({ hasText: 'npm test -- checkout' }).focus();
   const ring = await browser.evaluate(() => {
     const summary = document.activeElement as HTMLElement;
@@ -857,7 +857,7 @@ test('a context the server cut says so when opened and reads its size as at leas
   expect(await axeViolations(browser)).toEqual([]);
   // A whole context keeps its plain size (SPEC-090).
   await app.open(mock('/s/studio/sessions/ses_task_4'));
-  await expect(browser.locator(`${note} > summary`)).toHaveText(/⎿\s*Context added \(1\.6 KiB\)$/);
+  await firstShown(browser.locator(`${note} > summary`), /⎿\s*Context added \(1\.6 KiB\)$/);
   // Only the cut wake-up (SPEC-328) is cut in this session.
   await expect(browser.locator('.ss-tui li:not(.ss-wake) .ss-cut')).toHaveCount(0);
 });
