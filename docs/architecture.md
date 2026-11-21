@@ -1457,8 +1457,9 @@ The transcript watch also reads each subagent of the session's own thread
 (`Observation::SubagentCutOff`). The supervisor uses the transcript time to identify the round
 that ran when the observation was written, including during restart replay
 (`model_answered`, `cut_off`). The delivery view (`Delivery.review_rounds`, also in
-`delivery_status`) lists the current review or the rounds of the pull request just delivered.
-Each round includes its start, optional end and pull request number when known. When a merge is recorded,
+`delivery_status`) lists the current review. A Codex task can also show its just-delivered pull
+request's rounds when no review is open. Each round includes its start, optional end and pull
+request number when known. When a merge is recorded,
 `dlv_transition_at` writes the merge record `delivery.review.models` (actor `yulius`): the
 models of the runs that worked on the pull request (those still going when the previous one
 merged, known from its rounds or its own merge record, and every later one), and each round
