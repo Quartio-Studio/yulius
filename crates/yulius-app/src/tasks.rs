@@ -181,7 +181,7 @@ impl App {
     /// Store failures.
     pub async fn task_summary(&self, task: &TaskRecord) -> AppResult<TaskSummary> {
         let steps = self.deps.store.steps(&task.id).await?;
-        self.task_summary_with(task, None, &steps, None, task.archived_at.is_none(), false)
+        self.task_summary_with(task, None, &steps, None, task.archived_at.is_none())
             .await
     }
 
@@ -192,7 +192,6 @@ impl App {
         steps: &[StepRecord],
         requested: Option<&std::collections::HashSet<String>>,
         sync_wait: bool,
-        verify_host: bool,
     ) -> AppResult<TaskSummary> {
         let store = &self.deps.store;
         // A removed subscription is no task's (SPEC-447): neither its name nor its id is shown.
@@ -235,8 +234,7 @@ impl App {
                 &owned_requested
             }
         };
-        let (facts, candidate_pending) =
-            Box::pin(self.candidate_attention_facts(task, requested, verify_host)).await?;
+        let facts = self.task_attention_facts(task, requested).await?;
         let needs_you_notice = self.resolve_needs_you_notice(task, &facts).await;
         if sync_wait {
             self.sync_wait_message(task, needs_you_notice.as_ref())
@@ -250,7 +248,6 @@ impl App {
                 && !facts.goal_unfinished
                 && self.pr_ci_progressing(task).await);
         Ok(TaskSummary {
-            candidate_pending,
             parked_pr: None,
             parked_needs_you: None,
             id: task.id.to_string(),
@@ -721,7 +718,6 @@ impl App {
                     parked.remove(&task.id),
                     Some(&requested),
                     sync_wait,
-                    false,
                 )
                 .await?;
             out.push(summary);
@@ -739,7 +735,6 @@ impl App {
         mut status: Option<crate::sandboxes::ParkedStatus>,
         requested: Option<&std::collections::HashSet<String>>,
         sync_wait: bool,
-        verify_candidate: bool,
     ) -> AppResult<(TaskSummary, Vec<StepRecord>)> {
         let steps = match status.as_mut().and_then(|read| read.steps.take()) {
             Some(snapshot) => snapshot,
@@ -748,7 +743,7 @@ impl App {
         // Defer `sync_wait_message` until after `parked_needs_you` is settled so a parked task
         // whose PR is already green/merged does not record a phantom `parked:resume` history row.
         let mut summary = self
-            .task_summary_with(task, project, &steps, requested, false, verify_candidate)
+            .task_summary_with(task, project, &steps, requested, false)
             .await?;
         if let Some(read) = status {
             let mut effective = read.facts;
@@ -758,9 +753,9 @@ impl App {
             effective.browser_request |= summary.needs_you.is_some();
             effective.held_prompt |= summary.held_prompt.is_some();
             summary.parked_needs_you = Some(effective.needs_you());
-            summary.parked_pr = read.pull.pr;
+            summary.parked_pr = read.pr;
             summary.needs_you_notice = self
-                .resolve_needs_you_notice_with_pr(task, &effective, Some(&read.pull))
+                .resolve_needs_you_notice_with_pr(task, &effective, read.pr.map(|pr| pr.number))
                 .await;
         }
         if sync_wait && task.archived_at.is_none() && !task.status.is_resting() {
@@ -781,7 +776,7 @@ impl App {
             for task in self.deps.store.tasks(&sandbox.id, true).await? {
                 let steps = self.deps.store.steps(&task.id).await?;
                 out.push(
-                    self.task_summary_with(&task, None, &steps, Some(&empty), false, false)
+                    self.task_summary_with(&task, None, &steps, Some(&empty), false)
                         .await?,
                 );
             }
@@ -805,7 +800,7 @@ impl App {
             None
         };
         let (mut summary, steps) = self
-            .display_summary(&task, None, parked, None, true, true)
+            .display_summary(&task, None, parked, None, true)
             .await?;
         // Subscription emails are for administrators (UI-022, SPEC-244 SUB-005).
         let admin = ctx.user.is_superadmin || ctx.user.is_instance_admin;

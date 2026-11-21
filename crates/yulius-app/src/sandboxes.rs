@@ -15,6 +15,7 @@ use crate::error::AppResult;
 use crate::model::{SandboxRecord, StepRecord, TaskRecord};
 use tokio::sync::OnceCell;
 use tokio::time::Instant;
+use yulius_contracts::api::tasks::ParkedPr;
 
 /// Maximum concurrent reads per batch and active native Git workers per application.
 pub(crate) const PARKED_READS: usize = 8;
@@ -45,7 +46,7 @@ pub(crate) fn fair_batches<T>(
 /// Display result of one bounded read. An early timeout may precede the plan lookup.
 pub(crate) struct ParkedStatus {
     pub(crate) facts: AttentionFacts,
-    pub(crate) pull: crate::delivery::ParkedPullRead,
+    pub(crate) pr: Option<ParkedPr>,
     pub(crate) steps: Option<Vec<StepRecord>>,
 }
 
@@ -53,7 +54,7 @@ impl ParkedStatus {
     pub(crate) fn new(task: &TaskRecord) -> Self {
         Self {
             facts: AttentionFacts::new(task.status, task.activity),
-            pull: crate::delivery::ParkedPullRead::default(),
+            pr: None,
             steps: None,
         }
     }
@@ -312,11 +313,7 @@ impl App {
         task: &TaskRecord,
         requested: &HashSet<String>,
     ) -> AppResult<TaskGroup> {
-        Ok(self
-            .candidate_attention_facts(task, requested, true)
-            .await?
-            .0
-            .group())
+        Ok(self.task_attention_facts(task, requested).await?.group())
     }
 
     pub(crate) fn status_deadline(&self) -> Instant {
@@ -372,7 +369,7 @@ impl App {
                 let requested = requests
                     .get_or_init(|| self.browser_requests(&task.sandbox_id))
                     .await;
-                self.task_attention_facts(task, requested).await?.group()
+                self.task_group(task, requested).await?
             };
             groups.push(group);
         }
@@ -448,7 +445,7 @@ impl App {
             crate::race::Point::ParkedStatusRead,
             std::path::Path::new(task.id.as_str()),
         );
-        status.pull = observed;
+        status.pr = observed.pr;
         status
     }
 
@@ -457,70 +454,6 @@ impl App {
         &self,
         task: &TaskRecord,
         requested: &HashSet<String>,
-    ) -> AppResult<AttentionFacts> {
-        Ok(self
-            .candidate_attention_facts(task, requested, false)
-            .await?
-            .0)
-    }
-
-    pub(crate) async fn candidate_attention_facts(
-        &self,
-        task: &TaskRecord,
-        requested: &HashSet<String>,
-        verify_host: bool,
-    ) -> AppResult<(AttentionFacts, bool)> {
-        let live = task.status == TaskStatus::Running;
-        if !(live || task.status == TaskStatus::Parked)
-            || !task
-                .activity
-                .is_some_and(yulius_domain::task::Activity::is_idle)
-        {
-            return Ok((
-                self.local_attention_facts(task, requested, None).await?,
-                false,
-            ));
-        }
-        let observed = self.observed_pulls.get(&task.sandbox_id, &task.id);
-        let record = if live || observed.is_none() {
-            self.deps.store.delivery(&task.id).await
-        } else {
-            Ok(None)
-        };
-        // A cold ordinary-status read and the integration check use the same delivery.
-        let pull = observed.unwrap_or_else(|| match &record {
-            Ok(record) => record
-                .as_ref()
-                .filter(|r| crate::delivery::past_merge(&r.stage))
-                .map(|_| PullSignal::Merged),
-            Err(_) => Some(PullSignal::Errored),
-        });
-        let mut facts = self.local_attention_facts(task, requested, pull).await?;
-        if !live {
-            return Ok((facts, false));
-        }
-        let blocked = match record {
-            Ok(record) => {
-                self.delivery_candidate_blocks(task, record.as_ref(), verify_host)
-                    .await
-            }
-            Err(err) => Err(err),
-        };
-        facts.pull = Some(match blocked {
-            Ok(false) => return Ok((facts, false)),
-            Ok(true) => PullSignal::Failing,
-            Err(_) => PullSignal::Errored,
-        });
-        facts.yulius_wait = true;
-        Ok((facts, true))
-    }
-
-    /// The parking supervisor verifies hosted inputs separately before taking its launch lock.
-    pub(crate) async fn local_attention_facts(
-        &self,
-        task: &TaskRecord,
-        requested: &HashSet<String>,
-        mut pull: Option<PullSignal>,
     ) -> AppResult<AttentionFacts> {
         let store = &self.deps.store;
         if task.status.is_resting() || task.status == TaskStatus::Stopping {
@@ -545,16 +478,25 @@ impl App {
         let live = task.status == TaskStatus::Running && idle;
         // The pull request, the plan and the goal matter only after a finished turn: with no step
         // open and no unfinished goal, an idle agent answered (SPEC-429).
-        let (plan_open, spec_unfinished) = if finished {
+        let (pull, plan_open, spec_unfinished) = if finished {
+            let mut pull = match self.observed_pulls.get(&task.sandbox_id, &task.id) {
+                Some(observed) => observed,
+                // Not read since the server started: a merge recorded earlier is still known.
+                None => store
+                    .delivery(&task.id)
+                    .await?
+                    .filter(|record| crate::delivery::past_merge(&record.stage))
+                    .map(|_| PullSignal::Merged),
+            };
             // A newer Yulius CI run already queued or running supersedes a stale failing
             // pull-request observation on a live task (SPEC-578).
             if live && pull == Some(PullSignal::Failing) && self.pr_ci_progressing(task).await {
                 pull = Some(PullSignal::InReview);
             }
             let plan_open = plan_open(&store.steps(&task.id).await?);
-            (plan_open, self.spec_unfinished(&task.id).await)
+            (pull, plan_open, self.spec_unfinished(&task.id).await)
         } else {
-            (false, false)
+            (None, false, false)
         };
         Ok(AttentionFacts {
             status: task.status,

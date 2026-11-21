@@ -151,20 +151,13 @@ impl App {
         &self,
         task: &TaskRecord,
         facts: &AttentionFacts,
-        pr_hint: Option<&crate::delivery::ParkedPullRead>,
+        pr_hint: Option<u64>,
     ) -> Option<NeedsYouNoticeView> {
         if facts.group() != TaskGroup::NeedsYou {
             return None;
         }
         let store = &self.deps.store;
         let (slug, task_link) = self.task_page_link(task).await;
-        let ci_run_link = |run: &str| match &slug {
-            Some(slug) => format!(
-                "{}/s/{slug}/ci?run={run}",
-                self.config.public_url.trim_end_matches('/')
-            ),
-            None => task_link.clone(),
-        };
         let episode_at_ms = store
             .task_times(&task.id)
             .await
@@ -295,29 +288,8 @@ impl App {
                 at: rfc3339(Timestamp(episode_at_ms)),
                 at_ms: episode_at_ms,
             }
-        } else if facts.pull == Some(PullSignal::Failing)
-            && let Some(candidate) = pr_hint.and_then(|read| read.candidate.as_ref())
-        {
-            let run = &candidate.singleton.run;
-            let pr = candidate.singleton.pr;
-            NeedsYouNoticeView {
-                source: "system".to_owned(),
-                episode: format!("candidate_fail:{pr}:{run}:{episode_at_ms}"),
-                happened: format!("The integration candidate {run} for pull request #{pr} failed."),
-                problem: Some(candidate.message.clone()),
-                action: format!(
-                    "Inspect integration run {run}. Yulius resumes the parked owner for this failure when it can run."
-                ),
-                link: ci_run_link(run),
-                decision: false,
-                browser_tab: None,
-                at: rfc3339(Timestamp(episode_at_ms)),
-                at_ms: episode_at_ms,
-            }
         } else if facts.pull == Some(PullSignal::Failing) {
             let pr_num = pr_hint
-                .and_then(|read| read.pr)
-                .map(|pr| pr.number)
                 .or_else(|| {
                     self.observed_pulls
                         .known_pull(&task.sandbox_id, &task.id)
@@ -340,6 +312,14 @@ impl App {
                 {
                     let jobs = store.ci_jobs(&run.id, true).await.unwrap_or_default();
                     let failed = crate::pr_watch::failed_jobs(&jobs);
+                    let ci_link = match &slug {
+                        Some(slug) => format!(
+                            "{}/s/{slug}/ci?run={}",
+                            self.config.public_url.trim_end_matches('/'),
+                            run.id
+                        ),
+                        None => task_link.clone(),
+                    };
                     let at_ms = run.ended_at.unwrap_or(run.queued_at).0.max(episode_at_ms);
                     let action = if task.status == TaskStatus::Parked {
                         format!("Inspect CI run {} and resume the task or rerun CI.", run.id)
@@ -358,7 +338,7 @@ impl App {
                         ),
                         problem: None,
                         action,
-                        link: ci_run_link(&run.id),
+                        link: ci_link,
                         decision: false,
                         browser_tab: None,
                         at: rfc3339(Timestamp(at_ms)),
@@ -678,7 +658,7 @@ impl App {
         task: &TaskRecord,
         person: bool,
         facts: &AttentionFacts,
-        pr_hint: Option<&crate::delivery::ParkedPullRead>,
+        pr_hint: Option<u64>,
     ) -> serde_json::Map<String, Value> {
         // What the task's summary shows, also for a task that ended: a prompt held before its
         // end is still decided on its card.

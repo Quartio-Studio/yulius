@@ -40,6 +40,8 @@ Use the queue’s owner-preferred ordinary CI result at the armed head. A shared
   on its limit; with a merge armed it ends on its head's failure.
 - The PreToolUse guard refuses `gh pr merge` and `gh api …/pulls/N/merge`.
 
+The parking supervisor uses the latest singleton decision for the original owner. It compares the tested head and base with the verified PR and checks for a replacement merge arm before committing to shutdown. See SPEC-558.
+
 ## Alternatives
 
 - **Fix `yulius wait` only**: the agent must still start it, and Claude Code's paused check-ins and
@@ -51,8 +53,6 @@ Use the queue’s owner-preferred ordinary CI result at the armed head. A shared
 - **Tell a person instead**: the request is that nobody has to watch; the task can act.
 - **A database table for told events**: a migration for a small, per-process cache; the JSON file
   follows `armed-merges.json` and `merge-trains.json`.
-
-A recorded, still-current singleton failure belongs to the same task across parking and restart. Task reads use the decision for status only. The automatic wake verifies its inputs and human decisions and uses the same outcome key as live delivery. Session, subscription or launch-lock contention leaves the event unheard. The next watch checks current publication and human decisions before it resumes the owner. Hook publication, live list rows, Home and session accounting use local data and share a short-lived, receipt-specific observation of a superseded head or base.
 
 ## Consequences
 

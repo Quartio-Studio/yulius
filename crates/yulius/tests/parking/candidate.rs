@@ -13,697 +13,16 @@ use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::ids::{AttemptId, TaskId};
 
 #[test]
-fn a_stop_publication_with_an_accepted_candidate_does_not_wait_for_github() -> TestResult {
-    with_candidate_owner(false, async |_, app, remote, task| {
-        *remote.pull_read_hold.lock().map_err(|_| "host gate")? =
-            Some(Arc::new(tokio::sync::Notify::new()));
-        tokio::time::timeout(Duration::from_secs(2), app.publish_task(&task.id)).await?;
-        *remote.pull_read_hold.lock().map_err(|_| "host gate")? = None;
-        Ok(())
-    })
+fn parking_checks_the_saved_candidate_against_the_current_integration_base() -> TestResult {
+    park_after_candidate(false)
 }
 
 #[test]
-fn an_achieved_owner_releases_its_session_slot_after_the_tested_base_moves() -> TestResult {
-    with_candidate_owner(false, async |_, app, remote, task| {
-        let ctx = yulius_app::auth::AuthContext {
-            user: app.deps.store.user(&task.owner).await?.ok_or("user")?,
-            csrf_token: None,
-            session_hash: None,
-            token: None,
-        };
-
-        app.load_limits([(yulius_domain::limits::Limit::Sessions, 1)].into())
-            .await;
-        app.deps
-            .store
-            .set_activity(
-                &task.id,
-                Some(yulius_domain::task::Activity::Done),
-                app.now(),
-            )
-            .await?;
-        remote.remote.lock().map_err(|_| "origin")?.take();
-        remote.pulls.lock().map_err(|_| "pulls")?[0].base_sha = "new-base".into();
-        assert!(
-            !app.task_detail(&ctx, task.id.as_str())
-                .await?
-                .summary
-                .candidate_pending
-        );
-        let peer = super::new_task(
-            app,
-            &task.sandbox_id,
-            &task.owner,
-            "Another task",
-            yulius_app::model::TaskMode::Prompt,
-        )
-        .await?;
-        super::wait_for("one free working slot", Duration::from_secs(5), || async {
-            app.deps
-                .store
-                .live_attempt(&peer)
-                .await
-                .ok()
-                .flatten()
-                .is_some()
-        })
-        .await?;
-        app.stop_task_now(&peer).await?;
-        Ok(())
-    })
+fn a_replacement_arm_arriving_at_final_verification_keeps_the_original_owner_live() -> TestResult {
+    park_after_candidate(true)
 }
 
-#[test]
-fn a_parked_candidate_waits_for_capacity_without_saving_an_obsolete_prompt() -> TestResult {
-    with_candidate_owner(true, async |_, app, _, task| {
-        app.load_limits([(yulius_domain::limits::Limit::Sessions, 1)].into())
-            .await;
-        let peer = super::new_task(
-            app,
-            &task.sandbox_id,
-            &task.owner,
-            "Use the remaining slot",
-            yulius_app::model::TaskMode::Prompt,
-        )
-        .await?;
-        super::wait_for("occupied slot", Duration::from_secs(5), || async {
-            app.deps
-                .store
-                .live_attempt(&peer)
-                .await
-                .ok()
-                .flatten()
-                .is_some()
-        })
-        .await?;
-        let wake = app.watch_prs(&WatchBounds::default()).await;
-        assert!(wake.is_empty(), "prematurely heard: {wake:?}");
-        assert_eq!(
-            super::status_of(app, &task.id).await.0,
-            Some(yulius_domain::task::TaskStatus::Parked)
-        );
-        ask(app, &task.id).await?;
-        app.stop_task_now(&peer).await?;
-        assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
-        app.deps
-            .store
-            .set_task_needs_you(&task.id, None, app.now())
-            .await?;
-        let wake = app.watch_prs(&WatchBounds::default()).await;
-        assert_eq!(wake.len(), 1, "{wake:?}");
-        assert!(wake[0].1.contains("292.1 ms"));
-        Ok(())
-    })
-}
-
-#[test]
-fn a_parked_candidate_waits_for_subscription_capacity_without_saving_its_prompt() -> TestResult {
-    with_candidate_owner(true, async |_, app, _, task| {
-        let account = yulius_domain::ids::AccountId::parse("a-only")?;
-        let usage = json!({"primary":{"used_percent":100.0,"window_minutes":300,"resets_at":app.now().plus_millis(3_600_000).0}}).to_string();
-        app.deps
-            .store
-            .set_account_state(
-                &account,
-                yulius_app::model::AccountStatus::Limited,
-                Some(&usage),
-                None,
-                app.now(),
-            )
-            .await?;
-        assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
-        assert_eq!(
-            super::status_of(app, &task.id).await.0,
-            Some(yulius_domain::task::TaskStatus::Parked)
-        );
-        assert!(app.deps.store.open_pause(&task.id).await?.is_none());
-        app.deps
-            .store
-            .set_account_state(
-                &account,
-                yulius_app::model::AccountStatus::Ok,
-                Some(r#"{"primary":{"used_percent":0.0,"window_minutes":300,"resets_at":null}}"#),
-                None,
-                app.now(),
-            )
-            .await?;
-        let wake = app.watch_prs(&WatchBounds::default()).await;
-        assert_eq!(wake.len(), 1, "{wake:?}");
-        Ok(())
-    })
-}
-
-#[test]
-fn a_candidate_whose_subscription_disappears_before_spawn_keeps_its_park() -> TestResult {
-    with_candidate_owner(true, async |data, app, _, task| {
-        let path = data.join("yulius.db");
-        let parked = app
-            .deps
-            .store
-            .attempts(&task.id)
-            .await?
-            .pop()
-            .ok_or("parked attempt")?;
-        std::fs::write(
-            Path::new(&parked.run_dir).join("parked-goal-unfinished"),
-            b"",
-        )?;
-        let acc = yulius_domain::ids::AccountId::parse("a-only")?;
-        let original_account = app.deps.store.account(&acc).await?.ok_or("subscription")?;
-        let removal_db = path.clone();
-        yulius_app::race::on(
-            super::Point::RunRecorded,
-            Path::new(task.id.as_str()),
-            move || {
-                let deleted = rusqlite::Connection::open(&removal_db)
-                    .and_then(|db| db.execute("DELETE FROM accounts WHERE id='a-only'", []));
-                assert!(matches!(deleted, Ok(1)));
-            },
-        );
-        assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
-        assert_eq!(
-            super::status_of(app, &task.id).await.0,
-            Some(yulius_domain::task::TaskStatus::Parked)
-        );
-        assert!(app.deps.store.open_pause(&task.id).await?.is_none());
-        let receipt = app
-            .deps
-            .store
-            .latest_merge_wait(&task.id)
-            .await?
-            .ok_or("decision")?;
-        assert!(
-            app.deps
-                .store
-                .retire_singleton(&task.id, &receipt, app.now())
-                .await?
-        );
-        let ctx = yulius_app::auth::AuthContext {
-            user: app.deps.store.user(&task.owner).await?.ok_or("owner")?,
-            csrf_token: None,
-            session_hash: None,
-            token: None,
-        };
-        let detail = app.task_detail(&ctx, task.id.as_str()).await?;
-        assert!(
-            detail.summary.goal_unfinished,
-            "historical parked goal still open"
-        );
-        assert_eq!(detail.summary.parked_needs_you, Some(true));
-        let db = rusqlite::Connection::open(&path)?;
-        // The directory can be inspected while its marker cannot. Use an
-        // overlong marker path so this exercises the real I/O error even as root.
-        let marker = "parked-goal-unfinished";
-        let inaccessible = [1024, 4096]
-            .into_iter()
-            .filter(|limit| *limit > parked.run_dir.len() + 2)
-            .map(|limit| {
-                format!(
-                    "{}{}",
-                    parked.run_dir,
-                    "/.".repeat((limit - 2 - parked.run_dir.len()) / 2)
-                )
-            })
-            .find(|dir| {
-                Path::new(dir).is_dir()
-                    && std::fs::symlink_metadata(Path::new(dir).join(marker))
-                        .is_err_and(|err| err.kind() != std::io::ErrorKind::NotFound)
-            })
-            .ok_or("a readable directory at the host path length limit")?;
-        db.execute(
-            "UPDATE attempts SET run_dir=?1 WHERE id=?2",
-            rusqlite::params![inaccessible, parked.id.as_str()],
-        )?;
-        assert!(
-            app.task_detail(&ctx, task.id.as_str())
-                .await?
-                .summary
-                .goal_unfinished,
-            "unreadable marker must hold the goal"
-        );
-        db.execute(
-            "UPDATE attempts SET run_dir=?1 WHERE id=?2",
-            rusqlite::params![parked.run_dir, parked.id.as_str()],
-        )?;
-        db.execute(
-            "UPDATE spans SET detail=?1 WHERE key='wait@15'",
-            [receipt.detail],
-        )?;
-        app.deps.store.insert_account(&original_account).await?;
-        let wake = app.watch_prs(&WatchBounds::default()).await;
-        assert_eq!(wake.len(), 1, "{wake:?}");
-        Ok(())
-    })
-}
-
-#[test]
-fn an_unarmed_green_repair_reaches_a_parked_owner_with_an_obsolete_receipt() -> TestResult {
-    with_candidate_owner(true, async |_, app, _, task| {
-        let tree = Path::new(task.worktree_path.as_deref().ok_or("tree")?);
-        crate::pr_watch::git(tree, &["commit", "--allow-empty", "-qm", "Repair"])?;
-        crate::pr_watch::git(tree, &["push", "-q", "origin", "HEAD"])?;
-        let repair = crate::pr_watch::git(tree, &["rev-parse", "HEAD"])?;
-        let (mut run, job) = crate::pr_watch::run(
-            &task.sandbox_id,
-            "repair-green",
-            &repair,
-            RunState::Passed,
-            None,
-            app.now().0,
-        );
-        run.reference = CiRef::PullRequest(1481);
-        app.deps.store.insert_ci_run(&run, &[job]).await?;
-        let wake = app.watch_prs(&WatchBounds::default()).await;
-        assert_eq!(wake.len(), 1, "repaired head has its own actionable event");
-        assert!(
-            wake[0].1.contains(&repair[..9]) && !wake[0].1.contains("292.1 ms"),
-            "{wake:?}"
-        );
-        Ok(())
-    })
-}
-
-#[test]
-fn task_lists_and_home_keep_their_read_budget_with_a_live_candidate_and_a_parked_peer() -> TestResult
-{
-    with_candidate_owner(false, async |_, app, remote, task| {
-        let _peer = candidate_peer(app, task, yulius_domain::task::TaskStatus::Parked).await?;
-        let ctx = yulius_app::auth::AuthContext {
-            user: app.deps.store.user(&task.owner).await?.ok_or("owner")?,
-            csrf_token: None,
-            session_hash: None,
-            token: None,
-        };
-        *remote.pull_read_hold.lock().map_err(|_| "PR gate")? =
-            Some(Arc::new(tokio::sync::Notify::new()));
-        let (list, home) = tokio::join!(
-            tokio::time::timeout(
-                Duration::from_secs(2),
-                app.list_tasks(&ctx, task.sandbox_id.as_str(), false)
-            ),
-            tokio::time::timeout(Duration::from_secs(2), app.list_sandboxes(&ctx))
-        );
-        *remote.pull_read_hold.lock().map_err(|_| "PR gate")? = None;
-        assert!(
-            list.is_ok() && home.is_ok(),
-            "list timed out {}, Home timed out {}",
-            list.is_err(),
-            home.is_err()
-        );
-        let list = list??;
-        assert!(
-            list.iter()
-                .any(|row| row.id == task.id.as_str() && row.candidate_pending)
-        );
-        assert_eq!(home??.len(), 1);
-        Ok(())
-    })
-}
-
-#[test]
-fn the_watch_releases_the_achieved_owners_slot_after_external_pr_closure() -> TestResult {
-    with_candidate_owner(false, async |data, app, remote, task| {
-        use yulius_domain::task::{Activity, TaskStatus};
-        app.load_limits([(yulius_domain::limits::Limit::Sessions, 1)].into())
-            .await;
-        app.deps
-            .store
-            .set_activity(&task.id, Some(Activity::Done), app.now())
-            .await?;
-        let peer = candidate_peer(app, task, TaskStatus::Queued).await?;
-        remote.remote.lock().map_err(|_| "remote")?.take();
-        let head = crate::pr_watch::git(
-            Path::new(task.worktree_path.as_deref().ok_or("tree")?),
-            &["rev-parse", "HEAD"],
-        )?;
-        let base = crate::pr_watch::git(&data.join("origin.git"), &["rev-parse", "dev"])?;
-        {
-            let mut pulls = remote.pulls.lock().map_err(|_| "PR")?;
-            pulls[0].state = "closed".into();
-            pulls[0].base_sha = base;
-        }
-        // A later ordinary run on the old head cannot start the obsolete
-        // integration decision's 15-minute wait when the PR has closed.
-        let (mut rerun, job) = crate::pr_watch::run(
-            &task.sandbox_id,
-            "closed-rerun",
-            &head,
-            RunState::Running,
-            None,
-            app.now().0,
-        );
-        rerun.reference = CiRef::PullRequest(1481);
-        app.deps.store.insert_ci_run(&rerun, &[job]).await?;
-        assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
-        let receipts: serde_json::Value = serde_json::from_slice(&std::fs::read(
-            data.join(yulius_app::pr_watch::PR_NOTICES_FILE),
-        )?)?;
-        assert!(
-            receipts[task.id.as_str()]["singleton_wait"].is_null(),
-            "{receipts}"
-        );
-        app.start_run(
-            &peer,
-            yulius_app::supervisor::RunStart::Fresh { prompt: None },
-            None,
-        )
-        .await?;
-        let run = app.deps.store.live_attempt(&peer).await?;
-        app.stop_task_now(&peer).await?;
-        assert!(
-            run.is_some(),
-            "the closed PR still consumed the only session slot"
-        );
-        Ok(())
-    })
-}
-
-async fn candidate_peer(
-    app: &yulius_app::context::App,
-    task: &yulius_app::model::TaskRecord,
-    status: yulius_domain::task::TaskStatus,
-) -> Result<TaskId, Error> {
-    let mut peer = task.clone();
-    peer.id = TaskId::parse("candidate-peer")?;
-    peer.number = 99;
-    peer.title = "Second task".into();
-    peer.status = status;
-    peer.activity = None;
-    peer.branch = None;
-    peer.worktree_path = None;
-    Ok(app.deps.store.insert_task(&peer).await?.id)
-}
-
-#[test]
-fn an_unreadable_open_delivery_holds_the_owner_slot_and_successor_until_verification() -> TestResult
-{
-    with_candidate_owner(false, async |data, app, remote, task| {
-        use yulius_domain::task::{Activity, TaskStatus};
-        app.load_limits([(yulius_domain::limits::Limit::Sessions, 1)].into())
-            .await;
-        app.deps
-            .store
-            .set_activity(&task.id, Some(Activity::Done), app.now())
-            .await?;
-        let peer = candidate_peer(app, task, TaskStatus::Queued).await?;
-        let queued = app.deps.store.task(&peer).await?.ok_or("queued peer")?;
-        let ctx = yulius_app::auth::AuthContext {
-            user: app.deps.store.user(&task.owner).await?.ok_or("owner")?,
-            csrf_token: None,
-            session_hash: None,
-            token: None,
-        };
-        let db = rusqlite::Connection::open(data.join("yulius.db"))?;
-        db.execute(
-            "UPDATE delivery SET stage='unreadable' WHERE task_id=?1",
-            [task.id.as_str()],
-        )?;
-        let unreadable_slot = app.task_summary(&queued).await?.queue_reason;
-        let unreadable_owner = app.task_detail(&ctx, task.id.as_str()).await?;
-        assert!(unreadable_owner.summary.candidate_pending && unreadable_owner.summary.yulius_wait);
-        let listed = app
-            .list_tasks(&ctx, task.sandbox_id.as_str(), false)
-            .await?;
-        assert!(
-            listed
-                .iter()
-                .any(|row| row.id == task.id.as_str() && row.candidate_pending)
-        );
-        db.execute(
-            "UPDATE delivery SET stage=?1, pr_number=NULL WHERE task_id=?2",
-            rusqlite::params![DeliveryStage::PrOpen.wire_name(), task.id.as_str()],
-        )?;
-        let unidentified_slot = app.task_summary(&queued).await?.queue_reason;
-        let pending = app
-            .task_detail(&ctx, task.id.as_str())
-            .await?
-            .summary
-            .candidate_pending;
-        app.deps
-            .store
-            .transition_task(&peer, None, TaskStatus::Chained, None, app.now())
-            .await?;
-        app.deps
-            .store
-            .insert_chain(&yulius_app::intake::ChainRecord {
-                task_id: peer.clone(),
-                after_task_id: Some(task.id.clone()),
-                after_number: task.number,
-                blocked_reason: None,
-                created_at: app.now(),
-                rule: None,
-            })
-            .await?;
-        app.advance_chains(&task.id).await;
-        let held = super::status_of(app, &peer).await.0;
-        if held != Some(TaskStatus::Chained) {
-            app.stop_task_now(&peer).await?;
-        }
-        let full = Some("Waiting for a free session: 1 of 1 in use");
-        assert_eq!(
-            (
-                unreadable_slot.as_deref(),
-                unidentified_slot.as_deref(),
-                pending,
-                held
-            ),
-            (full, full, true, Some(TaskStatus::Chained))
-        );
-        db.execute(
-            "UPDATE delivery SET pr_number=1481 WHERE task_id=?1",
-            [task.id.as_str()],
-        )?;
-        app.advance_chains(&task.id).await;
-        assert_eq!(
-            super::status_of(app, &peer).await.0,
-            Some(TaskStatus::Chained)
-        );
-        remote.remote.lock().map_err(|_| "origin")?.take();
-        remote.pulls.lock().map_err(|_| "PR")?[0].base_sha = "new-base".into();
-        app.advance_chains(&task.id).await;
-        super::wait_for(
-            "successor running on the freed slot",
-            Duration::from_secs(5),
-            || async {
-                app.deps
-                    .store
-                    .live_attempt(&peer)
-                    .await
-                    .ok()
-                    .flatten()
-                    .is_some()
-            },
-        )
-        .await?;
-        app.stop_task_now(&peer).await?;
-        Ok(())
-    })
-}
-
-#[test]
-fn a_rearm_during_the_done_check_holds_the_achieved_owners_successor() -> TestResult {
-    with_candidate_owner(false, async |data, app, remote, task| {
-        use yulius_domain::task::{Activity, TaskStatus};
-        app.deps
-            .store
-            .set_activity(&task.id, Some(Activity::Done), app.now())
-            .await?;
-        let peer = candidate_peer(app, task, TaskStatus::Chained).await?;
-        app.deps
-            .store
-            .insert_chain(&yulius_app::intake::ChainRecord {
-                task_id: peer.clone(),
-                after_task_id: Some(task.id.clone()),
-                after_number: task.number,
-                rule: None,
-                blocked_reason: None,
-                created_at: app.now(),
-            })
-            .await?;
-        let gate = Arc::new(tokio::sync::Notify::new());
-        *remote.pull_read_hold.lock().map_err(|_| "PR gate")? = Some(gate.clone());
-        let checking = {
-            let app = app.clone();
-            let id = task.id.clone();
-            tokio::spawn(async move { app.advance_chains(&id).await })
-        };
-        tokio::time::timeout(Duration::from_secs(5), remote.pull_read_entered.notified()).await?;
-        let head = crate::pr_watch::git(
-            Path::new(task.worktree_path.as_deref().ok_or("tree")?),
-            &["rev-parse", "HEAD"],
-        )?;
-        std::fs::write(
-            data.join(yulius_app::agent_wait::ARMED_MERGES_FILE),
-            serde_json::to_vec(
-                &json!([{"task":task.id.as_str(), "head":head,"summary":"replacement"}]),
-            )?,
-        )?;
-        *remote.pull_read_hold.lock().map_err(|_| "PR gate")? = None;
-        gate.notify_one();
-        checking.await?;
-        let state = super::status_of(app, &peer).await.0;
-        if state != Some(TaskStatus::Chained) {
-            app.stop_task_now(&peer).await?;
-        }
-        assert_eq!(state, Some(TaskStatus::Chained));
-        // When the replacement finishes and the tested base has moved, the
-        // unchanged achieved owner really does release this same successor.
-        std::fs::write(data.join(yulius_app::agent_wait::ARMED_MERGES_FILE), b"[]")?;
-        remote.remote.lock().map_err(|_| "origin")?.take();
-        remote.pulls.lock().map_err(|_| "PR")?[0].base_sha = "new-base".into();
-        app.advance_chains(&task.id).await;
-        assert_ne!(
-            super::status_of(app, &peer).await.0,
-            Some(TaskStatus::Chained)
-        );
-        app.stop_task_now(&peer).await?;
-        Ok(())
-    })
-}
-
-#[test]
-fn a_candidate_recorded_during_the_ordinary_done_check_still_holds_the_successor() -> TestResult {
-    successor_waits_for_update_during_done_check(
-        "UPDATE spans SET outcome='dropped' WHERE key='wait@15'",
-    )
-}
-
-#[test]
-fn a_pr_identity_lost_during_the_ordinary_done_check_still_holds_the_successor() -> TestResult {
-    successor_waits_for_update_during_done_check(
-        "UPDATE delivery SET pr_number=NULL WHERE pr_number=1481",
-    )
-}
-
-fn successor_waits_for_update_during_done_check(update: &str) -> TestResult {
-    with_candidate_owner(false, async |data, app, remote, task| {
-        use yulius_domain::task::{Activity, TaskStatus};
-        app.deps
-            .store
-            .set_activity(&task.id, Some(Activity::Waiting), app.now())
-            .await?;
-        let db = rusqlite::Connection::open(data.join("yulius.db"))?;
-        db.execute("UPDATE spans SET outcome='pending' WHERE key='wait@15'", [])?;
-        let peer = candidate_peer(app, task, TaskStatus::Chained).await?;
-        app.deps
-            .store
-            .insert_chain(&yulius_app::intake::ChainRecord {
-                task_id: peer.clone(),
-                after_task_id: Some(task.id.clone()),
-                after_number: task.number,
-                blocked_reason: None,
-                created_at: app.now(),
-                rule: None,
-            })
-            .await?;
-        let gate = Arc::new(tokio::sync::Notify::new());
-        *remote.pull_read_hold.lock().map_err(|_| "PR gate")? = Some(gate.clone());
-        let check = {
-            let app = app.clone();
-            let id = task.id.clone();
-            tokio::spawn(async move { app.advance_chains(&id).await })
-        };
-        tokio::time::timeout(Duration::from_secs(5), remote.pull_read_entered.notified()).await?;
-        assert_eq!(db.execute(update, [])?, 1);
-        *remote.pull_read_hold.lock().map_err(|_| "PR gate")? = None;
-        gate.notify_one();
-        check.await?;
-        assert_eq!(
-            super::status_of(app, &peer).await.0,
-            Some(TaskStatus::Chained),
-            "the changed delivery holds the successor"
-        );
-        Ok(())
-    })
-}
-
-#[test]
-fn a_busy_launch_lock_defers_the_parked_candidate_until_its_base_is_verified_again() -> TestResult {
-    with_candidate_owner(true, async |_, app, remote, task| {
-        use yulius_domain::task::TaskStatus;
-        let peer = candidate_peer(app, task, TaskStatus::Queued).await?;
-        let (entered, release) = super::pause_watch_or_queue(super::Point::AccountChosen, &peer);
-        let starting = {
-            let app = app.clone();
-            let id = peer.clone();
-            tokio::spawn(async move {
-                app.start_run(
-                    &id,
-                    yulius_app::supervisor::RunStart::Fresh { prompt: None },
-                    None,
-                )
-                .await
-            })
-        };
-        tokio::time::timeout(Duration::from_secs(5), entered.notified()).await?;
-        let watched = tokio::time::timeout(
-            Duration::from_secs(2),
-            app.watch_prs(&WatchBounds::default()),
-        )
-        .await;
-        remote.remote.lock().map_err(|_| "origin")?.take();
-        remote.pulls.lock().map_err(|_| "pulls")?[0].base_sha = "advanced-base".into();
-        release.notify_one();
-        starting.await??;
-        app.stop_task_now(&peer).await?;
-        assert!(watched?.is_empty());
-        assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
-        assert_eq!(
-            super::status_of(app, &task.id).await.0,
-            Some(TaskStatus::Parked)
-        );
-        Ok(())
-    })
-}
-
-/// Restore a real owner after restart. Parked cases make the completed queue
-/// decision visible after the original process has already parked.
-fn with_candidate_owner(
-    parked: bool,
-    check: impl AsyncFnOnce(
-        &Path,
-        &Arc<yulius_app::context::App>,
-        &Arc<crate::support::FakeGitHub>,
-        &yulius_app::model::TaskRecord,
-    ) -> TestResult,
-) -> TestResult {
-    let (_dir, data) = data_dir()?;
-    let rt = runtime()?;
-    let case = ColdCandidate::Backdated;
-    let (id, head, original) = rt.block_on(Box::pin(seed_candidate(&data, &case)))?;
-    rt.shutdown_timeout(Duration::from_secs(5));
-    let rt = runtime()?;
-    let (app, remote) =
-        rt.block_on(Box::pin(restore_owner(&data, &case, &id, &head, &original)))?;
-    let verify = async {
-        if parked {
-            let db = rusqlite::Connection::open(data.join("yulius.db"))?;
-            db.execute("UPDATE spans SET outcome='pending' WHERE key='wait@15'", [])?;
-            super::parked(&app, &id).await?;
-            db.execute("UPDATE spans SET outcome='dropped' WHERE key='wait@15'", [])?;
-        }
-        let task = app.deps.store.task(&id).await?.ok_or("owner")?;
-        let result = check(&data, &app, &remote, &task).await;
-        app.stop_task_now(&id).await?;
-        result
-    };
-    rt.block_on(Box::pin(verify))?;
-    rt.shutdown_timeout(Duration::from_secs(5));
-    Ok(())
-}
-
-#[test]
-fn a_recorded_candidate_keeps_the_idle_original_owner_out_of_done_and_park() -> TestResult {
-    candidate_owner_status(false)
-}
-
-#[test]
-fn an_already_parked_owner_shows_the_recorded_candidate_and_resumes_for_its_reason() -> TestResult {
-    candidate_owner_status(true)
-}
-
-fn candidate_owner_status(already_parked: bool) -> TestResult {
+fn park_after_candidate(rearm: bool) -> TestResult {
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     let case = ColdCandidate::Backdated;
@@ -713,152 +32,76 @@ fn candidate_owner_status(already_parked: bool) -> TestResult {
     let (app, remote) =
         rt.block_on(Box::pin(restore_owner(&data, &case, &id, &head, &original)))?;
     rt.block_on(async {
-        let task = app.deps.store.task(&id).await?.ok_or("owner")?;
-        if already_parked {
-            let db = rusqlite::Connection::open(data.join("yulius.db"))?;
-            db.execute("UPDATE spans SET outcome='pending' WHERE key='wait@15'", [])?;
-            super::parked(&app, &id).await?;
-            db.execute("UPDATE spans SET outcome='dropped' WHERE key='wait@15'", [])?;
-            let ctx = yulius_app::auth::AuthContext {
-                user: app.deps.store.user(&task.owner).await?.ok_or("user")?,
-                csrf_token: None,
-                session_hash: None,
-                token: None,
-            };
-            let detail = app.task_detail(&ctx, id.as_str()).await?;
-            assert_eq!(
-                detail.summary.parked_needs_you,
-                Some(true),
-                "red candidate on green PR"
-            );
-            let notice = detail
-                .summary
-                .needs_you_notice
-                .as_ref()
-                .ok_or("candidate notice")?;
-            assert!(
-                notice.link.ends_with("/ci?run=candidate-red"),
-                "{}",
-                notice.link
-            );
-            assert!(
-                notice.happened.contains("integration candidate")
-                    && notice.happened.contains("candidate-red"),
-                "{}",
-                notice.happened
-            );
-            assert!(
-                notice
-                    .problem
-                    .as_deref()
-                    .is_some_and(|problem| problem.contains("292.1 ms"))
-            );
-            assert!(
-                detail
-                    .wait_history
-                    .iter()
-                    .any(|entry| entry.happened == notice.happened
-                        && entry.problem == notice.problem)
-            );
-            let caller = super::superagent(&task.sandbox_id, &task.owner, "admin");
-            let args = json!({"task_id": id.as_str()});
-            let brief = app.tool_task_get(&caller, &args).await?;
-            assert_eq!(brief["needs_you_notice"]["happened"], notice.happened);
-            assert_eq!(brief["needs_you_notice"]["link"], notice.link);
-            ask(&app, &id).await?;
-            let human = app.tool_task_get(&caller, &args).await?;
-            assert_eq!(human["needs_you_notice"]["action"], "Choose the colour");
-            assert_eq!(human["needs_you_notice"]["decision"], true);
-            assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
-            app.deps
-                .store
-                .set_task_needs_you(&id, None, app.now())
-                .await?;
-            let (entered, release) =
-                super::pause_watch_or_queue(super::Point::ArmedNoticePublicationRead, &id);
-            let watcher = app.clone();
-            let pass =
-                tokio::spawn(async move { watcher.watch_prs(&WatchBounds::default()).await });
-            tokio::time::timeout(Duration::from_secs(10), entered.notified()).await?;
-            ask(&app, &id).await?;
-            release.notify_one();
-            assert!(
-                tokio::time::timeout(Duration::from_secs(10), pass)
-                    .await??
-                    .is_empty()
-            );
-            app.deps
-                .store
-                .set_task_needs_you(&id, None, app.now())
-                .await?;
-            let wake = app.watch_prs(&WatchBounds::default()).await;
-            assert_eq!(wake.len(), 1, "{wake:?}");
-            assert!(
-                wake[0].1.contains("292.1 ms") && !wake[0].1.contains("no merge is armed"),
-                "{wake:?}"
-            );
-            assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
+        super::past_the_grace(&app, &id).await?;
+        if rearm {
+            let path = data.join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+            let db_path = data.join("yulius.db");
+            let arm = serde_json::to_vec(
+                &json!([{"task":id.as_str(), "head":head,"summary":"replacement"}]),
+            )?;
+            expect_park_deferred(&app, &id, move || {
+                assert!(std::fs::write(&path, &arm).is_ok());
+                let retired = rusqlite::Connection::open(&db_path).and_then(|db| {
+                    db.execute("UPDATE spans SET detail=json_set(detail, '$.superseded_at', 1) WHERE key='wait@15'", [])
+                });
+                assert!(matches!(retired, Ok(1)));
+            }).await?;
         } else {
-            assert!(
-                app.task_summary(&task).await?.yulius_wait,
-                "failed integration requires owner work"
-            );
-            super::past_the_grace(&app, &id).await?;
-            assert_eq!(app.park_idle_sessions_now().await, 0);
-            // An obsolete receipt and a subsequently published decision straddle
-            // the final host probe. Only the latter can block this checkout.
-            let span = app
-                .deps
-                .store
-                .latest_merge_wait(&id)
-                .await?
-                .ok_or("decision")?;
-            assert!(
-                app.deps
-                    .store
-                    .retire_singleton(&id, &span, app.now())
-                    .await?
-            );
-            assert!(!app.task_summary(&task).await?.candidate_pending);
+            expect_park_deferred(&app, &id, || {}).await?;
+            let span = app.deps.store.latest_merge_wait(&id).await?.ok_or("candidate")?;
+            assert!(app.deps.store.retire_singleton(&id, &span, app.now()).await?);
+            let saved = span.detail.ok_or("decision detail")?;
             let path = data.join("yulius.db");
-            let detail = span.detail.ok_or("queue decision detail")?;
-            yulius_app::race::on(
-                super::Point::ParkPrepared,
-                Path::new(id.as_str()),
-                move || {
-                    let updated = rusqlite::Connection::open(&path).and_then(|db| {
-                        db.execute("UPDATE spans SET detail=?1 WHERE key='wait@15'", [&detail])
-                    });
-                    assert!(matches!(updated, Ok(1)));
-                },
-            );
-            assert_eq!(
-                app.park_idle_sessions_now().await,
-                0,
-                "decision arrived during park"
-            );
-            let saved = remote.remote.lock().map_err(|_| "remote")?.take();
+            expect_park_deferred(&app, &id, move || {
+                let restored = rusqlite::Connection::open(&path).and_then(|db| {
+                    db.execute("UPDATE spans SET detail=?1 WHERE key='wait@15'", [&saved])
+                });
+                assert!(matches!(restored, Ok(1)));
+            }).await?;
+            remote.remote.lock().map_err(|_| "remote")?.take();
+            remote.pulls.lock().map_err(|_| "PR")?[0].base_sha.clear();
+            expect_park_deferred(&app, &id, || {}).await?;
             remote.pulls.lock().map_err(|_| "PR")?[0].base_sha = "next-base".into();
-            let ctx = yulius_app::auth::AuthContext {
-                user: app.deps.store.user(&task.owner).await?.ok_or("user")?,
-                csrf_token: None,
-                session_hash: None,
-                token: None,
-            };
-            assert!(
-                !app.task_detail(&ctx, id.as_str())
-                    .await?
-                    .summary
-                    .candidate_pending
-            );
-            assert!(!app.task_summary(&task).await?.candidate_pending);
-            *remote.remote.lock().map_err(|_| "remote")? = saved;
+            super::parked(&app, &id).await?;
         }
         app.stop_task_now(&id).await?;
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
+}
+
+/// A restarted host can still be reattaching. Require an actual eligibility
+/// decision so an earlier probe that deferred shutdown cannot satisfy the assertion.
+async fn expect_park_deferred(
+    app: &Arc<yulius_app::context::App>,
+    id: &TaskId,
+    change: impl FnOnce() + Send + 'static,
+) -> TestResult {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let checked = Arc::new(AtomicBool::new(false));
+    let reached = checked.clone();
+    yulius_app::race::on(
+        super::Point::ParkPrepared,
+        Path::new(id.as_str()),
+        move || {
+            change();
+            reached.store(true, Ordering::SeqCst);
+        },
+    );
+    super::wait_for(
+        "the original owner's final park decision",
+        Duration::from_secs(30),
+        || async {
+            assert_eq!(
+                app.park_idle_sessions_now().await,
+                0,
+                "original PR owner was parked"
+            );
+            checked.load(Ordering::SeqCst)
+        },
+    )
+    .await
 }
 
 #[test]

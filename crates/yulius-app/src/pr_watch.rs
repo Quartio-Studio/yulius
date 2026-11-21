@@ -169,21 +169,6 @@ struct QueueNoticeSource {
     train: Result<Option<WatchedTrain>, UnverifiedTrain>,
 }
 
-/// The observation admitted for an automatic parked resume. Owner messages take
-/// the normal resume path; only the watcher has a PR decision to revalidate.
-pub(crate) struct ParkedNotice {
-    pr: u64,
-    merged: bool,
-    branch: Option<String>,
-    source: Option<QueueNoticeSource>,
-}
-
-impl ParkedNotice {
-    pub(crate) fn is_candidate(&self) -> bool {
-        self.source.is_some()
-    }
-}
-
 /// What the watch told one task, as saved.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Told {
@@ -1037,14 +1022,14 @@ impl App {
                 if task.archived_at.is_some() || kept.contains_key(task.id.as_str()) {
                     continue;
                 }
-                let mut told = saved.get(task.id.as_str()).cloned().unwrap_or_default();
+                let told = saved.get(task.id.as_str()).cloned().unwrap_or_default();
                 let paused = !matches!(self.deps.store.open_pause(&task.id).await, Ok(None));
                 let facts = if !paused {
-                    Box::pin(self.pr_facts_parked(&task, &mut told, &mut runs)).await
+                    Box::pin(self.pr_facts_parked(&task, &told, &mut runs)).await
                 } else {
                     None
                 };
-                let Some((facts, source)) = facts else {
+                let Some(facts) = facts else {
                     if told.pr > 0 {
                         kept.insert(task.id.as_str().to_owned(), told);
                     }
@@ -1064,20 +1049,7 @@ impl App {
                             untold(told, &next)
                         } else {
                             let text = crate::task_message::clean_message(&text);
-                            let notice = ParkedNotice {
-                                pr: facts.pr,
-                                merged: facts.events.iter().any(|e| e.kind == "merged"),
-                                branch: task.branch.clone(),
-                                source,
-                            };
-                            match self
-                                .resume_parked_with_notice(
-                                    &task.id,
-                                    Some(text.clone()),
-                                    Some(&notice),
-                                )
-                                .await
-                            {
+                            match self.resume_parked(&task.id, Some(text.clone())).await {
                                 Ok(true) => {
                                     tracing::info!(
                                         task = %task.id,
@@ -1448,27 +1420,19 @@ impl App {
                 needs_you = !matches!(self.deps.store.task_needs_you(&task.id).await, Ok(None));
                 person_must_act = needs_you || browser_req || flagged_active;
             }
-            let Ok(latest) = self
-                .matching_candidate_receipt(task, pr, &mut outcome)
-                .await
-            else {
+            let Ok(latest) = self.latest_candidate_decision(task, &mut outcome).await else {
                 return observed_only();
             };
-            if let Some((span, decision)) = latest {
+            if let Some((span, decision)) = latest
+                && decision.singleton.pr == pr
+            {
                 if person_must_act {
                     return observed_only();
                 }
-                let Ok(pull) = self.read_notice_pull(&sandbox, pr).await else {
-                    self.cache_candidate_observation(task, span, true);
+                let Some(pull) = self.hosted_owner_pull(task, &sandbox, pr).await else {
                     return observed_only();
                 };
-                self.cache_candidate_observation(
-                    task,
-                    span.clone(),
-                    self.candidate_pull_signal(task, &sandbox, &decision, &pull)
-                        .is_some(),
-                );
-                if !self.notice_pull_owned(task, &sandbox, pr, &pull) || pull.base_sha.is_empty() {
+                if pull.base_sha.is_empty() {
                     return observed_only();
                 }
                 receipt = Some((span, decision, pull));
@@ -1520,12 +1484,7 @@ impl App {
                 .as_ref()
                 .filter(|run| run.state == RunState::Failed)
                 .map(|run| run.sha.clone())
-            && if task.status == TaskStatus::Parked {
-                self.maybe_publish_repair_for_parked(task, &failed_sha)
-                    .await
-            } else {
-                self.maybe_publish_repair_for_watch(task, &failed_sha).await
-            }
+            && self.maybe_publish_repair_for_watch(task, &failed_sha).await
         {
             if receipt.is_some() {
                 // The watcher just pushed a repair. Read the new hosted head on the next pass.
@@ -1892,41 +1851,10 @@ impl App {
             .filter(|run| run.sandbox_id == sandbox.id))
     }
 
-    /// Only the latest unretired decision belongs to this task's open PR. A live
-    /// outcome from a different activation takes priority over the historical row.
-    pub(crate) async fn recorded_candidate(
+    /// A newer live outcome or a retired queue decision supersedes the saved failure.
+    pub(crate) async fn latest_candidate_decision(
         &self,
         task: &TaskRecord,
-        pr: u64,
-    ) -> AppResult<Option<crate::merge_train::SingletonDecision>> {
-        Ok(self
-            .candidate_receipt(task, pr)
-            .await?
-            .map(|(_, decision)| decision))
-    }
-
-    async fn candidate_receipt(
-        &self,
-        task: &TaskRecord,
-        pr: u64,
-    ) -> AppResult<
-        Option<(
-            crate::stages::SpanRecord,
-            crate::merge_train::SingletonDecision,
-        )>,
-    > {
-        if self.merge_is_armed(&task.id) {
-            return Ok(None);
-        }
-        let mut outcome = self.armed_view(&task.id).1;
-        self.matching_candidate_receipt(task, pr, &mut outcome)
-            .await
-    }
-
-    async fn matching_candidate_receipt(
-        &self,
-        task: &TaskRecord,
-        pr: u64,
         outcome: &mut Option<(String, String)>,
     ) -> AppResult<
         Option<(
@@ -1947,101 +1875,7 @@ impl App {
             return Ok(None);
         }
         *outcome = None;
-        Ok(
-            (decision.superseded_at.is_none() && decision.singleton.pr == pr)
-                .then_some((span, decision)),
-        )
-    }
-
-    /// An idle owner cannot finish while its currently tested integration inputs are red.
-    /// An unavailable publication read defers the decision for a later observation.
-    pub(crate) async fn current_candidate_blocks(
-        &self,
-        task: &TaskRecord,
-        pr: u64,
-    ) -> AppResult<bool> {
-        let Some((span, decision)) = self.candidate_receipt(task, pr).await? else {
-            return Ok(false);
-        };
-        let sandbox = self.dlv_sandbox_of(task).await?;
-        let pull = match self.read_notice_pull(&sandbox, pr).await {
-            Ok(pull) => pull,
-            Err(error) => {
-                self.cache_candidate_observation(task, span, true);
-                return Err(error);
-            }
-        };
-        let blocked = self
-            .candidate_pull_signal(task, &sandbox, &decision, &pull)
-            .is_some();
-        let Some((current, _)) = self.candidate_receipt(task, pr).await? else {
-            return Ok(false);
-        };
-        if current != span {
-            return Ok(true);
-        }
-        self.cache_candidate_observation(task, span, blocked);
-        Ok(blocked)
-    }
-
-    fn cache_candidate_observation(
-        &self,
-        task: &TaskRecord,
-        span: crate::stages::SpanRecord,
-        blocked: bool,
-    ) {
-        let runtime = self.runtime(&task.id);
-        *runtime
-            .obsolete_candidate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            (!blocked).then(|| (span, std::time::Instant::now()));
-    }
-
-    /// Capacity and synchronous hook publication use the last verified obsolescence
-    /// of this exact queue decision. On restart or expiry they hold the task for verification.
-    pub(crate) async fn local_candidate_blocks(
-        &self,
-        task: &TaskRecord,
-        pr: u64,
-    ) -> AppResult<bool> {
-        let Some((span, _)) = self.candidate_receipt(task, pr).await? else {
-            return Ok(false);
-        };
-        let runtime = self.runtime(&task.id);
-        Ok(!runtime
-            .obsolete_candidate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .is_some_and(|(verified, at)| verified == &span && at.elapsed() < WATCH_EVERY * 2))
-    }
-
-    pub(crate) fn candidate_pull_signal(
-        &self,
-        task: &TaskRecord,
-        sandbox: &SandboxRecord,
-        decision: &crate::merge_train::SingletonDecision,
-        pull: &crate::ports::github::GhPull,
-    ) -> Option<yulius_domain::task::PullSignal> {
-        use yulius_domain::task::PullSignal;
-        let pr = decision.singleton.pr;
-        if pull.number != pr || pull.state.is_empty() {
-            return Some(PullSignal::Errored);
-        }
-        if pull.merged || pull.state == "closed" || pull.from_fork {
-            return None;
-        }
-        if pull.head.is_empty() || pull.base.is_empty() || pull.head_sha.is_empty() {
-            return Some(PullSignal::Errored);
-        }
-        if !self.notice_pull_owned(task, sandbox, pr, pull) || pull.head_sha != decision.head {
-            return None;
-        }
-        if pull.base_sha.is_empty() {
-            return Some(PullSignal::Errored);
-        }
-        (pull.base_sha == decision.singleton.base).then_some(PullSignal::Failing)
+        Ok(decision.superseded_at.is_none().then_some((span, decision)))
     }
 
     /// A second clone can publish a repair without advancing this checkout's tracking ref.
@@ -2052,16 +1886,6 @@ impl App {
         sandbox: &SandboxRecord,
         pr: u64,
     ) -> Option<crate::ports::github::GhPull> {
-        let pull = self.read_notice_pull(sandbox, pr).await.ok()?;
-        self.notice_pull_owned(task, sandbox, pr, &pull)
-            .then_some(pull)
-    }
-
-    async fn read_notice_pull(
-        &self,
-        sandbox: &SandboxRecord,
-        pr: u64,
-    ) -> AppResult<crate::ports::github::GhPull> {
         let read = async {
             let token = self.dlv_installation_token(sandbox).await?;
             self.deps
@@ -2069,34 +1893,28 @@ impl App {
                 .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, pr)
                 .await
         };
-        tokio::time::timeout(Duration::from_secs(5), read)
+        let pull = tokio::time::timeout(Duration::from_secs(5), read)
             .await
-            .map_err(|_| AppError::Upstream("Timed out verifying the pull request".into()))?
-    }
-
-    fn notice_pull_owned(
-        &self,
-        task: &TaskRecord,
-        sandbox: &SandboxRecord,
-        pr: u64,
-        pull: &crate::ports::github::GhPull,
-    ) -> bool {
-        pull.number == pr
+            .ok()?
+            .ok()?;
+        (pull.number == pr
             && pull.state == "open"
             && !pull.merged
             && !pull.from_fork
             && pull.base == delivery_profile(sandbox).integration_branch
             && task.branch.as_deref() == Some(pull.head.as_str())
-            && !pull.head_sha.is_empty()
+            && !pull.head_sha.is_empty())
+        .then_some(pull)
     }
 
-    async fn notice_inputs_current(
+    /// Recheck the recipient after the hosted read, before recording anything as heard.
+    async fn armed_notice_recipient(
         &self,
         task: &TaskRecord,
         sandbox: &SandboxRecord,
         pr: u64,
         source: &QueueNoticeSource,
-    ) -> Option<()> {
+    ) -> Option<NoticeRecipient> {
         let head = &source.head;
         if self.run_superseded_by_pushed_head(task, head).await {
             return None;
@@ -2130,19 +1948,6 @@ impl App {
         if ordinary != source.ordinary || candidate != source.candidate {
             return None;
         }
-        Some(())
-    }
-
-    /// Recheck the recipient after the hosted read, before recording anything as heard.
-    async fn armed_notice_recipient(
-        &self,
-        task: &TaskRecord,
-        sandbox: &SandboxRecord,
-        pr: u64,
-        source: &QueueNoticeSource,
-    ) -> Option<NoticeRecipient> {
-        self.notice_inputs_current(task, sandbox, pr, source)
-            .await?;
         let recipient = self
             .deps
             .store
@@ -2313,70 +2118,6 @@ impl App {
         Some(text)
     }
 
-    /// Hosted reads precede the launch lock and run after CLI provisioning.
-    pub(crate) async fn parked_notice_inputs(
-        &self,
-        task: &TaskRecord,
-        notice: &ParkedNotice,
-    ) -> bool {
-        let Some(source) = &notice.source else {
-            return true;
-        };
-        let Ok(sandbox) = self.dlv_sandbox_of(task).await else {
-            return false;
-        };
-        self.notice_inputs_current(task, &sandbox, notice.pr, source)
-            .await
-            .is_some()
-    }
-
-    /// Re-read durable ownership immediately before queueing or launching the resume.
-    pub(crate) async fn parked_notice_current(
-        &self,
-        task: &TaskRecord,
-        notice: &ParkedNotice,
-    ) -> bool {
-        let store = &self.deps.store;
-        if task.status != TaskStatus::Parked
-            || task.archived_at.is_some()
-            || task.branch != notice.branch
-            || task.activity == Some(yulius_domain::task::Activity::NeedsAttention)
-            || self.update_holds_starts()
-            || self.merge_is_armed(&task.id)
-            || !matches!(store.delivery(&task.id).await, Ok(Some(ref rec)) if rec.pr_number == Some(notice.pr) && if notice.merged { past_merge(&rec.stage) } else { rec.stage == DeliveryStage::PrOpen })
-        {
-            return false;
-        }
-        if let Some(source) = &notice.source {
-            let Some((span, _)) = &source.decision else {
-                return false;
-            };
-            if !matches!(store.latest_merge_wait(&task.id).await, Ok(Some(ref now)) if now == span)
-            {
-                return false;
-            }
-            let Ok(sandbox) = self.dlv_sandbox_of(task).await else {
-                return false;
-            };
-            if !matches!(self.ordinary_pull_run(&sandbox, notice.pr, &source.head).await, Ok(current) if current == source.ordinary)
-            {
-                return false;
-            }
-        } else if !notice.merged
-            && !matches!(self.recorded_candidate(task, notice.pr).await, Ok(None))
-        {
-            return false;
-        }
-        matches!(store.open_pause(&task.id).await, Ok(None))
-            && matches!(store.pending_hold(&task.id).await, Ok(None))
-            && matches!(store.task_needs_you(&task.id).await, Ok(None))
-            && tokio::select! {
-                biased;
-                request = self.browser_tab_request_for(&task.sandbox_id, &task.id) => request.is_none(),
-                () = std::future::ready(()) => false,
-            }
-    }
-
     /// What the watch knows of a parked task's pull request for automatic wake (SPEC-553
     /// PRK-103): only actionable events (failed/errored/unarmed-green CI runs, conflicts, failed
     /// publication, or untold merges with work remaining), never check-ins, stalls, active CI,
@@ -2384,9 +2125,9 @@ impl App {
     async fn pr_facts_parked(
         &self,
         task: &TaskRecord,
-        told: &mut Told,
+        told: &Told,
         runs: &mut BTreeMap<String, Vec<CiRunRecord>>,
-    ) -> Option<(PrFacts, Option<QueueNoticeSource>)> {
+    ) -> Option<PrFacts> {
         let record = self.deps.store.delivery(&task.id).await.ok()??;
         let pr = record.pr_number?;
         let sandbox = self.deps.store.sandbox(&task.sandbox_id).await.ok()??;
@@ -2425,48 +2166,20 @@ impl App {
                 return None;
             }
             let text = self.merged_note(task, &sandbox, pr, true).await;
-            return Some((
-                PrFacts {
-                    now_ms,
-                    pr,
-                    events: vec![Event {
-                        kind: "merged",
-                        key: pr.to_string(),
-                        text,
-                    }],
-                    progress: told.progress.clone(),
-                    ..PrFacts::default()
-                },
-                None,
-            ));
+            return Some(PrFacts {
+                now_ms,
+                pr,
+                events: vec![Event {
+                    kind: "merged",
+                    key: pr.to_string(),
+                    text,
+                }],
+                progress: told.progress.clone(),
+                ..PrFacts::default()
+            });
         }
         if record.stage != DeliveryStage::PrOpen {
             return None;
-        }
-        if self.merge_is_armed(&task.id) {
-            return None;
-        }
-        if let Some(decision) = self.recorded_candidate(task, pr).await.ok()? {
-            // The same queue decision and bounded ordinary rerun wait survive parking.
-            // No preliminary train notice or periodic check-in starts a process.
-            let (mut facts, source) = Box::pin(self.pr_facts(
-                task,
-                told,
-                runs,
-                &self.arm_observation(&task.id),
-                &self.armed_now(&task.id),
-            ))
-            .await?;
-            facts.events.retain(|event| {
-                matches!(event.kind, "run" | "outcome" | "publish" | "conflict")
-                    || (event.kind == "green" && facts.head != decision.head)
-            });
-            facts.has_ci = false;
-            facts.check_ins = false;
-            if source.as_ref().is_none_or(|s| s.decision.is_none()) {
-                facts.events.clear();
-            }
-            return Some((facts, source));
         }
         let integration = delivery_profile(&sandbox).integration_branch;
         if !runs.contains_key(sandbox.id.as_str()) {
@@ -2595,18 +2308,15 @@ impl App {
         );
         // `idle`, `check_ins`, `working` and `has_ci` stay false so `decide` wakes a parked task
         // ONLY on real actionable `events`, never on periodic check-ins or stalls.
-        Some((
-            PrFacts {
-                now_ms,
-                pr,
-                events,
-                progress,
-                ci_busy: own.is_some_and(|run| run.state.is_active()),
-                head: own.map(|run| run.sha.clone()).unwrap_or_default(),
-                ..PrFacts::default()
-            },
-            None,
-        ))
+        Some(PrFacts {
+            now_ms,
+            pr,
+            events,
+            progress,
+            ci_busy: own.is_some_and(|run| run.state.is_active()),
+            head: own.map(|run| run.sha.clone()).unwrap_or_default(),
+            ..PrFacts::default()
+        })
     }
 
     /// Local check + one-shot repair publication for a parked task on a failing open PR.

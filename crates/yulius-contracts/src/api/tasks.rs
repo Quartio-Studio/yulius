@@ -41,9 +41,6 @@ pub struct ParkedPr {
 /// A task in lists and events.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskSummary {
-    /// A live owner's recorded integration failure still blocks completion, or is being verified.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub candidate_pending: bool,
     /// The server's group for a parked task (true for Needs you, false for Done).
     /// Other tasks and summaries from earlier servers omit it.
     #[serde(default, skip_serializing_if = "Option::is_none")]

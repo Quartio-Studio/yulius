@@ -115,7 +115,6 @@ impl PrVerification {
 /// Identity to show even when the checks are unfinished or unreadable.
 #[derive(Default)]
 pub(crate) struct ParkedPullRead {
-    pub(crate) candidate: Option<crate::merge_train::SingletonDecision>,
     pub(crate) signal: Option<PullSignal>,
     pub(crate) pr: Option<yulius_contracts::api::tasks::ParkedPr>,
 }
@@ -145,10 +144,7 @@ impl ParkedPullRead {
                 .filter(|_| open || past_merge(&r.stage))
                 .map(|number| yulius_contracts::api::tasks::ParkedPr { number, open })
         });
-        Self {
-            pr,
-            ..Self::default()
-        }
+        Self { pr, signal: None }
     }
 }
 
@@ -181,18 +177,6 @@ impl DeliveryRecord {
             updated_at: Timestamp(0),
         }
     }
-}
-
-/// An open delivery without its identity cannot be verified.
-fn open_pr_number(record: Option<&DeliveryRecord>) -> AppResult<Option<u64>> {
-    record
-        .filter(|r| r.stage == DeliveryStage::PrOpen)
-        .map(|r| {
-            r.pr_number.ok_or_else(|| {
-                AppError::Internal("open delivery has no pull request number".into())
-            })
-        })
-        .transpose()
 }
 
 /// State of an environment run.
@@ -3981,8 +3965,36 @@ impl App {
         task: &TaskRecord,
         facts: &ParkingPrs,
     ) -> AppResult<bool> {
-        Ok(self.parking_checkout_matches(task, facts).await?
-            && self.parking_ci_blocker(task, facts).await?.is_none())
+        if !self.parking_checkout_matches(task, facts).await?
+            || self.parking_ci_blocker(task, facts).await?.is_some()
+        {
+            return Ok(false);
+        }
+        if facts.pulls.is_empty() {
+            return Ok(true);
+        }
+        let (_, mut outcome) = self.armed_view(&task.id);
+        let Some((_, decision)) = self.latest_candidate_decision(task, &mut outcome).await? else {
+            return Ok(true);
+        };
+        let Some(pull) = facts
+            .pulls
+            .iter()
+            .find(|pull| pull.number == decision.singleton.pr)
+        else {
+            return Ok(true);
+        };
+        if pull.merged || pull.from_fork {
+            return Ok(true);
+        }
+        if pull.head.is_empty() || pull.head_sha.is_empty() || pull.base.is_empty() {
+            return Ok(false);
+        }
+        let sandbox = self.dlv_sandbox_of(task).await?;
+        let same_owner = task.branch.as_deref() == Some(&pull.head)
+            && pull.base == delivery_profile(&sandbox).integration_branch
+            && pull.head_sha == decision.head;
+        Ok(!same_owner || (!pull.base_sha.is_empty() && pull.base_sha != decision.singleton.base))
     }
 
     async fn parking_checkout_matches(
@@ -4001,34 +4013,13 @@ impl App {
         &self,
         task: &TaskRecord,
         facts: &ParkingPrs,
-    ) -> AppResult<Option<ParkedPullRead>> {
+    ) -> AppResult<Option<(u64, PullSignal)>> {
         for pull in &facts.pulls {
-            let pr = Some(yulius_contracts::api::tasks::ParkedPr {
-                number: pull.number,
-                open: true,
-            });
-            // A current ordinary failure has its own run and repair instructions.
             if let Some(signal) = self
                 .parking_ci_signal(task, pull.number, &pull.head_sha, facts.watched)
                 .await?
             {
-                return Ok(Some(ParkedPullRead {
-                    pr,
-                    signal: Some(signal),
-                    candidate: None,
-                }));
-            }
-            if !pull.merged
-                && let Some(decision) = self.recorded_candidate(task, pull.number).await?
-            {
-                let sandbox = self.dlv_sandbox_of(task).await?;
-                if let Some(signal) = self.candidate_pull_signal(task, &sandbox, &decision, pull) {
-                    return Ok(Some(ParkedPullRead {
-                        pr,
-                        signal: Some(signal),
-                        candidate: (signal == PullSignal::Failing).then_some(decision),
-                    }));
-                }
+                return Ok(Some((pull.number, signal)));
             }
         }
         Ok(None)
@@ -4284,7 +4275,14 @@ impl App {
         purpose: PrVerification,
         observed: &mut ParkedPullRead,
     ) -> AppResult<Option<ParkingPrs>> {
-        let tracked = open_pr_number(record)?;
+        let tracked = record
+            .filter(|r| r.stage == DeliveryStage::PrOpen)
+            .map(|r| {
+                r.pr_number.ok_or_else(|| {
+                    AppError::Internal("open delivery has no pull request number".into())
+                })
+            })
+            .transpose()?;
         let sandbox = self.dlv_sandbox_of(task).await?;
         // A playground or an instance with no GitHub App can still park an answered task.
         // A known open PR requires verification, even when its installation is unavailable.
@@ -4351,7 +4349,7 @@ impl App {
             {
                 closed.insert(number);
             }
-            let Some(pull) = pull else {
+            let Some(pull) = pull.filter(|pull| pull.number == number) else {
                 verified = false;
                 break;
             };
@@ -4414,8 +4412,10 @@ impl App {
                 facts
                     .pulls
                     .retain(|pull| survives(pull.number, Some(&pull.head_sha)));
-                if let Some(blocker) = self.parking_ci_blocker(task, &facts).await? {
-                    *observed = blocker;
+                if let Some((number, signal)) = self.parking_ci_blocker(task, &facts).await? {
+                    observed.signal = Some(signal);
+                    observed.pr =
+                        Some(yulius_contracts::api::tasks::ParkedPr { number, open: true });
                     return Ok(None);
                 }
                 let known_open = changed
@@ -4692,8 +4692,9 @@ impl App {
         if checkout_changed || status.facts.parked_has_local_work_or_request() {
             return Ok(false);
         }
-        if let Some(blocker) = self.parking_ci_blocker(task, prs).await? {
-            *observed = blocker;
+        if let Some((number, signal)) = self.parking_ci_blocker(task, prs).await? {
+            observed.signal = Some(signal);
+            observed.pr = Some(yulius_contracts::api::tasks::ParkedPr { number, open: true });
             return Ok(false);
         }
         if store.delivery(&task.id).await?.as_ref() != record {
@@ -4706,23 +4707,6 @@ impl App {
                 && current.branch == task.branch
                 && current.worktree_path == task.worktree_path
         }))
-    }
-
-    /// Check the same open delivery for status, capacity and successor admission.
-    pub(crate) async fn delivery_candidate_blocks(
-        &self,
-        task: &TaskRecord,
-        record: Option<&DeliveryRecord>,
-        verify_host: bool,
-    ) -> AppResult<bool> {
-        let Some(pr) = open_pr_number(record)? else {
-            return Ok(false);
-        };
-        if verify_host {
-            self.current_candidate_blocks(task, pr).await
-        } else {
-            self.local_candidate_blocks(task, pr).await
-        }
     }
 
     /// The part of [`App::task_is_done`] that needs no GitHub call: the turn ended, no background
@@ -4740,17 +4724,12 @@ impl App {
         if self.merge_is_armed(&task.id) {
             return false;
         }
+        if task.activity == Some(Activity::Done) {
+            return true;
+        }
         // One reading of its delivery for the whole decision: a merge recorded between two
         // readings would be "no news due" by the first and "merged" by the second.
-        let Ok(record) = self.deps.store.delivery(&task.id).await else {
-            return false;
-        };
-        if task.activity == Some(Activity::Done) {
-            return !self
-                .delivery_candidate_blocks(task, record.as_ref(), false)
-                .await
-                .unwrap_or(true);
-        }
+        let record = self.deps.store.delivery(&task.id).await.ok().flatten();
         if self.pr_news_due_of(task, record.as_ref(), false).await {
             return false;
         }
@@ -4778,35 +4757,6 @@ impl App {
     /// DON-001), and Yulius has no news of that pull request left for its agent
     /// ([`App::pr_news_due`]). Anything unknown (no pull request, GitHub unreachable) is not Done.
     pub(crate) async fn task_is_done(&self, task: &TaskRecord) -> bool {
-        if !self.task_done_at_read(task).await {
-            return false;
-        }
-        if task.status != yulius_domain::task::TaskStatus::Running {
-            return true;
-        }
-        // Hosted checks can outlast a new turn, queue decision or merge request.
-        // Only a still-idle owner can release a successor on this observation.
-        let store = &self.deps.store;
-        if !matches!(store.task(&task.id).await, Ok(Some(now)) if
-            now.status == task.status && now.activity == task.activity &&
-            now.archived_at == task.archived_at && now.branch == task.branch && now.worktree_path == task.worktree_path)
-        {
-            return false;
-        }
-        let Ok(record) = store.delivery(&task.id).await else {
-            return false;
-        };
-        if self
-            .delivery_candidate_blocks(task, record.as_ref(), false)
-            .await
-            .unwrap_or(true)
-        {
-            return false;
-        }
-        !self.merge_is_armed(&task.id)
-    }
-
-    async fn task_done_at_read(&self, task: &TaskRecord) -> bool {
         use yulius_domain::task::{Activity, TaskStatus};
         let running = task.status == TaskStatus::Running;
         // A parked task is an idle run whose session went to sleep (SPEC-512 PRK-004): nothing of
@@ -4824,23 +4774,14 @@ impl App {
         if parked {
             return self.parked_predecessor_done(task).await.unwrap_or(false);
         }
-
+        if running && task.activity == Some(Activity::Done) {
+            return true;
+        }
         // One reading of its delivery for the whole decision: a merge recorded between two
         // readings would be "no news due" by the first and "merged" by the second.
         let Ok(record) = self.deps.store.delivery(&task.id).await else {
             return false;
         };
-        if running
-            && self
-                .delivery_candidate_blocks(task, record.as_ref(), true)
-                .await
-                .unwrap_or(true)
-        {
-            return false;
-        }
-        if running && task.activity == Some(Activity::Done) {
-            return true;
-        }
         // Yulius still has news of its pull request for its agent (an armed merge, a merge not
         // said yet): it goes on by itself, so it is not Done (SPEC-487 CHN-001, CHN-002).
         if self.pr_news_due_of(task, record.as_ref(), false).await {

@@ -336,8 +336,6 @@ pub struct TaskRuntime {
     /// Why Yulius could not push or deliver the agent's head, for `yulius wait`: the agent learns
     /// it instead of waiting for a run that never comes (SPEC-050 DLV-201, DLV-204).
     pub(crate) push_problem: Mutex<Option<crate::delivery::PushNote>>,
-    /// A hosted observation disproved this queue receipt's head or base.
-    pub(crate) obsolete_candidate: Mutex<Option<(crate::stages::SpanRecord, std::time::Instant)>>,
     /// The last local head already checked for open-PR CI repair publication by `yulius wait` or
     /// `pr_watch`, so periodic passes and long-poll reconnects do not repeat GitHub calls for the
     /// same head while the server stays up (SPEC-553 REP-004).
@@ -744,7 +742,6 @@ impl TaskRuntime {
             armed: Mutex::new(crate::agent_wait::ArmedSlot::default()),
             arm_writer: tokio::sync::Mutex::new(()),
             push_problem: Mutex::new(None),
-            obsolete_candidate: Mutex::new(None),
             repair_checked_head: Mutex::new(None),
             last_stop_ms: AtomicI64::new(0),
             stop_answered_ms: AtomicI64::new(0),
@@ -1881,7 +1878,7 @@ impl App {
         account: Option<AccountId>,
     ) -> BoxFuture<'a, AppResult<()>> {
         Box::pin(async move {
-            self.start_run_if(task_id, start, account, None, None, None)
+            self.start_run_if(task_id, start, account, None, None)
                 .await
                 .map(|_| ())
         })
@@ -1897,7 +1894,6 @@ impl App {
         account: Option<AccountId>,
         only: Option<TaskStatus>,
         rest: Option<IdleRest>,
-        notice: Option<&'a crate::pr_watch::ParkedNotice>,
     ) -> BoxFuture<'a, AppResult<bool>> {
         Box::pin(async move {
             self.settle_resting_run(task_id).await?;
@@ -1914,23 +1910,8 @@ impl App {
                     }
                     Harness::ClaudeCode => {}
                 }
-                if let Some(notice) = notice
-                    && !self.parked_notice_inputs(&task, notice).await
-                {
-                    return Ok(false);
-                }
             }
-            let candidate_wake = notice.is_some_and(crate::pr_watch::ParkedNotice::is_candidate);
-            let guard = if candidate_wake {
-                // A wait behind another launch can outlive the hosted observation.
-                // Defer the wake; the next pass will read the owner and PR again.
-                let Ok(guard) = self.supervisor.launch.try_lock() else {
-                    return Ok(false);
-                };
-                guard
-            } else {
-                self.supervisor.launch.lock().await
-            };
+            let guard = self.supervisor.launch.lock().await;
             let task = self
                 .deps
                 .store
@@ -1963,22 +1944,6 @@ impl App {
             // While an update pauses the tasks, starts queue like at the session limit and run
             // once it is over (SPEC-002 ADR-18).
             let full = held || live >= self.max_live_sessions() || self.update_holds_starts();
-            let placement = if candidate_wake {
-                if full {
-                    return Ok(false);
-                }
-                let Some(placed) = self.choose_account(&task, None).await? else {
-                    return Ok(false);
-                };
-                Some(placed)
-            } else {
-                None
-            };
-            if let Some(notice) = notice
-                && !self.parked_notice_current(&task, notice).await
-            {
-                return Ok(false);
-            }
             if full && task.status != TaskStatus::Switching {
                 let queued = self
                     .deps
@@ -2027,9 +1992,7 @@ impl App {
                 _ => (start, account),
             };
             let launching = Launching::start(&self.supervisor.launching, &task.id);
-            let result = self
-                .launch_attempt(&task, start, account, rest, placement)
-                .await;
+            let result = self.launch_attempt(&task, start, account, rest).await;
             drop(launching);
             drop(guard);
             if let Err(err) = &result {
@@ -2059,7 +2022,7 @@ impl App {
                 // A supertask that could not start no longer holds its project (SUP-005).
                 self.drain_queue().await;
             }
-            result
+            result.map(|()| true)
         })
     }
 
@@ -2095,10 +2058,7 @@ impl App {
         start: RunStart,
         requested: Option<AccountId>,
         rest: Option<IdleRest>,
-        placement: Option<Placed>,
-    ) -> AppResult<bool> {
-        let candidate_wake = placement.is_some();
-        let parked_activity = task.activity;
+    ) -> AppResult<()> {
         let store = &self.deps.store;
         let relaunch = start.clone();
         let sandbox = store
@@ -2155,11 +2115,9 @@ impl App {
             Some(id) if store.account(&id).await?.is_none() => None,
             other => other,
         };
-        let placement = match placement {
-            Some(placed) => Some(placed),
-            None => self.choose_account(&task, requested.as_ref()).await?,
-        };
-        let Some(Placed { account, fallback }) = placement else {
+        let Some(Placed { account, fallback }) =
+            self.choose_account(&task, requested.as_ref()).await?
+        else {
             // No subscription has capacity: the task waits before starting, without a process
             // (ROT-010); the resume loop starts it when capacity returns. A turn a limit cut
             // keeps its `limit` pause, so it still resumes past the limit (SPEC-034).
@@ -2174,7 +2132,7 @@ impl App {
                 _ => None,
             };
             self.pause_task(&task.id, kind, None, continuation).await?;
-            return Ok(true);
+            return Ok(());
         };
         // The run has its subscription: a pause the task waited in is over. Only here, so that
         // a start the full queue refused, and one that finds no capacity after all (the branch
@@ -2650,24 +2608,7 @@ impl App {
             store
                 .transition_attempt(&attempt_id, AttemptState::Exited, &update)
                 .await?;
-            if candidate_wake {
-                // No host received the diagnosis. Restore the park if the person has
-                // not stopped the task during launch. The watch will verify it anew.
-                if store
-                    .transition_task(
-                        &task.id,
-                        Some(TaskStatus::Starting),
-                        TaskStatus::Parked,
-                        parked_activity,
-                        self.now(),
-                    )
-                    .await?
-                {
-                    self.publish_task(&task.id).await;
-                }
-                return Ok(false);
-            }
-            return Box::pin(self.launch_attempt(&task, relaunch, None, rest, None)).await;
+            return Box::pin(self.launch_attempt(&task, relaunch, None, rest)).await;
         }
         // Before the spawn, so the first prompt's hook always finds it (SPEC-068).
         if typed_opening.is_some()
@@ -2867,7 +2808,7 @@ impl App {
                 }
             });
         }
-        Ok(true)
+        Ok(())
     }
 
     /// Writes the task's request file into the sandbox home (`.yulius/tasks/<number>.md`: the
@@ -4713,7 +4654,7 @@ impl App {
             // Only while it is still queued, checked under the launch lock: a task stopped or
             // started meanwhile is not resumed here.
             if let Err(err) = self
-                .start_run_if(&task.id, start, None, Some(TaskStatus::Queued), None, None)
+                .start_run_if(&task.id, start, None, Some(TaskStatus::Queued), None)
                 .await
             {
                 tracing::warn!(error = %err, task = %task.id, "queued task failed to start");
@@ -4857,8 +4798,8 @@ impl App {
         }
         {
             let mut intent = runtime.intent.lock().map_err(AppError::internal)?;
-            // Any other end under way owns the run's end.
-            if intent.is_some() {
+            // A newly armed delivery or another end keeps this park from taking the run.
+            if intent.is_some() || self.merge_is_armed(task_id) {
                 return Ok(false);
             }
             crate::parking::save_parked_screen(&runtime.hub, Path::new(&run.run_dir), quiet_ms)
@@ -4899,15 +4840,6 @@ impl App {
         task_id: &TaskId,
         prompt: Option<String>,
     ) -> AppResult<bool> {
-        self.resume_parked_with_notice(task_id, prompt, None).await
-    }
-
-    pub(crate) async fn resume_parked_with_notice(
-        self: &Arc<Self>,
-        task_id: &TaskId,
-        prompt: Option<String>,
-        notice: Option<&crate::pr_watch::ParkedNotice>,
-    ) -> AppResult<bool> {
         let task = self
             .deps
             .store
@@ -4930,9 +4862,7 @@ impl App {
             let run = store
                 .attempts(task_id)
                 .await?
-                .into_iter()
-                .rev()
-                .find(|run| !crate::parking::removed_before_spawn(run))
+                .pop()
                 .filter(|run| run.harness == Harness::Codex)
                 .ok_or_else(missing)?;
             let sessions = store.provider_sessions(task_id).await?;
@@ -4979,7 +4909,6 @@ impl App {
             None,
             Some(TaskStatus::Parked),
             rest,
-            notice,
         )
         .await
     }
@@ -5600,7 +5529,7 @@ impl App {
                 activity,
                 goal_unfinished: runtime.goal_unfinished.load(Ordering::SeqCst),
             });
-        let started = self.start_run_if(task_id, start, account, Some(from), rest, None);
+        let started = self.start_run_if(task_id, start, account, Some(from), rest);
         match started.await {
             // Another start (the capacity loop's) ran the paused task first: it won, the switch
             // is made.
