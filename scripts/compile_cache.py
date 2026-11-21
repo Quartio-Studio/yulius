@@ -81,8 +81,15 @@ def run_disposable(command, env, lease=None):
             return -requested
         # Inherit the caller's process group and inheritable jobserver descriptors.
         # The shell delivers stop, continue and terminal ownership to the whole job.
-        child = subprocess.Popen(command, env=env, close_fds=lease is not None,
-                                 pass_fds=() if lease is None else (lease,))
+        # The launcher owns a non-inheritable lease. Pass it to mbx through
+        # exec without closing descriptors the caller supplied to the build.
+        if lease is not None:
+            os.set_inheritable(lease, True)
+        try:
+            child = subprocess.Popen(command, env=env, close_fds=False)
+        finally:
+            if lease is not None:
+                os.set_inheritable(lease, False)
         try:
             # Block only in the parent, after spawn. On hosts with sigtimedwait
             # the kernel identifies terminal-generated signals by sender PID 0.

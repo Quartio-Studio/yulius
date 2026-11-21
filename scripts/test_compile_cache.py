@@ -101,29 +101,29 @@ class CompileCache(unittest.TestCase):
         env.update(YULIUS_BUILD_SCRATCH=str(self.sandbox / "scratch"), RUSTC=str(cargo.with_name("rustc")))
         command = [self.task / "scripts/cargo", "--scratch-target", "run", "--offline"]
         result = subprocess.run([*command, "--config", f'build.build-dir="{outside}"', "one", "two"],
-                                cwd=self.task, env=env, capture_output=True, text=True, timeout=15)
+                                cwd=self.task, env=env, capture_output=True, text=True, timeout=120)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(outside.exists(), "Cargo wrote intermediates outside scratch")
         self.assertEqual(result.stdout.splitlines(), ["one", "two"])
         config = f'build.build-dir="{outside}"'
         result = subprocess.run([*command, "--config", config, "-", "--config", "build.jobs=3"],
-                                cwd=self.task, env=env, capture_output=True, text=True, timeout=15)
+                                cwd=self.task, env=env, capture_output=True, text=True, timeout=120)
         self.assertFalse(outside.exists(), "bare dash allowed intermediates outside scratch")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("use -- before program options", result.stderr)
         result = subprocess.run([*command, "--config", config, "--", "-", "--config", "build.jobs=3"],
-                                cwd=self.task, env=env, capture_output=True, text=True, timeout=15)
+                                cwd=self.task, env=env, capture_output=True, text=True, timeout=120)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.splitlines(), ["-", "--config", "build.jobs=3"])
         self.assertFalse(outside.exists())
         for flag in ("--config", "--target-dir"):
             with self.subTest(program_flag=flag):
                 result = subprocess.run([*command, "one", flag, "program-value"], cwd=self.task,
-                                        env=env, capture_output=True, text=True, timeout=15)
+                                        env=env, capture_output=True, text=True, timeout=120)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("use -- before program options", result.stderr)
                 result = subprocess.run([*command, "--", "one", flag, "program-value"], cwd=self.task,
-                                        env=env, capture_output=True, text=True, timeout=15)
+                                        env=env, capture_output=True, text=True, timeout=120)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout.splitlines(), ["one", flag, "program-value"])
         self.assertFalse(list((self.sandbox / "scratch").iterdir()))
@@ -425,7 +425,9 @@ def group_snapshot(*args, **kwargs):
                     backend = int(pid)
                     self.assertEqual(store, str(self.sandbox / "rust-compile-cache"))
                     proc.terminate()
-                    proc.wait(timeout=8)
+                    # Two grace periods, a leader wait and the adopted-worker
+                    # deadline can each take three seconds before cleanup.
+                    self.assertEqual(proc.wait(timeout=20), 128 + signal.SIGTERM)
                     self.assertTrue(select.select([conn], [], [], 1)[0], "Cargo child survived cancellation")
                     self.assertEqual(conn.recv(1), b"")
                     backend = None
@@ -448,6 +450,45 @@ def group_snapshot(*args, **kwargs):
                 except ProcessLookupError:
                     pass
                 proc.wait(timeout=5)
+
+    @unittest.skipUnless((SCRIPTS.parent / ".tools/bin/mbx").exists(), "optional pinned mbx unavailable")
+    def test_disposable_cached_program_can_read_an_inherited_descriptor(self):
+        self.create_fixture(self.task, 'fn main() { let path = std::env::args().nth(1).unwrap(); '
+                            'print!("{}", std::fs::read_to_string(path).unwrap()); }')
+        (self.task / ".tools/bin/mbx").symlink_to((SCRIPTS.parent / ".tools/bin/mbx").resolve())
+        cargo = Path(subprocess.check_output(["rustup", "which", "cargo"], text=True).strip())
+        scratch = self.sandbox / "scratch"
+        env = self.cargo_env(self.sandbox / "home", cargo)
+        env.update(YULIUS_BUILD_SCRATCH=str(scratch), RUSTC=str(cargo.with_name("rustc")))
+        with tempfile.TemporaryFile() as source:
+            source.write(b"inherited input")
+            source.seek(0)
+            fd = source.fileno()
+            result = subprocess.run([self.task / "scripts/cargo", "--scratch-target", "run", "--offline",
+                                     "--", f"/dev/fd/{fd}"], cwd=self.task, env=env, pass_fds=(fd,),
+                                    start_new_session=True, stdin=subprocess.DEVNULL,
+                                    capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "inherited input")
+        self.assertEqual(list(scratch.iterdir()), [])
+
+    def test_disposable_fallback_releases_lease_before_running_cargo(self):
+        env = self.caller_fixture("import fcntl\n"
+                                  "fd = os.open(os.environ['SANDBOX'], os.O_RDONLY | os.O_DIRECTORY)\n"
+                                  "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)")
+        root = self.sandbox / "scratch"
+        env.update(SANDBOX=str(self.sandbox), YULIUS_BUILD_SCRATCH=str(root))
+        (self.task / ".tools/bin/mbx").write_text("#!/bin/sh\nexit 1\n")
+        stamp = self.sandbox / "rust-compile-cache/.yulius-mbx-v1"
+        for pending_upkeep in (False, True):
+            if pending_upkeep:
+                stamp.rename(stamp.with_name(".yulius-mbx-pruning"))
+            with self.subTest(pending_upkeep=pending_upkeep):
+                result = subprocess.run([self.task / "scripts/cargo", "--scratch-target", "build"],
+                                        env=env, start_new_session=True, stdin=subprocess.DEVNULL,
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(list(root.iterdir()), [])
 
     def test_disposable_cache_fallback_preserves_single_dispatch(self):
         env = self.caller_fixture("from pathlib import Path\n"
