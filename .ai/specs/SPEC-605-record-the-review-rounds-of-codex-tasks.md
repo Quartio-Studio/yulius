@@ -37,10 +37,10 @@ no observable role to distinguish a reviewer from other Codex subagents.
   without a recognized verdict leave the record as it was. Missing or invalid rollout
   evidence cannot block the reviewer.
 - **CDR-004** Reuse the delivery view, merge transaction and analytics for both harnesses.
-  Delivery exposes each round's timestamps and PR number when known. It shows rounds
-  for the current review or, after merging, the PR just delivered. The merge links the
-  rows to the PR and resets numbering for the next PR. It also records a durable boundary
-  so a delayed start from the prior PR cannot appear on the next one.
+  Delivery exposes each round's timestamps and PR number when known. It shows the current
+  review for any harness. A Codex task can also show the PR it just delivered when no review
+  is open. The merge links the rows to the PR and resets numbering for the next PR. It also
+  records a durable boundary so a delayed start from the prior PR cannot appear on the next one.
 
 ## Plan
 
@@ -50,6 +50,9 @@ no observable role to distinguish a reviewer from other Codex subagents.
 - [x] Verify review history through delivery and dashboard data
 - [x] Preserve review evidence across delayed hooks and successive pull requests
 - [x] Approve the change for delivery
+- [x] Preserve Claude Code delivery behavior after a merge
+- [x] Verify Codex and Claude Code delivery together
+- [x] Approve the staging fix for delivery
 
 ## Acceptance criteria
 
@@ -59,17 +62,20 @@ no observable role to distinguish a reviewer from other Codex subagents.
 - **AC-2 (CDR-002, CDR-003)** A partial response leaves the round open. A later report
   ends it with the actual model, timestamp and verdict once. A new reviewer records
   the next round after the prior verdict. A verdict can arrive before its start hook.
-- **AC-3 (CDR-004)** Delivery shows the selected PR's rows and timestamps. After the merge, the rows
-  show the landed PR number and dashboard analytics count its rounds and reviewer
+- **AC-3 (CDR-004)** Delivery shows the current PR's rows and timestamps. After a Codex merge,
+  the rows show the landed PR number and dashboard analytics count its rounds and reviewer
   models. The next PR starts at round one, even if a pre-merge hook is delayed and the
-  merge had zero review rows. Existing Claude review tests stay green.
+  merge had zero review rows. A Claude Code task clears its merged rows from its delivery
+  view while preserving the merge's review audit and analytics.
 
 ## Test plan
 
 Use an offline Responses API stub with pinned Codex to verify the hook envelope and
 child header. Use synthetic CLI-shaped JSON and real SQLite in a task integration
 test that exercises hooks, duplicate or invalid evidence, delivery and analytics.
-Run the existing Claude review tests and the Codex launch and briefing tests.
+Run the existing Claude review tests, including `delivery::agents_merge_only_through_gated_tools`,
+and the Codex launch and briefing tests. The fix forward runs the full `yulius::main`
+binary and the application, store and contract test binaries.
 
 ## Decisions
 
@@ -81,6 +87,8 @@ insufficient to identify the child and observe the actual answer. The record is
 prospective because old spawns did not follow the reserved naming convention.
 Antigravity's swarm uses a separate lifecycle without equivalent configured
 subagent hooks. Its instrumentation is outside this slice.
+Task delivery selects landed history specifically for Codex, whose merged tasks were the
+missing cases in the report. Claude Code's open-round view remains compatible with existing clients.
 
 ## Evidence
 
@@ -114,3 +122,17 @@ subagent hooks. Its instrumentation is outside this slice.
   reviewer and the round's timestamps and pull request number, answering its remaining
   documentation finding. The project disables Vidoc, so `scripts/dev security` sent
   nothing for scanning.
+- Staging CI run `921a833e-6b81-4048-a772-f1c75fb3b9c2` at `d188c8567` failed
+  `delivery::agents_merge_only_through_gated_tools` in test shard 2. The existing
+  test expected no Claude Code rounds after the merge and got one. Running the same
+  test locally against the first delivery reproduced the failure. [Delivery evidence](https://yulius.quartio.ai/api/tasks/390479b9-2747-4388-b326-779981ff5f47/delivery/evidence/d188c8567c521fa800102706083b48bff2ce31e5)
+- On the fix-forward branch, `E2E_TELEMETRY_DISABLED=1 npx e2e run tests/pipeline.e2e.ts`
+  passed all 18 Pipeline browser tests.
+- The previously failing gated-delivery test passed unchanged on the fix-forward branch.
+  The five Codex review cases passed, including landed history after a merge. The focused
+  Rust run passed all 41 cases. Independent review approved `ddf2a8809` after rerunning
+  the gated-delivery test and all five Codex review cases.
+- `scripts/cargo nextest run --locked --all-features --profile ci` with the full
+  `yulius::main` binary and the app, store and contract packages passed all 3,423
+  scheduled tests across five binaries. Nextest reported 24 skipped tests. The selector
+  was `binary_id(=yulius::main) | package(=yulius-app) | package(=yulius-store) | package(=yulius-contracts)`.
