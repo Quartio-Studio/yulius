@@ -505,6 +505,13 @@ pub trait CiStore: Send + Sync {
         sandbox: &SandboxId,
         sha: &str,
     ) -> AppResult<Vec<crate::ci::CiRunRecord>>;
+    /// Runs at a full or uniquely abbreviated PR head, latest admission first.
+    /// A transferred queue place can precede an older verdict at the same head.
+    async fn ci_runs_for_pull_head(
+        &self,
+        sandbox: &SandboxId,
+        head: crate::ci::PullHead<'_>,
+    ) -> AppResult<Vec<crate::ci::CiRunRecord>>;
     /// Queued and running runs of every sandbox, oldest first.
     async fn active_ci_runs(&self) -> AppResult<Vec<crate::ci::CiRunRecord>>;
     /// A running gate with an executed pass, no queued job and at most one running job

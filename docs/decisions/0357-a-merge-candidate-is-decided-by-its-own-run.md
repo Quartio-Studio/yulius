@@ -33,6 +33,8 @@ merged result, and a failing test is never run again until it passes.
 
 ## Decision
 
+- When open PRs share a commit, prefer the ordinary run for the member’s PR number. If it has none, the queue and `yulius wait` use the scheduler’s shared verdict for that commit. A fresh admission after integration CI was repaired supersedes an earlier configuration refusal. [SPEC-558](../../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
+
 - **A passed candidate merges at once** (MQW-002). Its run tested the integration branch with
   every member merged: that is the exact merged result, which the merge rule asks for. A member's
   own run that still goes is not waited for. When Yulius brings the member up to date for its

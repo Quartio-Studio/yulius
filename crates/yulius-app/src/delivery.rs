@@ -1912,7 +1912,13 @@ impl App {
                 }
             }
             if let Some(pull) = pr.as_ref().filter(|p| is_open(p)) {
-                match self.dlv_checks_at(sandbox, token, &pull.head_sha).await {
+                let gate = self
+                    .ci_gate_for_pull(sandbox, pull.number, &pull.head_sha)
+                    .await;
+                match self
+                    .checks_with_gate(sandbox, token, &pull.head_sha, gate)
+                    .await
+                {
                     Ok(at) => {
                         checks_errored = at.word == "error";
                         checks = at.state;
@@ -2154,7 +2160,8 @@ impl App {
                 &pull.base,
                 &pull.head_sha,
                 pull.merge_commit_sha.as_deref(),
-                self.ci_gate_result(&sandbox, &pull.head_sha).await,
+                self.ci_gate_for_pull(&sandbox, pull.number, &pull.head_sha)
+                    .await,
                 false,
                 "",
             ));
@@ -4867,18 +4874,24 @@ impl App {
         }
     }
 
-    /// Queues the latest Yulius CI run at `sha` again when it ended in an error (it could not
-    /// run): retried once by itself; two errored runs at one commit wait for the agent.
-    async fn retry_errored_run(&self, task: &TaskRecord, sha: &str) {
-        let Ok(runs) = self.deps.store.ci_runs_for_sha(&task.sandbox_id, sha).await else {
+    /// Retry an infrastructure error once for the selected CI reference at this head.
+    async fn retry_errored_run(&self, task: &TaskRecord, pr: u64, sha: &str) {
+        let Ok(runs) = self
+            .deps
+            .store
+            .ci_runs_for_pull_head(&task.sandbox_id, crate::ci::PullHead::Exact(sha))
+            .await
+        else {
             return;
         };
-        let Some(latest) = runs.first() else {
+        let Some(latest) = crate::ci::run_for_pull_head(&runs, pr) else {
             return;
         };
         let errored = runs
             .iter()
-            .filter(|r| r.state == yulius_domain::ci::RunState::Error)
+            .filter(|r| {
+                r.reference == latest.reference && r.state == yulius_domain::ci::RunState::Error
+            })
             .count();
         if latest.state == yulius_domain::ci::RunState::Error
             && errored < 2
@@ -4895,7 +4908,8 @@ impl App {
             return;
         };
         if observed.checks == ChecksState::Failure && pull.mergeable != Some(false) {
-            self.retry_errored_run(task, &pull.head_sha).await;
+            self.retry_errored_run(task, pull.number, &pull.head_sha)
+                .await;
         }
     }
 

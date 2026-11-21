@@ -1544,6 +1544,7 @@ request as it is:
 
 - a pull request's own run (its pre-check) always finishes: until it passed, Yulius never merges
   the integration branch into it, so a moving base never supersedes it;
+- when open PRs share a commit, the scheduler tests it once. The merge queue and its owner’s `yulius wait` use that ordinary run until the PR has its own run at that head. A later admission after configuration repair replaces a refusal.
 - green and up to date: merged now;
 - green, or its own run still queued or running, and behind: into the next merge candidate
   (`merge_train.rs`), the integration branch with up to 8 such pull requests merged in, in arm

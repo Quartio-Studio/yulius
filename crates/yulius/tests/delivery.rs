@@ -5145,6 +5145,15 @@ async fn a_parked_achieved_goal_waits_for_its_failed_ordinary_run() -> TestResul
         &[],
     )
     .await?;
+    // The parked detail reads the exact PR reference. A peer at the same
+    // commit still has a pending run, while the owner's rerun just passed.
+    let owner =
+        f.h.app
+            .authenticate_bearer(f.alice.bearer.as_deref().ok_or("owner token")?)
+            .await?
+            .ok_or("owner")?;
+    let detail = f.h.app.task_detail(&owner, before.as_str()).await?;
+    assert_eq!(detail.summary.parked_needs_you, Some(false));
     f.h.github.set_checks(&head, ChecksState::Failure);
     app.advance_chains(&before).await;
     assert_eq!(
