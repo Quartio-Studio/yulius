@@ -3203,8 +3203,16 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
             ),
             "approved at the merged head; the agent's run on the default model wrote it"
         );
-        // The pull request's rounds closed with it: the view lists none for the next one.
-        assert_eq!(f.delivery("t1").await?["review_rounds"], json!([]));
+        // The delivered PR shows its review. A subsequent PR starts with no open rounds.
+        let delivered = f.delivery("t1").await?;
+        let rounds = delivered["review_rounds"]
+            .as_array()
+            .ok_or("review rounds")?;
+        assert_eq!(rounds.len(), 1);
+        assert_eq!(rounds[0]["pr_number"], 1);
+        assert_eq!(rounds[0]["head"], head);
+        assert_eq!(rounds[0]["verdict"], "approve");
+        assert!(f.h.store.review_rounds(&task.id, true).await?.is_empty());
     }
     // F 2026-10-11 (AC-GIT-3): on GitHub the creator merged and promoted, not the App.
     assert_eq!(f.h.github.actors_of("merge_pull"), ["bob"]);
