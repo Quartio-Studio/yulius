@@ -526,7 +526,7 @@ A parked task in the sandbox task list or the task detail includes `parked_needs
 local work, owner decisions and current ordinary PR checks. When a PR is known, `parked_pr`
 gives its `number` and whether it is `open`. A branch lookup can identify a replacement
 for an older recorded delivery. With outstanding local work, the detail keeps an owner-observed open PR
-or the recorded delivery identity. Unfinished work and unreadable checks keep the task under Needs you.
+or the recorded delivery identity. Unfinished work and unreadable checks on a known open PR keep the task under Needs you. A locally settled task with a recorded merge stays under Done if discovery of a possible follow-up is unavailable and no open replacement is known.
 
 The MCP tools `task_get` and `tasks_list` use the verified parked group and include `parked_pr` when the verifier can identify the PR. A parked row’s `wait_reason` explains a current check failure, pending checks, an unreadable PR, a conflict, a required base update or unfinished local work. A stored owner decision or held prompt supplies its own fields. The `needs_you` scope keeps activity order and applies its limit after filtering. The `archived` scope reads archived tasks.
 
@@ -659,7 +659,7 @@ the agents' delivery workflow and other clients; no page of the web UI calls the
 
 | Method | Path | Level | Body → Response |
 | --- | --- | --- | --- |
-| GET | `/api/sandboxes/{sid}/git` | read | → `GitOverview`. HTTP 429 when 30 overlapping reads already hold publication slots in this sandbox. Home and MCP task lists continue to read available PR observations. |
+| GET | `/api/sandboxes/{sid}/git` | read | → `GitOverview`. HTTP 429 when 30 overlapping overview reads already hold publication slots in this sandbox. Parked task branch reads have a separate limit per task. Home and MCP task lists continue to read available PR observations. |
 | GET | `/api/tasks/{tid}/delivery` | read | → `Delivery`. In a playground the available action is the local squash (`merge`). Its local prerequisites appear in `blocked`, and a merged task has no further actions. |
 | GET | `/api/tasks/{tid}/delivery/evidence/{merged_sha}` | read | → `MergeEvidence`. Task, PR, branch, accepted head, landed SHA and up to 50 newest CI, CD and profile-command attempts with individual check states. When truncated, pass `?before=<next_before>` for the next page, including archived attempts. Add `?run_id=<id>` to pin one attempt. A missing task landing or requested attempt returns 404. Task agents use `delivery_status` with optional `merged_sha`, `before` or `run_id` to read the same evidence with their task credential. |
 | GET | `/api/tasks/{tid}/changes` | read | → `TaskChanges`: the task worktree (committed, uncommitted and untracked work; symlinks listed, never followed) against the merge base with `origin/<integration>`; 409 when the task has not started (no worktree yet) or its worktree is gone (the Git overview's `worktree`) |
@@ -963,8 +963,8 @@ Cleanup request = {"items": [{"kind", "name"}] (empty: every safe item), "force"
 A project's CD (SPEC-134, SPEC-257, ADR-0109/0110/0195) is its environments in `yulius.toml`, read
 only from protected branches: `[cd.dev]` and `[cd.prod]` by default and up to 16 in all. Each has a
 stage, which carries its rules: a dev-stage environment is read at the integration branch head, a
-production-stage one at the commit it deploys (the integration head when that head's table
-promotes, else the production head). A name other than `dev` and `prod` (1-32 lowercase letters,
+production-stage one at the commit it deploys (the selected integration revision when the
+integration head’s table promotes, else the production head). A name other than `dev` and `prod` (1-32 lowercase letters,
 digits and `-`, starting with a letter) states its `stage`; its stage is the integration head's,
 else a production-stage table at the production head.
 
@@ -1030,9 +1030,13 @@ The merge-first environment changes only through its staging queue (ADR-0411):
 - The deploy scripts of a merge-first target must be idempotent: a run lost to a restart is
   retried, up to three attempts.
 - A failed deploy that announced a rollback barrier is not restored; its request says so.
-- With a merge-first target, every promotion (a production deploy's, `POST …/delivery/promote`,
-  the profile's automatic one) is refused (409) until staging serves the integration head,
-  verified; the automatic promotion then runs once the staging queue verified it.
+- For a promoting production deployment, `GET …/cd` reports the release SHA in
+  `promotes_from`. Pass it as `expect` to `POST …/cd/{env}/deploy`. A changed candidate
+  returns 409. Merge-first staging supplies its verified revision. During a newer ordinary
+  dev deployment, rollback drill or integration branch CI run, CD can release the preceding
+  verified revision. [ADR-0425](decisions/0425-pin-a-production-deploy-to-verified-dev.md)
+- With a merge-first target, `POST …/delivery/promote` and the profile's automatic promotion
+  wait until staging has verified the integration head.
 - For every project, `POST …/delivery/promote` and the automatic promotion read the integration
   head and its `[cd.*]` tables through the verified CD mirror first, and answer 409 when they
   cannot be read: a fetch failure, or an invalid `yulius.toml` at the head.
@@ -1072,7 +1076,7 @@ CdOverview = {"slug", "environments": [CdEnvironment (dev stage, then prod stage
 CdEnvironment = {"name": "dev|prod|<name>", "label": "dev|production|<name>", "stage": "dev|prod",
                  "state": "not_defined|empty|ready",
                  "branch", "head", "problem": "yulius.toml line 3: …"|null, "about", "deploy", "verify",
-                 "promote", "promotes_from": "<integration head>"|null,
+                 "promote", "promotes_from": "<selected integration revision>"|null,
                  "secrets": [{"name", "state": "ready|not_allowed|missing|production|agents_use"}],
                  "states": [{"name", "version": <newest>|null (missing), "held_by": "<env> run <id>"|null}],
                  "deployed": "<sha of the last passed run>"|null, "last_run": CdRun|null,
@@ -1143,6 +1147,8 @@ the sandbox's agent secrets (an id that held one is ignored). `drill` must name 
 production-stage deploy whose table has a `deploy` is refused (`conflict`, audited
 `cd.refused`) until the table has `rollback` and the newest drill of its `drill` environment passed
 at a commit with the tree being deployed (with `promote`: the integration commit promoted).
+While a different dev commit is drilling, the latest completed drill can supply that proof if it
+passed for the confirmed tree. [ADR-0425](decisions/0425-pin-a-production-deploy-to-verified-dev.md)
 A person's production deploy refused only for that (the newest drill is missing or ran at another
 tree, none runs, the drill environment has `deploy` and `rollback` at the integration head, whose
 tree is the one production deploys, and its newest deploy is of another commit) deploys the drill
@@ -1301,7 +1307,7 @@ write access; every changing call is audited with the caller (`task:<n>`, `cockp
 
 | Tool | Same as | Notes |
 | --- | --- | --- |
-| `task_create` | New task | origin `agent`; at most 20 per project and rolling hour; `after_all_tasks: true` (alone among the start choices) waits for every task of the project with work still coming at the call, stored as the `start_rule` naming them (left out: ended and stopping tasks, tasks the list shows Done or Answered, prepared ones; at most 64 tasks, more is refused; none: it starts now and the `note` says so) (SPEC-487); `paths` (globs it will change) claimed for it, and a live or waiting task holding any of them answered with `created: false`, its claims and the offer of `after_task` or `start_anyway: true` (SPEC-493 SCO-004) |
+| `task_create` | New task | origin `agent`; at most 20 per project and rolling hour; `after_all_tasks: true` (alone among the start choices) waits for every task of the project with work still coming at the call, stored as the `start_rule` naming them (left out: ended and stopping tasks, tasks the list shows Done or Answered, prepared ones; a parked merge stays a prerequisite while discovery of follow-up PRs is inconclusive; at most 64 tasks, more is refused; none: it starts now and the `note` says so) (SPEC-487); `paths` (globs it will change) claimed for it, and a live or waiting task holding any of them answered with `created: false`, its claims and the offer of `after_task` or `start_anyway: true` (SPEC-493 SCO-004) |
 | `tasks_list`, `task_get` | the task list | a task's `needs_you` carries `at_ms`, `who` and `named` (SPEC-512 ANS-001), and the text says "(answered by its owner and @bob, @carol)" or "(answered by its owner only)" for a named request; each task: `runs_after` (a number, only for a task chained after one task), `start_rule` (the whole rule as stored, while the task waits on it) and `start_blocked` (why a waiting task will not start by itself any more); the text shows `after #N`, ``start rule `…` `` and `will not start by itself: …` (SPEC-487 CHN-004). Each task also says where the task list shows it, `shows` (`needs_you`, `working`, `queued`, `done`, `ended`: the list's own rule), and, only when there is one, why it waits for a person or is held, as its page does (SPEC-487 QST-001): `needs_you` `{action, happened, problem, decision, link, at}` (what its agent asked), `attention` `{kind: terminal \| yulius, problem, action, link}` (the reason of its flag), `held_prompt` `{class, at}` (a typed prompt Yulius held, also for a task that ended, as its card; for the person's own callers, the Cockpit and the remote MCP, also `excerpt`, at most 300 characters, and `typed_by`: a task's agent never gets a held prompt's words) and `pause` `{by: person \| update, user, since, pending}`. `tasks_list {scope: "needs_you"}` lists only the tasks shown under Needs you (QST-002). A derived wait with no stored question carries `wait_reason` (for example, the agent stopped with unfinished steps). The text shows `NEEDS ITS PERSON`, `asks its person to do \| decide: …`, `flagged by Yulius: …` or `Claude Code asks in its terminal: …`, `holds a typed prompt (class): "…"` and `paused by @login` |
 | `session_read` (task agents, the Cockpit, the remote MCP) | the Sessions page | `{id \| task_number, from?, limit?, max_chars?, tail?}`; with `tail: true` (not with `from`, 400) the session's end instead of a place in it (SPEC-487 QST-003): the last `limit` entries, fewer when `max_chars` is reached (entries are left out at the front, never at the end), redacted as any read (the whole transcript is read, so a dotenv file read before the tail is still redacted in it); the answer then has `tail: true`, `from` (the first line shown), `earlier` (lines before it exist) and `next_from` (the line after the last one read: where a later read goes on) |
 | `instance`, `instance_update` (the Cockpit; `instance` also the remote MCP with `project`; never task agents; `instance_update` neither through the remote MCP nor for the Global Superagent; SPEC-487 slice 7) | `GET /api/status`, `GET /api/update`; `POST /api/admin/update/check`, `POST /api/admin/update`, `POST /api/admin/restart`, `POST /api/admin/update/cancel` | `instance {}` → `{"status": StatusView, "update": UpdateView}` as the caller may see them. `instance_update {do: check \| update \| restart \| cancel, commit?}` (a superadmin; anyone else 403 "only a superadmin …") → the `UpdateView` after the button's function, with `confirm: true` (the ask is the confirmation) and, for `update`, the offered commit unless `commit` is given (409 "no update is offered now" without one); the functions' refusals pass as they are (no helper, a move or an update under way) |

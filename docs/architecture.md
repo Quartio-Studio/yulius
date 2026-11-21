@@ -1632,7 +1632,7 @@ person must act first (a prompt on screen, `needs_you`) or may have a draft in t
   the kept failures, partial observations from siblings stopped by a failed job, and the exact
   `ci_status` run), or one that errored;
 - a red merge candidate of two or more holding it, with "do not re-arm, merge or push";
-- a failed single-PR candidate, with the source CI run, failing job and a bounded, redacted excerpt. The queue verifies the live PR head and integration base even when another candidate tested the same tree. Unavailable diagnostic or redaction data leaves the arm in place within the verification budget. A running ordinary check retains its original wait deadline. The queue saves the decision in the task’s latest completed merge wait before clearing its arm. The record identifies the original PR, head, tested base and tree, source run and redacted failure. Hourly cleanup retains it. Startup uses the activation time to discard a consumed arm or retire its decision for a newer saved arm. The live PR watcher uses this record to deliver the accepted failure once to the original task. It checks the published head, integration base, latest wait and ordinary CI again before typing. The PR watcher defers advice for a saved request until its arm is restored. A passed train retains the admission head and records the verified integration head while waiting for GitHub. An exclusion identifies the request and head whose files conflicted. A legacy exclusion or replacement request gets the queue position alone.
+- a failed single-PR candidate, with the source CI run, failing job and a bounded, redacted excerpt. The queue verifies the live PR head and integration base even when another candidate tested the same tree. Unavailable diagnostic or redaction data leaves the arm in place within the verification budget. A running ordinary check retains its original wait deadline. The queue saves the decision in the task’s latest completed merge wait before clearing its arm. The record identifies the original PR, head, tested base and tree, source run and redacted failure. Hourly cleanup retains it. Startup uses the activation time to discard a consumed arm or retire its decision for a newer saved arm. The parking supervisor compares this decision with the verified PR head and base before recording the park intent. A change to the decision during hosted verification defers parking. The live PR watcher uses this record to deliver the accepted failure once to the original task. It checks the published head, integration base, latest wait and ordinary CI again before typing. The PR watcher defers advice for a saved request until its arm is restored. A passed train retains the admission head and records the verified integration head while waiting for GitHub. An exclusion identifies the request and head whose files conflicted. A legacy exclusion or replacement request gets the queue position alone.
 - a conflict with the integration branch (checked in the task's worktree), once per head;
 - how its armed merge ended (the slot's outcome), and its merge (`merged_text`), after which the
   watch is over for it;
@@ -2136,6 +2136,8 @@ run for these reads per application. Each keeps its permit until Git returns.
 [ADR-0409](decisions/0409-report-the-pr-that-blocks-a-parked-task.md)
 
 Task lists share one 750 ms PR verification budget. Each batch of up to eight parked rows receives a share of the remaining time. Home verifies parked rows across all visible projects before it counts live rows. A slow local Git read for a running task cannot spend the parked rows’ lookup time. The HTTP response uses the plan read by the verifier for both progress and detailed steps. [ADR-0412](decisions/0412-share-parked-pr-read-time-across-task-lists.md)
+
+A recorded merge remains visible when a display read cannot discover follow-up PRs. Branch discovery and Git overviews publish PR identities in request-start order. A branch result updates only its task. The overlap limit applies separately to the sandbox overview and to each task branch. Known open follow-ups still need verification. The server rechecks the local plan, decisions and delivery before showing Done and keeps an unverified follow-up lookup in the prerequisites for an `after_all_tasks` rule. [ADR-0424](decisions/0424-keep-a-recorded-merge-visible-when-follow-up-discovery-is-unavailable.md)
 
 The browser uses the parked summary’s verified Needs you group and its open steps, spec or goal when classifying a task. It retains the displayed reason for a human decision or failing PR. [ADR-0412](decisions/0412-share-parked-pr-read-time-across-task-lists.md)
 
@@ -3174,7 +3176,7 @@ sequenceDiagram
 flowchart LR
   M["merge into dev"] -->|"deploys nothing"| DEV
   DEV["dev stage: [cd.dev], [cd.staging] … at the dev head"] -.->|"cd_deploy, CD page, nightly automation"| RUN1["CD run"]
-  P["a person on the CD page, slug typed"] --> PROMO["promote dev into main"] --> PROD["prod stage: [cd.prod], [cd.platform] … at the main head"] --> RUN2["CD run"]
+  P["a person on the CD page, slug typed"] --> PROMO["promote the confirmed dev revision into main"] --> PROD["prod stage: [cd.prod], [cd.platform] … at the main head"] --> RUN2["CD run"]
   AG["agent"] -.->|"refused"| P
 ```
 
@@ -3213,9 +3215,12 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
     (`staging_note`).
   - `cd_status` and the CD page (`CdEnvironment.staging`) list the queue with revisions and run
     ids.
-  - Every promotion waits until staging serves the integration head, verified, read through the
-    CD mirror: `cd_prepare` for a production deploy, `staging_promotion_head` for the Delivery
-    page and the automatic one.
+  - A production CD deploy selects the verified staging revision through the CD mirror.
+    If the integration branch has advanced, a fast-forward uses the selected SHA and a
+    merge-commit release uses a same-repository pull request pinned to it. CD checks the
+    production tree against the confirmed revision. [ADR-0425](decisions/0425-pin-a-production-deploy-to-verified-dev.md)
+  - The Delivery page and automatic promotion use `staging_promotion_head` and wait for the
+    verified integration head.
     - A head that cannot be read is refused.
     - The queue's verified deploy runs the automatic promotion that waited.
   - A failed deploy that announced a rollback barrier is not restored.
@@ -3294,8 +3299,9 @@ branch's verified head. Which release is previous, kept or behind a barrier is
 `yulius_domain::rollback::History`. When a dev-stage deploy passes, its execution starts the drill
 (`App::cd_start_drill`; back to the previous release and forward, `drill_steps`), and a
 production-stage deploy asks `App::cd_rollback_gate` (`yulius_domain::rollback::production_gate`)
-before any secret or promotion: rollback configured, and the newest drill passed at the tree it
-deploys. A person's production deploy refused only for that proof, where the drill environment can
+before it obtains secrets or promotes a revision. Rollback must be configured and the drill must
+have passed for the deployed tree. While another dev commit is drilling, the last completed drill
+can prove that tree. A person's production deploy refused only for that proof, where the drill environment can
 deploy the same tree (`yulius_domain::rollback::dev_can_prove`, `App::cd_dev_proof`), deploys that
 environment instead as the same person (`App::cd_start_or_prove`,
 `crates/yulius-app/src/ci/prove.rs`;

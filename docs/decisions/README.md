@@ -456,7 +456,9 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0422 -->
 - [0423](0423-a-webpage-copy-returns-through-the-clicking-viewers-connection.md) returns a webpage’s clipboard write through the viewer connection that clicked.
 <!-- ADR 0423 -->
+- [0424](0424-keep-a-recorded-merge-visible-when-follow-up-discovery-is-unavailable.md) keeps a recorded merge visible when follow-up discovery is unavailable.
 <!-- ADR 0424 -->
+- [0425](0425-pin-a-production-deploy-to-verified-dev.md): Pin a production deploy to verified dev.
 <!-- ADR 0425 -->
 - [0426](0426-the-new-task-composer-defaults-to-codex.md) defaults the new-task composer to Codex when the browser has no saved model.
 <!-- ADR 0426 -->

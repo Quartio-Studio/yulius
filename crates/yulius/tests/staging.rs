@@ -8,7 +8,8 @@ use serde_json::{Value, json};
 use yulius_app::ci::{CiJobRecord, CiRunRecord};
 use yulius_app::ports::store::{AuditStore as _, SandboxStore as _, UserStore as _};
 use yulius_app::ports::store_ext::{
-    CdStore as _, CiStore as _, StagingChange, StagingRequestRecord, StagingStore as _,
+    CdStore as _, CiStore as _, DeliveryStore as _, StagingChange, StagingRequestRecord,
+    StagingStore as _,
 };
 use yulius_domain::ci::{CiRef, GateSource, RunState};
 use yulius_domain::ids::{SandboxId, TaskId};
@@ -600,8 +601,7 @@ async fn a_failed_deploy_puts_staging_back_on_its_last_verified_release() -> Tes
 }
 
 /// SPEC-575 MFS-009: with a merge-first target, a person's production deploy promotes only the
-/// revision staging verified. While the integration head is a newer revision not verified there,
-/// it is refused, naming both; once staging verified the head, the same deploy promotes it.
+/// revision staging verified, including while the next integration commit is still checking.
 #[tokio::test]
 async fn production_is_promoted_only_from_the_verified_staging_revision() -> TestResult {
     let toml = staging_toml().replace(
@@ -627,17 +627,132 @@ async fn production_is_promoted_only_from_the_verified_staging_revision() -> Tes
     ask(&f, "t1").await?;
     settle(&f).await?;
     assert_eq!(serving(&f)?, r1);
-    // A newer revision lands but is not verified on staging: refused, the head unpromoted.
+    // A newer revision is checking. The page offers the verified revision for confirmation.
     let r2 = land(&f, "t2", "two.txt").await?;
-    let refused = f.deploy(&f.bob, "prod", Some("app")).await?;
-    let said = refused.body.to_string();
-    assert!(
-        said.contains(&format!("staging verified {}", &r1[..7])) && said.contains(&r2[..7]),
-        "{said}"
+    let checking = gate(&f, &r2, RunState::Running).await?;
+    crate::cd::git(
+        &f.h.app.config.data_dir.join("sandboxes/s1/repo"),
+        &["fetch", "-q", "origin"],
+    )?;
+    f.h.store
+        .execute_for_tests(
+            "INSERT INTO delivery (task_id, stage, pr_number, updated_at)
+         VALUES ('t1', 'merged_integration', NULL, 1), ('t2', 'merged_integration', NULL, 1)",
+        )
+        .await?;
+    let overview = f.get("/api/sandboxes/s1/cd").await?;
+    let prod = overview["environments"]
+        .as_array()
+        .ok_or("envs")?
+        .iter()
+        .find(|env| env["name"] == "prod")
+        .ok_or("prod")?;
+    assert_eq!(prod["promotes_from"], r1);
+    // An existing release ref pointing elsewhere is refused and never overwritten.
+    let pin = format!("refs/heads/yulius/release/{r1}");
+    crate::cd::git(&f.origin, &["update-ref", &pin, &r2])?;
+    let moved = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(moved.status, axum::http::StatusCode::CONFLICT);
+    assert_eq!(crate::cd::git(&f.origin, &["rev-parse", &pin])?, r2);
+    assert!(!git_contains(&f, "main", &r1)?);
+    crate::cd::git(&f.origin, &["update-ref", "-d", &pin, &r2])?;
+    // An open promotion PR for the moving dev head remains independent of A's release.
+    use yulius_app::ports::github::{GitHubPort as _, NewPull};
+    let current_head_pr =
+        f.h.github
+            .create_pull(
+                &yulius_app::model::Secret("fixture-bob".into()),
+                "acme",
+                "app",
+                &NewPull {
+                    head: "dev".into(),
+                    base: "main".into(),
+                    title: "release: promote dev to main".into(),
+                    body: String::new(),
+                },
+            )
+            .await?;
+    f.h.github
+        .concurrent_release_ref
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    // GitHub lands the release, then reading its resulting commit fails. A retry must
+    // reconcile the landed tasks after confirming the tree, without another merge.
+    f.h.github
+        .fail_pinned_merge_read
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let uncertain = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert!(!uncertain.status.is_success(), "{}", uncertain.body);
+    assert!(git_contains(&f, "main", &r1)?);
+    assert_eq!(
+        f.h.github
+            .pull(current_head_pr.number)
+            .ok_or("other promotion")?
+            .state,
+        "open"
     );
-    assert!(!git_contains(&f, "main", &r2)?, "nothing promoted");
-    // Staging verifies r2: the same deploy promotes exactly it.
-    gate(&f, &r2, RunState::Passed).await?;
+
+    // The release reached GitHub, but its required checks must still permit the retry.
+    let mut recheck =
+        f.h.store
+            .ci_run(&format!("ci-{}", &r1[..12]))
+            .await?
+            .ok_or("first gate")?;
+    recheck.id = "recheck-staged-release".into();
+    recheck.state = RunState::Failed;
+    f.h.store.insert_ci_run(&recheck, &[]).await?;
+    let refused = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(
+        refused.status,
+        axum::http::StatusCode::CONFLICT,
+        "{}",
+        refused.body
+    );
+    assert_eq!(
+        f.h.store
+            .delivery(&TaskId::parse("t1")?)
+            .await?
+            .ok_or("t1")?
+            .stage,
+        yulius_domain::delivery::DeliveryStage::MergedIntegration
+    );
+    f.h.store
+        .execute_for_tests(
+            "UPDATE ci_runs SET state = 'passed' WHERE id = 'recheck-staged-release'",
+        )
+        .await?;
+
+    let deploy = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert!(deploy.status.is_success(), "{}", deploy.body);
+    let run = f
+        .ended(deploy.body["run_id"].as_str().ok_or("run")?)
+        .await?;
+    assert_eq!(run["state"], "passed");
+    assert!(git_contains(&f, "main", &r1)?);
+    assert!(!git_contains(&f, "main", &r2)?);
+    use yulius_domain::delivery::DeliveryStage;
+    assert_eq!(
+        f.h.store
+            .delivery(&TaskId::parse("t1")?)
+            .await?
+            .ok_or("t1 stage")?
+            .stage,
+        DeliveryStage::ProductionDone
+    );
+    assert_eq!(
+        f.h.store
+            .delivery(&TaskId::parse("t2")?)
+            .await?
+            .ok_or("t2 stage")?
+            .stage,
+        DeliveryStage::MergedIntegration
+    );
+    // Staging verifies r2: the same deploy now promotes it.
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE ci_runs SET state = 'passed' WHERE id = '{checking}';
+         UPDATE ci_jobs SET state = 'passed' WHERE run_id = '{checking}'"
+        ))
+        .await?;
     ask(&f, "t2").await?;
     settle(&f).await?;
     assert_eq!(serving(&f)?, r2);
@@ -650,6 +765,543 @@ async fn production_is_promoted_only_from_the_verified_staging_revision() -> Tes
     assert!(
         git_contains(&f, "main", &r2)?,
         "main holds the verified revision"
+    );
+    Ok(())
+}
+
+/// Without a staging target, branch CI supplies the release while the next head runs.
+#[tokio::test]
+async fn running_dev_ci_releases_only_the_preceding_green_revision() -> TestResult {
+    let f = fixture(
+        "[[ci.jobs]]\nname = \"full\"\ncommand = \"true\"\n[cd.dev]\n[cd.prod]\npromote = true\n",
+    )
+    .await?;
+    fast_forward_profile(&f, false).await?;
+    let a = f.push("dev", &[("a.txt", Some("verified"))])?;
+    let b = f.push("dev", &[("b.txt", Some("still running"))])?;
+    let active = gate(&f, &b, RunState::Running).await?;
+    let first = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(
+        first.status,
+        axum::http::StatusCode::CONFLICT,
+        "{}",
+        first.body
+    );
+    // A pass retained from a former branch history cannot become a production candidate.
+    let side = f.push("old-dev", &[("side.txt", Some("old history"))])?;
+    gate(&f, &side, RunState::Passed).await?;
+    let overview = f.get("/api/sandboxes/s1/cd").await?;
+    assert!(
+        overview["environments"][1]["promotes_from"].is_null(),
+        "{overview}"
+    );
+    let off_branch = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(
+        off_branch.status,
+        axum::http::StatusCode::CONFLICT,
+        "{}",
+        off_branch.body
+    );
+    gate(&f, &a, RunState::Passed).await?;
+    // Dev moves once more before the CI scheduler admits C. B is still verifying.
+    let c = f.push("dev", &[("newest.txt", Some("awaiting CI admission"))])?;
+    let deployed = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert!(deployed.status.is_success(), "{}", deployed.body);
+    assert_eq!(f.head("main")?, a);
+    assert_eq!(
+        f.h.store.ci_run(&active).await?.ok_or("active")?.state,
+        RunState::Running
+    );
+    // A green rerun of older A must not displace C when the next revision checks.
+    gate(&f, &c, RunState::Passed).await?;
+    let mut rerun =
+        f.h.store
+            .ci_run(&format!("ci-{}", &a[..12]))
+            .await?
+            .ok_or("A")?;
+    rerun.id = "green-rerun-A".into();
+    f.h.store.insert_ci_run(&rerun, &[]).await?;
+    // Cross a complete batch of first-parent history without any intervening verdict.
+    let mut d = f.push("dev", &[("d.txt", Some("checking"))])?;
+    let tree = crate::cd::git(&f.work, &["rev-parse", "HEAD^{tree}"])?;
+    for _ in 0..128 {
+        d = crate::cd::git(&f.work, &["commit-tree", &tree, "-p", &d, "-m", "pending"])?;
+    }
+    crate::cd::git(
+        &f.work,
+        &["push", "-q", "origin", &format!("{d}:refs/heads/dev")],
+    )?;
+    gate(&f, &d, RunState::Running).await?;
+    let newest = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert!(newest.status.is_success(), "{}", newest.body);
+    assert_eq!(f.head("main")?, c);
+    Ok(())
+}
+
+async fn deploy_with_shared_ci(newer_pending: bool) -> TestResult {
+    let f = fixture(concat!(
+        "[[ci.jobs]]\nname = \"security\"\ncommand = \"yulius security-scan --ci\"\n",
+        "[[ci.jobs]]\nname = \"full\"\ncommand = \"true\"\npaths = [\"src/**\"]\n",
+        "[cd.prod]\npromote = true\n",
+    ))
+    .await?;
+    fast_forward_profile(&f, false).await?;
+    let a = f.push("dev", &[("verified.txt", Some("A"))])?;
+    let id = gate(&f, &a, RunState::Passed).await?;
+    // A disabled security scan is a legitimate skip of the configured job.
+    f.h.store.execute_for_tests(&format!("UPDATE ci_jobs SET name='security', job_key='security', command='yulius security-scan --ci',
+        state='skipped', reason=NULL, exit_code=78 WHERE run_id='{id}' AND name='quick'")).await?;
+    if newer_pending {
+        let b = f.push("dev", &[("pending.txt", Some("B"))])?;
+        gate(&f, &b, RunState::Running).await?;
+    }
+    let original = f.head("main")?;
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE ci_runs SET reference = 'train/1' WHERE id = '{id}'"
+        ))
+        .await?;
+    let private = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(
+        private.status,
+        axum::http::StatusCode::CONFLICT,
+        "{}",
+        private.body
+    );
+    let skipped = yulius_domain::ci::AFTER_MERGE_SKIP_REASON;
+    f.h.store.execute_for_tests(&format!("UPDATE ci_runs SET reference = 'pr/17' WHERE id = '{id}';
+        UPDATE ci_jobs SET state = 'skipped', reason = '{skipped}' WHERE run_id = '{id}' AND name = 'full'")).await?;
+    let partial = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(
+        partial.status,
+        axum::http::StatusCode::CONFLICT,
+        "{}",
+        partial.body
+    );
+    assert_eq!(f.head("main")?, original);
+    f.h.store.execute_for_tests(&format!("UPDATE ci_jobs SET state = 'passed', reason = NULL WHERE run_id = '{id}' AND name = 'full'")).await?;
+    // A copied path skip can carry a generic note. A non-final train verdict looks like
+    // a PR run, although only the later combined tree ran its jobs. Neither verifies A.
+    let (label, change) = if newer_pending {
+        (
+            "path skip",
+            format!(
+                "UPDATE ci_jobs SET state='skipped', reason='copied verdict' WHERE run_id='{id}' AND name='full'"
+            ),
+        )
+    } else {
+        (
+            "non-final train step",
+            format!(
+                "UPDATE ci_runs SET requested_by='{}' WHERE id='{id}'",
+                yulius_app::merge_train::TRAIN_VERDICT_BY
+            ),
+        )
+    };
+    f.h.store.execute_for_tests(&change).await?;
+    let incomplete = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(
+        incomplete.status,
+        axum::http::StatusCode::CONFLICT,
+        "{label}: {}",
+        incomplete.body
+    );
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE ci_jobs SET state='passed', reason=NULL WHERE run_id='{id}' AND name='full';
+         UPDATE ci_runs SET requested_by='yulius' WHERE id='{id}'"
+        ))
+        .await?;
+    // A green job for an earlier command cannot satisfy this commit's gate.
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE ci_jobs SET command='old command' WHERE run_id='{id}' AND name='full'"
+        ))
+        .await?;
+    let changed = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(
+        changed.status,
+        axum::http::StatusCode::CONFLICT,
+        "{}",
+        changed.body
+    );
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE ci_jobs SET command='true' WHERE run_id='{id}' AND name='full'"
+        ))
+        .await?;
+    let released = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert!(released.status.is_success(), "{}", released.body);
+    assert_eq!(f.head("main")?, a);
+    f.ended(released.body["run_id"].as_str().ok_or("run")?)
+        .await?;
+    let mut explicit = f.h.store.ci_run(&id).await?.ok_or("shared run")?;
+    explicit.id = "explicit-branch-rerun".into();
+    explicit.reference = CiRef::Branch("dev".into());
+    explicit.state = RunState::Running;
+    explicit.ended_at = None;
+    let mut jobs = f.h.store.ci_jobs(&id, false).await?;
+    for job in &mut jobs {
+        job.id = format!("explicit-{}", job.key);
+        job.run_id.clone_from(&explicit.id);
+        if job.key == "full" {
+            // Path filters do not prevent a branch job from running. It can start and
+            // decide to skip, or have that executed verdict copied from the same tree.
+            job.state = RunState::Skipped;
+            job.exit_code = Some(yulius_domain::ci::SKIP_EXIT_CODE);
+            job.reason = newer_pending.then(|| yulius_domain::ci::EXECUTED_SKIP_REASON.into());
+        } else {
+            job.state = RunState::Passed;
+            job.exit_code = Some(0);
+            job.reason = None;
+        }
+    }
+    f.h.store.insert_ci_run(&explicit, &jobs).await?;
+    let checking = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(
+        checking.status,
+        axum::http::StatusCode::CONFLICT,
+        "{}",
+        checking.body
+    );
+    f.h.store
+        .execute_for_tests("UPDATE ci_runs SET state='passed' WHERE id='explicit-branch-rerun'")
+        .await?;
+    let checked = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert!(
+        checked.status.is_success(),
+        "executed path-scoped job: {}",
+        checked.body
+    );
+    assert_eq!(f.head("main")?, a);
+    Ok(())
+}
+
+/// Dev can deploy a fast-forwarded SHA that the ordinary scheduler already tested in full.
+#[tokio::test]
+async fn dev_head_accepts_its_full_shared_ci_verdict() -> TestResult {
+    deploy_with_shared_ci(false).await
+}
+
+/// The same shared verification stays eligible after the next commit starts checking.
+#[tokio::test]
+async fn prior_dev_revision_accepts_its_full_shared_ci_verdict() -> TestResult {
+    deploy_with_shared_ci(true).await
+}
+
+/// Rerunning A while B is current can apply B's job configuration to A.
+async fn historical_rerun_covers_the_release(branch: bool) -> TestResult {
+    let config = "[[ci.jobs]]\nname = \"full\"\ncommand = \"true\"\n[cd.prod]\npromote = true\n";
+    let f = fixture(config).await?;
+    fast_forward_profile(&f, false).await?;
+    let a = f.push("dev", &[("candidate.txt", Some("A"))])?;
+    let original = gate(&f, &a, RunState::Failed).await?;
+    let revised = if branch {
+        config.replace("command = \"true\"", "command = \"echo easier\"")
+    } else {
+        config.replace("[cd.prod]", "paths = [\"src/**\"]\n[cd.prod]")
+    };
+    let b = f.push("dev", &[("yulius.toml", Some(&revised))])?;
+    gate(&f, &b, RunState::Running).await?;
+    let mut run = f.h.store.ci_run(&original).await?.ok_or("old run")?;
+    if !branch {
+        run.reference = CiRef::PullRequest(17);
+        f.h.store
+            .execute_for_tests(&format!(
+                "UPDATE ci_runs SET reference='pr/17' WHERE id='{original}'"
+            ))
+            .await?;
+    }
+    run.id = "historical-rerun".into();
+    run.state = RunState::Passed;
+    let mut jobs = f.h.store.ci_jobs(&original, false).await?;
+    for job in &mut jobs {
+        job.id = format!("rerun-{}", job.key);
+        job.run_id.clone_from(&run.id);
+        if job.key == "full" {
+            if branch {
+                job.state = RunState::Passed;
+                job.exit_code = Some(0);
+                job.command = "echo easier".into();
+            } else {
+                job.state = RunState::Skipped;
+                job.exit_code = Some(yulius_domain::ci::SKIP_EXIT_CODE);
+                job.reason = Some(yulius_domain::ci::PATHS_SKIP_REASON.into());
+            }
+        }
+    }
+    f.h.store.insert_ci_run(&run, &jobs).await?;
+    let production = f.head("main")?;
+    let refused = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(
+        refused.status,
+        axum::http::StatusCode::CONFLICT,
+        "{}",
+        refused.body
+    );
+    assert_eq!(f.head("main")?, production);
+    if !branch {
+        // Old copied verdicts have lost the reason for their skip.
+        f.h.store
+            .execute_for_tests(
+                "UPDATE ci_jobs SET reason='not run again: same tree' WHERE id='rerun-full'",
+            )
+            .await?;
+        let ambiguous = f.deploy(&f.bob, "prod", Some("app")).await?;
+        assert_eq!(
+            ambiguous.status,
+            axum::http::StatusCode::CONFLICT,
+            "{}",
+            ambiguous.body
+        );
+        assert_eq!(f.head("main")?, production);
+    }
+    f.h.store.execute_for_tests("UPDATE ci_jobs SET state='passed', command='true', reason=NULL, exit_code=0 WHERE id='rerun-full'").await?;
+    let released = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert!(released.status.is_success(), "{}", released.body);
+    assert_eq!(f.head("main")?, a);
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_explicit_dev_rerun_must_execute_the_releases_own_job() -> TestResult {
+    historical_rerun_covers_the_release(true).await
+}
+
+#[tokio::test]
+async fn a_pr_rerun_cannot_skip_an_unscoped_release_job() -> TestResult {
+    historical_rerun_covers_the_release(false).await
+}
+
+/// Removing staging in a newer commit cannot release a candidate whose own staging never passed.
+#[tokio::test]
+async fn the_release_keeps_its_own_staging_requirement() -> TestResult {
+    let f = fixture(&promoting_toml()).await?;
+    let a = f.push("dev", &[("a.txt", Some("branch CI only"))])?;
+    gate(&f, &a, RunState::Passed).await?;
+    let config = "[[ci.jobs]]\nname = \"checks\"\ncommand = \"true\"\n[cd.prod]\npromote = true\n";
+    let b = f.push("dev", &[("yulius.toml", Some(config))])?;
+    gate(&f, &b, RunState::Running).await?;
+    let production = f.head("main")?;
+    let refused = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(
+        refused.status,
+        axum::http::StatusCode::CONFLICT,
+        "{}",
+        refused.body
+    );
+    assert_eq!(f.head("main")?, production);
+    let overview = f.get("/api/sandboxes/s1/cd").await?;
+    let prod = overview["environments"]
+        .as_array()
+        .ok_or("environments")?
+        .iter()
+        .find(|env| env["name"] == "prod")
+        .ok_or("prod")?;
+    assert!(prod["promotes_from"].is_null(), "{prod}");
+    Ok(())
+}
+
+/// Staging can serve B while its own rollback proof is running. Its previous proof
+/// supplies A only when both the drill and staging verified that revision.
+#[tokio::test]
+async fn staging_and_the_running_drill_agree_on_the_release_revision() -> TestResult {
+    let config = promoting_toml()
+        .replace(
+            "[cd.prod]",
+            "[cd.prod]\ndeploy = \"true\"\nrollback = \"true\"\nmigrations = \"none: no data\"",
+        )
+        .replace(
+            "[cd.dev]",
+            "[cd.dev]\ndeploy = \"true\"\nrollback = \"true\"\nmigrations = \"none: no data\"",
+        );
+    let f = fixture(&config).await?;
+    let original = f.head("main")?;
+    agent(&f, "t1").await?;
+    let a = land(&f, "t1", "first.txt").await?;
+    gate(&f, &a, RunState::Passed).await?;
+    ask(&f, "t1").await?;
+    settle(&f).await?;
+    f.prove("dev").await?;
+    agent(&f, "t2").await?;
+    let b = land(&f, "t2", "second.txt").await?;
+    gate(&f, &b, RunState::Passed).await?;
+    ask(&f, "t2").await?;
+    settle(&f).await?;
+    let proof_id = format!("drill-{}", &a[..12]);
+    let mut running =
+        f.h.store
+            .cd_run(&proof_id, false)
+            .await?
+            .ok_or("A's drill")?;
+    running.id = "drill-current-staged".into();
+    running.sha.clone_from(&b);
+    running.state = RunState::Running;
+    running.ended_at = None;
+    f.h.store.insert_cd_run(&running).await?;
+    crate::cd::git(
+        &f.h.app.config.data_dir.join("sandboxes/s1/repo"),
+        &["fetch", "-q", "origin"],
+    )?;
+    let offered = |overview: Value| -> BoxResult<Value> {
+        Ok(overview["environments"]
+            .as_array()
+            .ok_or("environments")?
+            .iter()
+            .find(|env| env["name"] == "prod")
+            .ok_or("prod")?["promotes_from"]
+            .clone())
+    };
+    assert_eq!(offered(f.get("/api/sandboxes/s1/cd").await?)?, a);
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE cd_runs SET state='failed' WHERE id='{proof_id}'"
+        ))
+        .await?;
+    assert!(offered(f.get("/api/sandboxes/s1/cd").await?)?.is_null());
+    // Rechecking the same commit cannot borrow its own old passing attempt.
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE cd_runs SET state='passed', sha='{b}' WHERE id='{proof_id}'"
+        ))
+        .await?;
+    assert!(offered(f.get("/api/sandboxes/s1/cd").await?)?.is_null());
+    // A drill for a revision that was never staged cannot stand in for the prior release.
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE cd_runs SET sha='{original}' WHERE id='{proof_id}'"
+        ))
+        .await?;
+    assert!(offered(f.get("/api/sandboxes/s1/cd").await?)?.is_null());
+    // A drill for C does not displace already-staged B.
+    let c = f.push("dev", &[("third.txt", Some("checking"))])?;
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE cd_runs SET sha='{c}' WHERE id='drill-current-staged'"
+        ))
+        .await?;
+    assert_eq!(offered(f.get("/api/sandboxes/s1/cd").await?)?, b);
+    Ok(())
+}
+
+/// When dev retires staging, a previously verified staging release remains eligible while
+/// its unstaged successor and the new configuration cannot qualify.
+#[tokio::test]
+async fn retiring_staging_keeps_its_last_verified_release_available() -> TestResult {
+    let f = fixture(&promoting_toml()).await?;
+    agent(&f, "t1").await?;
+    let a = land(&f, "t1", "staged.txt").await?;
+    gate(&f, &a, RunState::Passed).await?;
+    ask(&f, "t1").await?;
+    settle(&f).await?;
+    let b = f.push("dev", &[("unstaged.txt", Some("only CI passed"))])?;
+    gate(&f, &b, RunState::Passed).await?;
+    let config = "[[ci.jobs]]\nname = \"checks\"\ncommand = \"true\"\n[cd.prod]\npromote = true\n";
+    let c = f.push("dev", &[("yulius.toml", Some(config))])?;
+    gate(&f, &c, RunState::Running).await?;
+    crate::cd::git(
+        &f.h.app.config.data_dir.join("sandboxes/s1/repo"),
+        &["fetch", "-q", "origin"],
+    )?;
+    let overview = f.get("/api/sandboxes/s1/cd").await?;
+    let prod = overview["environments"]
+        .as_array()
+        .ok_or("environments")?
+        .iter()
+        .find(|env| env["name"] == "prod")
+        .ok_or("prod")?;
+    assert_eq!(prod["promotes_from"], a, "{prod}");
+    let released = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert!(released.status.is_success(), "{}", released.body);
+    assert!(git_contains(&f, "main", &a)?);
+    assert!(!git_contains(&f, "main", &b)?);
+    assert!(!git_contains(&f, "main", &c)?);
+    Ok(())
+}
+
+/// If production changes in the hosting provider's merge window, CD refuses the resulting
+/// tree and keeps the included task on integration.
+#[tokio::test]
+async fn a_concurrent_production_change_never_records_the_wrong_tree_as_released() -> TestResult {
+    let f = fixture(&promoting_toml()).await?;
+    let unrelated = f.push("other-release", &[("other.txt", Some("concurrent"))])?;
+    agent(&f, "t1").await?;
+    let a = land(&f, "t1", "a.txt").await?;
+    gate(&f, &a, RunState::Passed).await?;
+    ask(&f, "t1").await?;
+    settle(&f).await?;
+    f.push("dev", &[("b.txt", Some("pending"))])?;
+    f.h.store.execute_for_tests("INSERT INTO delivery (task_id, stage, pr_number, updated_at) VALUES ('t1', 'merged_integration', NULL, 1)").await?;
+    *f.h.github
+        .advance_base_on_merge
+        .lock()
+        .map_err(|_| "poisoned")? = Some(unrelated);
+    let refused = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(
+        refused.status,
+        axum::http::StatusCode::CONFLICT,
+        "{}",
+        refused.body
+    );
+    assert_eq!(
+        f.h.store
+            .delivery(&TaskId::parse("t1")?)
+            .await?
+            .ok_or("stage")?
+            .stage,
+        yulius_domain::delivery::DeliveryStage::MergedIntegration
+    );
+    Ok(())
+}
+
+/// A same-tree commit with an unexpected acknowledgement is rechecked before recording
+/// deliveries. A retry honors the delivery profile's optional checks.
+#[tokio::test]
+async fn a_release_retry_verifies_the_merge_receipt_and_honors_optional_checks() -> TestResult {
+    let f = fixture(&promoting_toml()).await?;
+    agent(&f, "t1").await?;
+    let a = land(&f, "t1", "verified.txt").await?;
+    gate(&f, &a, RunState::Passed).await?;
+    ask(&f, "t1").await?;
+    settle(&f).await?;
+    f.push("dev", &[("pending.txt", Some("B"))])?;
+    f.h.store.execute_for_tests("INSERT INTO delivery (task_id, stage, pr_number, updated_at) VALUES ('t1', 'merged_integration', NULL, 1)").await?;
+    f.h.github
+        .report_source_as_merge
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let refused = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(
+        refused.status,
+        axum::http::StatusCode::CONFLICT,
+        "{}",
+        refused.body
+    );
+    let landed = f.head("main")?;
+    assert_ne!(landed, a);
+    assert_eq!(
+        crate::cd::git(&f.origin, &["rev-parse", "main^{tree}"])?,
+        crate::cd::git(&f.origin, &["rev-parse", &format!("{a}^{{tree}}")])?
+    );
+    let id = TaskId::parse("t1")?;
+    assert_eq!(
+        f.h.store.delivery(&id).await?.ok_or("t1")?.stage,
+        yulius_domain::delivery::DeliveryStage::MergedIntegration
+    );
+    fast_forward_profile(&f, false).await?;
+    let mut recheck =
+        f.h.store
+            .ci_run(&format!("ci-{}", &a[..12]))
+            .await?
+            .ok_or("gate")?;
+    recheck.id = "optional-recheck".into();
+    recheck.state = RunState::Failed;
+    f.h.store.insert_ci_run(&recheck, &[]).await?;
+    let retry = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert!(retry.status.is_success(), "{}", retry.body);
+    assert_eq!(f.head("main")?, landed);
+    assert_eq!(
+        f.h.store.delivery(&id).await?.ok_or("t1")?.stage,
+        yulius_domain::delivery::DeliveryStage::ProductionDone
     );
     Ok(())
 }

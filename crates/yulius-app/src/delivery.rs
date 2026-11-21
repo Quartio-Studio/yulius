@@ -150,9 +150,70 @@ impl ParkedPullRead {
 
 #[derive(Default)]
 pub(crate) struct ParkingPrs {
+    pub(crate) followup_unverified: bool,
     checkout: Option<String>,
     watched: Option<u64>,
-    pulls: Vec<(u64, String)>,
+    pulls: Vec<GhPull>,
+}
+
+/// A display read publishes one ordered observation of a merged task's branch. Its
+/// direct PR checks refine the list, including when a later check hits the deadline.
+pub(crate) struct FollowupDiscovery {
+    read: Option<crate::sandboxes::OverviewRead>,
+    merged: u64,
+    deadline: tokio::time::Instant,
+    open: Option<Vec<u64>>,
+}
+
+impl FollowupDiscovery {
+    pub(crate) fn new(
+        read: Option<crate::sandboxes::OverviewRead>,
+        merged: u64,
+        deadline: tokio::time::Instant,
+    ) -> Self {
+        Self {
+            read,
+            merged,
+            deadline,
+            open: None,
+        }
+    }
+
+    async fn lookup<T>(&self, read: impl std::future::Future<Output = AppResult<T>>) -> Option<T> {
+        self.read.as_ref()?;
+        // Reserve time for the local task and delivery recheck after an inconclusive list.
+        let remaining = self
+            .deadline
+            .saturating_duration_since(tokio::time::Instant::now());
+        tokio::time::timeout_at(self.deadline - remaining / 4, read)
+            .await
+            .ok()?
+            .ok()
+    }
+
+    fn listed(&mut self, pulls: &[GhPull], closed: &std::collections::BTreeSet<u64>) {
+        self.open = Some(
+            pulls
+                .iter()
+                .map(|pr| pr.number)
+                .filter(|n| !closed.contains(n))
+                .collect(),
+        );
+    }
+
+    pub(crate) fn publish(
+        &mut self,
+        task: &TaskId,
+        verified: Option<yulius_contracts::api::tasks::ParkedPr>,
+    ) {
+        if let (Some(read), Some(open)) = (self.read.take(), self.open.take()) {
+            let replacement = verified
+                .filter(|pr| pr.open && open.contains(&pr.number))
+                .map(|pr| pr.number)
+                .or_else(|| open.last().copied());
+            read.record_branch(task, self.merged, replacement);
+        }
+    }
 }
 
 /// The persisted delivery stage of one task.
@@ -763,6 +824,18 @@ pub(crate) fn tested_checks_word(profile: &DeliveryProfile, word: &'static str) 
     } else {
         word
     }
+}
+
+/// A protected branch head or an earlier revision selected through the trusted CD mirror.
+#[derive(Clone, Copy)]
+pub(crate) enum PromotionSource<'a> {
+    Head(Option<&'a str>),
+    Verified {
+        sha: &'a str,
+        head: &'a str,
+        base: &'a str,
+        mirror: &'a Path,
+    },
 }
 
 fn pull_facts(pull: &GhPull) -> PullFacts<'_> {
@@ -3963,9 +4036,42 @@ impl App {
         &self,
         task: &TaskRecord,
         facts: &ParkingPrs,
+        before: Option<&crate::stages::SpanRecord>,
     ) -> AppResult<bool> {
-        Ok(self.parking_checkout_matches(task, facts).await?
-            && self.parking_ci_blocker(task, facts).await?.is_none())
+        if !self.parking_checkout_matches(task, facts).await?
+            || self.parking_ci_blocker(task, facts).await?.is_some()
+        {
+            return Ok(false);
+        }
+        let wait = self.deps.store.latest_merge_wait(&task.id).await?;
+        if wait.as_ref() != before {
+            return Ok(false);
+        }
+        if facts.pulls.is_empty() {
+            return Ok(true);
+        }
+        let (_, mut outcome) = self.armed_view(&task.id);
+        let Some((_, decision)) = crate::pr_watch::candidate_from_wait(wait, &mut outcome)? else {
+            return Ok(true);
+        };
+        let Some(pull) = facts
+            .pulls
+            .iter()
+            .find(|pull| pull.number == decision.singleton.pr)
+        else {
+            return Ok(true);
+        };
+        if pull.merged || pull.from_fork {
+            return Ok(true);
+        }
+        if pull.head.is_empty() || pull.head_sha.is_empty() || pull.base.is_empty() {
+            return Ok(false);
+        }
+        let sandbox = self.dlv_sandbox_of(task).await?;
+        let same_owner = task.branch.as_deref() == Some(&pull.head)
+            && pull.base == delivery_profile(&sandbox).integration_branch
+            && pull.head_sha == decision.head;
+        Ok(!same_owner || (!pull.base_sha.is_empty() && pull.base_sha != decision.singleton.base))
     }
 
     async fn parking_checkout_matches(
@@ -3985,12 +4091,12 @@ impl App {
         task: &TaskRecord,
         facts: &ParkingPrs,
     ) -> AppResult<Option<(u64, PullSignal)>> {
-        for (number, head) in &facts.pulls {
+        for pull in &facts.pulls {
             if let Some(signal) = self
-                .parking_ci_signal(task, *number, head, facts.watched)
+                .parking_ci_signal(task, pull.number, &pull.head_sha, facts.watched)
                 .await?
             {
-                return Ok(Some((*number, signal)));
+                return Ok(Some((pull.number, signal)));
             }
         }
         Ok(None)
@@ -4185,7 +4291,7 @@ impl App {
         purpose: PrVerification,
     ) -> AppResult<Option<ParkingPrs>> {
         let mut observed = ParkedPullRead::recorded(record);
-        self.verify_task_prs(task, record, purpose, &mut observed)
+        self.verify_task_prs(task, record, purpose, &mut observed, None)
             .await
     }
 
@@ -4245,6 +4351,7 @@ impl App {
         record: Option<&DeliveryRecord>,
         purpose: PrVerification,
         observed: &mut ParkedPullRead,
+        mut discovery: Option<&mut FollowupDiscovery>,
     ) -> AppResult<Option<ParkingPrs>> {
         let tracked = record
             .filter(|r| r.stage == DeliveryStage::PrOpen)
@@ -4263,20 +4370,14 @@ impl App {
         if sandbox.is_playground() || !self.github_configured().await? {
             return Ok((observed.pr.is_none_or(|pr| !pr.open)).then(ParkingPrs::default));
         }
-        let token = self.dlv_installation_token(&sandbox).await?;
-        let branch_pulls = || async {
+        let branch_pulls = async |token: &Secret| {
             let Some(branch) = task.branch.as_deref() else {
                 return Ok(Vec::new());
             };
             let mut pulls = self
                 .deps
                 .github
-                .list_pulls(
-                    &token,
-                    &sandbox.repo_owner,
-                    &sandbox.repo_name,
-                    Some(branch),
-                )
+                .list_pulls(token, &sandbox.repo_owner, &sandbox.repo_name, Some(branch))
                 .await?;
             pulls.retain(|pull| {
                 !pull.from_fork
@@ -4290,7 +4391,30 @@ impl App {
         // Branch-scoped discovery also finds PRs omitted by a partial sandbox overview
         // and new PRs opened externally while an older recorded delivery is being reconciled.
         let watched = tracked.filter(|_| purpose.watches_pending(self.config.ci.enabled));
-        let branch = branch_pulls().await?;
+        let discover = async {
+            let token = self.dlv_installation_token(&sandbox).await?;
+            let branch = branch_pulls(&token).await?;
+            Ok::<_, AppError>((token, branch))
+        };
+        let inconclusive = |observed: &mut ParkedPullRead| {
+            *observed = self.known_parked_pull(task, record);
+            observed.pr.filter(|pr| !pr.open).map(|_| ParkingPrs {
+                followup_unverified: true,
+                ..ParkingPrs::default()
+            })
+        };
+        let (token, branch) = if let Some(read) = discovery.as_ref() {
+            let Some(found) = read.lookup(discover).await else {
+                return Ok(inconclusive(observed));
+            };
+            found
+        } else {
+            discover.await?
+        };
+        let mut closed = std::collections::BTreeSet::new();
+        if let Some(read) = discovery.as_mut() {
+            read.listed(&branch, &closed);
+        }
         *observed = ParkedPullRead::recorded(record);
         observed.note_open_branch(&branch);
         if branch.len() > MAX_PULLS {
@@ -4304,7 +4428,6 @@ impl App {
         let checkout = self.verification_checkout(task, purpose).await?;
         let mut pulls = Vec::new();
         let mut verified = true;
-        let mut closed = std::collections::BTreeSet::new();
         for number in numbers {
             let checks = if purpose == PrVerification::WatchPending && watched != Some(number) {
                 PrVerification::Settled
@@ -4319,8 +4442,11 @@ impl App {
                 .is_some_and(|pr| !pr.open && pr.number == number)
             {
                 closed.insert(number);
+                if let Some(read) = discovery.as_mut() {
+                    read.listed(&branch, &closed);
+                }
             }
-            let Some(pull) = pull else {
+            let Some(pull) = pull.filter(|pull| pull.number == number) else {
                 verified = false;
                 break;
             };
@@ -4342,17 +4468,33 @@ impl App {
                 verified = false;
                 break;
             }
-            pulls.push((number, pull.head_sha));
+            pulls.push(pull);
         }
         if !verified && purpose != PrVerification::Display {
             return Ok(None);
         }
         let mut facts = ParkingPrs {
+            followup_unverified: false,
             checkout,
             pulls,
             watched,
         };
-        let current = branch_pulls().await?;
+        let current = if let Some(read) = discovery
+            .as_mut()
+            .filter(|_| verified && closed.len() == branch.len())
+        {
+            let Some(current) = read.lookup(branch_pulls(&token)).await else {
+                // Publish the directly confirmed merges before consulting concurrent observations.
+                read.publish(&task.id, observed.pr);
+                return Ok(inconclusive(observed));
+            };
+            current
+        } else {
+            branch_pulls(&token).await?
+        };
+        if let Some(read) = discovery {
+            read.listed(&current, &closed);
+        }
         if purpose != PrVerification::Display {
             return Ok((current == branch).then_some(facts));
         }
@@ -4382,7 +4524,7 @@ impl App {
                 // failure on a still-current, directly verified head takes priority.
                 facts
                     .pulls
-                    .retain(|(number, sha)| survives(*number, Some(sha)));
+                    .retain(|pull| survives(pull.number, Some(&pull.head_sha)));
                 if let Some((number, signal)) = self.parking_ci_blocker(task, &facts).await? {
                     observed.signal = Some(signal);
                     observed.pr =
@@ -4412,9 +4554,9 @@ impl App {
         }
         // A branch list can lag a direct get_pull confirmation of a merge.
         // Among successful reads only a PR confirmed open can replace it.
-        if verified && let Some((number, _)) = facts.pulls.last() {
+        if verified && let Some(pull) = facts.pulls.last() {
             observed.pr = Some(yulius_contracts::api::tasks::ParkedPr {
-                number: *number,
+                number: pull.number,
                 open: true,
             });
         }
@@ -4576,7 +4718,8 @@ impl App {
         // Checks and local conflict detection can take long enough for another push.
         let current = read().await?;
         observed.note_closed(&current);
-        let same_open_head = same_open_pull(&pull, &current);
+        let same_open_head = same_open_pull(&pull, &current)
+            && (purpose == PrVerification::Display || pull.base_sha == current.base_sha);
         if same_open_head && mergeable != Some(true) {
             let own = self
                 .parking_ci_signal(task, number, &current.head_sha, None)
@@ -5434,8 +5577,12 @@ impl App {
         actor: &UserRecord,
         token: &Secret,
         fetched: bool,
-        expected: Option<&str>,
+        source: PromotionSource<'_>,
     ) -> AppResult<PromoteResult> {
+        let expected = match source {
+            PromotionSource::Head(sha) => sha,
+            PromotionSource::Verified { sha, .. } => Some(sha),
+        };
         crate::playground::refuse_in_playground(sandbox, "Promotion")?;
         let moved = |at: &str| {
             AppError::Conflict(format!(
@@ -5445,12 +5592,44 @@ impl App {
                 at.get(..7).unwrap_or(at)
             ))
         };
-        let candidates: Vec<(TaskRecord, DeliveryRecord)> = self
-            .dlv_sandbox_deliveries(sandbox)
-            .await?
-            .into_iter()
-            .filter(|(_, record)| region(&record.stage, profile) == Some(Stage::Integration))
-            .collect();
+        let mut candidates = Vec::new();
+        for (task, record) in self.dlv_sandbox_deliveries(sandbox).await? {
+            if region(&record.stage, profile) != Some(Stage::Integration) {
+                continue;
+            }
+            if let PromotionSource::Verified { sha, mirror, .. } = source {
+                let mut landing = self
+                    .deps
+                    .store
+                    .landed_sha(&task.id, record.pr_number, None)
+                    .await?;
+                if landing.is_none()
+                    && let Some(number) = record.pr_number
+                {
+                    let pull = self
+                        .deps
+                        .github
+                        .get_pull(token, &sandbox.repo_owner, &sandbox.repo_name, number)
+                        .await?;
+                    let known = evidence::Landing::closed_pull(&pull);
+                    landing = self
+                        .deps
+                        .store
+                        .landed_sha(&task.id, Some(number), known.as_ref())
+                        .await?;
+                }
+                let landing = landing.ok_or_else(|| {
+                    AppError::Conflict(format!(
+                        "the merged revision of task #{} is unknown",
+                        task.number
+                    ))
+                })?;
+                if !self.deps.git.is_ancestor(mirror, &landing, sha).await? {
+                    continue;
+                }
+            }
+            candidates.push((task, record));
+        }
         for (task, record) in &candidates {
             if let Some(env) = pending_integration_environment(&record.stage, profile) {
                 return Err(AppError::Conflict(format!(
@@ -5475,16 +5654,47 @@ impl App {
                     profile.integration_branch
                 ))
             })?;
-        if expected.is_some_and(|sha| !sha.eq_ignore_ascii_case(&integration_sha)) {
+        let observed = match source {
+            PromotionSource::Head(sha) => sha,
+            PromotionSource::Verified { head, .. } => Some(head),
+        };
+        if observed.is_some_and(|sha| !sha.eq_ignore_ascii_case(&integration_sha)) {
             return Err(moved(&integration_sha));
         }
+        let integration_sha = expected.unwrap_or(&integration_sha).to_owned();
         let production_sha = github
             .branch_sha(token, owner, name, &profile.production_branch)
             .await?;
-        let relation = self.dlv_branch_relation(sandbox, profile, fetched).await;
+        if let PromotionSource::Verified { base, .. } = source
+            && production_sha.as_deref() != Some(base)
+        {
+            return Err(AppError::Conflict(
+                "nothing was promoted: the production base changed after the release preview"
+                    .into(),
+            ));
+        }
+        let relation = match (source, production_sha.as_deref()) {
+            (PromotionSource::Verified { mirror, .. }, Some(prod)) => Some(
+                self.deps
+                    .git
+                    .ahead_behind(mirror, prod, &integration_sha)
+                    .await?,
+            ),
+            _ => self.dlv_branch_relation(sandbox, profile, fetched).await,
+        };
         let contained = production_sha.as_deref() == Some(integration_sha.as_str())
             || relation.is_some_and(|(ahead, _)| ahead == 0);
         if contained {
+            if matches!(source, PromotionSource::Verified { .. }) && profile.require_checks {
+                self.dlv_checks_allow(sandbox, token, &integration_sha, false)
+                    .await?;
+            }
+            if candidates.is_empty() && matches!(source, PromotionSource::Verified { .. }) {
+                return Ok(PromoteResult {
+                    result: "already_promoted".into(),
+                    sha: production_sha,
+                });
+            }
             if candidates.is_empty() {
                 return Err(AppError::Conflict(format!(
                     "nothing to promote: '{}' already contains '{}'",
@@ -5571,6 +5781,39 @@ impl App {
                 ("promoted", integration_sha.clone())
             }
             PromoteMethod::MergeCommit => {
+                let from = if let PromotionSource::Verified { sha, .. } = source {
+                    let branch = format!("yulius/release/{sha}");
+                    if github
+                        .branch_sha(token, owner, name, &branch)
+                        .await?
+                        .is_none()
+                    {
+                        // Another request can create the same ref between the read and the POST.
+                        if let Err(err) =
+                            github.create_branch(token, owner, name, &branch, sha).await
+                            && github
+                                .branch_sha(token, owner, name, &branch)
+                                .await?
+                                .as_deref()
+                                != Some(sha)
+                        {
+                            return Err(err);
+                        }
+                    }
+                    if github
+                        .branch_sha(token, owner, name, &branch)
+                        .await?
+                        .as_deref()
+                        != Some(sha)
+                    {
+                        return Err(AppError::Conflict(format!(
+                            "promotion ref {branch} has changed"
+                        )));
+                    }
+                    branch
+                } else {
+                    profile.integration_branch.clone()
+                };
                 let existing = github
                     .list_pulls(token, owner, name, None)
                     .await?
@@ -5579,7 +5822,7 @@ impl App {
                         // A fork's `dev` is never this repository's promotion (SPEC-069).
                         is_open(p)
                             && !p.from_fork
-                            && p.head == profile.integration_branch
+                            && p.head == from
                             && p.base == profile.production_branch
                     });
                 match existing {
@@ -5601,7 +5844,7 @@ impl App {
                                 owner,
                                 name,
                                 &NewPull {
-                                    head: profile.integration_branch.clone(),
+                                    head: from.clone(),
                                     base: profile.production_branch.clone(),
                                     // The branch policy's release title (SPEC-069 BPL-005).
                                     title: format!(
@@ -5639,11 +5882,26 @@ impl App {
                         if expected.is_some_and(|sha| !sha.eq_ignore_ascii_case(&pull.head_sha)) {
                             return Err(moved(&pull.head_sha));
                         }
-                        self.dlv_check_policy(sandbox, profile, pull.number, &pull_facts(&pull))
+                        let mut facts = pull_facts(&pull);
+                        // The exact PR SHA and same-repository ref were checked above. This
+                        // ref represents a verified commit of the integration branch for policy.
+                        if matches!(source, PromotionSource::Verified { .. }) {
+                            facts.head = &profile.integration_branch;
+                        }
+                        self.dlv_check_policy(sandbox, profile, pull.number, &facts)
                             .await?;
                         if profile.require_checks {
                             self.dlv_checks_allow(sandbox, token, &pull.head_sha, false)
                                 .await?;
+                        }
+                        if let PromotionSource::Verified { base, .. } = source
+                            && github
+                                .branch_sha(token, owner, name, &profile.production_branch)
+                                .await?
+                                .as_deref()
+                                != Some(base)
+                        {
+                            return Err(AppError::Conflict("nothing was promoted: the production base changed while checking the release pull request".into()));
                         }
                         let sha = github
                             .merge_pull(
@@ -5660,6 +5918,29 @@ impl App {
                 }
             }
         };
+        if let PromotionSource::Verified {
+            sha: candidate,
+            mirror,
+            ..
+        } = source
+        {
+            // GitHub guards the PR head atomically. An outside writer can still move its base
+            // inside the merge call. Check the result before recording any delivery as released.
+            self.dlv_refresh_clone(sandbox).await?;
+            let current = self
+                .cd_verified_head(sandbox, &profile.production_branch, token)
+                .await?;
+            let tree = self.deps.git.tree_of(mirror, candidate).await?;
+            if current != sha
+                || tree.is_none()
+                || self.deps.git.tree_of(mirror, &current).await? != tree
+            {
+                return Err(AppError::Conflict(
+                    "nothing was deployed: the production merge did not land the confirmed tree"
+                        .into(),
+                ));
+            }
+        }
         self.dlv_audit(
             &Self::dlv_policy_actor(by, actor),
             "delivery.promote",
@@ -5755,7 +6036,7 @@ impl App {
                 actor,
                 token,
                 fetched,
-                head.as_deref(),
+                PromotionSource::Head(head.as_deref()),
             )
             .await;
         match promoted {
@@ -5833,7 +6114,7 @@ impl App {
             &ctx.user,
             &token,
             false,
-            head.as_deref(),
+            PromotionSource::Head(head.as_deref()),
         )
         .await
     }
@@ -6662,6 +6943,31 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn branch_publication_discards_verified_ids_absent_from_the_final_open_list() -> AppResult<()> {
+        let cache = crate::sandboxes::ObservedPulls::default();
+        let sandbox = SandboxId::parse("sandbox").map_err(AppError::internal)?;
+        let task = TaskId::parse("task").map_err(AppError::internal)?;
+        let mut discovery =
+            FollowupDiscovery::new(Some(cache.begin(&sandbox)?), 1, tokio::time::Instant::now());
+        discovery.open = Some(vec![2, 3]);
+        discovery.publish(
+            &task,
+            Some(yulius_contracts::api::tasks::ParkedPr {
+                number: 4,
+                open: true,
+            }),
+        );
+        assert_eq!(
+            cache
+                .known_pull(&sandbox, &task)
+                .flatten()
+                .map(|pr| pr.number),
+            Some(3)
+        );
+        Ok(())
+    }
 
     #[test]
     fn only_live_ci_can_wake_a_parked_task_after_pending_checks() {
