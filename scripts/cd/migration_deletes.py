@@ -59,12 +59,40 @@ def without_triggers(sql: str) -> str:
     return "".join(out)
 
 
+def code_only(sql: str) -> str:
+    """`sql` with its comments (`--`, `/* */`) and the text of its quoted strings left out, in one
+    pass, so a quote in a comment or a comment marker in a string is read as written."""
+    out, i, n = [], 0, len(sql)
+    while i < n:
+        if sql.startswith("--", i):
+            end = sql.find("\n", i)
+            i = n if end < 0 else end
+        elif sql.startswith("/*", i):
+            end = sql.find("*/", i + 2)
+            i = n if end < 0 else end + 2
+            out.append(" ")
+        elif sql[i] == "'":
+            i += 1
+            while i < n:
+                if sql[i] == "'" and sql.startswith("''", i):
+                    i += 2
+                elif sql[i] == "'":
+                    i += 1
+                    break
+                else:
+                    i += 1
+            out.append("''")
+        else:
+            out.append(sql[i])
+            i += 1
+    return "".join(out)
+
+
 def deletes(sql: str) -> list[str]:
-    """The tables the statements of one migration delete from (comments and triggers aside)."""
-    sql = re.sub(r"/\*.*?\*/", "", sql, flags=re.S)
-    sql = re.sub(r"--[^\n]*", "", sql)
-    sql = without_triggers(sql)
-    return sorted(set(re.findall(r"\bDELETE\s+FROM\s+([A-Za-z_][A-Za-z0-9_]*)", sql, re.I)))
+    """The tables the statements of one migration delete from (comments, strings and triggers
+    aside), lowercase."""
+    sql = without_triggers(code_only(sql))
+    return sorted({t.lower() for t in re.findall(r"\bDELETE\s+FROM\s+([A-Za-z_][A-Za-z0-9_]*)", sql, re.I)})
 
 
 def main() -> None:
@@ -75,7 +103,7 @@ def main() -> None:
         print("-")
         return
     pairs = [
-        f"{n}:{table.lower()}"
+        f"{n}:{table}"
         for n, name in enumerate(entries(lib.read_text()), start=1)
         for table in deletes((src / name).read_text())
     ]

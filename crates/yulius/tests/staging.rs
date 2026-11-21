@@ -2027,7 +2027,11 @@ async fn yuliuss_own_config_promotes_only_what_staging_verified() -> TestResult 
         "{}",
         page.body
     );
-    assert!(page.body.to_string().contains("[cd.dev]"), "{}", page.body);
+    let page_why = page.body.to_string();
+    assert!(
+        page_why.contains("[cd.dev]") && page_why.contains("staging verified nothing yet"),
+        "{page_why}"
+    );
     assert_ne!(f.head("main")?, r1);
     assert!(!git_contains(&f, "main", &r1)?);
     Ok(())

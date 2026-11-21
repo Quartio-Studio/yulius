@@ -1829,6 +1829,11 @@ previous store cannot be put back, the server stays stopped and the run says to 
 - By hand, as root: `systemctl stop yulius`, copy the binary and the store back from
   `/var/lib/yulius-releases/<commit>/`, `chown yulius:yulius` the store files, then
   `systemctl start yulius`.
+- **Held staging.** A run that could not put the previous store back leaves the server stopped and
+  writes `/var/lib/yulius-releases/HELD`, naming the release. It also prints a rollback barrier,
+  so Yulius starts no rollback of staging by itself. Every deploy, rollback and verify refuses
+  while the file exists. Restore the store by hand as above, then remove the file and ask for a
+  deploy again.
 
 **Who deploys.** Staging is Yulius's merge-first target
 ([ADR-0436](decisions/0436-yuliuss-full-suite-runs-after-the-merge-and-promotion-comes-from-verified-staging.md)).
@@ -1863,8 +1868,9 @@ or address beyond the variable and the pinned key.
 6. Pin the new host key in a pull request: the line `yulius-staging ssh-ed25519 <key>` from
    `/etc/ssh/ssh_host_ed25519_key.pub` in `scripts/cd/known_hosts`. Check its fingerprint on the
    VM (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`) before committing it.
-7. Deploy from the CD page. The first deploy keeps the binary it finds (and its store) on the
-   VM, but Yulius's CD never recorded it as a release: the CD page and `cd_rollback` cannot
+7. Have a task's agent ask for staging with `cd_deploy` once its work merged, for example the task
+   that pinned the new key (a merge-first target is not deployed from the CD page). The first
+   deploy keeps the binary it finds (and its store) on the VM, but Yulius's CD never recorded it as a release: the CD page and `cd_rollback` cannot
    return to it, and the first deploy has no drill (it needs two). Return to it by hand (above).
 
 **Who can reach it.** `STAGING_VM_SSH_KEY` may be copied to `.env` files, so dev CD runs get it,

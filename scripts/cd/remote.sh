@@ -44,6 +44,9 @@ start_wait="${YULIUS_CD_START_WAIT:-120}"
 lock_wait="${YULIUS_CD_LOCK_WAIT:-600}"
 # Scratch space for store copies: beside the releases (a disk), never /tmp (often RAM).
 scratch="$releases/.scratch"
+# Left when a put back failed: the server stays stopped until a person restored the store by hand
+# and removed it. Every switch and verify refuses meanwhile, also the rollback Yulius would start.
+held="$releases/HELD"
 
 say() { echo "vm: $*" || true; }
 die() {
@@ -276,11 +279,25 @@ recover() {
       if put_back "$prev"; then
         systemctl start "$service" </dev/null || true
       else
+        hold "$prev"
         echo "vm: putting back release $prev failed: $service stays stopped; restore by hand from $releases/$prev (docs/operations.md, \"Yulius's own staging VM\")" >&2 || true
       fi
       ;;
   esac
   exit "$rc"
+}
+
+# hold <release>: a put back of <release> failed. Recorded for every later step, and announced as
+# a rollback barrier, so Yulius does not start a rollback of staging by itself.
+hold() {
+  printf '%s release %s or its store could not be put back; %s is stopped\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$service" >"$held" || true
+  echo "::yulius-rollback-barrier staging is held: the store of release $1 could not be put back; a person restores it by hand" || true
+}
+
+refuse_while_held() {
+  [ ! -f "$held" ] ||
+    die "staging is held ($(head -c 300 "$held" 2>/dev/null || true)): restore the store by hand from $releases (docs/operations.md, \"Yulius's own staging VM\"), then remove $held"
 }
 
 # put_back <release>: its binary and the store it left back in place; fails, changing nothing
@@ -310,6 +327,7 @@ switch() {
   systemctl stop "$service" </dev/null || true
   if ! put_back "$prev"; then
     phase=done
+    hold "$prev"
     die "release $1 did not report its commit, and putting back release $prev failed: $service stays stopped; restore by hand from $releases/$prev (docs/operations.md, \"Yulius's own staging VM\")"
   fi
   phase=done
@@ -538,6 +556,7 @@ main() {
       trap recover EXIT
       trap 'exit 130' INT TERM
       lock
+      refuse_while_held
       if [ "$command" = activate ]; then activate "$release" "$tables"; else rollback "$release"; fi
       ;;
     verify)
@@ -545,6 +564,7 @@ main() {
       case "${3:-}" in - | [0-9] | [0-9][0-9] | [0-9][0-9][0-9] | [0-9][0-9][0-9][0-9]) ;; *) die "not a schema: ${3:-}" ;; esac
       case "${4:-}" in 0 | 1) ;; *) die "not 0 or 1: ${4:-}" ;; esac
       lock
+      refuse_while_held
       verify "$release" "$3" "$4"
       ;;
     *) die "unknown command: $command" ;;

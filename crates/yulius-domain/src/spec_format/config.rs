@@ -1886,7 +1886,8 @@ mod tests {
         Ok(())
     }
 
-    /// SPEC-134 CDK-004: Yulius defines its own CD: dev explicitly empty, production a promotion.
+    /// SPEC-134 CDK-004, SPEC-591: Yulius defines its own CD: dev its merge-first staging VM,
+    /// production a promotion.
     #[test]
     fn the_repositorys_own_cd_is_defined() -> TestResult {
         let raw = include_str!("../../../../yulius.toml");

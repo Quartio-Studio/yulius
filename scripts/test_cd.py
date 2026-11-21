@@ -104,6 +104,10 @@ class CdFilesTest(unittest.TestCase):
                 "  UPDATE a SET x = CASE WHEN NEW.x IS NULL THEN 0 ELSE NEW.x END;\n"
                 "  DELETE FROM c;\n"
                 "END;\n"
+                "CREATE TRIGGER v BEFORE DELETE ON a BEGIN\n"
+                "  SELECT RAISE(ABORT, 'no; DELETE FROM e here');\n"
+                "END;\n"
+                "DELETE FROM d WHERE x = 'it''s';\n"
             )
             (src / "migrations" / "0003_c.sql").write_text("")
             (src / "lib.rs").write_text(
@@ -116,7 +120,7 @@ class CdFilesTest(unittest.TestCase):
                 "];\n"
             )
             out = subprocess.run(["python3", "-I", str(DELETES), tmp], capture_output=True, text=True, check=True)
-            self.assertEqual(out.stdout.strip(), "2:notes")
+            self.assertEqual(out.stdout.strip(), "2:d,2:notes")
 
 
 class CdScriptsTest(unittest.TestCase):
@@ -617,6 +621,10 @@ class CdScriptsTest(unittest.TestCase):
                 self.assertIn("not a list of <schema>:<table>", out.stderr)
         self.assertEqual(self.running(), OLD)
         self.assertEqual(self.systemctl_log(), ["start yulius.service"])
+        # The real shape, several pairs, is accepted.
+        out = self.remote("activate", NEW, "69:session_chunks,72:session_chunks")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(self.running(), NEW)
 
     def test_rows_deleted_after_the_start_do_not_fail_verify(self) -> None:
         """Retention at the server's start or a person's delete is no migration loss."""
@@ -702,12 +710,13 @@ class CdScriptsTest(unittest.TestCase):
         )
 
         def stop_holder() -> None:
-            # flock's child holds the lock too: end the whole group.
-            try:
-                os.killpg(holder.pid, 9)
-            except ProcessLookupError:
-                pass
-            holder.wait()
+            # flock's child holds the lock too: end the whole group (once).
+            if holder.poll() is None:
+                try:
+                    os.killpg(holder.pid, 9)
+                except ProcessLookupError:
+                    pass
+                holder.wait()
 
         self.addCleanup(stop_holder)
         deadline = __import__("time").monotonic() + 10
@@ -746,6 +755,7 @@ class CdScriptsTest(unittest.TestCase):
             sqlite3.connect(snapshot).execute("SELECT count(*) FROM tasks WHERE title = 'written by new'").fetchone()[0],
             1,
         )
+        self.assert_held(out, NEW, snapshot)
 
     def test_an_undo_that_cannot_restore_the_store_leaves_the_server_stopped(self) -> None:
         self.release(NEW, schema=5, mode="halfway")
@@ -753,10 +763,30 @@ class CdScriptsTest(unittest.TestCase):
         out = self.deploy_fails(NEW)
         self.assertIn("stays stopped", out)
         self.assertFalse((self.run_dir / "active").exists())
-        self.assertEqual(
-            sqlite3.connect(self.releases / OLD / "store" / "yulius.db").execute("PRAGMA user_version").fetchone()[0],
-            4,
-        )
+        snapshot = self.releases / OLD / "store" / "yulius.db"
+        self.assertEqual(sqlite3.connect(snapshot).execute("PRAGMA user_version").fetchone()[0], 4)
+        (self.run_dir / "fail-cp-from").unlink()
+        self.assert_held(out, OLD, snapshot)
+
+    def assert_held(self, out: str, prev: str, snapshot: Path) -> None:
+        """Held after a failed put back: Yulius is told not to restore staging by itself, and the
+        rollback it would start, a redeploy and a verify all refuse until a person removed the
+        marker, never starting the server on another or an empty store."""
+        self.assertIn("\n::yulius-rollback-barrier staging is held", "\n" + out)
+        held = self.releases / "HELD"
+        self.assertTrue(held.is_file())
+        before = digest(snapshot)
+        for script, extra in (
+            ("rollback.sh", {"YULIUS_CD_RELEASE": prev, "YULIUS_CD_KIND": "rollback"}),
+            ("deploy.sh", {"YULIUS_CD_SHA": prev, "YULIUS_CD_KIND": "deploy"}),
+            ("verify.sh", {"YULIUS_CD_RELEASE": prev, "YULIUS_CD_KIND": "rollback"}),
+        ):
+            with self.subTest(script):
+                refused = self.fails(script, "dev", **extra)
+                self.assertIn("staging is held", refused)
+                self.assertIn(f"remove {held}", refused)
+        self.assertFalse((self.run_dir / "active").exists())
+        self.assertEqual(digest(snapshot), before)
 
     def test_a_killed_switch_and_a_redeploy_keep_the_release_to_go_back_to(self) -> None:
         self.release(NEW, schema=5)

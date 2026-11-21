@@ -17,7 +17,8 @@ that a deploy verifies. Yulius's `dev` is what a person promotes to `main` and w
 production instances (Quartio, PerfectData) install, so a regression that passes staging reaches
 people.
 
-Last week's CI:
+Last week's CI (the owner's figures for the week to 2026-11-21, given in task #575's request; this
+record did not measure them again, and runs on a loaded host take longer):
 
 | Run or job | Median |
 | --- | --- |
@@ -34,8 +35,9 @@ head pays the full suite again in its merge train.
 ## Decision
 
 - **`[cd.dev]` is the merge-first target** (`merge_first = true`).
-- **The full suite is both `test` shards and `e2e`** (`after_merge = true`). They run once, on
-  each merged revision of `dev` and on candidate runs of the staging queue. They do not run on
+- **The full suite is both `test` shards and `e2e`** (`after_merge = true`). They run on `dev`'s
+  runs, where a run that `dev` moved past is superseded, and on the staging queue's candidate run
+  of a requested revision that has no verdict. They do not run on
   pull request heads or in merge trains.
 - **`quality` and `security` stay on pull requests.** What a pull request still proves before it
   merges:
@@ -63,6 +65,9 @@ head pays the full suite again in its merge train.
   - That task fixes it on a new pull request and asks again. Promotion is refused until staging
     verified a fixed revision.
   - Nothing reverts by itself, and other pull requests keep merging on their quick checks.
+  - A flaky test of the full suite now fails on `dev` instead of a pull request. It ends a staging
+    request `gate_failed` and holds promotion just as a real failure does, so it is reproduced and
+    fixed, or quarantined with an issue (AGENTS.md), never only retried.
 
 ## Alternatives
 
@@ -82,8 +87,8 @@ head pays the full suite again in its merge train.
 
 - A pull request's run is about `quality`'s 5.5 min instead of a 9.2 min median, and its merge
   train about the same instead of 10.0 min.
-- The full suite runs once per merged revision: 11.6 job-minutes, about 4 min of wall time, with
-  the shards side by side.
+- The full suite runs per `dev` run and per requested candidate: 11.6 job-minutes, about 4 min of
+  wall time, with the shards side by side.
 - A Rust or browser regression can land on `dev`. It is caught on that revision before staging
   changes and before any promotion, and its task fixes it forward. Agents run the tests their
   change touches before the review, and the reviewer runs those in doubt.

@@ -122,7 +122,7 @@ was verified there.
 - [x] Run the scripts against the staging VM by hand and restore 3fc0e5976
 - [x] Fill [cd.dev], ADR-0430 and the staging VM's operations, architecture and AGENTS docs
 - [x] Answer review round 1 of the CD slice test-first and rerun on the VM
-- [ ] Independent review of the CD slice approved
+- [x] Independent review of the CD slice approved
 - [x] First staging deploy through CD recorded
 - [x] Answer review round 3's minor and nits test-first
 - [x] Move the test shards and e2e to the merged revision with merge_first and an ADR
@@ -347,3 +347,35 @@ Slice 2 (merge-first and the promotion rule), test-first:
   - **Verify again:** it passed.
 - **After it:** `cd_status` shows releases 7383920 (current) and e19ea9f, and "drill: passed at
   7383920 (dev)".
+
+Slice 2, review round 1 (Fable 5.2, head 744655f2c): request changes, one major in this change's
+own code, answered:
+
+- **The major: the "stays stopped" state did not last.** After a failed put back, the rollback
+  Yulius starts by itself, or a redeploy, took the `already` path and started the server on an
+  empty store.
+  - Now `hold` writes `/var/lib/yulius-releases/HELD` and prints
+    `::yulius-rollback-barrier staging is held…`, so Yulius restores nothing by itself. Activate,
+    rollback and verify refuse while the file exists.
+  - Both stays-stopped tests now also check, through `assert_held`: a rollback to the previous
+    release, a redeploy and a verify are each refused, the server stays inactive, and the
+    snapshot digest is unchanged.
+- **Minors:**
+  - Operations step 7 asks through `cd_deploy`, and the held marker is in the hand-restore steps.
+  - `docs/engineering/git.md` and the `yulius-git` skill say the work ends once the staging
+    request was answered. The skill was regenerated with `apm install` (0.37.0); the lockfile
+    keeps its format, with only the content hash changed.
+  - A test passes the real two-pair list to `activate`.
+  - ADR-0436 names where its numbers come from: the owner's figures in task #575's request, not
+    measured again here.
+- **Nits:**
+  - The deletion parser reads comments and quoted strings in one pass. A string in a trigger
+    deletes nothing, and a quote in a comment no longer hides a statement: the first, two-regex
+    try lost migration 69, and the test caught it.
+  - The `CASE` fixture has a top-level `DELETE FROM d` after it.
+  - The page assertion names "staging verified nothing yet".
+  - ADR-0436 is precise on when the full suite runs, and says that a flake on `dev` holds
+    promotion and must be fixed or quarantined.
+  - The lock test's cleanup runs once. The test's doc comment is current.
+- **The new checks before the fixes:** 3 failures, then 42 pass. `scripts/dev quick`,
+  `skills::tests` (22), `the_repositorys_own_cd_is_defined` and the staging test pass.
