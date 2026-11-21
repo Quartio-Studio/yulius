@@ -27,7 +27,7 @@ class CompileCache(unittest.TestCase):
     @staticmethod
     def checkout(path):
         (path / "scripts").mkdir(parents=True)
-        for name in ("cargo", "cache-rustc", "compile_cache.py", "home_lock.py"):
+        for name in ("cargo", "cache-rustc", "compile_cache.py", "home_lock.py", "build_subreaper.py", "build_groups.py"):
             shutil.copy2(SCRIPTS / name, path / "scripts" / name)
         (path / ".tools/bin").mkdir(parents=True)
         (path / ".config").mkdir()
@@ -52,6 +52,201 @@ class CompileCache(unittest.TestCase):
         env.update(RECORD=str(self.record), CARGO_RESULT=str(cargo_result))
         return subprocess.run([tree / "scripts/cargo", "build"], cwd=tree, env=env,
                               start_new_session=True, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
+
+    def test_disposable_target_is_removed_after_success_or_failure(self):
+        self.cargo.write_text('#!/bin/sh\necho "$CARGO_TARGET_DIR"\ntouch "$CARGO_TARGET_DIR/artifact"\nexit "$CARGO_RESULT"\n')
+        env = self.cargo_env(self.sandbox / "home", self.cargo)
+        for status, parent in ((0, self.task / "target"), (7, self.sandbox / "run-scratch")):
+            env.pop("YULIUS_BUILD_SCRATCH", None)
+            if status:
+                env["YULIUS_BUILD_SCRATCH"] = str(parent)
+            result = subprocess.run([self.task / "scripts/cargo", "--scratch-target", "check"],
+                                    env=dict(env, CARGO_RESULT=str(status)), capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, status, result.stderr)
+            target = Path(result.stdout.strip())
+            self.assertEqual(target.parent, parent)
+            self.assertFalse(target.exists())
+
+    def test_disposable_real_cargo_owns_both_output_directories(self):
+        self.create_fixture(self.task, 'fn main() { println!("{}", std::env::args().nth(1).unwrap()); }')
+        cargo = Path(subprocess.check_output(["rustup", "which", "cargo"], text=True).strip())
+        env = self.cargo_env(self.sandbox / "home", cargo)
+        outside = self.sandbox / "outside"
+        parent = self.sandbox / "scratch"
+        env.update(YULIUS_BUILD_SCRATCH=str(parent), CARGO_BUILD_BUILD_DIR=str(outside),
+                   RUSTC=str(cargo.with_name("rustc")))
+        settings = self.task / "elsewhere.toml"
+        settings.write_text(f'[build]\nbuild-dir = "{outside}"')
+        for args, expected in [(["clean", "--offline"], 0),
+                               (["run", "--quiet", "--offline", "--config", "build.jobs=1", "--", "--target-dir"], 0),
+                               (["build", "--offline", "--target-dir=" + str(outside)], 1),
+                               (["build", "--offline", "--target-dir", str(outside)], 1),
+                               (["build", "--config", f'build.build-dir="{outside}"'], 0),
+                               (["build", "--config=" + str(settings)], 0),
+                               (["check", "--offline", "--config", "build.jobs=1"], 0)]:
+            with self.subTest(args=args):
+                result = subprocess.run([self.task / "scripts/cargo", "--scratch-target", *args],
+                                        cwd=self.task, env=env, capture_output=True, text=True, timeout=20)
+                self.assertEqual(result.returncode, expected, result.stderr)
+                if args[0] == "run":
+                    self.assertEqual(result.stdout.strip(), "--target-dir")
+                self.assertFalse(outside.exists(), "intermediate artifacts escaped disk scratch")
+                self.assertFalse(list(parent.iterdir()))
+
+    def test_disposable_run_config_preserves_implicit_program_arguments(self):
+        self.create_fixture(self.task, 'fn main() { for arg in std::env::args().skip(1) { println!("{arg}"); } }')
+        cargo = Path(subprocess.check_output(["rustup", "which", "cargo"], text=True).strip())
+        outside = self.sandbox / "external"
+        env = self.cargo_env(self.sandbox / "home", cargo)
+        env.update(YULIUS_BUILD_SCRATCH=str(self.sandbox / "scratch"), RUSTC=str(cargo.with_name("rustc")))
+        command = [self.task / "scripts/cargo", "--scratch-target", "run", "--offline"]
+        result = subprocess.run([*command, "--config", f'build.build-dir="{outside}"', "one", "two"],
+                                cwd=self.task, env=env, capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(outside.exists(), "Cargo wrote intermediates outside scratch")
+        self.assertEqual(result.stdout.splitlines(), ["one", "two"])
+        config = f'build.build-dir="{outside}"'
+        result = subprocess.run([*command, "--config", config, "-", "--config", "build.jobs=3"],
+                                cwd=self.task, env=env, capture_output=True, text=True, timeout=15)
+        self.assertFalse(outside.exists(), "bare dash allowed intermediates outside scratch")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("use -- before program options", result.stderr)
+        result = subprocess.run([*command, "--config", config, "--", "-", "--config", "build.jobs=3"],
+                                cwd=self.task, env=env, capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ["-", "--config", "build.jobs=3"])
+        self.assertFalse(outside.exists())
+        for flag in ("--config", "--target-dir"):
+            with self.subTest(program_flag=flag):
+                result = subprocess.run([*command, "one", flag, "program-value"], cwd=self.task,
+                                        env=env, capture_output=True, text=True, timeout=15)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("use -- before program options", result.stderr)
+                result = subprocess.run([*command, "--", "one", flag, "program-value"], cwd=self.task,
+                                        env=env, capture_output=True, text=True, timeout=15)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.splitlines(), ["one", flag, "program-value"])
+        self.assertFalse(list((self.sandbox / "scratch").iterdir()))
+
+    def test_config_files_cannot_redirect_disposable_cargo_outputs(self):
+        self.create_fixture(self.task, "fn main() {}")
+        cargo = Path(subprocess.check_output(["rustup", "which", "cargo"], text=True).strip())
+        env = self.cargo_env(self.sandbox / "home", cargo)
+        env.update(YULIUS_BUILD_SCRATCH=str(self.sandbox / "scratch"), RUSTC=str(cargo.with_name("rustc")))
+        for name, content in [
+            ("bom.toml", '\ufeff[build]\nbuild-dir = "{outside}"'),
+            ("table.toml", 'build = {{\n build-dir = "{outside}",\n}}'),
+            ("common=1", '[build]\nbuild-dir = "{outside}"'),
+        ]:
+            with self.subTest(config=name):
+                outside = self.sandbox / ("outside-" + name)
+                (self.task / name).write_text(content.format(outside=outside))
+                result = subprocess.run([self.task / "scripts/cargo", "--scratch-target", "build", "--offline",
+                                         "--config", name], cwd=self.task, env=env, capture_output=True,
+                                        text=True, timeout=15)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(outside.exists(), "Cargo wrote intermediates outside scratch")
+                self.assertFalse(list((self.sandbox / "scratch").iterdir()))
+
+    def test_disposable_build_rejects_an_alias_with_external_outputs(self):
+        self.create_fixture(self.task, "fn main() {}")
+        cargo = Path(subprocess.check_output(["rustup", "which", "cargo"], text=True).strip())
+        outside = self.sandbox / "outside"
+        (self.task / ".cargo").mkdir()
+        (self.task / ".cargo/config.toml").write_text(
+            f'[alias]\nfast-build=["build","--target-dir","{outside}"]'
+        )
+        env = self.cargo_env(self.sandbox / "home", cargo)
+        env.update(YULIUS_BUILD_SCRATCH=str(self.sandbox / "scratch"), RUSTC=str(cargo.with_name("rustc")))
+        result = subprocess.run([self.task / "scripts/cargo", "--scratch-target", "fast-build", "--offline"],
+                                cwd=self.task, env=env, capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0, "alias wrote outside scratch")
+        self.assertFalse(outside.exists())
+
+    def test_unconfirmed_shutdown_retains_its_target_and_runs_cargo_once(self):
+        root = self.sandbox / "scratch"
+        env = self.caller_fixture("from pathlib import Path\n"
+                                  "target = Path(os.environ['CARGO_TARGET_DIR'])\n"
+                                  "with open(os.environ['RECORD'], 'a') as record: print(target, file=record)\n"
+                                  "(target / 'keep').write_text('build')")
+        env.update(RECORD=str(self.record), YULIUS_BUILD_SCRATCH=str(root))
+        with (self.task / "scripts/compile_cache.py").open("a") as fixture:
+            fixture.write("\ndef reap_adopted_workers():\n"
+                          "    raise UnreapedBuild('process observation unavailable')\n")
+        result = subprocess.run([self.task / "scripts/cargo", "--scratch-target", "build"],
+                                env=env, capture_output=True, text=True, timeout=5, start_new_session=True)
+        self.assertNotEqual(result.returncode, 0)
+        targets = self.record.read_text().splitlines()
+        self.assertEqual(len(targets), 1)
+        self.assertIn("retained build target " + targets[0], result.stderr)
+        self.assertTrue((Path(targets[0]) / "keep").is_file())
+
+    def test_portable_supervisor_keeps_target_for_worker_in_another_session(self):
+        self.check_portable_worker(False)
+
+    def test_portable_worker_changing_session_during_shutdown_retains_its_target(self):
+        self.check_portable_worker(True)
+
+    def check_portable_worker(self, move_during_check):
+        import signal
+        env = self.caller_fixture("""
+from pathlib import Path
+reader, writer = os.pipe()
+pid = os.fork()
+if pid == 0:
+    os.close(reader)
+    if not os.environ.get('MOVE'):
+        os.setsid()
+    os.closerange(0, 3)
+    os.write(writer, b'1')
+    if os.environ.get('MOVE'):
+        with open(os.environ['MOVE'], 'rb') as gate: gate.read(1)
+        os.setsid()
+        with open(os.environ['ACK'], 'wb') as ack: ack.write(b'1')
+    import signal
+    signal.pause()
+    os._exit(0)
+os.close(writer)
+os.read(reader, 1)
+Path(os.environ['RECORD']).write_text(str(pid))
+Path(os.environ['CARGO_TARGET_DIR'], 'keep').touch()
+""")
+        # Exercise the non-subreaper supervisor with real POSIX process groups on Linux.
+        adapter = self.task / "scripts/compile_cache.py"
+        code = adapter.read_text()
+        selection = 'subreaper = sys.platform == "linux"'
+        self.assertIn(selection, code)
+        adapter.write_text(code.replace(selection, 'subreaper = False'))
+        parent = self.sandbox / "scratch"
+        env.update(YULIUS_BUILD_SCRATCH=str(parent), RECORD=str(self.record), RUSTC_WRAPPER="fixture")
+        if move_during_check:
+            for name in ("MOVE", "ACK"):
+                env[name] = str(self.sandbox / name)
+                os.mkfifo(env[name])
+            groups = self.task / "scripts/build_groups.py"
+            with groups.open("a") as source:
+                source.write("""
+observe = group_snapshot
+def group_snapshot(*args, **kwargs):
+    snapshot = observe(*args, **kwargs)
+    if Path(os.environ['RECORD']).exists():
+        with open(os.environ['MOVE'], 'wb') as move: move.write(b'1')
+        with open(os.environ['ACK'], 'rb') as ack: ack.read(1)
+    return snapshot
+""")
+        try:
+            result = subprocess.run([self.task / "scripts/cargo", "--scratch-target", "check"],
+                                    env=env, start_new_session=True, capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(result.returncode, 0, "detached worker lost its build target")
+            target, = parent.iterdir()
+            self.assertIn("retained build target " + str(target), result.stderr)
+            self.assertTrue((target / "keep").is_file())
+        finally:
+            if self.record.exists():
+                try:
+                    os.kill(int(self.record.read_text()), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
 
     def test_worktree_and_ci_lane_share_only_their_sandbox_store(self):
         import_script = ("print(__import__('json').dumps([os.environ['MBX_CACHE_DIR'], os.getcwd()]), flush=True)\n"
@@ -218,16 +413,98 @@ class CompileCache(unittest.TestCase):
         env = self.caller_fixture("print(os.read(int(os.environ['TOKEN_FD']),1).decode())")
         read, write = os.pipe()
         try:
-            os.write(write, b"X")
-            env.update(CARGO_MAKEFLAGS=f"-j --jobserver-auth={read},{write}", TOKEN_FD=str(read))
-            result = subprocess.run([self.task / "scripts/cargo", "build"], env=env,
-                                    start_new_session=True, stdin=subprocess.DEVNULL, pass_fds=(read, write),
-                                    capture_output=True, text=True, timeout=5)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout.strip(), "X")
+            for flag in ([], ["--scratch-target"]):
+                os.write(write, b"X")
+                env.update(CARGO_MAKEFLAGS=f"-j --jobserver-auth={read},{write}", TOKEN_FD=str(read))
+                result = subprocess.run([self.task / "scripts/cargo", *flag, "build"], env=env,
+                                        start_new_session=True, stdin=subprocess.DEVNULL, pass_fds=(read, write),
+                                        capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), "X")
         finally:
             os.close(read)
             os.close(write)
+
+    def test_one_terminal_interrupt_reaches_the_build_handler_once(self):
+        self.check_single_interrupt(terminal_signal=True)
+
+    def test_interrupt_sent_to_launcher_reaches_cargo(self):
+        self.check_single_interrupt(terminal_signal=False)
+
+    def test_group_directed_interrupt_reaches_the_build_handler_once(self):
+        self.check_single_interrupt(terminal_signal=True, group=True)
+
+    def test_portable_supervisor_forwards_the_original_launcher_interrupt(self):
+        self.check_single_interrupt(terminal_signal=False, portable=True)
+
+    def check_single_interrupt(self, terminal_signal, group=False, portable=False):
+        import pty
+        import select
+        import signal
+        import time
+        env = self.caller_fixture("""
+import signal, time
+from pathlib import Path
+def finish(signum, frame):
+    record = Path(os.environ['RECORD'])
+    if record.exists():
+        record.write_text('interrupted twice')
+        sys.exit(99)
+    record.write_text('handling')
+    deadline = time.monotonic() + 5
+    while not Path(os.environ['ACK']).exists() and time.monotonic() < deadline: time.sleep(.005)
+    record.write_text('finished')
+    sys.exit(130)
+signal.signal(signal.SIGINT, finish)
+print('ready', flush=True)
+signal.pause()
+""")
+        env.update(RECORD=str(self.record), ACK=str(self.sandbox / "handler-release"))
+        # Let the handler finish once the supervisor has made its decision about
+        # forwarding. This orders both signal deliveries without scheduler timing.
+        with (self.task / "scripts/compile_cache.py").open("a") as source:
+            source.write("""
+original_wait = subprocess.Popen.wait
+def wait_after_forwarding(self, timeout=None):
+    if timeout == 3:
+        Path(os.environ['ACK']).touch()
+    return original_wait(self, timeout=timeout)
+subprocess.Popen.wait = wait_after_forwarding
+""")
+        if portable:
+            with (self.task / "scripts/compile_cache.py").open("a") as source:
+                source.write("\nif hasattr(signal, 'sigtimedwait'): del signal.sigtimedwait\n")
+        pid, terminal = pty.fork()
+        if pid == 0:
+            os.execve(self.task / "scripts/cargo", ["cargo", "--scratch-target", "run"], env)
+        try:
+            self.assertTrue(select.select([terminal], [], [], 5)[0])
+            self.assertIn(b'ready', os.read(terminal, 4096))
+            if terminal_signal:
+                os.kill(pid, signal.SIGSTOP)
+                os.waitpid(pid, os.WUNTRACED)
+                if group:
+                    os.killpg(pid, signal.SIGINT)
+                else:
+                    os.write(terminal, b'\x03')
+                deadline = time.monotonic() + 3
+                while not self.record.exists():
+                    self.assertLess(time.monotonic(), deadline, "Cargo missed the terminal interrupt")
+                    time.sleep(.005)
+                os.kill(pid, signal.SIGCONT)
+            else:
+                os.kill(pid, signal.SIGINT)
+            with os.fdopen(os.pidfd_open(pid), "rb") as launcher:
+                self.assertTrue(select.select([launcher], [], [], 8)[0])
+            self.assertEqual(self.record.read_text(), 'finished')
+        finally:
+            try:
+                os.kill(pid, signal.SIGCONT)
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            os.waitpid(pid, 0)
+            os.close(terminal)
 
     def test_a_foreground_test_reads_its_controlling_terminal(self):
         self.check_foreground_terminal(redirect_stdin=False)
@@ -235,19 +512,208 @@ class CompileCache(unittest.TestCase):
     def test_a_foreground_command_with_redirected_input_can_read_dev_tty(self):
         self.check_foreground_terminal(redirect_stdin=True)
 
-    def check_foreground_terminal(self, redirect_stdin):
+    def test_disposable_target_read_from_tty_and_cleanup_on_term(self):
+        self.check_foreground_terminal(redirect_stdin=False, scratch=True)
+
+    def test_terminal_ctrl_c_reaps_a_resistant_worker_before_releasing_scratch(self):
+        self.check_terminal_interrupt("signal.SIG_DFL")
+
+    def test_a_handled_terminal_interrupt_reaps_workers_before_releasing_scratch(self):
+        self.check_terminal_interrupt("lambda *_: sys.exit(130)")
+
+    def test_terminal_hangup_preserves_the_cargo_exit_status(self):
+        self.check_terminal_interrupt("signal.SIG_DFL", hangup=True)
+
+    def test_hangup_keeps_scratch_when_worker_shutdown_is_unconfirmed(self):
+        self.check_terminal_interrupt("signal.SIG_DFL", hangup=True, unconfirmed=True)
+
+    def test_foreground_interrupt_reaps_a_worker_in_a_separate_test_group(self):
+        self.check_terminal_interrupt("signal.SIG_DFL", separate_group=True)
+
+    def check_terminal_interrupt(self, handler, *, hangup=False, unconfirmed=False, separate_group=False):
+        import pty
+        import select
+        import signal
+        import socket
+        ready = self.sandbox.parent / "worker.sock"
+        root = self.sandbox / "scratch"
+        env = self.caller_fixture(f"""
+import signal, socket
+signal.signal(signal.SIGINT, {handler})
+if os.fork() == 0:
+    if {separate_group!r}: os.setpgid(0, 0)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    with socket.socket(socket.AF_UNIX) as conn:
+        conn.connect(os.environ["READY"])
+        conn.sendall(str(os.getpid()).encode())
+        signal.pause()
+signal.pause()
+""")
+        if unconfirmed:
+            with (self.task / "scripts/compile_cache.py").open("a") as fixture:
+                fixture.write("\ndef reap_adopted_workers():\n"
+                              "    raise UnreapedBuild('process observation unavailable')\n")
+        env.update(READY=str(ready), YULIUS_BUILD_SCRATCH=str(root))
+        with socket.socket(socket.AF_UNIX) as listener:
+            listener.bind(str(ready))
+            listener.listen()
+            listener.settimeout(6)
+            pid, terminal = pty.fork()
+            if pid == 0:
+                with (self.sandbox / "launcher.stderr").open("w") as errors:
+                    os.dup2(errors.fileno(), 2)
+                os.execve(self.task / "scripts/cargo", ["cargo", "--scratch-target", "build"], env)
+            worker = None
+            reaped = False
+            try:
+                conn, _ = listener.accept()
+                with conn, os.fdopen(os.pidfd_open(pid), "rb", buffering=0) as launcher:
+                    worker = int(conn.recv(32))
+                    if hangup:
+                        os.close(terminal)
+                        terminal = None
+                    else:
+                        os.write(terminal, b"\x03")
+                    self.assertTrue(select.select([launcher], [], [], 8)[0], "launcher missed terminal signal")
+                    _, status = os.waitpid(pid, 0)
+                    reaped = True
+                    if unconfirmed:
+                        self.assertNotEqual(os.waitstatus_to_exitcode(status), 0)
+                        self.assertIn("retained build target", (self.sandbox / "launcher.stderr").read_text())
+                        self.assertEqual(len(list(root.iterdir())), 1)
+                        return
+                    self.assertEqual(os.waitstatus_to_exitcode(status), 129 if hangup else 130)
+                    self.assertTrue(select.select([conn], [], [], 0)[0], "worker survived launcher exit")
+                    self.assertEqual(conn.recv(1), b"")
+                    worker = None
+                    self.assertEqual(list(root.iterdir()), [])
+            finally:
+                if worker is not None:
+                    try:
+                        os.kill(worker, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                if not reaped:
+                    os.kill(pid, signal.SIGKILL)
+                    os.waitpid(pid, 0)
+                if terminal is not None:
+                    os.close(terminal)
+
+    def test_shell_can_foreground_a_disposable_build_started_in_background(self):
+        self.check_shell_job(read_immediately=True)
+
+    def test_ctrl_z_stops_a_running_background_build_brought_forward(self):
+        self.check_shell_job(read_immediately=False)
+
+    def check_shell_job(self, read_immediately, start_background=True):
+        import pty
+        import select
+        import signal
+        import time
+        gate = self.sandbox / "input.fifo"
+        os.mkfifo(gate)
+        env = self.caller_fixture(f"""
+from pathlib import Path
+Path(os.environ['BACKEND']).write_text(str(os.getpid()))
+print('reader ready', flush=True)
+if not {read_immediately!r}:
+    with open(os.environ['GATE'], 'rb') as fifo: fifo.read(1)
+print('received '+input(), flush=True)
+""")
+        backend_file = self.sandbox / "backend"
+        env.update(BACKEND=str(backend_file), GATE=str(gate))
+        shell = shutil.which("bash")
+        env.update(YULIUS_BUILD_SCRATCH=str(self.sandbox / "scratch"), PS1="shell> ", PROMPT_COMMAND="")
+        pid, terminal = pty.fork()
+        if pid == 0:
+            os.chdir(self.task)
+            os.execve(shell, [shell, "--noprofile", "--norc", "-i"], env)
+
+        def read_until(marker):
+            output = b""
+            deadline = time.monotonic() + 5
+            while marker not in output:
+                self.assertTrue(select.select([terminal], [], [], max(0, deadline - time.monotonic()))[0],
+                                f"shell did not report {marker!r}: {output!r}")
+                output += os.read(terminal, 4096)
+            return output
+
+        job = None
+        try:
+            read_until(b"shell> ")
+            os.write(terminal, b"scripts/cargo --scratch-target run" + (b" &\n" if start_background else b"\n"))
+            output = read_until(b"reader ready")
+            import re
+            if start_background:
+                job = int(re.search(rb"\[1\] (\d+)", output).group(1))
+            else:
+                job = os.getpgid(int(backend_file.read_text()))
+            if read_immediately:
+                os.write(terminal, b"wait %1; jobs\n")
+                read_until(b"Stopped")
+            else:
+                if start_background:
+                    os.write(terminal, b"fg\n")
+                    read_until(b"scripts/cargo --scratch-target run")
+                    # Bash prints the job before completing tcsetpgrp. Ctrl-Z
+                    # must reach the actual foreground job, not the shell.
+                    deadline = time.monotonic() + 4
+                    while os.tcgetpgrp(terminal) != job:
+                        self.assertLess(time.monotonic(), deadline, "fg did not transfer the terminal")
+                        time.sleep(.005)
+                os.write(terminal, b"\x1a")
+                read_until(b"Stopped")
+                stat_file = Path("/proc") / backend_file.read_text() / "stat"
+                self.assertEqual(stat_file.read_text().rsplit(")", 1)[1].split()[0], "T",
+                                 "Cargo kept running while Bash reported its job suspended")
+            os.write(terminal, b"fg\n")
+            read_until(b"scripts/cargo --scratch-target run")
+            if not read_immediately:
+                with gate.open("wb") as fifo:
+                    fifo.write(b"1")
+            os.write(terminal, b"X\n")
+            read_until(b"received X")
+            os.write(terminal, b"exit 0\n")
+            _, status = os.waitpid(pid, 0)
+            pid = None
+            job = None
+            self.assertEqual(os.waitstatus_to_exitcode(status), 0)
+            self.assertFalse(list((self.sandbox / "scratch").iterdir()))
+        finally:
+            if job:
+                try:
+                    os.kill(job, signal.SIGTERM)
+                    os.kill(job, signal.SIGCONT)
+                except ProcessLookupError:
+                    pass
+            if pid:
+                os.kill(pid, signal.SIGKILL)
+                os.waitpid(pid, 0)
+            os.close(terminal)
+
+    def test_terminal_suspends_and_resumes_the_disposable_build(self):
+        self.check_shell_job(read_immediately=False, start_background=False)
+
+    def check_foreground_terminal(self, redirect_stdin, scratch=False):
         import pty
         import select
         import signal
         import time
         read = "open('/dev/tty').readline().strip()" if redirect_stdin else "input()"
-        env = self.caller_fixture(f"print('ready',flush=True);print('received '+{read},flush=True)")
+        env = self.caller_fixture(f"print('ready',flush=True);print('received '+{read},flush=True)" + (";input()" if scratch else ""))
+        args = ["cargo", "test", "--", "--nocapture"]
+        if scratch:
+            root = self.sandbox / "scratch"
+            root.mkdir()
+            env.update(YULIUS_BUILD_SCRATCH=str(root))
+            args.insert(1, "--scratch-target")
         pid, terminal = pty.fork()
         if pid == 0:
             if redirect_stdin:
                 with open(os.devnull, "rb") as empty:
                     os.dup2(empty.fileno(), 0)
-            os.execve(self.task / "scripts/cargo", ["cargo", "test", "--", "--nocapture"], env)
+            os.execve(self.task / "scripts/cargo", args, env)
         try:
             received = b""
             for expected in (b"ready", b"received X"):
@@ -265,6 +731,9 @@ class CompileCache(unittest.TestCase):
                 pass
             os.waitpid(pid, 0)
             os.close(terminal)
+
+        if scratch:
+            self.assertEqual(list(root.iterdir()), [], "cancelled foreground build retained its target")
 
     @unittest.skipUnless(shutil.which("script"), "Linux CI terminal required")
     def test_unattended_ci_caches_inside_the_original_runner_session(self):
