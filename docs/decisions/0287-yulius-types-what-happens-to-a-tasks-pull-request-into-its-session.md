@@ -18,7 +18,7 @@ planned to merge by hand.
 
 ## Decision
 
-When the queue attributes a failed candidate to one PR, record that decision in the owner’s merge wait span. The source run may have tested the same tree for a larger candidate. Verify the hosted head and integration base together and include the failing job’s retained, redacted diagnostic in the owner’s merge outcome. [SPEC-558](../../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
+A failed candidate narrowed to one PR belongs to that PR’s merge decision. The source run may have tested the same tree for a larger candidate. Verify the hosted head and integration base together and include the failing job’s retained, redacted diagnostic in the owner’s merge outcome. [SPEC-558](../../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
 
 - A server-side watch (every 20 s) looks at each running task with an open pull request, from
   Yulius's own records and clone, and types what needs the task into its session as one message

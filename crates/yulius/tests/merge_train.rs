@@ -1569,7 +1569,7 @@ async fn shared_owner_rerun(owner_state: RunState, peer_state: RunState) -> Test
 
 /// The owner of the singleton gets the verdict even when CI was executed for another train.
 #[tokio::test]
-async fn a_reused_failed_candidate_records_the_singleton_owner_and_cause() -> TestResult {
+async fn a_reused_failed_candidate_tells_the_singleton_owner_which_job_failed() -> TestResult {
     reused_singleton(SingletonChange::None).await
 }
 
@@ -1627,7 +1627,19 @@ async fn a_singleton_with_unavailable_inputs_releases_its_place_after_the_limit(
     reused_singleton(SingletonChange::Unavailable).await
 }
 
+#[tokio::test]
+async fn a_singleton_waits_for_its_failing_job_to_be_readable() -> TestResult {
+    reused_singleton(SingletonChange::JobRead).await
+}
+
+#[tokio::test]
+async fn a_singleton_waits_for_safe_redaction_before_telling_its_owner() -> TestResult {
+    reused_singleton(SingletonChange::MatcherRead).await
+}
+
 enum SingletonChange {
+    JobRead,
+    MatcherRead,
     Unavailable,
     Bookkeeping,
     RerunExpired,
@@ -1727,6 +1739,38 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
             .await?
     );
     app.merge_armed(&f.sandbox).await;
+    if matches!(
+        change,
+        SingletonChange::JobRead | SingletonChange::MatcherRead
+    ) {
+        let arm = saved_armed(app, 1)?.ok_or("original arm")?;
+        if matches!(change, SingletonChange::JobRead) {
+            f.h.store.execute_for_tests("UPDATE ci_jobs SET state='unreadable' WHERE run_id='prior-train' AND ordinal=2").await?;
+            assert!(app.deps.store.ci_jobs(run_id, true).await.is_err());
+        } else {
+            f.h.store
+                .execute_for_tests(
+                    "UPDATE vault_secrets SET hosts='unreadable' WHERE name='CHECK_KEY'",
+                )
+                .await?;
+            assert!(app.agent_secret_matcher(&f.sandbox).await.is_err());
+        }
+        app.merge_armed(&f.sandbox).await;
+        assert_eq!(
+            saved_armed(app, 1)?,
+            Some(arm),
+            "an unavailable diagnostic keeps the original arm"
+        );
+        assert!(f.wait(1, &worktree).await?["merge_outcome"].is_null());
+        f.h.store
+            .execute_for_tests(
+                "UPDATE ci_jobs SET state='failed' WHERE run_id='prior-train' AND ordinal=2",
+            )
+            .await?;
+        f.h.store
+            .execute_for_tests("UPDATE vault_secrets SET hosts='[]' WHERE name='CHECK_KEY'")
+            .await?;
+    }
     if matches!(change, SingletonChange::Unavailable) {
         let arm = saved_armed(app, 1)?.ok_or("arm")?;
         // A partially published hosted observation is also unavailable.
@@ -1991,7 +2035,10 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
         assert_eq!(state["checks"], "failed", "{state}");
         return Ok(());
     }
-    if !matches!(change, SingletonChange::None) {
+    if !matches!(
+        change,
+        SingletonChange::None | SingletonChange::JobRead | SingletonChange::MatcherRead
+    ) {
         match change {
             SingletonChange::Base => f.advance_dev("new-base.txt")?,
             SingletonChange::Retarget => {
@@ -2001,7 +2048,9 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
                 git(&worktree, &["commit", "--allow-empty", "-qm", "later head"])?;
                 git(&worktree, &["push", "-q", "origin", "HEAD"])?;
             }
-            SingletonChange::Unavailable
+            SingletonChange::JobRead
+            | SingletonChange::MatcherRead
+            | SingletonChange::Unavailable
             | SingletonChange::Bookkeeping
             | SingletonChange::None
             | SingletonChange::Ordinary
@@ -2058,12 +2107,6 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
         .filter(|s| s.name == "merge_armed" && s.outcome.as_deref() == Some("dropped"))
         .collect();
     assert_eq!(waits.len(), 1);
-    let detail: Value =
-        serde_json::from_str(waits[0].detail.as_deref().ok_or("merge wait detail")?)?;
-    assert_eq!(
-        detail,
-        json!({"head": head, "singleton": {"pr": 1, "base": base, "tree": tree, "run": "prior-train"}})
-    );
     Ok(())
 }
 

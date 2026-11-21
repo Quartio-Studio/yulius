@@ -283,15 +283,6 @@ fn short(sha: &str) -> &str {
     sha.get(..9).unwrap_or(sha)
 }
 
-/// The candidate the queue actually decided. A reused CI run can have different members.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct FailedSingleton {
-    pr: u64,
-    base: String,
-    tree: String,
-    run: String,
-}
-
 /// Result of observing a singleton's hosted inputs and ordinary CI at its exact head.
 enum SingletonObservation {
     Changed,
@@ -783,76 +774,77 @@ impl App {
         let member = train.members.first()?;
         let task = TaskId::parse(&member.task).ok()?;
         let integration = delivery_profile(sandbox).integration_branch;
-        let text = self
-            .singleton_failure_text(sandbox, member, &integration, &train.run)
-            .await;
-        let own = match self
+        let text = tokio::time::timeout(
+            Duration::from_secs(5),
+            self.singleton_failure_text(sandbox, member, &integration, &train.run),
+        )
+        .await
+        .ok()
+        .flatten();
+        let pr = member.pr;
+        let text = match self
             .singleton_observation(sandbox, &task, member, &integration, &train.base)
             .await
         {
-            Some(SingletonObservation::Current(ordinary)) => {
-                train.waiting_since = None;
-                ordinary
-            }
             Some(SingletonObservation::Changed) => {
                 self.dissolve(sandbox, &train, "its tested head or base changed")
                     .await;
                 return None;
             }
-            None => {
-                let now = self.now().0;
-                let since = *train.waiting_since.get_or_insert(now);
-                if now.saturating_sub(since) <= WAIT_LIMIT_MS {
-                    return Some(train);
-                }
-                // Free the queue on a sustained outage. This arm can proceed one by one
-                // without re-forming the same failed train and resetting its wait budget.
-                state.held_back.push((member.task.clone(), member.armed_at));
+            Some(SingletonObservation::Current(Some(RunState::Failed))) => {
+                state.limit = None;
+                state.suspect = None;
                 self.dissolve(
                     sandbox,
                     &train,
-                    "its tested head or base stayed unavailable",
+                    &format!(
+                        "#{pr}'s own run at {} ended failed: it leaves the candidate",
+                        short(&member.head)
+                    ),
                 )
                 .await;
                 return None;
             }
+            Some(SingletonObservation::Current(ordinary)) => {
+                if text.is_some() {
+                    train.waiting_since = None;
+                }
+                if matches!(ordinary, Some(RunState::Queued | RunState::Running))
+                    && train.wait_for_own(pr, self.now().0)
+                    && text.is_some()
+                {
+                    return Some(train);
+                }
+                text
+            }
+            None => None,
         };
-        let pr = member.pr;
-        if matches!(own, Some(RunState::Queued | RunState::Running))
-            && train.wait_for_own(pr, self.now().0)
-        {
-            return Some(train);
-        }
-        state.limit = None;
-        state.suspect = None;
-        let member = train.members.first()?;
-        if own == Some(RunState::Failed) {
+        let Some(text) = text else {
+            let now = self.now().0;
+            let since = *train.waiting_since.get_or_insert(now);
+            if now.saturating_sub(since) <= WAIT_LIMIT_MS {
+                return Some(train);
+            }
+            // Let the original arm proceed one by one on a continuous observation outage.
+            let member = train.members.first()?;
+            state.held_back.push((member.task.clone(), member.armed_at));
             self.dissolve(
                 sandbox,
                 &train,
-                &format!(
-                    "#{}'s own run at {} ended failed: it leaves the candidate",
-                    pr,
-                    short(&member.head)
-                ),
+                "its tested inputs or failure stayed unavailable",
             )
             .await;
             return None;
-        }
+        };
+        state.limit = None;
+        state.suspect = None;
+        let member = train.members.first()?;
         // Consume the arm at the final CI observation, before dissolution does I/O.
         if let Some(deciding) = self.take_armed(&task) {
             let verdict = if deciding.merge.armed_at == member.armed_at
                 && deciding.merge.head == member.head
             {
-                Verdict::FailedSingleton(
-                    text,
-                    FailedSingleton {
-                        pr: member.pr,
-                        base: train.base.clone(),
-                        tree: member.tree.clone(),
-                        run: train.run.clone(),
-                    },
-                )
+                Verdict::Decided(text)
             } else {
                 Verdict::Keep(deciding.merge.clone())
             };
@@ -869,11 +861,9 @@ impl App {
         member: &Member,
         integration: &str,
         run: &str,
-    ) -> String {
+    ) -> Option<String> {
         let mut text = singleton_failure(member.pr, &member.head, integration, run);
-        let Ok(jobs) = self.deps.store.ci_jobs(run, true).await else {
-            return text;
-        };
+        let jobs = self.deps.store.ci_jobs(run, true).await.ok()?;
         let mut failed = jobs.iter().filter(|job| job.state == RunState::Failed);
         let Some(job) = failed
             .clone()
@@ -884,15 +874,13 @@ impl App {
             })
             .or_else(|| failed.next())
         else {
-            return text;
+            return Some(text);
         };
         let label = crate::pr_watch::failed_jobs(std::slice::from_ref(job));
         let kept = job.failures.as_deref().unwrap_or_default();
         // The scanner keeps the test header before its output. The label already names
         // the test; reserve the excerpt for the diagnostic even when its name is long.
-        let Ok(matcher) = self.agent_secret_matcher(&sandbox.id).await else {
-            return text;
-        };
+        let matcher = self.agent_secret_matcher(&sandbox.id).await.ok()?;
         let retained = redact_text(&matcher, kept).0;
         let body = retained
             .split_once('\n')
@@ -905,7 +893,7 @@ impl App {
             text.push(' ');
             text.push_str(&excerpt);
         }
-        redact_text(&matcher, &text).0
+        Some(redact_text(&matcher, &text).0)
     }
 
     /// Before dropping an arm, confirm the PR still has the inputs the singleton tested.

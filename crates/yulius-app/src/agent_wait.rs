@@ -142,8 +142,6 @@ pub(crate) enum Verdict {
     Keep(ArmedMerge),
     /// Merged, refused or dropped: one line for the agent.
     Decided(String),
-    /// The queue dropped the one member it tested on the integration base.
-    FailedSingleton(String, crate::merge_train::FailedSingleton),
 }
 
 impl ArmedSlot {
@@ -189,7 +187,7 @@ impl ArmedSlot {
                 self.note = note;
                 changed
             }
-            Verdict::Decided(text) | Verdict::FailedSingleton(text, _) => {
+            Verdict::Decided(text) => {
                 self.note = None;
                 self.outcome = Some(MergeOutcome {
                     head: deciding.merge.head.clone(),
@@ -645,23 +643,16 @@ impl App {
 
     /// Ends a decision of [`App::take_armed`] in one step, as [`App::merge_armed`] does.
     pub(crate) async fn finish_armed(&self, task: &TaskId, deciding: &Deciding, verdict: Verdict) {
-        let decided = !matches!(verdict, Verdict::Keep(_));
-        let candidate = match &verdict {
-            Verdict::FailedSingleton(_, candidate) => Some(candidate.clone()),
-            _ => None,
-        };
-        let applied = {
+        let decided = matches!(verdict, Verdict::Decided(_));
+        {
             let runtime = self.runtime(task);
             let mut slot = lock_slot(&runtime);
-            let applied = slot.finish(deciding, verdict);
-            if applied {
+            if slot.finish(deciding, verdict) {
                 self.save_armed(task, slot.merge.as_ref());
             }
-            applied
-        };
-        if decided && (applied || candidate.is_none()) {
-            self.armed_wait_ended(task, &deciding.merge, candidate)
-                .await;
+        }
+        if decided {
+            self.armed_wait_ended(task, &deciding.merge).await;
         }
     }
 
@@ -686,34 +677,18 @@ impl App {
 
     /// Records how long an armed merge waited for its checks, from arming to its decision
     /// (SPEC-137 STG-104): `merged` when the task's pull request is merged now, else `dropped`.
-    async fn armed_wait_ended(
-        &self,
-        task: &TaskId,
-        armed: &ArmedMerge,
-        candidate: Option<crate::merge_train::FailedSingleton>,
-    ) {
+    async fn armed_wait_ended(&self, task: &TaskId, armed: &ArmedMerge) {
         use yulius_domain::delivery::DeliveryStage;
-        let (outcome, detail) = if let Some(candidate) = candidate {
-            (
-                "dropped",
-                serde_json::json!({ "head": armed.head, "singleton": candidate }),
-            )
-        } else {
-            let merged = matches!(
-                self.deps.store.delivery(task).await,
-                Ok(Some(record)) if !matches!(record.stage, DeliveryStage::None | DeliveryStage::PrOpen)
-            );
-            (
-                if merged { "merged" } else { "dropped" },
-                serde_json::json!({ "head": armed.head }),
-            )
-        };
+        let merged = matches!(
+            self.deps.store.delivery(task).await,
+            Ok(Some(record)) if !matches!(record.stage, DeliveryStage::None | DeliveryStage::PrOpen)
+        );
         self.record_task_span(
             task,
             ("wait", "merge_armed"),
             (Timestamp(armed.armed_at), self.now()),
-            outcome,
-            detail,
+            if merged { "merged" } else { "dropped" },
+            serde_json::json!({ "head": armed.head }),
         )
         .await;
     }
@@ -746,7 +721,16 @@ impl App {
                 continue;
             };
             let verdict = self.merge_armed_task(&task, deciding.merge.clone()).await;
-            self.finish_armed(&task.id, &deciding, verdict).await;
+            let decided = matches!(verdict, Verdict::Decided(_));
+            {
+                let mut slot = lock_slot(&runtime);
+                if slot.finish(&deciding, verdict) {
+                    self.save_armed(&task.id, slot.merge.as_ref());
+                }
+            }
+            if decided {
+                self.armed_wait_ended(&task.id, &deciding.merge).await;
+            }
         }
     }
 

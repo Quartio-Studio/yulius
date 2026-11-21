@@ -51,7 +51,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Publish verified parked task detail to Task Info
 - [x] Restore ordinary CI coverage after a repeated integration configuration repair
 - [x] Resolve shared ordinary CI for the original PR owner in the merge queue and wait
-- [ ] Record the singleton queue decision and its failing job for the original owner
+- [ ] Report the failing singleton job to its live PR owner
 - [ ] Keep failed integration candidates with their original owner
 - [ ] Verify candidate status before parking, showing Done or resuming a parked owner
 - [ ] Deliver bounded Codex goal continuation to dev
@@ -84,9 +84,11 @@ The scheduler discards older completed verdicts for a head after a later run was
 
 Yulius CI schedules one run per commit even when two PRs publish the same head. The queue and `yulius wait` prefer the owner’s own ordinary run when one exists. Otherwise they use the run that covers that commit under the scheduler’s rule. An ordinary integration configuration refusal invalidates earlier completed results for every PR at the commit. Active owner runs and explicit owner cancellations retain their meaning. A cancellation of a different reference cannot lend a verdict. Queue decisions and merged receipts use the full object name supplied by Git or the host. The wait endpoint also accepts a unique abbreviation. GitHub still enforces its required commit status when the queue submits the merge.
 
-A failed singleton can reuse the tested tree of a candidate with several members. Attribute it to the member the queue decided, record the tuple in its merge wait span, and verify the PR’s hosted head and base in one lookup. An ordinary owner rerun keeps its existing deadline. An unavailable or partial hosted read, or an unreadable ordinary CI record at the exact PR head, retains the candidate and its original ordinary wait deadline. A continuous verification outage beyond the 15-minute merge wait lets the same arm proceed one by one. The owner message redacts retained failure text before and after formatting, then bounds the excerpt. The queue consumes a confirmed arm at its final ordinary CI observation before writing the dissolution audit.
+A failed singleton can reuse the tested tree of a candidate with several members. The live queue verifies the PR’s hosted head and base in one lookup and attributes the failure to the member it decided. Restart recovery needs a durable decision written together with consumption of the original arm. A best-effort timing span cannot supply that guarantee. An ordinary owner rerun keeps its existing deadline. An unavailable or partial hosted read, an unreadable ordinary CI record at the exact PR head, or unavailable failure or redaction data retains the candidate and its original ordinary wait deadline. A continuous verification outage beyond the 15-minute merge wait lets the same arm proceed one by one. The owner message redacts retained failure text before and after formatting, then bounds the excerpt. The queue consumes a confirmed arm at its final ordinary CI observation before writing the dissolution audit.
 
 ## Evidence
+
+- At `665f884e7`, two regressions made the failing job or redaction matcher unreadable. Both lost the original arm. A third refused the merge wait span insert, restarted the application and found zero records linking the accepted singleton to its owner. The live delivery retries unreadable diagnostics within the existing verification budget. The separate original-owner recovery step covers durable recording across this interruption and replay of a later owner decision.
 
 - Second review of `812689dd3` found that a generic CI gate could turn a failed exact-head record read into an inconclusive result and drop the arm. A fixture put an unreadable reference in the owner’s running row and the arm disappeared. The singleton verifier now propagates that read error. The fixture repairs the row and checks recovery against the original deadline. The bookkeeping test uses its own run ID for its process-wide race hook.
 
