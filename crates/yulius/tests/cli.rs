@@ -11,6 +11,36 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 const EXE: &str = env!("CARGO_BIN_EXE_yulius");
 
+#[test]
+fn checked_cleanup_reports_expanded_options_before_touching_files() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    for file in ["marker", "--help"] {
+        std::fs::write(dir.path().join(file), "keep")?;
+    }
+    let result = Command::new(EXE)
+        .current_dir(dir.path())
+        .args([
+            "remove",
+            "--reject-option-operands",
+            "--",
+            "marker",
+            "--help",
+        ])
+        .output()?;
+    assert_eq!(result.status.code(), Some(1));
+    assert!(String::from_utf8(result.stdout)?.contains("expanded operand"));
+    for file in ["marker", "--help"] {
+        assert_eq!(std::fs::read_to_string(dir.path().join(file))?, "keep");
+    }
+    let repeated = Command::new(EXE)
+        .current_dir(dir.path())
+        .args(["remove", "--file-only", "--", "already-removed"])
+        .output()?;
+    assert_eq!(repeated.status.code(), Some(0));
+    assert!(String::from_utf8(repeated.stdout)?.contains("already gone"));
+    Ok(())
+}
+
 #[tokio::test]
 async fn backup_writes_a_consistent_copy_and_never_overwrites() -> TestResult {
     let dir = tempfile::tempdir()?;

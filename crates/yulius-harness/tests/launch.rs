@@ -186,6 +186,14 @@ fn claude_new_session_argv_snapshot_and_files() -> TestResult {
             }] }])
         );
     }
+    assert_eq!(
+        settings["hooks"]["PermissionRequest"],
+        json!([{
+            "matcher": "Bash", "hooks": [{
+                "type": "command", "command": "'/opt/yulius/bin/yulius' hook claude PermissionRequest", "timeout": 15
+            }]
+        }])
+    );
     // Before a tool runs: Bash is checked in the sandbox, the edit tools by Yulius's edit gate
     // (SPEC-426 EDG-001); both through the same client, never held.
     assert_eq!(
@@ -263,6 +271,11 @@ fn claude_resume_uncontained_never_skips_permissions() -> TestResult {
     request.effort = None;
     request.mcp_servers.clear();
     let plan = plan_launch(&request)?;
+    assert!(
+        json_of(file(&plan, "claude-settings.json")?)?["hooks"]
+            .get("PermissionRequest")
+            .is_none()
+    );
     // The reviewer agents (SPEC-493 REV-001): their content is its own test's.
     let agents = plan.argv[plan
         .argv
@@ -468,6 +481,14 @@ fn invalid_requests_are_rejected_without_echoing_values() {
     );
     let error = format!("{:?}", plan_launch(&bad_prompt));
     assert!(!error.contains("a\\0b"));
+    for (length, valid) in [(128, true), (129, false)] {
+        let name = format!("_{}", "1".repeat(length - 1));
+        bad_env.mcp_servers[0].transport = McpTransport::Http {
+            url: "https://example.invalid/mcp".into(),
+            bearer_env: Some(name),
+        };
+        assert_eq!(plan_launch(&bad_env).is_ok(), valid, "{length}");
+    }
 }
 
 #[test]

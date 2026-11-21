@@ -93,6 +93,9 @@ pub fn run_hook_with(
     if harness == "antigravity" {
         return crate::antigravity_hooks::run(event, input, output, env, hold);
     }
+    if harness == "claude" && event == "PermissionRequest" {
+        return crate::cleanup_permission::answer(input, output);
+    }
     // Tool results are redacted here, inside the sandbox, from fingerprints: the result itself
     // never goes to the server (SPEC-002 ADR-20).
     if harness == "claude" && event == "PostToolUse" {
