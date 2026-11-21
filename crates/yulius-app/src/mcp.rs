@@ -7,8 +7,8 @@ use yulius_contracts::mcp::{
     RpcRequest, RpcResponse, SUPPORTED_PROTOCOL_VERSIONS, ToolDescriptor, text_result,
 };
 use yulius_domain::harness::{
-    DEFAULT_ANTIGRAVITY_MODEL, DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL,
-    GPT_6_2_ASTRA, codex_effort,
+    DEFAULT_ANTIGRAVITY_EFFORT, DEFAULT_ANTIGRAVITY_MODEL, DEFAULT_CLAUDE_EFFORT,
+    DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_EFFORT, DEFAULT_CODEX_MODEL,
 };
 use yulius_domain::ids::SandboxId;
 use yulius_domain::vault::redact::redact_text;
@@ -140,8 +140,7 @@ fn model_property() -> Value {
 
 /// `task_create`'s and `sandbox_task_create`'s `effort` argument, one definition for both.
 fn effort_property() -> Value {
-    let astra_effort = codex_effort(GPT_6_2_ASTRA, None);
-    json!({"type": "string", "description": format!("Effort override (default {astra_effort} for {GPT_6_2_ASTRA}, {DEFAULT_CLAUDE_EFFORT} for other models, none for Haiku)")})
+    json!({"type": "string", "description": format!("Effort override. Codex defaults to {DEFAULT_CODEX_EFFORT} on every model and supports explicit xhigh and max on GPT-6.2 Astra and Sol. Claude defaults to {DEFAULT_CLAUDE_EFFORT} (none for Haiku). Antigravity defaults to {DEFAULT_ANTIGRAVITY_EFFORT}.")})
 }
 
 /// What the Yulius MCP tells a task's agent at `initialize`.
@@ -1834,7 +1833,7 @@ mod tests {
         }
         assert_eq!(
             described("effort"),
-            "Effort override (default xhigh for gpt-6.2-astra, high for other models, none for Haiku)"
+            "Effort override. Codex defaults to high on every model and supports explicit xhigh and max on GPT-6.2 Astra and Sol. Claude defaults to high (none for Haiku). Antigravity defaults to high."
         );
         assert_eq!(
             (DEFAULT_CLAUDE_MODEL, DEFAULT_CLAUDE_EFFORT),
