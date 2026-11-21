@@ -57,6 +57,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Preserve the ordinary armed merge outcome after a person merges through HTTP
 - [x] Keep the live owner’s merge notice across a queue decision
 - [x] Verify restored merge requests and their train positions
+- [x] Defer live PR notices while the session writer is busy
 - [ ] Verify restored arms and deliver current ordinary CI and train notices to the owner
 - [ ] Report the active singleton and replay its recorded failure for the original owner
 - [ ] Verify candidate status before parking, showing Done or resuming a parked owner
@@ -98,7 +99,15 @@ The queue writes the accepted singleton to the owner’s completed merge wait be
 
 When the watcher sees an open PR during an active queue decision or its slot changes during the read, it supplies the PR number to the normal notice bookkeeping and defers events, check-ins and stalls for that pass. A subsequent recorded merge remains eligible for delivery once to the same task.
 
+A live PR notice that finds the terminal writer busy leaves its event unheard. The existing bounded watch reevaluates the owner and event on its next pass. Once the first paste is accepted, the normal submit path completes it.
+
 ## Evidence
+
+- The writer-contention regression failed on the landed implementation at `ec580fc3a` and on the earlier recipient-check prototype. Both pasted the red CI notice after the resize released the writer and a human decision had opened. On `1425811da`, all 201 scoped tests passed. The fixture verified the session input time and screen, a second pass during the human decision, and one delivery when the decision cleared. Independent review approved the exact commit after running the fixture. Clippy, repository contracts, formatting and spec validation passed. Vidoc was disabled. The bounded mutation run listed 15 targets and was running at approval.
+
+- PR #1574 landed at dev `ec580fc3a`. Train run `8b6bf3ef-7a83-4490-9166-a988cf4aa5b6` passed quality, both Rust shards and browser E2E. PR run `6ce66313-3813-436a-b18e-8b2a2b20a606` and dev run `88ff2f78-4e23-4bbe-8b8d-4625c3fea241` reused the verified tree. Vidoc was disabled. The restored-position mutation campaign finished with 24 listed, 19 caught and five unviable. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/ec580fc3aaf5e25c81f6f385551285050b1e90a9)
+
+- The real PTY regression held the writer in a resize while a PR failure became actionable. Before the fix, the watcher queued its paste and sent the CI advice after the owner had been asked for a decision. Published-head and recipient verification and CI/train event selection remain in the following plan step.
 
 - Independent review approved `64116f9f69c26b216db2625e92175062082a8c7a` for restored merge requests and train positions. All 284 scoped parking, delivery, PR-watch and queue tests passed. The reviewer independently ran the real retitle-502 regression. Scoped Clippy, repository contracts, formatting and spec validation passed. Vidoc was disabled. The 24-target mutation campaign passed its unmutated baseline and was running at approval. The last review fix changed tests and documentation and had no Rust product mutations.
 

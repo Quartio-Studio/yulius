@@ -3376,3 +3376,104 @@ fn pause_watch_or_queue(
     });
     (entered, release)
 }
+
+#[test]
+fn a_busy_terminal_writer_leaves_the_armed_notice_unheard() -> TestResult {
+    use yulius_app::delivery::DeliveryRecord;
+    use yulius_app::pr_watch::WatchBounds;
+    use yulius_domain::ci::{CiRef, RunState};
+    use yulius_domain::delivery::DeliveryStage;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, github) = app_with_pulls(&data, 8, 1).await?;
+        let (id, caller) = answered(&app, &data).await?;
+        let task = app.deps.store.task(&id).await?.ok_or("owner")?;
+        let tree = Path::new(task.worktree_path.as_deref().ok_or("checkout")?);
+        let head = crate::pr_watch::git(tree, &["rev-parse", "HEAD"])?;
+        open_pull_at(&app, &github, &id, 1481, &head).await?;
+        app.deps
+            .store
+            .transition_delivery(
+                &DeliveryStage::None,
+                &DeliveryRecord {
+                    task_id: id.clone(),
+                    stage: DeliveryStage::PrOpen,
+                    pr_number: Some(1481),
+                    updated_at: app.now(),
+                },
+            )
+            .await?;
+        let (mut run, job) = crate::pr_watch::run(
+            &caller.sandbox,
+            "held-writer-ci",
+            &head,
+            RunState::Failed,
+            None,
+            31,
+        );
+        run.reference = CiRef::PullRequest(1481);
+        app.deps.store.insert_ci_run(&run, &[job]).await?;
+        std::fs::write(
+            data.join(yulius_app::agent_wait::ARMED_MERGES_FILE),
+            serde_json::to_vec(
+                &json!([{"task":id.as_str(),"head":head,"summary":"reviewed","armed_at":30}]),
+            )?,
+        )?;
+        app.restore_armed_merges().await;
+        let session = app.runtime(&id);
+        let last_input = session
+            .last_input_ms
+            .load(std::sync::atomic::Ordering::SeqCst);
+        let (entered, release) = pause_watch_or_queue(Point::TerminalResizeOwnsWriter, &id);
+        let resize = {
+            let app = app.clone();
+            let id = id.clone();
+            tokio::spawn(async move { app.resize_run(&id, 100, 40).await })
+        };
+        tokio::time::timeout(Duration::from_secs(10), entered.notified()).await?;
+        let watcher = app.clone();
+        let mut pass =
+            tokio::spawn(async move { watcher.watch_prs(&WatchBounds::default()).await });
+        let while_busy = tokio::time::timeout(Duration::from_secs(5), &mut pass).await;
+        ask(&app, &id).await?;
+        release.notify_one();
+        resize.await??;
+        let news = match while_busy {
+            Ok(news) => news?,
+            Err(_) => {
+                let stale = pass.await?;
+                return Err(
+                    format!("notice waited behind the resize and then typed: {stale:?}").into(),
+                );
+            }
+        };
+        assert_eq!(
+            session
+                .last_input_ms
+                .load(std::sync::atomic::Ordering::SeqCst),
+            last_input
+        );
+        assert!(!screen(&app, &id).contains("held-writer-ci"));
+        assert!(news.is_empty(), "notice while writer occupied: {news:?}");
+        assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
+        app.deps
+            .store
+            .set_task_needs_you(&id, None, app.now())
+            .await?;
+        let current = app.watch_prs(&WatchBounds::default()).await;
+        assert_eq!(current.len(), 1, "{current:?}");
+        assert!(current[0].1.contains("held-writer-ci"));
+        wait_for(
+            "the agent received the CI notice",
+            Duration::from_secs(10),
+            || async { screen(&app, &id).contains("held-writer-ci") },
+        )
+        .await?;
+        assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
+        app.stop_task_now(&id).await?;
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
