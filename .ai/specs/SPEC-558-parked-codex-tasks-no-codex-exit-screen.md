@@ -38,7 +38,9 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Give parked PRs fair status reads in task lists and Home
 - [x] Return the verified plan snapshot with parked HTTP task rows
 - [x] Filter and explain verified parked rows in MCP task reads
-- [ ] Refresh parked page and sidebar status independently of the Git overview
+- [x] Reproduce parked-page refresh races with a held Git overview
+- [x] Keep the newest successful full task list and recover the cold task page
+- [ ] Reconcile parked lifecycle events and deliver the verified page and sidebar watch
 - [ ] Keep failed integration candidates with their original owner
 - [ ] Deliver bounded Codex goal continuation to dev
 - [ ] Recover screens from tasks parked before the upgrade
@@ -65,6 +67,18 @@ Capture a separate screen at the park decision because exiting can clear the ent
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
 ## Evidence
+
+- On `25015275f`, a successful retry list could show active task #13 in the sidebar while the cold task page still applied an empty or failed archive lookup. Both held-lookup regressions failed. Returning the retry list after the archive had already reported the task missing reproduced the opposite ordering too. The page now checks the current active list at archive completion and reopens a missing task when a subsequent list contains it. All six direct-route recovery cases passed. Each requested at most one archive lookup.
+
+- Independent review of CI-passing head `36522249b` held the first archive lookup across two successful active-list responses after one Retry click. The second lookup failed, and the task page incorrectly reported an existing archived task missing. The Chromium regression failed on that head and passed after the page left the error state before starting recovery. The automatic, manual and overlapping recovery tests all passed and the archive regression confirmed one lookup.
+
+- Yulius CI run `567b17d4-ffa7-4377-8fc7-df2b24d67674` on `85f3cd6e7` reported the same two onboarding failures as the controlled local comparison. Both missed the sidebar title “Read again”. Both pass with full-list ordering isolated from task events. A further review found manual Retry starting two lookups for an archived task and allowing the second lookup’s failure to hide it. The regression failed on `04c04dcdf` and passed when the successful list notification became the sole route refresh. Both onboarding regressions, cold-page recovery and the archived Retry passed together.
+
+- The narrowed full-list and cold-route implementation passed 79 Chromium tests across parked tasks, onboarding, PRs, task Done and archive. Independent review exercised all 48 success, failure and completion orderings of three overlapping list reads. Its remaining fixture finding reproduced a held mock list returning HTTP 200 after cancellation. That regression, the cold task route and the browser reconnect test passed after the fixture used the normal abort handler. Repository quick checks passed, the Rust mutation command found no changed Rust code and Vidoc was disabled.
+
+- PR #1548 covers overlapping full task-list reads and direct task-page recovery. On dev `5bdabd1a9`, an older parked snapshot overwrote a newer running row. A prototype discarded the only successful cold load in both failure orders. A Chromium route regression reproduced the sidebar recovering while the open task page stayed on its load error. Tests cover all three cases and isolated refresh errors.
+- The broader implementation was split after review reproduced same-second archive and restore events, an archive response already reflecting a restore, and a delayed update after permanent deletion. A local full run of the broader prototype also identified two onboarding regressions caused by applying entire event payloads to newer list rows. This delivery orders full-list responses. The parked-page follow-up explicitly owns event ordering as well as independent status refresh. These prototypes and tests remain available to task #540.
+- PR #1542 delivered verified MCP filtering and wait explanations to dev at `5bdabd1a9`. The passing train ran the quality, Rust and browser jobs. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/5bdabd1a93590ac7b9d7552d2dffc1f8dbf27d2f)
 
 - The unchanged PR #1542 head `f9c6066cd` failed browser startup in CI runs `9fc67118-5115-4fdc-bac1-17a82b5ed009` and `77f4c481-947a-4168-ae52-2262b1399804`. The first run lost six tests and the second lost four different tests, including the parked-capacity check. All ten retained traces show Chromium losing startup scripts to `net::ERR_NETWORK_CHANGED` on the first open and its immediate recovery reload. Both Rust test shards passed on each run. A Chromium regression for two interrupted entry-script requests timed out at 30 seconds on that head. A preliminary two-recovery patch passed the focused cases, then exhausted three loads in under one second on real host changes. New regressions cover a three-interruption burst, persistent interruption and ordinary failure alongside a network change. The patched harness passed all 12 focused checks. The full browser suite with seven workers passed 1,186 tests with one optional model-backed test skipped.
 

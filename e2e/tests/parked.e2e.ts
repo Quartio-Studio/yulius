@@ -327,3 +327,199 @@ for (const status of ['parked', 'queued', 'starting', 'waiting_capacity']) {
     }
   });
 }
+
+test('a failed overlapping cold read does not discard the successful task list', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const results = await browser.evaluate(async () => {
+    const url = '/assets/store.js';
+    const { createStore } = await import(url);
+    const sid = 'cold-list';
+    const seen = [];
+    for (const lateSuccess of [false, true]) {
+      let release!: () => void, fail!: (e: Error) => void;
+      const good = new Promise<void>(resolve => { release = resolve; });
+      const bad = new Promise<void>((_, reject) => { fail = reject; });
+      let calls = 0;
+      const store = createStore({ get: async () => {
+        if (++calls === 1) await good; else await bad;
+        return [{ id: 'p', sandbox_id: sid, status: 'parked', parked_needs_you: false }];
+      } });
+      const first = store.loadTasks(sid);
+      const second = store.loadTasks(sid);
+      const finished = Promise.allSettled([first, second]);
+      if (lateSuccess) { fail(new Error('unavailable')); await second.catch(() => {}); release(); }
+      else { release(); await first; fail(new Error('unavailable')); }
+      seen.push((await finished).map(r => r.status), store.findTask('p')?.status ?? null, Boolean(store.tasksError(sid)));
+      store.stopEvents();
+    }
+    return seen;
+  });
+  expect(results).toEqual([['fulfilled', 'rejected'], 'parked', false, ['fulfilled', 'rejected'], 'parked', false]);
+});
+
+test('the latest successful full list wins when the older parked snapshot arrives last', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const result = await browser.evaluate(async () => {
+    const url = '/assets/store.js';
+    const { createStore } = await import(url);
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let calls = 0;
+    const store = createStore({ get: async () => {
+      const first = ++calls === 1;
+      if (first) await held;
+      return [{ id: 'p', sandbox_id: 'cold', status: first ? 'parked' : 'running' }];
+    } });
+    const older = store.loadTasks('cold');
+    await store.loadTasks('cold');
+    release();
+    const rows = await older;
+    store.stopEvents();
+    return [rows.get('p').status, store.findTask('p').status];
+  });
+  expect(result).toEqual(['running', 'running']);
+});
+
+test('a superseded list failure keeps the newer result while an isolated refresh reports its error', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const url = '/assets/store.js';
+    const { createStore } = await import(url);
+    let reject!: (error: Error) => void;
+    const held = new Promise<void>((_, no) => { reject = no; });
+    let calls = 0;
+    const store = createStore({ get: async () => {
+      if (++calls === 1) await held;
+      if (calls > 2) throw new Error('refresh unavailable');
+      return [{ id: 'p', sandbox_id: 's', status: 'parked' }];
+    } });
+    const older = store.loadTasks('s');
+    await store.loadTasks('s');
+    reject(new Error('older read failed'));
+    const rows = await older;
+    const superseded = [rows.get('p')?.status, Boolean(store.tasksError('s'))];
+    let failed = false;
+    try { await store.loadTasks('s'); } catch { failed = true; }
+    const isolated = [failed, store.tasksError('s')?.message, store.findTask('p').status];
+    store.stopEvents();
+    return [superseded, isolated];
+  });
+  expect(seen).toEqual([['parked', false], [true, 'refresh unavailable', 'parked']]);
+});
+
+test('a cold task page recovers when its other list request succeeds', async ({ app, browser, screen }) => {
+  await browser.addInitScript(() => {
+    const w = window as unknown as { __yuliusTaskListReply: (url: string) => Promise<Response | undefined>; releaseList: () => void };
+    let reads = 0;
+    w.__yuliusTaskListReply = async (url) => {
+      if (!String(url).includes('/sb_studio/tasks?archived=false')) return;
+      const request = ++reads;
+      if (request === 1) await new Promise<void>(resolve => { w.releaseList = resolve; });
+      if (request === 2) return new Response(JSON.stringify({ error: { code: 'unavailable', message: 'fixture list unavailable' } }), { status: 503 });
+    };
+  });
+  await app.open(mock('/s/studio/t/13', '&ambient=0'));
+  await expect(screen.getByText(/Couldn’t load the tasks of studio/i).first()).toBeVisible();
+  await browser.evaluate(() => (window as unknown as { releaseList: () => void }).releaseList());
+  await expect(browser.locator('.task-row').first()).toBeVisible();
+  await expect(browser.locator('.taskview .strip-status')).toBeVisible();
+  await expect(screen.getByText(/Couldn’t load the tasks of studio/i)).toHaveCount(0);
+});
+
+test('an aborted task-list fixture cannot return its held reply', async ({ app, browser }) => {
+  await app.open(mock('/settings'));
+  const result = await browser.evaluate(async () => {
+    const url = '/assets/mock.js';
+    const { createMockTransport } = await import(url);
+    const mock = createMockTransport(new URLSearchParams('ambient=0'));
+    let release!: (response: Response) => void;
+    const held = new Promise<Response>(resolve => { release = resolve; });
+    const w = window as unknown as { __yuliusTaskListReply?: () => Promise<Response> };
+    w.__yuliusTaskListReply = () => held;
+    const controller = new AbortController();
+    const read = mock.fetch('/api/sandboxes/sb_studio/tasks?archived=false', { signal: controller.signal })
+      .then((r: Response) => String(r.status), (e: Error) => e.name);
+    controller.abort();
+    release(new Response(null, { status: 200 }));
+    delete w.__yuliusTaskListReply;
+    return await read;
+  });
+  expect(result).toBe('AbortError');
+});
+
+test('retrying a cold archived task opens it with one archive lookup', async ({ app, browser }) => {
+  type Fixture = { allowActiveList: boolean; archiveReads: number; __yuliusTaskListReply: (url: string) => Response | undefined };
+  await browser.addInitScript(() => {
+    const w = window as unknown as Fixture;
+    w.archiveReads = 0;
+    w.__yuliusTaskListReply = (url) => {
+      if (!String(url).includes('/sb_studio/tasks?archived=')) return;
+      const archived = String(url).includes('archived=true');
+      if (archived ? ++w.archiveReads === 1 : w.allowActiveList) return;
+      return new Response(JSON.stringify({ error: { code: 'unavailable', message: 'fixture list unavailable' } }), { status: 503 });
+    };
+  });
+  await app.open(mock('/s/studio/t/1', '&ambient=0'));
+  const retry = browser.locator('main .load-error button');
+  await expect(retry).toBeVisible();
+  await browser.evaluate(() => { (window as unknown as Fixture).allowActiveList = true; });
+  await retry.click();
+  await expect(browser.locator('.taskview .strip-status')).toBeVisible();
+  expect(await browser.evaluate(() => (window as unknown as Fixture).archiveReads)).toBe(1);
+});
+
+for (const scenario of [
+  { title: 'two successful active lists recover the same archived task only once', number: 1, failArchive: false },
+  { title: 'an active task in the retry list wins over the held archive list', number: 13, failArchive: false },
+  { title: 'an active task in the retry list wins over a failed archive lookup', number: 13, failArchive: true },
+  { title: 'an active task in a later retry list reopens a cold missing task page', number: 13, failArchive: false, archiveFirst: true },
+]) {
+  test(scenario.title, async ({ app, browser }) => {
+    type Fixture = {
+      __yuliusTaskListReply: (url: string) => Promise<Response | undefined>;
+      __yuliusMock: { tasks: { sandbox_id: string; number: number; title: string }[] };
+      failArchive: boolean; releaseOriginal: () => void; releaseRetry?: () => void; releaseArchive?: () => void; archiveReads: number;
+    };
+    await browser.addInitScript(() => {
+      const w = window as unknown as Fixture;
+      let activeReads = 0;
+      w.archiveReads = 0;
+      w.__yuliusTaskListReply = async (url) => {
+        if (!String(url).includes('/sb_studio/tasks?archived=')) return;
+        if (String(url).includes('archived=true')) {
+          if (++w.archiveReads === 1) {
+            await new Promise<void>(resolve => { w.releaseArchive = resolve; });
+            if (!w.failArchive) return;
+          }
+        } else {
+          const read = ++activeReads;
+          if (read === 1) {
+            await new Promise<void>(resolve => { w.releaseOriginal = resolve; });
+            return new Response('[]', { headers: { 'Content-Type': 'application/json' } });
+          }
+          if (read === 3) {
+            await new Promise<void>(resolve => { w.releaseRetry = resolve; });
+            w.__yuliusMock.tasks.find(t => t.sandbox_id === 'sb_studio' && t.number === 13)!.title = 'Retry list arrived';
+            return;
+          }
+        }
+        return new Response(JSON.stringify({ error: { code: 'unavailable', message: 'fixture list unavailable' } }), { status: 503 });
+      };
+    });
+    await app.open(mock(`/s/studio/t/${scenario.number}`, '&ambient=0'));
+    await browser.evaluate((failArchive) => { (window as unknown as Fixture).failArchive = failArchive; }, scenario.failArchive);
+    await browser.locator('main .load-error button').click();
+    await expect.poll(() => browser.evaluate(() => Boolean((window as unknown as Fixture).releaseRetry))).toBe(true);
+    await browser.evaluate(() => (window as unknown as Fixture).releaseOriginal());
+    await expect.poll(() => browser.evaluate(() => Boolean((window as unknown as Fixture).releaseArchive))).toBe(true);
+    if (scenario.archiveFirst) {
+      await browser.evaluate(() => (window as unknown as Fixture).releaseArchive!());
+      await expect(browser.locator('main').getByText('Task not found')).toBeVisible();
+    }
+    await browser.evaluate(() => (window as unknown as Fixture).releaseRetry!());
+    await expect(browser.locator('.sidebar .task-row:has-text("Retry list arrived")')).toBeVisible();
+    if (!scenario.archiveFirst) await browser.evaluate(() => (window as unknown as Fixture).releaseArchive!());
+    await expect(browser.locator('.taskview .strip-status')).toBeVisible();
+    expect(await browser.evaluate(() => (window as unknown as Fixture).archiveReads)).toBe(1);
+  });
+}

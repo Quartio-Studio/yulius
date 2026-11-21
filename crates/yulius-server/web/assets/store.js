@@ -129,19 +129,33 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     emit('sandboxes');
   }
 
+  // Cold navigation and resync can both load the list. Keep the newest successful
+  // snapshot even when the other request fails.
+  let nextListRead = 0;
+  const listOrder = new WeakMap();
+
   async function loadTasks(sandboxId) {
+    const atStart = state.tasks.get(sandboxId);
+    const order = ++nextListRead;
     let list;
     try {
       list = await api.get(`/api/sandboxes/${enc(sandboxId)}/tasks?archived=false`);
     } catch (error) {
-      // Lists show this with a retry instead of "Loading…" forever.
-      state.taskErrors.set(sandboxId, error);
-      emit('tasks', sandboxId);
+      // An older failure cannot invalidate a list already supplied by a newer read.
+      const current = state.tasks.get(sandboxId);
+      if (listOrder.get(current) > order) return current;
+      if (current === atStart) {
+        state.taskErrors.set(sandboxId, error);
+        emit('tasks', sandboxId);
+      }
       throw error;
     }
+    const current = state.tasks.get(sandboxId);
+    if (listOrder.get(current) > order) return current;
     state.taskErrors.delete(sandboxId);
     const map = new Map();
     for (const task of Array.isArray(list) ? list : []) if (!task.archived) map.set(task.id, task);
+    listOrder.set(map, order);
     state.tasks.set(sandboxId, map);
     emit('tasks', sandboxId);
     return map;
