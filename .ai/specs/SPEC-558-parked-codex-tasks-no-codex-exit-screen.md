@@ -99,6 +99,8 @@ When the watcher sees an open PR during an active queue decision or its slot cha
 
 ## Evidence
 
+- The first independent review of `e2f8f3b66` found that a passed train’s verified integration head and a later request for an excluded PR were both misidentified. Three regressions failed on that head. The real GitHub-lag fixture now checks that the queue preserves both the admission head and the verified head. Cold owner watches check its train notice and reject an exclusion’s conflict files after a head change, a same-head re-arm and recovery of a legacy entry without an activation.
+
 - PR #1571 delivered the live queue observation at dev `d95fb3f5f`. Its reviewed head `b57c2a51c` passed Yulius CI run `6307bb55-5e96-4b8d-998e-a1f6f5708e89`. The identical dev tree passed in `701c1e15-a69f-466c-8fa6-867c2e77551c`. Quality, both Rust test shards and browser E2E passed. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe704d71f9/delivery/evidence/d95fb3f5fd784b33854fc720e9e41c294a20d5d0)
 
 - Two additional fixtures failed on the ported watcher. A PR excluded from the train was told it would merge when the train passed. An armed PR whose merge was recorded during final verification still received an open-PR check-in. The watcher now uses the excluded PR’s queue note and rechecks the stored stage and PR number with the CI verdicts.

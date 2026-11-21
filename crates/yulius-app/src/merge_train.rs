@@ -199,6 +199,9 @@ struct Member {
     pr: u64,
     /// The armed head it was built with.
     head: String,
+    /// The head the passed train verified and pushed while waiting for GitHub.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    verified_head: Option<String>,
     /// When its merge was armed: a new arm takes it out of the train.
     armed_at: i64,
     /// The integration branch's tree once it merged.
@@ -210,6 +213,10 @@ struct Member {
 struct LeftOut {
     task: String,
     pr: u64,
+    #[serde(default)]
+    head: Option<String>,
+    #[serde(default)]
+    armed_at: Option<i64>,
     files: Vec<String>,
 }
 
@@ -237,6 +244,8 @@ enum Step {
     /// Not yet (GitHub has not shown the head, or a run at the head pushed still runs): next
     /// pass.
     Wait,
+    /// GitHub has yet to accept the head checked against this member’s tested tree.
+    WaitAtHead(String),
     /// The train is dissolved, for this reason.
     Stop(String),
     /// The train is dissolved, for a reason of this member's own: it goes one by one, where it
@@ -387,7 +396,7 @@ fn singleton_failure(pr: u64, head: &str, integration: &str, run: &str) -> Strin
 }
 
 /// What `yulius wait` says about `task`'s place in `train`.
-fn note_of(train: &Train, task: &str) -> Option<QueueNote> {
+fn note_of(train: &Train, task: &str, arm: Option<(&str, i64)>) -> Option<QueueNote> {
     let prs = numbers(&train.members);
     if let Some(index) = train.members.iter().position(|m| m.task == task) {
         let place = format!(
@@ -420,6 +429,13 @@ fn note_of(train: &Train, task: &str) -> Option<QueueNote> {
         });
     }
     train.left_out.iter().find(|l| l.task == task).map(|left| {
+        if arm.is_none() || left.head.as_deref().zip(left.armed_at) != arm {
+            return QueueNote::current(format!(
+                "pull request #{} waits behind merge train {} and is considered after it ends.",
+                left.pr,
+                listed(&prs)
+            ));
+        }
         let files: Vec<String> = left
             .files
             .iter()
@@ -505,10 +521,13 @@ impl App {
             return None;
         };
         let train = self.read_trains(&task.sandbox_id).train?;
-        let note = note_of(&train, task.id.as_str())?;
+        let note = note_of(&train, task.id.as_str(), Some((&arm.head, arm.armed_at)))?;
         let candidate =
             if let Some(member) = train.members.iter().find(|m| m.task == task.id.as_str()) {
-                if member.pr != pr || member.head != arm.head || member.armed_at != arm.armed_at {
+                if member.pr != pr
+                    || member.verified_head.as_deref().unwrap_or(&member.head) != arm.head
+                    || member.armed_at != arm.armed_at
+                {
                     return None;
                 }
                 Some((train.run, numbers(&train.members)))
@@ -541,7 +560,12 @@ impl App {
     /// What `yulius wait` says about `task`'s merge train, if it is in one or was left out.
     pub(crate) fn train_note(&self, task: &TaskRecord) -> Option<QueueNote> {
         let state = self.read_trains(&task.sandbox_id);
-        note_of(state.train.as_ref()?, task.id.as_str())
+        let current = self.armed_now(&task.id);
+        let arm = match &current {
+            ArmedNow::Armed(arm) => Some((arm.head.as_str(), arm.armed_at)),
+            _ => None,
+        };
+        note_of(state.train.as_ref()?, task.id.as_str(), arm)
     }
 
     /// `sandbox`'s merge train, for the person's merge queue (SPEC-487 MRG-002): its CI run, its
@@ -1278,6 +1302,10 @@ impl App {
             train.own_wait = None;
             match self.train_step(sandbox, &train, index).await {
                 Step::Merged => train.waiting_since = None,
+                Step::WaitAtHead(head) => {
+                    train.members[index].verified_head = Some(head);
+                    return self.train_waits(sandbox, train).await;
+                }
                 Step::Wait => return self.train_waits(sandbox, train).await,
                 Step::Stop(reason) => {
                     self.dissolve(sandbox, &train, &reason).await;
@@ -1505,7 +1533,7 @@ impl App {
             self.ci_publish(&run).await;
         }
         if !self.github_shows(sandbox, member.pr, &head).await {
-            return (Verdict::Keep(moved_armed), Step::Wait);
+            return (Verdict::Keep(moved_armed), Step::WaitAtHead(head));
         }
         let Ok(Some(user)) = self.deps.store.user(&task.owner).await else {
             return keep(
@@ -1575,7 +1603,7 @@ impl App {
             }
             // GitHub could not take the pull request's new title for now: the train waits for
             // the next pass, as for a head GitHub does not show yet (SPEC-069 BPL-008).
-            Err(MergeFailure::Later(_)) => (Verdict::Keep(moved_armed), Step::Wait),
+            Err(MergeFailure::Later(_)) => (Verdict::Keep(moved_armed), Step::WaitAtHead(head)),
             Err(MergeFailure::Refused(err)) => keep(
                 moved_armed,
                 format!(
@@ -1885,12 +1913,15 @@ impl App {
                     task: candidate.task.id.to_string(),
                     pr: candidate.pr,
                     head: candidate.armed.head.clone(),
+                    verified_head: None,
                     armed_at: candidate.armed.armed_at,
                     tree,
                 }),
                 TrainStep::Conflict(files) => left_out.push(LeftOut {
                     task: candidate.task.id.to_string(),
                     pr: candidate.pr,
+                    head: Some(candidate.armed.head.clone()),
+                    armed_at: Some(candidate.armed.armed_at),
                     files,
                 }),
             }
@@ -2144,6 +2175,7 @@ mod tests {
             task: task.to_owned(),
             pr,
             head: format!("head-{task}"),
+            verified_head: None,
             armed_at: 1,
             tree: tree.to_owned(),
         }
@@ -2163,6 +2195,8 @@ mod tests {
             left_out: vec![LeftOut {
                 task: "d".to_owned(),
                 pr: 14,
+                head: Some("head-d".into()),
+                armed_at: Some(1),
                 files: vec!["shared.txt".to_owned()],
             }],
             merging: false,
@@ -2278,7 +2312,7 @@ mod tests {
     #[test]
     fn the_wait_says_where_a_pull_request_stands() {
         let mut train = train();
-        let note = note_of(&train, "b")
+        let note = note_of(&train, "b", None)
             .map(|note| note.text)
             .unwrap_or_default();
         assert!(
@@ -2286,23 +2320,23 @@ mod tests {
             "{note}"
         );
         assert!(note.contains("run run1"), "{note}");
-        let left = note_of(&train, "d")
+        let left = note_of(&train, "d", Some(("head-d", 1)))
             .map(|note| note.text)
             .unwrap_or_default();
         assert!(
             left.contains("#14 was left out") && left.contains("`shared.txt`"),
             "{left}"
         );
-        assert_eq!(note_of(&train, "x"), None);
+        assert_eq!(note_of(&train, "x", None), None);
         train.own_wait = Some((12, 0));
-        assert!(note_of(&train, "b").is_some_and(|note| note.awaits_own_run));
+        assert!(note_of(&train, "b", None).is_some_and(|note| note.awaits_own_run));
         assert!(
-            note_of(&train, "a")
+            note_of(&train, "a", None)
                 .is_some_and(|note| !note.awaits_own_run && note.text.contains("#12's own"))
         );
         train.own_wait = None;
         train.merging = true;
-        let merging = note_of(&train, "a")
+        let merging = note_of(&train, "a", None)
             .map(|note| note.text)
             .unwrap_or_default();
         assert!(merging.contains("passed; Yulius merges them"), "{merging}");

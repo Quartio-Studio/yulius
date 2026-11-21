@@ -4220,6 +4220,13 @@ async fn a_yulius_base_merge_keeps_the_merge_armed() -> TestResult {
     assert_eq!(state["merge_armed"], true, "kept: {state}");
     assert_eq!(state["merge_outcome"], Value::Null, "{state}");
     assert_eq!(saved_armed(&app, 1)?, Some((moved.clone(), armed_at)));
+    let train: Value = serde_json::from_str(&f.trains_file(&app))?;
+    let held = &train[f.sandbox.as_str()]["train"]["members"][0];
+    assert_eq!(held["head"], reviewed, "admission head");
+    assert_eq!(
+        held["verified_head"], moved,
+        "the watcher can identify the moved arm"
+    );
     // An unrelated PR verdict arrives while GitHub catches up. Keep the already
     // published owner verdict at this head and finish the candidate that passed.
     let mut peer = app

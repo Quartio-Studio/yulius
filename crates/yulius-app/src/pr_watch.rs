@@ -1246,14 +1246,14 @@ impl App {
         {
             let said = green_said(head, armed, notice_hold, queue_note, &integration);
             if let Some((class, text)) = said {
-                let class = if train.is_some() && holding.is_none() {
-                    "left-out"
+                let key = if train.is_some() && holding.is_none() {
+                    format!("{head}:left-out:{}", fingerprint(&text))
                 } else {
-                    class
+                    format!("{head}:{class}")
                 };
                 events.push(Event {
                     kind: "green",
-                    key: format!("{head}:{class}"),
+                    key,
                     text,
                 });
             }
