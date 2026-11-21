@@ -55,7 +55,7 @@ new request after the old sockets reach EOF. The issue requires the original con
 - [x] Obtain independent approval for the custody deadline slice
 - [x] Preserve original terminal receive queues and isolate connection loss during custody
 - [x] Obtain independent approval for terminal socket custody
-- [ ] Obtain independent approval for the proxy restart slice
+- [x] Obtain independent approval for the proxy restart slice
 - [ ] Hand established opaque connections and matching relay sockets to the restarted server
 - [ ] Verify same-socket continuity, admission limits and intercepted traffic through restart
 - [ ] Independent review in a fresh session, findings fixed test-first
@@ -91,6 +91,9 @@ mutation checks and quick checks. Review each slice independently and deliver th
 Use a bounded handoff of connected descriptors and in-memory copy state during an orderly
 restart. A private host-side custodian can hold those descriptors between server processes.
 This leaves all dialing and host-bound secret handling in the authorized server.
+An opaque HTTP/1.1 CONNECT gives its dedicated TCP connection to the copy. The bytes inside,
+including TLS carrying HTTP/2 to the destination, stay opaque. An outer HTTP/2 CONNECT to
+the proxy runs on a multiplexed session owned by the HTTP server and reconnects on restart.
 A custodian launched by a delegated service uses the service-owned sessions unit's existing
 legacy process leaf where available. A surviving child in a delegated server unit with active
 controllers can prevent systemd 258 and later from starting it. Where the sessions unit cannot
@@ -430,3 +433,33 @@ without adoption support or a remote peer that times out can end a tunnel.
   through the holder before shutdown. The successor became healthy with that same holder.
   The original client then received EOF in place of the marker written during restart.
   Proxy and holder wiring remain necessary for AC-1.
+- PR #1569 landed at dev squash `e8759b018`, with the same tree as the reviewed head
+  `aae723883`. PR run `66c61f08-cd34-4865-b380-9e1fd1d75c0f` and dev run
+  `51949d71-9ca7-4f3f-9df2-f26be8ce2242` passed. Quality, both shards and e2e
+  passed. Vidoc was disabled.
+  [Dev verification](https://yulius.quartio.ai/api/tasks/35adb14d-65fe-4a9f-b9fa-370d776d4139/delivery/evidence/e8759b018f629627a1583daf5eb445db61de2ce3?run_id=51949d71-9ca7-4f3f-9df2-f26be8ce2242)
+- Before restoring the direct wiring on this base, the direct two-process acceptance
+  fixture failed in 0.53 s. The original client read EOF where it expected the marker
+  written between server processes. The five real-process direct cases passed in 8.37 s
+  in the rehearsal. All 17 source, test and Cargo files in this integration match those
+  exercised in the rehearsal.
+- At `b0706ff51` the five direct server restart cases passed in 7.67 s. Independent
+  review also passed those five and all five focused egress handoff tests. It found the
+  product documentation overstated the eligible protocol. Its synthetic agent established
+  a cleartext HTTP/2 CONNECT directly to the proxy, received HTTP 200, and exchanged
+  `TEST` and `BACK`. After SIGTERM and successor readiness the destination read EOF.
+  The source documentation now identifies the dedicated HTTP/1.1 CONNECT to the proxy.
+- A separate real-server fixture negotiated TLS with HTTP/2 to a synthetic destination
+  inside an opaque HTTP/1.1 CONNECT. The destination accepted one TLS session. Its original
+  HTTP/2 stream delivered a response written while the direct server was down, received
+  more request bytes after successor readiness, and returned its final reply.
+- Fresh review approved the direct delivery at `a58afc499`. The reviewer passed all five
+  real-server restart tests and five egress handoff tests. It verified both the original
+  inner TLS/HTTP/2 session and the outer HTTP/2 reconnect. The successor refused the old
+  synthetic attempt with HTTP 407 and admitted a fresh live attempt with HTTP 200. Locally
+  the domain, egress and sandbox suites passed 929 tests, with two host-dependent skips.
+  Targeted Clippy, repository contracts and formatting passed. Vidoc was disabled.
+- The mutation run against the landed custody base `e8759b018` passed all 3,333
+  selected baseline tests. Of 129 mutations, 77 were caught and 52 were unviable.
+  None were missed, timed out or unreached. The follow-up on the protocol documentation
+  changed no Rust lines.
