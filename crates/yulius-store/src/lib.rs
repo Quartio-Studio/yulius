@@ -218,6 +218,9 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0080_task_wait_messages.sql"),
     include_str!("migrations/0081_ci_run_admission.sql"),
     include_str!("migrations/0082_task_merge_wait.sql"),
+    // SPEC-605. The position is the schema version, 0084 is the reserved file number.
+    include_str!("migrations/0084_review_round_delivery.sql"),
+    // SPEC-609. Schema version 84 follows the already shipped review migration.
     include_str!("migrations/0083_terminal_pulls.sql"),
 ];
 
@@ -547,7 +550,11 @@ mod tests {
             (80, include_str!("migrations/0080_task_wait_messages.sql")),
             (81, include_str!("migrations/0081_ci_run_admission.sql")),
             (82, include_str!("migrations/0082_task_merge_wait.sql")),
-            (83, include_str!("migrations/0083_terminal_pulls.sql")),
+            (
+                83,
+                include_str!("migrations/0084_review_round_delivery.sql"),
+            ),
+            (84, include_str!("migrations/0083_terminal_pulls.sql")),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -556,17 +563,17 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 83, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 84, "a new migration is pinned here too");
     }
 
     #[test]
     fn terminal_pull_upgrade_keeps_the_confirmed_landing_of_a_parked_task()
     -> Result<(), Box<dyn std::error::Error>> {
         let mut conn = Connection::open_in_memory()?;
-        for sql in &MIGRATIONS[..82] {
+        for sql in &MIGRATIONS[..83] {
             conn.execute_batch(sql)?;
         }
-        conn.pragma_update(None, "user_version", 82)?;
+        conn.pragma_update(None, "user_version", 83)?;
         conn.execute_batch(
             "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at)
              VALUES ('u', 'User', 0, 0, 1);

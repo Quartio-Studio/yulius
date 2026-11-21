@@ -662,7 +662,7 @@ the agents' delivery workflow and other clients; no page of the web UI calls the
 | Method | Path | Level | Body → Response |
 | --- | --- | --- | --- |
 | GET | `/api/sandboxes/{sid}/git` | read | → `GitOverview`. HTTP 429 when 30 overlapping overview reads already hold publication slots in this sandbox. Parked task branch reads have a separate limit per task. Home and MCP task lists continue to read available PR observations. |
-| GET | `/api/tasks/{tid}/delivery` | read | → `Delivery`. In a playground the available action is the local squash (`merge`). Its local prerequisites appear in `blocked`, and a merged task has no further actions. |
+| GET | `/api/tasks/{tid}/delivery` | read | → `Delivery`. `review_rounds` lists the current review or the just-delivered PR's rounds, oldest first, including `started_at`, `ended_at` (RFC 3339) and `pr_number` when known. In a playground the available action is the local squash (`merge`). Its local prerequisites appear in `blocked`, and a merged task has no further actions. |
 | GET | `/api/tasks/{tid}/delivery/evidence/{merged_sha}` | read | → `MergeEvidence`. Task, PR, branch, accepted head, landed SHA and up to 50 newest CI, CD and profile-command attempts with individual check states. When truncated, pass `?before=<next_before>` for the next page, including archived attempts. Add `?run_id=<id>` to pin one attempt. A missing task landing or requested attempt returns 404. Task agents use `delivery_status` with optional `merged_sha`, `before` or `run_id` to read the same evidence with their task credential. |
 | GET | `/api/tasks/{tid}/changes` | read | → `TaskChanges`: the task worktree (committed, uncommitted and untracked work; symlinks listed, never followed) against the merge base with `origin/<integration>`; 409 when the task has not started (no worktree yet) or its worktree is gone (the Git overview's `worktree`) |
 | GET | `/api/tasks/{tid}/commits` | read | → `[TaskCommit]`: the task branch's commits not on the integration branch, newest first (at most 100); 409 as for `/changes` |
@@ -691,9 +691,10 @@ Delivery = {"evidence"?:MergeEvidence,"stage":"none|pr_open|merged_integration|e
   "next_actions":["open_pr|merge|run_env:<name>|confirm_env:<name>|promote"],
   "blocked":[{"action","reason"}], "notes":["…"], "checks_access":ChecksAccess|null,
   "review_rounds":[ReviewRound]}
-ReviewRound = {"round":1, "agent":"yulius-reviewer|yulius-reviewer-opus",
-  "model":"claude-fable-5-2", "model_answered":"claude-fable-5-2|null",
+ReviewRound = {"round":1, "agent":"yulius-reviewer|yulius-reviewer-opus|codex-reviewer",
+  "model":"<model-id>", "model_answered":"<model-id>|null",
   "reason":"round|kept|no_fable", "head":"<sha>|null",
+  "started_at":"<RFC3339>", "ended_at":"<RFC3339>|null", "pr_number":42|null,
   "verdict":"approve|request_changes|null", "reported":bool, "cut_off":bool}
 EnvironmentRun = {"run_id","environment","kind":"command|manual",
   "state":"running|succeeded|failed|error","command":"…|null","commit":"<sha>|null",

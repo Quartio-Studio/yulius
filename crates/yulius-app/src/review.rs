@@ -16,9 +16,9 @@ use std::sync::Arc;
 
 use serde_json::Value;
 use yulius_contracts::hooks::{HookInput, HookOutput, events};
-use yulius_domain::harness::claude_model_name;
+use yulius_domain::harness::{Harness, claude_model_name, valid_session_id};
 use yulius_domain::review::{
-    LATE_REVIEWER_AGENT, REVIEWER_AGENT, reviewer_model, round_agent, verdict_of,
+    LATE_REVIEWER_AGENT, REVIEWER_AGENT, Verdict, reviewer_model, round_agent, verdict_of,
 };
 use yulius_domain::usage::ModelFamily;
 
@@ -702,6 +702,71 @@ impl App {
             .map(|c| c.sha)
     }
 
+    /// A native Codex review child belongs to the authenticated parent session.
+    fn codex_review_child<'a>(
+        ctx: &AgentContext,
+        input: &'a HookInput,
+    ) -> Option<(&'a str, &'a str)> {
+        let parent = input.session_id.as_deref()?;
+        let child = input.agent_id.as_deref()?;
+        (ctx.attempt.provider_session_id.as_deref() == Some(parent)
+            && child != parent
+            && valid_session_id(child))
+        .then_some((parent, child))
+    }
+
+    async fn codex_review_event(
+        &self,
+        ctx: &AgentContext,
+        input: &HookInput,
+        at: Timestamp,
+        verdict: Option<Verdict>,
+    ) -> AppResult<()> {
+        let Some((parent, child)) = Self::codex_review_child(ctx, input) else {
+            return Ok(());
+        };
+        let store = &self.deps.store;
+        let model = input.model.as_deref().filter(|model| !model.is_empty());
+        if let Some(verdict) = verdict
+            && store
+                .end_review_round(&ctx.task.id, child, at, Some(verdict.as_str()), model)
+                .await?
+        {
+            return Ok(());
+        }
+        // The start hook can still be in flight after the CLI's timeout. Either event can
+        // establish the round from the same rollout metadata in the store.
+        let Some(model) = model else {
+            return Ok(());
+        };
+        let anchor = self.sandbox_dir(&ctx.task.sandbox_id);
+        let sessions = self.codex_sessions(&ctx.task.sandbox_id);
+        let harness = Arc::clone(&self.deps.harness);
+        let (parent, id) = (parent.to_owned(), child.to_owned());
+        let Ok(Some(start)) = tokio::task::spawn_blocking(move || {
+            let path = harness.find_codex_rollout(&sessions, &id).ok()??;
+            let file = crate::transcripts::open(&anchor, &path).ok()?;
+            crate::transcripts::codex_review_start(file, &parent, &id)
+        })
+        .await
+        else {
+            return Ok(());
+        };
+        if start.started_at > at {
+            return Ok(());
+        }
+        store
+            .record_codex_review_round(
+                &ctx.task.id,
+                child,
+                model,
+                start.head.as_deref(),
+                start.started_at,
+                verdict.map(|verdict| (at, verdict)),
+            )
+            .await
+    }
+
     /// Links a newly launched reviewer, or opens its next round when it continues after a report.
     pub(crate) async fn review_subagent_started(
         &self,
@@ -709,6 +774,12 @@ impl App {
         input: &HookInput,
         at: Timestamp,
     ) {
+        if ctx.attempt.harness == Harness::Codex {
+            if let Err(err) = self.codex_review_event(ctx, input, at, None).await {
+                tracing::warn!(error = %err, task = %ctx.task.id, "Codex review start not recorded");
+            }
+            return;
+        }
         let (Some(agent), Some(id)) = (input.agent_type.as_deref(), input.agent_id.as_deref())
         else {
             return;
@@ -747,25 +818,28 @@ impl App {
         input: &HookInput,
         at: Timestamp,
     ) {
-        let Some(id) = input.agent_id.as_deref() else {
-            return;
-        };
-        if !input
-            .agent_type
-            .as_deref()
-            .is_some_and(|agent| REVIEWERS.contains(&agent))
-        {
+        let verdict = input.last_assistant_message.as_deref().and_then(verdict_of);
+        if ctx.attempt.harness == Harness::Codex {
+            // A Codex child can finish turns while it is still preparing its report.
+            if let Some(verdict) = verdict
+                && let Err(err) = self.codex_review_event(ctx, input, at, Some(verdict)).await
+            {
+                tracing::warn!(error = %err, task = %ctx.task.id, "Codex review report not recorded");
+            }
             return;
         }
-        let verdict = input
-            .last_assistant_message
-            .as_deref()
-            .and_then(verdict_of)
-            .map(|verdict| verdict.as_str());
+        let Some(id) = input.agent_id.as_deref().filter(|_| {
+            input
+                .agent_type
+                .as_deref()
+                .is_some_and(|agent| REVIEWERS.contains(&agent))
+        }) else {
+            return;
+        };
         match self
             .deps
             .store
-            .end_review_round(&ctx.task.id, id, at, verdict, None)
+            .end_review_round(&ctx.task.id, id, at, verdict.map(Verdict::as_str), None)
             .await
         {
             Ok(true) => self.reviewer_went_on(&ctx.task.id, id, at).await,
@@ -1014,19 +1088,29 @@ impl App {
         })
     }
 
-    /// The rounds of `task`'s open pull request, as the delivery view shows them. A failed read
-    /// shows none.
+    /// Prefer rounds in progress. A finished delivery can also show its merged review.
     pub(crate) async fn review_round_views(
         &self,
-        task: &yulius_domain::ids::TaskId,
+        delivery: &crate::delivery::DeliveryRecord,
     ) -> Vec<yulius_contracts::api::git::ReviewRoundView> {
-        self.deps
-            .store
-            .review_rounds(task, true)
-            .await
-            .unwrap_or_default()
+        let store = &self.deps.store;
+        let rounds = if crate::delivery::past_merge(&delivery.stage) {
+            store
+                .delivery_review_rounds(&delivery.task_id, delivery.pr_number)
+                .await
+        } else {
+            store.review_rounds(&delivery.task_id, true).await
+        }
+        .unwrap_or_default();
+        let open_pr = (delivery.stage == yulius_domain::delivery::DeliveryStage::PrOpen)
+            .then_some(delivery.pr_number)
+            .flatten();
+        rounds
             .into_iter()
-            .map(round_view)
+            .map(|round| {
+                let pr = round.pr_number.or(open_pr);
+                round_view(round, pr)
+            })
             .collect()
     }
 
@@ -1223,7 +1307,11 @@ impl MergedHead {
 }
 
 /// A round as the delivery view shows it.
-fn round_view(r: ReviewRoundRecord) -> yulius_contracts::api::git::ReviewRoundView {
+fn round_view(
+    r: ReviewRoundRecord,
+    pr_number: Option<u64>,
+) -> yulius_contracts::api::git::ReviewRoundView {
+    use yulius_domain::time::format_rfc3339;
     yulius_contracts::api::git::ReviewRoundView {
         round: r.round,
         agent: r.agent,
@@ -1234,6 +1322,9 @@ fn round_view(r: ReviewRoundRecord) -> yulius_contracts::api::git::ReviewRoundVi
         verdict: r.verdict,
         reported: r.ended_at.is_some(),
         cut_off: r.cut_off,
+        started_at: format_rfc3339(r.started_at),
+        ended_at: r.ended_at.map(format_rfc3339),
+        pr_number,
     }
 }
 
