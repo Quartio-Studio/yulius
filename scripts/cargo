@@ -30,7 +30,18 @@ if marker is not None:
             os.environ["RUSTC_WRAPPER"] = str(root / "scripts/cache-rustc")
     plain(os.environ.pop("YULIUS_MBX_CARGO"))
 
-cargo = os.environ.get("CARGO") or shutil.which("cargo") or "cargo"
+configured = os.environ.get("CARGO") or "cargo"
+cargo = shutil.which(configured) or configured
+launcher = Path(__file__).resolve()
+if Path(cargo).resolve() == launcher:
+    # A build tool may set CARGO to this launcher, or put scripts first in PATH.
+    for directory in os.get_exec_path():
+        executable = shutil.which("cargo", path=directory or ".")
+        if executable and Path(executable).resolve() != launcher:
+            cargo = executable
+            break
+    else:
+        sys.exit("The project Cargo launcher needs a Cargo executable on PATH")
 # Yulius CI keeps the runner's session for cancellation and redirects all three streams.
 unattended_ci = (os.environ.get("YULIUS_CI") == "1" and os.environ.get("YULIUS_CI_RUN")
                  and not any(os.isatty(fd) for fd in (0, 1, 2)))

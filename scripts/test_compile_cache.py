@@ -84,6 +84,21 @@ class CompileCache(unittest.TestCase):
         self.assertEqual(self.launch(self.task, home, "sys.exit(99)").returncode, 0)
         self.assertEqual(self.record.read_text().splitlines(), ["build", "build"])
 
+    def test_tools_can_select_the_project_launcher_as_cargo(self):
+        backend = self.sandbox / "backend"
+        backend.mkdir()
+        (backend / "cargo").symlink_to(self.cargo)
+        launcher = self.task / "scripts/cargo"
+        env = self.cargo_env(self.sandbox / "home", launcher)
+        env.update(PATH=os.pathsep.join([str(launcher.parent), str(backend), env["PATH"]]),
+                   RECORD=str(self.record), CARGO_RESULT="0")
+        for configured in (str(launcher), "cargo"):
+            env["CARGO"] = configured
+            result = subprocess.run([launcher, "metadata"], cwd=self.task, env=env,
+                                    stdin=subprocess.DEVNULL, capture_output=True, timeout=4)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.record.read_text().splitlines(), ["metadata", "metadata"])
+
     def test_a_build_arriving_during_upkeep_runs_without_waiting_for_the_store(self):
         import fcntl
         lease = os.open(self.sandbox, os.O_RDONLY | os.O_DIRECTORY)
