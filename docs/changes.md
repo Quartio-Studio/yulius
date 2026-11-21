@@ -8,6 +8,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - A parked PR owner receives the failing integration job in its resumed session. A busy subscription or a human decision keeps the notice pending until the watcher can verify it again.
 
+- Codex tasks start with the rate-limit model switch reminder hidden. If an existing session shows it, Yulius holds automated input so a message cannot confirm the switch. [SPEC-603](../.ai/specs/SPEC-603-codex-s-rate-limit-prompt-must-not-switc.md)
 - Claude Code task delivery shows current review rounds. Codex task delivery also keeps the
   just-merged PR's review visible. [SPEC-605](../.ai/specs/SPEC-605-record-the-review-rounds-of-codex-tasks.md)
 - Task lists retain observed pull request state during a GitHub outage. The Status panel and task lists report when the GitHub App’s request budget resets. [SPEC-608](../.ai/specs/SPEC-608-a-github-rate-limit-must-not-show-finish.md)

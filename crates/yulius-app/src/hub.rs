@@ -272,6 +272,25 @@ impl Hub {
             .is_ok_and(|s| crate::visible_draft::shown(s.parser.screen()))
     }
 
+    /// Whether the current grid shows Codex's rate-limit model picker. An
+    /// alternate grid needs a repaint and a visible input cursor to rule it out.
+    /// While a partial redraw shows only the title, the native picker still hides the cursor.
+    pub(crate) fn codex_rate_limit_picker_shown(&self) -> Option<bool> {
+        let screen = self.screen.lock().ok()?;
+        let grid = screen.parser.screen();
+        if crate::prompt_box::codex_rate_limit_picker_shown(grid) {
+            return Some(true);
+        }
+        if grid.alternate_screen()
+            && (!screen.redraw.rendered()
+                || grid.hide_cursor()
+                || grid.rows(0, grid.size().1).all(|row| row.trim().is_empty()))
+        {
+            return None;
+        }
+        Some(false)
+    }
+
     /// Visible screen text (for previews and tests).
     #[must_use]
     pub fn screen_text(&self) -> String {
@@ -675,6 +694,29 @@ mod tests {
             again.contains("\x1b[?1049h") && again.contains("\x1b[?1002h"),
             "after a host reset: {again:?}"
         );
+    }
+
+    #[test]
+    fn a_partial_codex_picker_repaint_cannot_take_automated_input() {
+        let hub = Hub::new(120, 40);
+        hub.output(
+            1,
+            b"\x1b[?1049h\x1b[?25l\x1b[34;1HApproaching rate limits\r\nSwitch to gpt-6-luna",
+        );
+        assert_eq!(hub.codex_rate_limit_picker_shown(), Some(true));
+        hub.resize(120, 24);
+        assert_eq!(hub.codex_rate_limit_picker_shown(), None);
+
+        hub.output(2, b"\x1b[H\x1b[J\x1b[18;1HApproaching rate limits");
+        assert_eq!(hub.codex_rate_limit_picker_shown(), None);
+        hub.output(3, b"\r\nSwitch to gpt-6-luna");
+        assert_eq!(hub.codex_rate_limit_picker_shown(), Some(true));
+
+        hub.output(
+            4,
+            "\x1b[H\x1b[J\x1b[18;1H› Ask Codex to do anything\x1b[?25h".as_bytes(),
+        );
+        assert_eq!(hub.codex_rate_limit_picker_shown(), Some(false));
     }
 
     /// Every viewer's hello repeats its size: the same size again changes nothing and tells

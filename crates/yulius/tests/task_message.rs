@@ -2,6 +2,7 @@
 //! task's session (real processes: supervisor → detached `yulius ptyhost` → fake agent), or adds
 //! it to the request of a task that has not started, and refuses what cannot take one.
 
+use std::net::TcpListener;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -26,7 +27,7 @@ use yulius_app::model::TaskMode;
 
 use crate::first_message::{
     ShiftedClock, activity, data_dir, hooked, new_task, notices, runtime, screen, start, start_on,
-    start_with, stop, wait_for,
+    start_on_listener, start_with, stop, wait_for,
 };
 use crate::pool_supervision::{HOUR, ScriptedUsage, refresh, seed, usage};
 use crate::support::agents::FakeAgentOptions;
@@ -1741,6 +1742,315 @@ async fn open_pull_for_news(
         .transition_delivery(&DeliveryStage::None, &open)
         .await?;
     Ok(head)
+}
+
+// The screen reported in task #587, with Codex's first menu item selected.
+const CODEX_RATE_LIMIT_PICKER: &str = concat!(
+    "\x1b[?1049h\x1b[H\x1b[J\x1b[?25l\x1b[34;1H",
+    "  Approaching rate limits\r\n",
+    "  Switch to gpt-6-luna for lower credit usage?\r\n",
+    "› 1. Switch to gpt-6-luna                   Fast and affordable model for easier tasks.\r\n",
+    "  2. Keep current model\r\n",
+    "  3. Keep current model (never show again)  Hide future rate limit reminders about switching models\r\n",
+    "  enter select · esc back",
+);
+const CODEX_EMPTY_COMPOSER: &str = concat!(
+    "\x1b[?1049h\x1b[H\x1b[J",
+    "\x1b[34;1H\x1b[1m›\x1b[22m \x1b[2mAsk Codex to do anything\x1b[0m",
+    "\x1b[40;1H  \x1b[1m←\x1b[22m for agents · \x1b[1m?\x1b[22m for shortcuts",
+    "\x1b[34;3H\x1b[?25h",
+);
+
+async fn codex_with_pr_news(
+    data: &Path,
+) -> Result<(Arc<App>, TaskId, ProjectCaller, TcpListener), Error> {
+    use yulius_app::pr_watch::WatchBounds;
+    use yulius_domain::ci::RunState;
+
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let clock = Arc::new(ShiftedClock(AtomicI64::new(-13 * MINUTE)));
+    let probe = Arc::new(ScriptedUsage::default());
+    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
+    listener.set_nonblocking(true)?;
+    let accepting = tokio::net::TcpListener::from_std(listener.try_clone()?)?;
+    let app = start_on_listener(data, &fake, fake_agent(), accepting, probe, clock).await?;
+    let (sandbox, user) = seed(&app, data, &[]).await?;
+    crate::codex::add_codex_account(&app, "a-codex", r#"{"OPENAI_API_KEY":"synthetic"}"#).await?;
+    let id = crate::codex::new_codex_task(&app, &sandbox, &user, "Codex PR news").await?;
+    wait_for(
+        "first Codex turn ended",
+        Duration::from_secs(30),
+        || async {
+            screen(&app, &id).contains("ECHO: Codex PR news")
+                && activity(&app, &id).await.is_some_and(Activity::is_idle)
+        },
+    )
+    .await?;
+    let task = app.deps.store.task(&id).await?.ok_or("task")?;
+    let head = open_pull_for_news(&app, data, &task).await?;
+    assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
+    let (red, job) = crate::pr_watch::run(&sandbox, "r1", &head, RunState::Failed, None, 1);
+    app.deps.store.insert_ci_run(&red, &[job]).await?;
+    Ok((app, id, superagent(&sandbox, &user, "admin"), listener))
+}
+
+fn paint_codex(app: &App, id: &TaskId, picture: &str) {
+    let runtime = app.runtime(id);
+    runtime
+        .hub
+        .output(runtime.hub.output_seq() + 1, picture.as_bytes());
+}
+
+#[test]
+fn the_codex_rate_limit_picker_holds_messages_until_it_is_dismissed() -> TestResult {
+    use yulius_app::pr_watch::WatchBounds;
+
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let (app, id, caller, _) = codex_with_pr_news(&data).await?;
+        paint_codex(&app, &id, CODEX_RATE_LIMIT_PICKER);
+        assert!(screen(&app, &id).contains("› 1. Switch to gpt-6-luna"));
+        let bounds = WatchBounds::default();
+        let reply = send(&app, &caller, &id).await;
+        assert!(
+            matches!(&reply, Err(AppError::Conflict(why)) if why.contains("rate-limit model picker")),
+            "{reply:?}"
+        );
+        assert!(app.watch_prs(&bounds).await.is_empty());
+        assert!(audited(&data, &id)?.is_empty());
+        assert!(!screen(&app, &id).contains("ECHO: "));
+
+        // A quotation in the conversation is ordinary output. The composer has the cursor.
+        let conversation = format!(
+            "{CODEX_EMPTY_COMPOSER}\x1b7\x1b[2;1HApproaching rate limits\r\n\
+             Switch to gpt-6-luna for lower credit usage?\x1b8"
+        );
+        paint_codex(&app, &id, &conversation);
+        let news = app.watch_prs(&bounds).await;
+        assert_eq!(news.len(), 1, "{news:?}");
+        assert_eq!(news[0].0, id);
+        wait_for("deferred PR notice", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("ECHO: Yulius, about your pull request #7")
+        })
+        .await?;
+        assert!(app.watch_prs(&bounds).await.is_empty());
+        stop(&app, &id).await
+    })
+}
+
+#[test]
+fn the_codex_rate_limit_picker_between_paste_and_enter_holds_the_submit() -> TestResult {
+    use yulius_app::pr_watch::WatchBounds;
+    use yulius_app::race::{Point, on};
+
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let (app, id, _, _) = codex_with_pr_news(&data).await?;
+        let drawn = (Arc::clone(&app), id.clone());
+        on(Point::PrNoticePasted, Path::new(id.as_str()), move || {
+            paint_codex(&drawn.0, &drawn.1, CODEX_RATE_LIMIT_PICKER);
+        });
+        let bounds = WatchBounds::default();
+        assert!(
+            app.watch_prs(&bounds).await.is_empty(),
+            "Enter was withheld"
+        );
+        assert!(screen(&app, &id).contains("Approaching rate limits"));
+
+        // The picker can restore what was pasted. Wait for a confirmed empty composer
+        // before the watcher pastes again.
+        paint_codex(
+            &app,
+            &id,
+            "\x1b[H\x1b[J\x1b[34;1H› Yulius, about your pull request #7\x1b[?25h",
+        );
+        assert!(app.watch_prs(&bounds).await.is_empty());
+        // Dismiss and clear in the native TUI, simulated by its repaint in this fixture.
+        paint_codex(&app, &id, CODEX_EMPTY_COMPOSER);
+        assert_eq!(app.watch_prs(&bounds).await.len(), 1, "notice released");
+        assert!(app.watch_prs(&bounds).await.is_empty());
+        stop(&app, &id).await
+    })
+}
+
+#[test]
+fn the_codex_rate_limit_picker_holds_input_when_its_heading_wraps() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let (app, id, caller, _) = codex_with_pr_news(&data).await?;
+        app.resize_run(&id, 20, 40).await?;
+        paint_codex(
+            &app,
+            &id,
+            concat!(
+                "\x1b[?1049h\x1b[H\x1b[J\x1b[?25l\x1b[34;1H",
+                "  Approaching\r\n  rate limits\r\n",
+                "  Switch to\r\n  gpt-6-luna for\r\n",
+                "  › 1. Switch to\r\n",
+                "    2. Keep current",
+            ),
+        );
+        assert_eq!(app.runtime(&id).hub.size(), (20, 40));
+        let reply = send(&app, &caller, &id).await;
+        assert!(
+            matches!(&reply, Err(AppError::Conflict(why)) if why.contains("rate-limit model picker")),
+            "{reply:?}"
+        );
+        stop(&app, &id).await
+    })
+}
+
+#[test]
+fn the_codex_rate_limit_picker_holds_enter_when_resize_crops_out_the_picker() -> TestResult {
+    use yulius_app::pr_watch::WatchBounds;
+    use yulius_app::race::{Point, on};
+
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let (app, id, _, _) = codex_with_pr_news(&data).await?;
+        let drawn = (Arc::clone(&app), id.clone());
+        on(Point::PrNoticePasted, Path::new(id.as_str()), move || {
+            paint_codex(&drawn.0, &drawn.1, CODEX_RATE_LIMIT_PICKER);
+            assert!(screen(&drawn.0, &drawn.1).contains("Approaching rate limits"));
+            drawn.0.runtime(&drawn.1).hub.resize(120, 24);
+            assert!(!screen(&drawn.0, &drawn.1).contains("Approaching rate limits"));
+            paint_codex(
+                &drawn.0,
+                &drawn.1,
+                "\x1b[H\x1b[J\x1b[18;1H  Approaching rate limits",
+            );
+        });
+        let bounds = WatchBounds::default();
+        assert!(
+            app.watch_prs(&bounds).await.is_empty(),
+            "the partial repaint kept Enter out"
+        );
+        assert!(
+            app.watch_prs(&bounds).await.is_empty(),
+            "the incomplete repaint still holds the notice"
+        );
+        paint_codex(&app, &id, "\x1b[H\x1b[J");
+        assert!(
+            app.watch_prs(&bounds).await.is_empty(),
+            "erase alone is not a repaint"
+        );
+        let composer = CODEX_EMPTY_COMPOSER
+            .replace("[34;", "[18;")
+            .replace("[40;", "[24;");
+        paint_codex(&app, &id, &composer);
+        assert_eq!(
+            app.watch_prs(&bounds).await.len(),
+            1,
+            "repaint released the notice"
+        );
+        assert!(app.watch_prs(&bounds).await.is_empty());
+        stop(&app, &id).await
+    })
+}
+
+#[test]
+fn the_codex_rate_limit_picker_submit_hold_survives_a_server_restart() -> TestResult {
+    codex_paste_across_restart(false)
+}
+
+#[test]
+fn the_codex_rate_limit_picker_paste_is_recovered_before_enter_runs() -> TestResult {
+    codex_paste_across_restart(true)
+}
+
+fn codex_paste_across_restart(interrupt_before_enter: bool) -> TestResult {
+    use yulius_app::pr_watch::WatchBounds;
+    use yulius_app::race::{Point, on};
+
+    let (_dir, data) = data_dir()?;
+    let first = runtime()?;
+    let (id, caller, listener) = first.block_on(async {
+        let (app, id, caller, listener) = codex_with_pr_news(&data).await?;
+        let drawn = (Arc::clone(&app), id.clone());
+        if interrupt_before_enter {
+            let (pasted, observed) = tokio::sync::oneshot::channel();
+            let (leave, paused) = std::sync::mpsc::channel();
+            on(Point::PrNoticePasted, Path::new(id.as_str()), move || {
+                paint_codex(&drawn.0, &drawn.1, CODEX_RATE_LIMIT_PICKER);
+                let _ = pasted.send(());
+                let _ = paused.recv_timeout(Duration::from_secs(10));
+            });
+            let watching = Arc::clone(&app);
+            let watch =
+                tokio::spawn(async move { watching.watch_prs(&WatchBounds::default()).await });
+            tokio::time::timeout(Duration::from_secs(10), observed).await??;
+            watch.abort();
+            leave.send(())?;
+            assert!(matches!(watch.await, Err(err) if err.is_cancelled()));
+        } else {
+            on(Point::PrNoticePasted, Path::new(id.as_str()), move || {
+                paint_codex(&drawn.0, &drawn.1, CODEX_RATE_LIMIT_PICKER);
+            });
+            assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
+        }
+        assert!(screen(&app, &id).contains("Approaching rate limits"));
+        Ok::<_, Error>((id, caller, listener))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+    let occupied = TcpListener::bind(listener.local_addr()?);
+    assert!(
+        matches!(occupied, Err(err) if err.kind() == std::io::ErrorKind::AddrInUse),
+        "the saved PTY's hook endpoint remains reserved throughout the restart"
+    );
+
+    runtime()?.block_on(async {
+        let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+        let app = start_on_listener(
+            &data,
+            &fake,
+            fake_agent(),
+            tokio::net::TcpListener::from_std(listener)?,
+            Arc::new(ScriptedUsage::default()),
+            Arc::new(ShiftedClock(AtomicI64::new(0))),
+        )
+        .await?;
+        app.reconcile().await?;
+        paint_codex(
+            &app,
+            &id,
+            "\x1b[?1049h\x1b[H\x1b[J\x1b[34;1H› Yulius, about your pull request #7\x1b[?25h",
+        );
+        let reply = app
+            .tool_task_message(
+                &caller,
+                &json!({"task_id": id.as_str(), "text": "Go on", "with_draft": true}),
+            )
+            .await;
+        assert!(
+            matches!(&reply, Err(AppError::Conflict(why)) if why.contains("unsent automated paste")),
+            "{reply:?}"
+        );
+        paint_codex(&app, &id, CODEX_EMPTY_COMPOSER);
+        assert_eq!(send(&app, &caller, &id).await?["delivered"], "sent");
+        stop(&app, &id).await
+    })
+}
+
+#[test]
+fn the_codex_rate_limit_picker_requires_recording_a_paste_before_writing_it() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let (app, id, caller, _) = codex_with_pr_news(&data).await?;
+        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("attempt")?;
+        let marker = Path::new(&attempt.run_dir).join("codex-submit-held");
+        std::fs::create_dir(&marker)?;
+        let reply = send(&app, &caller, &id).await;
+        assert!(
+            matches!(&reply, Err(AppError::Conflict(why)) if why.contains("could not record the Codex paste")),
+            "{reply:?}"
+        );
+        assert!(audited(&data, &id)?.is_empty());
+        std::fs::remove_dir(&marker)?;
+        assert_eq!(send(&app, &caller, &id).await?["delivered"], "sent");
+        assert!(!marker.exists(), "a successful Enter clears the recorded paste");
+        assert_eq!(send(&app, &caller, &id).await?["delivered"], "sent");
+        stop(&app, &id).await
+    })
 }
 
 /// Replay the pinned Codex composer's empty repaint into the PTY grid. The viewer's
