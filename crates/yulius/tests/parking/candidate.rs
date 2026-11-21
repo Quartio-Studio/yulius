@@ -2026,6 +2026,18 @@ async fn check_recorded_decision(
         return Ok(());
     }
     if matches!(case, ColdCandidate::Stall) {
+        // A later stall check-in requires an idle turn. The first watch returns once its
+        // diagnosis is typed, before the real PTY agent necessarily finishes answering it.
+        super::wait_for(
+            "the candidate diagnosis to be answered",
+            Duration::from_secs(30),
+            || async {
+                super::screen(&cold, id).contains("ECHO: Yulius, about your pull request #1481")
+                    && super::status_of(&cold, id).await.1
+                        == Some(yulius_domain::task::Activity::Waiting)
+            },
+        )
+        .await?;
         let bounds = WatchBounds {
             stall_quiet_ms: 0,
             stall_after_ms: 0,
