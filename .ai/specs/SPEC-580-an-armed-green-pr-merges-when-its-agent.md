@@ -118,10 +118,11 @@ Ran `cargo test -p yulius --test main -- antigravity_armed_merge:: --nocapture` 
 - `armed_green_pr_conflict_reports_conflicts_true_and_drops_arm`: failed (`task_delivery` returned `pr.conflicts: false` on a conflicting PR with stale local `origin/dev`).
 - `stalled_armed_green_pr_checks_in_then_escalates_to_needs_you_and_auto_clears`: failed (`expected SPEC-578 needs_you_notice after armed-PR stall bound`).
 
-### Post-fix verification (on approved HEAD `8fab62b43c99ca877c6a4f0a7230f7edeefa70fd`)
+### Post-fix verification (on approved HEAD `89e39e7829b7c03da3a6dd9eaaa26db9471e1d95`)
 - `cargo test -p yulius-ptyhost shells::` — **17 passed, 0 failed** (including `pty_hosted_commands_distinguish_yulius_wait_from_real_background_work`).
 - `cargo test -p yulius-app --lib agent_wait::tests::` — **9 passed, 0 failed** (including `active_wait_guard_balances_and_never_underflows`).
 - `cargo test -p yulius-app --lib pr_watch::tests::` — **20 passed, 0 failed** (including `armed_green_stall_checks_in_then_escalates_and_resets_on_progress` and `untold_resets_armed_check_in_on_new_head_and_preserves_on_same_head`).
+- `cargo test -p yulius --test main -- delivery::overlapping_parked_status_reads_bound_git_workers_after_timeouts --exact` — **1 passed, 0 failed** (3.38 s; verifies parked-task `delivery_view` conflict checks respect `PARKED_READS` and `status_deadline()`).
 - `cargo test -p yulius --test main -- antigravity_armed_merge::` — **10 passed, 0 failed**:
   - `antigravity_armed_green_pr_with_yulius_wait_merges_and_is_not_working`
   - `antigravity_stop_with_non_wait_background_work_preserves_spec_528_and_waits_for_completion`
@@ -145,6 +146,7 @@ Ran `cargo test -p yulius --test main -- antigravity_armed_merge:: --nocapture` 
 - Independent review by fresh `reviewer` agent (`gemini-4-neon-high`, high effort):
   - Round 1 on `b1a055e47`: REQUEST CHANGES (1 blocking, 4 major, 1 minor, 1 nit — all fixed test-first in `8fab62b43`).
   - Round 2 on `8fab62b43c99ca877c6a4f0a7230f7edeefa70fd`: **APPROVE** (all 7 findings verified fixed with dedicated regression tests; 2-line duplicate doc comment nit cleaned up in `finish.rs`).
+- Independent review in a fresh session by `reviewer-ci` (`gemini-4-neon-high`, high effort) after bounding parked-task conflict checks in `delivery_view` (`89e39e7829b7c03da3a6dd9eaaa26db9471e1d95`): **APPROVE** (0 blocking/major/minor findings; 1 optional spec-evidence nit applied here).
 
 ### Remaining validation limits
 - Full workspace `scripts/dev macos` and full CI gate (`scripts/dev ci`, full integration suite, and `scripts/dev mutants`) are deferred to Yulius CI on the pull request head per `AGENTS.md`.
