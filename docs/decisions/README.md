@@ -471,6 +471,7 @@ If a reservation skips past all available slots, land an empty extension first w
 - [0431](0431-the-move-restarts-caddy-and-asks-its-own-port-443.md): An instance move always restarts the new host's Caddy with the carried configuration and asks that host's own port 443 before the proxy counts as done.
 <!-- ADR 0431 -->
 <!-- ADR 0432 -->
+- [0433](0433-store-each-new-task-draft-under-its-own-key.md): each unfinished task draft has its own browser storage key, and each tab remembers its selection
 <!-- ADR 0433 -->
 <!-- ADR 0434 -->
 <!-- ADR 0435 -->
@@ -503,3 +504,35 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0462 -->
 <!-- ADR 0463 -->
 <!-- ADR 0464 -->
+<!-- ADR 0465 -->
+<!-- ADR 0466 -->
+<!-- ADR 0467 -->
+<!-- ADR 0468 -->
+<!-- ADR 0469 -->
+<!-- ADR 0470 -->
+<!-- ADR 0471 -->
+<!-- ADR 0472 -->
+<!-- ADR 0473 -->
+<!-- ADR 0474 -->
+<!-- ADR 0475 -->
+<!-- ADR 0476 -->
+<!-- ADR 0477 -->
+<!-- ADR 0478 -->
+<!-- ADR 0479 -->
+<!-- ADR 0480 -->
+<!-- ADR 0481 -->
+<!-- ADR 0482 -->
+<!-- ADR 0483 -->
+<!-- ADR 0484 -->
+<!-- ADR 0485 -->
+<!-- ADR 0486 -->
+<!-- ADR 0487 -->
+<!-- ADR 0488 -->
+<!-- ADR 0489 -->
+<!-- ADR 0490 -->
+<!-- ADR 0491 -->
+<!-- ADR 0492 -->
+<!-- ADR 0493 -->
+<!-- ADR 0494 -->
+<!-- ADR 0495 -->
+<!-- ADR 0496 -->

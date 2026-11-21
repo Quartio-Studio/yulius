@@ -1577,6 +1577,7 @@ button.strip-pr { background: transparent; font-family: inherit; cursor: pointer
   display: flex; flex-direction: column; border: 1px solid var(--border-control); border-radius: var(--radius-xl);
   background: var(--surface); box-shadow: var(--shadow-raised); container: composer / inline-size;
 }
+.composer-drafts { display: flex; gap: 8px; flex-wrap: wrap; }
 .composer-box:focus-within { border-color: var(--accent-border-strong); outline: 2px solid transparent; outline-offset: 1px; }
 .composer-prompt {
   min-height: 112px; max-height: 50vh; padding: 16px 20px 8px; border: 0; background: transparent; color: var(--text);
