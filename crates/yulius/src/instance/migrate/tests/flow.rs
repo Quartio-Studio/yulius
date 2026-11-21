@@ -1077,6 +1077,15 @@ fn a_move_runs_from_the_plan_to_the_finish() -> TestResult {
     let caddy = new.text(profile::CADDYFILE).unwrap_or_default();
     assert!(caddy.starts_with(&format!("{NEW_HOST} {{")), "{caddy}");
     assert!(new.ran("systemctl reload-or-restart caddy"));
+    // SPEC-592 CKS-002: port 443 is asked for the new public host, on the new host itself.
+    let asked = new.runs("curl");
+    assert!(
+        asked.iter().any(|l| {
+            l.contains(&format!("--resolve {NEW_HOST}:443:127.0.0.1"))
+                && l.ends_with(&format!("https://{NEW_HOST}/"))
+        }),
+        "{asked:?}"
+    );
     assert!(new.ran("systemctl start yulius.service"));
     assert!(new.ran("systemctl enable --now yulius-update.path"));
     assert!(new.ran("ufw --force enable"));
