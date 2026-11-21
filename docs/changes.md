@@ -7,6 +7,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-21
 
 - Mutation builds and disposable Cargo targets use disk scratch, ordinary session `/tmp` is capped at 1 GiB, and each delivery checks its tests by hand and requests staging once after merge. [SPEC-600](../.ai/specs/SPEC-600-mutation-testing-sized-to-the-change-wit.md)
+- The seven-day API estimate includes recorded GPT-6 Codex runs at Standard prices and shows what the pool would cost if eligible runs used Ultrafast. [SPEC-602](../.ai/specs/SPEC-602-it-doesnt-seem-real-verify-i-think-it-s.md)
 
 - Load-sensitive browser and merge-train tests wait for observable progress under contention.
   The Docker smoke fixture holds its first result until the browser displays it.

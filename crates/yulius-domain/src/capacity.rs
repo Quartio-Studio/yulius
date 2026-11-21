@@ -370,6 +370,8 @@ pub struct PoolTokens {
     pub unknown_usage_runs: u32,
     /// Runs in the window whose model has no price.
     pub unpriced_runs: u32,
+    /// Additional cost if every eligible run used Ultrafast, apportioned to the window.
+    pub ultrafast_premium_usd: Option<f64>,
 }
 
 /// Spreads every run's tokens over `days` rolling 24-hour periods ending at `now`, in proportion
@@ -402,13 +404,21 @@ pub fn pool_tokens(runs: &[TokenRun], now: Timestamp, days: usize) -> PoolTokens
             out.unknown_usage_runs = out.unknown_usage_runs.saturating_add(1);
             continue;
         }
-        let cost = run
-            .model
-            .as_deref()
-            .and_then(crate::pricing::price_of)
-            .map(|p| {
-                crate::pricing::cost_usd(p, run.input, run.output, run.cache_read, run.cache_write)
-            });
+        let rates = run.model.as_deref().and_then(crate::pricing::model_prices);
+        let cost = rates.map(|(standard, _)| {
+            crate::pricing::cost_usd(
+                standard,
+                run.input,
+                run.output,
+                run.cache_read,
+                run.cache_write,
+            )
+        });
+        let premium = rates
+            .and_then(|(_, tier)| tier)
+            .zip(cost)
+            .map(|(tier, cost)| cost * (tier.multiplier(now) - 1.0))
+            .filter(|premium| *premium > 0.0);
         if cost.is_none() {
             out.unpriced_runs = out.unpriced_runs.saturating_add(1);
         }
@@ -425,6 +435,9 @@ pub fn pool_tokens(runs: &[TokenRun], now: Timestamp, days: usize) -> PoolTokens
             };
             if share > 0.0 {
                 bucket.add(run, share, cost);
+                if let Some(premium) = premium {
+                    *out.ultrafast_premium_usd.get_or_insert(0.0) += premium * share;
+                }
             }
         }
     }
@@ -692,6 +705,16 @@ mod tests {
         assert!(close(pool.per_day[5].cost_usd, 0.4 * 24.2));
         assert_eq!(pool.per_day[3].cost(), Some(0.0));
         assert_eq!((pool.unknown_usage_runs, pool.unpriced_runs), (0, 0));
+    }
+
+    #[test]
+    fn an_eligible_run_with_zero_tokens_adds_no_ultrafast_scenario() {
+        let runs = [
+            token_run(-2, Some(-1), "gpt-6.2-astra", 0),
+            token_run(-2, Some(-1), "gpt-6-luna", 1_000_000),
+        ];
+        let pool = pool_tokens(&runs, NOW, 7);
+        assert_eq!(pool.ultrafast_premium_usd, None);
     }
 
     #[test]

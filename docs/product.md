@@ -488,8 +488,10 @@ watching, steering and unblocking.
   goes on with the model Yulius runs it with (its own, or the fallback of a task set to Fable),
   wherever the pool places it, the same subscription included, and says so (SPEC-493). Its
   Capacity card says what
-  is left, how fast it burns, the tokens it used and what they would cost at Claude API list
-  prices, with a 7-day chart for each. Administrators rename each subscription in place ("work
+  is left, how fast it burns, the tokens recorded for its runs and their estimated cost at standard Claude and GPT-6 API
+  prices, with a 7-day chart for each. When eligible Codex runs contributed usage, the card also
+  shows the weekly total if those runs used Ultrafast. [Decision 0440](decisions/0440-estimate-codex-work-at-standard-and-ultrafast-api-prices.md)
+  Administrators rename each subscription in place ("work
   Max", "personal") and see the email of its Claude account wherever it is named; when Claude
   does not share it, they type it in place under the name (SPEC-463). Every card says whose
   subscription it is with a badge under its name (Claude, Codex or Antigravity, the vendor on

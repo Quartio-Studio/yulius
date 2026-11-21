@@ -1,18 +1,21 @@
-//! Claude API list prices and what a run's tokens would cost at them (SPEC-110 TUS-001,
-//! TUS-002, ADR-0089).
+//! Standard API list prices and the optional Codex Ultrafast rate (SPEC-110, SPEC-602).
 //!
 //! Subscriptions are not billed per token; this answers "what would the pool's work have cost on
 //! the API". Prices are USD per million tokens from
 //! <https://platform.claude.com/docs/en/about-claude/pricing>, read 2026-10-14. Cache writes are
 //! priced at the 5-minute rate (the API default; runs store one cache-write total), and Haiku 5.5
-//! at its rates for prompts up to 100 000 tokens. An unknown model has no price, never zero.
+//! at its rates for prompts up to 100 000 tokens. GPT-6 prices use the short-context and
+//! 30-minute cache-write rates at <https://developers.openai.com/api/docs/pricing>, read
+//! 2026-11-21. An unknown model has no price.
+
+use crate::time::Timestamp;
 
 /// One model's list price in USD per million tokens.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Price {
     /// Base input tokens.
     pub input: f64,
-    /// 5-minute cache writes.
+    /// Cache writes at the provider's default retention.
     pub cache_write: f64,
     /// Cache hits and refreshes.
     pub cache_read: f64,
@@ -24,7 +27,30 @@ pub struct Price {
 /// cloud-platform ids (Bedrock `anthropic.…-v1:0`, Vertex `…@YYYYMMDD`) count as unpriced.
 #[must_use]
 pub fn price_of(model: &str) -> Option<Price> {
+    model_prices(model).map(|(standard, _)| standard)
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum Ultrafast {
+    Gpt62,
+    Regular,
+}
+
+impl Ultrafast {
+    /// OpenAI's GPT-6.2 offer ends at midnight Pacific on March 1, 2027 (08:00 UTC).
+    pub(crate) fn multiplier(self, now: Timestamp) -> f64 {
+        match self {
+            Self::Gpt62 if now < Timestamp(1_803_888_000_000) => 3.0,
+            Self::Gpt62 | Self::Regular => 6.0,
+        }
+    }
+}
+
+pub(crate) fn model_prices(model: &str) -> Option<(Price, Option<Ultrafast>)> {
     let id = model.trim().to_ascii_lowercase();
+    if let Some((_, price, tier)) = CODEX_PRICES.iter().find(|(name, _, _)| *name == id) {
+        return Some((*price, *tier));
+    }
     let id = id.split('[').next().unwrap_or_default();
     let id = match id.rsplit_once('-') {
         Some((base, date)) if date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit()) => base,
@@ -33,7 +59,7 @@ pub fn price_of(model: &str) -> Option<Price> {
     PRICES
         .iter()
         .find(|(name, _)| *name == id)
-        .map(|(_, price)| *price)
+        .map(|(_, price)| (*price, None))
 }
 
 const fn usd(input: f64, cache_write: f64, cache_read: f64, output: f64) -> Price {
@@ -44,6 +70,32 @@ const fn usd(input: f64, cache_write: f64, cache_read: f64, output: f64) -> Pric
         output,
     }
 }
+
+const CODEX_PRICES: &[(&str, Price, Option<Ultrafast>)] = &[
+    (
+        "gpt-6.2-astra",
+        usd(8.0, 10.0, 0.4, 40.0),
+        Some(Ultrafast::Gpt62),
+    ),
+    (
+        "gpt-6.2-sol",
+        usd(2.0, 2.5, 0.1, 10.0),
+        Some(Ultrafast::Gpt62),
+    ),
+    (
+        "gpt-6-astra",
+        usd(10.0, 12.5, 1.0, 50.0),
+        Some(Ultrafast::Regular),
+    ),
+    (
+        "gpt-6.1-sol",
+        usd(2.0, 2.5, 0.1, 10.0),
+        Some(Ultrafast::Regular),
+    ),
+    ("gpt-6.1-terra", usd(1.0, 1.25, 0.05, 5.0), None),
+    ("gpt-6-sol", usd(2.0, 2.5, 0.2, 10.0), None),
+    ("gpt-6-luna", usd(0.1, 0.125, 0.01, 0.5), None),
+];
 
 /// Model id → (input, 5-minute cache write, cache read, output), USD per million tokens.
 const PRICES: &[(&str, Price)] = &[
@@ -118,6 +170,22 @@ mod tests {
         assert_eq!(sonnet, Some((2.0, 0.1, 10.0)));
         let haiku = price_of("claude-haiku-4-5").map(|p| (p.input, p.cache_write, p.output));
         assert_eq!(haiku, Some((1.0, 1.25, 5.0)));
+    }
+
+    #[test]
+    fn gpt_six_models_use_their_standard_short_context_token_rates() {
+        for (model, expected) in [
+            ("gpt-6.2-astra", usd(8.0, 10.0, 0.4, 40.0)),
+            ("gpt-6.2-sol", usd(2.0, 2.5, 0.1, 10.0)),
+            ("gpt-6-astra", usd(10.0, 12.5, 1.0, 50.0)),
+            ("gpt-6.1-sol", usd(2.0, 2.5, 0.1, 10.0)),
+            ("gpt-6.1-terra", usd(1.0, 1.25, 0.05, 5.0)),
+            ("gpt-6-sol", usd(2.0, 2.5, 0.2, 10.0)),
+            ("gpt-6-luna", usd(0.1, 0.125, 0.01, 0.5)),
+        ] {
+            assert_eq!(price_of(model), Some(expected), "{model}");
+        }
+        assert_eq!(price_of("gpt-6.2-astra-preview"), None);
     }
 
     #[test]
