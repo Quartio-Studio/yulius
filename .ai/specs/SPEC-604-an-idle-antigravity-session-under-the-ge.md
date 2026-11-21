@@ -1,6 +1,6 @@
 ---
 yulius-task: bc5e9db9-59da-4313-bc95-0a804b81deab
-status: in-progress
+status: done
 ---
 
 # SPEC-604 An idle Antigravity conversation shows Waiting after a restart
@@ -26,7 +26,7 @@ The incident report describes two completed and merged tasks that occupied sessi
 - [x] Trace the reported screen through turn detection
 - [x] Recognize the idle prompt and protect active turns
 - [x] Verify the parking path and startup behavior
-- [ ] Approve the fix for merge and staging
+- [x] Approve the fix for merge and staging
 
 ## Acceptance criteria
 
@@ -49,3 +49,4 @@ Use the resolved launch mode to classify a resumed conversation. The pinned CLI 
 - Scoped nextest ran 33 Antigravity lifecycle, host-move, Codex reopening and parking tests. All passed. The fixture-backed test observed Waiting, automatic parking with no live attempt, Working on a prompted resume, a native Stop, and closure with no live attempt.
 - All four selected harness launch tests passed for Antigravity and Codex resume arguments.
 - Manual mutation removed Antigravity from the bare-resume arm. The regression again read `Some(Working)` at the Waiting assertion. Restored the implementation and reran the fixture test successfully.
+- Independent review approved the implementation at `64cdbc6f4` with no findings. The reviewer ran 12 Antigravity lifecycle tests and three native hook tests. Repository contracts, formatting and `spec_check` passed. Vidoc was disabled. The task delivery record identifies the merged revision and its staging request.
