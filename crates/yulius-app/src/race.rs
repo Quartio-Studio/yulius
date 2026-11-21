@@ -18,7 +18,7 @@ pub enum Point {
     ParkedMessageSelected,
     /// The parked predecessor's local work is settled and its successor needs hosted PR facts.
     ParkedPredecessorChecksPr,
-    /// The ending observer recorded this attempt's terminal outcome.
+    /// SQLite committed this attempt's terminal outcome, before returning to its observer.
     TerminalOutcomeRecorded,
     /// A host exit was received, before the run reader enters finalization.
     HostExitReceived,
@@ -325,7 +325,7 @@ pub fn on(point: Point, below: &Path, hook: impl FnOnce() + Send + 'static) {
 }
 
 /// The server reached `point` for `path`: runs the hook registered for it, if any.
-pub(crate) fn reached(point: Point, path: &Path) {
+pub fn reached(point: Point, path: &Path) {
     #[cfg(feature = "test-support")]
     {
         let hook = {

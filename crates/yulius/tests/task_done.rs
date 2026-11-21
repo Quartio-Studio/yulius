@@ -3889,6 +3889,13 @@ fn screen_at_terminal_transition(lost: bool) -> TestResult {
             String::from_utf8_lossy(&captured).contains("written after the settled turn"),
             "the terminal attempt still exposed its previous turn's screen"
         );
+        let ended = app.deps.store.attempt(&run.id).await?.ok_or("ended run")?;
+        let outcome = if lost {
+            (AttemptState::Lost, Some("lost"))
+        } else {
+            (AttemptState::Killed, Some("closed"))
+        };
+        assert_eq!((ended.state, ended.exit_reason.as_deref()), outcome);
         let rests = wait_for("the ended task", Duration::from_secs(30), || async {
             task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
         })

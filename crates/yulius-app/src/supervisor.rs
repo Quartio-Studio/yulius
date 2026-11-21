@@ -4342,10 +4342,6 @@ impl App {
             return; // another observer already recorded the outcome
         }
         crate::race::reached(
-            crate::race::Point::TerminalOutcomeRecorded,
-            Path::new(attempt_id.as_str()),
-        );
-        crate::race::reached(
             crate::race::Point::LossRecorded,
             Path::new(task_id.as_str()),
         );
@@ -4634,10 +4630,6 @@ impl App {
         if !first {
             return; // another observer already recorded the outcome
         }
-        crate::race::reached(
-            crate::race::Point::TerminalOutcomeRecorded,
-            Path::new(attempt_id.as_str()),
-        );
         // The losing reader leaves the winner's screen and session state intact.
         if let Ok(mut end) = runtime.session_end.lock() {
             *end = None;

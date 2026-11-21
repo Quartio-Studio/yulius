@@ -1358,6 +1358,13 @@ impl TaskStore for SqliteStore {
             )
             .map_err(db)?;
             tx.commit().map_err(db)?;
+            #[cfg(feature = "test-support")]
+            if next.is_terminal() {
+                yulius_app::race::reached(
+                    yulius_app::race::Point::TerminalOutcomeRecorded,
+                    std::path::Path::new(&id),
+                );
+            }
             Ok(true)
         })
         .await
