@@ -253,7 +253,7 @@ async fn a_failing_candidate_leaves_staging_on_its_release_and_the_fix_deploys()
         "the failing candidate never deployed"
     );
     // Asking again for the same failing revision deploys nothing: it is fixed forward.
-    assert!(f.h.store.mark_staging_told(&failed.id).await?);
+    assert!(f.h.store.mark_staging_told(&failed).await?);
     let repeated = staging_answer(&f, "t2").await?;
     assert_eq!(repeated["staging"]["id"], failing["id"]);
     let text = repeated["text"].as_str().ok_or("receipt text")?;
@@ -281,7 +281,7 @@ async fn a_failing_candidate_leaves_staging_on_its_release_and_the_fix_deploys()
     assert_eq!(deployed(&f).await?, [r1.clone(), r3.clone()]);
 
     // A duplicate request is the same request; nothing deploys again.
-    assert!(f.h.store.mark_staging_told(&three.id).await?);
+    assert!(f.h.store.mark_staging_told(&three).await?);
     let again = staging_answer(&f, "t2").await?;
     assert_eq!(again["staging"]["id"], fixed["id"]);
     let text = again["text"].as_str().ok_or("receipt text")?;
@@ -1632,7 +1632,8 @@ async fn a_candidate_run_survives_the_branch_moving_on_and_decides() -> TestResu
 async fn requests_are_refused_or_superseded_as_the_task_stands() -> TestResult {
     let f = fixture(&staging_toml()).await?;
     agent(&f, "t1").await?;
-    land(&f, "t1", "one.txt").await?;
+    let r1 = land(&f, "t1", "one.txt").await?;
+    gate(&f, &r1, RunState::Running).await?;
     let steps = support::mcp_tool(
         &f.h,
         &token("t1"),
@@ -1653,6 +1654,12 @@ async fn requests_are_refused_or_superseded_as_the_task_stands() -> TestResult {
     assert_eq!(done["isError"], false, "{done}");
     let first = ask(&f, "t1").await?;
     let r2 = land(&f, "t1", "two.txt").await?;
+    let receipt = delivery_text(&f, "t1").await?;
+    assert!(
+        receipt.contains(&format!("your merged revision {}", &r2[..12]))
+            && receipt.contains("cd_deploy {\"environment\":\"staging\"}"),
+        "{receipt}"
+    );
     let second = ask(&f, "t1").await?;
     assert_eq!(second["revision"], r2.as_str());
     let old = request(&f, first["id"].as_str().ok_or("id")?).await?;
@@ -1985,6 +1992,181 @@ async fn delivery_text(f: &Fixture, task: &str) -> BoxResult<String> {
         .to_owned())
 }
 
+/// Slice A is confirmed. Slice B's merge command succeeded and the closed PR cannot yet be read.
+#[tokio::test]
+async fn the_final_request_never_stages_an_earlier_slice_while_the_current_landing_is_unconfirmed()
+-> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "t1").await?;
+    let first = land(&f, "t1", "first.txt").await?;
+    f.h.store
+        .execute_for_tests("UPDATE task_merges SET pr_number = 7 WHERE task_id = 't1'")
+        .await?;
+    let second = f.push("dev", &[("second.txt", Some("second"))])?;
+    f.h.store
+        .execute_for_tests(&format!(
+        "INSERT INTO delivery(task_id, stage, pr_number, updated_at) VALUES ('t1','pr_open',8,1);
+         INSERT INTO task_merge_recovery(task_id, pr_number, branch, head_sha, merged_sha)
+           VALUES ('t1',8,'dev','{second}','{second}')"))
+        .await?;
+    // The person merged PR 8 externally. Until reconciliation its local row still reads open.
+    assert!(refused(&f, "t1").await?.contains("delivery_status"));
+    f.h.store
+        .execute_for_tests("UPDATE delivery SET stage = 'merged_integration' WHERE task_id = 't1'")
+        .await?;
+    let text = delivery_text(&f, "t1").await?;
+    assert!(
+        !text.contains(&format!("your merged revision {}", &first[..12])),
+        "{text}"
+    );
+    assert!(!text.contains("ask once with cd_deploy"), "{text}");
+    assert!(refused(&f, "t1").await?.contains("delivery_status"));
+    f.h.store
+        .execute_for_tests(&format!(
+            "INSERT INTO task_merges(task_id, sandbox_id, merged_sha, branch, pr_number, head_sha)
+           VALUES ('t1','s1','{second}','dev',8,'{second}')"
+        ))
+        .await?;
+    assert_eq!(ask(&f, "t1").await?["revision"], second);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_busy_task_view_cannot_hold_the_staging_queue() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "t1").await?;
+    f.h.store
+        .execute_for_tests("UPDATE tasks SET activity = 'waiting' WHERE id = 't1'")
+        .await?;
+    let sha = land(&f, "t1", "one.txt").await?;
+    let run = gate(&f, &sha, RunState::Failed).await?;
+    let sandbox = sandbox(&f).await?;
+    let staged = StagingRequestRecord {
+        id: "sr_held_view".into(),
+        sandbox_id: sandbox.id.clone(),
+        environment: "staging".into(),
+        task_id: Some(TaskId::parse("t1")?),
+        revision: sha,
+        state: StagingState::Testing,
+        ci_run_id: Some(run),
+        cd_run_id: None,
+        attempts: 0,
+        note: None,
+        requested_by: "task:1".into(),
+        told: false,
+        created_at: f.h.app.now(),
+        updated_at: f.h.app.now(),
+    };
+    assert!(f.h.store.insert_staging_request(&staged).await?);
+    let browser = std::sync::Arc::new(crate::delivery::HeldBrowserLookup::for_publication());
+    let mut deps = f.h.app.deps.clone();
+    deps.browser = browser.clone();
+    let app = yulius_app::context::App::new(f.h.app.config.clone(), deps);
+    let mut events = app.events.subscribe();
+    let (start, started) = tokio::sync::oneshot::channel();
+    let advance = tokio::spawn(async move {
+        started.await.expect("start the queue");
+        app.staging_advance(&sandbox, "staging").await
+    });
+    let (entered, _release) = browser.hold_lookup_for(advance.id());
+    start.send(()).expect("queue is live");
+    tokio::time::timeout(WAIT, entered.notified()).await?;
+    tokio::time::timeout(Duration::from_secs(5), advance)
+        .await??
+        .map_err(|e| e.to_string())?;
+    assert_eq!(
+        request(&f, &staged.id).await?.state,
+        StagingState::GateFailed
+    );
+    let mut resync = false;
+    while let Ok(event) = events.try_recv() {
+        resync |= matches!(event.event, yulius_contracts::events::UiEvent::Resync);
+    }
+    assert!(resync, "a view that missed the update must refetch");
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_final_step_waits_for_staging_until_its_answer_is_delivered() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "t1").await?;
+    let revision = land(&f, "t1", "one.txt").await?;
+    let run = gate(&f, &revision, RunState::Running).await?;
+    let steps = support::mcp_tool(
+        &f.h,
+        &token("t1"),
+        "steps_set",
+        json!({"steps": [{"title": "Verify staging", "status": "in_progress"}]}),
+    )
+    .await?;
+    assert_eq!(steps["isError"], false, "{steps}");
+    let asked = ask(&f, "t1").await?;
+    let id = asked["id"].as_str().ok_or("request id")?;
+    f.h.store
+        .execute_for_tests("UPDATE tasks SET activity = 'waiting' WHERE id = 't1'")
+        .await?;
+    let task = TaskId::parse("t1")?;
+    let summary = || async {
+        let task = f.h.app.deps.store.task(&task).await?.ok_or("task")?;
+        BoxResult::Ok(serde_json::to_value(f.h.app.task_summary(&task).await?)?)
+    };
+    let view = summary().await?;
+    assert!(view["needs_you_notice"].is_null(), "{view}");
+    assert_eq!(
+        view["staging_wait"],
+        "Waiting for the merged revision’s full suite"
+    );
+    let brief = support::mcp_tool(&f.h, &token("t1"), "task_get", json!({"number": 1})).await?;
+    let fields = support::tool_text(&brief);
+    assert_eq!(fields["shows"], "working", "{fields}");
+    assert_eq!(fields["staging_wait"], view["staging_wait"]);
+    assert!(
+        brief["content"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("Waiting for the merged revision’s full suite"))
+    );
+    f.h.store
+        .execute_for_tests("UPDATE tasks SET status = 'parked' WHERE id = 't1'")
+        .await?;
+    let parked = summary().await?;
+    assert!(parked["needs_you_notice"].is_null(), "{parked}");
+    assert_eq!(parked["staging_wait"], view["staging_wait"]);
+    assert!(
+        f.h.store
+            .transition_ci_job(
+                &format!("{run}-full"),
+                &[RunState::Running],
+                RunState::Failed,
+                &yulius_app::ci::CiJobUpdate::default()
+            )
+            .await?
+    );
+    assert!(
+        f.h.store
+            .transition_ci_run(
+                &run,
+                &[RunState::Running],
+                RunState::Failed,
+                &yulius_app::ci::CiRunUpdate::default()
+            )
+            .await?
+    );
+    f.h.app
+        .staging_advance(&sandbox(&f).await?, "staging")
+        .await?;
+    let failed = request(&f, id).await?;
+    assert_eq!(failed.state, StagingState::GateFailed);
+    assert_eq!(
+        summary().await?["staging_wait"],
+        "Waiting for the staging outcome to reach the agent"
+    );
+    assert!(f.h.store.mark_staging_told(&failed).await?);
+    let answered = summary().await?;
+    assert!(answered["staging_wait"].is_null());
+    assert!(answered["needs_you_notice"].is_object(), "{answered}");
+    Ok(())
+}
+
 /// SPEC-575 MFS-013: a task whose work merged into a merge-first project reads in
 /// `delivery_status` that staging waits for its request, then where its request stands. A task
 /// whose session began before its project switched (the switch's own task) learns it there,
@@ -2001,19 +2183,37 @@ async fn delivery_status_asks_a_merged_task_for_its_staging_request() -> TestRes
     assert!(
         asks.contains(&format!(
             "Staging ([cd.staging], merge-first): your merged revision {short} has no staging \
-             request. Once your whole delivery merged (no steps open), ask once with cd_deploy \
-             {{\"environment\":\"staging\"}}: Yulius runs the full gate on that revision, then \
-             deploys it (or answers included when staging already contains it) and tells you \
-             the outcome."
+             request. Once your whole delivery has landed, ask once with cd_deploy {{\"environment\":\"staging\"}} \
+             before ending your turn. Yulius runs the full suite, then deploys and verifies that revision. \
+             If your final step requires the outcome, leave it in progress. Yulius wakes this task with the outcome."
         )),
         "{asks}"
     );
+    f.h.store
+        .execute_for_tests("UPDATE tasks SET activity = 'waiting' WHERE id = 't1'")
+        .await?;
+    let mut updates = f.h.app.events.subscribe();
     let ci = gate(&f, &r1, RunState::Passed).await?;
     let asked = ask(&f, "t1").await?;
     settle(&f).await?;
     let id = asked["id"].as_str().ok_or("id")?;
     let done = request(&f, id).await?;
     assert_eq!(done.state, StagingState::Verified, "{done:?}");
+    let mut labels = Vec::new();
+    while let Ok(event) = updates.try_recv() {
+        if let yulius_contracts::events::UiEvent::TaskUpdated { task } = event.event
+            && task.id == "t1"
+            && let Some(label) = task.staging_wait
+        {
+            labels.push(label);
+        }
+    }
+    assert!(
+        labels
+            .iter()
+            .any(|label| label == StagingState::Deploying.task_wait_label()),
+        "the task's mounted view must see the deploy start: {labels:?}"
+    );
     let after = delivery_text(&f, "t1").await?;
     assert!(
         after.contains(&format!(
@@ -2024,6 +2224,13 @@ async fn delivery_status_asks_a_merged_task_for_its_staging_request() -> TestRes
         "{after}"
     );
     assert!(!after.contains("has no staging request"), "{after}");
+    let r2 = land(&f, "t1", "two.txt").await?;
+    let later = delivery_text(&f, "t1").await?;
+    assert!(
+        later.contains(&r2[..12]) && later.contains("already has its staging deployment"),
+        "{later}"
+    );
+    assert!(!later.contains("ask once with cd_deploy"), "{later}");
     // Without a merge-first target a merge asks for nothing.
     let plain = fixture(&staging_toml().replace("merge_first = true\n", "")).await?;
     agent(&plain, "t2").await?;

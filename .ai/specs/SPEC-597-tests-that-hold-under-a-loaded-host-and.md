@@ -30,7 +30,7 @@ SPEC-575 already has a durable staging queue, explicit admission through `cd_dep
 - [x] Approve the browser and merge-train test fixes for delivery
 - [x] Direct a superseding final staging request to the newer landing
 - [x] Deliver staging receipts that identify a completed check or its fix-forward action
-- [ ] Preserve a retried deployment’s outcome when delivery overlaps a previous failure
+- [x] Preserve a retried deployment’s outcome when delivery overlaps a previous failure
 - [ ] Prove the staging failure and recovery paths and approve their delivery after the CI test merge
 - [ ] Package the reviewed staging change with its verification evidence
 
@@ -105,3 +105,11 @@ With the terminal receipt changes removed, the repeated failed-gate and no-run g
 The multi-task fixture deployed revision B, then repeated A’s verified request. Before the fix its receipt said staging still served A. Successful receipts now report what the recorded deployment verified or included and name the available run IDs.
 
 All 35 CI-profile staging scenarios passed with the historical receipt fix. Independent review approved `0b7400556`. The repository contract and format checks passed. Vidoc was disabled.
+
+The receipt changes landed at `553e50b4b` from PR #1637 on green Yulius CI (PR run `18f60c3c-94aa-41fe-8eeb-f12e3bf1f59d`, train `7197a893-84f7-49a3-a73b-c454af0162b2`). [Verification evidence](https://yulius.quartio.ai/api/tasks/4014aca0-70ee-4ff0-aae0-9347694f1f02/delivery/evidence/553e50b4b62e56594f1bfd02cb79718cd10ab4fe)
+
+With the retry guards removed, the real agent received the previous deployment failure after the retry verified (one stale wake, expected zero). On the same clock tick the SQLite store also accepted an old acknowledgment for a second failed attempt.
+
+The full Chromium suite on the final staging slice passed 1,318 tests with zero retries. One model-dependent case was skipped. The run took 3m35s alongside the Rust build.
+
+After restoration, both retry regressions passed. Scoped CI-profile nextest passed all 76 cases across staging, merge receipts, goal Stop, wake delivery and SQLite. Repository and format checks passed.
