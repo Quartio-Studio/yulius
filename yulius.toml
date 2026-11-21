@@ -37,25 +37,40 @@ RUST_TEST_THREADS = "{cpus}"
 # `scripts/dev ci` on a Mac before a release to link and test there. Each job without `cpus`
 # gets an equal share of CI's budget (ADR-0350); CI's measured use, not the shares, decides when
 # a job starts (ADR-0353).
-# The gate but its tests, and the tests in two shards beside it (SPEC-497 SHR-001): each value of
-# the matrix is its own job, with its own checkout and build, run side by side where CI's budget
-# allows; `scripts/dev test` runs shard i of n for a value `i/n`. Locally, `scripts/dev ci` runs
-# everything in one go. A pull request still behind the `dev` that added `checks` runs these jobs
-# with its own older xtask: there `quality` runs the whole `ci`, and each shard all the tests.
+# Each quality pass has an independent checkout, CPU budget and verdict.
 [[ci.jobs]]
 name = "quality"
-command = "python3 scripts/bootstrap.py --install-rustup && if scripts/dev help | grep -q '^  checks '; then scripts/dev checks; else scripts/dev ci; fi"
+command = 'python3 scripts/bootstrap.py --install-rustup && echo "::yulius-stage doctor" && scripts/dev doctor && echo "::yulius-stage check" && scripts/dev check'
+
+[[ci.jobs]]
+name = "lint"
+command = 'python3 scripts/bootstrap.py --install-rustup && echo "::yulius-stage lint" && scripts/dev lint'
+
+[[ci.jobs]]
+name = "macos"
+command = 'python3 scripts/bootstrap.py --install-rustup && echo "::yulius-stage macos" && scripts/dev macos'
+
+[[ci.jobs]]
+name = "docs"
+command = "python3 scripts/bootstrap.py --install-rustup && echo '::yulius-stage docs' && if test -f scripts/ci_test_shard.py; then scripts/dev docs; elif scripts/dev help | grep -q '^  checks '; then scripts/dev checks; else scripts/dev ci; fi"
+
+[[ci.jobs]]
+name = "deps"
+cpus = 2
+command = 'python3 scripts/bootstrap.py --install-rustup && echo "::yulius-stage deps" && scripts/dev deps'
 
 # The full suite (SPEC-591, ADR-0436): both test shards and e2e run on the merged revision, once,
 # not on pull requests; `[cd.dev]`, the merge-first staging target, changes only to a revision
 # whose full suite passed, and production is promoted only from what staging verified. A pull
-# request still runs `quality` (format, lint, clippy of every target, docs, macOS, dependencies,
-# repository contracts and the scripts' tests) and `security`, and any job it adds or changes.
+# request runs the five quality jobs, security, and any job it adds or changes.
 [[ci.jobs]]
 name = "test"
+# The old five-job gate gave each shard 22 CPUs on the 112-CPU CI host. With
+# four default compiler shares plus deps, e2e and security, two shares of 21 fit.
+cpus = 21
 matrix = "1/2 2/2"
 after_merge = true
-command = "python3 scripts/bootstrap.py --install-rustup && scripts/dev test"
+command = "python3 scripts/bootstrap.py --install-rustup && if test -f scripts/ci_test_shard.py; then scripts/dev test-shard; else scripts/dev test; fi"
 
 # The browser's system libraries are installed once in the sandbox (onboarding); installing them
 # on every run (`--with-deps`, apt) raced the other CI lane and agents for the dpkg lock and

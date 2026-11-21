@@ -1909,8 +1909,8 @@ mod tests {
         let dev_about = dev.about.as_deref().unwrap_or_default();
         assert!(dev_about.contains("staging VM"), "{dev_about}");
         // SPEC-591 STG-007: the staging VM is the merge-first target, and the full suite (both
-        // test shards and e2e) runs on the merged revision; a pull request merges on `quality`
-        // and `security`.
+        // test partitions and e2e) runs on the merged revision. PRs run all quality passes
+        // and security (SPEC-598).
         assert!(dev.merge_first);
         assert_eq!(cd.merge_first().map(|t| t.name.as_str()), Some("dev"));
         let config = parse_yulius_toml(raw)?;
@@ -1923,6 +1923,10 @@ mod tests {
             after,
             [
                 ("quality", false),
+                ("lint", false),
+                ("macos", false),
+                ("docs", false),
+                ("deps", false),
                 ("test (1/2)", true),
                 ("test (2/2)", true),
                 ("e2e", true),

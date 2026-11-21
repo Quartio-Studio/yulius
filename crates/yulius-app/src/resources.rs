@@ -86,7 +86,9 @@ impl Waiter {
 #[derive(Debug, Clone, Copy)]
 struct Started {
     id: u64,
-    at: Instant,
+    /// None until the ticket collects its grant.
+    at: Option<Instant>,
+    need: Budget,
     allowance: Budget,
 }
 
@@ -119,14 +121,7 @@ impl Reservation {
 impl Drop for Reservation {
     fn drop(&mut self) {
         let mut state = self.admission.lock();
-        state.held.jobs = state.held.jobs.saturating_sub(1);
-        state.held.reserved.cpus = state.held.reserved.cpus.saturating_sub(self.need.cpus);
-        state.held.reserved.memory_mb = state
-            .held
-            .reserved
-            .memory_mb
-            .saturating_sub(self.need.memory_mb);
-        state.started.retain(|started| started.id != self.id);
+        state.release(self.id, self.need);
         drop(state);
         self.admission.changed.notify_waiters();
     }
@@ -144,8 +139,16 @@ impl Drop for Ticket {
         let before = state.queue.len();
         state.queue.retain(|waiter| waiter.id != self.id);
         let left = state.queue.len() != before;
+        let uncollected = state
+            .started
+            .iter()
+            .find(|job| job.id == self.id && job.at.is_none())
+            .copied();
+        if let Some(job) = uncollected {
+            state.release(job.id, job.need);
+        }
         drop(state);
-        if left {
+        if left || uncollected.is_some() {
             self.admission.changed.notify_waiters();
         }
     }
@@ -263,10 +266,9 @@ impl CiAdmission {
         Measured { used, settled }
     }
 
-    /// Admits the job holding `ticket` at `now` (SPEC-497 HBA-002) when no job before it in the
-    /// order ([`Waiter::order`]) has waited past [`OVERTAKE_LIMIT`] or could start now, and it
-    /// may start itself ([`AdmissionState::decide`], `slots` jobs at most); otherwise what it
-    /// waits for. A job that cannot start lets the ones behind it that can.
+    /// A woken waiter reserves for eligible tickets in priority and arrival order, until
+    /// the job limit or an overdue ticket blocks the rest. Independent wakeups and writes of
+    /// queued reasons need not serialize grants that fit together.
     fn try_admit(
         self: &Arc<Self>,
         ticket: &Ticket,
@@ -275,53 +277,77 @@ impl CiAdmission {
         slots: usize,
     ) -> Result<Reservation, Wait> {
         let mut state = self.lock();
-        let Some(me) = state
+        let mut wait = Wait::Behind;
+        if state
             .queue
             .iter()
-            .find(|waiter| waiter.id == ticket.id)
-            .copied()
-        else {
-            return Err(Wait::Behind);
-        };
-        let mut before: Vec<Waiter> = state
-            .queue
-            .iter()
-            .filter(|waiter| waiter.order() < me.order())
-            .copied()
-            .collect();
-        before.sort_by_key(Waiter::order);
-        for waiter in &before {
-            if now.saturating_duration_since(waiter.since) >= OVERTAKE_LIMIT {
-                return Err(Wait::Overdue);
+            .any(|candidate| candidate.id == ticket.id)
+        {
+            // Reserve in one pass. Each decision sees all grants already made in this pass.
+            let mut candidates = state.queue.clone();
+            candidates.sort_by_key(Waiter::order);
+            let mut changed = false;
+            for candidate in candidates {
+                match state.decide(candidate.need, measured, now, slots) {
+                    Ok(need) => {
+                        state.grant(candidate.id, need);
+                        changed = true;
+                    }
+                    Err(reason) => {
+                        if candidate.id == ticket.id || matches!(reason, Wait::Slots(_)) {
+                            wait = reason;
+                        }
+                        if now.saturating_duration_since(candidate.since) >= OVERTAKE_LIMIT {
+                            if candidate.id != ticket.id && wait == Wait::Behind {
+                                wait = Wait::Overdue;
+                            }
+                            break;
+                        }
+                        if matches!(reason, Wait::Slots(_)) {
+                            break;
+                        }
+                    }
+                }
             }
-            if state.decide(waiter.need, measured, now, slots).is_ok() {
-                return Err(Wait::Behind);
+            if changed {
+                self.changed.notify_waiters();
             }
         }
-        let need = state.decide(me.need, measured, now, slots)?;
-        state.queue.retain(|waiter| waiter.id != me.id);
-        state.held.jobs += 1;
-        state.held.reserved.cpus = state.held.reserved.cpus.saturating_add(need.cpus);
-        state.held.reserved.memory_mb =
-            state.held.reserved.memory_mb.saturating_add(need.memory_mb);
-        let allowance = state.budget.start_allowance(need);
-        state.started.push(Started {
-            id: me.id,
-            at: now,
-            allowance,
-        });
-        drop(state);
-        // The next one in line may start too.
-        self.changed.notify_waiters();
+        let granted = state
+            .started
+            .iter_mut()
+            .find(|s| s.id == ticket.id && s.at.is_none())
+            .ok_or(wait)?;
+        granted.at = Some(now);
         Ok(Reservation {
             admission: Arc::clone(self),
-            id: me.id,
-            need,
+            id: granted.id,
+            need: granted.need,
         })
     }
 }
 
 impl AdmissionState {
+    fn grant(&mut self, id: u64, need: Budget) {
+        self.queue.retain(|waiter| waiter.id != id);
+        self.held.jobs += 1;
+        self.held.reserved.cpus = self.held.reserved.cpus.saturating_add(need.cpus);
+        self.held.reserved.memory_mb = self.held.reserved.memory_mb.saturating_add(need.memory_mb);
+        self.started.push(Started {
+            id,
+            at: None,
+            need,
+            allowance: self.budget.start_allowance(need),
+        });
+    }
+
+    fn release(&mut self, id: u64, need: Budget) {
+        self.held.jobs = self.held.jobs.saturating_sub(1);
+        self.held.reserved.cpus = self.held.reserved.cpus.saturating_sub(need.cpus);
+        self.held.reserved.memory_mb = self.held.reserved.memory_mb.saturating_sub(need.memory_mb);
+        self.started.retain(|started| started.id != id);
+    }
+
     /// Whether a job needing `need` may start at `now` beside what CI holds (SPEC-497 HBA-002):
     /// fewer running jobs than `slots`, a settled reading while CI runs, and room in the budget
     /// ([`admit`]: what CI's processes wait for, the worst case, what CI uses and what jobs
@@ -347,7 +373,11 @@ impl AdmissionState {
         let starting = self
             .started
             .iter()
-            .filter(|started| now.saturating_duration_since(started.at) < START_WINDOW)
+            .filter(|started| {
+                started
+                    .at
+                    .is_none_or(|at| now.saturating_duration_since(at) < START_WINDOW)
+            })
             .fold(Budget::default(), |sum, started| Budget {
                 cpus: sum.cpus.saturating_add(started.allowance.cpus),
                 memory_mb: sum.memory_mb.saturating_add(started.allowance.memory_mb),
@@ -857,6 +887,59 @@ mod tests {
         assert!(next.settled);
     }
 
+    #[test]
+    fn one_wakeup_reserves_all_earlier_eligible_jobs_up_to_the_live_limit() {
+        let admission = Arc::new(CiAdmission::new(Capacity::new(16, 16384)));
+        let now = Instant::now();
+        let tickets: Vec<_> = (0..4)
+            .map(|_| admission.enqueue(CiPriority::PullRequest, need(1), now))
+            .collect();
+        // Wake the last waiter first. The first three can be reserved immediately in order.
+        assert!(
+            admission
+                .try_admit(&tickets[3], Measured::NOTHING, now, 3)
+                .is_err()
+        );
+        assert_eq!(admission.lock().held.jobs, 3);
+        let mut tickets = tickets.into_iter();
+        drop(tickets.next()); // cancelled after the grant, before collecting it
+        let remaining: Vec<_> = tickets.collect();
+        let held: Vec<_> = remaining
+            .iter()
+            .map(|ticket| admission.try_admit(ticket, Measured::NOTHING, now, 3).ok())
+            .collect();
+        assert!(held.iter().all(Option::is_some));
+        assert_eq!(admission.lock().held.jobs, 3);
+        drop(held);
+        assert_eq!(admission.lock().held.jobs, 0);
+    }
+
+    #[test]
+    fn the_first_wakeup_also_reserves_for_later_eligible_jobs() {
+        let admission = Arc::new(CiAdmission::new(Capacity::new(9, 9216)));
+        let now = Instant::now();
+        let tickets: Vec<_> = (0..3)
+            .map(|_| admission.enqueue(CiPriority::Branch, need(2), now))
+            .collect();
+        let first = admission
+            .try_admit(&tickets[0], Measured::NOTHING, now, 3)
+            .ok();
+        assert!(first.is_some());
+        assert_eq!(admission.lock().held.jobs, 3);
+        // Pending grants still count after the startup window. A fresh 3-CPU arrival on
+        // a host already using 3 cannot start beside the two pending 2-CPU grants.
+        let later = now + START_WINDOW;
+        let fourth = admission.enqueue(CiPriority::Branch, need(3), later);
+        let measured = Measured {
+            used: Some(need(3)),
+            settled: true,
+        };
+        assert!(matches!(
+            admission.try_admit(&fourth, measured, later, 12),
+            Err(Wait::Budget(_))
+        ));
+    }
+
     /// SPEC-497 HBA-002: a job that cannot start lets a later one that can; one before it that
     /// can start goes first; merge candidates' jobs go before older pull requests'; a job that
     /// waited past the overtaking limit holds back those behind it until it starts or leaves;
@@ -887,14 +970,13 @@ mod tests {
         // The first job ends: the large one fits now and goes before a later one.
         drop(held);
         let later = admission.enqueue(pr, need(1), at(4));
-        assert_eq!(
-            admission.try_admit(&later, measured, at(4), 12).err(),
-            Some(Wait::Behind)
-        );
-        let large_held = admission.try_admit(&large, measured, at(4), 12).ok();
-        assert!(large_held.is_some());
         let later_held = admission.try_admit(&later, measured, at(4), 12).ok();
-        assert!(later_held.is_some());
+        assert!(later_held.is_some(), "both fit on the same wakeup");
+        let large_held = admission.try_admit(&large, measured, at(4), 12).ok();
+        assert!(
+            large_held.is_some(),
+            "the earlier job received its reservation first"
+        );
         drop((small_held, large_held, later_held));
         // A merge candidate's job goes before an older pull request's.
         let running = admission.enqueue(pr, need(7), at(10));
@@ -902,10 +984,10 @@ mod tests {
         assert!(running.is_some());
         let review = admission.enqueue(pr, need(1), at(11));
         let merge = admission.enqueue(CiPriority::Merge, need(1), at(12));
-        assert_eq!(
-            admission.try_admit(&review, measured, at(12), 12).err(),
-            Some(Wait::Behind)
-        );
+        assert!(matches!(
+            admission.try_admit(&review, measured, at(12), 12),
+            Err(Wait::Budget(_))
+        ));
         let merge_held = admission.try_admit(&merge, measured, at(12), 12).ok();
         assert!(merge_held.is_some());
         drop((merge_held, review));

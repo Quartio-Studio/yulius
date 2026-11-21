@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- CI gives each quality pass its own budget and verdict. Both Rust test partitions use one build. [SPEC-598](../.ai/specs/SPEC-598-shorten-a-yulius-ci-run-parallel-quality.md)
 - Continue on a named subscription checks the current model and subscription before starting or queuing the task. A refusal keeps the task stopped and preserves its archive and question. [SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
 
 - Deliveries check new tests by hand and request staging once after merge. The project mutation command runs only when a task requests it by name. New projects receive the same rule at bootstrap. [SPEC-600](../.ai/specs/SPEC-600-mutation-testing-sized-to-the-change-wit.md)
