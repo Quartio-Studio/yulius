@@ -1388,7 +1388,7 @@ resolves to nothing, the run gets the server without that variable or token.
     a configuration is a keyframe), binary JPEG frames (pixels) `u8 3` + 32-byte tab id (ASCII,
     space padded) + image, `{"type":"clipboard","text"}` (the selection, at most 1 MiB),
     `{"type":"page_copy_available","tab_id","offer"}` (a fresh virtual-display selection),
-    `{"type":"page_clipboard","tab_id","offer","text"}` (plain text, at most 1 MiB, after this viewer accepts),
+    `{"type":"page_clipboard","tab_id","offer","text"}` (plain text, at most 1 MiB, after this viewer accepts; a stale or unreadable offer returns the error code `clipboard_unavailable`),
     `{"type":"agent_activity","tab_id","x","y","action":"click|type|open|navigate","label"}` (an
     agent acted; `x`/`y` in viewport CSS pixels or null), `{"type":"action_requested","tab_id",
     "reason","task_id"}`, `{"type":"error","code":"invalid|url_refused|not_found|capacity|

@@ -398,6 +398,8 @@ pub enum ViewMode {
 pub enum ViewerErrorCode {
     /// Malformed or out-of-bounds message.
     Invalid,
+    /// The accepted clipboard offer expired or has no transferable plain text.
+    ClipboardUnavailable,
     /// The URL policy refused the address.
     UrlRefused,
     /// Unknown tab.

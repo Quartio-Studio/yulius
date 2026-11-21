@@ -1680,6 +1680,9 @@ impl FakeDisplay {
     }
 
     pub(crate) fn record(&self, input: DisplayInput) {
+        if input.supersedes_copy() {
+            lock(&self.inner.offered_copy).1 = None;
+        }
         lock(&self.inner.inputs).push(input);
         self.inner.inputs_seen.send_modify(|n| *n += 1);
     }

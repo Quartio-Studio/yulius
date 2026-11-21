@@ -359,6 +359,9 @@ async fn the_panel_streams_the_sandbox_chrome_and_takes_input() -> TestResult {
         until(&cdp, session, "the agent's tab selected", &format!("document.querySelector('.bp-bar input').value === 'localhost:{}/'", site.port())).await?;
         // The page's canvas turns green after 1.5 s: the stream shows it.
         until(&cdp, session, "the updated canvas in the stream", "(() => { const c = document.querySelector('.bp-canvas'); const p = c.getContext('2d').getImageData(330, 35, 1, 1).data; return p[1] > 150 && p[0] < 80; })()").await?;
+        if display {
+            assert_eq!(eval(&cdp, session, "navigator.clipboard.writeText('original viewer text').then(() => navigator.clipboard.readText())").await?, json!("original viewer text"));
+        }
         // A click in the panel reaches the page.
         let button = stage_point(&cdp, session, (170.0, 182.0)).await?;
         for kind in ["mouseMoved", "mousePressed", "mouseReleased"] {
@@ -374,7 +377,7 @@ async fn the_panel_streams_the_sandbox_chrome_and_takes_input() -> TestResult {
             }
             until_page(&browser, &page, "the webpage's successful clipboard write", "document.getElementById('copy').textContent === 'Copied'").await?;
             until(&cdp, session, "the offer to copy from the sandbox", "document.querySelector('.toast button.btn')?.textContent === 'Copy to my clipboard'").await?;
-            assert_ne!(eval(&cdp, session, "navigator.clipboard.readText()").await?, json!("first line\nzażółć"));
+            assert_eq!(eval(&cdp, session, "navigator.clipboard.readText()").await?, json!("original viewer text"));
             eval(&cdp, session, "document.querySelector('.toast button.btn').click(); true").await?;
             until(&cdp, session, "the button's text on the viewer clipboard", r"navigator.clipboard.readText().then(t => t === 'first line\nzażółć')").await?;
         }

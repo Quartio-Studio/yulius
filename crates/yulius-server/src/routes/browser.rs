@@ -878,7 +878,7 @@ async fn pump(
                             if !out.json(&ViewerServerMsg::PageClipboard { tab_id, offer, text }).await { return; }
                             Ok(())
                         } else {
-                            Err((ViewerErrorCode::Invalid, "Clipboard text is unavailable. Copy plain text up to 1 MiB on the webpage and try again.".into()))
+                            Err((ViewerErrorCode::ClipboardUnavailable, "Clipboard text is unavailable. Copy plain text up to 1 MiB on the webpage and try again.".into()))
                         }
                     }
                     Ok(ViewerClientMsg::Copy { tab_id }) => {

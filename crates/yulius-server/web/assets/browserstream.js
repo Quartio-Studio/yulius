@@ -606,13 +606,24 @@ export function createStreamView(ctx, sandbox, hooks) {
     closeCopyOffer = null;
   }
 
+  const copyExpired = 'Copy expired. Click Copy on the webpage again.';
+
   function offerPageCopy(tabId, offer) {
     clearPageCopy();
-    pageCopyTimer = setTimeout(clearPageCopy, 15000);
-    closeCopyOffer = toast('The sandbox clipboard changed.', {
+    const notice = document.createTextNode('The sandbox clipboard changed.');
+    let expired = false;
+    pageCopyTimer = setTimeout(() => { expired = true; notice.data = copyExpired; }, 15000);
+    closeCopyOffer = toast(notice, {
       action: { label: 'Copy to my clipboard', run: () => {
+        clearTimeout(pageCopyTimer);
+        if (expired) { toast(copyExpired, { kind: 'warn' }); return; }
         acceptedPageOffer = offer;
-        if (!send({ type: 'accept_page_copy', tab_id: tabId, offer })) {
+        if (send({ type: 'accept_page_copy', tab_id: tabId, offer })) {
+          pageCopyTimer = setTimeout(() => {
+            clearPageCopy();
+            toast('The clipboard did not respond. Click Copy on the webpage again.', { kind: 'warn' });
+          }, 6000);
+        } else {
           clearPageCopy();
           toast('The browser disconnected. Click Copy on the webpage again.', { kind: 'warn' });
         }
@@ -629,9 +640,11 @@ export function createStreamView(ctx, sandbox, hooks) {
       if (version === pageCopyVersion) showCopied();
     } catch {
       if (version !== pageCopyVersion) return;
-      pageCopyTimer = setTimeout(clearPageCopy, 15000);
-      const dismiss = toast('Your browser needs another click to write to the clipboard.', {
+      const notice = document.createTextNode('Your browser needs another click to write to the clipboard.');
+      pageCopyTimer = setTimeout(() => { value = ''; notice.data = copyExpired; }, 15000);
+      const dismiss = toast(notice, {
         action: { label: 'Retry copy', run: () => {
+          if (!value) { toast(copyExpired, { kind: 'warn' }); return; }
           let filled = false;
           const fill = (event) => {
             if (!event.clipboardData) return;
@@ -643,7 +656,7 @@ export function createStreamView(ctx, sandbox, hooks) {
           try {
             if (document.execCommand('copy') && filled) { showCopied(); return; }
           } catch { /* the browser refused this gesture too */ }
-          finally { document.removeEventListener('copy', fill, true); }
+          finally { document.removeEventListener('copy', fill, true); clearPageCopy(); }
           toast('Your browser blocked the clipboard write.', { kind: 'warn' });
         } },
       });
@@ -750,6 +763,7 @@ export function createStreamView(ctx, sandbox, hooks) {
         if (hooks.onActionCleared) hooks.onActionCleared(message);
         break;
       case 'error':
+        if (message.code === 'clipboard_unavailable' && acceptedPageOffer !== null) clearPageCopy();
         if (message.code === 'input_locked_until_restart') {
           if (lockReason.textContent !== message.message) lockReason.textContent = message.message;
           restartNotice.hidden = false;

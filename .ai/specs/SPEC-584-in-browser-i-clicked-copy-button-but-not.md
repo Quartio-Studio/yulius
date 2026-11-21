@@ -49,3 +49,7 @@ The report names the browser without identifying a site. Use a synthetic page in
 - The two-Chromium regression failed on the original implementation after the fixture acknowledged its write. The viewer timed out waiting for the exact multiline UTF-8 text. The corrected keyboard assertion also awaits the actual clipboard read.
 - The browser E2E regression failed before the Browser panel handled the offer. The focused suite now passes, including a refused asynchronous write followed by a native copy gesture.
 - The two clipboard decoding unit tests pass. They cover ordinary UTF-8, invalid or incomplete data, characters split across incremental chunks and the combined byte limit.
+- Independent review found four issues. The shared release-input predicate initially failed the idle-observer regression. An observer closing its socket now releases held input while the initiating viewer can still accept. All 64 browser crate unit tests pass.
+- A simulated deadline between acceptance and its reply initially lost the reply. The focused browser suite now verifies a separate reply deadline, native retry, and an expired action that retains keyboard focus. Both the offer and retry erase usable clipboard state on expiry.
+- The real-browser fixture now seeds the device clipboard before the first click and checks that exact value before acceptance. This assertion also fails if a clipboard read is denied.
+- `scripts/dev security` reported the project’s Vidoc scan disabled.

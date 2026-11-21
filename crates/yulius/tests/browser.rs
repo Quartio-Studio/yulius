@@ -1949,13 +1949,17 @@ async fn a_page_button_returns_its_fresh_copy_only_to_the_clicking_socket() -> T
         let accept = json!({"type":"accept_page_copy", "tab_id":tab, "offer":offer["offer"]});
         send(&mut observer, accept.clone()).await?;
         assert_eq!(wait_json(&mut observer, |m| matches!(m["type"].as_str(), Some("error" | "page_copy_available" | "page_clipboard"))).await?["type"], "error");
+        observer.close(None).await?;
+        assert!(display.wait_for_input(|i| *i == DisplayInput::ReleaseAll, WAIT).await);
         send(&mut viewer, accept.clone()).await?;
         assert_eq!(wait_json(&mut viewer, |m| m["type"] == "page_clipboard").await?,
             json!({"type":"page_clipboard", "tab_id":tab, "offer":offer["offer"], "text":"copied by button"}));
         send(&mut viewer, accept).await?;
         assert_eq!(wait_json(&mut viewer, |m| matches!(m["type"].as_str(), Some("error" | "page_copy_available" | "page_clipboard"))).await?["type"], "error");
 
-        // The observer's ordinary click copies nothing. Its selection reply is a barrier.
+        // An ordinary click copies nothing. The keyboard selection reply is a barrier.
+        let mut observer = ws_connect(served.addr, path, &f.writer, ORIGIN).await?;
+        wait_json(&mut observer, |m| m["type"] == "tabs").await?;
         send(&mut observer, press).await?;
         send(&mut observer, release).await?;
         f.fake.set_selection("keyboard selection");

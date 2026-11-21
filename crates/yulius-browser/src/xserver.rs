@@ -450,13 +450,8 @@ impl XState {
     fn command(&mut self, command: XCommand) {
         match command {
             XCommand::Input(input) => {
-                if matches!(
-                    input,
-                    DisplayInput::Button { press: true, .. }
-                        | DisplayInput::Key { press: true, .. }
-                        | DisplayInput::Type(_)
-                        | DisplayInput::ReleaseAll
-                ) && let Some(clipboard) = &mut self.clipboard
+                if input.supersedes_copy()
+                    && let Some(clipboard) = &mut self.clipboard
                 {
                     clipboard.cancel(&self.conn);
                 }

@@ -81,6 +81,16 @@ pub enum DisplayInput {
     },
 }
 
+impl DisplayInput {
+    /// A new press or typed character supersedes the pending clipboard offer.
+    pub(crate) fn supersedes_copy(self) -> bool {
+        matches!(
+            self,
+            Self::Button { press: true, .. } | Self::Key { press: true, .. } | Self::Type(_)
+        )
+    }
+}
+
 /// Settings of the virtual displays.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DisplayConfig {
@@ -883,5 +893,26 @@ mod tests {
     #[test]
     fn keyframes_are_on_demand_by_default() {
         assert_eq!(DisplayConfig::new("/run".into()).keyframe_interval, None);
+    }
+}
+
+#[cfg(test)]
+mod copy_input_tests {
+    use super::DisplayInput;
+
+    #[test]
+    fn cleanup_when_an_observer_leaves_preserves_the_offered_copy() {
+        assert!(!DisplayInput::ReleaseAll.supersedes_copy());
+        assert!(DisplayInput::Type('x').supersedes_copy());
+        for press in [false, true] {
+            assert_eq!(
+                DisplayInput::Key { keycode: 1, press }.supersedes_copy(),
+                press
+            );
+            assert_eq!(
+                DisplayInput::Button { button: 1, press }.supersedes_copy(),
+                press
+            );
+        }
     }
 }
