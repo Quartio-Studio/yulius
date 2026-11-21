@@ -59,7 +59,7 @@ new request after the old sockets reach EOF. The issue requires the original con
 - [x] Hand established opaque connections and matching relay sockets to the restarted server
 - [x] Verify same-socket continuity, admission limits and intercepted traffic through restart
 - [x] Quiesce outbound relay admissions without recording a capacity refusal
-- [ ] Obtain independent approval for the holder relay lifecycle slice
+- [x] Obtain independent approval for the holder relay lifecycle slice
 - [ ] Restore matched proxy and relay pairs on the delivered holder lifecycle
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
@@ -559,6 +559,15 @@ matched relay and proxy restoration has its own review and CI.
   Admission now distinguishes a stopped table from a full table under the same lock.
   The regression passed with a zero delta and quiet stderr. The live relay capture
   and the successor's matched restore are separate deliveries.
+- The original integrated candidate listed 109 mutations. The first run caught 62,
+  missed 10 and found 37 unviable. All were reached with zero timeouts. On the corrected
+  candidate, the strict startup test caught the missing-manager substitution. The
+  isolated relay checks caught the other nine substitutions in endpoint verification,
+  holder validation, registration cleanup, stopping and adoption. Across 63 relay
+  mutations this focused run caught 48 and found 13 unviable. Two changes to paired
+  cancellation survived the sandbox-only tests. The service-level cancellation run
+  caught both of them and all 12 mutations on the cancellation change, with zero
+  missed, timed out or unreached.
 
 
 ### Holder admission and capture slice
@@ -580,3 +589,17 @@ matched relay and proxy restoration has its own review and CI.
   Substituting an empty copy state in the reviewed code failed the saved-suffix assertion.
   All five relay cases passed with the real captured state, including the complete ordered
   reply and FIN on the original client.
+- A fresh reviewer approved `f7897c77c` and passed all five holder capture fixtures,
+  the host prerequisite case and 56 relay tests serially. The committed SIGTERM test
+  failed on dev in 2.91 seconds because the old server admitted a late relay. The six
+  isolated Linux cases passed on the candidate in 8.02 seconds. The broader domain,
+  sandbox and egress suites passed 934 tests with two environment-dependent skips.
+  Scoped Clippy and quick checks passed. Vidoc was disabled.
+- One concurrent review run hit `AddrInUse` in the older forward capacity fixture. The
+  fixture releases an ephemeral listener before binding the same address again on dev
+  `d95fb3f5f`. [Issue #1572](https://github.com/Quartio-Studio/yulius/issues/1572)
+  tracks the separate fixture correction.
+- `scripts/dev mutants` against dev for the holder admission slice reached all
+  69 mutations in 18 minutes. It caught 30 and found 39 unviable. The follow-up
+  against the reviewed head for the unique-link correction reached all six mutations,
+  caught two and found four unviable. Both runs reported zero missed or timed out.
