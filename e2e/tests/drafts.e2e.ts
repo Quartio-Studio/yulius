@@ -503,35 +503,54 @@ test('a task that finishes starting while another draft is open leaves that edit
 });
 
 
-test('discarding an open draft in another tab retires its pending upload and unmount write', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio'));
-  await screen.getByRole('textbox', 'Task prompt').fill('Discard from either tab');
-  await expect.poll(() => storedDraft(browser)).toMatchObject({ text: 'Discard from either tab' });
-  const tab = await surface.page().context().newPage();
-  try {
-    await tab.goto(surface.page().url());
-    await tab.getByRole('textbox', { name: 'Task prompt' }).waitFor();
-    await browser.evaluate(() => {
-      const w = window as unknown as Holding;
-      w.__yuliusMock.holdUpload = new Promise<void>((resolve) => { w.__release = resolve; });
-    });
-    await drop(browser, [['late.pdf', 'pdf', 'application/pdf']]);
-    await expect(browser.locator('.composer-box .upload-text')).toHaveText(/Uploading late.pdf/);
-    await browser.evaluate(() => { (window as unknown as { uploadStatus: Element | null }).uploadStatus = document.querySelector('.composer-box .upload-text'); });
+// A second real tab gets its own editor and the browser delivers its storage events.
+for (const action of ['Discard saved draft', 'Discard before typing', 'Erase prompt text']) {
+  test(`an open draft with a pending upload survives only ordinary edits in another tab: ${action}`, async ({ app, browser, screen }) => {
+    await app.open(mock('/s/studio'));
+    const prompt = screen.getByRole('textbox', 'Task prompt');
+    if (action !== 'Discard before typing') {
+      await prompt.fill('Work in both tabs');
+      await expect.poll(() => storedDraft(browser)).toMatchObject({ text: 'Work in both tabs' });
+    }
+    const tab = await surface.page().context().newPage();
+    try {
+      await tab.goto(surface.page().url());
+      const otherPrompt = tab.getByRole('textbox', { name: 'Task prompt' });
+      await otherPrompt.waitFor();
+      await browser.evaluate(() => {
+        const w = window as unknown as Holding;
+        w.__yuliusMock.holdUpload = new Promise<void>((resolve) => { w.__release = resolve; });
+      });
+      await drop(browser, [['late.pdf', 'pdf', 'application/pdf']]);
+      await expect(browser.locator('.composer-box .upload-text')).toHaveText(/Uploading late.pdf/);
+      await browser.evaluate(() => { (window as unknown as { uploadStatus: Element | null }).uploadStatus = document.querySelector('.composer-box .upload-text'); });
 
-    await tab.getByRole('button', { name: 'Drafts', exact: true }).click();
-    await tab.getByRole('menuitem', { name: 'Discard current draft' }).click();
-    await tab.getByRole('button', { name: 'Discard draft', exact: true }).click();
-    await expect.poll(() => storedDrafts(browser)).toHaveLength(0);
-    await browser.evaluate(() => (window as unknown as Holding).__release!());
-    await expect.poll(() => browser.evaluate(() => (window as unknown as { uploadStatus: Element }).uploadStatus.textContent)).toBe('Added late.pdf');
+      if (action === 'Erase prompt text') {
+        await otherPrompt.fill('');
+      } else {
+        await tab.getByRole('button', { name: 'Drafts', exact: true }).click();
+        await tab.getByRole('menuitem', { name: 'Discard current draft' }).click();
+        await tab.getByRole('button', { name: 'Discard draft', exact: true }).click();
+        // The originating editor has heard the retirement before the upload completes.
+        await expect.poll(() => browser.evaluate(() => (window as unknown as { uploadStatus: Element }).uploadStatus.isConnected)).toBe(false);
+      }
+      await expect.poll(() => storedDrafts(browser)).toHaveLength(0);
+      await browser.evaluate(() => (window as unknown as Holding).__release!());
+      await expect.poll(() => browser.evaluate(() => (window as unknown as { uploadStatus: Element }).uploadStatus.textContent)).toBe('Added late.pdf');
 
-    await screen.getByRole('button', 'New draft').click();
-    expect(await storedDrafts(browser)).toEqual([]);
-    await browser.reload();
-    await expect.poll(() => promptText(browser)).toBe('');
-    await expect.poll(() => attachmentNames(browser)).toEqual([]);
-  } finally {
-    await tab.close();
-  }
-});
+      if (action === 'Erase prompt text') {
+        await expect.poll(() => attachmentNames(browser)).toEqual(['late.pdf']);
+        await browser.reload();
+        await expect.poll(() => attachmentNames(browser)).toEqual(['late.pdf']);
+      } else {
+        await screen.getByRole('button', 'New draft').click();
+        expect(await storedDrafts(browser)).toEqual([]);
+        await browser.reload();
+        await expect.poll(() => promptText(browser)).toBe('');
+        await expect.poll(() => attachmentNames(browser)).toEqual([]);
+      }
+    } finally {
+      await tab.close();
+    }
+  });
+}
