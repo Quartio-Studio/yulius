@@ -1615,7 +1615,9 @@ impl App {
             .issued_prompts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Reissuing the same instruction should not evict other replayable sends.
         const LIMIT: usize = 16;
+        prompts.retain(|entry| *entry != digest);
         if prompts.len() == LIMIT {
             prompts.pop_front();
         }
@@ -1695,15 +1697,14 @@ impl App {
         {
             return Some((owner.time, owner.sequence));
         }
-        let mut issued = runtime
+        // Receipt of a callback cannot prove its response reached the provider. Keep
+        // the run's source evidence so retries remain automatic across a later Enter.
+        if runtime
             .issued_prompts
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(index) = issued.iter().position(|entry| *entry == digest) {
-            // Keep the receipt through retries while the owner has an unacknowledged Enter.
-            if eligible.next().is_none() {
-                issued.remove(index);
-            }
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&digest)
+        {
             return None;
         }
         // The provider may edit or normalize what the viewer entered. Once an
