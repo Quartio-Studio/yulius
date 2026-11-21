@@ -673,10 +673,9 @@ fn discipline(input: &BriefingInput<'_>) -> String {
          start, done once nothing of it remains (a review: once approved), never in a batch. Add \
          a step only for work found later. Keep the Plan checklist and your steps in sync with \
          `steps_set` and `step_update`.\n\
-         4. Tests prove behavior: for every behavior change first write a test that fails \
-         without it, then make it pass; cover failure cases. Wait on conditions, never on \
-         sleeps. A flaky test is reproduced and fixed, or quarantined with an issue; never \
-         retried until green.\n\
+         4. Start each behavior change with a test that fails without it. Make it pass and \
+         cover failures. Run each touched test binary in full. Wait on conditions, never sleeps. \
+         Flaky tests are reproduced and fixed or quarantined with an issue, never retried until green.\n\
          5. Decide like a senior engineer: compare options, choose and justify yourself (do not \
          ask the user to choose), and record each lasting decision {decisions}. Keep the \
          architecture document {architecture} (with at least one Mermaid diagram), the product \
@@ -2348,6 +2347,10 @@ mod tests {
         let layout = DocsLayout::default();
         let mut input = base(&profile, &layout)?;
         let plain = build_briefing(&input, DEFAULT_BUDGET_BYTES);
+        assert!(
+            plain.contains("Run each touched test binary in full."),
+            "{plain}"
+        );
         assert!(plain.contains("Merges deploy nothing"), "{plain}");
         assert!(!plain.contains("Local deployment"), "{plain}");
         input.foundations.merge_first = Some("staging".into());

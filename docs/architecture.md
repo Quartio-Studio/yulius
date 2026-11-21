@@ -4253,6 +4253,8 @@ flowchart TD
   R -->|"merge-first target at the integration head"| Q["after_merge jobs skipped: they run on the merged revision"]
 ```
 
+Yulius’s own `file-contracts` job looks up Rust tests that read paths in the candidate’s diff. Its path filters cover the UI, catalog, documentation and other repository inputs. The full Rust shards cover those tests on dev. [Decision 0448](decisions/0448-repository-file-readers-run-before-merge.md)
+
 ## CI job output
 
 A CI job's output is read from its log while it runs: the stored output is its last 512 KiB
