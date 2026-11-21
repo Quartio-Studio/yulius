@@ -235,7 +235,7 @@ impl App {
         // that viewer (#78). Nor are the focus and mouse reports and query answers xterm sends
         // by itself (SPEC-068).
         let prev_typed = attach.runtime.typed_at_ms.load(Ordering::SeqCst);
-        let mut recorded_typing = false;
+        let mut recorded_typing = None;
         if !scroll && is_typing(data) {
             let change = attach.runtime.hub.claim(attach.viewer_id);
             // The keystroke matters more than the size: a failed resize never drops it.
@@ -245,8 +245,7 @@ impl App {
             // A prompt submitted soon after is this person's (TSK-013).
             let mut mark = attach.runtime.draft_mark.lock().await;
             mark.recovered_at = None;
-            self.record_typing(&attach.task_id, &ctx.user.id);
-            recorded_typing = true;
+            recorded_typing = Some(self.record_terminal_frame(&attach.task_id, &ctx.user.id, data));
             // What they type may stay in the prompt box, unsent: the run's folder keeps that
             // for a restarted server (SPEC-480 DRF-009). Before the key is passed on, so the
             // prompt it may submit removes the mark after it was written.
@@ -261,11 +260,14 @@ impl App {
                 // If the live run exited between the check above and `send_input`, restore the
                 // prior `typed_at_ms` so we neither leave a ghost draft mark nor wipe an existing
                 // human draft on a transient write/scroll error.
-                if recorded_typing && !attach.runtime.has_live_run().await {
-                    attach
-                        .runtime
-                        .typed_at_ms
-                        .store(prev_typed, Ordering::SeqCst);
+                if let Some(seq) = recorded_typing {
+                    self.retract_viewer_submit(&attach.task_id, seq);
+                    if !attach.runtime.has_live_run().await {
+                        attach
+                            .runtime
+                            .typed_at_ms
+                            .store(prev_typed, Ordering::SeqCst);
+                    }
                 }
                 self.terminal_input_when_not_running(attach, data, scroll, err)
                     .await
@@ -457,6 +459,19 @@ impl App {
     }
 }
 
+/// Enter forwarded from the viewer, including a pasted command submitted in the same
+/// frame. A bracketed paste ending at its closing escape is still a draft.
+pub(crate) fn submits_prompt(data: &[u8]) -> bool {
+    let Some(text) = data
+        .strip_suffix(b"\r\n")
+        .or_else(|| data.strip_suffix(b"\r"))
+        .or_else(|| data.strip_suffix(b"\n"))
+    else {
+        return false;
+    };
+    !text.starts_with(b"\x1b") || text.ends_with(b"\x1b[201~")
+}
+
 /// Whether a viewer's input frame is a person typing (SPEC-068 TYP-001): it holds a keystroke
 /// (text, a control key, an Escape key sequence, a bracketed paste). What xterm sends by itself is
 /// not: focus reports (`ESC [ I` / `ESC [ O`), mouse reports (SGR `ESC [ < … M|m`, X10 `ESC [ M`
@@ -582,7 +597,27 @@ fn parked_input_wake(data: &[u8], scroll: bool) -> Option<Option<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_typing, parked_input_wake};
+    use super::{is_typing, parked_input_wake, submits_prompt};
+
+    #[test]
+    fn submits_prompt_requires_an_enter_outside_a_paste() {
+        for key in [
+            b"\r".as_slice(),
+            b"\n",
+            b"verify\r\n",
+            b"\x1b[200~verify\x1b[201~\r",
+        ] {
+            assert!(submits_prompt(key));
+        }
+        for draft in [
+            b"v".as_slice(),
+            b"\x1b\r",
+            b"\x1b[200~verify\r\x1b[201~",
+            b"\x1b[200~verify\r",
+        ] {
+            assert!(!submits_prompt(draft));
+        }
+    }
 
     #[test]
     fn only_keystrokes_are_typing() {

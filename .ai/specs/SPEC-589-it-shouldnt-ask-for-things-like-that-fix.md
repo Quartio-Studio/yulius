@@ -9,7 +9,7 @@ status: in-progress
 
 A goal task whose next action is already authorized continues that work itself. Its owner can leave the task running through verification on dev.
 
-Fixes #1600.
+Fixes #1600 and #1612.
 
 ## Context
 
@@ -82,3 +82,6 @@ Make the continuation decision where the agent can act on it, at the shared Stop
 - The combined frozen follow-up mutation run reported `89 listed, 26 caught, 0 missed, 0 timed out, 19 unviable, 44 not reached` at its 25-minute bound.
 - On the sixth reviewed implementation, 291 of 294 compatibility tests passed. The three failures were the new regression controls for delayed input, copied owner instructions and the missing queue origin. The next implementation passed Clippy with warnings denied. The earlier follow-up mutation that suppressed final goal publication is covered by the synchronized UI and wait-history test, which had failed before publication was coalesced. The budget test now accepts an owner prompt before submitting its automatic continuation, exercising the consumed-input boundary.
 - All 33 focused controls passed for the sixth review fixes, including a 300-key next draft, a copied gate instruction delivered to the replacement subprocess, and durable origin tags for both queued session lineages.
+- Seventh review at `ac523ded0` found a replacement charging an attempt from a stale task snapshot, an unsent owner draft that an automatic submit erased, and a plan lock held through explicit spec-check publication. All three reproduced. A paused launch recorded three attempts after a worker completed a step, where the correct count was one. The automatic submit erased the draft. The explicit spec-check control at `35d0eeb46` exceeded its four-second deadline while the browser lookup was held (#1612).
+- The SQLite store increments the current count in one statement. Terminal frames record an actual Enter before forwarding it and lose that attribution if forwarding fails. A submit uses its send time and observed input order to select the Enter for its authenticated task. Automatic callbacks leave an unsent owner draft and its budget intact. Explicit spec validation publishes after it releases the plan lock.
+- The preceding owner-input mutation run reported `76 listed, 8 caught, 4 missed, 0 timed out, 8 unviable, 56 not reached` at its 20-minute bound. Three surviving substitutions concerned the previous latest-key predicate. The Enter attribution now replaces that predicate, with controls for delayed callbacks, a subsequent draft and previously consumed input. The fourth suppressed coalesced publication and is covered by the synchronized task-view and wait-history assertions.

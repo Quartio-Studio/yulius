@@ -629,6 +629,39 @@ fn a_goal_continuation_recovers_a_process_free_capacity_hold() -> TestResult {
             "{launch}"
         );
         assert_eq!(app.deps.store.task(id).await?.ok_or("task")?.gate_blocks, 1);
+
+        // The next held turn has a live process. Move it to the newly available
+        // subscription and charge the instruction delivered to the replacement.
+        let first = run.account_id.ok_or("first subscription")?;
+        let second = add_account(&app, "b-second").await?;
+        let limited = serde_json::json!({"primary":{"used_percent":98.0, "window_minutes":300,
+            "resets_at":app.now().plus_millis(HOUR).0}})
+        .to_string();
+        app.deps
+            .store
+            .set_account_state(&first, AccountStatus::Ok, Some(&limited), None, app.now())
+            .await?;
+        app.deps
+            .store
+            .set_account_state(
+                &second,
+                AccountStatus::Ok,
+                Some(r#"{"primary":{"used_percent":5.0,"window_minutes":300}}"#),
+                None,
+                app.now(),
+            )
+            .await?;
+        app.pause_task(id, PauseKind::Turn, Some(first), None)
+            .await?;
+        Box::pin(app.resume_round()).await;
+        let moved = app
+            .deps
+            .store
+            .live_attempt(id)
+            .await?
+            .ok_or("replacement")?;
+        assert_eq!(moved.account_id, Some(second));
+        assert_eq!(app.deps.store.task(id).await?.ok_or("task")?.gate_blocks, 2);
         stop(&app, id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
@@ -693,6 +726,24 @@ fn a_goal_continuation_queued_after_a_hold_preserves_session_lineage() -> TestRe
             );
             stop(&app, &id).await?;
         }
+        let id = legacy_goal_hold(&app, &sandbox, &user).await?;
+        let owner = "Continue the authorized goal. Check the revised fixture";
+        assert!(
+            app.deps
+                .store
+                .update_open_pause(&id, PauseKind::Prompt, Some(owner))
+                .await?
+        );
+        app.resume_round().await;
+        let queued = app
+            .deps
+            .store
+            .queued_start(&id)
+            .await?
+            .ok_or("queued owner prompt")?;
+        assert_eq!(queued.kind, QueuedStartKind::Fresh);
+        assert_eq!(queued.prompt.as_deref(), Some(owner));
+        stop(&app, &id).await?;
         stop(&app, &holder).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
@@ -947,7 +998,13 @@ fn a_goal_continuation_budget_survives_a_public_subscription_switch() -> TestRes
             2,
             "automatic native goal restoration"
         );
-        app.record_typing(&id, &user);
+        let terminal = app.terminal_open(&ctx, id.as_str(), None).await?;
+        app.terminal_input(&ctx, &terminal, b"draft", false).await?;
+        app.hook_event(token, "claude", "UserPromptSubmit", &submit(&command), None)
+            .await?;
+        assert!(app.has_draft(&id));
+        assert_eq!(task(&app, &id).await?.gate_blocks, 2);
+        app.terminal_input(&ctx, &terminal, b"\r", false).await?;
         app.hook_event(token, "claude", "UserPromptSubmit", &submit(prompt), None)
             .await?;
         assert_eq!(task(&app, &id).await?.gate_blocks, 0);

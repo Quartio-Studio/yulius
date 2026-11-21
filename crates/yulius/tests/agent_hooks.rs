@@ -2475,7 +2475,8 @@ async fn goal_stop_budget_survives_submission_of_its_own_continuation() -> TestR
     let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify dev").await?;
     // Previously accepted viewer input belongs to that prompt. The next submit
     // carries an automatic continuation after one attempt has been consumed.
-    f.h.app.record_typing(&f.task, &UserId::parse("u1")?);
+    f.h.app
+        .record_terminal_frame(&f.task, &UserId::parse("u1")?, b"Verify dev\r");
     let entered = call(
         &f.h.internal,
         Method::POST,
@@ -2918,7 +2919,7 @@ fn a_key_during_submit_context_lookup_keeps_its_mark() -> TestResult {
             std::fs::create_dir_all(&run)?;
             let mark = Path::new(&run).join("person-typed");
             let user = UserId::parse("u1")?;
-            app.record_typing(&f.task, &user);
+            app.record_terminal_frame(&f.task, &user, b"old text\r");
 
             // Token lookup submits its SQLite job on the blocking pool. Hold the only
             // worker until the hook has entered and the later viewer key is recorded.
@@ -2976,11 +2977,10 @@ async fn a_delayed_goal_submit_retains_the_owner_and_the_next_draft() -> TestRes
     .await?;
     let app = &f.h.app;
     let owner = UserId::parse("u1")?;
-    app.record_typing(&f.task, &owner);
+    app.record_terminal_frame(&f.task, &owner, b"Verify dev\r");
     f.h.clock.0.fetch_add(1, Ordering::SeqCst);
     let sent = app.now().0;
-    // A long next draft exceeds the bounded recent-key history. Its input must
-    // preserve the first key of the instruction that was already sent.
+    // More typing in a long next draft cannot displace the submitted Enter.
     for _ in 0..300 {
         f.h.clock.0.fetch_add(1, Ordering::SeqCst);
         app.record_typing(&f.task, &owner);

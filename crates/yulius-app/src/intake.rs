@@ -248,14 +248,21 @@ impl App {
     /// Records that `user` typed into `task`'s terminal now (a prompt submitted soon after is
     /// theirs, TSK-013).
     pub fn record_typing(&self, task: &TaskId, user: &UserId) {
+        self.record_terminal_frame(task, user, &[]);
+    }
+
+    /// Record a viewer input frame before it reaches the PTY. Only an Enter can
+    /// attribute a subsequent provider prompt submission to that viewer.
+    pub fn record_terminal_frame(&self, task: &TaskId, user: &UserId, data: &[u8]) -> u64 {
         let runtime = self.runtime(task);
         let at = self.now().0;
-        let seq = self.record_viewer_key(task, at);
+        let seq = self.record_viewer_key(task, at, crate::terminal::submits_prompt(data));
         runtime.typed_at_ms.store(at, Ordering::SeqCst);
         runtime.typed_seq.fetch_max(seq, Ordering::SeqCst);
         if let Ok(mut who) = runtime.typed_by.lock() {
             *who = Some(user.clone());
         }
+        seq
     }
 
     /// `Some(who)` when a person typed into the task's terminal within

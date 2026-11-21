@@ -1127,6 +1127,20 @@ impl TaskStore for SqliteStore {
         .await
     }
 
+    async fn consume_stop_attempt(
+        &self,
+        id: &TaskId,
+        ceiling: u32,
+        at: Timestamp,
+    ) -> AppResult<()> {
+        let id = id.as_str().to_owned();
+        self.call(move |c| {
+            c.execute("UPDATE tasks SET gate_blocks = MIN(gate_blocks + 1, ?2), updated_at = ?3 WHERE id = ?1",
+                params![id, ceiling, at.0]).map_err(db)?;
+            Ok(())
+        }).await
+    }
+
     async fn update_task(&self, id: &TaskId, u: &TaskFieldUpdate, at: Timestamp) -> AppResult<()> {
         let (id, u) = (id.as_str().to_owned(), u.clone());
         self.call(move |c| {

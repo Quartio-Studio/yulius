@@ -997,8 +997,8 @@ const LIVE_WITH_A_RUN: [TaskStatus; 4] = [
 /// Supervisor-owned per-process state.
 #[derive(Default)]
 pub struct SupervisorState {
-    /// Unsubmitted viewer key times and sequence numbers. Only ordering metadata is kept.
-    viewer_keys: Mutex<HashMap<TaskId, VecDeque<(i64, u64)>>>,
+    /// Viewer Enter events awaiting the provider's submit callback. Contains only ordering metadata.
+    viewer_submits: Mutex<HashMap<TaskId, VecDeque<(i64, u64)>>>,
     input_seq: AtomicU64,
     runtimes: Mutex<HashMap<TaskId, Arc<TaskRuntime>>>,
     /// Shared, so an install on the blocking pool can own its guard (SPEC-507 SKR-005).
@@ -1589,23 +1589,18 @@ impl App {
         self.capacity_changed();
     }
 
-    pub(crate) fn record_viewer_key(&self, task: &TaskId, at: i64) -> u64 {
-        let mut keys = self
-            .supervisor
-            .viewer_keys
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    pub(crate) fn record_viewer_key(&self, task: &TaskId, at: i64, enter: bool) -> u64 {
         let seq = self.supervisor.input_seq.fetch_add(1, Ordering::SeqCst) + 1;
-        let pending = keys.entry(task.clone()).or_default();
-        if let Some(last) = pending.back_mut()
-            && last.0 == at
-        {
-            last.1 = seq;
-        } else {
-            // Preserve the first key of long drafts and recent keys for delayed callbacks.
-            // One timestamp suffices for all keys observed in the same millisecond.
-            const MAX_KEY_TIMES: usize = 256;
-            if pending.len() == MAX_KEY_TIMES {
+        if enter {
+            let mut submits = self
+                .supervisor
+                .viewer_submits
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let pending = submits.entry(task.clone()).or_default();
+            // Keep the first unacknowledged Enter and the most recent submissions.
+            const MAX_PENDING_SUBMITS: usize = 256;
+            if pending.len() == MAX_PENDING_SUBMITS {
                 pending.remove(1);
             }
             pending.push_back((at, seq));
@@ -1613,25 +1608,46 @@ impl App {
         seq
     }
 
-    pub(crate) fn viewer_keys_at_submit(&self, sent: i64) -> HashMap<TaskId, (i64, u64)> {
-        self.supervisor
-            .viewer_keys
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .filter_map(|(task, keys)| {
-                keys.iter()
-                    .rev()
-                    .find(|(at, _)| *at <= sent)
-                    .map(|key| (task.clone(), *key))
-            })
-            .collect()
+    pub(crate) fn viewer_input_sequence(&self) -> u64 {
+        self.supervisor.input_seq.load(Ordering::SeqCst)
     }
 
-    pub(crate) fn consume_viewer_keys(&self, task: &TaskId, through: u64) {
+    pub(crate) fn retract_viewer_submit(&self, task: &TaskId, seq: u64) {
+        let mut submits = self
+            .supervisor
+            .viewer_submits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(pending) = submits.get_mut(task) {
+            pending.retain(|(_, key)| *key != seq);
+            if pending.is_empty() {
+                submits.remove(task);
+            }
+        }
+    }
+
+    pub(crate) fn viewer_submit_at(
+        &self,
+        task: &TaskId,
+        sent: i64,
+        sequence: u64,
+    ) -> Option<(i64, u64)> {
+        let submits = self
+            .supervisor
+            .viewer_submits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        submits.get(task)?.iter().copied().find(|(at, seq)| {
+            *seq <= sequence
+                && *at <= sent
+                && sent.saturating_sub(*at) <= yulius_domain::intake::TYPED_WINDOW_MS
+        })
+    }
+
+    pub(crate) fn consume_viewer_submits(&self, task: &TaskId, through: u64) {
         let mut keys = self
             .supervisor
-            .viewer_keys
+            .viewer_submits
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(pending) = keys.get_mut(task) {
@@ -1644,7 +1660,7 @@ impl App {
 
     /// Drops a deleted task's runtime state.
     pub(crate) fn forget_runtime(&self, task: &TaskId) {
-        self.consume_viewer_keys(task, u64::MAX);
+        self.consume_viewer_submits(task, u64::MAX);
         if let Ok(mut map) = self.supervisor.runtimes.lock() {
             map.remove(task);
         }
@@ -2776,14 +2792,7 @@ impl App {
             )
         {
             store
-                .update_task(
-                    &task.id,
-                    &TaskFieldUpdate {
-                        gate_blocks: Some(task.gate_blocks.saturating_add(1)),
-                        ..TaskFieldUpdate::default()
-                    },
-                    self.now(),
-                )
+                .consume_stop_attempt(&task.id, crate::hooks::MAX_GATE_BLOCKS, self.now())
                 .await?;
         }
         let size = runtime.hub.size();
@@ -2865,7 +2874,7 @@ impl App {
         // Typing from now on, once viewers can write to this run, is a person's draft in it
         // (SPEC-068): its prompt box starts empty (SPEC-468 CCF-010).
         let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
-        self.consume_viewer_keys(&task.id, u64::MAX);
+        self.consume_viewer_submits(&task.id, u64::MAX);
         runtime.run_starts(self.now().0).await;
         self.attach_run(&task.id, &attempt, &host_token).await?;
         runtime.hub.state_changed();

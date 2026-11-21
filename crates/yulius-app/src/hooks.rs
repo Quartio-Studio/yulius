@@ -224,9 +224,8 @@ impl App {
         let sent = sent_ms
             .filter(|sent| *sent > 0)
             .map_or(now, |sent| sent.min(now));
-        let keys = (event == events::USER_PROMPT_SUBMIT).then(|| self.viewer_keys_at_submit(sent));
+        let sequence = self.viewer_input_sequence();
         let ctx = self.agent_context(token).await?;
-        let key = keys.and_then(|keys| keys.get(&ctx.task.id).copied());
         if ctx.attempt.harness != harness {
             return Err(AppError::Unauthenticated);
         }
@@ -254,7 +253,7 @@ impl App {
             None
         };
         if event != events::STOP {
-            return self.answer_hook(&ctx, event, input, sent, key).await;
+            return self.answer_hook(&ctx, event, input, sent, sequence).await;
         }
         // The agent sent this Stop after every prompt of its turn (SPEC-346 LPH-002).
         {
@@ -276,11 +275,11 @@ impl App {
         let reply = STOP_BROWSER_DEADLINE
             .scope(deadline, async {
                 if ctx.task.mode != TaskMode::Goal {
-                    return self.answer_hook(&ctx, event, input, sent, key).await;
+                    return self.answer_hook(&ctx, event, input, sent, sequence).await;
                 }
                 self.publish_after_updates(
                     &ctx.task,
-                    self.answer_hook(&ctx, event, input, sent, key),
+                    self.answer_hook(&ctx, event, input, sent, sequence),
                 )
                 .await
             })
@@ -315,7 +314,7 @@ impl App {
     /// Gather same-task updates until the operation finishes. A spec watcher releases
     /// its plan lock before building the task view, including its live browser lookup.
     /// When Stop owns the outer operation it publishes the final continuation decision.
-    async fn publish_after_updates<T>(
+    pub(crate) async fn publish_after_updates<T>(
         &self,
         task: &TaskRecord,
         work: impl std::future::Future<Output = T>,
@@ -391,7 +390,7 @@ impl App {
         event: &str,
         input: &HookInput,
         sent: i64,
-        key: Option<(i64, u64)>,
+        sequence: u64,
     ) -> AppResult<HookReply> {
         if event != events::USER_PROMPT_SUBMIT {
             return self
@@ -417,12 +416,13 @@ impl App {
         let submitted = if from_box {
             let mut mark = runtime.draft_mark.lock().await;
             if !sent_again {
-                let emptied = runtime.box_emptied_ms.load(Ordering::SeqCst);
-                let viewer_input = key.is_some_and(|(typed, seq)| {
-                    typed > emptied
-                        || (typed == emptied && seq > runtime.emptied_seq.load(Ordering::SeqCst))
-                });
-                mark.submit = (sent, key.map_or(0, |(_, seq)| seq), viewer_input);
+                let enter = self.viewer_submit_at(&ctx.task.id, sent, sequence);
+                // Enter empties the owner's draft at that key, even if more text is
+                // already in the PTY when the provider sends or retries its callback.
+                mark.submit = match enter {
+                    Some((at, seq)) if ctx.task.mode == TaskMode::Goal => (at, seq, true),
+                    _ => (sent, sequence, enter.is_some()),
+                };
             }
             Some(mark.submit)
         } else {
@@ -446,10 +446,17 @@ impl App {
                 if output.decision.as_deref() == Some(yulius_contracts::hooks::DECISION_BLOCK)
         );
         if from_box && blocked {
+            if let Some((_, keys, true)) = submitted {
+                self.consume_viewer_submits(&ctx.task.id, keys);
+            }
             // What was submitted is back in the box: nothing was sent past a draft.
             runtime.sent_past_draft.store(false, Ordering::SeqCst);
         }
-        if let Some((emptied, keys, _)) = submitted
+        if let Some((emptied, keys, owner)) = submitted
+            && (ctx.task.mode == TaskMode::Prompt
+                || owner
+                || !self.persons_draft_holds(&ctx.task.id)
+                || runtime.sent_past_draft.load(Ordering::SeqCst))
             && !held
             && !blocked
         {
@@ -473,7 +480,7 @@ impl App {
                 runtime.typed_at_ms.fetch_max(inherited, Ordering::SeqCst);
                 mark.written = true;
             } else {
-                self.consume_viewer_keys(&ctx.task.id, keys);
+                self.consume_viewer_submits(&ctx.task.id, keys);
                 if emptied >= runtime.box_emptied_ms.fetch_max(emptied, Ordering::SeqCst) {
                     runtime.emptied_seq.fetch_max(keys, Ordering::SeqCst);
                 }
@@ -968,7 +975,10 @@ impl App {
         let store = &self.deps.store;
         // A person wrote to the task (they typed it, even a prompt held below): what its agent
         // asked a person is answered (SPEC-134 CDT-004). Prompts Yulius types do not count.
-        if typed && self.typed_recently(&ctx.task.id).is_some() {
+        if typed
+            && (ctx.task.mode == TaskMode::Prompt || viewer_input)
+            && self.typed_recently(&ctx.task.id).is_some()
+        {
             self.end_needs_you(&ctx.task.id).await;
         }
         // A prompt held for capacity stays held while its pause lasts (also across a restart).
@@ -1626,11 +1636,9 @@ impl App {
         if task.gate_blocks >= MAX_GATE_BLOCKS {
             return self.exhausted_stop(task, &reason).await;
         }
-        let update = TaskFieldUpdate {
-            gate_blocks: Some(task.gate_blocks + 1),
-            ..TaskFieldUpdate::default()
-        };
-        store.update_task(&task.id, &update, self.now()).await?;
+        store
+            .consume_stop_attempt(&task.id, MAX_GATE_BLOCKS, self.now())
+            .await?;
         if task.mode == TaskMode::Prompt {
             self.publish_task(&task.id).await;
         }
