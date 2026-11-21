@@ -2182,6 +2182,13 @@ impl App {
                 access,
             )
             .await;
+        // `pull_view` leaves `conflicts = false` so callers decide per task via `pull_conflicts`
+        // (SPEC-491, SPEC-580 AWM-003). Populate it here for open pull requests.
+        if let Some(pull) = observed.pr.as_ref().filter(|p| is_open(p))
+            && let Some(pr) = view.pr.as_mut()
+        {
+            pr.conflicts = self.pull_conflicts(task, &sandbox, pull).await;
+        }
         if past_merge(&observed.record.stage) {
             let known = observed
                 .pr
@@ -4800,7 +4807,22 @@ impl App {
         pull: &GhPull,
     ) -> bool {
         match self.local_conflict(task, sandbox, &pull.head_sha).await {
-            Some(conflicts) => conflicts,
+            Some(true) => true,
+            Some(false) if pull.mergeable == Some(false) => {
+                // GitHub reports CONFLICTING/DIRTY while our local clone said clean: either the
+                // clone's `origin/<integration>` is stale (the base moved on GitHub) or a union
+                // merge driver resolves it (SPEC-491 DON-001). Refresh the clone and re-check;
+                // if the clone cannot be refreshed, trust GitHub's flag rather than a stale base
+                // (SPEC-580 AWM-003).
+                if self.dlv_refresh_clone(sandbox).await.is_ok() {
+                    self.local_conflict(task, sandbox, &pull.head_sha)
+                        .await
+                        .unwrap_or(true)
+                } else {
+                    true
+                }
+            }
+            Some(false) => false,
             None => pull.mergeable == Some(false),
         }
     }

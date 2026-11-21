@@ -750,7 +750,10 @@ impl App {
                     .await,
                 Ok(true)
             );
-            if current && self.train_hold(&task) == crate::merge_train::Hold::Free {
+            let free = self.train_hold(&task) == crate::merge_train::Hold::Free;
+            if free
+                && (current || self.local_conflict(&task, sandbox, &armed.head).await == Some(true))
+            {
                 return true;
             }
             let idle = task.status == TaskStatus::Running
@@ -758,11 +761,7 @@ impl App {
                 && self.background_shells_of(&task.id).unwrap_or(0) == 0;
             // A member of a train is the train's to decide (SPEC-493: one waiting for a member's
             // own run decides nothing until that run ends).
-            if !candidate_running
-                && idle
-                && self.train_hold(&task) == crate::merge_train::Hold::Free
-                && self.at_clean_head(&task, &armed.head).await
-            {
+            if !candidate_running && idle && free && self.at_clean_head(&task, &armed.head).await {
                 return true;
             }
         }
@@ -1207,6 +1206,17 @@ impl App {
             });
             return Verdict::Keep(armed);
         }
+        // SPEC-580 AWM-003: an armed green pull request that already conflicts with the current
+        // integration branch (verified by `pull_conflicts` with the repository's merge drivers)
+        // cannot be tested or merged without the agent resolving it — drop the arm immediately
+        // rather than waiting for the turn to end.
+        if pr.conflicts {
+            let branch = task.branch.as_deref().unwrap_or(&pr.head);
+            let files = self
+                .conflict_files(task, &sandbox, &integration, &armed.head)
+                .await;
+            return Verdict::Decided(armed_conflict_text(branch, &integration, &files));
+        }
         // Green but behind its base: the next merge candidate tests it on top of the base
         // (SPEC-441 MQ-003), unless it goes one by one.
         if self.behind_integration(task, &sandbox).await
@@ -1427,15 +1437,7 @@ impl App {
                 Current::Unchanged
             }
             Ok(MergeIntegration::Conflict(files)) => {
-                let listed: Vec<String> = files.iter().take(8).map(|f| format!("`{f}`")).collect();
-                Current::Conflict(format!(
-                    "The merge you armed is on hold: `{branch}` conflicts with `{integration}` in \
-                     {}. Bring it in yourself: `git fetch origin && git merge \
-                     origin/{integration}`, resolve those files, rerun the affected tests, \
-                     commit and end your turn so Yulius pushes; then get the review of the new \
-                     head and call `delivery_merge` again. Never rebase or force-push.",
-                    listed.join(", ")
-                ))
+                Current::Conflict(armed_conflict_text(branch, &integration, &files))
             }
             Ok(MergeIntegration::Merged(head)) => {
                 match self
@@ -1465,6 +1467,26 @@ impl App {
                     }
                 }
             }
+        }
+    }
+
+    /// Non-destructive preview of conflicting file paths between `origin/<integration>` and
+    /// `head` (never modifies the agent's worktree; SPEC-580 AWM-003).
+    async fn conflict_files(
+        &self,
+        task: &TaskRecord,
+        sandbox: &crate::model::SandboxRecord,
+        integration: &str,
+        head: &str,
+    ) -> Vec<String> {
+        let repo = task
+            .worktree_path
+            .as_deref()
+            .map_or_else(|| self.sandbox_repo(&sandbox.id), std::path::PathBuf::from);
+        let base_ref = format!("origin/{integration}");
+        match self.deps.git.preview_merge(&repo, &base_ref, head).await {
+            Ok(crate::ports::git::TrainStep::Conflict(files)) => files,
+            _ => Vec::new(),
         }
     }
 
@@ -1685,6 +1707,20 @@ impl App {
         timeout: Duration,
     ) -> AppResult<WaitState> {
         let deadline = tokio::time::Instant::now() + timeout.min(WAIT_MAX);
+        struct ActiveWaitGuard(Arc<crate::supervisor::TaskRuntime>);
+        impl Drop for ActiveWaitGuard {
+            fn drop(&mut self) {
+                self.0
+                    .active_waits
+                    .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let ctx = self.agent_context(token).await?;
+        let runtime = self.runtime(&ctx.task.id);
+        runtime
+            .active_waits
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let _active_wait = ActiveWaitGuard(runtime);
         // A failed push of this head that GitHub's branch has since reached is old news: the
         // wait goes on to the checks and the armed merge (SPEC-139 PSH-002, #366). Once per
         // request: a note written during the wait comes from a push that just asked GitHub.
@@ -1692,7 +1728,6 @@ impl App {
             .map(str::trim)
             .filter(|h| h.len() >= 7 && h.chars().all(|c| c.is_ascii_hexdigit()))
         {
-            let ctx = self.agent_context(token).await?;
             let normalized = head.to_ascii_lowercase();
             self.forget_push_problem_if_pushed(&ctx.task, &normalized)
                 .await;
@@ -1875,6 +1910,30 @@ fn load_armed(path: &std::path::Path) -> std::io::Result<Vec<SavedArmed>> {
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(std::io::Error::other),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(err) => Err(err),
+    }
+}
+
+/// Actionable instructions for an armed merge dropped because it conflicts with the integration
+/// branch (DLV-203, SPEC-580 AWM-003).
+fn armed_conflict_text(branch: &str, integration: &str, files: &[String]) -> String {
+    if files.is_empty() {
+        format!(
+            "The merge you armed is on hold: `{branch}` conflicts with `{integration}`. Bring it \
+             in yourself: `git fetch origin && git merge origin/{integration}`, resolve the \
+             conflicts, rerun the affected tests, commit and end your turn so Yulius pushes; then \
+             get the review of the new head and call `delivery_merge` again. Never rebase or \
+             force-push."
+        )
+    } else {
+        let listed: Vec<String> = files.iter().take(8).map(|f| format!("`{f}`")).collect();
+        format!(
+            "The merge you armed is on hold: `{branch}` conflicts with `{integration}` in {}. \
+             Bring it in yourself: `git fetch origin && git merge origin/{integration}`, resolve \
+             those files, rerun the affected tests, commit and end your turn so Yulius pushes; \
+             then get the review of the new head and call `delivery_merge` again. Never rebase or \
+             force-push.",
+            listed.join(", ")
+        )
     }
 }
 

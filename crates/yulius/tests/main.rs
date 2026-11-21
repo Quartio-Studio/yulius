@@ -16,6 +16,7 @@ mod agent_hooks;
 mod agent_states;
 mod analytics;
 mod antigravity;
+mod antigravity_armed_merge;
 mod antigravity_cli;
 mod attachment_trash;
 mod auto_choice;
