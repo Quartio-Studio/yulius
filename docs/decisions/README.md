@@ -499,6 +499,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0444 -->
 - [0445](0445-antigravity-resume-activity-follows-its-launch-prompt.md) A bare Antigravity resume starts at its saved idle activity or Waiting.
 <!-- ADR 0445 -->
+- [0446](0446-keep-github-availability-separate-from-task-state.md): Keep GitHub availability separate from task state.
 <!-- ADR 0446 -->
 <!-- ADR 0447 -->
 - [0448](0448-repository-file-readers-run-before-merge.md): Repository file readers run before merge.

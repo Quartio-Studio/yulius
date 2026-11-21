@@ -828,6 +828,25 @@ fn gate_view(gate: &Gate) -> CiGate {
 }
 
 impl App {
+    fn ci_run_view(
+        &self,
+        sandbox: &SandboxRecord,
+        run: &CiRunRecord,
+        jobs: &[CiJobRecord],
+        output: bool,
+    ) -> CiRun {
+        let mut view = run_view(run, jobs, output);
+        if !sandbox.is_playground()
+            && run.status_for != Some(run.state)
+            && run.status_attempts < STATUS_MAX_ATTEMPTS
+            && !matches!(run.reference, CiRef::Train(_))
+            && let Some(wait) = self.github_wait()
+        {
+            view.status = wait;
+        }
+        view
+    }
+
     /// The turn of `job` in `sandbox`, for an `exclusive` job (SPEC-435 JTL-001), and the entry
     /// that forgets it once nobody holds or waits for it: drop that after the turn.
     fn ci_turn(
@@ -2035,6 +2054,10 @@ impl App {
                 .record_ci_status(run_id, None, Some(PLAYGROUND_STATUS_NOTE))
                 .await;
         }
+        // A known App-wide wait must not spend this status's bounded recovery attempts.
+        if self.deps.github.rate_limit_reset().is_some() {
+            return Ok(());
+        }
         let jobs = store.ci_jobs(run_id, false).await?;
         let failed = jobs.iter().find(|j| j.state == RunState::Failed);
         let summary = RunSummary {
@@ -2051,6 +2074,7 @@ impl App {
         let status = dom::commit_status(run.state, summary);
         let token = match self.dlv_installation_token(&sandbox).await {
             Ok(token) => token,
+            Err(err) if self.deps.github.rate_limit_reset().is_some() => return Err(err),
             Err(err) => {
                 let note = format!("not published: {}", err.public_message());
                 store.record_ci_status(run_id, None, Some(&note)).await?;
@@ -2079,6 +2103,7 @@ impl App {
             .await
         {
             Ok(()) => store.record_ci_status(run_id, Some(run.state), None).await,
+            Err(err) if self.deps.github.rate_limit_reset().is_some() => Err(err),
             Err(err) => {
                 let note = match &err {
                     AppError::Forbidden(message) => format!("not published: {message}"),
@@ -2354,7 +2379,7 @@ impl App {
         let mut runs = Vec::with_capacity(records.len());
         for run in &records {
             let jobs = self.deps.store.ci_jobs(&run.id, false).await?;
-            runs.push(run_view(run, &jobs, false));
+            runs.push(self.ci_run_view(&sandbox, run, &jobs, false));
         }
         let admin = level >= AccessLevel::Admin || ctx.user.is_superadmin;
         let status_access = records
@@ -2392,7 +2417,7 @@ impl App {
         let (sandbox, _) = self.ci_sandbox(ctx, sandbox_id, Action::View).await?;
         let run = self.ci_run_of(&sandbox, run_id).await?;
         let jobs = self.deps.store.ci_jobs(&run.id, true).await?;
-        Ok(run_view(&run, &jobs, true))
+        Ok(self.ci_run_view(&sandbox, &run, &jobs, true))
     }
 
     /// `POST /api/sandboxes/{sid}/ci/runs/{rid}/cancel`.
