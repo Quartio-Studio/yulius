@@ -475,6 +475,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0432 -->
 - [0433](0433-store-each-new-task-draft-under-its-own-key.md): each unfinished task draft has its own browser storage key, and each tab remembers its selection
 <!-- ADR 0433 -->
+- [0434](0434-keep-a-local-compiler-cache-in-each-project-sandbox.md): Keep a local compiler cache in each project sandbox.
 <!-- ADR 0434 -->
 <!-- ADR 0435 -->
 <!-- ADR 0436 -->
