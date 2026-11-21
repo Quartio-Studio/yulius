@@ -20,6 +20,8 @@ planned to merge by hand.
 
 Record an observed open PR before preparing advice about its merge queue state. Use the slot’s request generation, count of successful takes and decision state to check that the same queue request is still current. A pass overtaken by a queue decision can then defer typing and still recognize the PR after its merge.
 
+During restoration, keep the open PR sighting and withhold a check-in until its owner's saved merge request has a live activation. The train retains the member's admission head and checkpoints the head verified against its predicted tree when GitHub needs more time. Queue-position reads can then distinguish a verified move from an incomplete checkpoint. The conflict files of an excluded member belong to the activation and head that produced them.
+
 A failed candidate narrowed to one PR belongs to that PR’s merge decision. The source run may have tested the same tree for a larger candidate. The queue persists the accepted decision before clearing its original arm. Restoration reconciles the recorded activation with the arm saved on disk. Verify the hosted head and integration base together and include the failing job’s retained, redacted diagnostic in the owner’s merge outcome. [SPEC-558](../../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
 
 - A server-side watch (every 20 s) looks at each running task with an open pull request, from

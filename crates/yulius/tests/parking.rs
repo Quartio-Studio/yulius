@@ -3059,7 +3059,31 @@ fn a_completed_queue_retry_preserves_its_new_reason_for_the_live_owner() -> Test
     first_watch_during_queue_decision(QueueWatch::KeptDuringRead, None)
 }
 
+#[test]
+fn a_first_pr_watch_during_arm_restoration_remembers_the_merge() -> TestResult {
+    first_watch_during_queue_decision(QueueWatch::Restoring, None)
+}
+
+#[test]
+fn a_saved_owner_defers_check_ins_before_its_arm_is_restored() -> TestResult {
+    first_watch_during_queue_decision(QueueWatch::SavedOwner, None)
+}
+
+#[test]
+fn another_owners_saved_arm_allows_this_prs_check_in() -> TestResult {
+    first_watch_during_queue_decision(QueueWatch::SavedPeer, None)
+}
+
+#[test]
+fn a_saved_arm_arriving_during_a_free_watch_defers_the_check_in() -> TestResult {
+    first_watch_during_queue_decision(QueueWatch::SavedDuringRead, None)
+}
+
 enum QueueWatch {
+    Restoring,
+    SavedOwner,
+    SavedPeer,
+    SavedDuringRead,
     KeptDuringRead,
     MergedDuringRead,
     Taken,
@@ -3102,7 +3126,37 @@ fn first_watch_during_queue_decision(case: QueueWatch, previously_seen: Option<u
         let saved_arm = serde_json::to_vec(
             &json!([{"task":id.as_str(),"head":head,"summary":"reviewed","armed_at":30}]),
         )?;
-        if matches!(case, QueueWatch::KeptDuringRead) {
+        if matches!(case, QueueWatch::Restoring | QueueWatch::SavedOwner | QueueWatch::SavedPeer | QueueWatch::SavedDuringRead) {
+            std::fs::write(&arms, b"[")?;
+            app.restore_armed_merges().await;
+            let first = match case {
+                QueueWatch::SavedOwner => {
+                    std::fs::write(&arms, &saved_arm)?;
+                    app.watch_prs(&due).await
+                }
+                QueueWatch::SavedPeer => {
+                    std::fs::write(&arms, serde_json::to_vec(&json!([{"task":"peer","head":head,"summary":"reviewed","armed_at":30}]))?)?;
+                    app.watch_prs(&due).await
+                }
+                QueueWatch::SavedDuringRead => {
+                    std::fs::write(&arms, b"[]")?;
+                    let (read, release) = pause_watch_or_queue(Point::LivePrFactsRead, &id);
+                    let watcher = Arc::clone(&app);
+                    let pass = tokio::spawn(async move { watcher.watch_prs(&due).await });
+                    tokio::time::timeout(Duration::from_secs(10), read.notified()).await?;
+                    std::fs::write(&arms, &saved_arm)?;
+                    release.notify_one();
+                    pass.await?
+                }
+                _ => app.watch_prs(&due).await,
+            };
+            if matches!(case, QueueWatch::SavedPeer) {
+                assert_eq!(first.len(), 1, "another task's saved arm held this owner: {first:?}");
+                assert_eq!(first[0].0, id);
+            } else {
+                assert!(first.is_empty(), "check-in before arm restoration: {first:?}");
+            }
+        } else if matches!(case, QueueWatch::KeptDuringRead) {
             std::fs::write(&arms, &saved_arm)?;
             app.restore_armed_merges().await;
             let (mut green, job) = crate::pr_watch::run(
