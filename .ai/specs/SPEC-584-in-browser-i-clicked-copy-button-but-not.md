@@ -25,7 +25,7 @@ The separate Codex terminal menu is covered by [SPEC-582](SPEC-582-fix-clipboard
 
 - [x] Reproduce the browser Copy failure
 - [x] Capture the clipboard regression in a spec and test
-- [ ] Make Copy deliver the requested text
+- [x] Make Copy deliver the requested text
 - [ ] Verify, review and merge the fix into dev
 
 ## Acceptance criteria
@@ -53,3 +53,5 @@ The report names the browser without identifying a site. Use a synthetic page in
 - A simulated deadline between acceptance and its reply initially lost the reply. The focused browser suite now verifies a separate reply deadline, native retry, and an expired action that retains keyboard focus. Both the offer and retry erase usable clipboard state on expiry.
 - The real-browser fixture now seeds the device clipboard before the first click and checks that exact value before acceptance. This assertion also fails if a clipboard read is denied.
 - `scripts/dev security` reported the project’s Vidoc scan disabled.
+- On the disposable Linux display, two Chromium processes exercised a page button with no DOM selection, the exact pre-existing device value before acceptance, the multiline UTF-8 result after acceptance, and keyboard copy. The stream used JPEG fallback. All 39 browser socket integration tests passed. The full Chromium UI suite passed 1,300 tests and skipped one opt-in agent test.
+- The private Xvfb selection-owner fixture passed. It exercises the native event path with an existing selection, verifies there is no selection request before confirmation, and checks wrong, consumed and replaced offers.
