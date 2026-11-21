@@ -46,9 +46,15 @@ RUST_TEST_THREADS = "{cpus}"
 name = "quality"
 command = "python3 scripts/bootstrap.py --install-rustup && if scripts/dev help | grep -q '^  checks '; then scripts/dev checks; else scripts/dev ci; fi"
 
+# The full suite (SPEC-591, ADR-0436): both test shards and e2e run on the merged revision, once,
+# not on pull requests; `[cd.dev]`, the merge-first staging target, changes only to a revision
+# whose full suite passed, and production is promoted only from what staging verified. A pull
+# request still runs `quality` (format, lint, clippy of every target, docs, macOS, dependencies,
+# repository contracts and the scripts' tests) and `security`, and any job it adds or changes.
 [[ci.jobs]]
 name = "test"
 matrix = "1/2 2/2"
+after_merge = true
 command = "python3 scripts/bootstrap.py --install-rustup && scripts/dev test"
 
 # The browser's system libraries are installed once in the sandbox (onboarding); installing them
@@ -60,6 +66,7 @@ command = "python3 scripts/bootstrap.py --install-rustup && scripts/dev test"
 [[ci.jobs]]
 name = "e2e"
 cpus = 18
+after_merge = true
 command = "cd e2e && npm ci --ignore-scripts && npx e2e-web install chromium && E2E_TELEMETRY_DISABLED=1 npx e2e run --reporter list,junit"
 
 # The Vidoc security scan on vidoc-1 (SPEC-195, ADR-0157) of pull request heads: the files the pull
@@ -92,7 +99,8 @@ command = "python3 scripts/vidoc_scan.py --ci"
 # the migration checked on a copy before the stop (no rows lost), and the sandbox Docker smoke test. Swapping the VM: docs/operations.md,
 # "Yulius's own staging VM".
 [cd.dev]
-about = "Yulius's own staging VM (a fresh instance no person relies on): the exact build of a dev revision, its store migrated from the previous staging release; its migration checked on a copy first (no rows lost); verify: commit, HTTPS, contained doctor, schema, Docker smoke"
+merge_first = true
+about = "Yulius's own staging VM, the merge-first target no person relies on: the exact build of a dev revision whose full suite passed; its migration checked on a copy first; verify: commit, HTTPS, contained doctor, schema, Docker smoke"
 deploy = "scripts/cd/deploy.sh dev"
 verify = "scripts/cd/verify.sh dev"
 rollback = "scripts/cd/rollback.sh dev"

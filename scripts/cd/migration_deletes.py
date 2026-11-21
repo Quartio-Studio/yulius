@@ -34,11 +34,65 @@ def entries(lib: str) -> list[str]:
     return files
 
 
+def without_triggers(sql: str) -> str:
+    """`sql` with each `CREATE TRIGGER … BEGIN … END` left out: its `END` is the one that closes
+    no `CASE` of the body."""
+    out, pos = [], 0
+    for start in re.finditer(r"\bCREATE\s+(?:TEMP\s+|TEMPORARY\s+)?TRIGGER\b", sql, re.I):
+        if start.start() < pos:
+            continue
+        out.append(sql[pos : start.start()])
+        begin = re.compile(r"\bBEGIN\b", re.I).search(sql, start.end())
+        if begin is None:
+            return "".join(out)
+        depth, end = 0, len(sql)
+        for word in re.finditer(r"\b(CASE|END)\b", sql[begin.end() :], re.I):
+            if word.group(1).upper() == "CASE":
+                depth += 1
+            elif depth:
+                depth -= 1
+            else:
+                end = begin.end() + word.end()
+                break
+        pos = end
+    out.append(sql[pos:])
+    return "".join(out)
+
+
+def code_only(sql: str) -> str:
+    """`sql` with its comments (`--`, `/* */`) and the text of its quoted strings left out, in one
+    pass, so a quote in a comment or a comment marker in a string is read as written."""
+    out, i, n = [], 0, len(sql)
+    while i < n:
+        if sql.startswith("--", i):
+            end = sql.find("\n", i)
+            i = n if end < 0 else end
+        elif sql.startswith("/*", i):
+            end = sql.find("*/", i + 2)
+            i = n if end < 0 else end + 2
+            out.append(" ")
+        elif sql[i] == "'":
+            i += 1
+            while i < n:
+                if sql[i] == "'" and sql.startswith("''", i):
+                    i += 2
+                elif sql[i] == "'":
+                    i += 1
+                    break
+                else:
+                    i += 1
+            out.append("''")
+        else:
+            out.append(sql[i])
+            i += 1
+    return "".join(out)
+
+
 def deletes(sql: str) -> list[str]:
-    """The tables the statements of one migration delete from (comments and triggers aside)."""
-    sql = re.sub(r"--[^\n]*", "", sql)
-    sql = re.sub(r"\bCREATE\s+TRIGGER\b.*?\bEND\s*;", "", sql, flags=re.S | re.I)
-    return sorted(set(re.findall(r"\bDELETE\s+FROM\s+([A-Za-z_][A-Za-z0-9_]*)", sql, re.I)))
+    """The tables the statements of one migration delete from (comments, strings and triggers
+    aside), lowercase."""
+    sql = without_triggers(code_only(sql))
+    return sorted({t.lower() for t in re.findall(r"\bDELETE\s+FROM\s+([A-Za-z_][A-Za-z0-9_]*)", sql, re.I)})
 
 
 def main() -> None:
@@ -49,7 +103,7 @@ def main() -> None:
         print("-")
         return
     pairs = [
-        f"{n}:{table.lower()}"
+        f"{n}:{table}"
         for n, name in enumerate(entries(lib.read_text()), start=1)
         for table in deletes((src / name).read_text())
     ]
