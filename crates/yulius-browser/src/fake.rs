@@ -9,7 +9,8 @@
 //! tests), fail a method, or drop all connections (crash tests).
 //!
 //! [`write_fake_chromium`] writes a POSIX shell script that behaves like Chromium's startup
-//! contract: it reads `--user-data-dir=`, records its argv, relays its DevTools pipe (fds 3 and
+//! contract: it reads `--user-data-dir=`, records its argv, holds and honours the profile's
+//! `SingletonLock` like Chrome (SPEC-593), relays its DevTools pipe (fds 3 and
 //! 4) to the fake server's pipe port through `python3` (a repository prerequisite), forks a
 //! descendant (to prove process-group cleanup) and stays alive until killed.
 //!
@@ -1466,6 +1467,34 @@ if [ -z "$dir" ]; then echo "fake-chromium: missing --user-data-dir" >&2; exit 2
 printf '%s\n' "$@" > "$dir/fake-chromium-argv.txt"
 printf '%s' "$$" > "$dir/fake-chromium.pid"
 "#;
+    // Chrome's process singleton (SPEC-593): a lock of another host is refused (headless: exit
+    // 21; on a display a dialog that never answers), a running pid of this host gets the window
+    // handed over (exit 0), anything else is replaced by this process's own lock.
+    let singleton = r#"host="$(uname -n)"
+headless=""
+for arg in "$@"; do
+  case "$arg" in
+    --headless*) headless=1 ;;
+  esac
+done
+if [ -L "$dir/SingletonLock" ]; then
+  lock="$(readlink "$dir/SingletonLock")"
+  lock_host="${lock%-*}"
+  lock_pid="${lock##*-}"
+  if [ "$lock_host" != "$lock" ] && [ "$lock_host" != "$host" ]; then
+    echo "fake-chromium: The profile appears to be in use by another Chromium process ($lock_pid) on another computer ($lock_host)." >&2
+    if [ -n "$headless" ]; then exit 21; fi
+    exec sleep 600
+  fi
+  if [ "$lock_host" = "$host" ] && kill -0 "$lock_pid" 2>/dev/null; then
+    echo "fake-chromium: Opening in existing browser session." >&2
+    exit 0
+  fi
+fi
+rm -f "$dir/SingletonLock" "$dir/SingletonCookie" "$dir/SingletonSocket"
+ln -s "$host-$$" "$dir/SingletonLock"
+"#;
+    let parse_dir = format!("{parse_dir}{singleton}");
     // Only the relay keeps fds 3 and 4, so its end (the server dropped the connection) is the
     // end of the pipe for Yulius, as a crashed browser's would be.
     let ready = |port: u16, trap: &str| {

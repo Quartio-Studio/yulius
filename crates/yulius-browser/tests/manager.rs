@@ -807,3 +807,178 @@ async fn replacement_cleanup_holds_the_slot_and_saved_tabs_until_the_display_sto
     }
     Ok(())
 }
+
+/// The host name Chrome writes into its `SingletonLock` (`<host>-<pid>`).
+fn host_name() -> Result<String, Box<dyn std::error::Error>> {
+    Ok(nix::unistd::gethostname()?
+        .into_string()
+        .map_err(|_| "host name")?)
+}
+
+fn link(dir: &Path, name: &str, target: &str) -> TestResult {
+    std::os::unix::fs::symlink(target, dir.join(name))?;
+    Ok(())
+}
+
+fn link_target(dir: &Path, name: &str) -> Result<String, Box<dyn std::error::Error>> {
+    Ok(std::fs::read_link(dir.join(name))?
+        .to_str()
+        .ok_or("utf-8")?
+        .to_owned())
+}
+
+/// The locks a moved profile carries: the old host's lock and links into its gone `/tmp`.
+fn carried_locks(profile: &Path) -> TestResult {
+    std::fs::create_dir_all(profile)?;
+    link(profile, "SingletonLock", "old-host-4242")?;
+    link(
+        profile,
+        "SingletonSocket",
+        "/tmp/.org.chromium.Chromium.gone/SingletonSocket",
+    )?;
+    link(profile, "SingletonCookie", "8412907261")?;
+    Ok(())
+}
+
+/// SPEC-593 AC-1: a profile carried from another host (its lock and dangling socket and cookie
+/// links) starts; the fake refuses it like Chrome (exit 21 headless) until Yulius clears them.
+#[tokio::test]
+async fn a_profile_locked_by_another_host_starts_after_its_stale_locks_are_cleared() -> TestResult {
+    let fake = FakeCdpServer::start().await?;
+    let dir = tempfile::tempdir()?;
+    let exe = write_fake_chromium(
+        dir.path(),
+        "fake-chromium",
+        FakeChromium::Ready {
+            port: fake.pipe_port(),
+        },
+    )?;
+    let manager = BrowserManager::new(config(exe, dir.path()));
+    let sandbox = SandboxId::parse("moved")?;
+    let profile = manager.default_profile_dir(&sandbox);
+    carried_locks(&profile)?;
+    let browser = manager.ensure(&sandbox, &profile).await?;
+    let pid = browser.pid().ok_or("no pid")?;
+    assert_eq!(
+        link_target(&profile, "SingletonLock")?,
+        format!("{}-{pid}", host_name()?),
+        "the browser holds the profile now"
+    );
+    assert!(std::fs::symlink_metadata(profile.join("SingletonSocket")).is_err());
+    assert!(std::fs::symlink_metadata(profile.join("SingletonCookie")).is_err());
+    manager.shutdown(&sandbox).await?;
+    Ok(())
+}
+
+/// SPEC-593 AC-3: a lock of this host naming a running process is kept with its links, and the
+/// failed start (Chrome hands over to it) names that process.
+#[tokio::test]
+async fn a_lock_of_a_running_local_process_is_kept_and_named_when_the_start_fails() -> TestResult {
+    let fake = FakeCdpServer::start().await?;
+    let dir = tempfile::tempdir()?;
+    let exe = write_fake_chromium(
+        dir.path(),
+        "fake-chromium",
+        FakeChromium::Ready {
+            port: fake.pipe_port(),
+        },
+    )?;
+    let manager = BrowserManager::new(config(exe, dir.path()));
+    let sandbox = SandboxId::parse("held")?;
+    let profile = manager.default_profile_dir(&sandbox);
+    std::fs::create_dir_all(&profile)?;
+    let mut holder = std::process::Command::new("sleep").arg("600").spawn()?;
+    let lock = format!("{}-{}", host_name()?, holder.id());
+    link(&profile, "SingletonLock", &lock)?;
+    link(
+        &profile,
+        "SingletonSocket",
+        "/tmp/.org.chromium.Chromium.live/SingletonSocket",
+    )?;
+    link(&profile, "SingletonCookie", "1234")?;
+    let result = manager.ensure(&sandbox, &profile).await;
+    let kept = (
+        link_target(&profile, "SingletonLock"),
+        link_target(&profile, "SingletonSocket"),
+        link_target(&profile, "SingletonCookie"),
+    );
+    holder.kill()?;
+    holder.wait()?;
+    match result {
+        Err(error @ BrowserError::ProfileInUse { pid, .. }) => {
+            assert_eq!(pid, holder.id());
+            let text = error.to_string();
+            assert!(text.contains(&format!("process {pid}")), "{text}");
+        }
+        other => return Err(format!("expected the profile in use, got {other:?}").into()),
+    }
+    assert_eq!(kept.0?, lock);
+    assert_eq!(kept.1?, "/tmp/.org.chromium.Chromium.live/SingletonSocket");
+    assert_eq!(kept.2?, "1234");
+    Ok(())
+}
+
+/// SPEC-593 AC-3: a start on the profile of a browser Yulius runs never takes its lock.
+#[tokio::test]
+async fn a_running_browsers_profile_lock_is_never_removed() -> TestResult {
+    let fake = FakeCdpServer::start().await?;
+    let dir = tempfile::tempdir()?;
+    let exe = write_fake_chromium(
+        dir.path(),
+        "fake-chromium",
+        FakeChromium::Ready {
+            port: fake.pipe_port(),
+        },
+    )?;
+    let manager = BrowserManager::new(config(exe, dir.path()));
+    let (first, second) = (SandboxId::parse("owner")?, SandboxId::parse("intruder")?);
+    let profile = manager.default_profile_dir(&first);
+    let running = manager.ensure(&first, &profile).await?;
+    let pid = running.pid().ok_or("no pid")?;
+    let lock = link_target(&profile, "SingletonLock")?;
+    assert_eq!(lock, format!("{}-{pid}", host_name()?));
+    match manager.ensure(&second, &profile).await {
+        Err(BrowserError::ProfileInUse { pid: holder, .. }) => assert_eq!(holder, pid),
+        other => return Err(format!("expected the profile in use, got {other:?}").into()),
+    }
+    assert_eq!(link_target(&profile, "SingletonLock")?, lock);
+    assert!(running.is_alive() && pid_alive(pid));
+    manager.shutdown(&first).await?;
+    Ok(())
+}
+
+/// SPEC-593 AC-4: a stale lock that cannot be removed fails the start before a display starts,
+/// naming the lock.
+#[tokio::test]
+async fn a_stale_lock_that_cannot_be_removed_fails_before_the_display_starts() -> TestResult {
+    let fake = FakeCdpServer::start().await?;
+    let dir = tempfile::tempdir()?;
+    let exe = write_fake_chromium(
+        dir.path(),
+        "fake-chromium",
+        FakeChromium::Ready {
+            port: fake.pipe_port(),
+        },
+    )?;
+    let mut settings = config(exe, dir.path());
+    let display = yulius_browser::fake::FakeDisplay::new();
+    settings.display = display.mode();
+    let manager = BrowserManager::new(settings);
+    let sandbox = SandboxId::parse("stuck")?;
+    let profile = manager.default_profile_dir(&sandbox);
+    std::fs::create_dir_all(profile.join("SingletonSocket").join("occupied"))?;
+    link(&profile, "SingletonLock", "old-host-4242")?;
+    match manager.ensure(&sandbox, &profile).await {
+        Err(error @ BrowserError::Profile(_)) => {
+            let text = error.to_string();
+            assert!(
+                text.contains("SingletonSocket") && text.contains("old-host"),
+                "{text}"
+            );
+        }
+        other => return Err(format!("expected a profile error, got {other:?}").into()),
+    }
+    assert_eq!(display.lifecycle(), (0, 0), "no display was started");
+    assert_eq!(fake.connections(), 0, "Chrome was not started");
+    Ok(())
+}
