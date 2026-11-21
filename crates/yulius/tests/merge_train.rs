@@ -3055,6 +3055,32 @@ async fn a_pull_request_that_conflicts_in_the_train_is_left_out() -> TestResult 
     );
     assert_eq!(state["merge_armed"], true, "still armed: {state}");
     let third = git(&worktrees[2], &["rev-parse", "HEAD"])?;
+    let registry = app.config.data_dir.join(MERGE_TRAINS_FILE);
+    let saved: Value = serde_json::from_str(&f.trains_file(&app))?;
+    let (_, activation) = saved_armed(&app, 3)?.ok_or("excluded arm")?;
+    let original = &saved[f.sandbox.as_str()]["train"]["left_out"][0];
+    assert_eq!(original["head"], third);
+    assert_eq!(original["armed_at"], activation);
+    for (excluded_head, excluded_arm) in [
+        (json!("earlier"), json!(activation)),
+        (json!(third), json!(activation - 1)),
+        (Value::Null, Value::Null),
+    ] {
+        let mut older = saved.clone();
+        let exclusion = &mut older[f.sandbox.as_str()]["train"]["left_out"][0];
+        exclusion["head"] = excluded_head;
+        exclusion["armed_at"] = excluded_arm;
+        std::fs::write(&registry, serde_json::to_vec(&older)?)?;
+        let wait = f.wait(3, &worktrees[2]).await?;
+        assert!(
+            wait["merge_train"]
+                .as_str()
+                .is_some_and(|note| note.contains("#3 waits behind merge train #1, #2")
+                    && !note.contains("shared.txt")),
+            "{wait}"
+        );
+    }
+    std::fs::write(&registry, serde_json::to_vec(&saved)?)?;
 
     app.ci_sync_sandbox(&app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?)
         .await?;
@@ -4226,6 +4252,29 @@ async fn a_yulius_base_merge_keeps_the_merge_armed() -> TestResult {
     assert_eq!(
         held["verified_head"], moved,
         "the watcher can identify the moved arm"
+    );
+    // The saved arm can be ahead of the train checkpoint, including across an upgrade.
+    let registry = app.config.data_dir.join(MERGE_TRAINS_FILE);
+    let mut legacy = train.clone();
+    legacy[f.sandbox.as_str()]["train"]["members"][0]
+        .as_object_mut()
+        .ok_or("saved member")?
+        .remove("verified_head");
+    std::fs::write(&registry, serde_json::to_vec(&legacy)?)?;
+    let interrupted = f.wait(1, &worktree).await?;
+    assert!(
+        interrupted["merge_train"]
+            .as_str()
+            .is_some_and(|note| note.contains("verifies its current head")),
+        "{interrupted}"
+    );
+    std::fs::write(&registry, serde_json::to_vec(&train)?)?;
+    let restored = f.wait(1, &worktree).await?;
+    assert!(
+        restored["merge_train"].as_str().is_some_and(
+            |note| note.contains("number 1 of 1") && note.contains("combined result passed")
+        ),
+        "{restored}"
     );
     // An unrelated PR verdict arrives while GitHub catches up. Keep the already
     // published owner verdict at this head and finish the candidate that passed.

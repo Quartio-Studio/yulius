@@ -1116,7 +1116,13 @@ impl App {
         let train_read = self.watched_train(task, pr);
         let train = train_read.as_ref().ok().and_then(Option::as_ref);
         let holding = train.and_then(|train| train.candidate.as_ref());
-        let candidate_id = holding.map(|(id, _)| id.as_str());
+        // An ordinary failure is actionable even when the holding CI record cannot be decoded.
+        let ordinary_failed = own
+            .as_ref()
+            .is_some_and(|run| matches!(run.state, RunState::Failed | RunState::Error));
+        let candidate_id = holding
+            .filter(|_| !ordinary_failed)
+            .map(|(id, _)| id.as_str());
         let Ok(candidate) = self.holding_run(&sandbox, candidate_id).await else {
             return observed_only();
         };

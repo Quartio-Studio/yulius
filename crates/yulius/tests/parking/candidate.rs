@@ -841,9 +841,19 @@ async fn check_after_restart(
                 "the queue is verifying its sole member: {held:?}"
             );
             current[task.sandbox_id.as_str()]["train"]["run"] = json!("gone");
+            rusqlite::Connection::open(data.join("yulius.db"))?.execute(
+                "UPDATE ci_runs SET reference = 'pr/0' WHERE id = 'earlier-bisection'",
+                [],
+            )?;
+            let mut undecodable = current.clone();
+            undecodable[task.sandbox_id.as_str()]["train"]["run"] = json!("earlier-bisection");
             for (queued, (run_id, registry)) in [
                 ("ordinary-red", serde_json::to_vec(&current)?),
                 ("ordinary-red-rerun", b"[".to_vec()),
+                (
+                    "ordinary-red-after-candidate-error",
+                    serde_json::to_vec(&undecodable)?,
+                ),
             ]
             .into_iter()
             .enumerate()

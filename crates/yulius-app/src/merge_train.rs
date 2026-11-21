@@ -403,6 +403,16 @@ fn singleton_failure(pr: u64, head: &str, integration: &str, run: &str) -> Strin
 fn note_of(train: &Train, task: &str, arm: Option<(&str, i64)>) -> Option<QueueNote> {
     let prs = numbers(&train.members);
     if let Some(index) = train.members.iter().position(|m| m.task == task) {
+        let member = &train.members[index];
+        if arm.is_some_and(|(head, activation)| {
+            activation != member.armed_at
+                || head != member.verified_head.as_deref().unwrap_or(&member.head)
+        }) {
+            return Some(QueueNote::current(
+                "The queue verifies its current head before giving this request a train position."
+                    .into(),
+            ));
+        }
         let place = format!(
             "pull request #{} is number {} of {} in merge train {}",
             train.members[index].pr,

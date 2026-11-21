@@ -56,6 +56,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Recover the recorded singleton decision and its replacement arm
 - [x] Preserve the ordinary armed merge outcome after a person merges through HTTP
 - [x] Keep the live owner’s merge notice across a queue decision
+- [ ] Verify restored merge requests and their train positions
 - [ ] Verify restored arms and deliver current ordinary CI and train notices to the owner
 - [ ] Report the active singleton and replay its recorded failure for the original owner
 - [ ] Verify candidate status before parking, showing Done or resuming a parked owner
@@ -98,6 +99,8 @@ The queue writes the accepted singleton to the owner’s completed merge wait be
 When the watcher sees an open PR during an active queue decision or its slot changes during the read, it supplies the PR number to the normal notice bookkeeping and defers events, check-ins and stalls for that pass. A subsequent recorded merge remains eligible for delivery once to the same task.
 
 ## Evidence
+
+- Review of the combined live watcher at `c81bdeab6` found that an undecodable CI row for a candidate suppressed a readable ordinary failure at the PR head. The original 421 scoped checks passed. Adding a stored `pr/0` candidate reference reproduced zero notices instead of one. Restored-arm and verified queue-position reads are delivered first. The live dispatch regression and its correction belong to the next plan item.
 
 - On `cdb4a42f0`, the restored owner emitted a stall with free-queue guidance when its arm file carried the pushed head and the train file still held the admission head. The test now interrupts both persisted phases, checks a partially readable train registry and expects one notice after the queue records the verified member. A new ordinary failure still reaches its owner when the holding train cannot be read. The cold fixture uses the actual passed-train message and positively asserts the legacy exclusion’s queue-position notice.
 
