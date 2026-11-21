@@ -34,22 +34,24 @@ impl Redraw {
         self.rendered
     }
 
-    /// Feed live output into the screen, preserving the four-byte erase sequence across reads.
-    /// Inspect the grid only after a complete ED 2 in the alternate screen. Once confirmed,
+    /// Feed live output into the screen, preserving erase sequences across reads.
+    /// ED 2 clears the display from any position. Codex uses ED 0 from home. Once confirmed,
     /// ordinary output takes just the parser's usual pass.
     pub fn process(&mut self, parser: &mut vt100::Parser, mut bytes: &[u8]) {
         while !self.rendered {
             let Some(end) = bytes.iter().position(|byte| {
                 self.suffix.rotate_left(1);
                 self.suffix[3] = *byte;
-                self.suffix == *b"\x1b[2J"
+                self.suffix == *b"\x1b[2J" || self.suffix.ends_with(b"\x1b[J")
             }) else {
                 break;
             };
             let (through_erase, rest) = bytes.split_at(end + 1);
             parser.process(through_erase);
             let grid = parser.screen();
-            self.rendered = grid.alternate_screen()
+            let full_erase = self.suffix == *b"\x1b[2J" || grid.cursor_position() == (0, 0);
+            self.rendered = full_erase
+                && grid.alternate_screen()
                 && grid.rows(0, grid.size().1).all(|row| row.trim().is_empty());
             bytes = rest;
         }

@@ -214,9 +214,7 @@ pub(crate) fn draft_flag(reason: &AttentionRecord) -> bool {
 }
 
 fn shows_empty(harness: Harness, runtime: &TaskRuntime) -> bool {
-    harness == Harness::ClaudeCode
-        && !runtime.screen_withheld()
-        && runtime.hub.prompt_box_shown_empty()
+    !runtime.screen_withheld() && runtime.hub.prompt_box_shown_empty(harness)
 }
 
 /// How long a line of Yulius's own waits for another typist to finish ([`Typing::wait`]).
