@@ -938,10 +938,8 @@ impl App {
         let verified = self
             .deps
             .store
-            .recent_staging_requests(&sandbox.id, &target.name, 50)
-            .await?
-            .iter()
-            .any(|r| r.state == StagingState::Verified && r.revision == serving);
+            .staging_verified(&sandbox.id, &target.name, &serving)
+            .await?;
         Ok(verified.then_some(serving))
     }
 
