@@ -154,6 +154,8 @@ pub(crate) enum BoxKeys {
 pub(crate) struct KeyState {
     pub(crate) in_paste: bool,
     pub(crate) after_backslash: bool,
+    // Bytes already seen of the expected six-byte paste delimiter.
+    marker_prefix: usize,
 }
 
 /// How long without a keystroke ends a paste whose end marker never came (a reconnect mid-paste;
@@ -169,28 +171,71 @@ fn settled(state: KeyState, last_key_ms: i64, now_ms: i64) -> KeyState {
     }
 }
 
+/// An edit the prompt box receives, after escape sequences and paste delimiters
+/// have been interpreted. The observer need not retain the input itself.
+#[derive(Clone, Copy)]
+pub(crate) enum BoxEdit {
+    Text(u8),
+    Backspace,
+    /// Completion, navigation or another provider-specific edit.
+    Editor,
+    Clear,
+    Send,
+}
+
 /// Reads one frame of a person's keys. A bracketed paste's line breaks are text, also across
 /// frames. Enter sends, unless it follows a backslash or comes with Alt (Claude Code's line
 /// breaks); Ctrl-C clears the box. Escape sequences (arrows, function keys), Tab and other
 /// control keys type nothing. Shift-Enter reaches the terminal as a plain Enter and reads as one.
 pub(crate) fn read_box_keys(data: &[u8], state: &mut KeyState) -> BoxKeys {
+    read_box_edits(data, state, |_| {})
+}
+
+pub(crate) fn read_box_edits(
+    data: &[u8],
+    state: &mut KeyState,
+    mut edit: impl FnMut(BoxEdit),
+) -> BoxKeys {
     const START: &[u8] = b"\x1b[200~";
     const END: &[u8] = b"\x1b[201~";
     let (mut typed, mut emptied) = (false, false);
     let in_paste = &mut state.in_paste;
     let after_backslash = &mut state.after_backslash;
     let mut i = 0;
+    let prefix = std::mem::take(&mut state.marker_prefix);
+    if prefix > 0 {
+        let marker = if *in_paste { END } else { START };
+        let remaining = &marker[prefix..];
+        if data.starts_with(remaining) {
+            *in_paste = !*in_paste;
+            *after_backslash = false;
+            typed = *in_paste;
+            i = remaining.len();
+        } else if remaining.starts_with(data) {
+            state.marker_prefix = prefix + data.len();
+            return BoxKeys::Neither;
+        } else if *in_paste {
+            // A partial closing escape that turned out to be literal paste text.
+            for &byte in &marker[..prefix] {
+                edit(BoxEdit::Text(byte));
+            }
+            typed = true;
+            *after_backslash = false;
+        }
+    }
     while i < data.len() {
         let rest = &data[i..];
-        if rest.starts_with(START) {
-            *in_paste = true;
-            typed = true;
-            i += START.len();
-        } else if rest.starts_with(END) {
-            *in_paste = false;
+        let marker = if *in_paste { END } else { START };
+        if rest.starts_with(marker) {
+            *in_paste = !*in_paste;
+            typed |= *in_paste;
             *after_backslash = false;
-            i += END.len();
+            i += marker.len();
+        } else if marker.starts_with(rest) {
+            state.marker_prefix = rest.len();
+            break;
         } else if *in_paste {
+            edit(BoxEdit::Text(data[i]));
             typed = true;
             *after_backslash = data[i] == b'\\';
             i += 1;
@@ -198,10 +243,12 @@ pub(crate) fn read_box_keys(data: &[u8], state: &mut KeyState) -> BoxKeys {
             let backslash_before = std::mem::take(after_backslash);
             match data[i] {
                 0x1b if data.get(i + 1) == Some(&b'\r') => {
+                    edit(BoxEdit::Text(b'\n'));
                     typed = true;
                     i += 2;
                 }
                 0x1b => {
+                    edit(BoxEdit::Editor);
                     i += 1;
                     if matches!(data.get(i), Some(b'[' | b'O')) {
                         i += 1;
@@ -212,19 +259,39 @@ pub(crate) fn read_box_keys(data: &[u8], state: &mut KeyState) -> BoxKeys {
                     i += 1;
                 }
                 b'\r' if backslash_before => {
+                    edit(BoxEdit::Backspace);
+                    edit(BoxEdit::Text(b'\n'));
                     typed = true;
                     i += 1;
                 }
                 b'\r' | 0x03 => {
+                    edit(if data[i] == b'\r' {
+                        BoxEdit::Send
+                    } else {
+                        BoxEdit::Clear
+                    });
                     (typed, emptied) = (false, true);
                     i += 1;
                 }
+                0x08 | 0x7f => {
+                    edit(BoxEdit::Backspace);
+                    i += 1;
+                }
+                0x15 => {
+                    edit(BoxEdit::Clear);
+                    i += 1;
+                }
                 byte if byte >= 0x20 && byte != 0x7f => {
+                    edit(BoxEdit::Text(byte));
                     typed = true;
                     *after_backslash = byte == b'\\';
                     i += 1;
                 }
-                _ => i += 1,
+                b'\n' => i += 1,
+                _ => {
+                    edit(BoxEdit::Editor);
+                    i += 1;
+                }
             }
         }
     }
@@ -1400,7 +1467,7 @@ mod tests {
         // R2: a paste whose end never came is over after a pause without keys.
         let open = KeyState {
             in_paste: true,
-            after_backslash: false,
+            ..KeyState::default()
         };
         assert_eq!(settled(open, 1_000, 1_000 + PASTE_STALE_MS), open);
         assert_eq!(

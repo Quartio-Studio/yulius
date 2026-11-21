@@ -235,7 +235,7 @@ impl App {
         // that viewer (#78). Nor are the focus and mouse reports and query answers xterm sends
         // by itself (SPEC-068).
         let prev_typed = attach.runtime.typed_at_ms.load(Ordering::SeqCst);
-        let mut recorded_typing = false;
+        let mut recorded_typing = None;
         if !scroll && is_typing(data) {
             let change = attach.runtime.hub.claim(attach.viewer_id);
             // The keystroke matters more than the size: a failed resize never drops it.
@@ -245,12 +245,18 @@ impl App {
             // A prompt submitted soon after is this person's (TSK-013).
             let mut mark = attach.runtime.draft_mark.lock().await;
             mark.recovered_at = None;
-            self.record_typing(&attach.task_id, &ctx.user.id);
-            recorded_typing = true;
+            let before = attach
+                .runtime
+                .viewer_prompt
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            let sequence = self.record_terminal_frame(&attach.task_id, &ctx.user.id, data);
+            recorded_typing = Some((sequence, before));
             // What they type may stay in the prompt box, unsent: the run's folder keeps that
             // for a restarted server (SPEC-480 DRF-009). Before the key is passed on, so the
             // prompt it may submit removes the mark after it was written.
-            if !mark.written {
+            if !mark.written && self.persons_draft_holds(&attach.task_id) {
                 let typed = attach.runtime.typed_at_ms.load(Ordering::SeqCst);
                 mark.written = self.mark_draft(&attach.task_id, typed).await;
             }
@@ -261,11 +267,24 @@ impl App {
                 // If the live run exited between the check above and `send_input`, restore the
                 // prior `typed_at_ms` so we neither leave a ghost draft mark nor wipe an existing
                 // human draft on a transient write/scroll error.
-                if recorded_typing && !attach.runtime.has_live_run().await {
-                    attach
-                        .runtime
-                        .typed_at_ms
-                        .store(prev_typed, Ordering::SeqCst);
+                if let Some((seq, before)) = recorded_typing {
+                    self.retract_viewer_submit(&attach.task_id, seq);
+                    {
+                        let mut prompt = attach
+                            .runtime
+                            .viewer_prompt
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if attach.runtime.typed_seq.load(Ordering::SeqCst) == seq {
+                            *prompt = before;
+                        }
+                    }
+                    if !attach.runtime.has_live_run().await {
+                        attach
+                            .runtime
+                            .typed_at_ms
+                            .store(prev_typed, Ordering::SeqCst);
+                    }
                 }
                 self.terminal_input_when_not_running(attach, data, scroll, err)
                     .await
@@ -457,6 +476,101 @@ impl App {
     }
 }
 
+/// Tracks whether a viewer entered substantive text before submitting. Only
+/// lengths and parser state are kept. A callback acknowledges the Enter separately.
+#[derive(Clone, Default)]
+pub(crate) struct ViewerPrompt {
+    keys: crate::cockpit::KeyState,
+    fingerprint: sha2::Sha256,
+    edited: bool,
+    length: usize,
+    // Position of the first nonblank character, so erasing the last text makes Enter empty.
+    first_text: Option<usize>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ViewerEnter {
+    None,
+    Empty,
+    Submitted([u8; 32]),
+    /// The provider editor determines the result of a recall or cursor edit.
+    Edited,
+}
+
+impl ViewerEnter {
+    pub(crate) fn may_submit(self) -> bool {
+        matches!(self, Self::Submitted(_) | Self::Edited)
+    }
+}
+
+impl ViewerPrompt {
+    pub(crate) fn restored(&mut self) {
+        self.edited = true;
+        if self.first_text.is_none() {
+            self.length = self.length.saturating_add(1);
+            self.first_text = Some(self.length);
+        }
+    }
+
+    pub(crate) fn read(&mut self, frame: &[u8]) -> ViewerEnter {
+        use crate::cockpit::{BoxEdit, read_box_edits};
+        use sha2::Digest;
+        // This state belongs to a live run. A pause between its bytes leaves the PTY unchanged.
+        // Clients may frame a submitted line as CRLF. A LF inside a paste is text.
+        let mut enter = ViewerEnter::None;
+        let observe = |edit| match edit {
+            BoxEdit::Text(byte) => {
+                // xterm pastes line breaks as CR. The composer submits them as LF.
+                self.fingerprint
+                    .update([if byte == b'\r' { b'\n' } else { byte }]);
+                if byte & 0xc0 != 0x80 {
+                    self.length = self.length.saturating_add(1);
+                    if !byte.is_ascii_whitespace() {
+                        self.first_text.get_or_insert(self.length);
+                    }
+                }
+            }
+            BoxEdit::Editor => self.edited = true,
+            BoxEdit::Backspace => {
+                self.length = self.length.saturating_sub(1);
+                if self.first_text.is_some_and(|first| first > self.length) {
+                    self.first_text = None;
+                }
+                // Even when a character remains, the incremental digest no longer
+                // describes the editor's text. A provider callback confirms it.
+                if self.length == 0 {
+                    self.fingerprint = Default::default();
+                } else {
+                    self.edited = true;
+                }
+            }
+            BoxEdit::Send | BoxEdit::Clear => {
+                if matches!(edit, BoxEdit::Send) && !enter.may_submit() {
+                    enter = if self.edited {
+                        ViewerEnter::Edited
+                    } else if self.first_text.is_some() {
+                        ViewerEnter::Submitted(self.fingerprint.clone().finalize().into())
+                    } else {
+                        ViewerEnter::Empty
+                    };
+                }
+                self.edited = false;
+                self.fingerprint = Default::default();
+                self.length = 0;
+                self.first_text = None;
+            }
+        };
+        // A plain LF frame is used as Enter by some terminal clients.
+        let keys = if frame == b"\n" && !self.keys.in_paste {
+            b"\r"
+        } else {
+            frame
+        };
+        read_box_edits(keys, &mut self.keys, observe);
+        enter
+    }
+}
+
 /// Whether a viewer's input frame is a person typing (SPEC-068 TYP-001): it holds a keystroke
 /// (text, a control key, an Escape key sequence, a bracketed paste). What xterm sends by itself is
 /// not: focus reports (`ESC [ I` / `ESC [ O`), mouse reports (SGR `ESC [ < … M|m`, X10 `ESC [ M`
@@ -582,7 +696,52 @@ fn parked_input_wake(data: &[u8], scroll: bool) -> Option<Option<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_typing, parked_input_wake};
+    use super::{ViewerEnter, ViewerPrompt, is_typing, parked_input_wake};
+
+    #[test]
+    fn submits_prompt_requires_an_enter_after_content_outside_a_paste() {
+        let mut input = ViewerPrompt::default();
+        for frame in [
+            b"\r".as_slice(),
+            b"   \r",
+            b"v\x7f\r",
+            b"cancel\x03\r",
+            b"clear\x15\r",
+        ] {
+            assert!(!input.read(frame).may_submit());
+        }
+        assert!(input.read(b"v") == ViewerEnter::None);
+        assert!(input.read(b"\n").may_submit());
+        assert!(input.read(b"verify\r\n").may_submit());
+        assert!(input.read(b"\x1b[200~verify\x1b[201~\r").may_submit());
+        for frame in [
+            b"line one\\".as_slice(),
+            b"\r",
+            b"\x1b\r",
+            b"\x1b[200~paste",
+            b"part\r",
+            b"end\x1b[201~",
+        ] {
+            assert!(input.read(frame) == ViewerEnter::None);
+        }
+        assert!(input.read(b"\r").may_submit());
+    }
+
+    /// The terminal transport may divide a paste between any two bytes.
+    #[test]
+    fn submits_prompt_recognizes_paste_markers_across_frames() {
+        let pasted = b"\x1b[200~line one\r\x1b[20xline two\x1b[201~";
+        for width in 1..=pasted.len() {
+            let mut prompt = ViewerPrompt::default();
+            for frame in pasted.chunks(width) {
+                assert!(
+                    prompt.read(frame) == ViewerEnter::None,
+                    "frame size {width}"
+                );
+            }
+            assert!(prompt.read(b"\r").may_submit(), "frame size {width}");
+        }
+    }
 
     #[test]
     fn only_keystrokes_are_typing() {
