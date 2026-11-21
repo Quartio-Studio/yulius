@@ -1669,8 +1669,14 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
         "s".repeat(600),
         "x".repeat(512)
     );
+    // The bookkeeping test installs a process-wide hook for this run id.
+    let run_id = if matches!(change, SingletonChange::Bookkeeping) {
+        "prior-train-bookkeeping"
+    } else {
+        "prior-train"
+    };
     let (mut red, mut job) =
-        crate::pr_watch::run(&f.sandbox, "prior-train", &sha, RunState::Failed, None, 1);
+        crate::pr_watch::run(&f.sandbox, run_id, &sha, RunState::Failed, None, 1);
     red.reference = CiRef::Train(vec![8, 9]);
     job.name = "shard 2".into();
     job.state = RunState::Running;
@@ -1767,7 +1773,7 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
         return Ok(());
     }
     if matches!(change, SingletonChange::Bookkeeping) {
-        let (at, go) = support::hold_point(yulius_app::race::Point::TrainDissolving, "prior-train");
+        let (at, go) = support::hold_point(yulius_app::race::Point::TrainDissolving, run_id);
         let pass = {
             let app = Arc::clone(app);
             let sandbox = f.sandbox.clone();
@@ -1905,6 +1911,25 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
                     .any(|s| s.name == "merge_armed" && s.outcome.as_deref() == Some("dropped"))
             );
             if matches!(change, SingletonChange::RerunExpired) {
+                let saved = saved_armed(app, 1)?.ok_or("armed before CI read error")?;
+                f.h.store
+                    .execute_for_tests(
+                        "UPDATE ci_runs SET reference = 'pr/0' WHERE id = 'ordinary-rerun'",
+                    )
+                    .await?;
+                app.merge_armed(&f.sandbox).await;
+                assert_eq!(
+                    saved_armed(app, 1)?,
+                    Some(saved),
+                    "an unreadable owner run cannot drop the arm"
+                );
+                f.h.store
+                    .execute_for_tests(
+                        "UPDATE ci_runs SET reference = 'pr/1' WHERE id = 'ordinary-rerun'",
+                    )
+                    .await?;
+                app.merge_armed(&f.sandbox).await;
+                assert_eq!(f.wait(1, &worktree).await?["checks"], "running");
                 f.h.clock
                     .0
                     .fetch_add(yulius_app::merge_train::WAIT_LIMIT_MS, Ordering::SeqCst);

@@ -173,7 +173,8 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # A failing ordinary PR run, unreadable check or unpublished repair keeps its author live.
 # A failed single-PR merge candidate names its source run, failing job and a redacted
 # excerpt. Its merge wait span records which PR, head and integration base the queue tested.
-# If GitHub cannot confirm those inputs, the queue keeps the candidate for up to 15 minutes.
+# If GitHub cannot confirm the inputs or Yulius cannot read the ordinary runs at that head,
+# the queue keeps the candidate for up to 15 minutes.
 # After a continuous outage, its arm can proceed one by one.
 # The PR watcher delivers actionable failures once and waits for a pending human decision.
 # When PRs share a head, their tasks can wait on the same ordinary CI run. An explicit

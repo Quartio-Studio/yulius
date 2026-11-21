@@ -57,7 +57,7 @@ use yulius_domain::vault::redact::{PlainMatcher, redact_text};
 
 use crate::agent_wait::{ArmedMerge, ArmedNow, Deciding, QUEUE_BASE_GUIDANCE, QueueNote, Verdict};
 use crate::auth::AuthContext;
-use crate::ci::{CiJobRecord, CiRunRecord};
+use crate::ci::{CiJobRecord, CiRunRecord, PullHead, run_for_pull_head};
 use crate::context::App;
 use crate::delivery::{MergeFailure, delivery_profile, past_merge};
 use crate::model::{SandboxRecord, TaskRecord};
@@ -290,6 +290,12 @@ pub(crate) struct FailedSingleton {
     base: String,
     tree: String,
     run: String,
+}
+
+/// Result of observing a singleton's hosted inputs and ordinary CI at its exact head.
+enum SingletonObservation {
+    Changed,
+    Current(Option<RunState>),
 }
 
 /// Fold redacted CI text to a bounded line that can be typed into the owner's terminal.
@@ -780,12 +786,15 @@ impl App {
         let text = self
             .singleton_failure_text(sandbox, member, &integration, &train.run)
             .await;
-        match self
-            .singleton_inputs_match(sandbox, &task, member, &integration, &train.base)
+        let own = match self
+            .singleton_observation(sandbox, &task, member, &integration, &train.base)
             .await
         {
-            Some(true) => train.waiting_since = None,
-            Some(false) => {
+            Some(SingletonObservation::Current(ordinary)) => {
+                train.waiting_since = None;
+                ordinary
+            }
+            Some(SingletonObservation::Changed) => {
                 self.dissolve(sandbox, &train, "its tested head or base changed")
                     .await;
                 return None;
@@ -807,22 +816,17 @@ impl App {
                 .await;
                 return None;
             }
-        }
-        let own = self
-            .ci_gate_for_pull(sandbox, member.pr, &member.head)
-            .await;
+        };
         let pr = member.pr;
-        if matches!(
-            own,
-            GateResult::Run(Some(RunState::Queued | RunState::Running))
-        ) && train.wait_for_own(pr, self.now().0)
+        if matches!(own, Some(RunState::Queued | RunState::Running))
+            && train.wait_for_own(pr, self.now().0)
         {
             return Some(train);
         }
         state.limit = None;
         state.suspect = None;
         let member = train.members.first()?;
-        if own == GateResult::Run(Some(RunState::Failed)) {
+        if own == Some(RunState::Failed) {
             self.dissolve(
                 sandbox,
                 &train,
@@ -906,14 +910,14 @@ impl App {
 
     /// Before dropping an arm, confirm the PR still has the inputs the singleton tested.
     /// A changed input invalidates the attribution. An unavailable read leaves it undecided.
-    async fn singleton_inputs_match(
+    async fn singleton_observation(
         &self,
         sandbox: &SandboxRecord,
         task: &TaskId,
         member: &Member,
         integration: &str,
         base: &str,
-    ) -> Option<bool> {
+    ) -> Option<SingletonObservation> {
         let confirm = async {
             let token = self.dlv_installation_token(sandbox).await.ok()?;
             let pull = self
@@ -933,7 +937,19 @@ impl App {
             if current && (pull.head_sha.is_empty() || pull.base_sha.is_empty()) {
                 return None;
             }
-            Some(current && pull.head_sha == member.head && pull.base_sha == base)
+            if !current || pull.head_sha != member.head || pull.base_sha != base {
+                return Some(SingletonObservation::Changed);
+            }
+            // A failed read cannot establish that the owner's earlier running check ended.
+            let runs = self
+                .deps
+                .store
+                .ci_runs_for_pull_head(&sandbox.id, PullHead::Exact(&member.head))
+                .await
+                .ok()?;
+            Some(SingletonObservation::Current(
+                run_for_pull_head(&runs, member.pr).map(|run| run.state),
+            ))
         };
         tokio::time::timeout(Duration::from_secs(5), confirm)
             .await
