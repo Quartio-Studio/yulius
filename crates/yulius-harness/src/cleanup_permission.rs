@@ -9,7 +9,7 @@ use conch_parser::ast::{
     GuardBodyPair, ListableCommand, Parameter, PipeableCommand, RedirectOrCmdWord, SimpleWord,
     TopLevelCommand, TopLevelWord, Word,
 };
-use conch_parser::{lexer::Lexer, parse::DefaultParser};
+use conch_parser::{lexer::Lexer, parse::DefaultParser, token::Token};
 use serde_json::{Value, json};
 
 use crate::hook_client::MAX_INPUT_BYTES;
@@ -46,7 +46,22 @@ fn retry_message(body: &[u8]) -> Option<String> {
         return None;
     }
     let command = event["tool_input"]["command"].as_str()?;
-    let commands = DefaultParser::new(Lexer::new(command.chars()))
+    // For classification, Bash's &> and &>> are redirects of the same simple command as
+    // > and >>. Leave here-documents untouched so their delimiters and contents stay exact.
+    let mut tokens = Lexer::new(command.chars()).peekable();
+    let has_heredoc = command.contains("<<");
+    let tokens = std::iter::from_fn(|| {
+        let token = tokens.next()?;
+        if !has_heredoc
+            && token == Token::Amp
+            && matches!(tokens.peek(), Some(Token::Great | Token::DGreat))
+        {
+            tokens.next()
+        } else {
+            Some(token)
+        }
+    });
+    let commands = DefaultParser::new(tokens)
         .into_iter()
         .collect::<Result<Vec<_>, _>>()
         .ok()?;
@@ -70,7 +85,7 @@ fn find_command<T>(
     command: &TopLevelCommand<String>,
     visit: &impl Fn(&DefaultPipeableCommand) -> Option<T>,
 ) -> Option<T> {
-    // The POSIX parser also represents Bash's combined output redirect as a job boundary.
+    // A background shell list has its own execution context.
     let Command::List(list) = &command.0 else {
         return None;
     };
