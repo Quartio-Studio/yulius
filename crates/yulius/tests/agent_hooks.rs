@@ -2350,7 +2350,7 @@ async fn goal_stop_during_spec_publication(check: bool) -> TestResult {
             watcher
                 .tool_spec_check(&ctx)
                 .await
-                .map(|report| report["valid"] == true)
+                .map(|report| report["spec"]["valid"] == true)
         } else {
             watcher.sync_steps_from_spec(&task).await
         }
@@ -2362,10 +2362,13 @@ async fn goal_stop_during_spec_publication(check: bool) -> TestResult {
     )
     .await;
     release.notify_one();
-    assert!(syncing.await??);
-    let yulius_app::hooks::HookReply::Output(reply) = stop?? else {
+    let checked = syncing.await??;
+    let yulius_app::hooks::HookReply::Output(reply) =
+        stop.map_err(|_| "Stop waited on the spec-check publication")??
+    else {
         return Err("held".into());
     };
+    assert!(checked);
     let reply = serde_json::to_value(reply)?;
     assert_eq!(reply["decision"], "block");
     assert!(
