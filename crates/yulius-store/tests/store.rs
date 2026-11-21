@@ -182,6 +182,49 @@ async fn task_numbers_and_status_cas() -> R {
     Ok(())
 }
 
+#[tokio::test]
+async fn an_idle_switch_claims_the_observed_activity_and_live_attempt() -> R {
+    use yulius_domain::task::Activity;
+
+    let store = SqliteStore::open_in_memory()?;
+    let (sid, uid) = seed(&store).await?;
+    let t = store.insert_task(&task("t1", &sid, &uid)?).await?;
+    let mut run = attempt("a1", &t.id, 1)?;
+    run.state = AttemptState::Live;
+    store.insert_attempt(&run).await?;
+    let idle = (Activity::Done, Timestamp(30));
+    assert!(
+        store
+            .transition_task(
+                &t.id,
+                Some(TaskStatus::Starting),
+                TaskStatus::Running,
+                Some(idle.0),
+                idle.1
+            )
+            .await?
+    );
+
+    let at = Timestamp(40);
+    let wrong = AttemptId::parse("a2")?;
+    assert!(!store.claim_idle_switch(&t.id, idle, &wrong, at).await?);
+    assert!(
+        !store
+            .claim_idle_switch(&t.id, (idle.0, Timestamp(29)), &run.id, at)
+            .await?
+    );
+    assert!(
+        !store
+            .claim_idle_switch(&t.id, (Activity::Waiting, idle.1), &run.id, at)
+            .await?
+    );
+    assert!(store.claim_idle_switch(&t.id, idle, &run.id, at).await?);
+    let switching = store.task(&t.id).await?.ok_or("switching task")?;
+    assert_eq!(switching.status, TaskStatus::Switching);
+    assert_eq!(switching.activity, None);
+    Ok(())
+}
+
 /// SPEC-153 OLC-001: an onboarding state change lands only on the state it was decided on; a
 /// start that read `pending` before an admin's skip never writes `preparing` over `skipped`.
 #[tokio::test]
