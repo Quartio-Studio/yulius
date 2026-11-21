@@ -1024,7 +1024,12 @@ enum StartCondition<'a> {
     OwnerContinue(&'a TaskRecord),
     Any,
     Status(TaskStatus),
-    Parked(Option<AttemptId>),
+    Parked(Option<AttemptId>, Option<&'a crate::pr_watch::ParkedNotice>),
+}
+
+enum LaunchAdmission {
+    Owner(crate::capacity::ContinuationAdmission),
+    Candidate(Box<Placed>),
 }
 
 /// Which task state the requested switch may take over.
@@ -2247,7 +2252,12 @@ impl App {
     ) -> BoxFuture<'a, AppResult<bool>> {
         Box::pin(async move {
             let resume = matches!(start, RunStart::Resume { .. } | RunStart::GoalResume { .. });
-            let settled = if matches!(condition, StartCondition::Parked(_)) {
+            let notice = match condition {
+                StartCondition::Parked(_, notice) => notice,
+                _ => None,
+            };
+            let decision = notice.and_then(|notice| notice.decision().map(|pair| (notice, pair)));
+            let settled = if matches!(condition, StartCondition::Parked(..)) {
                 self.wait_for_terminal_cleanup(task_id, true).await?;
                 crate::race::reached(
                     crate::race::Point::ParkedResumePrepared,
@@ -2274,12 +2284,24 @@ impl App {
                     }
                     Harness::ClaudeCode => {}
                 }
+                if let Some(notice) = notice
+                    && !self.parked_notice_inputs(&task, notice).await
+                {
+                    return Ok(false);
+                }
             }
             crate::race::reached(
                 crate::race::Point::StartPreflightFinished,
                 Path::new(task_id.as_str()),
             );
-            let guard = self.supervisor.launch.lock().await;
+            let guard = if decision.is_some() {
+                let Ok(guard) = self.supervisor.launch.try_lock() else {
+                    return Ok(false);
+                };
+                guard
+            } else {
+                self.supervisor.launch.lock().await
+            };
             let task = self
                 .deps
                 .store
@@ -2315,7 +2337,7 @@ impl App {
                     }
                 }
                 StartCondition::Status(status) if *status != task.status => return Ok(false),
-                StartCondition::Parked(expected) => {
+                StartCondition::Parked(expected, _) => {
                     if task.status != TaskStatus::Parked
                         || task.resume_attempt_id.as_ref() != expected.as_ref()
                     {
@@ -2360,6 +2382,15 @@ impl App {
             // While an update pauses the tasks, starts queue like at the session limit and run
             // once it is over (SPEC-002 ADR-18).
             let full = held || live >= self.max_live_sessions() || self.update_holds_starts();
+            if full && decision.is_some() {
+                return Ok(false);
+            }
+            if decision.is_none()
+                && let Some(notice) = notice
+                && !self.parked_notice_current(&task, notice).await
+            {
+                return Ok(false);
+            }
             if full && task.status != TaskStatus::Switching {
                 let queued = self
                     .deps
@@ -2425,7 +2456,28 @@ impl App {
                     return Ok(false);
                 };
                 self.publish_task(&task.id).await;
-                Some(admitted)
+                Some(LaunchAdmission::Owner(admitted))
+            } else if let Some((notice, (pr, span))) = decision {
+                let Some(placed) = self.choose_account(&task, None).await? else {
+                    return Ok(false);
+                };
+                self.prepare_start_claim(&task.id).await?;
+                let runtime = self.runtime(&task.id);
+                let Ok(writer) = runtime.arm_writer.try_lock() else {
+                    return Ok(false);
+                };
+                if !self.parked_notice_current(&task, notice).await
+                    || !self
+                        .deps
+                        .store
+                        .claim_parked_candidate(&task, pr, span, self.now())
+                        .await?
+                {
+                    return Ok(false);
+                }
+                drop(writer);
+                self.publish_task(&task.id).await;
+                Some(LaunchAdmission::Candidate(Box::new(placed)))
             } else {
                 None
             };
@@ -2544,9 +2596,11 @@ impl App {
         requested: Option<AccountId>,
         rest: Option<IdleRest>,
         pause_outcome: &'static str,
-        admission: Option<crate::capacity::ContinuationAdmission>,
+        admission: Option<LaunchAdmission>,
     ) -> AppResult<bool> {
         let store = &self.deps.store;
+        let candidate_wake = matches!(admission, Some(LaunchAdmission::Candidate(_)));
+        let parked_activity = task.activity;
         let relaunch = start.clone();
         let sandbox = store
             .sandbox(&task.sandbox_id)
@@ -2595,11 +2649,15 @@ impl App {
         let lineage = store.provider_sessions(&task.id).await?;
         let previous = lineage.last().cloned();
         let harness = task.harness;
-        let placement = if let Some(crate::capacity::ContinuationAdmission::Named {
-            account,
-            model,
-            fallback,
-        }) = admission
+        let placement = if let Some(LaunchAdmission::Candidate(placed)) = admission {
+            Some(*placed)
+        } else if let Some(LaunchAdmission::Owner(
+            crate::capacity::ContinuationAdmission::Named {
+                account,
+                model,
+                fallback,
+            },
+        )) = admission
         {
             // A later model edit is for the next start. This run uses the accepted placement.
             task.model = model;
@@ -3138,6 +3196,21 @@ impl App {
             store
                 .transition_attempt(&attempt_id, AttemptState::Exited, &update)
                 .await?;
+            if candidate_wake {
+                if store
+                    .transition_task(
+                        &task.id,
+                        Some(TaskStatus::Starting),
+                        TaskStatus::Parked,
+                        parked_activity,
+                        self.now(),
+                    )
+                    .await?
+                {
+                    self.publish_task(&task.id).await;
+                }
+                return Ok(false);
+            }
             return Box::pin(self.launch_attempt(&task, relaunch, None, rest, pause_outcome, None))
                 .await;
         }
@@ -5554,7 +5627,19 @@ impl App {
         };
         let run = if task.status == TaskStatus::Parked {
             let id = task.resume_attempt_id.as_ref().ok_or_else(missing)?;
-            store.attempt(id).await?
+            let run = store.attempt(id).await?;
+            if run
+                .as_ref()
+                .is_some_and(crate::parking::removed_before_spawn)
+            {
+                let runs = store.attempts(&task.id).await?;
+                runs.into_iter()
+                    .rev()
+                    .skip_while(|run| run.id != *id)
+                    .find(|run| !crate::parking::removed_before_spawn(run))
+            } else {
+                run
+            }
         } else {
             store.attempts(&task.id).await?.pop()
         };
@@ -5638,6 +5723,15 @@ impl App {
         task: &TaskRecord,
         prompt: Option<String>,
     ) -> AppResult<bool> {
+        self.resume_parked_with_notice(task, prompt, None).await
+    }
+
+    pub(crate) async fn resume_parked_with_notice(
+        self: &Arc<Self>,
+        task: &TaskRecord,
+        prompt: Option<String>,
+        notice: Option<&crate::pr_watch::ParkedNotice>,
+    ) -> AppResult<bool> {
         if task.status != TaskStatus::Parked {
             return Ok(false);
         }
@@ -5655,7 +5749,7 @@ impl App {
             &task.id,
             RunStart::Resume { prompt },
             None,
-            StartCondition::Parked(task.resume_attempt_id.clone()),
+            StartCondition::Parked(task.resume_attempt_id.clone(), notice),
             rest,
             None,
         )

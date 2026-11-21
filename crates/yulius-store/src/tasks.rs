@@ -482,6 +482,38 @@ impl TaskStore for SqliteStore {
         .await
     }
 
+    async fn claim_parked_candidate(
+        &self,
+        selected: &TaskRecord,
+        pr: u64,
+        span: &yulius_app::stages::SpanRecord,
+        at: Timestamp,
+    ) -> AppResult<bool> {
+        let id = selected.id.to_string();
+        let attempt = selected.resume_attempt_id.clone();
+        let branch = selected.branch.clone();
+        let span = span.clone();
+        self.call(move |c| {
+            let tx = c.transaction().map_err(db)?;
+            let eligible: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM tasks t JOIN delivery d ON d.task_id = t.id
+                 WHERE t.id = ?1 AND t.status = 'parked' AND t.archived_at IS NULL
+                 AND t.needs_you IS NULL AND t.activity IS NOT 'needs_attention'
+                 AND d.stage = 'pr_open' AND d.pr_number = ?2 AND t.branch = ?3
+                 AND (SELECT id FROM attempts WHERE task_id = t.id ORDER BY seq DESC LIMIT 1) = ?4
+                 AND NOT EXISTS (SELECT 1 FROM capacity_pauses WHERE task_id = t.id AND ended_at IS NULL)
+                 AND NOT EXISTS (SELECT 1 FROM prompt_holds WHERE task_id = t.id AND state = 'pending'))",
+                params![id, to_i64(pr), branch, attempt.as_ref().map(AttemptId::as_str)], |row| row.get(0)
+            ).map_err(db)?;
+            if !eligible || crate::spans::latest_merge_wait(&tx, &id)?.as_ref() != Some(&span) {
+                return Ok(false);
+            }
+            let started = transition(&tx, &id, Some(TaskStatus::Parked), TaskStatus::Starting, None, at, None)?;
+            tx.commit().map_err(db)?;
+            Ok(started)
+        }).await
+    }
+
     async fn queue_task(
         &self,
         id: &TaskId,

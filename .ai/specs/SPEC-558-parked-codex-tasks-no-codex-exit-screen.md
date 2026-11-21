@@ -92,6 +92,8 @@ Use the fake Codex executable, its rollout, real PTY shutdown and the applicatio
 
 ## Decisions
 
+An automatic continuation for a parked PR owner verifies the recorded integration decision before launching. A human decision or unavailable capacity leaves the original session parked. The next watcher pass checks the PR again before delivering a prompt.
+
 Parking and a replacement merge request share the task’s merge writer at admission. If the writer is busy or a merge is armed, the idle pass leaves the session live. Once the park commits, a new merge request checks the committed run and durable task state before it can arm. Stop, close, or loss can settle that same run and release its park marker. Final admission checks the attached attempt while holding the end-intent lock. An exit reader already settling the run takes precedence over an earlier idle observation.
 
 A named Continue checks the current model and the requested subscription when Yulius accepts the start or queue entry. A refusal preserves the resting state, archive and question. The queue checks availability again at dispatch through its existing subscription policy. An immediate launch uses the model and account admitted together.
@@ -124,6 +126,9 @@ The SQLite query returning a parked task includes the latest attempt ID in the s
 
 ## Evidence
 
+- Step 46 baseline on `d643f0262` exposed the parked owner receiving unarmed-green advice, accepting a wake without capacity and waiting on a busy launch lock. The published replacement-head control passed. A separate failing parked-detail assertion for ordinary CI during a base advance belongs to the remaining status-read work.
+
+- PR #1662 landed on `dev` at `8b38f0344`. The PR passed `ffcecebd-4a79-4afd-89e3-3da8d9438c12` and its merge train passed `a0e4ceb9-423d-4ff3-8014-a269555be9e0`. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/8b38f0344672b3bd804514bf52e2137f40de7fb6)
 - With the reviewed source restored and the delivered-review assertion updated, `37f11fe5-c165-4961-bda7-d77889767c76` passed all 467 parking, delivery, merge-train, Antigravity and playground checks. Clippy passed for `yulius-app` and `yulius` with all targets, all features and warnings denied. Vidoc was disabled on this project.
 - On the reviewed base, `e7587059-8ab5-46c3-8dd1-82df3ed425c4` passed 466 of 467 scoped tests. The gated delivery test still expected an empty review list after merge. SPEC-605 retains the delivered PR’s approval. The fixture now verifies that approval and that no round remains open for the next PR.
 - Independent review approved `37d89deee8b393762f6a17a794aa3a5de6e7e2da` against `3b95efbd8` after replaying both Close cases. Run `48787152-18d8-43a0-8948-d3dacfa9616c` passed all 64 candidate and gated-merge tests. Removing the selected-attachment and active-reader checks by hand reproduced both failures in `cd32f197-afea-4e61-bef4-eaef05aa125d`. The supervisor was restored to the approved head.

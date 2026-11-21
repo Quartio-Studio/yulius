@@ -2157,6 +2157,8 @@ If the server restarted between writing the attempt’s ID and writing its sessi
 resume path recovers the ID from the parked attempt. If capacity holds a resume, an unreadable
 rollout history leaves its pause and prompt in place for the next capacity round.
 
+The PR watcher can resume a parked owner for a failed single-PR integration candidate. It reuses the live watcher’s saved decision and checks the published head, integration base and ordinary CI before launch. Under the merge writer, SQLite binds the start to the parked attempt, PR and recorded decision while checking for a human request. If the launch slot or subscription is busy, the next watch verifies the failure again. A subscription removed before spawn leaves the original screen and goal available for that retry.
+
 Each parked task read includes the latest attempt ID from the same SQLite snapshot. A resume carries that ID through permission and account checks, including when a bulk operation, Telegram reply or remote restart first resolves the target. Under the launch lock it checks that the same attempt is still parked before restoring Codex lineage, starting a process or queueing its prompt.
 
 Continue also binds the owner’s selection to the latest attempt and archive state on an ended task. Exit and loss release terminal cleanup before successor checks. Once that cleanup finishes, the store compares the selection and records Starting or a queued start together with clearing the archive and question. A named Continue applies the pool’s manual placement policy to the task model and subscription records in that transaction. An immediate launch uses the accepted model and subscription. A queued start retains its subscription choice for the normal dispatch check.
