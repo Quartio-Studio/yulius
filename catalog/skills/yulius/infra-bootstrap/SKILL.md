@@ -207,7 +207,67 @@ example when it starts deploying for real), and record every change as a decisio
      Runs reach any host over SSH (port 22): pin the hosts' keys in
      the state or the repository (`StrictHostKeyChecking=yes` with its own known-hosts file), since
      each run's `HOME` is fresh.
-   - **Who deploys.** A merge deploys nothing. Dev: a person on the CD page, or an agent with
+   - **Merge-first staging, the default with a shared target** (SPEC-575). When the project has
+     a shared machine people test on before production (a staging or dev VM, a preview cluster),
+     make it the merge-first target:
+
+     ```toml
+     [[ci.jobs]]                         # the quick checks: a pull request merges on these
+     name = "quick"
+     command = "scripts/ci quick"        # format, lint, unit tests: minutes, not tens of them
+
+     [[ci.jobs]]
+     name = "full"                       # the full suite: integration, end-to-end, audits
+     command = "scripts/ci full"
+     after_merge = true                  # runs on the merged revision, not on pull requests
+
+     [cd.staging]
+     stage = "dev"
+     merge_first = true                  # the shared staging target: at most one
+     deploy = "scripts/cd/deploy.sh staging"
+     verify = "scripts/cd/verify.sh staging"
+     rollback = "scripts/cd/rollback.sh staging"
+     migrations = "expand/contract: the previous release reads the new schema"
+     secrets = "STAGING_SSH_KEY STAGING_HOST"
+     ```
+
+     - Keep every check the project has: move each long one into an `after_merge` job, never out
+       of the gate. At least one job stays a quick check.
+     - A pull request then merges after the independent review and its quick checks. Yulius runs
+       the full gate on exactly the merged revision before staging may change.
+     - A task's agent asks for staging with `cd_deploy` once its delivery is complete. Yulius
+       deploys and verifies that tested revision, once per task, in revision order. A deploy lost
+       to a restart is retried.
+     - A failing candidate leaves staging on its last verified release and tells the owning task
+       which check failed. The agent fixes it forward, merges and asks again.
+     - Production, with `[cd.prod] promote = true`, is promoted from the last verified staging
+       revision, still by a person.
+     - The deploy scripts must be idempotent: Yulius may run a staging deploy again after a
+       restart.
+     - Without a shared target, write no `merge_first` and no `after_merge`: the full suite stays
+       on every pull request. Say so in `[cd.dev] about` ("no shared target: the full suite gates
+       each pull request").
+   - **Task-local deployment** (SPEC-575 MFS-010). Every task of a deployable project can build,
+     deploy and test the app inside its own sandbox before it merges. Describe how in `[local]`:
+
+     ```toml
+     [local]
+     about = "the app and its database in docker compose, on this sandbox's ports"
+     deploy = "scripts/cd/deploy.sh local"
+     verify = "scripts/cd/verify.sh local"
+     ```
+
+     - The local target is the sandbox: `scripts/cd/deploy.sh local` refuses any other host. It
+       binds only the sandbox's ports (`$YULIUS_PORT_BASE` to `$YULIUS_PORT_BASE` +
+       `$YULIUS_PORT_COUNT` - 1) and uses isolated test data (a disposable database seeded by the
+       script).
+     - It is reusable: a second run replaces the first, and a task iterates on it.
+     - It uses only the dev service credentials agent sessions are allowed (`.env` through
+       `secret_copy_to_env`). Staging SSH keys, release publishing or signing keys and production
+       credentials stay named only in their `[cd.*]` tables, which run outside the agent's reach.
+     - The gate checks the refusal: `scripts/cd/deploy.sh local` with a non-local target exits
+       non-zero.
+   - **Who deploys.** A merge deploys nothing by itself. Dev: a person on the CD page, or an agent with
      `cd_deploy` when its task asks (then `yulius wait`), or a nightly automation that deploys and
      tests it. Production: only a person with administrator access, typing the project's slug;
      agents never promote or deploy it. What only a person can do (add a machine's credentials,
@@ -246,6 +306,10 @@ example when it starts deploying for real), and record every change as a decisio
   reports on it.
 - With a Vidoc key on the instance, the `security` job runs `yulius security-scan --ci` and
   AGENTS.md asks for the scan before delivery; without one, the summary says it was skipped.
+- With a shared staging target, it is the merge-first `[cd.<name>]` and the long checks are
+  `after_merge` jobs; without one, the full suite stays on pull requests and `[cd.dev] about` says
+  "no shared target". A deployable project has a `[local]` deployment that targets only the
+  sandbox.
 - `[cd.dev]` and `[cd.prod]` are defined (empty with an `about` when nothing deploys yet), with a
   `[cd.<name>]` and its `stage` for each further target, and each one that deploys has a deploy
   and a verify script that passed on a real run, and a `rollback` with its `migrations` line

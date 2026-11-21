@@ -102,6 +102,10 @@ impl NeedsYouRecord {
             episode: None,
             who: self.named.who.clone(),
             named: self.named.narrows(),
+            browser_tab: self
+                .link
+                .as_deref()
+                .and_then(crate::browser::browser_tab_from_link),
         }
     }
 
@@ -188,9 +192,14 @@ impl App {
             .map_err(|e| AppError::Invalid(format!("invalid arguments: {e}")))?;
         let store = &self.deps.store;
         if args.resolved {
+            let cleared_browser = self
+                .clear_task_browser_actions(&ctx.task.sandbox_id, &ctx.task.id, None)
+                .await
+                > 0;
             let ended = store
                 .set_task_needs_you(&ctx.task.id, None, self.now())
-                .await?;
+                .await?
+                || cleared_browser;
             if ended {
                 self.publish_task(&ctx.task.id).await;
                 self.needs_you_audit(ctx, "task.needs_you.resolved", "resolved by the agent")
@@ -262,6 +271,13 @@ impl App {
                 withdrawn: Vec::new(),
             },
         };
+        // Supersede any stale browser tab handoff that does not match this request (SPEC-578).
+        let keep_tab = link
+            .as_deref()
+            .and_then(crate::browser::browser_tab_from_link)
+            .and_then(|id| yulius_contracts::browser::TabId::parse(&id).ok());
+        self.clear_task_browser_actions(&ctx.task.sandbox_id, &ctx.task.id, keep_tab.as_ref())
+            .await;
         // The request itself puts the task in Needs you (`AttentionFacts`, `taskInfo`), whatever the
         // agent does meanwhile; its activity is left to its turns.
         store
@@ -393,7 +409,17 @@ impl App {
             Ok(Some(request)) => request.cause,
             _ => None,
         };
-        self.end_one_needs_you(task).await;
+        let cleared_browser = if let Ok(Some(record)) = self.deps.store.task(task).await {
+            self.clear_task_browser_actions(&record.sandbox_id, task, None)
+                .await
+                > 0
+        } else {
+            false
+        };
+        let ended = self.end_one_needs_you(task).await;
+        if !ended && cleared_browser {
+            self.publish_task(task).await;
+        }
         if let Some(cause) = shared {
             self.answer_shared_cause(task, &cause).await;
         }
@@ -429,7 +455,13 @@ impl App {
             .end_task_needs_you_at(task, asked_at, self.now())
             .await
         {
-            Ok(true) => self.publish_task(task).await,
+            Ok(true) => {
+                if let Ok(Some(record)) = self.deps.store.task(task).await {
+                    self.clear_task_browser_actions(&record.sandbox_id, task, None)
+                        .await;
+                }
+                self.publish_task(task).await;
+            }
             Ok(false) => return,
             Err(err) => {
                 tracing::warn!(task = %task, error = %err, "the answered request was not ended");
@@ -551,24 +583,93 @@ impl App {
         ended
     }
 
-    /// The task's open request, for its summary.
-    pub(crate) async fn needs_you_view(&self, task: &TaskId) -> Option<NeedsYouView> {
-        match self.deps.store.task_needs_you(task).await {
+    /// The task's open request, for its summary and MCP projections. Falls back to an active
+    /// in-memory browser handoff (and any legacy browser `tasks.attention` timestamp/link) when
+    /// `tasks.needs_you` is absent (SPEC-578).
+    pub(crate) async fn needs_you_view(&self, task: &TaskRecord) -> Option<NeedsYouView> {
+        match self.deps.store.task_needs_you(&task.id).await {
             Ok(Some(request)) => {
                 let mut view = request.view();
+                view.action = self
+                    .redact_notice_text(&task.sandbox_id, &view.action)
+                    .await;
+                if let Some(happened) = &view.happened {
+                    view.happened = Some(self.redact_notice_text(&task.sandbox_id, happened).await);
+                }
+                if let Some(problem) = &view.problem {
+                    view.problem = Some(self.redact_notice_text(&task.sandbox_id, problem).await);
+                }
                 if let Some(cause) = &request.cause {
                     view.episode = Some(rfc3339(Timestamp(
-                        self.shared_episode(task, cause, request.at).await,
+                        self.shared_episode(&task.id, cause, request.at).await,
                     )));
                 }
-                Some(view)
+                return Some(view);
             }
-            Ok(None) => None,
+            Ok(None) => {}
             Err(err) => {
-                tracing::warn!(task = %task, error = %err, "reading a needs_you request failed");
-                None
+                tracing::warn!(task = %task.id, error = %err, "reading a needs_you request failed");
+                return None;
             }
         }
+        // Legacy browser handoff: tab still requests user action even though `tasks.needs_you`
+        // was never written (or before SPEC-578) and `activity` may have moved away from
+        // `needs_attention`.
+        let (tab_id, reason) = self
+            .browser_tab_request_for(&task.sandbox_id, &task.id)
+            .await?;
+        let stored_attn = self
+            .deps
+            .store
+            .stored_task_attention(&task.id)
+            .await
+            .ok()
+            .flatten();
+        let at_ms = stored_attn
+            .as_ref()
+            .map_or(task.updated_at.0, |(_, at)| at.0);
+        let stored_link = stored_attn
+            .as_ref()
+            .and_then(|(attn, _)| attn.link.clone())
+            .filter(|link| crate::browser::browser_tab_from_link(link).as_deref() == Some(&tab_id));
+        let link = match stored_link {
+            Some(link) => Some(link),
+            None => self
+                .deps
+                .store
+                .sandbox(&task.sandbox_id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|sandbox| {
+                    yulius_contracts::browser::TabId::parse(&tab_id)
+                        .ok()
+                        .map(|id| self.browser_tab_link(&sandbox.slug, &id))
+                }),
+        };
+        let happened = crate::attention::shown_line(
+            &format!("The agent asked you to act in the sandbox browser: {reason}"),
+            MAX_HAPPENED_CHARS,
+        );
+        let action = crate::attention::shown_line(
+            &format!("Open the browser tab: {reason}"),
+            MAX_ACTION_CHARS,
+        )
+        .unwrap_or_else(|| "Open the browser tab and complete the requested action.".to_owned());
+        Some(NeedsYouView {
+            action,
+            happened,
+            problem: None,
+            decision: false,
+            link,
+            at: rfc3339(Timestamp(at_ms)),
+            at_ms,
+            cause: None,
+            episode: None,
+            who: Vec::new(),
+            named: false,
+            browser_tab: Some(tab_id),
+        })
     }
 }
 

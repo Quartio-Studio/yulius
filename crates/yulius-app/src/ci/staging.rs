@@ -323,7 +323,18 @@ impl App {
         let (head, target) = self.staging_target(sandbox).await?;
         // The running deploy settles first, whatever the environment became (review round 1).
         let now_pending: Vec<&StagingRequestRecord> = pending.iter().collect();
-        self.staging_settle_deploy(&now_pending).await?;
+        // A verified revision may be what an automatic promotion waited for (MFS-009).
+        for request in self.staging_settle_deploy(&now_pending).await? {
+            match self.staging_person(&request).await {
+                Ok(Some(owner)) => self.staging_auto_promote(sandbox, &owner).await,
+                Ok(None) => {
+                    tracing::warn!(sandbox = %sandbox.slug, request = %request.id, "no active owner with write access runs the promotion waiting for staging")
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, sandbox = %sandbox.slug, request = %request.id, "the promotion waiting for staging could not run")
+                }
+            }
+        }
         let mut pending = store.pending_staging_requests(&sandbox.id, env).await?;
         pending.truncate(MAX_PENDING);
         if target.as_ref().is_none_or(|t| t.name != env) {
@@ -529,7 +540,8 @@ impl App {
     async fn staging_settle_deploy(
         self: &Arc<Self>,
         pending: &[&StagingRequestRecord],
-    ) -> AppResult<()> {
+    ) -> AppResult<Vec<StagingRequestRecord>> {
+        let mut verified = Vec::new();
         for request in pending
             .iter()
             .filter(|r| r.state == StagingState::Deploying)
@@ -591,9 +603,11 @@ impl App {
                 note: Some(note),
                 ..StagingChange::default()
             };
-            self.staging_move(request, next, change).await?;
+            if self.staging_move(request, next, change).await? && next == StagingState::Verified {
+                verified.push((*request).clone());
+            }
         }
-        Ok(())
+        Ok(verified)
     }
 
     /// Starts the deploy of `request`: it moves to deploying first (one per environment, by the
@@ -789,6 +803,49 @@ impl App {
             .await
             .unwrap_or(false);
         Ok(contains.then_some(run))
+    }
+
+    /// The integration head a promotion must promote, read through the CD mirror (SPEC-575
+    /// MFS-009): `Ok(None)` without a merge-first target (any head); with one, the verified head
+    /// when staging serves it, verified, else `Err` with why it waits for staging. A head or table
+    /// that cannot be read is the error.
+    ///
+    /// # Errors
+    /// `Conflict` when the verified head or its tables cannot be read.
+    pub(crate) async fn staging_promotion_head(
+        &self,
+        sandbox: &SandboxRecord,
+    ) -> AppResult<Result<Option<String>, String>> {
+        // A playground has no GitHub and no CD (SPEC-099), and a host whose Git keeps no CD
+        // mirror runs no CD: no staging to wait for.
+        if sandbox.is_playground() || !self.deps.git.has_cd_mirror() {
+            return Ok(Ok(None));
+        }
+        // The verified tables decide, and a promotion whose tables cannot be read is refused,
+        // whatever the project: an agent breaking its clone can only cause a refusal, never a
+        // bypass (review round 1 of slice 4).
+        let (head, target) = self.staging_target(sandbox).await.map_err(|err| {
+            AppError::Conflict(format!(
+                "nothing was promoted: the verified integration head and its CD tables cannot be read now ({}); promote again once they read (a fetch problem passes by itself, an invalid yulius.toml needs a fix)",
+                err.public_message()
+            ))
+        })?;
+        let Some(target) = target else {
+            return Ok(Ok(None));
+        };
+        let verified = self.staging_verified_revision(sandbox, &target).await?;
+        if verified.as_deref() == Some(head.as_str()) {
+            return Ok(Ok(Some(head)));
+        }
+        Ok(Err(format!(
+            "nothing was promoted: production is promoted from the revision [cd.{}] verified, and the integration head {} is {}; promote once staging verified it",
+            target.name,
+            short(&head),
+            match &verified {
+                Some(sha) => format!("not it (staging verified {})", short(sha)),
+                None => "not verified there (staging verified nothing yet)".to_owned(),
+            }
+        )))
     }
 
     /// The revision production may be promoted from (SPEC-575 MFS-009): what staging serves,

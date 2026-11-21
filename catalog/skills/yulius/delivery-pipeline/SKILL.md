@@ -13,6 +13,7 @@ record why, and move on.
 ready issue → spec → slices (test first) → local gates → independent review → fixes
   → pull request → merge on green → cleanup
 CD, separately: deploy dev and verify (when asked, or nightly), its rollback drilled · production: a person promotes and deploys
+Merge-first staging: quick checks → merge → full gate on the merged revision → cd_deploy once → staging verified
 ```
 
 Research, questions about the product, documentation and small chores skip the spec; when they
@@ -157,7 +158,18 @@ same branch, test first. Never rerun until green, never skip, never weaken a tes
 
 ## 7. Deploy (CD), separately
 
-A merge deploys nothing. CD (deployment) is its own mechanism, like CI: the project's `[cd.dev]`
+With a merge-first staging target (a dev-stage `[cd.<name>]` with `merge_first = true`):
+- Your pull request merges on its quick checks.
+- Build, deploy and test locally first with the project's `[local]` deployment, which targets only
+  your sandbox.
+- Once your whole delivery merged (every pull request of the task), ask for staging once (in
+  Yulius: `cd_deploy` of that environment).
+- Yulius runs the full gate on exactly your merged revision, then deploys and verifies it in
+  revision order. A failing gate leaves staging on its last verified release and tells you which
+  check failed: fix it forward with a new pull request, merge it and ask again.
+- Production is promoted only from the revision staging verified.
+
+A merge deploys nothing by itself. CD (deployment) is its own mechanism, like CI: the project's `[cd.dev]`
 and `[cd.prod]` (and any other `[cd.<name>]`, of the dev or the production stage) run their deploy
 and verify scripts from the protected branches (skill `infra-bootstrap`, step 3). Deploy dev (or
 another dev-stage environment) when your task asks for it (in Yulius: `cd_deploy`, then

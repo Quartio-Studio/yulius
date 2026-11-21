@@ -344,6 +344,8 @@ pub trait BrowserSession: Send + Sync {
         reason: &str,
         task: Option<&TaskId>,
     ) -> Result<ActionRequest, BrowserFailure>;
+    /// Clears a tab's pending user-action request; returns whether one existed (SPEC-578).
+    fn clear_action(&self, tab: &TabId) -> bool;
 }
 
 /// Owns at most one browser per sandbox.

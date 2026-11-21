@@ -187,9 +187,33 @@ export function mountTaskInfoView(ctx, sandbox, task) {
       ['Worktree', detail.worktree ? h('code', null, detail.worktree) : '—'],
     ];
     const switches = Array.isArray(detail.switches) ? detail.switches : [];
+    const waitHistory = Array.isArray(detail.wait_history) ? detail.wait_history : [];
+    const linkRoute = (url) => {
+      if (typeof url !== 'string' || !url.startsWith(location.origin)) return null;
+      try {
+        const parsed = new URL(url);
+        return `${parsed.pathname}${parsed.search}`;
+      } catch { return null; }
+    };
 
     setChildren(body,
       facts,
+      waitHistory.length ? h('section', { class: 'card ti-card', 'aria-labelledby': 'ti-wait-history' },
+        h('h2', { class: 'card-title', id: 'ti-wait-history' }, icon('st-attention', { size: 14 }), 'Needs you history'),
+        h('ul', { class: 'list-plain ti-wait-history' }, waitHistory.map((entry) => {
+          const route = linkRoute(entry.link);
+          return h('li', { class: ['ti-wait-item', entry.resolved_at && 'resolved'] },
+            h('div', { class: 'ti-wait-head' },
+              h('span', { class: 'badge' }, entry.source),
+              h('span', { class: 'muted xs', title: dateTime(entry.at) }, relLong(entry.at)),
+              entry.resolved_at
+                ? h('span', { class: 'muted xs', title: dateTime(entry.resolved_at) }, `· resolved ${relLong(entry.resolved_at)}`)
+                : h('span', { class: 'badge badge-warn' }, 'Open'),
+              entry.link ? h('a', { class: 'link-btn small ti-wait-link', href: entry.link, target: route ? null : '_blank', rel: 'noopener', dataset: route ? { route } : null }, 'Open') : null),
+            h('div', { class: 'small' }, entry.happened),
+            entry.problem ? h('div', { class: 'muted small' }, `Problem: ${entry.problem}`) : null,
+            entry.action ? h('div', { class: 'small' }, h('strong', null, entry.decision ? 'Decide: ' : 'To do: '), entry.action) : null);
+        }))) : null,
       h('div', { class: 'ti-columns' },
         h('section', { class: 'card ti-card', 'aria-labelledby': 'ti-plan' }, h('h2', { class: 'card-title', id: 'ti-plan' }, icon('tasks', { size: 14 }), 'Plan'), steps()),
         h('section', { class: 'card ti-card', 'aria-labelledby': 'ti-details' }, h('h2', { class: 'card-title', id: 'ti-details' }, icon('target', { size: 14 }), 'Details'),

@@ -35,6 +35,7 @@ export function createNotificationCenter(ctx) {
   let items = sanitize(readJson(storageKey, []));
   let seq = 0;
   const taskTones = new Map(); // task id → last tone seen this session
+  const taskEpisodes = new Map(); // task id → last Needs You episode seen this session
   const accountStatus = new Map(); // account id → last status seen this session
 
   const badge = h('span', { class: 'notif-badge', hidden: true });
@@ -260,7 +261,14 @@ export function createNotificationCenter(ctx) {
     if (info.tone === 'switching') return;
     const previous = taskTones.get(task.id);
     taskTones.set(task.id, info.tone);
-    if (previous === info.tone || !(info.tone in TASK_TONES) || watching(task.id)) return;
+    const notice = info.group === 'needs' ? task.needs_you_notice : null;
+    const episode = notice ? (notice.episode || (task.needs_you && task.needs_you.at) || '') : null;
+    const prevEpisode = taskEpisodes.get(task.id);
+    if (notice) taskEpisodes.set(task.id, episode);
+    else taskEpisodes.delete(task.id);
+    const sameEpisode = Boolean(notice && episode && prevEpisode === episode);
+    const sameState = notice ? (previous === info.tone && (sameEpisode || !episode)) : previous === info.tone;
+    if (sameState || !(info.tone in TASK_TONES) || watching(task.id)) return;
     const sandbox = sandboxOf(task.sandbox_id);
     // A problem of the whole sandbox several tasks ask about (SPEC-494): one entry per episode
     // (the server names it by its oldest open request), not one per task, wherever the person is.
@@ -276,12 +284,23 @@ export function createNotificationCenter(ctx) {
       });
       return;
     }
+    let route = taskRoute(task);
+    if (notice && typeof notice.link === 'string' && notice.link.startsWith(location.origin)) {
+      try {
+        const parsed = new URL(notice.link);
+        route = `${parsed.pathname}${parsed.search}`;
+      } catch { /* keep taskRoute */ }
+    }
+    const detail = notice
+      ? [notice.happened, notice.action, sandbox ? sandbox.name : null].filter(Boolean).join(' · ').replaceAll('`', '')
+      : `${info.label}${sandbox ? ` · ${sandbox.name}` : ''}`;
     add({
       kind: TASK_TONES[info.tone],
       title: `#${task.number} ${task.title || 'Task'}`,
-      detail: `${info.label}${sandbox ? ` · ${sandbox.name}` : ''}`,
-      route: taskRoute(task),
-      key: `task:${task.id}`,
+      detail,
+      route,
+      key: notice && episode ? `task:${task.id}:${episode}` : `task:${task.id}`,
+      at: (notice && notice.at) || null,
     });
   });
 

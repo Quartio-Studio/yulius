@@ -3186,8 +3186,11 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
   - `tell_staging_outcomes` types each task's outcome into its session once.
   - `cd_status` and the CD page (`CdEnvironment.staging`) list the queue with revisions and run
     ids.
-  - A person's production deploy that promotes waits until staging serves the integration
-    head, verified (read through the CD mirror in `cd_prepare`).
+  - Every promotion waits until staging serves the integration head, verified, read through the
+    CD mirror: `cd_prepare` for a production deploy, `staging_promotion_head` for the Delivery
+    page and the automatic one.
+    - A head that cannot be read is refused.
+    - The queue's verified deploy runs the automatic promotion that waited.
   - A failed deploy that announced a rollback barrier is not restored.
 - **Idempotence.** Each move is a compare-and-set from the state it was read in. One live
   request per requester and revision, and one success per task and environment. The background
@@ -3208,6 +3211,25 @@ stateDiagram-v2
     testing --> superseded: a newer revision of the task
     ready --> superseded: a newer revision of the task
 ```
+
+### Merge-first as the bootstrap default
+
+[Decision 0415](decisions/0415-merge-first-is-the-bootstrap-default-and-reaches-onboarded-projects-through-a-task.md)
+(SPEC-575 MFS-010 to MFS-012).
+
+- **The default, taught.** The built-in `infra-bootstrap` skill, its workflow, the
+  `delivery-pipeline` skill, the onboarding prompt (`onboarding.rs` `CD_SETUP`) and the
+  new-project template make a shared staging target merge-first and add a `[local]` deployment.
+- **The briefing.**
+  - `Foundations.merge_first` replaces "merges deploy nothing" with how staging changes.
+  - `Foundations.local` names `[local]` beside the dev-server ports
+    (`spec_format::parse_yulius_toml_local`).
+- **The upgrade.** At a server start (`App::create_bootstrap_upgrades`, `bootstrap_upgrade.rs`),
+  each onboarded sandbox below `BOOTSTRAP_REVISION` gets one Infra bootstrap task.
+  - It is owned by the sandbox's creator, with an automation's origin.
+  - Its record in `bootstrap_upgrades` (migration 0079) is `laid` at creation or before
+    onboarding, `claimed` while the task is being made, and `linked` once it is made.
+  - Every start finishes a claim left unfinished: it adopts a task made since, else makes it.
 
 ### Rollback
 
@@ -3901,9 +3923,18 @@ on, after a restart as before one. The same holds for a question that took a sec
 flag over.
 
 A live `yulius wait` under Codex counts as a wait whether Codex execs it directly or launches
-it through a shell. The process probe excludes waits adopted by the sandbox init. A failed PR
-check has its own action in the task strip. The terminal reply banner is for a person's turn
-or an explicit request ([SPEC-552](../.ai/specs/SPEC-552-on-codex-agent-keeps-calling-me-even-if.md)).
+it through a shell. The process probe excludes waits adopted by the sandbox init. Every task in
+Needs you carries a unified redacted `NeedsYouNoticeView` (`App::resolve_needs_you_notice`) naming
+what happened, what to do, and where to act—shown beside the task status (even when stopped or
+parked), in the attention bar, Needs you lists, notifications, and identically across `tasks_list`
+and `task_get`, with deduplicated timestamped episodes persisted in `task_wait_messages`. Browser
+handoffs (`browser_request_user_action`) persist on `tasks.needs_you` and clear across tab state,
+persisted requests, and legacy browser `tasks.attention` when answered, dismissed, superseded,
+closed, viewer-cleared (`clear_action`), or ended; untold failed Yulius CI runs on a live session
+and newer progressing CI runs keep the task in Working until human action is needed
+([SPEC-552](../.ai/specs/SPEC-552-on-codex-agent-keeps-calling-me-even-if.md),
+[SPEC-578](../.ai/specs/SPEC-578-show-an-actionable-message-whenever-a-ta.md),
+[ADR-0414](decisions/0414-actionable-needs-you-notices-and-wait-history.md)).
 
 Needs you means a person has to act. An idle agent that stopped reads "Your turn" under Needs you only
 while its work is visibly unfinished: plan steps open, or a goal that Claude Code last recorded as set,

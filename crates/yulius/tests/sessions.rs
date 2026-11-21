@@ -1409,3 +1409,37 @@ async fn agents_search_and_read_only_their_own_sandbox_sessions() -> TestResult 
     assert!(names.contains(&"sessions_search") && names.contains(&"session_read"));
     Ok(())
 }
+
+/// SPEC-575 MFS-012 (review round 1 of slice 4): a sandbox created after the release (imported
+/// here through the real path) is recorded at the current bootstrap revision, so even once
+/// onboarded it never gets an upgrade task: its onboarding laid that default already.
+#[tokio::test]
+async fn a_sandbox_created_after_the_release_gets_no_upgrade_task() -> TestResult {
+    use yulius_app::ports::store_ext::StagingStore as _;
+    let w = World::new("org").await?;
+    let (_user, creds) = w.user("alice", false).await?;
+    ready_repo(&w, "fresh")?;
+    w.grant("alice", "fresh", "admin");
+    let made = import(&w, &creds, "Quartio-Studio/fresh").await?;
+    let sid = SandboxId::parse(text(&made["id"]))?;
+    let recorded = w.h.store.bootstrap_upgrade(&sid).await?.ok_or("recorded")?;
+    assert_eq!(
+        (recorded.revision, recorded.state.as_str()),
+        (yulius_app::bootstrap_upgrade::BOOTSTRAP_REVISION, "laid")
+    );
+    w.h.store
+        .execute_for_tests(&format!(
+            "UPDATE sandboxes SET onboarding_state = 'ready' WHERE id = '{}'",
+            sid.as_str()
+        ))
+        .await?;
+    assert_eq!(w.h.app.create_bootstrap_upgrades().await, 0);
+    assert!(
+        w.h.store
+            .tasks(&sid, false)
+            .await?
+            .iter()
+            .all(|t| t.title != yulius_app::bootstrap_upgrade::UPGRADE_TITLE)
+    );
+    Ok(())
+}
