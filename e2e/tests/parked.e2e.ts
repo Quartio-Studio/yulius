@@ -1672,6 +1672,44 @@ test('Task Info waits for the parked subscription email when its ID changes unde
   await expect(subscription).toHaveText(/Claude #2.*replacement@example.invalid/);
 });
 
+for (const parked of [false, true]) {
+  test(`Task Info applies both overlapping step replies in order for a ${parked ? 'parked' : 'running'} task`, async ({ app, browser }) => {
+    await app.open(mock('/s/studio', '&ambient=0&pullgap=0&pullclock=manual'));
+    await expect(browser.locator('.task-row').first()).toBeVisible();
+    await browser.evaluate((parked) => {
+      const db = (window as unknown as Fixture).__yuliusMock;
+      if (parked) Object.assign(db.tasks.find(t => t.id === 'tsk_studio_14')!, {
+        status: 'parked', activity: 'done', parked_needs_you: true, parked_pr: { number: 521, open: true },
+      });
+      location.hash = '/s/studio/tasks/14';
+    }, parked);
+    await expect(browser.locator('.ti-kv')).toBeVisible();
+    type Fixture = { release: Record<string, () => void>; __yuliusMock: {
+      holdDetail?: Promise<void>; tasks: { id: string; title: string; stepsList: { title: string; status: string }[] }[];
+      eventSockets: Set<{ push(message: string): void }>;
+    } };
+    for (const marker of ['First update', 'Second update']) {
+      await browser.evaluate((marker) => {
+        const w = window as unknown as Fixture;
+        const db = w.__yuliusMock;
+        const task = db.tasks.find(t => t.id === 'tsk_studio_14')!;
+        task.title = marker;
+        task.stepsList = task.stepsList.map((s, i) => ({ ...s, title: i === 0 ? marker : s.title, status: marker === 'First update' ? 'pending' : 'done' }));
+        w.release ??= {};
+        db.holdDetail = new Promise<void>(resolve => { w.release[marker] = resolve; });
+        for (const socket of db.eventSockets) socket.push(JSON.stringify({ type: 'steps.updated', task_id: task.id }));
+      }, marker);
+      await expect.poll(() => browser.evaluate(() => !(window as unknown as Fixture).__yuliusMock.holdDetail)).toBe(true);
+    }
+    for (const marker of ['First update', 'Second update']) {
+      await browser.evaluate((marker) => (window as unknown as Fixture).release[marker](), marker);
+      await expect(browser.locator('.ti-steps')).toContainText(marker);
+      await expect(browser.locator('.ti-stat').nth(3)).toContainText(marker === 'First update' ? '0/7' : '7/7');
+      await expect(browser.locator('.gt-title')).toContainText(marker);
+    }
+  });
+}
+
 test('an older healthy detail cannot clear an unchanged Needs you after a newer parked watch fails', async ({ app, browser }) => {
   await app.open(mock('/s/studio'));
   const facts = await browser.evaluate(async () => {

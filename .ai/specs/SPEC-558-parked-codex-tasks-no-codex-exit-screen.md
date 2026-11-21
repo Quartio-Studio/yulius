@@ -76,6 +76,8 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- On `cb3c16082`, Task Info redisplayed a resolved owner instruction when a later PR failure put the task back under Needs you. The mounted regression passed after the page accepted the complete watched summary. On `5ed4cd05e`, two held step reads answering in start order left a running task’s Plan at 0/7 after all seven step rows completed. On a parked task the header retained the first answer’s title. Both regressions exercise the page through its step events.
+
 - PR #1559 delivered terminal-discovered archive removal. Yulius CI passed its quality, Rust and browser jobs on `650d6c005` and reused that tree on landed dev commit `17b2b65a2`. The security job was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/17b2b65a235e3ed7d9885fdd59ac7da9d8b2f491)
 - On that dev tree, five Task Info Chromium cases failed. They observed an older detail undo a rerun, stale groups after a rerun in either direction, Done after a missed park and rerun, and an older failing Git overview overriding verified completion. The omitted PR identity case already passed. A sixth regression reproduced the old subscription email under a replaced account ID with the same display name. All twelve mounted Task Info and terminal cases passed with the change, as did five subscription-name and privacy cases.
 

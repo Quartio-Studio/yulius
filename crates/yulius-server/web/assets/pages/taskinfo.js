@@ -228,11 +228,13 @@ export function mountTaskInfoView(ctx, sandbox, task) {
   let alive = true;
   let latestRead = 0;
   let appliedRead = 0;
+  let latestSummary = task;
+  let publishing = false;
   const sameAccount = (a, b) => a.account_id === b.account_id && a.account_label === b.account_label;
   async function load() {
     const read = ++latestRead;
-    const startingRow = current;
-    const publish = ctx.store.beginParkedDetail(startingRow);
+    const summaryAtStart = latestSummary;
+    const publish = ctx.store.beginParkedDetail(current);
     try {
       const fresh = await ctx.api.get(`/api/tasks/${enc(task.id)}`, { signal: reads.signal });
       if (!alive || read < appliedRead) return;
@@ -240,14 +242,16 @@ export function mountTaskInfoView(ctx, sandbox, task) {
       detail = fresh;
       detailError = null;
       // A summary received during this request owns public changes such as a rename.
-      // Set the mounted view before publishing, which can notify this page synchronously.
-      if (current === startingRow) current = { ...fresh };
-      current = publish(fresh, current);
+      // Publishing echoes our own read synchronously. Its returned row already includes that update.
+      publishing = true;
+      current = publish(fresh, latestSummary === summaryAtStart ? fresh : current);
+      publishing = false;
       loadWaterfall(ctx, sandbox, `task:${task.id}`, stagesHost, { title: 'Stages of this task' });
     } catch (error) {
       if (!alive || read !== latestRead || error.code === 'aborted') return;
       detailError = error;
     } finally {
+      publishing = false;
       publish.release();
     }
     render();
@@ -258,7 +262,8 @@ export function mountTaskInfoView(ctx, sandbox, task) {
     ctx.store.on('pulls', (sid) => { if (sid === sandbox.id) render(); }),
     // The task moves on while you read: its state, steps and times follow.
     ctx.store.on('task', (t) => {
-      if (t.id !== task.id) return;
+      if (t.id !== task.id || publishing) return;
+      latestSummary = t;
       // Summaries never carry the subscription's email (SPEC-244): a new subscription drops the
       // old one's until the detail is read again.
       const moved = !sameAccount(t, current);
