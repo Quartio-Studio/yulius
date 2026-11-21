@@ -34,19 +34,23 @@ class CompileCache(unittest.TestCase):
         shutil.copy2(SCRIPTS.parent / ".config/tools.toml", path / ".config/tools.toml")
         return path
 
+    def cargo_env(self, home, cargo):
+        home.mkdir(parents=True, exist_ok=True)
+        env = dict(os.environ, HOME=str(home), CARGO=str(cargo), YULIUS_SANDBOX="project",
+                   YULIUS_TOOLS_CACHE=str(home / ".cache/yulius-tools"), XDG_CONFIG_HOME=str(home / ".config"))
+        for name in ("RUSTC_WRAPPER", "CARGO_INCREMENTAL", "MAKEFLAGS", "MFLAGS", "CARGO_MAKEFLAGS", "MBX_REMOTE_URL"):
+            env.pop(name, None)
+        return env
+
     def launch(self, tree, home, mbx, cargo_result=0):
         binary = tree / ".tools/bin/mbx"
         if mbx:
             binary.write_text("#!/usr/bin/env python3\nimport os,sys\n" + mbx)
             binary.chmod(0o755)
-        home.mkdir(parents=True, exist_ok=True)
-        env = dict(os.environ, HOME=str(home), YULIUS_SANDBOX="project", CARGO=str(self.cargo),
-                   RECORD=str(self.record), CARGO_RESULT=str(cargo_result),
-                   YULIUS_TOOLS_CACHE=str(home / ".cache/yulius-tools"))
-        env.pop("RUSTC_WRAPPER", None)
-        env.pop("CARGO_INCREMENTAL", None)
+        env = self.cargo_env(home, self.cargo)
+        env.update(RECORD=str(self.record), CARGO_RESULT=str(cargo_result))
         return subprocess.run([tree / "scripts/cargo", "build"], cwd=tree, env=env,
-                              capture_output=True, text=True, timeout=10)
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
 
     def test_worktree_and_ci_lane_share_only_their_sandbox_store(self):
         import_script = ("print(__import__('json').dumps([os.environ['MBX_CACHE_DIR'], os.getcwd()]), flush=True)\n"
@@ -137,8 +141,9 @@ class CompileCache(unittest.TestCase):
             mbx = self.task / ".tools/bin/mbx"
             mbx.write_text('#!/bin/sh\n"$CARGO" "$@"\n')
             mbx.chmod(0o755)
-            env = dict(os.environ, HOME=str(home), YULIUS_SANDBOX="project", CARGO=str(self.cargo))
-            proc = subprocess.Popen([self.task / "scripts/cargo", "run", ready], env=env, start_new_session=True)
+            env = self.cargo_env(home, self.cargo)
+            proc = subprocess.Popen([self.task / "scripts/cargo", "run", ready], env=env,
+                                    stdin=subprocess.DEVNULL, start_new_session=True)
             try:
                 conn, _ = listener.accept()
                 with conn:
@@ -178,10 +183,7 @@ class CompileCache(unittest.TestCase):
         mbx = self.task / ".tools/bin/mbx"
         mbx.write_text('#!/bin/sh\nexec "$CARGO" "$@"\n')
         mbx.chmod(0o755)
-        env = dict(os.environ, HOME=str(home), CARGO=str(self.cargo), YULIUS_SANDBOX="project")
-        for name in ("RUSTC_WRAPPER", "CARGO_INCREMENTAL", "MAKEFLAGS", "MFLAGS", "CARGO_MAKEFLAGS"):
-            env.pop(name, None)
-        return env
+        return self.cargo_env(home, self.cargo)
 
     def test_a_make_jobserver_token_reaches_cargo(self):
         env = self.caller_fixture("print(os.read(int(os.environ['TOKEN_FD']),1).decode())")
@@ -190,7 +192,7 @@ class CompileCache(unittest.TestCase):
             os.write(write, b"X")
             env.update(CARGO_MAKEFLAGS=f"-j --jobserver-auth={read},{write}", TOKEN_FD=str(read))
             result = subprocess.run([self.task / "scripts/cargo", "build"], env=env,
-                                    pass_fds=(read, write), capture_output=True, text=True, timeout=5)
+                                    stdin=subprocess.DEVNULL, pass_fds=(read, write), capture_output=True, text=True, timeout=5)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.strip(), "X")
         finally:
@@ -231,10 +233,8 @@ class CompileCache(unittest.TestCase):
         mbx = tree / ".tools/bin/mbx"
         if not mbx.exists():
             mbx.symlink_to((SCRIPTS.parent / ".tools/bin/mbx").resolve())
-        env = dict(os.environ, HOME=str(home), CARGO_HOME=str(home / ".cargo"), YULIUS_SANDBOX="project",
-                   CARGO=str(toolchain / "cargo"), RUSTC=str(toolchain / "rustc"), RUSTDOC=str(toolchain / "rustdoc"))
-        env.pop("RUSTC_WRAPPER", None)
-        env.pop("CARGO_INCREMENTAL", None)
+        env = self.cargo_env(home, toolchain / "cargo")
+        env.update(CARGO_HOME=str(home / ".cargo"), RUSTC=str(toolchain / "rustc"), RUSTDOC=str(toolchain / "rustdoc"))
         if incremental is not None:
             env["CARGO_INCREMENTAL"] = incremental
         command = toolchain / "cargo" if plain else tree / "scripts/cargo"
@@ -242,7 +242,7 @@ class CompileCache(unittest.TestCase):
         if package:
             args.extend(["--package", package])
         result = subprocess.run(args, cwd=tree,
-                                env=env, capture_output=True, text=True, timeout=120)
+                                env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
         self.assertEqual(result.returncode, 0, result.stderr)
         return tree / target / "debug/fixture", result.stderr
 

@@ -45,7 +45,7 @@ Exercise the Cargo entry point with real small crates, including an embedded che
 
 Deliver the repository launcher and its 16 GiB store collection first. Deliver instance-side idle-store eviction and scheduled CI evidence together in a second reviewed change. Use mbx 1.30.0 with private Cargo targets and a sandbox-private disk budget. [ADR-0434](../../docs/decisions/0434-keep-a-local-compiler-cache-in-each-project-sandbox.md)
 
-Adopt the policy in Yulius's repository. Bootstrap adoption for quartio-v2 or autoresearch would require explicit project opt-in, a compatible pinned tool and sandbox disk budget, a review of path-sensitive crates and equivalent concurrent, failure and timing evidence in each project.
+Adopt the policy in Yulius's repository. To make it the default emitted by Rust project bootstrap, the onboarding template would install a digest-pinned tool for supported hosts, generate the launcher, wire task and CI commands to it, and honor existing wrappers and a project-level opt-out. Disk upkeep would need a budget and ownership stamp for each enrolled sandbox. Validate the macro and source-path policy, parallel builds, cache loss and cold/warm timings on representative quartio-v2 and autoresearch checkouts before updating that template. Existing projects would adopt it through their own reviewed onboarding changes.
 
 ## Evidence
 
