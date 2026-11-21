@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- Antigravity tasks parked on background `yulius wait` now settle cleanly to Waiting (`yulius_wait = true`, never stuck as Working) so their armed green PRs enter the merge queue on parity with Claude Code and Codex while non-wait background commands still hold the queue; `delivery_status` and `task_delivery` now refresh stale clones to report live PR conflicts (`pr.conflicts = true`) while preserving SPEC-491 union-driver merges and dropping conflicting armed merges with conflicting file names; and armed green PRs stuck outside a merge train now receive an agent check-in after 10 minutes and escalate via SPEC-578 Needs You after 20 minutes, auto-clearing once the PR moves or merges ([ADR-0419](decisions/0419-antigravity-stop-settles-turn-and-armed-green-prs-have-a-stall-bound.md), [SPEC-580](../.ai/specs/SPEC-580-an-armed-green-pr-merges-when-its-agent.md)).
 - Established opaque HTTP/1.1 CONNECT tunnels through the sandbox holder now resume on the same sockets after an orderly Linux server restart. Frozen clients receive queued bytes after thaw, and the restored relay counts against its original limits. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
 - A live task’s PR notice stays pending when a terminal resize or another input owns the writer. The next watch checks whether the owner can receive it (SPEC-558).
 
