@@ -603,7 +603,48 @@ fn losing_exit_reader(before_finalization: bool) -> TestResult {
                 || async { screen(&app, &id).contains("Text for the second run only") },
             )
             .await?;
+            let replacement = app
+                .deps
+                .store
+                .live_attempt(&id)
+                .await?
+                .ok_or("replacement run")?;
+            let (exiting, release_exit) =
+                pause_at_key(Point::HostExitReceived, replacement.id.as_str());
+            let replacement_finished = Arc::new(tokio::sync::Notify::new());
+            let signal = replacement_finished.clone();
+            yulius_app::race::on(
+                Point::HostExitFinalized,
+                Path::new(replacement.id.as_str()),
+                move || signal.notify_one(),
+            );
+            request_one_park(&app).await?;
+            tokio::time::timeout(Duration::from_secs(10), exiting.notified()).await?;
             finish.notify_one();
+            tokio::time::timeout(Duration::from_secs(10), finished.notified()).await?;
+            release_exit.notify_one();
+            tokio::time::timeout(Duration::from_secs(10), replacement_finished.notified()).await?;
+            let settled = app
+                .deps
+                .store
+                .attempt(&replacement.id)
+                .await?
+                .ok_or("settled replacement")?;
+            assert_eq!(
+                settled.exit_reason.as_deref(),
+                Some("parked"),
+                "the late reader consumed the replacement's park request"
+            );
+            let parked = app
+                .deps
+                .store
+                .task(&id)
+                .await?
+                .ok_or("parked replacement")?;
+            assert_eq!(parked.parked_attempt_id.as_ref(), Some(&replacement.id));
+            assert!(screen(&app, &id).contains("Text for the second run only"));
+            let capture = std::fs::read(Path::new(&replacement.run_dir).join("parked-screen"))?;
+            assert!(String::from_utf8_lossy(&capture).contains("Text for the second run only"));
             accepted
         } else {
             // The losing exit reader is still using the old session. A bounded
@@ -623,14 +664,14 @@ fn losing_exit_reader(before_finalization: bool) -> TestResult {
         };
         assert_eq!(accepted["delivered"], "resumed");
         if before_finalization {
-            tokio::time::timeout(Duration::from_secs(10), finished.notified()).await?;
             assert_eq!(
                 std::fs::read(&saved)?,
                 original,
                 "the stale exit reader rewrote the lost run's saved screen"
             );
+        } else {
+            app.stop_task_now(&id).await?;
         }
-        app.stop_task_now(&id).await?;
         Ok::<_, Error>(())
     });
     rt.shutdown_timeout(Duration::from_secs(5));

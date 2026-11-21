@@ -117,6 +117,10 @@ The SQLite query returning a parked task includes the latest attempt ID in the s
 
 ## Evidence
 
+- In isolated run `746fa1e0-e581-400a-a775-c0cf19d5e4c0`, removing only the terminal-attempt guard allowed the stale reader to consume the replacement’s park request. The replacement recorded `exited code=None signal=Some(2)` instead of `parked`. The regression holds both exit readers and checks the replacement’s durable attempt ID and capture after they finish.
+
+- The screen-settlement implementation at `c7ad33727` passed all 185 selected parking, Codex, supervision and lost-screen tests in run `ba615278-18a9-46e7-88ba-e34aceddd074`. Review requested a test that holds the replacement's own park request while the stale reader finishes. It also identified a separate pre-existing live-output path that selects a hub by task after a replacement attaches. That ordering was traced by inspection. [Issue #1624](https://github.com/Quartio-Studio/yulius/issues/1624)
+
 - Before changing the exit and resume paths, run `95aa3f86-7b25-4f96-bd59-b410200f5b88` reproduced three failures on the delivered parked dispatch code. Resume accepted a message during screen publication, accepted another while an exit reader held the old run, and a late reader rewrote the old saved screen with output from the replacement run. Both controls passed. An obsolete message was refused and a held successor PR lookup allowed the owner to resume.
 
 - PR #1621 delivered parked attempt selection at dev `dc08c1a23`. PR run `ed3009cd-2971-4ef9-b3f2-61ecd612bd63` and merge train `e5428c1d-eb75-413e-bb5a-c510dc3e54e7` passed. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/dc08c1a230ec2ca90eeb185a58c69801265877d6)
