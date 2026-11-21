@@ -4,13 +4,8 @@
 
 use std::io::{Read, Write};
 
-use conch_parser::ast::{
-    AndOr, Command, ComplexWord, CompoundCommandKind, DefaultPipeableCommand, DefaultSimpleWord,
-    GuardBodyPair, ListableCommand, Parameter, PipeableCommand, RedirectOrCmdWord, SimpleWord,
-    TopLevelCommand, TopLevelWord, Word,
-};
-use conch_parser::{lexer::Lexer, parse::DefaultParser, token::Token};
 use serde_json::{Value, json};
+use tree_sitter::{Node, Parser};
 
 use crate::hook_client::MAX_INPUT_BYTES;
 
@@ -46,34 +41,22 @@ fn retry_message(body: &[u8]) -> Option<String> {
         return None;
     }
     let command = event["tool_input"]["command"].as_str()?;
-    // For classification, Bash's &> and &>> are redirects of the same simple command as
-    // > and >>. Leave here-documents untouched so their delimiters and contents stay exact.
-    let mut tokens = Lexer::new(command.chars()).peekable();
-    let has_heredoc = command.contains("<<");
-    let tokens = std::iter::from_fn(|| {
-        let token = tokens.next()?;
-        if !has_heredoc
-            && token == Token::Amp
-            && matches!(tokens.peek(), Some(Token::Great | Token::DGreat))
-        {
-            tokens.next()
-        } else {
-            Some(token)
-        }
-    });
-    let commands = DefaultParser::new(tokens)
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_bash::LANGUAGE.into())
         .ok()?;
-    let defines_rm = commands.iter().any(|command| {
-        find_command(command, &|node| {
-            matches!(node, PipeableCommand::FunctionDef(name, _) if name == "rm").then_some(())
-        })
-        .is_some()
+    let tree = parser.parse(command, None)?;
+    let root = tree.root_node();
+    if root.has_error() {
+        return None;
+    }
+    let defines_rm = statements(root).any(|node| {
+        node.kind() == "function_definition"
+            && node
+                .child_by_field_name("name")
+                .is_some_and(|name| &command[name.byte_range()] == "rm")
     });
-    let retry = commands
-        .iter()
-        .find_map(|command| find_command(command, &|node| checked_removal(node, defines_rm)))?;
+    let retry = statements(root).find_map(|node| checked_removal(node, command, defines_rm))?;
     Some(format!(
         "The Bash script has not run. Resubmit it, replacing this removal in place with `{retry}`. \
          Preserve the conditions, loop, variable bindings and other commands. Check the cleanup \
@@ -81,81 +64,84 @@ fn retry_message(body: &[u8]) -> Option<String> {
     ))
 }
 
-fn find_command<T>(
-    command: &TopLevelCommand<String>,
-    visit: &impl Fn(&DefaultPipeableCommand) -> Option<T>,
-) -> Option<T> {
-    // A background shell list has its own execution context.
-    let Command::List(list) = &command.0 else {
-        return None;
-    };
-    std::iter::once(&list.first)
-        .chain(list.rest.iter().map(|op| match op {
-            AndOr::And(c) | AndOr::Or(c) => c,
-        }))
-        .find_map(|item| match item {
-            ListableCommand::Single(cmd) => find_pipe(cmd, visit),
-            ListableCommand::Pipe(_, cmds) => cmds.iter().find_map(|cmd| find_pipe(cmd, visit)),
-        })
-}
-
-fn find_pipe<T>(
-    cmd: &DefaultPipeableCommand,
-    visit: &impl Fn(&DefaultPipeableCommand) -> Option<T>,
-) -> Option<T> {
-    let PipeableCommand::Compound(compound) = cmd else {
-        return visit(cmd);
-    };
-    let search = |command: &TopLevelCommand<String>| find_command(command, visit);
-    let guard = |pair: &GuardBodyPair<TopLevelCommand<String>>| {
-        pair.guard.iter().chain(&pair.body).find_map(search)
-    };
-    match &compound.kind {
-        CompoundCommandKind::For { body, .. }
-        | CompoundCommandKind::Brace(body)
-        | CompoundCommandKind::Subshell(body) => body.iter().find_map(search),
-        CompoundCommandKind::While(pair) | CompoundCommandKind::Until(pair) => guard(pair),
-        CompoundCommandKind::If {
-            conditionals,
-            else_branch,
-        } => conditionals
-            .iter()
-            .find_map(guard)
-            .or_else(|| else_branch.as_ref()?.iter().find_map(search)),
-        CompoundCommandKind::Case { arms, .. } => {
-            arms.iter().flat_map(|arm| &arm.body).find_map(search)
+// Visit executable statements in source order. Words, expansions, definitions and here-doc
+// bodies are not executable statement containers. Bash marks an asynchronous list with "&".
+fn statements(root: Node<'_>) -> impl Iterator<Item = Node<'_>> {
+    let mut pending = vec![root];
+    std::iter::from_fn(move || {
+        let node = pending.pop()?;
+        match node.kind() {
+            "program"
+            | "list"
+            | "pipeline"
+            | "for_statement"
+            | "c_style_for_statement"
+            | "while_statement"
+            | "if_statement"
+            | "elif_clause"
+            | "else_clause"
+            | "case_statement"
+            | "case_item"
+            | "do_group"
+            | "compound_statement"
+            | "subshell"
+            | "negated_command" => {
+                for index in (0..node.named_child_count()).rev() {
+                    if let Some(child) = node.named_child(index)
+                        && !child.next_sibling().is_some_and(|next| next.kind() == "&")
+                    {
+                        pending.push(child);
+                    }
+                }
+            }
+            "redirected_statement" => pending.extend(node.child_by_field_name("body")),
+            _ => {}
         }
-    }
+        Some(node)
+    })
 }
 
-fn checked_removal(cmd: &DefaultPipeableCommand, defines_rm: bool) -> Option<String> {
-    let PipeableCommand::Simple(simple) = cmd else {
-        return None;
-    };
-    // A replacement made only of the command and its operands would lose these effects.
-    if !simple.redirects_or_env_vars.is_empty() {
+// Tree-sitter attaches a trailing redirect to the entire list or pipeline. In Bash it
+// belongs to the last command of that list. A redirect on an enclosing group stays in place.
+fn has_trailing_redirect(mut node: Node<'_>) -> bool {
+    while let Some(parent) = node.parent() {
+        if parent.kind() == "redirected_statement" {
+            return parent.child_by_field_name("body") == Some(node);
+        }
+        if !matches!(parent.kind(), "list" | "pipeline" | "negated_command")
+            || node.next_named_sibling().is_some()
+        {
+            break;
+        }
+        node = parent;
+    }
+    false
+}
+
+fn checked_removal(node: Node<'_>, source: &str, defines_rm: bool) -> Option<String> {
+    if node.kind() != "command" || has_trailing_redirect(node) {
         return None;
     }
-    let mut words = simple
-        .redirects_or_cmd_words
-        .iter()
-        .map(|item| match item {
-            RedirectOrCmdWord::CmdWord(word) => Some(word),
-            RedirectOrCmdWord::Redirect(_) => None,
-        })
-        .collect::<Option<Vec<_>>>()?
-        .into_iter()
-        .peekable();
-    let program = literal(words.next()?)?;
+    let name = node.child_by_field_name("name")?;
+    let program = &source[name.byte_range()];
     if !matches!(program, "rm" | "/bin/rm" | "/usr/bin/rm") || (program == "rm" && defines_rm) {
         return None;
     }
+    let mut cursor = node.walk();
+    // Only the executable and its operands may be replaced, never a redirect or assignment.
+    if node.child_count() != 1 + node.children_by_field_name("argument", &mut cursor).count() {
+        return None;
+    }
+    let mut words = node
+        .children_by_field_name("argument", &mut cursor)
+        .peekable();
     let mut recursive = false;
     let mut force = false;
     let mut end_options = false;
     while let Some(flag) = words
         .peek()
-        .and_then(|word| literal(word))
+        .filter(|word| word.kind() == "word")
+        .map(|word| &source[word.byte_range()])
         .filter(|s| s.starts_with('-'))
     {
         words.next();
@@ -191,7 +177,7 @@ fn checked_removal(cmd: &DefaultPipeableCommand, defines_rm: bool) -> Option<Str
     retry.push_str(" --");
     let mut relevant = false;
     for word in words {
-        let (path, has_variable) = checked_path(word)?;
+        let (path, has_variable) = checked_path(word, source)?;
         if !end_options && path.starts_with('-') {
             return None;
         }
@@ -209,53 +195,57 @@ fn checked_removal(cmd: &DefaultPipeableCommand, defines_rm: bool) -> Option<Str
     ))
 }
 
-fn literal(word: &TopLevelWord<String>) -> Option<&str> {
-    match &word.0 {
-        ComplexWord::Single(Word::Simple(SimpleWord::Literal(text))) => Some(text),
+// Retain only ordinary path fragments and simple named variables. Never replay shell code
+// from an expansion, glob pattern or quoted literal in the suggested replacement.
+fn checked_path(node: Node<'_>, source: &str) -> Option<(String, bool)> {
+    let text = &source[node.byte_range()];
+    let literal = |text: &str| {
+        text.chars()
+            .all(|c| c.is_alphanumeric() || "/._- +".contains(c))
+            .then(|| (text.to_owned(), false))
+    };
+    match node.kind() {
+        "word" | "number" => {
+            // A backslash in an unquoted Bash word quotes its next character.
+            let mut word = String::new();
+            let mut chars = text.chars();
+            while let Some(c) = chars.next() {
+                word.push(if c == '\\' { chars.next()? } else { c });
+            }
+            literal(&word)
+        }
+        "string_content" => literal(text),
+        "raw_string" => literal(text.strip_prefix('\'')?.strip_suffix('\'')?),
+        "simple_expansion" | "expansion" => {
+            let name = node.named_child(0)?;
+            if name.kind() != "variable_name" {
+                return None;
+            }
+            let name = &source[name.byte_range()];
+            if text != format!("${name}") && text != format!("${{{name}}}") {
+                return None;
+            }
+            Some((format!("${{{name}:?}}"), true))
+        }
+        "string" | "concatenation" => {
+            let mut path = String::new();
+            let mut variable = false;
+            let mut cursor = node.walk();
+            // Some literal punctuation is anonymous in the grammar. Every input byte
+            // between the quotes must belong to a fragment we actually rendered.
+            let quotes = usize::from(node.kind() == "string");
+            let mut offset = node.start_byte() + quotes;
+            for part in node.named_children(&mut cursor) {
+                if part.start_byte() != offset {
+                    return None;
+                }
+                let (fragment, has_variable) = checked_path(part, source)?;
+                path.push_str(&fragment);
+                variable |= has_variable;
+                offset = part.end_byte();
+            }
+            (offset == node.end_byte() - quotes).then_some((path, variable))
+        }
         _ => None,
     }
-}
-
-// Render only ordinary pathname fragments and named variables. Substitutions, globs and other
-// shell expressions remain Claude's decision. Literal text must stay literal inside the quotes.
-fn checked_path(word: &TopLevelWord<String>) -> Option<(String, bool)> {
-    let parts = match &word.0 {
-        ComplexWord::Single(part) => std::slice::from_ref(part),
-        ComplexWord::Concat(parts) => parts.as_slice(),
-    };
-    let mut path = String::new();
-    let mut has_variable = false;
-    let literal_part = |text: &str, path: &mut String| -> Option<()> {
-        if !text
-            .chars()
-            .all(|c| c.is_alphanumeric() || "/._- +".contains(c))
-        {
-            return None;
-        }
-        path.push_str(text);
-        Some(())
-    };
-    for part in parts {
-        let simple_parts = match part {
-            Word::Simple(part) => std::slice::from_ref(part),
-            Word::DoubleQuoted(parts) => parts.as_slice(),
-            Word::SingleQuoted(text) => {
-                literal_part(text, &mut path)?;
-                continue;
-            }
-        };
-        for part in simple_parts {
-            match part {
-                SimpleWord::Literal(text) | SimpleWord::Escaped(text) => {
-                    literal_part(text, &mut path)?
-                }
-                DefaultSimpleWord::Param(Parameter::Var(name)) => {
-                    has_variable = true;
-                    path.push_str(&format!("${{{name}:?}}"));
-                }
-                _ => return None,
-            }
-        }
-    }
-    Some((path, has_variable))
 }
