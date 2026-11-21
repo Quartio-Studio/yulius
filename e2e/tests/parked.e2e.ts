@@ -3090,50 +3090,93 @@ test('a mounted terminal follows archive and Undo after receiving only the Close
   await expect(title).toHaveText(/Restored task/);
 });
 
-test('a mounted Closed terminal keeps Undo from its second outstanding detail read', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio', '&ambient=0&pullgap=0&pullclock=manual'));
-  type Fixture = { phase: 'archive' | 'undo'; captured: string[]; releaseArchive(): void; releaseUndo(): void; __yuliusMock: {
-    tasks: { id: string }[]; eventSockets: Set<{ push(data: string): void }>;
-    touchTask(s: string, n: number, fields: object): void } };
-  await browser.evaluate(() => {
-    const db = (window as unknown as Fixture).__yuliusMock;
-    db.touchTask('sb_studio', 13, { status: 'parked', activity: 'done', parked_needs_you: false });
-  });
-  await expect(screen.getByRole('region', 'Done').getByRole('link', /Improve the code/)).toBeVisible();
-  await browser.evaluate(() => {
-    const db = (window as unknown as Fixture).__yuliusMock;
-    Object.assign(db.tasks.find(t => t.id === 'tsk_studio_13')!, { title: 'Opened parked detail' });
-    location.hash = '/s/studio/t/13';
-  });
-  const title = browser.locator('.step-task');
-  await expect(title).toHaveText(/Opened parked detail/);
-  await browser.evaluate(() => {
-    const w = window as unknown as Fixture, db = w.__yuliusMock;
-    const archive = Promise.withResolvers<void>(), undo = Promise.withResolvers<void>();
-    w.releaseArchive = archive.resolve;
-    w.releaseUndo = undo.resolve;
-    w.phase = 'archive';
-    w.captured = [];
-    // Hold every incidental detail read in its phase, so another reader cannot
-    // consume the terminal's gate before the corresponding lifecycle update.
-    Object.defineProperty(db, 'holdDetail', {
-      get() { w.captured.push(w.phase); return w.phase === 'archive' ? archive.promise : undo.promise; },
-      set() {},
+for (const omitted of [false, true]) {
+  test(`a mounted ${omitted ? 'Parked' : 'Closed'} terminal keeps Undo from its second outstanding detail read`, async ({ app, browser, screen }) => {
+    await app.open(mock('/s/studio', '&ambient=0&pullgap=0&pullclock=manual'));
+    type Fixture = { phase: 'archive' | 'undo'; captured: string[]; releaseArchive(): void; releaseUndo(): void; __yuliusMock: {
+      tasks: { id: string }[]; eventSockets: Set<{ push(data: string): void }>;
+      touchTask(s: string, n: number, fields: object): void; changePull(s: string, n: number, fields: object): void } };
+    await browser.evaluate(() => {
+      const db = (window as unknown as Fixture).__yuliusMock;
+      db.touchTask('sb_studio', 12, { status: 'parked', parked_needs_you: false });
+      db.touchTask('sb_studio', 13, { status: 'parked', activity: 'done', parked_needs_you: false });
     });
-    db.touchTask('sb_studio', 13, { status: 'closed', archived: false });
-    Object.assign(db.tasks.find(t => t.id === 'tsk_studio_13')!, { title: 'Held archive', archived: true });
+    await expect(screen.getByRole('region', 'Done').getByRole('link', /Improve the code/)).toBeVisible();
+    await browser.evaluate(() => {
+      const db = (window as unknown as Fixture).__yuliusMock;
+      Object.assign(db.tasks.find(t => t.id === 'tsk_studio_13')!, { title: 'Opened parked detail' });
+      location.hash = '/s/studio/t/13';
+    });
+    const title = browser.locator('.step-task');
+    await expect(title).toHaveText(/Opened parked detail/);
+    if (omitted) {
+      await browser.evaluate(() => {
+        const db = (window as unknown as Fixture).__yuliusMock;
+        Object.assign(db.tasks.find(t => t.id === 'tsk_studio_13')!, { status: 'closed', archived: true });
+        Object.assign(db.tasks.find(t => t.id === 'tsk_studio_12')!, { title: 'List omitted the archive' });
+        db.changePull('sb_studio', 520, { checks: 'success' });
+      });
+      await expect(browser.locator('.task-row').getByText('List omitted the archive')).toBeVisible();
+    }
+    await browser.evaluate((omitted) => {
+      const w = window as unknown as Fixture, db = w.__yuliusMock;
+      const archive = Promise.withResolvers<void>(), undo = Promise.withResolvers<void>();
+      w.releaseArchive = archive.resolve;
+      w.releaseUndo = undo.resolve;
+      w.phase = 'archive';
+      w.captured = [];
+      // Hold every incidental detail read in its phase, so another reader cannot
+      // consume the terminal's gate before the corresponding lifecycle update.
+      Object.defineProperty(db, 'holdDetail', {
+        get() { w.captured.push(w.phase); return w.phase === 'archive' ? archive.promise : undo.promise; },
+        set() {},
+      });
+      if (omitted) {
+        for (const socket of db.eventSockets) socket.push(JSON.stringify({ type: 'steps.updated', task_id: 'tsk_studio_13' }));
+      } else db.touchTask('sb_studio', 13, { status: 'closed', archived: false });
+      Object.assign(db.tasks.find(t => t.id === 'tsk_studio_13')!, { title: 'Held archive', archived: true });
+    }, omitted);
+    if (!omitted) await expect(browser.locator('.strip-status')).toHaveText(/Closed/i);
+    await expect.poll(() => browser.evaluate(() => (window as unknown as Fixture).captured.includes('archive'))).toBe(true);
+    await browser.evaluate(() => {
+      const w = window as unknown as Fixture, db = w.__yuliusMock;
+      w.phase = 'undo';
+      Object.assign(db.tasks.find(t => t.id === 'tsk_studio_13')!, { title: 'Undo from newer detail', archived: false });
+      for (const socket of db.eventSockets) socket.push(JSON.stringify({ type: 'steps.updated', task_id: 'tsk_studio_13' }));
+    });
+    await expect.poll(() => browser.evaluate(() => (window as unknown as Fixture).captured.includes('undo'))).toBe(true);
+    await browser.evaluate(() => (window as unknown as Fixture).releaseArchive());
+    await expect(title).toHaveText(/Held archive/);
+    await browser.evaluate(() => (window as unknown as Fixture).releaseUndo());
+    await expect(title).toHaveText(/Undo from newer detail/);
   });
-  await expect(browser.locator('.strip-status')).toHaveText(/Closed/i);
-  await expect.poll(() => browser.evaluate(() => (window as unknown as Fixture).captured.includes('archive'))).toBe(true);
-  await browser.evaluate(() => {
-    const w = window as unknown as Fixture, db = w.__yuliusMock;
-    w.phase = 'undo';
-    Object.assign(db.tasks.find(t => t.id === 'tsk_studio_13')!, { title: 'Undo from newer detail', archived: false });
-    for (const socket of db.eventSockets) socket.push(JSON.stringify({ type: 'steps.updated', task_id: 'tsk_studio_13' }));
+}
+
+test('a parked terminal can discover archive and Undo after the active list has already omitted it', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const cases = [];
+    for (const removal of ['none', 'delete', 'newer empty list']) {
+      const mounted = { id: 'p', sandbox_id: 's', status: 'parked', archived: false, title: 'Mounted' };
+      const archived = { ...mounted, status: 'closed', archived: true, title: 'Archived' };
+      const undo = { ...archived, archived: false, title: 'Restored' };
+      let reads = 0;
+      const store = createStore({ get: async () => ++reads === 1 ? [mounted] : [] });
+      await store.loadTasks('s');
+      await store.loadTasks('s', true);
+      const notices: string[] = [];
+      store.on('task', (task: typeof mounted) => notices.push(task.title));
+      const archive = store.beginParkedDetail({ ...mounted });
+      const restore = store.beginParkedDetail({ ...mounted });
+      archive(archived);
+      if (removal === 'delete') store.removeTask('p');
+      if (removal === 'newer empty list') await store.loadTasks('s', true);
+      restore(undo);
+      cases.push([notices, store.findTask('p')?.title ?? null]);
+    }
+    return cases;
   });
-  await expect.poll(() => browser.evaluate(() => (window as unknown as Fixture).captured.includes('undo'))).toBe(true);
-  await browser.evaluate(() => (window as unknown as Fixture).releaseArchive());
-  await expect(title).toHaveText(/Held archive/);
-  await browser.evaluate(() => (window as unknown as Fixture).releaseUndo());
-  await expect(title).toHaveText(/Undo from newer detail/);
+  expect(seen).toEqual([[['Archived', 'Restored'], 'Restored'], [['Archived'], null], [['Archived'], null]]);
 });

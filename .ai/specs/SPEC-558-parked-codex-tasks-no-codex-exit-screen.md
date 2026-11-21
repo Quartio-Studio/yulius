@@ -76,6 +76,8 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- Review of `e3ce34f7a` reproduced a Parked terminal missing both Closed and Archived, followed by the active list omitting its row before either detail read started. The mounted archive-and-Undo test stayed on “Opened parked detail”. The store test emitted no archive notice and left the restored row absent. A pending read now retains the mounted task’s identity even after omission. Both mounted starting states passed, and the store regression verified one archive notification, a genuine restoration, and precedence of deletion or a newer empty list.
+
 - On merged #1557, eleven of twelve archive regressions failed. The mounted terminal retained its archived title after Undo when it had received only the preceding Closed event, and it could leave the active task list unchanged when its detail discovered an archive. The change removes the row on verified archive, retains the observation through overlapping reads, and notifies the mounted terminal. The first notification can explain an earlier empty list without adding another membership change.
 
 - PR #1557 delivered verified restoration at dev `4706dbda6`. Yulius CI run `2c77d886-a75a-4b98-a199-724a10d03aac` passed quality, both Rust shards and e2e on `72a8cf148`. Dev run `54b1ee87-7773-4f2e-b266-f1f776ba87a2` reused the identical tree. The product commit passed 1,273 local Chromium tests with one optional skip. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe704d71f9/delivery/evidence/4706dbda696510c1a254ee1c6651802a04a3eca4)

@@ -394,10 +394,9 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
 
   function beginParkedDetail(startingRow) {
     const order = ++nextListRead;
-    // A mounted archived task is outside the active list. Its next detail
-    // can establish that Undo restored it while the terminal was open.
-    const read = { row: state.tasks.get(startingRow?.sandbox_id)?.get(startingRow?.id) ??
-      (startingRow?.archived || restingStatus(startingRow?.status) ? startingRow : undefined) };
+    // The active list can lose a row before the mounted terminal learns
+    // it was archived. Keep its identity until this detail read settles.
+    const read = { row: state.tasks.get(startingRow?.sandbox_id)?.get(startingRow?.id) ?? startingRow };
     if (read.row) activeDetails.add(read);
     const release = () => activeDetails.delete(read);
     const publish = (detail, view = {}) => {
