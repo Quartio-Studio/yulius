@@ -1,6 +1,6 @@
 ---
 yulius-task: 94533bcb-3c26-400e-accf-9972ce2e54ae
-status: in-progress
+status: done
 ---
 
 # SPEC-584. Copy text from a webpage in the sandbox Browser
@@ -26,7 +26,7 @@ The separate Codex terminal menu is covered by [SPEC-582](SPEC-582-fix-clipboard
 - [x] Reproduce the browser Copy failure
 - [x] Capture the clipboard regression in a spec and test
 - [x] Make Copy deliver the requested text
-- [ ] Verify, review and merge the fix into dev
+- [x] Verify, review and merge the fix into dev
 
 ## Acceptance criteria
 
@@ -59,3 +59,5 @@ The person confirmed the Copy button was on a webpage inside the Yulius Browser 
 - The review-fix mutation run listed 6 mutants, caught 4, missed 1 and found 1 unviable. The new private-display fixture catches the missed no-op X command. A package-scoped rerun of that exact mutant reported “1 mutant tested in 13s: 1 caught”.
 - The first whole-change mutation run overlapped edits and some copies mixed source revisions. Its results were discarded. A detached checkout of the corrected implementation supplied the repeat run.
 - Focused mutation testing of native clipboard handling initially missed 15 changes to expiry, cancellation and late X events. A real private-display fixture now checks expired and abandoned requests, wrong windows and properties, and a complete incremental transfer. The repeat covered all 56 native clipboard mutants: 50 caught, 6 unviable, 0 missed. All 66 browser crate unit tests passed.
+- The stable whole-change mutation run reported “mutants: 105 listed, 70 caught, 15 missed, 0 timed out, 20 unviable, 0 not reached (bound 30 min, took 1326 s)”. Every one of the 15 names appears in the caught list of the strengthened native tests.
+- Independent review approved commit `62c1fba53`. The subsequent changes add mutation regression tests and evidence. Following a clean merge of `dev` at `a643b6906`, the real two-Chromium regression and all 39 Browser integration tests passed again. The final PR checks and merge SHA are recorded in task #568’s delivery evidence.
