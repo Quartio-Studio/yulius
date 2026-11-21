@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { failOnPageErrors, mock } from './support.ts';
+import { failOnPageErrors, firstShown, mock } from './support.ts';
 
 failOnPageErrors();
 
@@ -82,7 +82,7 @@ for (const [name, path, heading] of pages) {
   test(`the ${name} page has no overlapping controls and no sideways scroll at 768 and 390 px`, async ({ app, browser, screen }) => {
     await browser.setViewport({ width: 768, height: 900 });
     await app.open(mock(path));
-    await expect(screen.getByRole('heading', { level: 1 })).toHaveText(heading);
+    await firstShown(screen.getByRole('heading', { level: 1 }), heading);
     await expect.poll(() => layoutProblems(browser)).toEqual({ overlaps: [], sideways: false });
 
     await browser.setViewport({ width: 390, height: 844 });
@@ -112,7 +112,7 @@ const gitRoom = (browser: Browser) => browser.evaluate(() => {
 
 test('the Git page beside a tool panel keeps its board columns and summary cards wide enough to read', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/git'));
-  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Git');
+  await firstShown(screen.getByRole('heading', { level: 1 }), 'Git');
   // Without a panel a wide window still shows the board's columns side by side, in one row.
   await expect.poll(() => browser.evaluate(() => new Set([...document.querySelectorAll('#main .dl-col')]
     .map((el) => Math.round(el.getBoundingClientRect().top))).size)).toBe(1);
@@ -134,7 +134,7 @@ test('the Git page beside a tool panel keeps its board columns and summary cards
 // progress bar; the panel's head at its narrowest kept its title.
 test('a task with a tool panel open keeps its step strip and the panel head apart', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
-  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  await firstShown(screen.getByRole('heading', { level: 1 }), '#12 Checkout API');
   await screen.getByRole('button', /^Show tools/).click();
   for (const tool of ['Editor', 'Browser', 'Shell']) {
     await screen.getByRole('navigation', 'Tools').getByRole('button', new RegExp(`^${tool}`)).click();
@@ -162,7 +162,7 @@ const stripRoom = (browser: Browser) => browser.evaluate(() => {
 
 test('a task with a long state keeps its step count clear of the progress bar', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/14'));
-  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#14 Start the preview server');
+  await firstShown(screen.getByRole('heading', { level: 1 }), '#14 Start the preview server');
   await expect(browser.locator('.taskview .strip-status')).toHaveText(/background task still running/);
   for (const width of [1440, 1024, 768]) {
     await browser.setViewport({ width, height: 900 });
@@ -187,14 +187,14 @@ const spilledChips = (browser: Browser) => browser.evaluate(() => [...document.q
 // pull request chip left the label less than its count, even with a short "Done · PR #520".
 test('a task beside a tool panel keeps room for its step count in a narrow strip', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/13'));
-  await expect(screen.getByRole('heading', { level: 1 })).toHaveText(/^#13 /);
+  await firstShown(screen.getByRole('heading', { level: 1 }), /^#13 /);
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('navigation', 'Tools').getByRole('button', /^Shell/).click();
   await expect(screen.getByRole('region', 'Tool panel')).toBeVisible();
   const narrow = new Set<number>();
   for (const task of [13, 14, 7]) {
     await app.open(mock(`/s/studio/t/${task}`));
-    await expect(screen.getByRole('heading', { level: 1 })).toHaveText(new RegExp(`^#${task} `));
+    await firstShown(screen.getByRole('heading', { level: 1 }), new RegExp(`^#${task} `));
     await expect(screen.getByRole('region', 'Tool panel')).toBeVisible();
     // #13 has its pull request in the strip: the chip that broke onto two lines (#542).
     if (task === 13) await expect(browser.locator('.taskview .strip-pr')).toHaveText(/^PR #520/);
@@ -238,7 +238,7 @@ const stripFit = (browser: Browser): Promise<StripFit> => browser.evaluate(() =>
 
 test('the step strip gives way whole chips by priority and never passes its edge', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/13'));
-  await expect(screen.getByRole('heading', { level: 1 })).toHaveText(/^#13 /);
+  await firstShown(screen.getByRole('heading', { level: 1 }), /^#13 /);
   // Auto, "After #12" and two "Then" chips beside the pull request chip, as the server sends them.
   await touchTask(browser, 13, {
     supertask: true,
@@ -318,7 +318,7 @@ const touchTask = (browser: Browser, number: number, changes: unknown) => browse
 // would fit, so the label keeps its room (UI-046; the 560 px query lost to the base rule, #348 review).
 test('a narrow strip beside a panel shows no chip even when one fits', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
-  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  await firstShown(screen.getByRole('heading', { level: 1 }), '#12 Checkout API');
   await touchTask(browser, 12, { nextLinks: [{ task_id: 'tsk_studio_14', number: 14, title: 'Start the preview server', status: 'chained', blocked: null }] });
   await expect.poll(async () => (await stripFit(browser)).shown).toEqual(['Then #14', 'Claude #2']);
   await screen.getByRole('button', /^Show tools/).click();
@@ -335,7 +335,7 @@ test('a narrow strip beside a panel shows no chip even when one fits', async ({ 
 test('a task with a short state keeps it whole while the step name gives way', async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 768, height: 900 });
   await app.open(mock('/s/studio/t/12'));
-  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  await firstShown(screen.getByRole('heading', { level: 1 }), '#12 Checkout API');
   await expect.poll(() => stripRoom(browser)).toEqual({ countInside: true, stateWhole: true });
 });
 
@@ -351,12 +351,12 @@ test('every top-level page is centred, with no empty band on the right', async (
   });
   for (const [, path, heading] of pages) {
     await app.open(mock(path));
-    await expect(screen.getByRole('heading', { level: 1 })).toHaveText(heading);
+    await firstShown(screen.getByRole('heading', { level: 1 }), heading);
     await expect.poll(centred).toBe(true);
   }
   // A builder page (its heading is for screen readers only).
   await app.open(mock('/s/studio/workflows/wf-feature'));
-  await expect.poll(() => browser.evaluate(() => Boolean(document.querySelector('#main .wf-page')))).toBe(true);
+  await firstShown(browser.locator('#main .wf-page'));
   await expect.poll(centred).toBe(true);
 });
 
@@ -391,7 +391,7 @@ const composerControls = (browser: Browser) => browser.evaluate(() => {
 
 test('the new-task composer squeezed keeps its controls in the box, the last row starting at the left', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
-  await expect(screen.getByRole('textbox', 'Task prompt')).toBeVisible();
+  await firstShown(screen.getByRole('textbox', 'Task prompt'));
   // Wide, every control is on one row.
   await expect.poll(async () => (await composerControls(browser)).rows).toBe(1);
   const squeezed = { outside: [], overlaps: 0, lastRowAligned: true, startEndsLastRow: true };

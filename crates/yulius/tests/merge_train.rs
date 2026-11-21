@@ -34,11 +34,14 @@ use yulius_domain::time::Timestamp;
 type BoxResult<T> = Result<T, Box<dyn std::error::Error>>;
 type TestResult = BoxResult<()>;
 
-/// Every wait of a test shares one deadline from its start (SPEC-140 TWT-002): nextest kills a test
+/// The usual fixture shares one deadline from its start (SPEC-140 TWT-002): nextest kills it
 /// at 120 s (`slow-timeout` 30 s × `terminate-after` 4, `.config/nextest.toml`), and a test that
 /// misses its deadline 20 s before reports what it saw. The red train test takes 9 to 10 s alone
 /// and 37 to 41 s in 8 copies at once beside 24 busy loops (load 34 to 79).
 const BUDGET: Duration = Duration::from_secs(100);
+// The two four/five-head scenarios exceeded 100 s on a shard slowed from 4 to 11.7 minutes.
+// Keep one deadline for all their conditions and 30 s to report before nextest intervenes.
+const MULTI_HEAD_BUDGET: Duration = Duration::from_secs(300);
 
 /// One job: two pull requests that each add a `clash-*` file pass alone and fail together (the
 /// kind of conflict no merge shows, F 2026-10-13: two records taking one number).
@@ -183,12 +186,16 @@ struct Fixture {
 }
 
 async fn fixture() -> BoxResult<Fixture> {
-    fixture_with(Project::Standard, None).await
+    fixture_with(Project::Standard, None, BUDGET).await
 }
 
 /// A fixture of `project`, its CI with `lanes` lanes per sandbox when given.
-async fn fixture_with(project: Project, lanes: Option<u32>) -> BoxResult<Fixture> {
-    let deadline = tokio::time::Instant::now() + BUDGET;
+async fn fixture_with(
+    project: Project,
+    lanes: Option<u32>,
+    budget: Duration,
+) -> BoxResult<Fixture> {
+    let deadline = tokio::time::Instant::now() + budget;
     // A short base: job sockets live at <data>/runs/ci-<uuid>/pty.sock (Unix path limit).
     let dir = tempfile::Builder::new().prefix("ytr").tempdir_in("/tmp")?;
     let root = dir.path().canonicalize()?;
@@ -199,7 +206,11 @@ async fn fixture_with(project: Project, lanes: Option<u32>) -> BoxResult<Fixture
         git: Some(Arc::new(crate::support::confined_git())),
         dir: Some(dir),
         configure: Some(Box::new(move |config| {
-            config.ci.job_timeout = Duration::from_secs(60);
+            config.ci.job_timeout = if budget == MULTI_HEAD_BUDGET {
+                budget
+            } else {
+                Duration::from_secs(60)
+            };
             config.ci.max_jobs = 3;
             if let Some(lanes) = lanes {
                 config.ci.lanes = lanes;
@@ -1100,7 +1111,7 @@ async fn a_red_candidate_is_bisected_and_the_breaking_pull_request_told() -> Tes
 /// When the first half lands, the last two recreate the four-member tree that failed.
 #[tokio::test]
 async fn a_bisection_executes_the_failed_tree_only_once() -> TestResult {
-    let f = fixture().await?;
+    let f = fixture_with(Project::Standard, None, MULTI_HEAD_BUDGET).await?;
     let app = f.h.app.clone();
     let mut worktrees = Vec::new();
     for (n, file) in [(1, "a.txt"), (2, "b.txt"), (3, "clash-1"), (4, "clash-2")] {
@@ -3620,7 +3631,12 @@ async fn run_candidate(f: &Fixture, app: &Arc<App>, id: &str) -> BoxResult<RunSt
             return Ok(run.state);
         }
         if tokio::time::Instant::now() > f.deadline {
-            return Err("the candidate did not end".into());
+            return Err(format!(
+                "candidate {id} at {} is still {}",
+                run.sha,
+                run.state.as_str()
+            )
+            .into());
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -3738,7 +3754,7 @@ async fn a_run_that_skipped_a_paths_job_is_no_source_for_a_candidate() -> TestRe
 /// again; `reused`: whether the second takes the first's passed run.
 async fn formed_again(project: Project) -> TestResult {
     let reused = project != Project::Paths;
-    let f = fixture_with(project, None).await?;
+    let f = fixture_with(project, None, BUDGET).await?;
     let app = f.h.app.clone();
     let worktree = f.task(1, &[("f1.txt", "x\n")]).await?;
     f.arm(1, &worktree).await?;
@@ -3814,7 +3830,7 @@ async fn formed_again(project: Project) -> TestResult {
 /// first. No candidate fails on their combination.
 #[tokio::test]
 async fn derived_files_are_changed_one_candidate_at_a_time() -> TestResult {
-    let f = fixture_with(Project::Apart, None).await?;
+    let f = fixture_with(Project::Apart, None, BUDGET).await?;
     let app = f.h.app.clone();
     let mut worktrees = Vec::new();
     for (n, file) in [(1u32, "gen/a.txt"), (2, "gen/b.txt"), (3, "c.txt")] {
@@ -3864,7 +3880,7 @@ async fn derived_files_are_changed_one_candidate_at_a_time() -> TestResult {
 /// own runs took, and its job's output says so.
 #[tokio::test]
 async fn a_candidates_run_takes_a_lane_of_its_members() -> TestResult {
-    let f = fixture_with(Project::Standard, Some(2)).await?;
+    let f = fixture_with(Project::Standard, Some(2), BUDGET).await?;
     let app = f.h.app.clone();
     let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
     let one = f.task(1, &[("a.txt", "x\n")]).await?;
@@ -4169,7 +4185,7 @@ async fn failed_member_leaves(fail_during_decision: bool) -> TestResult {
 /// candidate is cancelled, and all three land in order after their 3 pre-checks and at most 2
 /// candidate runs.
 async fn three_green_in_sequence(project: Project) -> TestResult {
-    let f = fixture_with(project, Some(1)).await?;
+    let f = fixture_with(project, Some(1), BUDGET).await?;
     let app = f.h.app.clone();
     let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
     let mut worktrees = Vec::new();
@@ -4433,7 +4449,7 @@ async fn arming_the_same_head_again_keeps_its_place() -> TestResult {
 /// Four green heads arriving during a running candidate share the first candidate after it.
 #[tokio::test]
 async fn four_heads_that_pass_during_a_candidate_join_the_next_one_in_arm_order() -> TestResult {
-    let f = fixture().await?;
+    let f = fixture_with(Project::Standard, None, MULTI_HEAD_BUDGET).await?;
     let app = &f.h.app;
     let mut worktrees = Vec::new();
     for n in 1..=5 {

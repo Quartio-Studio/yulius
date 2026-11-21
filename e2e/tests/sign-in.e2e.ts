@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, firstShown, FIRST_LOAD_MS, mock } from './support.ts';
 
 failOnPageErrors();
 
@@ -9,7 +9,7 @@ const MOCK_PASSWORD = 'correct horse battery';
 
 test('a wrong password is refused and the right one signs in', async ({ app, browser, screen }) => {
   await app.open(mock('/', '&signedout=1'));
-  await expect(browser).toHaveURL(/#\/signin/);
+  await expect(browser).toHaveURL(/#\/signin/, { timeout: FIRST_LOAD_MS });
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sign in');
 
   // The password form sits in a disclosure below "Sign in with GitHub".
@@ -35,7 +35,7 @@ const NO_GITHUB = /GitHub sign-in isn’t set up on this instance yet/;
 
 test('without a GitHub App the page offers the password, not GitHub', async ({ app, browser, screen }) => {
   await app.open(mock('/', '&signedout=1&github=0'));
-  await expect(browser).toHaveURL(/#\/signin/);
+  await expect(browser).toHaveURL(/#\/signin/, { timeout: FIRST_LOAD_MS });
   await expect(screen.getByText(NO_GITHUB)).toBeVisible();
   await expect(browser.locator('a.btn-github:visible')).toHaveCount(0);
   await expect(browser.locator('a.auth-alt:visible')).toHaveCount(0);
@@ -92,7 +92,7 @@ const signOut = async (browser: Browser, screen: { getByRole: Function }) => {
 
 test('GitHub connected after the page loaded is offered at the next sign-in', async ({ app, browser, screen }) => {
   await app.open(mock('/', '&signedout=1&github=0'));
-  await expect(screen.getByText(NO_GITHUB)).toBeVisible();
+  await firstShown(screen.getByText(NO_GITHUB));
   await screen.getByLabel('Superadmin password').fill(MOCK_PASSWORD);
   await screen.getByRole('button', 'Sign in').click();
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
@@ -113,7 +113,7 @@ test('a stale "not set up" reason is not shown once GitHub is connected', async 
 test('a password typed while the page learns GitHub was connected stays', async ({ app, browser, screen }) => {
   // Signed in before GitHub was connected elsewhere: this session still says it isn't.
   await app.open(mock('/', '&github=0'));
-  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
+  await firstShown(screen.getByRole('heading', { level: 1 }), 'Sandboxes');
   await browser.evaluate(() => { (window as unknown as Mocked).__yuliusMock.finishGithubApp(); });
   await holdStatus(browser);
   await signOut(browser, screen);
@@ -135,7 +135,7 @@ test('a password typed while the page learns GitHub was connected stays', async 
 
 test('GitHub connected in this session is offered at sign-out before the status answers', async ({ app, browser, screen }) => {
   await app.open(mock('/admin/github', '&github=0'));
-  await expect(screen.getByText(/You confirm the app on GitHub/)).toBeVisible();
+  await firstShown(screen.getByText(/You confirm the app on GitHub/));
   await browser.evaluate(() => { window.open = (() => ({ opener: null, closed: false, document: document.implementation.createHTMLDocument(''), close() {} })) as unknown as typeof window.open; });
   await browser.locator('label.field:has(> .field-label:text-is("Owner (organization or user)")) input').fill('Quartio-Studio');
   await screen.getByRole('button', 'Create GitHub App on GitHub').click();
@@ -157,7 +157,7 @@ test('GitHub connected in this session is offered at sign-out before the status 
 
 test('a late status answer for an earlier sign-in page leaves the current one right', async ({ app, browser, screen }) => {
   await app.open(mock('/', '&github=0'));
-  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
+  await firstShown(screen.getByRole('heading', { level: 1 }), 'Sandboxes');
   await browser.evaluate(() => { (window as unknown as Mocked).__yuliusMock.finishGithubApp(); });
   await holdStatus(browser);
   // Page A: drawn from the session (no GitHub), its status read held.
@@ -185,7 +185,7 @@ const MOVED_ADDRESS = /GitHub says it doesn’t know this address/;
 
 test('when GitHub does not know this address the page says so and opens the password', async ({ app, browser, screen }) => {
   await app.open(mock('/', '&signedout=1&callback=missing'));
-  await expect(browser).toHaveURL(/#\/signin/);
+  await expect(browser).toHaveURL(/#\/signin/, { timeout: FIRST_LOAD_MS });
   await expect(screen.getByText(MOVED_ADDRESS)).toBeVisible();
   await expect(screen.getByText(/until the superadmin adds it to the GitHub App \(Settings → Instance says how\)\. The superadmin’s password below works meanwhile\./)).toBeVisible();
   await githubOffered(browser);
@@ -201,7 +201,7 @@ test('the page reads the status once more by itself, and the sentence goes when 
   // `callback=fixed`: the first status says that GitHub refuses the address, and, as on the
   // server, reading it made the instance ask GitHub again, which accepts the address by now.
   await app.open(mock('/', '&signedout=1&callback=fixed'));
-  await expect(browser).toHaveURL(/#\/signin/);
+  await expect(browser).toHaveURL(/#\/signin/, { timeout: FIRST_LOAD_MS });
   const reads = () => browser.evaluate(() => (window as unknown as { __yuliusMock: { asked?: Record<string, number> } }).__yuliusMock.asked?.['/api/setup/status'] ?? 0);
   await expect.poll(reads, { timeout: 15000 }).toBe(2);
   await expect(screen.getByText(MOVED_ADDRESS)).toBeHidden();
@@ -210,7 +210,7 @@ test('the page reads the status once more by itself, and the sentence goes when 
 
 test('the page learns in place that GitHub accepts the address now', async ({ app, browser, screen }) => {
   await app.open(mock('/', '&signedout=1&callback=missing'));
-  await expect(screen.getByText(MOVED_ADDRESS)).toBeVisible();
+  await firstShown(screen.getByText(MOVED_ADDRESS));
   // Signing in and out again reads the status anew, as every sign-in page does.
   await browser.evaluate(() => { (window as unknown as { __yuliusMock: { address: { state: string } } }).__yuliusMock.address.state = 'registered'; });
   const password = screen.getByLabel('Superadmin password');
