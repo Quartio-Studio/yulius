@@ -21,6 +21,7 @@ mod attachment_trash;
 mod auto_choice;
 mod automation_start;
 mod automations;
+mod bootstrap_upgrade;
 mod browser;
 mod browser_network;
 mod cd;

@@ -753,7 +753,8 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
 - **Merge** uses the profile's merge method and passes the head that was checked as the
   expected head; a PR head that differs from the task worktree's head is refused as stale.
   With `auto_promote` (Studio), the integration branch is promoted right after a merge done
-  through Yulius once no integration environment is pending; the outcome is added to `notes`
+  through Yulius once no integration environment is pending (with a merge-first staging target:
+  once the staging queue verified the head, SPEC-575); the outcome is added to `notes`
   and audited. With `require_checks`, an automatic fast-forward does not wait for the
   integration head's own checks (they may not have reported yet), and is stopped by failing
   or unreadable ones ("Automatic promotion did not happen: …"). No other path merges,
@@ -993,6 +994,15 @@ merge_first = true                  # at most one; needs deploy, verify and roll
                                     #   after_merge jobs off pull requests (SPEC-575, ADR-0410)
 ```
 
+A task-local deployment (SPEC-575 MFS-010, ADR-0415) is one table:
+
+```toml
+[local]
+about = "the app and its database in docker compose, on this sandbox's ports"
+deploy = "scripts/cd/deploy.sh local"   # required; deploys into this sandbox only
+verify = "scripts/cd/verify.sh local"   # optional
+```
+
 The merge-first environment changes only through its staging queue (ADR-0411):
 
 - A task's agent's `cd_deploy` of it records a staging request for the task's newest landing on
@@ -1018,8 +1028,12 @@ The merge-first environment changes only through its staging queue (ADR-0411):
 - The deploy scripts of a merge-first target must be idempotent: a run lost to a restart is
   retried, up to three attempts.
 - A failed deploy that announced a rollback barrier is not restored; its request says so.
-- With a merge-first target, a production deploy that promotes is refused (409) until staging
-  serves the integration head, verified.
+- With a merge-first target, every promotion (a production deploy's, `POST …/delivery/promote`,
+  the profile's automatic one) is refused (409) until staging serves the integration head,
+  verified; the automatic promotion then runs once the staging queue verified it.
+- For every project, `POST …/delivery/promote` and the automatic promotion read the integration
+  head and its `[cd.*]` tables through the verified CD mirror first, and answer 409 when they
+  cannot be read: a fetch failure, or an invalid `yulius.toml` at the head.
 
 A run deploys the commit GitHub reports for the branch, taken into a mirror only Yulius writes
 (every object checked, replacement refs ignored). It writes the commit's files into the run's own
