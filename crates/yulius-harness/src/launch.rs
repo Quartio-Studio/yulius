@@ -803,7 +803,8 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
 
 /// The `config.toml` Yulius writes into a Codex home before each run: credentials stay in its
 /// `auth.json` (the vault's copy, written back after the run), and Codex neither checks for
-/// updates (the operator installs it, #45) nor asks to trust the worktree. The agent's shell keeps
+/// updates (the operator installs it, #45), asks to trust the worktree or offers to switch models
+/// near the rate limit (SPEC-603). The agent's shell keeps
 /// the run's environment (Codex's default) except `CODEX_HOME`: a `codex` the agent runs there
 /// uses its own home, never this one with Yulius's hooks (SPEC-281 SSN-002).
 fn codex_config(worktree: &str, pro_500: bool) -> Vec<u8> {
@@ -814,6 +815,7 @@ fn codex_config(worktree: &str, pro_500: bool) -> Vec<u8> {
     };
     format!(
         "cli_auth_credentials_store = \"file\"\ncheck_for_update_on_startup = false\n{speed}\n\
+         [notice]\nhide_rate_limit_model_nudge = true\n\n\
          [shell_environment_policy]\nignore_default_excludes = true\nexclude = [\"CODEX_HOME\"]\n\n\
          [projects.{}]\ntrust_level = \"trusted\"\n",
         toml_string(worktree)
