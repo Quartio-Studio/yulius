@@ -2167,6 +2167,7 @@ async fn goal_stop_continues_unfinished_spec_then_explains_the_retry_limit() -> 
 async fn goal_stop_yields_to_a_live_yulius_wait_then_continues_the_step() -> TestResult {
     use std::time::Duration;
     let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Check the build").await?;
+    assert_eq!(stop_of(&f, Agent::Codex).await?["decision"], "block");
     let app = Arc::clone(&f.h.app);
     let initial = app.agent_wait_state(TOKEN, None).await?;
     let waiter = tokio::spawn(async move {
@@ -2181,6 +2182,11 @@ async fn goal_stop_yields_to_a_live_yulius_wait_then_continues_the_step() -> Tes
     .await?;
     assert!(stop_of(&f, Agent::Codex).await?["decision"].is_null());
     assert_eq!(task_brief(&f).await?["shows"], "working");
+    assert_eq!(
+        f.h.store.task(&f.task).await?.ok_or("task")?.gate_blocks,
+        1,
+        "the same step waits for machine news"
+    );
     waiter.abort();
     assert!(waiter.await.is_err_and(|e| e.is_cancelled()));
     assert_eq!(stop_of(&f, Agent::Codex).await?["decision"], "block");
@@ -2370,19 +2376,29 @@ async fn goal_stop_restores_working_when_the_turn_was_last_seen_waiting() -> Tes
             .is_empty()
     );
     let mut updated = false;
+    let mut plan_published = false;
     while let Ok(envelope) = events.try_recv() {
-        if let yulius_contracts::events::UiEvent::TaskUpdated { task } = envelope.event
-            && task.id == f.task.as_str()
-        {
-            updated = true;
-            assert!(
-                task.needs_you_notice.is_none(),
-                "intermediate notice: {:?}",
-                task.needs_you_notice
-            );
+        match envelope.event {
+            yulius_contracts::events::UiEvent::TaskUpdated { task }
+                if task.id == f.task.as_str() =>
+            {
+                updated = true;
+                assert!(
+                    task.needs_you_notice.is_none(),
+                    "intermediate notice: {:?}",
+                    task.needs_you_notice
+                );
+            }
+            yulius_contracts::events::UiEvent::StepsUpdated { task_id }
+                if task_id == f.task.as_str() =>
+            {
+                plan_published = true;
+            }
+            _ => {}
         }
     }
     assert!(updated, "the final working state was published");
+    assert!(plan_published, "the synchronized steps were published");
     Ok(())
 }
 

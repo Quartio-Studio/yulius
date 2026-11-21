@@ -30,7 +30,7 @@ Earlier user requests establish the ownership rule. Task #534 concerned automate
 - [x] Route unfinished work to its automatic continuation owner
 - [x] Preserve goal continuation through capacity recovery and a busy browser
 - [x] Track completed background work and concurrent plan progress at Stop
-- [ ] Preserve the in-flight turn during spec publication and a requested subscription switch
+- [x] Preserve the in-flight turn during spec publication and a requested subscription switch
 - [ ] Distinguish owner input from native goal restoration and preserve prompt-mode rotation
 - [ ] Verify the fix and obtain independent approval
 

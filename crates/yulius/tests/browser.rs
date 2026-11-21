@@ -1318,7 +1318,19 @@ async fn goal_stop_observes_the_browser_action_for_its_own_task() -> TestResult 
         task.activity = Some(Activity::Working);
         let task = f.h.store.insert_task(&task).await?;
         let token = "fixture-browser-goal";
-        seed_live_attempt(&f.h, task.id.as_str(), token).await?;
+        let mut run =
+            f.h.store
+                .live_attempt(&TaskId::parse("t1")?)
+                .await?
+                .ok_or("fixture run")?;
+        run.id = yulius_domain::ids::AttemptId::parse("browser-goal-run")?;
+        run.task_id = task.id.clone();
+        run.account_id =
+            Some(crate::pool_supervision::add_account(&f.h.app, "browser-account").await?);
+        run.token_hash = f.h.app.deps.crypto.sha256_hex(token.as_bytes());
+        let run_dir = tempfile::tempdir()?;
+        run.run_dir = run_dir.path().to_string_lossy().into_owned();
+        f.h.store.insert_attempt(&run).await?;
         let ctx = f.h.app.agent_context(token).await?;
         f.h.app
             .tool_steps_set(
@@ -1344,9 +1356,24 @@ async fn goal_stop_observes_the_browser_action_for_its_own_task() -> TestResult 
         let tab = browser.tabs().first().ok_or("tab")?.id.clone();
         // The live tab already owns a human action before the task activity has caught up.
         browser.request_user_action(&tab, "Sign in to the test account", Some(&task.id))?;
-        let input = yulius_contracts::hooks::HookInput::default();
-        let stop = || f.h.app.hook_event(token, "claude", "Stop", &input, None);
-        let yulius_app::hooks::HookReply::Output(held) = stop().await? else {
+        use yulius_app::ports::browser::BrowserPort;
+        let lookup = Arc::new(crate::delivery::HeldBrowserLookup::with_session(
+            browser.clone(),
+        ));
+        let (entered, release) = lookup.hold_publication_lookup(&task.id);
+        lookup.running(&task.sandbox_id).await;
+        let mut deps = f.h.app.deps.clone();
+        deps.browser = lookup;
+        let app = yulius_app::context::App::new(f.h.app.config.clone(), deps);
+        let observing = app.clone();
+        let stop = tokio::spawn(async move {
+            observing
+                .hook_event(token, "claude", "Stop", &Default::default(), None)
+                .await
+        });
+        tokio::time::timeout(WAIT, entered.notified()).await?;
+        release.notify_one();
+        let yulius_app::hooks::HookReply::Output(held) = stop.await?? else {
             return Err("capacity hold".into());
         };
         assert!(held.decision.is_none());
@@ -1356,7 +1383,10 @@ async fn goal_stop_observes_the_browser_action_for_its_own_task() -> TestResult 
             "Sign in for a different task",
             Some(&TaskId::parse("t1")?),
         )?;
-        let yulius_app::hooks::HookReply::Output(resumed) = stop().await? else {
+        let yulius_app::hooks::HookReply::Output(resumed) = app
+            .hook_event(token, "claude", "Stop", &Default::default(), None)
+            .await?
+        else {
             return Err("capacity hold".into());
         };
         assert_eq!(resumed.decision.as_deref(), Some("block"));
