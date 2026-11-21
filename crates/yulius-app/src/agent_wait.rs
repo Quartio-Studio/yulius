@@ -357,22 +357,6 @@ impl App {
         self.restore_task_arm_if_needed(&task.id).await;
         let runtime = self.runtime(&task.id);
         let _writer = runtime.arm_writer.lock().await;
-        crate::race::reached(
-            crate::race::Point::ArmWriteStarted,
-            std::path::Path::new(task.id.as_str()),
-        );
-        // A request can have verified its head before parking took the writer.
-        // The reader may already have taken the intent to persist the Parked state.
-        use yulius_domain::task::TaskStatus;
-        let parking = runtime.park_committed();
-        if self.deps.store.task(&task.id).await?.is_some_and(|now| {
-            now.status == TaskStatus::Parked
-                || (parking && matches!(now.status, TaskStatus::Running | TaskStatus::Switching))
-        }) {
-            return Err(crate::error::AppError::Conflict(
-                "The session is parking or parked. Resume it before arming the merge.".into(),
-            ));
-        }
         self.reconcile_arm_change(&task.id, &runtime).await?;
         if lock_slot(&runtime)
             .merge
