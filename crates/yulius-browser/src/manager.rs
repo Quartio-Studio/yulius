@@ -256,14 +256,22 @@ async fn wait_until_ready(
     }
 }
 
-async fn prepare_profile(profile_dir: &Path) -> Result<(), BrowserError> {
+/// Creates the profile (mode 0700) and removes Chrome's locks no running browser holds
+/// (SPEC-593); returns the pid of a running process of this host whose lock was kept.
+async fn prepare_profile(profile_dir: &Path) -> Result<Option<u32>, BrowserError> {
     use std::os::unix::fs::PermissionsExt;
     tokio::fs::create_dir_all(profile_dir)
         .await
         .map_err(BrowserError::Profile)?;
     tokio::fs::set_permissions(profile_dir, std::fs::Permissions::from_mode(0o700))
         .await
-        .map_err(BrowserError::Profile)
+        .map_err(BrowserError::Profile)?;
+    crate::profile::clear_stale_locks(
+        profile_dir,
+        &crate::profile::host_name()?,
+        crate::profile::process_running,
+    )
+    .await
 }
 
 impl BrowserManager {
@@ -388,7 +396,32 @@ impl BrowserManager {
         profile_dir: &Path,
     ) -> Result<Arc<BrowserInstance>, BrowserError> {
         let exe = resolve_executable(&self.config.chromium_exe)?;
-        prepare_profile(profile_dir).await?;
+        let held = prepare_profile(profile_dir).await?;
+        let started = self.start(state, sandbox, profile_dir, &exe).await;
+        match (started, held) {
+            // Chrome handed over to the process holding the profile, or waits for it: say so.
+            (
+                Err(
+                    error @ (BrowserError::ExitedEarly { .. }
+                    | BrowserError::StartupTimeout { .. }
+                    | BrowserError::Cdp(_)),
+                ),
+                Some(pid),
+            ) => Err(BrowserError::ProfileInUse {
+                pid,
+                error: Box::new(error),
+            }),
+            (started, _) => started,
+        }
+    }
+
+    async fn start(
+        &self,
+        state: &mut BrowserState,
+        sandbox: &SandboxId,
+        profile_dir: &Path,
+        exe: &Path,
+    ) -> Result<Arc<BrowserInstance>, BrowserError> {
         // Its way out first: a browser that cannot have it is not started (ADR-0321). A start
         // that fails below drops the lease, which closes it.
         let network = match &self.config.network {
@@ -413,7 +446,7 @@ impl BrowserManager {
             env.extend(display.env());
         }
         let (process, pipe) =
-            Supervised::spawn_with_devtools_pipe(&exe, &args, &env).map_err(BrowserError::Spawn)?;
+            Supervised::spawn_with_devtools_pipe(exe, &args, &env).map_err(BrowserError::Spawn)?;
         let process = Arc::new(process);
         *state = BrowserState::Starting {
             display: display.clone(),
