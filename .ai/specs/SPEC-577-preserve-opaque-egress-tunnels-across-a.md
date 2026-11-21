@@ -63,7 +63,7 @@ new request after the old sockets reach EOF. The issue requires the original con
 - [x] Restore matched proxy and relay pairs on the delivered holder lifecycle
 - [x] Bind the original relay at CONNECT and retain final bytes until both copies drain
 - [x] Independent review in a fresh session, findings fixed test-first
-- [x] Every gate green, docs and the changes log updated
+- [x] Yulius CI passed with Vidoc disabled, and the docs and changes log are updated
 
 ## Acceptance criteria
 
