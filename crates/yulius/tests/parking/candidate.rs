@@ -178,7 +178,13 @@ fn with_idle_candidate(
         rt.block_on(Box::pin(restore_owner(&data, &case, &id, &head, &original)))?;
     rt.block_on(async {
         let result = check(&data, &app, &remote, id.clone(), head).await;
-        app.stop_task_now(&id).await?;
+        if !super::status_of(&app, &id)
+            .await
+            .0
+            .is_some_and(|state| state.is_resting())
+        {
+            app.stop_task_now(&id).await?;
+        }
         result
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -219,6 +225,257 @@ fn a_singleton_decided_on_a_new_base_during_the_host_probe_keeps_the_owner_live(
         })
         .await?;
         expect_park_deferred(app, &id, || {}).await?;
+        Ok(())
+    })
+}
+
+#[test]
+fn the_owner_stays_live_while_its_replacement_merge_is_being_armed() -> TestResult {
+    contending_merge_request(true)
+}
+
+#[test]
+fn a_merge_requested_while_its_owner_is_committed_to_park_is_refused() -> TestResult {
+    contending_merge_request(false)
+}
+
+fn contending_merge_request(arm_first: bool) -> TestResult {
+    with_idle_candidate(async |_, app, remote, id, head| {
+        let ctx = pending_owner_merge(app, remote, &id, &head).await?;
+        if !arm_first {
+            let (decided, release) = super::pause_watch_or_queue(super::Point::ParkDecided, &id);
+            let park = {
+                let app = app.clone();
+                let id = id.clone();
+                tokio::spawn(async move {
+                    super::parked(&app, &id)
+                        .await
+                        .map_err(|err| err.to_string())
+                })
+            };
+            tokio::time::timeout(Duration::from_secs(10), decided.notified()).await?;
+            let request = app.merge_for_person(&ctx, id.as_str()).await;
+            release.notify_one();
+            park.await??;
+            assert!(
+                matches!(&request, Err(yulius_app::error::AppError::Conflict(reason)) if reason.contains("park")),
+                "merge during park: {request:?}"
+            );
+            return Ok(());
+        }
+        let (entered, release) = super::pause_watch_or_queue(super::Point::ArmWriteStarted, &id);
+        let mut arming = {
+            let app = app.clone();
+            let id = id.clone();
+            tokio::spawn(async move { app.merge_for_person(&ctx, id.as_str()).await })
+        };
+        tokio::select! {
+            () = entered.notified() => (),
+            result = &mut arming => return Err(format!("merge completed before arm write: {:?}", result?).into()),
+        }
+        let decision = expect_park_deferred(app, &id, || {}).await;
+        release.notify_one();
+        let armed = arming.await??;
+        decision?;
+        assert_eq!(armed["armed"], true);
+        Ok(())
+    })
+}
+
+#[test]
+fn a_merge_prepared_while_running_checks_the_settled_park_before_arming() -> TestResult {
+    with_idle_candidate(async |_, app, remote, id, head| {
+        let ctx = pending_owner_merge(app, remote, &id, &head).await?;
+        let (decided, finish_park) = super::pause_watch_or_queue(super::Point::ParkDecided, &id);
+        let (admitting, finish_arm) =
+            super::pause_watch_or_queue(super::Point::ArmWriteStarted, &id);
+        let parking_app = app.clone();
+        let parking_id = id.clone();
+        let park = tokio::spawn(async move {
+            super::parked(&parking_app, &parking_id)
+                .await
+                .map_err(|err| err.to_string())
+        });
+        tokio::time::timeout(Duration::from_secs(10), decided.notified()).await?;
+        let merge_app = app.clone();
+        let merge_id = id.clone();
+        let request =
+            tokio::spawn(async move { merge_app.merge_for_person(&ctx, merge_id.as_str()).await });
+        tokio::time::timeout(Duration::from_secs(10), admitting.notified()).await?;
+        finish_park.notify_one();
+        let settled = park.await?;
+        finish_arm.notify_one();
+        settled?;
+        let result = request.await?;
+        assert!(
+            matches!(&result, Err(yulius_app::error::AppError::Conflict(reason)) if reason.contains("parked")),
+            "merge after park settled: {result:?}"
+        );
+        Ok(())
+    })
+}
+
+async fn pending_owner_merge(
+    app: &Arc<yulius_app::context::App>,
+    remote: &Arc<crate::support::FakeGitHub>,
+    id: &TaskId,
+    head: &str,
+) -> Result<yulius_app::auth::AuthContext, Error> {
+    let task = app.deps.store.task(id).await?.ok_or("task")?;
+    let span = app
+        .deps
+        .store
+        .latest_merge_wait(id)
+        .await?
+        .ok_or("candidate")?;
+    assert!(
+        app.deps
+            .store
+            .retire_singleton(id, &span, app.now())
+            .await?
+    );
+    let (mut rerun, job) = crate::pr_watch::run(
+        &task.sandbox_id,
+        "ordinary-rerun",
+        head,
+        RunState::Running,
+        None,
+        app.now().0,
+    );
+    rerun.reference = CiRef::PullRequest(1481);
+    app.deps.store.insert_ci_run(&rerun, &[job]).await?;
+    remote.set_checks(head, ChecksState::Pending);
+    remote.pulls.lock().map_err(|_| "pulls")?[0].title = "fix(search): repair latency".into();
+    let ctx = yulius_app::auth::AuthContext {
+        user: app.deps.store.user(&task.owner).await?.ok_or("owner")?,
+        csrf_token: None,
+        session_hash: None,
+        token: None,
+    };
+    Ok(ctx)
+}
+
+#[test]
+fn an_overtaken_switch_refuses_to_arm_after_the_run_reader_takes_the_park() -> TestResult {
+    merge_while_switching(true)
+}
+
+#[test]
+fn a_normal_subscription_switch_allows_the_owners_pending_merge() -> TestResult {
+    merge_while_switching(false)
+}
+
+fn merge_while_switching(parking: bool) -> TestResult {
+    with_idle_candidate(async |_, app, remote, id, head| {
+        let ctx = pending_owner_merge(app, remote, &id, &head).await?;
+        let (taken, release) = super::pause_watch_or_queue(super::Point::RunEndTaken, &id);
+        let app2 = app.clone();
+        let id2 = id.clone();
+        let settling = if parking {
+            let switch_app = app.clone();
+            let switch_id = id.clone();
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                super::Point::ParkDecided,
+                Path::new(id.as_str()),
+                move || {
+                    let switched = tokio::task::block_in_place(|| {
+                        handle
+                            .block_on(switch_app.switch_task_now(&switch_id, None, "manual", None))
+                    });
+                    assert!(
+                        switched.is_err_and(|err| err
+                            .to_string()
+                            .contains("the idle session was parked"))
+                    );
+                },
+            );
+            tokio::spawn(async move {
+                super::parked(&app2, &id2)
+                    .await
+                    .map_err(|err| err.to_string())
+            })
+        } else {
+            tokio::spawn(async move {
+                app2.switch_task_now(&id2, None, "manual", None)
+                    .await
+                    .map(|_| ())
+                    .map_err(|err| err.to_string())
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(10), taken.notified()).await?;
+        let state = super::status_of(app, &id).await.0;
+        let request = app.merge_for_person(&ctx, id.as_str()).await;
+        let armed = app.merge_state_for_person(&ctx, id.as_str()).await?;
+        release.notify_one();
+        settling.await??;
+        assert_eq!(state, Some(yulius_domain::task::TaskStatus::Switching));
+        if parking {
+            assert!(
+                matches!(&request, Err(yulius_app::error::AppError::Conflict(reason)) if reason.contains("park")),
+                "{request:?}"
+            );
+            assert_eq!(armed["armed"], false);
+        } else {
+            assert_eq!(request?["armed"], true);
+            assert_eq!(armed["armed"], true);
+        }
+        Ok(())
+    })
+}
+
+#[test]
+fn a_capacity_pause_cannot_accept_a_merge_after_parking_commits() -> TestResult {
+    capacity_pause_merge(true)
+}
+
+#[test]
+fn a_capacity_pause_without_a_park_can_accept_a_merge() -> TestResult {
+    capacity_pause_merge(false)
+}
+
+fn capacity_pause_merge(parking: bool) -> TestResult {
+    use yulius_app::model::PauseKind;
+    use yulius_domain::task::TaskStatus;
+    with_idle_candidate(async |_, app, remote, id, head| {
+        let ctx = pending_owner_merge(app, remote, &id, &head).await?;
+        let release = if parking {
+            let (taken, release) = super::pause_watch_or_queue(super::Point::RunEndTaken, &id);
+            super::wait_for(
+                "the run to commit its park",
+                Duration::from_secs(10),
+                || async { app.park_idle_sessions_now().await == 1 },
+            )
+            .await?;
+            tokio::time::timeout(Duration::from_secs(10), taken.notified()).await?;
+            Some(release)
+        } else {
+            None
+        };
+        app.pause_task(&id, PauseKind::Prompt, None, None).await?;
+        let state = super::status_of(app, &id).await.0;
+        let request = app.merge_for_person(&ctx, id.as_str()).await;
+        let armed = app.merge_state_for_person(&ctx, id.as_str()).await;
+        if let Some(release) = release {
+            release.notify_one();
+            super::wait_for(
+                "the paused ending run to close",
+                Duration::from_secs(10),
+                || async { super::status_of(app, &id).await.0 == Some(TaskStatus::Closed) },
+            )
+            .await?;
+        }
+        assert_eq!(state, Some(TaskStatus::WaitingCapacity));
+        if parking {
+            assert!(
+                matches!(&request, Err(yulius_app::error::AppError::Conflict(_))),
+                "{request:?}"
+            );
+            assert_eq!(armed?["armed"], false);
+        } else {
+            assert_eq!(request?["armed"], true);
+            assert_eq!(armed?["armed"], true);
+        }
         Ok(())
     })
 }

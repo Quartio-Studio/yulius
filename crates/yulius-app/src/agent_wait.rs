@@ -357,6 +357,29 @@ impl App {
         self.restore_task_arm_if_needed(&task.id).await;
         let runtime = self.runtime(&task.id);
         let _writer = runtime.arm_writer.lock().await;
+        crate::race::reached(
+            crate::race::Point::ArmWriteStarted,
+            std::path::Path::new(task.id.as_str()),
+        );
+        // A request can have verified its head before parking took the writer.
+        // The reader may already have taken the intent to persist the Parked state.
+        if runtime.park_committed() {
+            return Err(crate::error::AppError::Conflict(
+                "The session is parking. Resume it before arming the merge.".into(),
+            ));
+        }
+        let current = self
+            .deps
+            .store
+            .task(&task.id)
+            .await?
+            .ok_or(crate::error::AppError::NotFound)?;
+        if !current.status.keeps_an_armed_merge() {
+            return Err(crate::error::AppError::Conflict(format!(
+                "The task is {}. Resume it before arming the merge.",
+                current.status.as_str()
+            )));
+        }
         self.reconcile_arm_change(&task.id, &runtime).await?;
         if lock_slot(&runtime)
             .merge

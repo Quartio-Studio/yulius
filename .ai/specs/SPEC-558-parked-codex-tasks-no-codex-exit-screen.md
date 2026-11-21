@@ -110,7 +110,14 @@ The live watcher resolves ordinary CI for the owner at the armed head and reads 
 
 The final parking check compares the owner’s saved singleton decision with the verified PR head and integration base. A change to the saved merge decision during hosted verification defers the pass. A changed base or published repair retires the old failure for this decision.
 
+The final parking decision and replacement merge admission share the task’s merge writer. A replacement admitted first keeps the owner live. Once parking commits, the owner must resume before arming a merge. This holds while the run reader records the end, including an overlapping subscription switch or capacity pause.
+
 ## Evidence
+
+- On the tree of dev `f5d772b6c`, five real parking/merge races failed. An arm writer lost its live owner, and a pending merge was admitted during a committed park, during an overtaken switch or capacity pause, and after the task had settled parked. The ordinary switch and capacity pause controls passed.
+- The preceding parking verification campaign reported 79 mutations, with 19 caught, 12 missed and 48 unviable. Targeted replays caught all 12 survivors. The retained regressions cover a changed base SHA during checks and a live queue decision whose head or reason differs from the saved failure.
+
+- PR #1597 landed on dev at `03661c9dc`. PR run `bfbedf0a-3e2a-4aec-bf84-15a2f70b8ab6` passed on `84a430398`. Train run `2efca3b9-8474-44d2-aa83-7a1e74ae94fe` passed quality, both test shards and browser E2E. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/03661c9dcf52a7ad1d4562f0873a8b9cd8cc994e)
 
 - Independent review approved the parking decision at `9bdbd5bc1e8c6be3b41713e904f4ed21563166d7`. All seven parking controls passed independently on the prior binary with the same candidate behavior. The full product tree for this delivery matches `e740eb5db`. The bounded mutation run and its focused replays continue separately. Vidoc was disabled. The historical Quartio instance needs a release containing the change for a live check.
 

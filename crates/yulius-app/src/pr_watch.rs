@@ -2701,6 +2701,42 @@ mod tests {
 
     const MIN: i64 = 60 * 1000;
 
+    #[test]
+    fn a_saved_candidate_consumes_only_the_same_live_head_and_failure()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let span = crate::stages::SpanRecord {
+            sandbox_id: SandboxId::parse("s-one")?,
+            subject_kind: yulius_domain::stages::SubjectKind::Task,
+            subject_id: "original-owner".into(),
+            key: "wait@10".into(),
+            parent_key: None,
+            kind: "wait".into(),
+            name: "merge".into(),
+            environment: None,
+            job: None,
+            started_at: Timestamp(10),
+            ended_at: Some(Timestamp(20)),
+            outcome: Some("dropped".into()),
+            source: "recorded".into(),
+            detail: Some(serde_json::json!({
+                "head": "tested-head", "message": "latency failed",
+                "singleton": {"pr": 1481, "base": "dev-at-test", "tree": "integrated", "run": "failed-ci"}
+            }).to_string()),
+        };
+        for (head, message, matches) in [
+            ("tested-head", "latency failed", true),
+            ("repaired-head", "latency failed", false),
+            ("tested-head", "another outcome", false),
+        ] {
+            let live = Some((head.to_owned(), message.to_owned()));
+            let mut outcome = live.clone();
+            let decision = candidate_from_wait(Some(span.clone()), &mut outcome)?;
+            assert_eq!(decision.is_some(), matches, "{head}, {message}");
+            assert_eq!(outcome, if matches { None } else { live });
+        }
+        Ok(())
+    }
+
     fn run(id: &str, state: RunState) -> CiRunRecord {
         CiRunRecord {
             id: id.to_owned(),
