@@ -498,7 +498,7 @@ watching, steering and unblocking.
   effort-weighted steps that hold all the work the agent knows of (a pull request delivers the
   finished part, and a plan that grew says how many steps it had at first, SPEC-484),
   independent review
-  (findings in the change's own code are fixed before merge, never deferred to an issue),
+  (agents fix findings in their own code and obtain re-review through approval under the task's existing authorization),
   merge on green into `dev`, cleanup; promotion to `main` is a person's. Profiles live in
   `yulius.toml`, with the branch policy (typed branches, conventional titles, `dev` → `main`
   promotions) that Yulius checks before every merge. Each task records what it delivered in the

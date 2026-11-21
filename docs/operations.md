@@ -171,6 +171,8 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # While it waits for a subscription the message is retained and its last parked screen stays visible.
 # An open plan step, unfinished spec or unfinished goal keeps the agent live, including while it asks its owner.
 # A failing ordinary PR run, unreadable check or unpublished repair keeps its author live.
+# A failed integration candidate keeps the author live while its PR head and tested base match.
+# A change to the saved merge decision during verification also keeps the session live.
 # A failed single-PR merge candidate names its source run, failing job and a redacted
 # excerpt or its recorded configuration error. The queue verifies the current PR head and integration base.
 # If it cannot verify them, read ordinary CI at that head or safely read the failing job,
