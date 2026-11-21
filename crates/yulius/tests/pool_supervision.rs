@@ -785,7 +785,7 @@ async fn check_held_owner_prompt(
         .set_account_state(
             &AccountId::parse("a-first")?,
             AccountStatus::Ok,
-            None,
+            Some(r#"{"primary":{"used_percent":5.0,"window_minutes":300}}"#),
             None,
             app.now(),
         )
