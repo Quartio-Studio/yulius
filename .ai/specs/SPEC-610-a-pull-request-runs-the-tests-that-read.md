@@ -28,6 +28,8 @@ PR #1645 changed the composer mock. The merge train passed and dev revision 13a6
 - [x] Run the affected contract tests in the pull request gate
 - [x] Require whole touched test binaries in task briefings
 - [x] Verify reader coverage, timing and delivery evidence
+- [x] Resolve named runtime paths in repository tests
+- [x] Trace exported file constants into their consumer tests
 - [ ] Approve the change for delivery to dev
 
 ## Acceptance criteria
@@ -58,3 +60,4 @@ The change diff uses the merge base with the integration branch and includes bot
 - Independent review identified two indirect catalog consumers, indirect literal filesystem paths, a segment-glob mismatch in the coverage check and rollout to older PR checkouts. Regression tests reproduced the findings. The revised selector covers the HTTP template list and workflow catalog accessor, bound path variables and literal concatenation. The native job uses only exact names and directory prefixes. An older-PR Git fixture runs the protected selector against the older checkout and propagates its failing test command. All nine Python regressions passed.
 - The corrected integration binary ran the 12 UI contracts alone in 2.98 s. The hosted pull request gate and staging request are recorded by Yulius delivery.
 - The second review reproduced a missed embedded HTTP security policy, an unqualified Rust file read and 112 unrelated cases selected by a rejected JSON path in a delivery test. Regression tests failed for all three. Header access now identifies policy consumers, imported reads resolve their literal inputs, and source edits select tests through their actual inputs. A delivery.rs-only change selects fixture_hygiene. All ten Python tests passed. The final unrelated-file probe returned 78 in 2.24 s.
+- The third review found a typed path constant and the public SCANNER include. The follow-up work split runtime binding and exported data discovery. Both new fixtures failed first. The selector now derives public file constants at their definitions across the workspace and selects cases that use them, including the real scanner refusal test. Typed let, const and static path bindings resolve at filesystem reads. Eleven Python tests passed, and the compiled scanner refusal case passed.

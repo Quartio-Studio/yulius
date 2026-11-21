@@ -57,6 +57,7 @@ class RepositoryTests(unittest.TestCase):
         self.assertIn("the_repositorys_own_cd_is_defined", names("yulius.toml"))
         self.assertIn("agents_manage_automations_through_mcp_tools", names("catalog/workflows/fix.md"))
         self.assertIn("ready_made_automations_are_enabled_in_one_call", names("catalog/automations/docs-up-to-date.md"))
+        self.assertIn("the_scanner_recognizes_the_proxys_refusal", names("scripts/vidoc_scan.py"))
         policy = names("crates/yulius-server/src/content-security-policy.txt")
         self.assertIn("public_responses_carry_security_headers", policy)
         self.assertIn("yulius_is_never_shown_inside_itself", policy)
@@ -148,7 +149,9 @@ fn reads_a_config() {
             crate = root / "crates/sample"
             (crate / "src").mkdir(parents=True)
             (crate / "Cargo.toml").write_text('[package]\nname = "sample"\n')
-            for body in ('let path = "../../docs/guide.md"; std::fs::read_to_string(path).unwrap();',
+            for body in ('const GUIDE: &str = "../../docs/guide.md"; std::fs::read_to_string(GUIDE).unwrap();',
+                         'let guide: &str = "../../docs/guide.md"; std::fs::read(guide).unwrap();',
+                         'let path = "../../docs/guide.md"; std::fs::read_to_string(path).unwrap();',
                          'let guide = include_str!(concat!("../../../", "docs/guide.md"));'):
                 with self.subTest(body=body):
                     (crate / "src/lib.rs").write_text(f'#[test]\nfn pins_a_guide() {{\n    {body}\n}}\n')
@@ -159,6 +162,20 @@ fn reads_a_config() {
             (crate / "src/lib.rs").write_text(
                 '#[test]\nfn pins_a_fixture() {\n let path = "test-data"; std::fs::read(&path).unwrap();\n}\n')
             self.assertEqual([r.name for r in select(inventory(root), ["crates/sample/test-data"])], ["pins_a_fixture"])
+
+    def test_exported_embedded_data_selects_consumers_across_files(self):
+        from repository_tests import inventory, select
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            crate = root / "crates/sample"
+            (crate / "src").mkdir(parents=True)
+            (crate / "tests").mkdir()
+            (crate / "Cargo.toml").write_text('[package]\nname = "sample"\n')
+            (crate / "src/source.rs").write_text(
+                'pub const GUIDE_TEXT: &str = include_str!("../../../docs/guide.md");\n')
+            (crate / "tests/consumer.rs").write_text(
+                '#[test]\nfn pins_exported_data() {\n    assert!(sample::source::GUIDE_TEXT.contains("old"));\n}\n')
+            self.assertEqual([r.name for r in select(inventory(root), ["docs/guide.md"])], ["pins_exported_data"])
 
     def test_an_older_pr_executes_the_protected_selector_on_its_own_checkout(self):
         jobs = tomllib.loads((ROOT / "yulius.toml").read_text())["ci"]["jobs"]

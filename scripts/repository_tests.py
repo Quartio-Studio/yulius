@@ -16,11 +16,17 @@ TEST = re.compile(
 )
 READ_FUNCTION = r"\b(?:read(?:_to_string|_dir)?|File::open)\s*\(\s*"
 BOUND_READ = re.compile(READ_FUNCTION + r"&?(\w+)\s*\)")
-LITERAL_BINDING = re.compile(r'\blet\s+(?:mut\s+)?(\w+)\s*=\s*(?:r#*)?"([^"\\]+)"')
+PATH_ARGUMENT = r'(?:&\s*)?(?:(?:std::path::)?(?:Path::new|PathBuf::from)\s*\(\s*)?(?:r#*)?"([^"\\]+)"'
+LITERAL_BINDING = re.compile(
+    r"\b(?:let|const|static)\s+(?:mut\s+)?(\w+)\s*(?::[^=;]+)?=\s*" + PATH_ARGUMENT
+)
 READ_CALL = re.compile(READ_FUNCTION)
 LITERAL_CONCAT = re.compile(r'\bconcat!\s*\(\s*((?:"[^"\\]*"\s*,\s*)*"[^"\\]*"\s*,?)\s*\)')
-DIRECT_READ = re.compile(READ_FUNCTION + r'(?:r#*)?"([^"\\]+)"')
+DIRECT_READ = re.compile(READ_FUNCTION + PATH_ARGUMENT)
 INCLUDE = re.compile(r'\binclude_(?:str|bytes)!\s*\(\s*(?:r#*)?"([^"\\]+)"')
+PUBLIC_INCLUDE = re.compile(
+    r"\bpub(?:\([^)]*\))?\s+(?:const|static)\s+(\w+)\s*:[^;=]+?\s*=\s*" + INCLUDE.pattern
+)
 MANIFEST = re.compile(r'env!\s*\(\s*"CARGO_MANIFEST_DIR"\s*\)\s*\)')
 CONCAT_MANIFEST = re.compile(r'concat!\s*\(\s*env!\s*\(\s*"CARGO_MANIFEST_DIR"\s*\)\s*,\s*"/([^"\\]+)"')
 PATH_LITERAL = re.compile(r'"([\w./-]+)"')
@@ -46,7 +52,7 @@ class Reader:
     name: str
 
 
-def inputs_for(root, crate, path, text, caller_text=None):
+def inputs_for(root, crate, path, text, embedded, caller_text=None):
     inputs = set()
 
     def add(base, literal):
@@ -95,9 +101,9 @@ def inputs_for(root, crate, path, text, caller_text=None):
         else:
             for name in JOIN.findall(caller_text or text):
                 add(crate, name)
-    for accessor, directory in EMBEDDED.items():
+    for accessor, dependency in embedded:
         if accessor in text:
-            inputs.add(directory)
+            inputs.add(dependency)
     return inputs
 
 
@@ -139,25 +145,36 @@ def cargo_target(crate, config, path):
 
 
 def inventory(root):
+    manifests = sorted([*root.glob("crates/*/Cargo.toml"), *root.glob("tools/*/Cargo.toml")])
+    embedded = list(EMBEDDED.items())
+    # Tests can consume a public Rust constant in another module or crate.
+    # Derive its input at the definition. Equal names conservatively select both.
+    for manifest in manifests:
+        for source in (manifest.parent / "src").rglob("*.rs"):
+            text = source.read_text()
+            for name, relative in PUBLIC_INCLUDE.findall(text):
+                dependency = Path(os.path.normpath(source.parent / relative))
+                if dependency.is_relative_to(root):
+                    embedded.append((name, dependency.relative_to(root).as_posix()))
+    anchors = ("include_str!", "include_bytes!", "CARGO_MANIFEST_DIR", *(name for name, _ in embedded))
     readers = []
-    for manifest in sorted([*root.glob("crates/*/Cargo.toml"), *root.glob("tools/*/Cargo.toml")]):
+    for manifest in manifests:
         crate = manifest.parent
         config = tomllib.loads(manifest.read_text())
         package = config["package"]["name"]
         for folder in ("src", "tests"):
             for path in sorted((crate / folder).rglob("*.rs")):
                 text = path.read_text()
-                anchors = ("include_str!", "include_bytes!", "CARGO_MANIFEST_DIR", *EMBEDDED)
                 if not any(key in text for key in anchors) and not READ_CALL.search(text):
                     continue
                 if not TEST.search(text):
-                    if "tests" in path.relative_to(crate).parts and inputs_for(root, crate, path, text):
+                    if "tests" in path.relative_to(crate).parts and inputs_for(root, crate, path, text, embedded):
                         raise ValueError(f"{path.relative_to(root)} reads repository data in a shared "
                                          "test helper. Associate it with its caller tests in the selector.")
                     continue
                 target = cargo_target(crate, config, path)
                 source = path.relative_to(root).as_posix()
-                all_inputs = inputs_for(root, crate, path, text)
+                all_inputs = inputs_for(root, crate, path, text, embedded)
                 if not all_inputs:
                     continue
                 if folder == "src":
@@ -167,8 +184,8 @@ def inventory(root):
                                    for match in TEST.finditer(text))
                     continue
                 sections, shared = test_sections(text)
-                common = inputs_for(root, crate, path, shared, caller_text=text)
-                per_test = {name: inputs_for(root, crate, path, body) for name, body in sections.items()}
+                common = inputs_for(root, crate, path, shared, embedded, caller_text=text)
+                per_test = {name: inputs_for(root, crate, path, body, embedded) for name, body in sections.items()}
                 # Preserve any file-wide read that could not be attributed to one
                 # test (for instance, a root and a path literal in separate items).
                 common.update(all_inputs.difference(*per_test.values()))
