@@ -6,7 +6,7 @@
 
 use async_trait::async_trait;
 use rusqlite::types::Value;
-use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
+use rusqlite::{Connection, Row, params, params_from_iter};
 use yulius_app::error::AppResult;
 use yulius_app::ports::store_ext::SpanStore;
 use yulius_app::stages::{NewSpan, SpanFilter, SpanRecord};
@@ -151,18 +151,21 @@ impl SpanStore for SqliteStore {
     async fn retire_singleton(
         &self,
         task: &yulius_domain::ids::TaskId,
+        observed: &SpanRecord,
         now: Timestamp,
-    ) -> AppResult<Option<Timestamp>> {
+    ) -> AppResult<bool> {
         let task = task.as_str().to_owned();
+        let (key, detail) = (observed.key.clone(), observed.detail.clone());
         self.call(move |c| {
-            c.query_row(
+            let updated = c.execute(
                 "UPDATE spans SET detail=json_set(detail, '$.superseded_at', COALESCE(json_extract(detail,'$.superseded_at'), ?2))
                  WHERE id=(SELECT id FROM spans WHERE subject_kind='task' AND subject_id=?1 AND kind='wait' AND name='merge_armed'
                     ORDER BY started_at DESC, id DESC LIMIT 1)
-                 AND json_valid(detail) AND json_type(detail,'$.singleton')='object'
-                 RETURNING started_at",
-                params![task,now.0], |row| Ok(Timestamp(row.get(0)?)),
-            ).optional().map_err(db)
+                 AND outcome='dropped' AND key=?3 AND detail=?4
+                 AND json_valid(detail) AND json_type(detail,'$.singleton')='object'",
+                params![task, now.0, key, detail],
+            ).map_err(db)?;
+            Ok(updated != 0)
         }).await
     }
 
@@ -404,13 +407,22 @@ mod tests {
                 })
                 .await?
         );
-        assert_eq!(
-            store.retire_singleton(&owner, Timestamp(16)).await?,
-            Some(Timestamp(10))
+        let original = store.latest_merge_wait(&owner).await?.ok_or("owner")?;
+        assert!(
+            store
+                .retire_singleton(&owner, &original, Timestamp(16))
+                .await?
         );
-        assert_eq!(
-            store.retire_singleton(&owner, Timestamp(17)).await?,
-            Some(Timestamp(10))
+        assert!(
+            !store
+                .retire_singleton(&owner, &original, Timestamp(17))
+                .await?
+        );
+        let retired = store.latest_merge_wait(&owner).await?.ok_or("owner")?;
+        assert!(
+            store
+                .retire_singleton(&owner, &retired, Timestamp(17))
+                .await?
         );
         assert_eq!(
             detail(&store.latest_merge_wait(&owner).await?.ok_or("owner")?)["superseded_at"],
@@ -449,7 +461,17 @@ mod tests {
                 .key,
             "wait@20"
         );
-        assert_eq!(store.retire_singleton(&owner, Timestamp(24)).await?, None);
+        let ordinary = store.latest_merge_wait(&owner).await?.ok_or("ordinary")?;
+        assert!(
+            !store
+                .retire_singleton(&owner, &retired, Timestamp(24))
+                .await?
+        );
+        assert!(
+            !store
+                .retire_singleton(&owner, &ordinary, Timestamp(24))
+                .await?
+        );
         store.prune_spans(Timestamp(100)).await?;
         let retained = store
             .subject_spans(

@@ -1714,7 +1714,13 @@ async fn a_singleton_decision_survives_span_pruning_before_arm_cleanup() -> Test
     Box::pin(reused_singleton(SingletonChange::PrunedReceipt)).await
 }
 
+#[tokio::test]
+async fn a_stale_saved_head_cannot_retire_the_singletons_newer_decision() -> TestResult {
+    Box::pin(reused_singleton(SingletonChange::StaleSavedHead)).await
+}
+
 enum SingletonChange {
+    StaleSavedHead,
     DamagedReceipt,
     PrunedReceipt,
     ArmFileRead,
@@ -1809,6 +1815,22 @@ async fn check_recovered_singleton_arm(
             "a retry before the next queue pass changed the saved replacement's place"
         );
     } else {
+        f.h.store.execute_for_tests("CREATE TEMP TABLE pending_detail AS SELECT id, detail FROM spans WHERE name='merge_armed' AND subject_id='t1' AND outcome='dropped'").await?;
+        for damage in [
+            "UPDATE spans SET detail='{}' WHERE id IN (SELECT id FROM pending_detail)",
+            "UPDATE spans SET detail=json_remove(detail,'$.singleton.tree') WHERE id IN (SELECT id FROM pending_detail)",
+        ] {
+            f.h.store.execute_for_tests(damage).await?;
+            let retry_ctx = live.agent_context("tok-t1").await?;
+            let retry = Box::pin(live.tool_delivery_merge(&retry_ctx, &args)).await;
+            assert!(
+                retry.is_err(),
+                "acknowledged an unreadable pending retirement: {retry:?}"
+            );
+            Box::pin(live.merge_armed(&f.sandbox)).await;
+            assert_eq!(saved_armed(&live, 1)?, Some((head.to_owned(), stamp)));
+            f.h.store.execute_for_tests("UPDATE spans SET detail=(SELECT detail FROM pending_detail WHERE pending_detail.id=spans.id) WHERE id IN (SELECT id FROM pending_detail)").await?;
+        }
         Box::pin(live.merge_armed(&f.sandbox)).await;
     }
     let old = live
@@ -1916,6 +1938,37 @@ async fn check_singleton_history(
         json!({"pr":1,"base":base,"tree":tree,"run":run_id}),
         "the accepted singleton decision must survive the failed write and restart"
     );
+    if matches!(change, SingletonChange::StaleSavedHead) {
+        let mut entries: Value = serde_json::from_slice(&original_arms)?;
+        let stamp = entries[0]["armed_at"]
+            .as_i64()
+            .ok_or("original activation")?;
+        // A reviewed move keeps its stamp even when its best-effort file update fails.
+        // An older saved activation also cannot displace a later accepted decision.
+        for saved_stamp in [stamp, stamp - 1] {
+            entries[0]["head"] = json!(base);
+            entries[0]["armed_at"] = json!(saved_stamp);
+            std::fs::write(&arms, serde_json::to_vec(&entries)?)?;
+            let recovered = restart(&cold).await;
+            assert!(
+                saved_armed(&recovered, 1)?.is_none(),
+                "an old head of activation {saved_stamp} was rearmed"
+            );
+            let span = recovered
+                .deps
+                .store
+                .latest_merge_wait(&TaskId::parse("t1")?)
+                .await?
+                .ok_or("accepted receipt")?;
+            let detail: Value = serde_json::from_str(span.detail.as_deref().ok_or("decision")?)?;
+            assert_eq!(detail["head"], head);
+            assert!(
+                detail["superseded_at"].is_null(),
+                "the old file retired the accepted decision: {detail}"
+            );
+        }
+        return Ok(());
+    }
     if matches!(change, SingletonChange::DamagedReceipt) {
         f.h.store.execute_for_tests("CREATE TEMP TABLE accepted_detail AS SELECT id, detail FROM spans WHERE name='merge_armed' AND subject_id='t1' AND outcome='dropped'").await?;
         for damage in [
@@ -2058,6 +2111,7 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
             | SingletonChange::ArmFileRead
             | SingletonChange::DamagedReceipt
             | SingletonChange::PrunedReceipt
+            | SingletonChange::StaleSavedHead
     ) {
         return Box::pin(check_singleton_history(
             &f, &change, &head, &base, &tree, run_id, secret,
@@ -2463,6 +2517,7 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
             | SingletonChange::ArmFileRead
             | SingletonChange::DamagedReceipt
             | SingletonChange::PrunedReceipt
+            | SingletonChange::StaleSavedHead
             | SingletonChange::Rearmed
             | SingletonChange::Pruned
             | SingletonChange::JobRead

@@ -1129,9 +1129,13 @@ pub trait SpanStore: Send + Sync {
         figures: &[(String, f64)],
         add: bool,
     ) -> AppResult<()>;
-    /// Retires a previously accepted singleton on a new activation and returns its arm stamp.
-    async fn retire_singleton(&self, task: &TaskId, now: Timestamp)
-    -> AppResult<Option<Timestamp>>;
+    /// Retires an observed singleton only while the same decision is still current.
+    async fn retire_singleton(
+        &self,
+        task: &TaskId,
+        observed: &crate::stages::SpanRecord,
+        now: Timestamp,
+    ) -> AppResult<bool>;
     /// Latest merge wait for this task, including ordinary decisions that supersede a singleton.
     async fn latest_merge_wait(
         &self,

@@ -123,7 +123,7 @@ pub(crate) struct ArmedSlot {
     generation: u64,
     last_armed_at: i64,
     /// The replacement is on disk, but the earlier singleton is still being retired.
-    retirement_pending: bool,
+    retirement_pending: Option<Timestamp>,
     /// Where the armed merge stands, in one sentence, as its last decision left it (SPEC-441
     /// MQ-007).
     note: Option<QueueNote>,
@@ -162,14 +162,14 @@ impl ArmedSlot {
     /// superseded.
     fn clear(&mut self) {
         self.generation += 1;
-        self.retirement_pending = false;
+        self.retirement_pending = None;
         self.merge = None;
         self.note = None;
     }
 
     /// Takes the armed merge out to decide it; it still reads as armed until [`Self::finish`].
     fn take(&mut self) -> Option<Deciding> {
-        if self.retirement_pending {
+        if self.retirement_pending.is_some() {
             return None;
         }
         let merge = self.merge.take()?;
@@ -396,8 +396,9 @@ impl App {
             self.write_armed(&task.id, Some(&merge))
                 .map_err(crate::error::AppError::internal)?;
             slot.arm(merge);
-            slot.retirement_pending =
-                prior.is_some_and(|decision| decision.superseded_at.is_none());
+            slot.retirement_pending = last
+                .filter(|_| prior.is_some_and(|decision| decision.superseded_at.is_none()))
+                .map(|span| span.started_at);
         }
         self.finish_retirement(&task.id, &runtime).await?;
         Ok(true)
@@ -410,9 +411,32 @@ impl App {
         task: &TaskId,
         runtime: &crate::supervisor::TaskRuntime,
     ) -> AppResult<()> {
-        if lock_slot(runtime).retirement_pending {
-            self.deps.store.retire_singleton(task, self.now()).await?;
-            lock_slot(runtime).retirement_pending = false;
+        let pending = lock_slot(runtime).retirement_pending;
+        if let Some(stamp) = pending {
+            let changed = || {
+                crate::error::AppError::Conflict(
+                    "The pending merge decision changed during retirement.".into(),
+                )
+            };
+            let span = self
+                .deps
+                .store
+                .latest_merge_wait(task)
+                .await?
+                .filter(|span| span.started_at == stamp)
+                .ok_or_else(changed)?;
+            let receipt =
+                crate::merge_train::SingletonDecision::from_span(&span)?.ok_or_else(changed)?;
+            if receipt.superseded_at.is_none()
+                && !self
+                    .deps
+                    .store
+                    .retire_singleton(task, &span, self.now())
+                    .await?
+            {
+                return Err(changed());
+            }
+            lock_slot(runtime).retirement_pending = None;
         }
         Ok(())
     }
@@ -511,18 +535,20 @@ impl App {
                 }
             };
             if let (Some(span), Some(receipt)) = (last, receipt) {
-                if span.started_at.0 == entry.armed_at && receipt.head == entry.head {
+                // A reviewed move to a new head keeps its activation stamp.
+                if span.started_at.0 >= entry.armed_at {
                     self.save_armed(&task_id, None);
-                    lock_slot(&runtime).last_armed_at = entry.armed_at;
+                    lock_slot(&runtime).last_armed_at = span.started_at.0;
                     continue;
                 }
                 if receipt.superseded_at.is_none()
-                    && self
-                        .deps
-                        .store
-                        .retire_singleton(&task_id, self.now())
-                        .await
-                        .is_err()
+                    && !matches!(
+                        self.deps
+                            .store
+                            .retire_singleton(&task_id, &span, self.now())
+                            .await,
+                        Ok(true)
+                    )
                 {
                     complete = false;
                     continue;
@@ -735,7 +761,7 @@ impl App {
     pub(crate) fn armed_now(&self, task: &TaskId) -> ArmedNow {
         let runtime = self.runtime(task);
         let slot = lock_slot(&runtime);
-        if slot.retirement_pending {
+        if slot.retirement_pending.is_some() {
             return ArmedNow::None;
         }
         match (&slot.merge, slot.deciding) {
@@ -900,7 +926,7 @@ impl App {
             // Taken while it is decided, so a CI end and the delivery loop never merge twice; it
             // reads as armed for `yulius wait` until the decision ends, in one step (WAI-003).
             let runtime = self.runtime(&task.id);
-            if lock_slot(&runtime).retirement_pending {
+            if lock_slot(&runtime).retirement_pending.is_some() {
                 let _writer = runtime.arm_writer.lock().await;
                 if self.finish_retirement(&task.id, &runtime).await.is_err() {
                     continue;
