@@ -214,6 +214,10 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0078_staging_requests.sql"),
     // Schema version 79 (SPEC-575 MFS-012).
     include_str!("migrations/0079_bootstrap_upgrades.sql"),
+    // Schema version 80 (SPEC-578); 0080 is the reserved file number.
+    include_str!("migrations/0080_task_wait_messages.sql"),
+    include_str!("migrations/0081_ci_run_admission.sql"),
+    include_str!("migrations/0082_task_merge_wait.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -522,6 +526,9 @@ mod tests {
             (77, include_str!("migrations/0077_task_merge_evidence.sql")),
             (78, include_str!("migrations/0078_staging_requests.sql")),
             (79, include_str!("migrations/0079_bootstrap_upgrades.sql")),
+            (80, include_str!("migrations/0080_task_wait_messages.sql")),
+            (81, include_str!("migrations/0081_ci_run_admission.sql")),
+            (82, include_str!("migrations/0082_task_merge_wait.sql")),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -530,7 +537,7 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 79, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 82, "a new migration is pinned here too");
     }
 
     /// SPEC-575 (a person's integration finding on PR #1541): a populated database at the

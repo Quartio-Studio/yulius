@@ -1544,6 +1544,7 @@ request as it is:
 
 - a pull request's own run (its pre-check) always finishes: until it passed, Yulius never merges
   the integration branch into it, so a moving base never supersedes it;
+- when open PRs share a commit, the scheduler tests it once. The merge queue and its owner’s `yulius wait` use that ordinary run until the PR has its own run at that head. A later admission after configuration repair replaces a refusal.
 - green and up to date: merged now;
 - green, or its own run still queued or running, and behind: into the next merge candidate
   (`merge_train.rs`), the integration branch with up to 8 such pull requests merged in, in arm
@@ -1618,11 +1619,18 @@ person must act first (a prompt on screen, `needs_you`) or may have a draft in t
   the kept failures, partial observations from siblings stopped by a failed job, and the exact
   `ci_status` run), or one that errored;
 - a red merge candidate of two or more holding it, with "do not re-arm, merge or push";
+- a failed single-PR candidate, with the source CI run, failing job and a bounded, redacted excerpt. The queue verifies the live PR head and integration base even when another candidate tested the same tree. Unavailable diagnostic or redaction data leaves the arm in place within the verification budget. A running ordinary check retains its original wait deadline. The queue saves the decision in the task’s latest completed merge wait before clearing its arm. The record identifies the original PR, head, tested base and tree, source run and redacted failure. Hourly cleanup retains it. Startup uses the activation time to discard a consumed arm or retire its decision for a newer saved arm. The PR watcher defers advice for a saved request until its arm is restored. A passed train retains the admission head and records the verified integration head while waiting for GitHub. An exclusion identifies the request and head whose files conflicted. A legacy exclusion or replacement request gets the queue position alone.
 - a conflict with the integration branch (checked in the task's worktree), once per head;
 - how its armed merge ended (the slot's outcome), and its merge (`merged_text`), after which the
   watch is over for it;
 - a green head that is not merging: no merge armed, where the armed merge stands, or, held by a
   candidate, "Hands off".
+
+The watch remembers an open PR when it first observes its number. While the live queue decides the merge, or if its activation changes during a read, the watch defers advice and keeps that observation for the eventual merge notice.
+
+For a live merge request, the watcher reads ordinary CI at its armed head using the same owner preference as the queue. An actionable ordinary failure takes precedence over train advice. The watcher ties a train notice to the request’s activation, PR, head and current member list. When armed advice is due, it confirms the open PR’s hosted head within five seconds, then rechecks the delivery, CI results and any decision reserved for a person, including a held scope change. A local publication lookup precedes hosted verification. Both the paste and Enter target the observed attempt, so a subscription switch leaves obsolete advice unheard. An already-reported failed train waits for the queue’s next decision. If the facts change, the next pass can deliver the current notice.
+
+The first paste of a live PR notice needs immediate access to the session writer. If another input or resize holds it, the watcher keeps the event pending for its next pass.
 
 Each event has a key, typed once and kept in `<data>/pr-notices.json`. A session idle for 45
 minutes with nothing typed gets a check-in with the pull request's state; a pull request with no
@@ -2115,6 +2123,12 @@ run for these reads per application. Each keeps its permit until Git returns.
 [ADR-0409](decisions/0409-report-the-pr-that-blocks-a-parked-task.md)
 
 Task lists share one 750 ms PR verification budget. Each batch of up to eight parked rows receives a share of the remaining time. Home verifies parked rows across all visible projects before it counts live rows. A slow local Git read for a running task cannot spend the parked rows’ lookup time. The HTTP response uses the plan read by the verifier for both progress and detailed steps. [ADR-0412](decisions/0412-share-parked-pr-read-time-across-task-lists.md)
+
+The browser uses the parked summary’s verified Needs you group and its open steps, spec or goal when classifying a task. It retains the displayed reason for a human decision or failing PR. [ADR-0412](decisions/0412-share-parked-pr-read-time-across-task-lists.md)
+
+The sidebar watches the bounded task list and Git overview independently. It can update a parked group while the Git read is pending. The list reader confirms an overlapping parked lifecycle change once. The mounted terminal uses the refreshed row for plan progress and owner notices while a detail read is outstanding. Opening the terminal or Task Info verifies parked work and publishes its progress, owner decision and PR state to the existing parked row. The request order resolves overlapping answers from the list, detail and Git overview. A terminal detail can also update an existing task’s lifecycle when its park event was missed. An older outstanding list retains that transition, even if its snapshot omitted the task. A terminal that discovers a resume also publishes the active subscription and work state to the sidebar. A Closed, Stopped or Failed task can be restored after archive without changing its process status. Its unarchived terminal detail verifies membership in the active task list, even if an older list omitted the row. A newer list that restores a row also updates its mounted terminal. Archive detail removes the active row and notifies the terminal even when an empty list has already omitted it. Overlapping reads keep the archive observation until a newer Undo or removal resolves the task’s membership. [ADR-0417](decisions/0417-refresh-parked-task-status-alongside-the-git-overview.md)
+
+When browser list requests overlap, the newest successful snapshot supplies the task list. A failed cold task page recovers when an overlapping request supplies the list. [ADR-0418](decisions/0418-keep-the-newest-successful-task-list.md)
 
 MCP parked task reads use the verifier’s plan snapshot for progress and detailed steps. The Needs you filter uses the group rendered with the owner’s current decision. Each page shares one parked PR lookup budget. [ADR-0416](decisions/0416-parked-mcp-rows-use-the-verified-plan-and-pr.md)
 
@@ -3819,7 +3833,22 @@ The Linux `sandbox-host hold-tunnels` helper holds a bounded batch of connected 
 and private copy state for one successor. Its two-minute deadline includes the time spent
 receiving and returning the batch. Each timed pair also retains its original monotonic
 deadline. The helper releases expired pairs while a successor receives the remaining live
-records. The server integration is tracked in SPEC-577.
+records. A timed pair can carry its original kernel socket identities. The sender supplies
+them before transferring its descriptors. The receiver can drain a final TCP receive queue
+after both FINs, and a reset or timed-out stream releases its own pair. On orderly Linux
+shutdown the server pauses established opaque HTTP/1.1 CONNECT tunnels. In namespace mode it
+also pauses the outbound copy enrolled at CONNECT. The live internal endpoints identify
+the relay at enrollment. Its kernel socket cookie binds the two records across restart. HTTP/2 traffic inside the tunnel stays opaque. A multiplexed HTTP/2 session to
+the proxy reconnects.
+Capture and deposit have fifteen seconds, concurrent with five seconds to drain in-flight HTTP
+responses. The successor restores the original sockets, copy cursors, admission owners, last
+activity and expiry before serving new HTTP requests. Intercepted connections close at restart.
+Fresh connections use the successor's host-bound injection and redaction policy. The holder
+keeps its forward. The replacement verifies that holder's identity and reserves the saved
+outbound copies in their old admission order before the relay accepts again. Eviction or
+explicit cancellation releases both host-side places. A peer's FIN closes its write
+direction and allows the other direction to drain. A copy that finishes first remains
+available for handoff while the other copy still has outstanding bytes.
 [ADR-0413](decisions/0413-a-bounded-helper-holds-connected-tunnel-sockets-between-servers.md)
 The proxy also counts each connection's run (agent run, CI job, Superagent shell). When nothing was
 idle for 5 minutes, a full sandbox share takes the oldest connection of its busiest other run, and
@@ -3842,6 +3871,11 @@ flowchart LR
   A["process in the sandbox"] -->|"127.0.0.1:8081"| F["holder's forward (256 places)"]
   F -->|"out.sock"| O["server's out.sock relay (256 places)"]
   O --> I["internal listener: API, MCP, egress proxy (128 per sandbox, 256 in all)"]
+  D["direct agent connection (legacy mode)"] --> I
+  I -.->|"orderly stop of an established opaque tunnel"| C["Linux socket custodian"]
+  O -.->|"matching opaque tunnel and surviving holder"| C
+  C -.->|"restore original sockets and places before HTTP"| I
+  C -.->|"reserve original outbound places before accepting"| O
   F -.->|"full: the longest-idle place (idle 5 min or more) gives way"| F
   I -.->|"share full, all active: the busiest run's oldest tunnel gives way"| I
   I -.->|"still refused: a trouble"| H["ConnectionHealth"]
@@ -3921,9 +3955,18 @@ on, after a restart as before one. The same holds for a question that took a sec
 flag over.
 
 A live `yulius wait` under Codex counts as a wait whether Codex execs it directly or launches
-it through a shell. The process probe excludes waits adopted by the sandbox init. A failed PR
-check has its own action in the task strip. The terminal reply banner is for a person's turn
-or an explicit request ([SPEC-552](../.ai/specs/SPEC-552-on-codex-agent-keeps-calling-me-even-if.md)).
+it through a shell. The process probe excludes waits adopted by the sandbox init. Every task in
+Needs you carries a unified redacted `NeedsYouNoticeView` (`App::resolve_needs_you_notice`) naming
+what happened, what to do, and where to act—shown beside the task status (even when stopped or
+parked), in the attention bar, Needs you lists, notifications, and identically across `tasks_list`
+and `task_get`, with deduplicated timestamped episodes persisted in `task_wait_messages`. Browser
+handoffs (`browser_request_user_action`) persist on `tasks.needs_you` and clear across tab state,
+persisted requests, and legacy browser `tasks.attention` when answered, dismissed, superseded,
+closed, viewer-cleared (`clear_action`), or ended; untold failed Yulius CI runs on a live session
+and newer progressing CI runs keep the task in Working until human action is needed
+([SPEC-552](../.ai/specs/SPEC-552-on-codex-agent-keeps-calling-me-even-if.md),
+[SPEC-578](../.ai/specs/SPEC-578-show-an-actionable-message-whenever-a-ta.md),
+[ADR-0414](decisions/0414-actionable-needs-you-notices-and-wait-history.md)).
 
 Needs you means a person has to act. An idle agent that stopped reads "Your turn" under Needs you only
 while its work is visibly unfinished: plan steps open, or a goal that Claude Code last recorded as set,
@@ -4049,6 +4092,7 @@ outcome recorded")]
 `yulius.toml` is read with a TOML 1.1 parser (`spec_format::config`, the `toml` crate's spanned
 document): any valid layout parses, and invalid TOML is refused with the parser's message at its
 line.
+After the integration configuration is repaired, the scheduler reads its bounded run history in admission order. For a refused head, completed verdicts admitted before the refusal cannot cover the repair. A later active run covers it, and a cancellation retains its reference-specific effect.
 
 - **The gate in force** (`App::ci_configured_gate`) comes from the integration branch's head.
   While that file is invalid, the gate comes from the newest first-parent commit (at most 100

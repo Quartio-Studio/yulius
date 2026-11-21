@@ -129,41 +129,383 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     emit('sandboxes');
   }
 
-  async function loadTasks(sandboxId) {
-    let list;
+  // Cold navigation and resync can both load the list. Keep the newest successful
+  // snapshot even when the other request fails.
+  let nextListRead = 0;
+  const listOrder = new WeakMap();
+  const failedWatchOrder = new WeakMap();
+  const rowOrder = new WeakMap();
+  const verifiedGroup = new WeakMap(); // last verifier answer, before a failed read inferred Needs you
+  const overviewOrder = new WeakMap();
+  const prOrder = new WeakMap();
+
+  // Events have second-resolution timestamps. Confirm a lifecycle change seen
+  // during an explicit list read once, then preserve any changes during confirmation.
+  const activeLists = new Set();
+  const activeDetails = new Set();
+  const terminalLifecycleRows = new WeakSet();
+
+  function forgetDetailRow(taskId) {
+    for (const read of activeDetails) if (read.row?.id === taskId) read.row = null;
+  }
+
+  async function loadTasks(sandboxId, watching = false) {
+    const atStart = state.tasks.get(sandboxId);
+    const order = ++nextListRead;
+    const read = { sandboxId, order, changes: new Map(), beforeConfirmation: null, transitions: new Map(), lifecycle: new Set(), deleted: new Set(), failedWatchOrder: 0 };
+    let snapshotOrder = order;
+    let confirming = false;
+    const path = `/api/sandboxes/${enc(sandboxId)}/tasks?archived=false`;
+    activeLists.add(read);
     try {
-      list = await api.get(`/api/sandboxes/${enc(sandboxId)}/tasks?archived=false`);
-    } catch (error) {
-      // Lists show this with a retry instead of "Loading…" forever.
-      state.taskErrors.set(sandboxId, error);
+      let list = await api.get(path);
+      for (const task of Array.isArray(list) ? list : []) {
+        if (task.status === 'parked' && read.changes.has(task.id)) read.lifecycle.add(task.id);
+      }
+      if ([...read.changes].some(([id, task]) => read.lifecycle.has(id) && (!watching || task.archived || task.status !== 'parked'))) {
+        read.beforeConfirmation = read.changes;
+        read.changes = new Map();
+        confirming = true;
+        const confirmationOrder = ++nextListRead;
+        try {
+          list = await api.get(path);
+          snapshotOrder = confirmationOrder;
+        } catch {
+          read.changes = new Map([...read.beforeConfirmation, ...read.changes]);
+        } finally {
+          read.beforeConfirmation = null;
+        }
+      }
+      const current = state.tasks.get(sandboxId);
+      if (listOrder.get(current) > snapshotOrder) return current;
+      const missedChange = pullWatch.get(sandboxId)?.changeBeforeParkedRows > snapshotOrder;
+      const watchFailure = Math.max(read.failedWatchOrder, failedWatchOrder.get(current) ?? 0);
+      const failureOrder = Math.max(watchFailure, pullWatch.get(sandboxId)?.changeBeforeParkedRows ?? 0);
+      const map = new Map();
+      if (watchFailure > snapshotOrder) failedWatchOrder.set(map, watchFailure);
+      for (const task of Array.isArray(list) ? list : []) {
+        if (task.archived) continue;
+        map.set(task.id, orderedListRow(task, current?.get(task.id), snapshotOrder, failureOrder, read.transitions.has(task.id)));
+      }
+      for (const [id, task] of read.changes) {
+        const listed = map.get(id);
+        if (!watching && !confirming && !read.lifecycle.has(id) && !read.transitions.has(id) && listed && listed.status !== 'parked') continue;
+        if (task.archived) {
+          map.delete(id);
+          continue;
+        }
+        const prior = current?.get(id);
+        // A detail can supersede an event after the list saved it for replay.
+        const latest = rowOrder.get(prior) > Math.max(snapshotOrder, rowOrder.get(task) ?? 0) ? prior : task;
+        const fallbackOrder = Math.max(failureOrder, unverified.get(latest) ?? 0);
+        const uncertain = latest.status === 'parked' && fallbackOrder >= rowOrder.get(latest);
+        map.set(id, uncertain ? awaitingVerification(latest, listed ?? prior, fallbackOrder) : latest);
+      }
+      // A detail can discover a lifecycle change while this list is reading,
+      // even for a row the older snapshot omitted. Later events and confirmed
+      // lists still take precedence. Permanent removal wins in either order.
+      for (const [id, transition] of read.transitions) {
+        if (rowOrder.get(transition) <= snapshotOrder || read.changes.has(id)) continue;
+        if (transition.archived) {
+          map.delete(id);
+          continue;
+        }
+        const latest = current?.get(id) ?? transition;
+        // For two parked observations the list loop has already reconciled
+        // the PR and verification, keeping the newer lifecycle fields.
+        if (latest.status !== 'parked' || map.get(id)?.status !== 'parked') map.set(id, latest);
+      }
+      for (const id of read.deleted) map.delete(id);
+      state.taskErrors.delete(sandboxId);
+      listOrder.set(map, snapshotOrder);
+      state.tasks.set(sandboxId, map);
+      let changed = false;
+      if (current) {
+        for (const task of map.values()) {
+          const prior = current.get(task.id);
+          // Notify the terminal when a newer list supersedes its lifecycle
+          // observation or restores a row that disappeared in an archive.
+          const tracked = terminalLifecycleRows.has(prior);
+          if (prior && task.status !== 'parked' && prior.status !== 'parked' && !tracked) continue;
+          if (tracked && task.status !== 'parked') terminalLifecycleRows.add(task);
+          if (!prior || JSON.stringify(task) !== JSON.stringify(prior) || pullForStatus(task) !== pullForStatus(prior)) {
+            emit('task', task);
+            changed = true;
+          }
+          // Only the open task view subscribes to its step list. The watched
+          // summary can learn that its plan changed even if no step event arrived.
+          if (prior?.status === 'parked' && task.status === 'parked' && task.steps &&
+              (task.steps.done !== prior.steps?.done || task.steps.total !== prior.steps?.total ||
+               (task.steps.current ?? null) !== (prior.steps?.current ?? null))) emit('steps', task.id);
+        }
+      }
       emit('tasks', sandboxId);
+      if (watching && changed) scheduleCountsRefresh();
+      if (missedChange && !hasParkedRows(current) && hasParkedRows(map)) {
+        requestRead(sandboxId, refreshParkedGroups, true, true);
+      }
+      return map;
+    } catch (error) {
+      const current = state.tasks.get(sandboxId);
+      if (listOrder.get(current) > order) return current;
+      if (watching) {
+        // Preserve the watch order across overlapping list and detail reads.
+        if (current) failedWatchOrder.set(current, Math.max(order, failedWatchOrder.get(current) ?? 0));
+        for (const older of activeLists) {
+          if (older.sandboxId === sandboxId && older.order < order) older.failedWatchOrder = Math.max(older.failedWatchOrder, order);
+        }
+        let changed = false;
+        for (const [id, task] of current || []) {
+          if (task.status !== 'parked' || read.changes.has(id) || Math.max(rowOrder.get(task) ?? 0, unverified.get(task) ?? 0) > order) continue;
+          const updated = awaitingVerification(task, undefined, order);
+          if (updated !== task) {
+            current.set(id, updated);
+            emit('task', updated);
+            changed = true;
+          }
+        }
+        if (changed) { emit('tasks', sandboxId); scheduleCountsRefresh(); }
+        return current;
+      }
+      if (current === atStart) {
+        state.taskErrors.set(sandboxId, error);
+        emit('tasks', sandboxId);
+      }
       throw error;
+    } finally {
+      activeLists.delete(read);
     }
-    state.taskErrors.delete(sandboxId);
-    const map = new Map();
-    for (const task of Array.isArray(list) ? list : []) if (!task.archived) map.set(task.id, task);
-    state.tasks.set(sandboxId, map);
-    emit('tasks', sandboxId);
-    return map;
+  }
+
+  // Parked status comes from the same verifier in the list and on the detail route.
+  // Keep detail-only data (runs, transcripts, etc.) out of the shared task list.
+  function parkedFacts(task) {
+    return {
+      status: task.status, archived: task.archived, activity: task.activity, steps: task.steps, spec_unfinished: task.spec_unfinished,
+      goal_unfinished: task.goal_unfinished, held_prompt: task.held_prompt,
+      needs_you: task.needs_you, needs_you_notice: task.needs_you_notice,
+      parked_needs_you: task.parked_needs_you, parked_pr: task.parked_pr,
+    };
+  }
+
+  function recordVerification(task, order) {
+    if (typeof task.parked_needs_you === 'boolean') {
+      verifiedGroup.set(task, { order, needsYou: task.parked_needs_you });
+    }
+    if (task.parked_pr) prOrder.set(task.parked_pr, order);
+  }
+
+  function latestVerification(task, other) {
+    const first = verifiedGroup.get(task);
+    const second = verifiedGroup.get(other);
+    return (second?.order ?? 0) > (first?.order ?? 0) ? second : first;
+  }
+
+  function orderedListRow(listed, prior, snapshotOrder, failureOrder, keepLifecycleFields) {
+    // A detail or lifecycle event that started later supplies the parked state.
+    // The list can still carry a new title or discover an open PR.
+    recordVerification(listed, snapshotOrder);
+    const priorOrder = rowOrder.get(prior) ?? 0;
+    const keepPrior = priorOrder > snapshotOrder && prior?.status === 'parked' && listed.status === 'parked';
+    const order = keepPrior ? priorOrder : snapshotOrder;
+    let row = listed;
+    if (keepPrior) {
+      row = keepLifecycleFields ? { ...prior } : { ...listed, ...parkedFacts(prior) };
+      verifiedGroup.set(row, latestVerification(prior, listed));
+      if (unverified.has(prior)) unverified.set(row, unverified.get(prior));
+    }
+    const fallbackOrder = Math.max(failureOrder, unverified.get(prior) ?? 0);
+    if (row.status === 'parked' && fallbackOrder >= order) {
+      row = awaitingVerification(row, keepPrior ? listed : prior, fallbackOrder);
+    } else {
+      unverified.delete(row);
+    }
+    rowOrder.set(row, order);
+    verifiedGroup.set(row, latestVerification(row, prior));
+    return row;
+  }
+
+  function publishParkedRow(map, row, updated) {
+    if (updated.archived) {
+      // Concurrent terminal reads still need the archive's observation order:
+      // an older detail cannot restore it, and a newer detail can discover Undo.
+      for (const pending of activeDetails) {
+        if (pending.row?.id === row.id) pending.row = updated;
+      }
+      const removed = map.delete(row.id);
+      // A list can omit the row before the terminal learns why it vanished.
+      if (removed || !row.archived) emit('task', updated);
+      if (removed) {
+        emit('tasks', row.sandbox_id);
+        scheduleCountsRefresh();
+      }
+      return updated;
+    }
+    if (updated !== row) {
+      const restored = !map.has(row.id);
+      map.set(row.id, updated);
+      if (restored || JSON.stringify(updated) !== JSON.stringify(row) || pullForStatus(updated) !== pullForStatus(row)) {
+        emit('task', updated);
+        emit('tasks', row.sandbox_id);
+        scheduleCountsRefresh();
+      }
+    }
+    return updated;
+  }
+
+  // TaskDetail flattens TaskSummary together with private run data. Publish
+  // the public summary on lifecycle changes, including a newly attached account.
+  function lifecycleSummary(detail, prior) {
+    const summary = { ...parkedFacts(detail), account_id: detail.account_id };
+    for (const key of ['id', 'sandbox_id', 'number', 'title', 'harness', 'harness_choice', 'branch', 'origin',
+      'created_by', 'owner', 'control_request', 'control_from', 'owner_asks_first', 'created_at', 'updated_at',
+      'state_since', 'working_since', 'account_label', 'mode', 'resumes_at', 'waits_for_account',
+      'background_shells', 'background_shells_since', 'yulius_wait', 'merge_armed', 'after', 'next', 'attention',
+      'auto', 'supertask', 'held_by', 'queue_reason', 'start_at', 'not_started', 'awaits_start_onboarding',
+      'pause', 'pr_stalled', 'overlaps']) {
+      if (key in detail) summary[key] = detail[key];
+      else if (key in prior) summary[key] = prior[key];
+    }
+    return summary;
+  }
+
+  function rememberTransition(row, discovered = false) {
+    if (!row.archived && row.status !== 'parked') terminalLifecycleRows.add(row);
+    const order = rowOrder.get(row);
+    for (const read of activeLists) {
+      if (read.sandboxId !== row.sandbox_id || read.order >= order) continue;
+      // An older detail may retain a newer event. Keep that event available
+      // for confirmation and replay, including any PR the detail supplied.
+      for (const events of [read.beforeConfirmation, read.changes]) {
+        if (!events?.has(row.id)) continue;
+        if (rowOrder.get(events.get(row.id)) === order) events.set(row.id, row);
+        else events.delete(row.id);
+      }
+      if (discovered || row.status === 'parked') read.lifecycle.add(row.id);
+      read.transitions.set(row.id, row);
+    }
+  }
+
+  // Resting tasks can move into and out of the archive without changing
+  // process status (TaskStatus::is_resting). Their detail verifies membership.
+  function restingStatus(status) {
+    return status === 'closed' || status?.startsWith('stopped_') || status?.startsWith('failed_');
+  }
+
+  function beginParkedDetail(startingRow) {
+    const order = ++nextListRead;
+    // The active list can lose a row before the mounted terminal learns
+    // it was archived. Keep its identity until this detail read settles.
+    const read = { row: state.tasks.get(startingRow?.sandbox_id)?.get(startingRow?.id) ?? startingRow };
+    if (read.row) activeDetails.add(read);
+    const release = () => activeDetails.delete(read);
+    const publish = (detail, view = {}) => {
+      release();
+      const map = state.tasks.get(detail.sandbox_id);
+      if (!map || read.row === null) return view;
+      // Retain the observed task across an older list omission. A removal
+      // event invalidates the reference before any pending detail can publish.
+      const retained = read.row?.id === detail.id ? read.row : null;
+      const listed = map.get(detail.id);
+      const listVersion = listOrder.get(map) ?? 0;
+      const laterEvent = rowOrder.get(retained) > Math.max(listVersion, rowOrder.get(listed) ?? 0);
+      const crossedPark = startingRow && startingRow.status !== detail.status &&
+        (startingRow.status === 'parked' || detail.status === 'parked');
+      const undo = startingRow?.archived && !detail.archived;
+      const verifiesMembership = detail.archived || startingRow?.archived || retained?.archived ||
+        restingStatus(detail.status) || restingStatus(startingRow?.status);
+      // An empty active list agrees with an archive. The detail still tells
+      // the mounted terminal why its row disappeared.
+      const confirmsAbsence = detail.archived && (rowOrder.get(retained) ?? 0) <= order;
+      const retainOmitted = confirmsAbsence || ((crossedPark || verifiesMembership) && listVersion < order);
+      const row = laterEvent ? retained : listed ?? (retainOmitted ? retained : null);
+      if (!row) return undo ? { ...view, ...lifecycleSummary(startingRow, startingRow) } : view;
+      if (!verifiesMembership && detail.status !== 'parked' && row.status !== 'parked' && startingRow?.status !== 'parked') return view;
+      const transition = verifiesMembership || crossedPark || row.status !== detail.status;
+      recordVerification(detail, order);
+      if (rowOrder.get(row) > order) {
+        // Preserve the newer event's work and decisions. An older detail may
+        // still identify the open PR that an unverified update could not name.
+        const supplement = detail.status === 'parked' && !detail.archived && row.status === 'parked' &&
+          unverified.has(row) && (verifiedGroup.get(row)?.order ?? 0) < order;
+        const latest = supplement ? awaitingVerification(row, detail) : row;
+        if (transition) rememberTransition(latest);
+        publishParkedRow(map, listed ?? row, latest);
+        return { ...view, ...(transition ? lifecycleSummary(latest, latest) : parkedFacts(latest)) };
+      }
+      let updated = transition ? lifecycleSummary(detail, row) : { ...row, ...parkedFacts(detail) };
+      const hintOrder = pullWatch.get(detail.sandbox_id)?.changeBeforeParkedRows ?? 0;
+      verifiedGroup.set(updated, latestVerification(detail, row));
+      const fallbackOrder = Math.max(hintOrder, unverified.get(row) ?? 0, failedWatchOrder.get(map) ?? 0);
+      if (!detail.archived && detail.status === 'parked' && (fallbackOrder > order || typeof detail.parked_needs_you !== 'boolean')) {
+        updated = awaitingVerification(updated, row, Math.max(order, fallbackOrder));
+      }
+      rowOrder.set(updated, order);
+      if (transition) rememberTransition(updated, true);
+      const missedHint = !detail.archived && detail.status === 'parked' && hintOrder > order && !hasParkedRows(map);
+      publishParkedRow(map, row, updated);
+      if (missedHint) requestRead(detail.sandbox_id, refreshParkedGroups, true, true);
+      return { ...view, ...(transition ? updated : parkedFacts(updated)) };
+    };
+    publish.release = release;
+    return publish;
+  }
+
+  function observedPr(task, snapshot) {
+    // An unverified group may inherit its PR from a different read. Compare
+    // the PR observations themselves, independently of grouping and chip text.
+    const candidates = [task.parked_pr, snapshot?.parked_pr].filter(Boolean);
+    const overview = state.pulls.get(task.sandbox_id);
+    const git = overview?.get(task.id);
+    if (git && ['open', 'closed', 'merged'].includes(git.state)) {
+      const pr = { number: git.number, open: git.state === 'open' };
+      prOrder.set(pr, overviewOrder.get(overview) ?? 0);
+      candidates.push(pr);
+    }
+    candidates.sort((a, b) => (prOrder.get(b) ?? 0) - (prOrder.get(a) ?? 0));
+    // A newer closure rules out an older observation of the same open PR.
+    return candidates.find((pr, i) => pr.open && !candidates.slice(0, i).some(newer => newer.number === pr.number)) ?? candidates[0];
   }
 
   function upsertTask(task) {
-    if (!task || !task.id) return;
-    // Only a full load creates a sandbox's list: a list built from live events alone would show
-    // just the tasks that changed and look complete. Watchers of the task still hear about it.
+    if (!task?.id) return;
+    if (task.archived) forgetDetailRow(task.id);
     const map = state.tasks.get(task.sandbox_id);
-    if (!map) {
-      emit('task', task);
-      return;
+    const prior = map?.get(task.id);
+    const pending = [...activeLists].filter(read => read.sandboxId === task.sandbox_id);
+    if (pending.some(read => read.deleted.has(task.id))) return;
+    const recheck = task.status === 'parked' && !task.archived && typeof task.parked_needs_you !== 'boolean';
+    const order = ++nextListRead;
+    recordVerification(task, order);
+    if (recheck) task = awaitingVerification(task, prior, order);
+    rowOrder.set(task, order);
+    if (task.status !== 'parked' && terminalLifecycleRows.has(prior)) terminalLifecycleRows.add(task);
+    // A live list can replace a newer live event before a detail reveals that
+    // the task crossed a park. Keep that event with the outstanding read.
+    for (const read of activeDetails) if (read.row?.id === task.id) read.row = task;
+    for (const read of pending) {
+      if (task.archived || task.status === 'parked' || prior?.status === 'parked') read.lifecycle.add(task.id);
+      read.changes.set(task.id, task);
     }
-    if (task.archived) map.delete(task.id);
-    else map.set(task.id, task);
-    emit('tasks', task.sandbox_id);
+    if (map) {
+      if (task.archived) map.delete(task.id);
+      else map.set(task.id, task);
+      emit('tasks', task.sandbox_id);
+    }
     emit('task', task);
+    if (recheck) requestRead(task.sandbox_id, refreshParkedGroups, true, true);
   }
 
-  /** Drop a task from its list; `byUser` marks a removal this browser asked for (its own toast says so). */
-  function removeTask(taskId, { byUser = false } = {}) {
+  /** Archive can be undone. A permanent deletion wins even over a delayed response. */
+  function removeTask(taskId, { byUser = false, archived = false } = {}) {
+    forgetDetailRow(taskId);
+    for (const read of activeLists) {
+      if (!archived) read.deleted.add(taskId);
+      else if (state.tasks.get(read.sandboxId)?.has(taskId)) {
+        read.lifecycle.add(taskId);
+        read.changes.set(taskId, { archived: true });
+      }
+    }
     for (const [sandboxId, map] of state.tasks) {
       if (map.delete(taskId)) emit('tasks', sandboxId);
     }
@@ -221,6 +563,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       case 'task.control_taken': emit('control-taken', event); break;
       case 'steps.updated': emit('steps', event.task_id); break;
       case 'browser.action_requested': addActionRequest(event); break;
+      case 'browser.action_cleared': clearActionRequest(event.sandbox_id, event.tab_id); break;
       case 'automation.run': emit('automation-run', event); break;
       case 'account.updated': emit('account', event.account); break;
       case 'update.updated': emit('update', event); break;
@@ -272,8 +615,11 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   // `pullGapMs` after the last read started (a push announces several times), or as soon as the
   // tab is shown again. Reads of a sandbox never overlap, so an older one cannot answer last, and a
   // change announced during a read brings one more read after it.
-  const pullWatch = new Map(); // sandbox id → { views, at, timer, due, soon }
-  const pullReads = new Map(); // sandbox id → { again } while its read runs, watched or not
+  const pullWatch = new Map(); // sandbox id → view count, poll timer and each source's read schedule
+  const sources = [refreshParkedGroups, loadGitOverview];
+  const inFlight = new Map(sources.map(source => [source, new Map()]));
+  // A failed read may need a conservative display when Git later discovers an open PR.
+  const unverified = new WeakMap();
   const pollPaused = () => document.hidden || navigator.onLine === false;
   // The overview takes seconds (GitHub and Git for every task), so this browser keeps what the
   // last read said, per user, and a page load shows it at once until its own read replaces it
@@ -294,6 +640,22 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     }
     return state.pulls.get(sandboxId) || new Map();
   }
+  // Keep the real chip visible. Only disregard a blocking overview for grouping
+  // when a later list verified this very PR. A new overview gets its own order.
+  function pullForStatus(task) {
+    const pulls = pullsOf(task.sandbox_id);
+    const pr = pulls.get(task.id);
+    // Mounted terminals add detail-only fields to a copy. An identical
+    // list can verify the same row again without emitting a field update.
+    const row = rowOrder.has(task) ? task : state.tasks.get(task.sandbox_id)?.get(task.id);
+    if (pr?.state === 'open' && task.parked_needs_you === false && task.parked_pr?.number === pr.number &&
+        row?.parked_needs_you === false && row.parked_pr?.number === pr.number &&
+        ((!unverified.has(row) && rowOrder.get(row) > (overviewOrder.get(pulls) ?? 0)) ||
+         (row.parked_pr.open === false && prOrder.get(row.parked_pr) > (overviewOrder.get(pulls) ?? 0))) &&
+        (pr.conflicts || !['success', 'none'].includes(pr.checks))) return null;
+    return pr;
+  }
+
   /** Sign-out or an expired session: the pull requests (titles included) do not stay in this browser. */
   function forgetPulls() {
     state.pulls.clear();
@@ -302,22 +664,61 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       for (const key of Object.keys(window.localStorage)) if (key.startsWith(PULLS_PREFIX)) window.localStorage.removeItem(key);
     } catch { /* storage unavailable: nothing kept */ }
   }
-  /** Reads the sandbox's pull requests; `fresh`: a change was announced, so a read in flight (which may predate it) is followed by another. */
-  async function loadPulls(sandboxId, fresh = false) {
-    const running = pullReads.get(sandboxId);
-    if (running) {
-      if (fresh) running.again = true;
-      return;
+  // A rerun on the same open PR changes its checks without changing the task's
+  // delivery stage. Refresh the server's parked groups alongside the watched
+  // overview. An SSE update or list replacement during this read takes precedence.
+  function hasParkedRows(tasks) {
+    return tasks && [...tasks.values()].some(task => task.status === 'parked');
+  }
+
+  async function refreshParkedGroups(sandboxId) {
+    if (hasParkedRows(state.tasks.get(sandboxId))) await loadTasks(sandboxId, true);
+  }
+
+  function awaitingVerification(task, snapshot, order = unverified.get(task) ?? 0) {
+    const pr = observedPr(task, snapshot);
+    const verification = latestVerification(task, snapshot);
+    // A verification can time out before naming the blocker. Keep that
+    // unresolved decision until a later verifier answers it.
+    const unnamedBlocker = [task, snapshot].some(row => row?.parked_needs_you === true && !row.parked_pr?.open &&
+      (unverified.get(row) ?? 0) > (verification?.order ?? 0));
+    const needsYou = pr?.open || unnamedBlocker || verification?.needsYou;
+    // A fallback to an open PR is temporary. A later verification can close
+    // that PR without overwriting a rename, plan or decision received meanwhile.
+    let updated = task;
+    if (needsYou !== task.parked_needs_you || pr?.open !== task.parked_pr?.open || pr?.number !== task.parked_pr?.number) {
+      updated = { ...task, parked_needs_you: needsYou, parked_pr: pr };
+      if (rowOrder.has(task)) rowOrder.set(updated, rowOrder.get(task));
+    } else if (pr && task.parked_pr) {
+      prOrder.set(task.parked_pr, prOrder.get(pr) ?? 0);
     }
-    const read = { again: false };
-    pullReads.set(sandboxId, read);
-    const entry = pullWatch.get(sandboxId);
-    if (entry) Object.assign(entry, { at: clock.now(), due: false });
+    verifiedGroup.set(updated, verification);
+    unverified.set(updated, order);
+    return updated;
+  }
+
+  async function loadGitOverview(sandboxId) {
+    const order = ++nextListRead;
     try {
       const git = await api.get(`/api/sandboxes/${enc(sandboxId)}/git`);
       const rows = Array.isArray(git.tasks) ? git.tasks : [];
       const pulls = rows.filter((t) => t.pr).map((t) => [t.task_id, t.pr]);
-      state.pulls.set(sandboxId, new Map(pulls));
+      const overview = new Map(pulls);
+      overviewOrder.set(overview, order);
+      state.pulls.set(sandboxId, overview);
+      // An overview can discover a replacement or a closure after the summary read failed.
+      const tasks = state.tasks.get(sandboxId);
+      let changed = false;
+      for (const [id, pr] of pulls) {
+        const prior = tasks?.get(id);
+        if (!['open', 'closed', 'merged'].includes(pr.state) || !unverified.has(prior)) continue;
+        const updated = awaitingVerification(prior);
+        if (updated === prior) continue;
+        tasks.set(id, updated);
+        emit('task', updated);
+        changed = true;
+      }
+      if (changed) emit('tasks', sandboxId);
       seeded.delete(sandboxId);
       const key = pullsKey(sandboxId);
       if (key) writeJson(key, pulls);
@@ -335,62 +736,84 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
         state.pulls.set(sandboxId, new Map());
         emit('pulls', sandboxId);
       }
-    } finally {
-      pullReads.delete(sandboxId);
-      if (read.again) pullsChanged(sandboxId);
     }
   }
-  /** The server announced a change of the sandbox's pull requests (SPEC-108). */
-  function pullsChanged(sandboxId) {
-    const entry = pullWatch.get(sandboxId);
-    // Not watched: the next view to watch it reads at once anyway.
-    if (!entry) return;
-    if (pollPaused()) {
-      entry.due = true;
+  // Each source has its own minimum gap and one in-flight request per sandbox.
+  // A fresh hint during a request survives until that source can read again.
+  function requestRead(id, source, fresh = false, paced = false) {
+    const schedule = pullWatch.get(id)?.schedules.get(source);
+    if (!schedule) return;
+    if (pollPaused()) { schedule.due ||= fresh; return; }
+    const delay = schedule.at + pullGapMs - clock.now();
+    if (paced && delay > 0) {
+      if (schedule.soon == null) schedule.soon = clock.setTimeout(() => {
+        schedule.soon = null;
+        requestRead(id, source, true, true);
+      }, delay);
       return;
     }
-    if (entry.soon) return; // a read is planned already and will see this change
-    const wait = entry.at + pullGapMs - clock.now();
-    if (wait <= 0) {
-      loadPulls(sandboxId, true);
-      return;
-    }
-    entry.soon = clock.setTimeout(() => {
-      entry.soon = null;
-      if (pullWatch.get(sandboxId) !== entry) return;
-      if (pollPaused()) entry.due = true;
-      else loadPulls(sandboxId, true);
-    }, wait);
+    const reads = inFlight.get(source);
+    const running = reads.get(id);
+    if (running) { running.again ||= fresh; return; }
+    clock.clearTimeout(schedule.soon);
+    Object.assign(schedule, { at: clock.now(), due: false, soon: null });
+    const read = { again: false };
+    reads.set(id, read);
+    void source(id).finally(() => {
+      reads.delete(id);
+      if (read.again) requestRead(id, source, true, true);
+    });
   }
-  function watchPulls(sandboxId) {
-    let entry = pullWatch.get(sandboxId);
+
+  function pullsChanged(id) {
+    const watch = pullWatch.get(id);
+    if (watch && !hasParkedRows(state.tasks.get(id))) watch.changeBeforeParkedRows = ++nextListRead;
+    for (const source of sources) requestRead(id, source, true, true);
+  }
+
+  function watchPulls(id) {
+    let entry = pullWatch.get(id);
     if (!entry) {
-      entry = { views: 0, at: 0, due: false, soon: null, timer: clock.setInterval(() => { if (!pollPaused()) loadPulls(sandboxId); }, 60_000) };
-      pullWatch.set(sandboxId, entry);
-      // A read that runs from before this watch may predate a change announced while nobody
-      // watched (and so dropped): read again after it.
-      const running = pullReads.get(sandboxId);
-      if (running) running.again = true;
+      const schedules = new Map(sources.map(source => [source, { at: 0, due: false, soon: null }]));
+      const timer = clock.setInterval(() => {
+        for (const source of sources) requestRead(id, source);
+      }, 60_000);
+      entry = { views: 0, schedules, timer };
+      pullWatch.set(id, entry);
+      // A read from the previous watch can predate announcements nobody received.
+      for (const reads of inFlight.values()) {
+        const running = reads.get(id);
+        if (running) running.again = true;
+      }
     }
-    entry.views += 1;
-    if (clock.now() - entry.at > 15_000) loadPulls(sandboxId);
+    entry.views++;
+    for (const [source, schedule] of entry.schedules) {
+      if (clock.now() - schedule.at > 15_000) requestRead(id, source);
+    }
     let done = false;
     return () => {
       if (done) return;
       done = true;
-      entry.views -= 1;
-      if (entry.views <= 0) { clock.clearInterval(entry.timer); clock.clearTimeout(entry.soon); pullWatch.delete(sandboxId); }
+      if (--entry.views === 0) {
+        clock.clearInterval(entry.timer);
+        for (const schedule of entry.schedules.values()) clock.clearTimeout(schedule.soon);
+        pullWatch.delete(id);
+      }
     };
   }
   const refreshPulls = () => {
     if (pollPaused()) return;
-    for (const [id, entry] of pullWatch) if (entry.due || clock.now() - entry.at > 15_000) loadPulls(id, entry.due);
+    for (const [id, entry] of pullWatch) {
+      for (const [source, schedule] of entry.schedules) {
+        if (schedule.due || clock.now() - schedule.at > 15_000) requestRead(id, source, schedule.due);
+      }
+    }
   };
   document.addEventListener('visibilitychange', refreshPulls);
   window.addEventListener('focus', refreshPulls);
   // After lost events or a restart, read the watched pull requests again at once: the server's
   // "needs you" counts start from what such a read sees (#147).
-  on('resync', () => { for (const id of pullWatch.keys()) loadPulls(id, true); });
+  on('resync', () => { for (const id of pullWatch.keys()) for (const source of sources) requestRead(id, source, true); });
 
   function stopEvents() {
     if (events) events.stop();
@@ -408,6 +831,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     upsertSandbox,
     removeSandbox,
     loadTasks,
+    beginParkedDetail,
     upsertTask,
     removeTask,
     tasksOf,
@@ -429,6 +853,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     watchPulls,
     /** The sandbox's pull requests by task id: the last overview read, or the stored one before it. */
     pullsOf,
+    pullForStatus,
     forgetPulls,
     /** A task's row of its sandbox's Git overview (changed files and lines), or null. */
     gitRowOf: (sandboxId, taskId) => (state.gitRows.get(sandboxId) || new Map()).get(taskId) || null,

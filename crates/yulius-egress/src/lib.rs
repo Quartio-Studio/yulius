@@ -13,7 +13,11 @@
 
 mod browser;
 mod ca;
+#[cfg(target_os = "linux")]
+mod http_input;
 mod proxy;
+#[cfg(target_os = "linux")]
+pub use http_input::HttpInput;
 
 pub use browser::{BrowserEgress, serve_browser};
 pub use ca::{

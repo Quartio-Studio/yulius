@@ -436,12 +436,15 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0412 -->
 - [0413](0413-a-bounded-helper-holds-connected-tunnel-sockets-between-servers.md) A bounded helper holds connected tunnel sockets between servers.
 <!-- ADR 0413 -->
+- [0414](0414-actionable-needs-you-notices-and-wait-history.md) persists browser handoffs, resolves unified redacted Needs You notices across HTTP, MCP, UI and notifications, keeps agent-recoverable or progressing CI runs out of Needs You, and deduplicates timestamped wait-episode history in `task_wait_messages` (SPEC-578).
 <!-- ADR 0414 -->
 - [0415](0415-merge-first-is-the-bootstrap-default-and-reaches-onboarded-projects-through-a-task.md) Merge-first is the bootstrap default and reaches onboarded projects through a task.
 <!-- ADR 0415 -->
 - [0416](0416-parked-mcp-rows-use-the-verified-plan-and-pr.md) uses the verified parked plan and PR for MCP filtering and explanations.
 <!-- ADR 0416 -->
+- [0417](0417-refresh-parked-task-status-alongside-the-git-overview.md) refreshes parked task status independently of the Git overview.
 <!-- ADR 0417 -->
+- [0418](0418-keep-the-newest-successful-task-list.md) keeps the newest successful browser task list when full reads overlap.
 <!-- ADR 0418 -->
 <!-- ADR 0419 -->
 <!-- ADR 0420 -->

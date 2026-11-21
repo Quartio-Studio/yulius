@@ -16,6 +16,14 @@ pub enum Point {
     QueuedRowCapacity,
     /// An idle running row reads its pending PR news. Keyed by task ID.
     LiveRowPrNews,
+    /// The live watch has read an open PR, before returning its advice. Keyed by task ID.
+    LivePrFactsRead,
+    /// The armed watcher completed its local publication lookup before final recipient admission.
+    ArmedNoticePublicationRead,
+    /// A live PR notice was pasted into the attempt; its submit is still pending.
+    PrNoticePasted,
+    /// A free arm has been taken by the queue, before its merge is decided.
+    FreeArmTaken,
     /// A review starts reading its Git head. Keyed by worktree path.
     ReviewHead,
     /// `file_read`: the path was resolved and checked, the file is not opened yet.
@@ -122,6 +130,8 @@ pub enum Point {
     /// A failed candidate has checked its members for failures and is deciding how to
     /// account for their runs. The path is the candidate run id.
     FailedTrainDeciding,
+    /// Dissolution is about to write its CI and audit records. The path is the run id.
+    TrainDissolving,
     /// Start onboarding (SPEC-256) read the sandbox `pending`; the start has not read it again
     /// yet. The path is the sandbox id.
     OnboardingApproved,
@@ -152,6 +162,8 @@ pub enum Point {
     /// The screen showed an empty box during an old-key hold. The typist is about to
     /// recheck under the draft lock before pasting. The path is the task id.
     BoxSeenEmpty,
+    /// A terminal resize owns the run writer. The path is the task id.
+    TerminalResizeOwnsWriter,
     /// A prompt hook (SPEC-346) passed its turn-end check under the turn lock; it has not set
     /// Working yet. The path is the task id.
     PromptTurnChecked,

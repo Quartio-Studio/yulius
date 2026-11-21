@@ -1100,6 +1100,7 @@ impl App {
             if !app.end_shells(&shells).await {
                 tracing::warn!(sandbox = %id, "a shell of the removed sandbox could not be ended");
             }
+            app.clear_sandbox_browser_actions(&id).await;
             app.deps.browser.stop(&id).await;
         });
     }

@@ -80,10 +80,11 @@ function waitForTheMockOnEveryLoad(app: App, browser: Browser): void {
     let recoveryDeadline: number | undefined;
     let backoff = 250;
     let navigate = (_timeout: number) => open(path);
+    const budgetExhausted = (cause?: unknown) => new Error('Mock startup budget exhausted after net::ERR_NETWORK_CHANGED.', { cause });
     const remaining = () => {
       if (recoveryDeadline === undefined) return FIRST_LOAD_MS;
       const ms = Math.ceil(recoveryDeadline - performance.now());
-      if (ms <= 0) throw new Error('Mock startup budget exhausted after net::ERR_NETWORK_CHANGED.');
+      if (ms <= 0) throw budgetExhausted();
       return ms;
     };
 
@@ -122,6 +123,11 @@ function waitForTheMockOnEveryLoad(app: App, browser: Browser): void {
         try {
           await navigate(remaining());
         } catch (error) {
+          // A recovery navigation receives the remaining budget. Its timer can
+          // expire inside goto/reload, before the next call to remaining().
+          const cause = error instanceof Error ? error.cause : undefined;
+          if (recoveryDeadline !== undefined && !ordinaryFailure && cause instanceof Error &&
+              'code' in cause && cause.code === 'OPERATION_TIMEOUT') throw budgetExhausted(error);
           if (!documentInterrupted || ordinaryFailure) throw error;
         }
         if (!documentInterrupted && await ready(() => scriptInterrupted || Boolean(ordinaryFailure), remaining())) return;

@@ -38,8 +38,8 @@ pub const CI_JOB_GROUP_KEPT: std::time::Duration = std::time::Duration::from_sec
 const CONTROLLERS: [&str; 3] = ["cpu", "memory", "pids"];
 /// Processes moved out of the unit's root at most (a bound for a pathological unit).
 const MAX_MOVED: usize = 4096;
-/// The leaf of processes found in the unit's root.
-pub(crate) const LEGACY_LEAF: &str = "legacy";
+/// The leaf for processes moved out of a service unit, including a tunnel custodian.
+pub const LEGACY_LEAF: &str = "legacy";
 /// The parent of sandbox groups.
 pub(crate) const SANDBOXES: &str = "sandboxes";
 /// A sandbox's leaves and their `cpu.weight` (SPEC-053 CPU-201): CI gets four times the agents'

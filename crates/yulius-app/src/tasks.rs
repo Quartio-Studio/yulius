@@ -181,19 +181,17 @@ impl App {
     /// Store failures.
     pub async fn task_summary(&self, task: &TaskRecord) -> AppResult<TaskSummary> {
         let steps = self.deps.store.steps(&task.id).await?;
-        self.task_summary_among(task, None, &steps).await
+        self.task_summary_with(task, None, &steps, None, task.archived_at.is_none())
+            .await
     }
 
-    /// [`Self::task_summary`] of a task listed with the rest of its project's unarchived tasks
-    /// (`project`): what it needs of the others is read from the list (SPEC-483 slice 37).
-    ///
-    /// # Errors
-    /// Store failures.
-    pub(crate) async fn task_summary_among(
+    async fn task_summary_with(
         &self,
         task: &TaskRecord,
         project: Option<&[TaskRecord]>,
         steps: &[StepRecord],
+        requested: Option<&std::collections::HashSet<String>>,
+        sync_wait: bool,
     ) -> AppResult<TaskSummary> {
         let store = &self.deps.store;
         // A removed subscription is no task's (SPEC-447): neither its name nor its id is shown.
@@ -228,6 +226,27 @@ impl App {
         };
         let idle_run = matches!(task.status, TaskStatus::Running | TaskStatus::Parked)
             && task.activity.is_some_and(Activity::is_idle);
+        let owned_requested;
+        let requested = match requested {
+            Some(set) => set,
+            None => {
+                owned_requested = self.browser_requests(&task.sandbox_id).await;
+                &owned_requested
+            }
+        };
+        let facts = self.task_attention_facts(task, requested).await?;
+        let needs_you_notice = self.resolve_needs_you_notice(task, &facts).await;
+        if sync_wait {
+            self.sync_wait_message(task, needs_you_notice.as_ref())
+                .await;
+        }
+        let yulius_wait = facts.yulius_wait
+            || (task.status == TaskStatus::Running
+                && task.activity == Some(Activity::Waiting)
+                && !facts.plan_open
+                && !facts.spec_unfinished
+                && !facts.goal_unfinished
+                && self.pr_ci_progressing(task).await);
         Ok(TaskSummary {
             parked_pr: None,
             parked_needs_you: None,
@@ -288,8 +307,9 @@ impl App {
             needs_you: if task.status.is_resting() {
                 None
             } else {
-                self.needs_you_view(&task.id).await
+                self.needs_you_view(task).await
             },
+            needs_you_notice,
             attention: self.attention_view(task).await,
             auto: self.auto_choice_view(&task.id).await,
             supertask: task.supertask,
@@ -303,9 +323,7 @@ impl App {
             background_shells_since: self
                 .background_shells_since(&task.id)
                 .map(|ms| rfc3339(yulius_domain::time::Timestamp(ms))),
-            yulius_wait: task.status == TaskStatus::Running
-                && task.activity.is_some_and(Activity::is_idle)
-                && (self.agent_waits_on_yulius(&task.id) || self.pr_news_due(task).await),
+            yulius_wait,
             merge_armed: task.status == TaskStatus::Running
                 && task.activity.is_some_and(Activity::is_idle)
                 && self.merge_is_armed(&task.id),
@@ -332,6 +350,10 @@ impl App {
         let Ok(Some(task)) = self.deps.store.task(task_id).await else {
             return;
         };
+        if task.status.is_resting() {
+            self.clear_task_browser_actions(&task.sandbox_id, &task.id, None)
+                .await;
+        }
         self.follow_working_stretch(&task).await;
         if let Ok(summary) = self.task_summary(&task).await {
             self.events.publish(
@@ -678,37 +700,67 @@ impl App {
         let mut parked = self
             .parked_list_statuses(tasks.iter().map(|task| (task, &requests)).collect())
             .await;
+        let requested = if archived {
+            std::collections::HashSet::new()
+        } else {
+            requests
+                .get_or_init(|| self.browser_requests(&sid))
+                .await
+                .clone()
+        };
         let mut out = Vec::with_capacity(tasks.len());
         for task in &tasks {
+            let sync_wait = !archived && !task.status.is_resting();
             let (summary, _) = self
-                .display_summary(task, project, parked.remove(&task.id))
+                .display_summary(
+                    task,
+                    project,
+                    parked.remove(&task.id),
+                    Some(&requested),
+                    sync_wait,
+                )
                 .await?;
             out.push(summary);
         }
         Ok(out)
     }
 
-    /// Render the plan from the parked eligibility check in both its progress and detail.
+    /// Render the plan from the parked eligibility check in both its progress and detail, and
+    /// reconcile `needs_you_notice` / `task_wait_messages` once `parked_needs_you` is settled
+    /// (SPEC-578).
     async fn display_summary(
         &self,
         task: &TaskRecord,
         project: Option<&[TaskRecord]>,
         mut status: Option<crate::sandboxes::ParkedStatus>,
+        requested: Option<&std::collections::HashSet<String>>,
+        sync_wait: bool,
     ) -> AppResult<(TaskSummary, Vec<StepRecord>)> {
         let steps = match status.as_mut().and_then(|read| read.steps.take()) {
             Some(snapshot) => snapshot,
             None => self.deps.store.steps(&task.id).await?,
         };
-        let mut summary = self.task_summary_among(task, project, &steps).await?;
+        // Defer `sync_wait_message` until after `parked_needs_you` is settled so a parked task
+        // whose PR is already green/merged does not record a phantom `parked:resume` history row.
+        let mut summary = self
+            .task_summary_with(task, project, &steps, requested, false)
+            .await?;
         if let Some(read) = status {
-            summary.parked_needs_you = Some(
-                read.facts.needs_you()
-                    || summary.spec_unfinished
-                    || summary.goal_unfinished
-                    || summary.needs_you.is_some()
-                    || summary.held_prompt.is_some(),
-            );
+            let mut effective = read.facts;
+            effective.plan_open = crate::sandboxes::plan_open(&steps);
+            effective.spec_unfinished |= summary.spec_unfinished;
+            effective.goal_unfinished |= summary.goal_unfinished;
+            effective.browser_request |= summary.needs_you.is_some();
+            effective.held_prompt |= summary.held_prompt.is_some();
+            summary.parked_needs_you = Some(effective.needs_you());
             summary.parked_pr = read.pr;
+            summary.needs_you_notice = self
+                .resolve_needs_you_notice_with_pr(task, &effective, read.pr.map(|pr| pr.number))
+                .await;
+        }
+        if sync_wait && task.archived_at.is_none() && !task.status.is_resting() {
+            self.sync_wait_message(task, summary.needs_you_notice.as_ref())
+                .await;
         }
         Ok((summary, steps))
     }
@@ -718,10 +770,15 @@ impl App {
     /// # Errors
     /// Store failures.
     pub async fn archived_tasks(&self, ctx: &AuthContext) -> AppResult<Vec<TaskSummary>> {
+        let empty = std::collections::HashSet::new();
         let mut out = Vec::new();
         for (sandbox, _) in self.visible_sandboxes(&ctx.user).await? {
             for task in self.deps.store.tasks(&sandbox.id, true).await? {
-                out.push(self.task_summary(&task).await?);
+                let steps = self.deps.store.steps(&task.id).await?;
+                out.push(
+                    self.task_summary_with(&task, None, &steps, Some(&empty), false)
+                        .await?,
+                );
             }
         }
         Ok(out)
@@ -742,7 +799,9 @@ impl App {
         } else {
             None
         };
-        let (mut summary, steps) = self.display_summary(&task, None, parked).await?;
+        let (mut summary, steps) = self
+            .display_summary(&task, None, parked, None, true)
+            .await?;
         // Subscription emails are for administrators (UI-022, SPEC-244 SUB-005).
         let admin = ctx.user.is_superadmin || ctx.user.is_instance_admin;
         if admin
@@ -852,6 +911,7 @@ impl App {
             });
         }
         let started = !attempts.is_empty() || !store.provider_sessions(&task.id).await?.is_empty();
+        let wait_history = self.wait_history_view(&task).await;
         Ok(TaskDetail {
             summary,
             spec_path: task.spec_path.clone(),
@@ -872,6 +932,7 @@ impl App {
             cli_version,
             cli_moves_to,
             cli_moves_stopped,
+            wait_history,
         })
     }
 
@@ -1027,6 +1088,10 @@ impl App {
                 "stop the task before deleting it".into(),
             ));
         }
+        // A parked (or resting) task being deleted may still hold a live browser tab handoff
+        // (SPEC-578): clear it before removing the row.
+        self.clear_task_browser_actions(&task.sandbox_id, &task.id, None)
+            .await;
         let attempts = self.deps.store.attempts(&task.id).await?;
         if let Some(path) = &task.worktree_path {
             let repo = self.sandbox_repo(&task.sandbox_id);

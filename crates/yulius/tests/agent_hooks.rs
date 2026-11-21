@@ -2366,6 +2366,7 @@ fn compatibility_pull() -> yulius_app::ports::github::GhPull {
         state: "open".into(),
         merged: false,
         base: "dev".into(),
+        base_sha: String::new(),
         head: "feat/1-x".into(),
         head_sha: "abc123".into(),
         mergeable: Some(true),
@@ -3076,7 +3077,7 @@ async fn incomplete_git_overviews_preserve_the_current_parked_pr_observation() -
         if let Some(row) = row {
             assert_eq!(
                 row["wait_reason"],
-                "The agent stopped and its pull request checks are failing."
+                "The task is parked and pull request #1462 checks are failing."
             );
         }
         assert_eq!(
@@ -3653,7 +3654,7 @@ async fn a_parked_task_names_the_ordinary_ci_failure_on_the_older_open_pr() -> T
     assert_eq!(brief["parked_pr"], json!({"number":1461,"open":true}));
     assert_eq!(
         brief["wait_reason"],
-        "The agent stopped and its pull request checks are failing."
+        "The task is parked and pull request #1461 checks are failing."
     );
     f.h.github
         .set_checks("abc123", yulius_app::ports::github::ChecksState::Pending);
@@ -3662,7 +3663,7 @@ async fn a_parked_task_names_the_ordinary_ci_failure_on_the_older_open_pr() -> T
         .await?;
     assert_eq!(
         pending["wait_reason"],
-        "The agent stopped and its pull request checks are failing."
+        "The task is parked and pull request #1461 checks are failing."
     );
     f.h.github
         .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
@@ -3685,7 +3686,7 @@ async fn a_parked_task_names_the_ordinary_ci_failure_on_the_older_open_pr() -> T
     assert_eq!(row["parked_pr"], json!({"number":1461,"open":true}));
     assert_eq!(
         row["wait_reason"],
-        "The agent stopped and its pull request checks are failing."
+        "The task is parked and pull request #1461 checks are failing."
     );
     let unavailable = serde_json::to_value(app.task_detail(&owner, f.task.as_str()).await?)?;
     assert_eq!(unavailable["parked_needs_you"], true);
@@ -3761,7 +3762,7 @@ async fn a_parked_task_ignores_its_owner_observation_once_the_same_pr_is_merged(
             .await?;
     assert_eq!(
         brief["wait_reason"],
-        "The agent stopped with unfinished steps in its plan."
+        "The task is parked with unfinished steps in its plan (1 open, next: \"Document the follow-up\")."
     );
     Ok(())
 }
@@ -4379,7 +4380,7 @@ async fn a_parked_task_keeps_a_confirmed_failure_in_an_incomplete_check_report()
         (
             ChecksState::Failure,
             vec![ChecksSource::CommitStatuses],
-            "The agent stopped and its pull request checks are failing.",
+            "The task is parked and pull request #1461 checks are failing.",
         ),
         (
             ChecksState::Pending,
@@ -4476,7 +4477,7 @@ async fn a_title_edit_during_a_parked_check_preserves_the_same_heads_failure() -
     edited?;
     assert_eq!(
         result?["wait_reason"],
-        "The agent stopped and its pull request checks are failing."
+        "The task is parked and pull request #1461 checks are failing."
     );
     Ok(())
 }
@@ -4513,7 +4514,7 @@ async fn work_reopened_during_a_parked_check_supplies_the_wait_reason() -> TestR
         assert_eq!(task["shows"], "needs_you");
         assert_eq!(
             task["wait_reason"],
-            "The agent stopped with unfinished steps in its plan."
+            "The task is parked with unfinished steps in its plan (1 open, next: \"Verify the repair\")."
         );
         assert_eq!(task["steps"]["total"], 1);
         assert_eq!(task["steps_list"][0]["title"], "Verify the repair");

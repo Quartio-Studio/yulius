@@ -79,7 +79,10 @@ mod merge_train;
 mod metrics_recount;
 mod migration;
 mod model_fallback;
+mod needs_you_messages;
 mod notes;
+#[cfg(target_os = "linux")]
+mod opaque_restart;
 mod parking;
 mod playground;
 mod playground_guests;

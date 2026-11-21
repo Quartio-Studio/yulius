@@ -382,6 +382,10 @@ impl BrowserSession for Session {
             .request_user_action(tab, reason, task)
             .map_err(failure)
     }
+
+    fn clear_action(&self, tab: &TabId) -> bool {
+        self.0.clear_action(tab)
+    }
 }
 
 /// Placeholder when no browser is configured: every call fails with a clear message.

@@ -36,11 +36,19 @@ test("someone else's task is taken after a confirmation naming its owner", async
 // refused with why, and the page then offers Request control.
 test('a take refused because the owner now asks first leaves Request control', async ({ app, browser, screen }) => {
   await app.open(mock('/s/product/t/3'));
-  await firstShown(screen.getByRole('button', 'Take control'));
-  // Changed on the server without an event, as for a page that read the task before.
-  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { tasks: { number: number; sandbox_id: string; ownerAsksFirst?: boolean }[] } }).__yuliusMock.tasks.find((t) => t.sandbox_id === 'sb_product' && t.number === 3)!.ownerAsksFirst = true; });
-  await screen.getByRole('button', 'Take control').click();
-  await screen.getByRole('dialog', "Take control of @anna-q's task #3?").getByRole('button', 'Take control').click();
+  const take = screen.getByRole('button', 'Take control');
+  await firstShown(take);
+  await take.click();
+  const dialog = screen.getByRole('dialog', "Take control of @anna-q's task #3?");
+  await expect(dialog).toBeVisible();
+  // Change the server policy after the dialog opens, so even a detail refresh before
+  // the first click cannot replace the action we are about to confirm.
+  await browser.evaluate(() => {
+    type MockTask = { number: number; sandbox_id: string; ownerAsksFirst?: boolean };
+    const { tasks } = (window as unknown as { __yuliusMock: { tasks: MockTask[] } }).__yuliusMock;
+    tasks.find(task => task.sandbox_id === 'sb_product' && task.number === 3)!.ownerAsksFirst = true;
+  });
+  await dialog.getByRole('button', 'Take control').click();
   await expect(browser.locator('.toast').filter({ hasText: 'wants to be asked' })).toBeVisible();
   await expect(screen.getByRole('button', 'Request control')).toBeVisible();
   await expect(screen.getByRole('button', 'Take control')).toHaveCount(0);

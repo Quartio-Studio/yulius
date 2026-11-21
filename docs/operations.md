@@ -171,7 +171,36 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # While it waits for a subscription the message is retained and its last parked screen stays visible.
 # An open plan step, unfinished spec or unfinished goal keeps the agent live, including while it asks its owner.
 # A failing ordinary PR run, unreadable check or unpublished repair keeps its author live.
+# A failed single-PR merge candidate names its source run, failing job and a redacted
+# excerpt or its recorded configuration error. The queue verifies the current PR head and integration base.
+# If it cannot verify them, read ordinary CI at that head or safely read the failing job,
+# the queue keeps the candidate for up to 15 minutes.
+# After a continuous outage, its arm can proceed one by one.
+# Restart reconciles a failed single-PR candidate with its saved merge request. An interrupted
+# receipt write keeps the original request recoverable. A later request keeps its queue position
+# while its earlier receipt is retired, including when a retry finds the PR already merged.
+# When a person merges the armed head from the task page, yulius wait reports the accepted merge.
+# The first PR watch can occur while the queue decides its arm. Advice waits for the decision.
+# The owner still hears the merge once if a new arm finishes between watch observations.
+# While a saved merge request is being restored, the owner’s PR check-in waits.
+# When a passed train updates a member’s head, yulius wait keeps its position while GitHub catches up.
+# If a saved arm is ahead of the train checkpoint, yulius wait reports that the queue is verifying the head.
+# An excluded PR’s conflict files belong to the request and head that were tested.
+# A legacy exclusion or later request reports that the PR waits behind the train.
+# Hourly history cleanup retains the latest merge wait of each existing task, even when
+# its activation began more than 180 days ago. Removing the task releases this history.
 # The PR watcher delivers actionable failures once and waits for a pending human decision.
+# The armed owner hears an ordinary CI failure once, even while its train runs or the train
+# registry cannot be read. A train failure names the PRs currently held by its run.
+# An armed notice checks the hosted PR head even if another clone published the repair.
+# A pending scope decision holds the notice until the person resolves it. Once a train failure
+# has been reported, further check-ins wait for the queue to act on it.
+
+# A busy terminal writer defers the notice. On its next pass the watcher checks the owner again.
+# When PRs share a head, their tasks can wait on the same ordinary CI run. An explicit
+# rerun for the owner takes precedence in yulius wait and in its merge queue decision.
+# If a later run finds the integration CI configuration invalid, earlier completed runs
+# at that head become obsolete. After repair, even an owner that passed can show queued.
 # A partial Git overview keeps a known failing PR under Needs you. A complete lookup
 # can clear it. Refreshing this display sends no message to the parked task.
 # A successor waiting for Done (after_task or #N done) stays chained while its parked predecessor
@@ -181,6 +210,20 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # the parked task under Needs you until a later read verifies its state.
 # Task lists and Home share the 750 ms PR lookup budget across their parked rows.
 # An unreadable PR counts toward Needs you while later healthy PRs can show Done.
+# If two task list requests overlap, the sidebar keeps the newest successful snapshot.
+# A task page that initially showed a list error opens when the other request succeeds.
+# A parked task with unfinished work in its summary stays under Needs you even if its Git chip is green.
+# A CI rerun refreshes the open sidebar while its Git overview is loading. If the task list
+# cannot verify a known open PR, the row stays under Needs you until verification succeeds.
+# The parked terminal updates its step count and clears resolved owner notices when the list refreshes.
+# A terminal that discovers a missed park updates the active task list with the verified work.
+# Opening a parked terminal also corrects a missed resume in the sidebar.
+# Undo restores a resting task to Tasks. An open terminal can discover the restoration through
+# task detail or a refreshed list. A newer removal takes precedence. When the terminal receives
+# Closed and then discovers the archive in detail, it removes the task from the active task list.
+# Opening the terminal or Task Info refreshes the parked sidebar row. Task Info uses the same
+# verified status in its header and Now tile. An unavailable refresh keeps a known
+# open PR under Needs you until verification succeeds. The Git chip shows the last overview.
 # Use task_get for the current parked wait reason or tasks_list with scope needs_you
 # for the ordered page of tasks that currently need attention.
 #Environment=YULIUS_PARK_AFTER_MINUTES=30
@@ -1510,6 +1553,8 @@ a control question about one that cannot be registered: only when GitHub refuses
 and nothing is changed at GitHub.
 
 ### CI on this machine
+
+If a PR rerun failed because the integration branch’s CI configuration was invalid, repairing the configuration schedules another run at the same head. An earlier pass on that head predates the refusal.
 
 Yulius is the projects' only CI (SPEC-002 ADR-21). No GitHub Actions or paid GitHub feature is
 involved.

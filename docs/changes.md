@@ -4,8 +4,53 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-21
+
+- An armed PR’s owner now hears its current ordinary CI failure once, including a run shared at the same head. A train notice identifies the current members and waits if a repair is published or a person takes the decision during the read (SPEC-558).
+
+- Established opaque HTTP/1.1 CONNECT tunnels through the sandbox holder now resume on the same sockets after an orderly Linux server restart. Frozen clients receive queued bytes after thaw, and the restored relay counts against its original limits. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
+- A live task’s PR notice stays pending when a terminal resize or another input owns the writer. The next watch checks whether the owner can receive it (SPEC-558).
+
+- A saved merge request holds its owner’s PR check-in during startup. A passed train keeps the verified member head while GitHub catches up, and `yulius wait` names conflicting files only for the excluded request that produced them (SPEC-558).
+- During orderly Linux server shutdown, live sandbox outbound relays stop accepting new connections without reporting a capacity warning. An admitted copy can return its original sockets, pending bytes and write-half state for restart. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
+
+- A running task whose first PR watch occurs during a live merge queue decision still hears about the resulting merge once. Check-ins wait for the queue (SPEC-558).
+- On Linux in legacy mode, established opaque HTTP/1.1 CONNECT tunnels retain the agent’s original TCP peers and queued bytes across an orderly server restart. Multiplexed HTTP/2 sessions to the proxy reconnect. Intercepted connections reconnect through the host-bound secret policy. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
+
+- The merge queue saves a failed single-PR decision before clearing its request. After restart it preserves a later request for the same head, including a retry that finds the PR already merged. When a person merges the armed head, its agent can read the merge receipt immediately in `yulius wait` (SPEC-558).
+
+- Hourly history cleanup preserves each existing task’s latest merge queue decision, even if the arm began before the telemetry cutoff (SPEC-558).
+
+- A failed single-PR merge candidate tells its original owner which job failed. It verifies the current PR head and integration base and retries unreadable diagnostics, including when a multi-PR run tested the same tree (SPEC-558).
+
+- When open PRs share a commit, the merge queue and `yulius wait` use the owner’s ordinary CI result. A PR without its own run can use the shared result for that commit (SPEC-558).
+
+- Repairing invalid integration CI schedules a fresh run for a refused PR head even when that head passed before the configuration broke (SPEC-558).
+
+- Task Info updates the sidebar when it verifies a parked task. Its header and Now tile follow the latest verified status while the PR chip shows the last Git overview (SPEC-558).
+
+- A task leaves the active task list when its terminal discovers an archive, including when the browser received Closed but missed the subsequent Archived update (SPEC-558).
+
+- After Undo, a mounted terminal can restore a resting task to the active task list. A refreshed list also updates the terminal when the task reappears (SPEC-558).
+
+- Opening a parked terminal now corrects a missed resume in the sidebar, including the active subscription and background work (SPEC-558).
+
+- A terminal that discovers a missed park updates the sidebar, even if an older task list omitted its row (SPEC-558).
+
+- Opening a parked terminal updates its sidebar row with the verified plan, PR and owner decision. A delayed read preserves a newer observation of the same PR closing (SPEC-558).
+
+- A parked terminal shows the completed step count when the sidebar observes the last step finish. A later CI failure no longer displays an owner action that was already resolved (SPEC-558).
+
+- Parked rows in the sidebar follow CI reruns while Git is loading. Overlapping task lists reconcile resumes, archives, Undo and permanent removals (SPEC-558).
+
+- Browser task rows keep verified unfinished parked work under Needs you, including when the Git overview shows healthy checks (SPEC-558).
+
 ## 2026-11-20
 
+- The Linux tunnel custodian preserves final TCP receive queues and drops a lost connection independently. Original sockets transfer after the receiver has their complete identity metadata. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
+
+- 2026-11-20 Browser task lists keep the newest successful snapshot when requests overlap. A task page can recover from its initial load error as soon as the sidebar receives the list.
+- Every task entering Needs You now carries a redacted, actionable notice explaining what happened, what a person needs to do, and where to do it—shown beside the task status (even when stopped or parked), in the attention bar, Needs You lists, notifications, and identically in `tasks_list` and `task_get`—alongside deduplicated timestamped wait-episode history (`task_wait_messages`). Browser handoffs persist across activity transitions, parking, and restarts and clear cleanly when answered, dismissed, superseded, closed, or marked done; untold agent-recoverable CI failures and progressing reruns stay in Working until human action is needed ([ADR-0414](decisions/0414-actionable-needs-you-notices-and-wait-history.md), [SPEC-578](../.ai/specs/SPEC-578-show-an-actionable-message-whenever-a-ta.md)).
 - With a merge-first staging target, the Delivery page's Promote and the automatic promotion
   also take only the revision staging verified, read through the verified CD mirror; an
   automatic promotion runs once the staging queue verified the head. Any project's promotion is

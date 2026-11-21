@@ -25,12 +25,12 @@ use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::ids::TaskId;
 use yulius_domain::task::TaskStatus;
 
-use crate::agent_wait::QueueNote;
+use crate::agent_wait::{ArmObservation, ArmedNow, QueueNote};
 use crate::ci::{CiJobRecord, CiRunRecord};
 use crate::context::App;
 use crate::delivery::{delivery_profile, past_merge};
-use crate::error::AppError;
-use crate::merge_train::Hold;
+use crate::error::{AppError, AppResult};
+use crate::merge_train::{Hold, UnverifiedTrain, WatchedTrain};
 use crate::model::{SandboxRecord, TaskRecord};
 use crate::task_message::{Sender, Typed};
 
@@ -85,6 +85,14 @@ pub struct Event {
     pub text: String,
 }
 
+/// Durable activity and current attention from the same read that admits an armed notice.
+pub struct NoticeRecipient {
+    /// The agent began a turn, including one its transcript has yet to report.
+    pub working: bool,
+    /// The current reason the task needs attention, if any.
+    pub attention: Option<crate::attention::AttentionRecord>,
+}
+
 /// What the watch knows of a task's pull request at one pass.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PrFacts {
@@ -115,6 +123,14 @@ pub struct PrFacts {
     pub has_ci: bool,
     /// The pull request's head, from its newest run (empty when none).
     pub head: String,
+}
+
+/// Inputs whose identity must still match when advice for a live armed PR reaches its owner.
+struct ArmedNoticeSource {
+    ordinary: Option<CiRunRecord>,
+    candidate_id: Option<String>,
+    candidate: Option<CiRunRecord>,
+    train: Result<Option<WatchedTrain>, UnverifiedTrain>,
 }
 
 /// What the watch told one task, as saved.
@@ -231,7 +247,7 @@ fn message(pr: u64, texts: &[&str]) -> String {
 }
 
 /// Terminal failures and tests observed before fail-fast stopped a sibling (SPEC-566).
-fn failed_jobs(jobs: &[CiJobRecord]) -> String {
+pub(crate) fn failed_jobs(jobs: &[CiJobRecord]) -> String {
     let said: Vec<String> = jobs
         .iter()
         .filter_map(|job| {
@@ -584,12 +600,15 @@ impl App {
             }
             let held =
                 update_holds || !matches!(self.deps.store.open_pause(&task.id).await, Ok(None));
+            let activation = self.arm_observation(&task.id);
+            let slot = self.armed_now(&task.id);
             let facts = if task.status == TaskStatus::Running && !held {
-                self.pr_facts(&task, &told, &mut runs).await
+                self.pr_facts(&task, &told, &mut runs, &activation, &slot)
+                    .await
             } else {
                 None
             };
-            let Some(facts) = facts else {
+            let Some((facts, source)) = facts else {
                 // Not watched now (no open pull request, paused, not running): no stall shows
                 // (review minor 3), and what it was told stays while its pull request may come
                 // back.
@@ -613,32 +632,95 @@ impl App {
                 Some(text) => {
                     // Job names, reasons and test names come from the project: no control
                     // character may end the paste early (review minor 4).
-                    let text = crate::task_message::clean_message(&text);
+                    let prepared = text;
+                    let text = crate::task_message::clean_message(&prepared);
                     let paste = format!("\x1b[200~{text}\x1b[201~");
                     // From here the task goes on by itself until the turn this starts has
                     // begun (SPEC-487 CHN-002). Stamped before it is typed, as its prompt hook
                     // may be served before the typing returns; when nothing was typed, what
                     // was there before is put back whole. When Claude Code's queue is handing
                     // something on, a turn runs or is coming, and the news waits behind it.
-                    let stamp = TypedNews {
-                        typed_ms: self.now().0,
-                        in_queue: runtime.queue().hands_on(),
+                    let mut before = None;
+                    let mut stamp = || {
+                        let pending = TypedNews {
+                            typed_ms: self.now().0,
+                            in_queue: runtime.queue().hands_on(),
+                        };
+                        before = Some(
+                            runtime
+                                .pr_news
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .replace(pending),
+                        );
                     };
-                    let before = runtime
-                        .pr_news
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .replace(stamp);
-                    let put_back = || {
-                        *runtime
-                            .pr_news
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner) = before;
-                    };
-                    match self
-                        .type_into_session(&task, paste.as_bytes(), Typed::Prompt, Sender::Yulius)
-                        .await
+
+                    let result = if let ArmedNow::Armed(arm) = &slot
+                        && let Some(source) = &source
                     {
+                        let admit = async {
+                            let Ok(Some(sandbox)) = self.deps.store.sandbox(&task.sandbox_id).await
+                            else {
+                                return false;
+                            };
+                            let Some(recipient) = self
+                                .armed_notice_recipient(
+                                    &task, &sandbox, facts.pr, &arm.head, source,
+                                )
+                                .await
+                            else {
+                                return false;
+                            };
+                            // A changed free-slot note also changes this observation: only an
+                            // arm, clear or completed queue decision publishes that note.
+                            if self.update_holds_starts()
+                                || self.arm_observation(&task.id) != activation
+                                || self.armed_now(&task.id) != slot
+                                || self.watched_train(&task, facts.pr) != source.train
+                            {
+                                return false;
+                            }
+                            let mut current = facts.clone();
+                            self.refresh_notice_activity(&task.id, &runtime, &mut current);
+                            if recipient.working {
+                                current.working = true;
+                                current.idle = false;
+                            }
+                            if decide(&current, &told, bounds).0.as_deref()
+                                != Some(prepared.as_str())
+                            {
+                                return false;
+                            }
+                            stamp();
+                            true
+                        };
+                        self.type_into_session_if(
+                            &task,
+                            paste.as_bytes(),
+                            Typed::PrNotice(&attempt.id),
+                            Sender::Yulius,
+                            Some(admit),
+                        )
+                        .await
+                    } else {
+                        stamp();
+                        self.type_into_session(
+                            &task,
+                            paste.as_bytes(),
+                            Typed::PrNotice(&attempt.id),
+                            Sender::Yulius,
+                        )
+                        .await
+                    };
+                    let put_back = || {
+                        if let Some(previous) = before {
+                            *runtime
+                                .pr_news
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner) = previous;
+                        }
+                    };
+                    match result {
                         Ok(()) => {
                             tracing::info!(task = %task.id, pr = facts.pr, "told the task about its pull request");
                             typed.push((task.id.clone(), text));
@@ -857,6 +939,17 @@ impl App {
         self.pr_news_due_of(task, record.as_ref(), false).await
     }
 
+    /// Newest Yulius CI run for pull request `pr` in `sandbox`, if any (SPEC-578).
+    pub(crate) async fn latest_pr_ci_run(
+        &self,
+        sandbox: &yulius_domain::ids::SandboxId,
+        pr: u64,
+    ) -> Option<CiRunRecord> {
+        let runs = self.deps.store.ci_runs(sandbox, RUNS_READ).await.ok()?;
+        runs.into_iter()
+            .find(|run| run.reference == CiRef::PullRequest(pr))
+    }
+
     /// [`Self::pr_news_due`] for a decision that already read the task's delivery `record`, so
     /// that one decision rests on one reading of it (review round 2); `merged_elsewhere` when
     /// GitHub says its pull request is merged and the record does not say so yet.
@@ -894,20 +987,54 @@ impl App {
                 store.sandbox(&task.sandbox_id).await,
                 Ok(Some(sandbox)) if sandbox.is_playground()
             );
+        let paused = matches!(store.person_pause(&task.id).await, Ok(Some(_)));
         let facts = NewsFacts {
             armed: false,
             // A pause that cannot be read counts as none: the safe side for Done.
-            paused: matches!(store.person_pause(&task.id).await, Ok(Some(_))),
+            paused,
             pull,
             outcome,
             publish_problem,
             playground,
             ..typed
         };
-        self.with_pr_notices(|told| match told.get(task.id.as_str()) {
+        let due = self.with_pr_notices(|told| match told.get(task.id.as_str()) {
             Some(told) => news_due(&facts, told),
             None => news_due(&facts, &Told::default()),
-        })
+        });
+        if due {
+            return true;
+        }
+        // An untold failed/errored Yulius CI run on a live, unpaused, non-playground session
+        // with no open human request will be pasted into the agent by `watch_prs` so the agent
+        // can recover it without escalating to Needs You (SPEC-578). Check `store.live_attempt`
+        // (what `watch_prs` itself iterates) rather than `existing_runtime`, because `armed_view`
+        // above lazily allocates a `TaskRuntime`.
+        if !paused
+            && matches!(store.live_attempt(&task.id).await, Ok(Some(_)))
+            && let Some((pr, false)) = pull
+            && task.activity != Some(yulius_domain::task::Activity::NeedsAttention)
+            && matches!(store.task_needs_you(&task.id).await, Ok(None))
+            && self
+                .browser_tab_request_for(&task.sandbox_id, &task.id)
+                .await
+                .is_none()
+            && let Some(run) = self.latest_pr_ci_run(&task.sandbox_id, pr).await
+            && matches!(run.state, RunState::Failed | RunState::Error)
+            && !(run.state == RunState::Failed
+                && self.run_superseded_by_pushed_head(task, &run.sha).await)
+            && !matches!(
+                store.sandbox(&task.sandbox_id).await,
+                Ok(Some(sandbox)) if sandbox.is_playground()
+            )
+        {
+            return self.with_pr_notices(|told| {
+                told.get(task.id.as_str()).is_none_or(|t| {
+                    t.pr != pr || t.keys.get("run").map(String::as_str) != Some(run.id.as_str())
+                })
+            });
+        }
+        false
     }
 
     /// Writes what each task was told (whole, then renamed into place); failures are logged.
@@ -938,12 +1065,13 @@ impl App {
         task: &TaskRecord,
         told: &Told,
         runs: &mut BTreeMap<String, Vec<CiRunRecord>>,
-    ) -> Option<PrFacts> {
+        activation: &ArmObservation,
+        slot: &ArmedNow,
+    ) -> Option<(PrFacts, Option<ArmedNoticeSource>)> {
         // The slot before the delivery: a merge decided in between then reads as merged, never
         // as "no merge armed" on an open pull request (review minor 8).
         let (armed, outcome) = self.armed_view(&task.id);
-        // Also before a restarted server put the armed merges back: never "no merge is armed"
-        // for one that is (SPEC-487, review round 2).
+        // A saved arm may still await restoration (SPEC-487, review round 2).
         let armed = armed || self.merge_is_armed(&task.id);
         let record = self.deps.store.delivery(&task.id).await.ok()??;
         let pr = record.pr_number?;
@@ -955,56 +1083,97 @@ impl App {
         // A person must act first (a prompt on screen, `needs_you`): nothing is typed, the merge
         // notice included (review M1, round 2).
         let needs_you = !matches!(self.deps.store.task_needs_you(&task.id).await, Ok(None));
+        let browser_req = self
+            .browser_tab_request_for(&task.sandbox_id, &task.id)
+            .await
+            .is_some();
         let flagged = task.activity == Some(yulius_domain::task::Activity::NeedsAttention);
         let person_must_act =
-            needs_you || (flagged && !self.held_message_flag_outlived(task).await);
+            needs_you || browser_req || (flagged && !self.held_message_flag_outlived(task).await);
         if past_merge(&record.stage) {
             // Merged: said once, to a task the watch saw with it open (PRN-005, PRN-007).
             if !merge_untold(told, pr) {
                 return None;
             }
             let text = self.merged_text_once(task, &sandbox, pr).await?;
-            return Some(PrFacts {
-                now_ms,
-                pr,
-                events: vec![Event {
-                    kind: "merged",
-                    key: pr.to_string(),
-                    text,
-                }],
-                progress: told.progress.clone(),
-                person_must_act,
-                ..PrFacts::default()
-            });
+            return Some((
+                PrFacts {
+                    now_ms,
+                    pr,
+                    events: vec![Event {
+                        kind: "merged",
+                        key: pr.to_string(),
+                        text,
+                    }],
+                    progress: told.progress.clone(),
+                    person_must_act,
+                    ..PrFacts::default()
+                },
+                None,
+            ));
         }
         if record.stage != DeliveryStage::PrOpen {
             return None;
         }
+        // A deferred pass remembers the open PR and leaves its existing stall clock alone.
+        let observed_only = || {
+            Some((
+                PrFacts {
+                    pr,
+                    now_ms,
+                    progress: if told.pr == pr {
+                        told.progress.clone()
+                    } else {
+                        String::new()
+                    },
+                    ..PrFacts::default()
+                },
+                None,
+            ))
+        };
+        if activation.deciding {
+            return observed_only();
+        }
+        let arm_head = match slot {
+            ArmedNow::Armed(arm) => Some(arm.head.as_str()),
+            _ if armed => return observed_only(),
+            _ => None,
+        };
         let integration = delivery_profile(&sandbox).integration_branch;
-        if !runs.contains_key(sandbox.id.as_str()) {
-            let read = self
-                .deps
-                .store
-                .ci_runs(&sandbox.id, RUNS_READ)
-                .await
-                .unwrap_or_default();
-            runs.insert(sandbox.id.as_str().to_owned(), read);
-        }
-        let sandbox_runs = runs.get(sandbox.id.as_str()).map_or(&[][..], Vec::as_slice);
-        let mut own = sandbox_runs
-            .iter()
-            .find(|run| run.reference == CiRef::PullRequest(pr))
-            .cloned();
-        if own.is_none() && !told.head.is_empty() {
-            own = self
-                .deps
-                .store
-                .ci_runs_for_sha(&sandbox.id, &told.head)
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .find(|run| run.reference == CiRef::PullRequest(pr));
-        }
+        let mut own = if let Some(head) = arm_head {
+            // Every armed owner follows the queue's ordinary run at that head, including
+            // a run shared by the scheduler or one outside the recent sandbox window.
+            match self.ordinary_pull_run(&sandbox, pr, head).await {
+                Ok(run) => run,
+                Err(_) => return observed_only(),
+            }
+        } else {
+            if !runs.contains_key(sandbox.id.as_str()) {
+                let read = self
+                    .deps
+                    .store
+                    .ci_runs(&sandbox.id, RUNS_READ)
+                    .await
+                    .unwrap_or_default();
+                runs.insert(sandbox.id.as_str().to_owned(), read);
+            }
+            let sandbox_runs = runs.get(sandbox.id.as_str()).map_or(&[][..], Vec::as_slice);
+            let mut recent = sandbox_runs
+                .iter()
+                .find(|run| run.reference == CiRef::PullRequest(pr))
+                .cloned();
+            if recent.is_none() && !told.head.is_empty() {
+                recent = self
+                    .deps
+                    .store
+                    .ci_runs_for_sha(&sandbox.id, &told.head)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|run| run.reference == CiRef::PullRequest(pr));
+            }
+            recent
+        };
         // SPEC-553 REP-004: recover an idle task whose clean committed CI repair on a failing
         // open PR missed turn-end publication (for example across a server restart). Reads only
         // local HEAD unless it differs from the failing PR run's SHA.
@@ -1030,20 +1199,36 @@ impl App {
                 .find(|run| run.reference == CiRef::PullRequest(pr))
                 .cloned();
         }
+        let train_read = self.watched_train(task, pr);
+        let train = train_read.as_ref().ok().and_then(Option::as_ref);
+        let holding = train.and_then(|train| train.candidate.as_ref());
+        // An ordinary failure is actionable even when the holding CI record cannot be decoded.
+        let ordinary_takes_precedence = own.as_ref().is_some_and(|run| {
+            run.state == RunState::Failed
+                || (run.state == RunState::Error && told.keys.get("run") != Some(&run.id))
+        });
+        let candidate_id = holding
+            .filter(|_| !ordinary_takes_precedence)
+            .map(|(id, _)| id.as_str());
+        let Ok(candidate) = self.holding_run(&sandbox, candidate_id).await else {
+            return observed_only();
+        };
+        let candidate = candidate.as_ref();
         if let Some(run) = own.as_ref()
             && run.state == RunState::Failed
             && self.run_superseded_by_pushed_head(task, &run.sha).await
         {
+            if arm_head.is_some() {
+                return observed_only();
+            }
             own = None;
         }
-        let sandbox_runs = runs.get(sandbox.id.as_str()).map_or(&[][..], Vec::as_slice);
         let own = own.as_ref();
-        // A candidate older than the pull request's own newest run is about an earlier head.
-        let candidate = sandbox_runs
-            .iter()
-            .find(|run| matches!(&run.reference, CiRef::Train(members) if members.contains(&pr)))
-            .filter(|run| own.is_none_or(|own| run.queued_at >= own.queued_at));
-        let hold = self.train_hold(task);
+        let notice_hold = if holding.is_some() {
+            Hold::Held
+        } else {
+            Hold::Free
+        };
         let mut events = Vec::new();
         let told_key = |kind: &str, key: &str| told.keys.get(kind).is_some_and(|k| k == key);
         if let Some(run) = own {
@@ -1069,10 +1254,27 @@ impl App {
                 _ => {}
             }
         }
-        if let Some(run) = candidate
-            && let CiRef::Train(members) = &run.reference
-            && run.state == RunState::Failed
+        if train_read.is_err() && events.is_empty() {
+            return observed_only();
+        }
+        // A disappearing train, or one awaiting its singleton decision, has no
+        // instructions for its member. An untold ordinary failure still takes priority.
+        if events.is_empty()
+            && holding.is_some_and(|(_, members)| match candidate.map(|run| run.state) {
+                Some(RunState::Queued | RunState::Running | RunState::Passed) => false,
+                Some(RunState::Failed) => {
+                    members.len() == 1
+                        || candidate.is_some_and(|run| told_key("candidate", &run.id))
+                }
+                Some(RunState::Error | RunState::Cancelled | RunState::Skipped) | None => true,
+            })
+        {
+            return observed_only();
+        }
+        if let (Some(run), Some((_, members))) = (candidate, holding)
             && members.len() > 1
+            && run.state == RunState::Failed
+            && !own.is_some_and(|run| run.state == RunState::Failed)
             && !told_key("candidate", &run.id)
         {
             let jobs = self
@@ -1101,8 +1303,8 @@ impl App {
         // Without a run at its head (a project without Yulius CI) the branch's pushed head is
         // asked: a conflicting pull request is not tested (SPEC-491 DON-003), so its agent has
         // to hear of it there too.
-        let conflict_head = match &head {
-            Some(head) => Some(head.clone()),
+        let conflict_head = match arm_head.or(head.as_deref()) {
+            Some(head) => Some(head.to_owned()),
             None => self.branch_head(task).await,
         };
         // SPEC-553 REP-004: deliver an actionable failed publication once when `yulius wait` is
@@ -1123,7 +1325,7 @@ impl App {
             }
         }
         if let Some(head) = &conflict_head
-            && hold == Hold::Free
+            && matches!(train_read, Ok(None))
             && self.conflicts(task, &sandbox, head).await
         {
             events.push(Event {
@@ -1134,13 +1336,21 @@ impl App {
         }
         let green =
             own.is_some_and(|run| matches!(run.state, RunState::Passed | RunState::Skipped));
-        let queue_note = self.merge_queue_note(task);
-        if let (true, Some(head)) = (green, &head) {
-            let said = green_said(head, armed, hold, queue_note.as_ref(), &integration);
+        let arm_note = self.arm_queue_note(&task.id);
+        let queue_note = train.map(|train| &train.note).or(arm_note.as_ref());
+        if let (true, Some(head)) = (green, &head)
+            && candidate.is_none_or(|run| run.state != RunState::Failed)
+        {
+            let said = green_said(head, armed, notice_hold, queue_note, &integration);
             if let Some((class, text)) = said {
+                let key = if train.is_some() && holding.is_none() {
+                    format!("{head}:left-out:{}", fingerprint(&text))
+                } else {
+                    format!("{head}:{class}")
+                };
                 events.push(Event {
                     kind: "green",
-                    key: format!("{head}:{class}"),
+                    key,
                     text,
                 });
             }
@@ -1165,32 +1375,143 @@ impl App {
         let has_ci = self.config.ci.enabled
             && (own.is_some() || self.ci_gate(&sandbox).await.gate.is_some());
         let status = if has_ci {
-            status_text(own, armed, hold, queue_note.as_ref(), &integration)
+            status_text(own, armed, notice_hold, queue_note, &integration)
         } else {
             no_ci_status(armed)
         };
         let runtime = self.existing_runtime(&task.id)?;
-        let idle = !runtime.turn_in_progress() && self.typed_recently(&task.id).is_none();
-        let quiet_since_ms = runtime
-            .turn_closed_ms
-            .load(Ordering::SeqCst)
-            .max(runtime.spawned_ms.load(Ordering::SeqCst));
-        let check_ins = !runtime.goal_achieved.load(Ordering::SeqCst) && !needs_you;
-        Some(PrFacts {
+        let mut facts = PrFacts {
             now_ms,
             pr,
             events,
             progress,
             ci_busy,
             status,
-            idle,
-            quiet_since_ms,
-            check_ins,
+            check_ins: !needs_you,
             person_must_act,
-            working: runtime.turn_in_progress(),
             has_ci,
             head: own.map(|run| run.sha.clone()).unwrap_or_default(),
-        })
+            ..PrFacts::default()
+        };
+        self.refresh_notice_activity(&task.id, &runtime, &mut facts);
+        crate::race::reached(
+            crate::race::Point::LivePrFactsRead,
+            std::path::Path::new(task.id.as_str()),
+        );
+        if self.update_holds_starts()
+            || &self.arm_observation(&task.id) != activation
+            || &self.armed_now(&task.id) != slot
+            || self.merge_is_armed(&task.id) != armed
+        {
+            return observed_only();
+        }
+        let candidate_id = candidate_id.map(str::to_owned);
+        let source = arm_head.map(|_| ArmedNoticeSource {
+            ordinary: own.cloned(),
+            candidate_id,
+            candidate: candidate.cloned(),
+            train: train_read,
+        });
+        Some((facts, source))
+    }
+
+    fn refresh_notice_activity(
+        &self,
+        task: &TaskId,
+        runtime: &crate::supervisor::TaskRuntime,
+        facts: &mut PrFacts,
+    ) {
+        facts.working = runtime.turn_in_progress();
+        facts.idle = !facts.working && self.typed_recently(task).is_none();
+        facts.quiet_since_ms = runtime
+            .turn_closed_ms
+            .load(Ordering::SeqCst)
+            .max(runtime.spawned_ms.load(Ordering::SeqCst));
+        facts.check_ins &= !runtime.goal_achieved.load(Ordering::SeqCst);
+    }
+
+    /// Read the CI run named by the holding train. A PR left out of it has no candidate run.
+    async fn holding_run(
+        &self,
+        sandbox: &SandboxRecord,
+        id: Option<&str>,
+    ) -> AppResult<Option<CiRunRecord>> {
+        let Some(id) = id else { return Ok(None) };
+        Ok(self
+            .deps
+            .store
+            .ci_run(id)
+            .await?
+            .filter(|run| run.sandbox_id == sandbox.id))
+    }
+
+    /// A second clone can publish a repair without advancing this checkout's tracking ref.
+    /// Only a notice ready to type needs a hosted read. Keep outages bounded per notice.
+    async fn hosted_arm_is_current(
+        &self,
+        task: &TaskRecord,
+        sandbox: &SandboxRecord,
+        pr: u64,
+        head: &str,
+    ) -> bool {
+        let read = async {
+            let token = self.dlv_installation_token(sandbox).await?;
+            self.deps
+                .github
+                .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, pr)
+                .await
+        };
+        matches!(tokio::time::timeout(Duration::from_secs(5), read).await,
+            Ok(Ok(pull)) if pull.number == pr && pull.state == "open" && !pull.merged
+                && !pull.from_fork && pull.base == delivery_profile(sandbox).integration_branch
+                && task.branch.as_deref() == Some(pull.head.as_str()) && pull.head_sha.eq_ignore_ascii_case(head))
+    }
+
+    /// Recheck the recipient after the hosted read, before recording anything as heard.
+    async fn armed_notice_recipient(
+        &self,
+        task: &TaskRecord,
+        sandbox: &SandboxRecord,
+        pr: u64,
+        head: &str,
+        source: &ArmedNoticeSource,
+    ) -> Option<NoticeRecipient> {
+        if self.run_superseded_by_pushed_head(task, head).await {
+            return None;
+        }
+        crate::race::reached(
+            crate::race::Point::ArmedNoticePublicationRead,
+            std::path::Path::new(task.id.as_str()),
+        );
+        if !self.hosted_arm_is_current(task, sandbox, pr, head).await {
+            return None;
+        }
+        let (ordinary, candidate) = tokio::try_join!(
+            self.ordinary_pull_run(sandbox, pr, head),
+            self.holding_run(sandbox, source.candidate_id.as_deref()),
+        )
+        .ok()?;
+        if ordinary != source.ordinary || candidate != source.candidate {
+            return None;
+        }
+        let recipient = self
+            .deps
+            .store
+            .armed_notice_recipient(&task.id, pr, task.branch.as_deref()?)
+            .await
+            .ok()??;
+        if let Some(reason) = &recipient.attention
+            && !(self.held_draft_box_cleared(task) && crate::task_message::draft_flag(reason))
+        {
+            return None;
+        }
+        // Chromium can hold its slot across a restart. A pending lookup leaves the notice
+        // unheard so that the next pass verifies the published head again.
+        tokio::select! {
+            biased;
+            request = self.browser_tab_request_for(&task.sandbox_id, &task.id) => request.is_none().then_some(recipient),
+            () = std::future::ready(()) => None,
+        }
     }
 
     /// The merge notice of `task`'s pull request `pr` (`merged_text`), read from GitHub once and

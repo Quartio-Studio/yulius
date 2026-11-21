@@ -83,7 +83,11 @@ watching, steering and unblocking.
   server's disk runs low Yulius sweeps harder, prunes idle caches and every page shows a warning
   (SPEC-276). When the egress proxy refuses a sandbox at its share, or its relay toward Yulius or
   the proxy itself is full, the sandbox's people see a warning naming the task whose run holds the
-  most connections, notified once until it has room again (SPEC-361). Removing a sandbox asks
+  most connections, notified once until it has room again (SPEC-361). On Linux, a frozen agent's established
+  opaque HTTP/1.1 CONNECT tunnel keeps its original peers and pending bytes during an orderly
+  server update, including through a surviving sandbox holder. Multiplexed HTTP/2 connections
+  to the proxy reconnect. Intercepted requests reconnect through the successor's host-bound
+  credential policy (SPEC-577). Removing a sandbox asks
   whether to delete its files permanently or keep them; kept
   ones are listed with their size for a later deletion. `yulius onboard`
   only uploads: the onboarding task that adapts the repository to the Yulius standards is created
@@ -555,7 +559,8 @@ watching, steering and unblocking.
   and kept 180 days (SPEC-137): a task's waits, states, steps (with their tokens), runs, pauses,
   pull request and merge waits; a CI run's queue (and why), jobs and the stages their output names
   (`::yulius-stage`, with test counts); a deploy's confirmation, promotion, deploy and verify; what a
-  CI job or deploy used (CPU time, peak memory, bytes written; SPEC-154). The Dashboard's Pipeline
+  CI job or deploy used (CPU time, peak memory, bytes written; SPEC-154). Each task keeps its
+  latest completed merge wait beyond the telemetry window (SPEC-558). The Dashboard's Pipeline
   (stages) tab (`?section=pipeline`; `/pipeline` still opens it) shows deployment frequency, lead
   time, change failure rate and time to restore for dev and production, any stage's daily p50 and
   p90 and the stage table (with CPU and memory p50 · p90) with CSV/JSON export; a CI run, a deploy

@@ -453,7 +453,18 @@ function createApp(root, transport) {
         }
         updateTitle();
       }),
-      store.on('tasks', () => updateTitle()),
+      store.on('tasks', (sid) => {
+        updateTitle();
+        if (currentRoute?.name !== 'task' || currentSandbox?.id !== sid || !store.state.tasks.has(sid)) return;
+        const number = currentRoute.number;
+        const key = centerView?.key;
+        if (key === `tasks-error:${sid}:${number}` ||
+            (key === `missing-task:${sid}:${number}` && activeTaskByNumber(sid, number))) {
+          // Leave the error view before recovery so successive lists share one archive lookup.
+          setCenter(`tasks-loading:${sid}:${number}`, () => ({ el: placeholder('Loading the task…', 'loading') }));
+          refreshRoute();
+        }
+      }),
       // `resync` follows lost events and every sandbox change (import, onboarding, removal).
       store.on('resync', async () => {
         try {
@@ -586,15 +597,19 @@ function createApp(root, transport) {
     try { await store.loadTasks(sandbox.id); } catch { /* store.tasksError(sandbox.id) */ }
   }
 
+  function activeTaskByNumber(sandboxId, number) {
+    return store.tasksOf(sandboxId)?.find(task => task.number === number);
+  }
+
   async function findTaskByNumber(sandbox, number) {
-    const active = (store.tasksOf(sandbox.id) || []).find((t) => t.number === number);
+    const active = activeTaskByNumber(sandbox.id, number);
     if (active) return active;
+    let archived;
     try {
-      const archived = await api.get(`/api/sandboxes/${enc(sandbox.id)}/tasks?archived=true`);
-      return (Array.isArray(archived) ? archived : []).find((t) => t.number === number) || null;
-    } catch {
-      return null;
-    }
+      archived = await api.get(`/api/sandboxes/${enc(sandbox.id)}/tasks?archived=true`);
+    } catch { /* The active list may still have recovered during the archive lookup. */ }
+    return activeTaskByNumber(sandbox.id, number) ||
+      (Array.isArray(archived) && archived.find(task => task.number === number)) || null;
   }
 
   async function handleRoute(route) {
@@ -647,7 +662,7 @@ function createApp(root, transport) {
         if (store.tasksOf(sandbox.id) === null && store.tasksError(sandbox.id)) {
           // The list failed to load: say so, rather than "Task #12 was not found".
           failed(`tasks-error:${sandbox.id}:${route.number}`, `Couldn’t load the tasks of ${sandbox.name}: ${store.tasksError(sandbox.id).message}`,
-            () => store.loadTasks(sandbox.id).then(() => refreshRoute(), () => {}));
+            () => store.loadTasks(sandbox.id).catch(() => {}));
           break;
         }
         task = await findTaskByNumber(sandbox, route.number);

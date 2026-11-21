@@ -682,6 +682,9 @@ export function createStreamView(ctx, sandbox, hooks) {
       case 'action_requested':
         if (hooks.onActionRequested) hooks.onActionRequested(message);
         break;
+      case 'action_cleared':
+        if (hooks.onActionCleared) hooks.onActionCleared(message);
+        break;
       case 'error':
         if (message.code === 'input_locked_until_restart') {
           if (lockReason.textContent !== message.message) lockReason.textContent = message.message;
@@ -807,6 +810,7 @@ export function createStreamView(ctx, sandbox, hooks) {
     history(tabId, delta) { send({ type: 'history', tab_id: tabId, delta }); },
     reload(tabId) { send({ type: 'reload', tab_id: tabId }); },
     close(tabId) { send({ type: 'close', tab_id: tabId }); },
+    clearAction(tabId) { send({ type: 'clear_action', tab_id: tabId }); },
     focus() { keys.focus({ preventScroll: true }); },
     layout,
     start() { connect(); setTimeout(() => { sendViewport(); layout(); }, 0); },

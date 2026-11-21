@@ -158,6 +158,11 @@ impl ObservationSource {
     }
 }
 
+pub(crate) enum PrNoticeInput<'a> {
+    Paste(&'a [u8]),
+    Submit,
+}
+
 struct ActiveRun {
     attempt_id: AttemptId,
     writer: Box<dyn RunWriter>,
@@ -326,6 +331,8 @@ pub struct TaskRuntime {
     /// of it in progress and how the last one ended (SPEC-028 MSR-003), under one lock so
     /// `yulius wait` reads them together (SPEC-064 WAI-003).
     pub(crate) armed: Mutex<crate::agent_wait::ArmedSlot>,
+    /// Orders durable singleton decisions with an operator or agent changing its arm.
+    pub(crate) arm_writer: tokio::sync::Mutex<()>,
     /// Why Yulius could not push or deliver the agent's head, for `yulius wait`: the agent learns
     /// it instead of waiting for a run that never comes (SPEC-050 DLV-201, DLV-204).
     pub(crate) push_problem: Mutex<Option<crate::delivery::PushNote>>,
@@ -514,6 +521,33 @@ impl Drop for Finalizing<'_> {
 pub const SWITCH_COOLDOWN_MS: i64 = 10 * 60 * 1000;
 
 impl TaskRuntime {
+    /// The paste needs immediate writer access. Its Enter can wait, but both belong to the
+    /// attempt that the watcher observed. A switch attaches a new writer to this runtime.
+    pub(crate) async fn write_pr_notice(
+        &self,
+        attempt: &AttemptId,
+        now: Timestamp,
+        input: PrNoticeInput<'_>,
+    ) -> AppResult<()> {
+        let (mut run, bytes) = match input {
+            PrNoticeInput::Paste(bytes) => (
+                self.run
+                    .try_lock()
+                    .map_err(|_| AppError::Conflict("the session writer is busy".into()))?,
+                bytes,
+            ),
+            PrNoticeInput::Submit => (self.run.lock().await, b"\r".as_slice()),
+        };
+        let run = run
+            .as_mut()
+            .filter(|run| &run.attempt_id == attempt)
+            .ok_or_else(|| {
+                AppError::Conflict("the observed session is no longer attached".into())
+            })?;
+        self.last_input_ms.store(now.0, Ordering::SeqCst);
+        run.writer.input(bytes).await
+    }
+
     /// Consumes the reader's request only for the attempt whose end was recorded.
     fn take_reader_request(&self, attempt_id: &AttemptId) -> Option<TakenRequest> {
         self.taken_request
@@ -703,6 +737,7 @@ impl TaskRuntime {
             typing_message: AtomicBool::new(false),
             spawned_ms: AtomicI64::new(0),
             armed: Mutex::new(crate::agent_wait::ArmedSlot::default()),
+            arm_writer: tokio::sync::Mutex::new(()),
             push_problem: Mutex::new(None),
             repair_checked_head: Mutex::new(None),
             last_stop_ms: AtomicI64::new(0),
@@ -5897,6 +5932,10 @@ impl App {
         let runtime = self.runtime(task_id);
         runtime.hub.resize(cols, rows);
         let mut run = runtime.run.lock().await;
+        crate::race::reached(
+            crate::race::Point::TerminalResizeOwnsWriter,
+            Path::new(task_id.as_str()),
+        );
         match run.as_mut() {
             Some(run) => run.writer.resize(cols, rows).await,
             None => Ok(()),
