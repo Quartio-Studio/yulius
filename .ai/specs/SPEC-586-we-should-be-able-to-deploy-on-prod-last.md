@@ -24,7 +24,7 @@ SPEC-575 records what the shared staging environment verified. Production CD cur
 - [x] Read the product context and related work, then write and validate the spec
 - [x] Select and show the verified dev revision during a newer verification
 - [x] Promote exactly the selected revision and its included deliveries
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
@@ -58,4 +58,8 @@ A person's production deployment carries an exact source revision. The staging q
 - At `b6c07f417`, all 180 CD, rollback, staging and delivery tests and 10 focused shared-CI and release tests passed. Review then identified two reruns that used newer job definitions. An explicit dev pass for a changed command and a PR skip for a newly path-filtered job both returned HTTP 200 on this head. A third regression reproduced loss of the path-skip reason on copy.
 - The shared-verdict mutation delta against `fc6f2da70` completed with 17 listed, 0 caught, 0 missed, 0 timed out, 17 unviable and 0 not reached. The generated Rust variants failed to compile. The 60-minute bound took 448 seconds.
 - An expanded mutation baseline reproduced an unrelated test-fixture failure under an alternate temporary root. Using the fixtures’ actual root, `TMPDIR=/tmp`, passed the agent CLI bind test in the scratch checkout in 2.04 seconds. [Issue #1595](https://github.com/Quartio-Studio/yulius/issues/1595) tracks that test environment.
-- At `d5b9516e1`, 239 CD, delivery, rollback, staging, branch reuse and domain CI tests passed. The final review reproduced one incorrect refusal in both the current-head and historical fixtures: a path-scoped job actually executed and returned the CI skip code. Both releases returned HTTP 409. Candidate coverage now distinguishes that recorded exit from a scheduler skip.
+- At `d5b9516e1`, 239 CD, delivery, rollback, staging, branch reuse and domain CI tests passed. The review reproduced one incorrect refusal in both the current-head and historical fixtures: a path-scoped job actually executed and returned the CI skip code. Both releases returned HTTP 409. Candidate coverage now distinguishes that recorded exit from a scheduler skip.
+- Independent review approved `a7a799faf`. All 239 scoped behavior tests passed at that head. Scoped Clippy, repository contracts, formatting, decision numbering and spec validation passed. Vidoc was disabled in Yulius. The Git-backed HTTP fixtures exercised production confirmation and execution without a live production target.
+- The promotion fix delta against `d29ca70ee` listed 44, caught 6, missed 1 and found 37 unviable. The rollback and retry fix delta against `c98d45fba` listed 22, caught 2, missed 1 and found 19 unviable. Neither had timeouts or unreached mutants. The later receipt and optional-check regressions caught both surviving variants. A targeted cargo-mutants run also confirmed the competing PR selection and simultaneous release-ref creation regressions. All four selected mutants were caught.
+- The Chromium E2E suite passed 1,298 tests, including all 30 CD and release-page cases. Its model-dependent agent test was skipped. A separate mutation check confirmed the retry regression catches comparing production against the moving dev head instead of the pinned revision.
+- The real-Git staging and drill fixture selects A while staged B is being drilled, refuses a failed, same-revision or never-staged previous proof, and keeps B available while a later C drills.

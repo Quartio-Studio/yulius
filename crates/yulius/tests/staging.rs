@@ -1102,6 +1102,88 @@ async fn the_release_keeps_its_own_staging_requirement() -> TestResult {
     Ok(())
 }
 
+/// Staging can serve B while its own rollback proof is running. Its previous proof
+/// supplies A only when both the drill and staging verified that revision.
+#[tokio::test]
+async fn staging_and_the_running_drill_agree_on_the_release_revision() -> TestResult {
+    let config = promoting_toml()
+        .replace(
+            "[cd.prod]",
+            "[cd.prod]\ndeploy = \"true\"\nrollback = \"true\"\nmigrations = \"none: no data\"",
+        )
+        .replace(
+            "[cd.dev]",
+            "[cd.dev]\ndeploy = \"true\"\nrollback = \"true\"\nmigrations = \"none: no data\"",
+        );
+    let f = fixture(&config).await?;
+    let original = f.head("main")?;
+    agent(&f, "t1").await?;
+    let a = land(&f, "t1", "first.txt").await?;
+    gate(&f, &a, RunState::Passed).await?;
+    ask(&f, "t1").await?;
+    settle(&f).await?;
+    f.prove("dev").await?;
+    agent(&f, "t2").await?;
+    let b = land(&f, "t2", "second.txt").await?;
+    gate(&f, &b, RunState::Passed).await?;
+    ask(&f, "t2").await?;
+    settle(&f).await?;
+    let proof_id = format!("drill-{}", &a[..12]);
+    let mut running =
+        f.h.store
+            .cd_run(&proof_id, false)
+            .await?
+            .ok_or("A's drill")?;
+    running.id = "drill-current-staged".into();
+    running.sha.clone_from(&b);
+    running.state = RunState::Running;
+    running.ended_at = None;
+    f.h.store.insert_cd_run(&running).await?;
+    crate::cd::git(
+        &f.h.app.config.data_dir.join("sandboxes/s1/repo"),
+        &["fetch", "-q", "origin"],
+    )?;
+    let offered = |overview: Value| -> BoxResult<Value> {
+        Ok(overview["environments"]
+            .as_array()
+            .ok_or("environments")?
+            .iter()
+            .find(|env| env["name"] == "prod")
+            .ok_or("prod")?["promotes_from"]
+            .clone())
+    };
+    assert_eq!(offered(f.get("/api/sandboxes/s1/cd").await?)?, a);
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE cd_runs SET state='failed' WHERE id='{proof_id}'"
+        ))
+        .await?;
+    assert!(offered(f.get("/api/sandboxes/s1/cd").await?)?.is_null());
+    // Rechecking the same commit cannot borrow its own old passing attempt.
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE cd_runs SET state='passed', sha='{b}' WHERE id='{proof_id}'"
+        ))
+        .await?;
+    assert!(offered(f.get("/api/sandboxes/s1/cd").await?)?.is_null());
+    // A drill for a revision that was never staged cannot stand in for the prior release.
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE cd_runs SET sha='{original}' WHERE id='{proof_id}'"
+        ))
+        .await?;
+    assert!(offered(f.get("/api/sandboxes/s1/cd").await?)?.is_null());
+    // A drill for C does not displace already-staged B.
+    let c = f.push("dev", &[("third.txt", Some("checking"))])?;
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE cd_runs SET sha='{c}' WHERE id='drill-current-staged'"
+        ))
+        .await?;
+    assert_eq!(offered(f.get("/api/sandboxes/s1/cd").await?)?, b);
+    Ok(())
+}
+
 /// When dev retires staging, a previously verified staging release remains eligible while
 /// its unstaged successor and the new configuration cannot qualify.
 #[tokio::test]
