@@ -1,6 +1,6 @@
 ---
 yulius-task: 5b06b876-20e3-4a88-b4c2-2c7c3667ff86
-status: in-progress
+status: done
 ---
 
 # SPEC-595 Shared compilation for Yulius Rust builds
@@ -31,7 +31,7 @@ On November 21 the operator measured about 195 seconds compiling and 151 seconds
 - [x] Record the observed CI lane reuse and before/after run times
 - [x] Verify candidate idle-store recovery and reconcile the shipped launcher CI measurements
 - [x] Restore task admission after compiler-store eviction with multiply linked files
-- [ ] Verify the completed quota and disk-upkeep integration for delivery
+- [x] Verify the completed quota and disk-upkeep integration for delivery
 
 ## Acceptance criteria
 
@@ -130,3 +130,9 @@ The task-admission test first failed because upkeep made zero fresh quota measur
 A CI dispatcher regression showed two full quota measurements after upkeep cleared a store with zero credited bytes. With an empty round it measured once. The dispatcher now reuses the reading upkeep took after a removal.
 
 Review of `e103a27e4` identified a final interrupted state in which the previous round had cleared the last artifact. Only the pending stamp remained. The admission regression reproduced a restored ready stamp and zero quota refreshes. Finishing that pending eviction now reports completion to quota admission even if the current round has no payload left to remove. A store that was already empty and ready reports no cleanup.
+
+At `b0cd5857e`, all 15 focused Rust tests passed. The pending-only store recovered, the task saw exactly one fresh quota reading and one retry, and a queued CI run measured once after either an empty round or a cache eviction. All 15 tests passed again on `24504e4ea` after integrating dev `14e01f438`. Independent review approved that exact head. The reviewer separately passed the launcher tests for active upkeep and interrupted eviction and verified the 33 scheduled hits against all three job logs.
+
+Clippy passed with warnings denied on all targets of the three affected crates at the reviewed head. Vidoc was disabled for the project.
+
+In a hand check, changing the quota boundary to `>=` removed an artifact at exactly the limit, omitting pending-only eviction completion gave the task zero fresh quota readings, and restoring CI’s second disk scan gave it two readings. Each regression failed on its respective condition. With the reviewed lines restored and dev `cf492c608` integrated, all 16 focused Rust tests and all 21 launcher and release tests passed.

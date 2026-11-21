@@ -1842,3 +1842,39 @@ async fn compiler_upkeep_remeasures_quota_before_retrying_a_refused_task() -> Bo
     }
     Ok(())
 }
+
+/// A different preparation failure at exactly the quota must preserve the idle compiler store.
+#[tokio::test]
+async fn compiler_upkeep_preserves_the_cache_after_an_unrelated_refusal_at_quota() -> BoxResult<()>
+{
+    struct AtLimit;
+    #[async_trait::async_trait]
+    impl SandboxIsolation for AtLimit {
+        async fn prepare(&self, _: &SandboxRef) -> AppResult<Option<SandboxJoin>> {
+            Err(yulius_app::error::AppError::Conflict(
+                "holder unavailable".into(),
+            ))
+        }
+        async fn disk(&self, _: &SandboxRef) -> Option<DiskUsage> {
+            Some(DiskUsage {
+                used: BIG as u64,
+                limit: BIG as u64,
+            })
+        }
+        fn release(&self, _: &SandboxId) {}
+    }
+    let w = world().await?;
+    let task = seed_task(&w.h, "t-limit", "s1", "u-alice", TaskStatus::Running, None).await?;
+    let cache = w.root.join("rust-compile-cache");
+    std::fs::create_dir(&cache)?;
+    std::fs::write(cache.join(".yulius-mbx-v1"), b"mbx-v1\n")?;
+    let artifact = cache.join("artifact");
+    std::fs::write(&artifact, b"keep")?;
+    assert!(w.h.app.set_isolation(Arc::new(AtLimit)));
+    assert!(matches!(
+        w.h.app.preflight_start(&task, None).await,
+        Err(yulius_app::error::AppError::Conflict(_))
+    ));
+    assert_eq!(std::fs::read(artifact)?, b"keep");
+    Ok(())
+}
