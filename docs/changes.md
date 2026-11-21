@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- On Linux in legacy mode, established opaque agent CONNECT tunnels retain their original TCP peers and queued bytes across an orderly server restart. Intercepted connections reconnect through the host-bound secret policy. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
+
 - The merge queue saves a failed single-PR decision before clearing its request. After restart it preserves a later request for the same head, including a retry that finds the PR already merged. When a person merges the armed head, its agent can read the merge receipt immediately in `yulius wait` (SPEC-558).
 
 - Hourly history cleanup preserves each existing task’s latest merge queue decision, even if the arm began before the telemetry cutoff (SPEC-558).

@@ -3829,8 +3829,12 @@ receiving and returning the batch. Each timed pair also retains its original mon
 deadline. The helper releases expired pairs while a successor receives the remaining live
 records. A timed pair can carry its original kernel socket identities. The sender supplies
 them before transferring its descriptors. The receiver can drain a final TCP receive queue
-after both FINs, and a reset or timed-out stream releases its own pair. The server integration
-is tracked in SPEC-577.
+after both FINs, and a reset or timed-out stream releases its own pair. In Linux legacy mode the server pauses established opaque agent tunnels on orderly shutdown.
+Capture and deposit have fifteen seconds, concurrent with five seconds to drain in-flight HTTP
+responses. The successor restores the original sockets, copy cursors, admission owners, last
+activity and expiry before serving new HTTP requests. Intercepted connections close at restart.
+Fresh connections use the successor's host-bound injection and redaction policy. Continuity
+through a namespace holder also requires its matching outbound relay.
 [ADR-0413](decisions/0413-a-bounded-helper-holds-connected-tunnel-sockets-between-servers.md)
 The proxy also counts each connection's run (agent run, CI job, Superagent shell). When nothing was
 idle for 5 minutes, a full sandbox share takes the oldest connection of its busiest other run, and
@@ -3853,6 +3857,9 @@ flowchart LR
   A["process in the sandbox"] -->|"127.0.0.1:8081"| F["holder's forward (256 places)"]
   F -->|"out.sock"| O["server's out.sock relay (256 places)"]
   O --> I["internal listener: API, MCP, egress proxy (128 per sandbox, 256 in all)"]
+  D["direct agent connection (legacy mode)"] --> I
+  I -.->|"orderly stop of an established opaque tunnel"| C["Linux socket custodian"]
+  C -.->|"restore original sockets and places before HTTP"| I
   F -.->|"full: the longest-idle place (idle 5 min or more) gives way"| F
   I -.->|"share full, all active: the busiest run's oldest tunnel gives way"| I
   I -.->|"still refused: a trouble"| H["ConnectionHealth"]

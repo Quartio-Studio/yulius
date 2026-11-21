@@ -430,3 +430,13 @@ without adoption support or a remote peer that times out can end a tunnel.
   through the holder before shutdown. The successor became healthy with that same holder.
   The original client then received EOF in place of the marker written during restart.
   Proxy and holder wiring remain necessary for AC-1.
+- PR #1569 landed at dev squash `e8759b018`, with the same tree as the reviewed head
+  `aae723883`. PR run `66c61f08-cd34-4865-b380-9e1fd1d75c0f` and dev run
+  `51949d71-9ca7-4f3f-9df2-f26be8ce2242` passed. Quality, both shards and e2e
+  passed. Vidoc was disabled.
+  [Dev verification](https://yulius.quartio.ai/api/tasks/35adb14d-65fe-4a9f-b9fa-370d776d4139/delivery/evidence/e8759b018f629627a1583daf5eb445db61de2ce3?run_id=51949d71-9ca7-4f3f-9df2-f26be8ce2242)
+- Before restoring the direct wiring on this base, the direct two-process acceptance
+  fixture failed in 0.53 s. The original client read EOF where it expected the marker
+  written between server processes. The five real-process direct cases passed in 8.37 s
+  in the rehearsal. All 17 source, test and Cargo files in this integration match those
+  exercised in the rehearsal.
