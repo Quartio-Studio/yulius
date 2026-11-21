@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- Claude Code task delivery shows current review rounds. Codex task delivery also keeps the
+  just-merged PR's review visible. [SPEC-605](../.ai/specs/SPEC-605-record-the-review-rounds-of-codex-tasks.md)
 - Antigravity conversations reopened without a prompt show Waiting and can release their session slots while the Gemini announcement is visible. The composer regression checks the inherited model and effort of a task drawn to Antigravity. [SPEC-604](../.ai/specs/SPEC-604-an-idle-antigravity-session-under-the-ge.md)
 - `scripts/cargo --scratch-target` supports Clippy and nextest alongside built-in commands. Eligible builds reuse the sandbox compiler cache, and the command removes the private disk target after its workers stop. [SPEC-600](../.ai/specs/SPEC-600-mutation-testing-sized-to-the-change-wit.md)
 - Codex reviewers now contribute their reviewed head, timestamps, answering model and verdict
