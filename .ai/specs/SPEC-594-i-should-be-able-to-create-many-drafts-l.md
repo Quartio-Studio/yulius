@@ -1,6 +1,6 @@
 ---
 yulius-task: f09ba136-9aa7-4298-8509-879a8ff4faab
-status: in-progress
+status: done
 ---
 
 # SPEC-594. Keep several unfinished new-task drafts
@@ -25,7 +25,7 @@ The composer in [SPEC-026](SPEC-026-if-i-type-something-here-and-i-change-ta.md)
 - [x] Cover independent drafts and legacy recovery in the browser
 - [x] Let people create, switch and remove individual task drafts
 - [x] Preserve edits when reopening pending and shared drafts
-- [ ] Verify the composer and obtain independent approval for delivery
+- [x] Verify the composer and obtain independent approval for delivery
 
 ## Acceptance criteria
 
@@ -51,3 +51,5 @@ Extend the existing browser draft storage with separate keys for additional draf
 - `scripts/dev quick` passed. Vidoc was disabled by the project. `scripts/dev mutants` reported no changed Rust code to mutate.
 - Round two reproduced a held first upload surviving a discard, and a held upload lost when another tab erased the prompt. Discard and successful start now send an explicit cross-tab retirement message, including for an empty draft. Erasing text remains an edit to the same draft. Three two-tab scenarios cover these distinct outcomes.
 - Round three reproduced an editable draft during held creation and stale text after leaving an untouched editor. The success, failed-start and cross-tab regressions all failed at the reviewed head. The pending state now belongs to the draft across remounts. An untouched editor adopts a deferred remote save on release, preserving live files and later local edits.
+- Independent review approved `91c18a861ffdd7b76b9e8437b738e1a2b4736597` after running all 25 Chromium tests in `drafts.e2e.ts`. All passed, including legacy restore, three simultaneous drafts, inline image recovery, asynchronous submission and two-tab retirement and editing.
+- `git diff --check`, `scripts/dev quick` and `spec_check` passed. The previous full local web runs were interrupted. The full suite runs again at the approved implementation, and task #578's delivery record tracks the exact-head Yulius CI verdict.
