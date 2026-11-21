@@ -1152,3 +1152,108 @@ fn a_refused_antigravity_prompt_is_never_continued() -> TestResult {
     assert_no_connection(&listener);
     Ok(())
 }
+
+#[test]
+fn claude_scratch_removal_permission_returns_a_checked_retry() -> TestResult {
+    use serde_json::{Value, json};
+
+    let answer = |payload: &[u8]| {
+        let mut out = Vec::new();
+        assert_eq!(
+            run_hook(
+                "claude",
+                "PermissionRequest",
+                &mut &payload[..],
+                &mut out,
+                &|_| None,
+            ),
+            0
+        );
+        out
+    };
+    let request = |command: &str| {
+        json!({
+            "hook_event_name": "PermissionRequest", "permission_mode": "bypassPermissions",
+            "permission_suggestions": [], "tool_name": "Bash", "tool_input": {"command": command}
+        })
+    };
+    for (command, parent, child) in [
+        (
+            r#"W=/work
+S=/tmp/scratchpad
+cd $W && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts/test_cd.py 2>&1 | tail -n 4
+for d in r3m r3p; do
+    rm -rf $S/$d
+    mkdir -p $S/$d/scripts
+    cp -r $W/scripts/cd $S/$d/scripts/cd
+done
+cd $S/r3m && n=$(grep -n '^  phase=installed$' scripts/cd/remote.sh | sed -n 2p | cut -d: -f1)
+sed -i "${n}s/.* /   : # mutated/" scripts/cd/remote.sh && sed -n "$((n-2)),$((n+1))p" scripts/cd/remote.sh
+python3 -m unittest scripts/test_cd.py 2>&1 | grep -E "^(FAIL|Ran|OK)"
+cd $S/probe && python3 r2.py $S/r3p/scripts 2>&1 | tail -n 8"#,
+            "S",
+            "d",
+        ),
+        (r#"rm -fr -- "${scratch}/${copy}""#, "scratch", "copy"),
+    ] {
+        let mut event = request(command);
+        for worker in [false, true] {
+            if worker {
+                event["agent_id"] = json!("reviewer-fixture");
+            }
+            let reply: Value = serde_json::from_slice(&answer(&serde_json::to_vec(&event)?))?;
+            let output = &reply["hookSpecificOutput"];
+            assert_eq!(output["hookEventName"], "PermissionRequest");
+            let decision = &output["decision"];
+            assert_eq!(decision["behavior"], "deny");
+            assert_eq!(decision["interrupt"], false);
+            let retry = format!(r#"yulius remove "${{{parent}:?}}/${{{child}:?}}""#);
+            assert!(
+                decision["message"]
+                    .as_str()
+                    .is_some_and(|s| s.contains(&retry)),
+                "{decision}"
+            );
+        }
+    }
+    for command in [
+        r#"rm -rf "${S:?}/${d:?}""#,
+        "rm -rf /tmp/scratch",
+        "rm -i $S/$d",
+        "rm -f $S/$d",
+        "rm -rf $S/$d another-path",
+        "rm -rf $S$other$d",
+        "rm -rf $S/leaf",
+        "curl https://example.invalid",
+        "echo do rm -rf $S/$d",
+        "printf '%s' 'rm -rf $S/$d'",
+        "rm -rf '$S/$d'",
+        "cat <<'END'\nrm -rf $S/$d\nEND",
+        "echo ok # rm -rf $S/$d",
+        "rm -rf $S/$d &&",
+    ] {
+        assert!(
+            answer(&serde_json::to_vec(&request(command))?).is_empty(),
+            "{command}"
+        );
+    }
+    for (key, value) in [
+        ("tool_name", json!("Read")),
+        ("permission_mode", json!("plan")),
+        ("hook_event_name", json!("PreToolUse")),
+        ("tool_input", json!(null)),
+        ("permission_suggestions", json!([{"type":"addRules"}])),
+    ] {
+        let mut event = request("rm -rf $S/$d");
+        event[key] = value;
+        assert!(answer(&serde_json::to_vec(&event)?).is_empty(), "{key}");
+    }
+    let mut at_limit = serde_json::to_vec(&request("rm -rf $S/$d"))?;
+    at_limit.resize(MAX_INPUT_BYTES, b' ');
+    assert!(!answer(&at_limit).is_empty());
+    assert!(answer(b"invalid json").is_empty());
+    let mut oversized = serde_json::to_vec(&request("rm -rf $S/$d"))?;
+    oversized.resize(MAX_INPUT_BYTES + 1, b' ');
+    assert!(answer(&oversized).is_empty());
+    Ok(())
+}

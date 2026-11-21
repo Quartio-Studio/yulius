@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- Contained Claude tasks and reviewers now receive a checked retry when a recursive scratch deletion uses a variable parent and child. They can finish cleanup without waiting for a person to reply. [SPEC-596](../.ai/specs/SPEC-596-such-requests-should-be-answered-automat.md)
+
 - The new-task composer now keeps multiple unfinished drafts in one sandbox, each with its own text, attachments and task choices. [SPEC-594](../.ai/specs/SPEC-594-i-should-be-able-to-create-many-drafts-l.md)
 
 - An instance move now restarts the new host's Caddy with the carried Caddyfile and drop-ins on every pass and asks that host's port 443 for the public host before it reports the reverse proxy done, stopping with where to look when nothing answers there. Before, a Caddy the package had started with its default `:80` site kept serving it until a person ran `systemctl reload caddy`. [SPEC-592](../.ai/specs/SPEC-592-instance-move-caddy-keeps-serving-its-pr.md), [ADR-0431](decisions/0431-the-move-restarts-caddy-and-asks-its-own-port-443.md)

@@ -619,6 +619,16 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
             }] }]),
         );
     }
+    if request.contained {
+        hooks.insert(
+            "PermissionRequest".to_owned(),
+            json!([{ "matcher": "Bash", "hooks": [{
+                "type": "command",
+                "command": hook_command(request, "claude", "PermissionRequest")?,
+                "timeout": CLAUDE_HOOK_TIMEOUT_SECONDS,
+            }] }]),
+        );
+    }
     // Every tool result passes the in-sandbox redaction of agent secrets (SPEC-002 ADR-20):
     // a result holding one is replaced by its redacted copy before the model reads it.
     hooks.insert(

@@ -1740,6 +1740,11 @@ ownership by location: an untracked or ignored path of the task's worktree
 contained run; mount points, directories holding one and the root's links are refused, and a
 link is removed as a link. Task runs get `TMPDIR=/tmp`, so `$TMPDIR/x` is not `/x`.
 
+For a contained Claude task, a Bash permission request about a recursive scratch removal such
+as `rm -rf $S/$d` returns a checked retry directly to the calling agent, including a reviewer.
+The local hook leaves the original script unexecuted. The agent retries with guarded components
+and checks the cleanup result before recreating the scratch copy. [Decision 0435](decisions/0435-claude-returns-variable-path-cleanup-to-the-calling-agent.md)
+
 ```mermaid
 flowchart TD
     P[path: directory resolved, last component not followed] --> M{a mount point or holds one?}

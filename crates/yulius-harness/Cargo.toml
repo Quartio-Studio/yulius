@@ -26,6 +26,8 @@ nix = { workspace = true }
 uuid = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Distinguish an actual removal argument from quoted text in a Claude permission request.
+conch-parser = { workspace = true }
 thiserror = { workspace = true }
 # The signed-in user of a Codex `auth.json` (its `id_token` claims, SPEC-503 CDX-006).
 base64 = { workspace = true }
