@@ -352,6 +352,9 @@ pub struct TaskRuntime {
     /// Background shells of the idle agent that only run `yulius wait`, as last probed (-1 = not
     /// known): it waits for Yulius and goes on by itself (SPEC-085 STT-002).
     pub(crate) background_waits: AtomicI64,
+    /// Open `POST /internal/agent/wait` (`yulius wait`) requests currently served for this task
+    /// (SPEC-580 AWM-001): complements the process probe before the first probe runs and in tests.
+    pub(crate) active_waits: AtomicU32,
     /// Since when (ms) the idle agent's background shells have been running (0 = none).
     pub(crate) shells_since_ms: AtomicI64,
     /// The run's strays as last probed, by their first process `(pid, started)`, to when (ms) each
@@ -761,6 +764,7 @@ impl TaskRuntime {
             background_shells: AtomicI64::new(-1),
             limits_at_start: Mutex::new(None),
             background_waits: AtomicI64::new(-1),
+            active_waits: AtomicU32::new(0),
             shells_since_ms: AtomicI64::new(0),
             strays_seen: Mutex::new(HashMap::new()),
             background_agents: AtomicU32::new(0),
@@ -6480,6 +6484,9 @@ impl App {
         runtime.turn_started_ms.store(0, Ordering::SeqCst);
         runtime.background_shells.store(-1, Ordering::SeqCst);
         runtime.background_waits.store(-1, Ordering::SeqCst);
+        // `active_waits` is RAII-balanced by `ActiveWaitGuard` per live `/internal/agent/wait`
+        // handler; resetting it here while an old attempt's long-poll is still dropping could
+        // desynchronize or underflow the counter (SPEC-580 review F1).
         runtime.background_agents.store(0, Ordering::SeqCst);
         runtime.notice_attention_ms.store(0, Ordering::SeqCst);
         runtime.turn_record_ms.store(0, Ordering::SeqCst);

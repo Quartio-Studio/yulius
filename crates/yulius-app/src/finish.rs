@@ -695,7 +695,15 @@ impl App {
     /// background work is probed, a finished task's pull request opens (#35), and once it is Done
     /// its chains start (TSK-012) and the queue may use its slot (SES-101).
     async fn settle_clean_turn(self: &Arc<Self>, task: &TaskRecord) -> AppResult<()> {
-        let achieved = self.runtime(&task.id).goal_achieved.load(Ordering::SeqCst);
+        let runtime = self.runtime(&task.id);
+        let achieved = runtime.goal_achieved.load(Ordering::SeqCst);
+        // Harnesses without a transcript turn-end record (Antigravity) close the turn here,
+        // and Claude/Codex avoid staying `turn_in_progress` before their record is read
+        // (SPEC-580 AWM-001).
+        runtime.end_turn();
+        runtime
+            .turn_closed_ms
+            .fetch_max(self.now().0, Ordering::SeqCst);
         let next = Activity::after_clean_turn(achieved);
         self.set_task_activity(task, next).await?;
         let (app, task_id) = (Arc::clone(self), task.id.clone());
@@ -1288,7 +1296,7 @@ impl App {
 
     /// Probes the background shells of an idle task (bounded) and publishes the task when their
     /// number changed. Busy or ended tasks are not probed; their count is forgotten.
-    pub(crate) async fn probe_idle_shells(self: &Arc<Self>, task_id: &TaskId) {
+    pub async fn probe_idle_shells(self: &Arc<Self>, task_id: &TaskId) {
         let runtime = self.runtime(task_id);
         let idle = matches!(
             self.deps.store.task(task_id).await,
@@ -1595,11 +1603,37 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// Whether the idle task's agent waits in `yulius wait` (its checks, its delivery or an armed
-    /// merge), as last probed: it goes on by itself when Yulius has news (SPEC-085 STT-002).
-    pub(crate) fn agent_waits_on_yulius(&self, task_id: &TaskId) -> bool {
+    /// Bounded live process probe of `task_id`'s background shells and `yulius wait` processes;
+    /// `None` when no live child pid exists or the probe timed out / could not read the table.
+    pub(crate) async fn background_probe_now(
+        &self,
+        task_id: &TaskId,
+    ) -> Option<crate::ports::session::BackgroundProbe> {
+        let attempt = self.deps.store.live_attempt(task_id).await.ok()?;
+        let pid = attempt.and_then(|attempt| attempt.child_pid)?;
+        let host = Arc::clone(&self.deps.session_host);
+        let probe = tokio::task::spawn_blocking(move || host.background_probe(pid));
+        tokio::time::timeout(SHELL_PROBE_TIMEOUT, probe)
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .flatten()
+    }
+
+    /// Number of open `POST /internal/agent/wait` requests currently served for `task_id`.
+    pub fn active_waits_of(&self, task_id: &TaskId) -> u32 {
         self.existing_runtime(task_id)
-            .is_some_and(|runtime| runtime.background_waits.load(Ordering::SeqCst) > 0)
+            .map_or(0, |runtime| runtime.active_waits.load(Ordering::SeqCst))
+    }
+
+    /// Whether the idle task's agent waits in `yulius wait` (its checks, its delivery or an armed
+    /// merge), as last probed or currently long-polling: it goes on by itself when Yulius has
+    /// news (SPEC-085 STT-002, SPEC-580 AWM-001).
+    pub(crate) fn agent_waits_on_yulius(&self, task_id: &TaskId) -> bool {
+        self.existing_runtime(task_id).is_some_and(|runtime| {
+            runtime.background_waits.load(Ordering::SeqCst) > 0
+                || runtime.active_waits.load(Ordering::SeqCst) > 0
+        })
     }
 
     /// Whether Claude Code last recorded the task's goal as set or not met yet, as its transcript

@@ -3141,6 +3141,7 @@ fn first_watch_during_queue_decision(case: QueueWatch, previously_seen: Option<u
             check_in_after_ms: 0,
             stall_quiet_ms: 0,
             stall_after_ms: 0,
+            ..WatchBounds::default()
         };
         let arms = data.join(yulius_app::agent_wait::ARMED_MERGES_FILE);
         let notices = data.join(yulius_app::pr_watch::PR_NOTICES_FILE);
