@@ -1798,6 +1798,15 @@ mod tests {
             for (harness, expected) in policies {
                 input.harness = harness;
                 let briefing = build_briefing(&input, DEFAULT_BUDGET_BYTES);
+                let review = briefing
+                    .lines()
+                    .find(|line| line.starts_with("- Get an independent review"))
+                    .ok_or("missing independent review instructions")?;
+                assert!(
+                    review.contains("Re-review until approval without asking")
+                        && !review.contains("needs_you"),
+                    "{harness:?}, playground={playground}: {review}"
+                );
                 assert_eq!(
                     briefing.contains("when the review starts"),
                     !playground && harness == Harness::ClaudeCode
@@ -1869,7 +1878,7 @@ mod tests {
             "marking findings own code or pre-existing",
             "answer all.",
             "never as an issue",
-            "never as an issue; after 3 rounds split or `needs_you`",
+            "a permission outside the repository), ask with `needs_you`",
             "for one met on the way, an unrelated flaky test or a leftover nit, say why it is \
              outside your change",
             // SPEC-517 FIX-005 (quartio-v2 task #312): the request's own defect is fixed, never
@@ -2495,7 +2504,6 @@ mod tests {
             "`ci_rerun`",
             "marks each finding own code or pre-existing",
             "Fix every own-code finding",
-            "split the change or `needs_you`",
             "List in your summary what is outside your change",
         ] {
             assert!(text.contains(present), "{present} not in {text}");

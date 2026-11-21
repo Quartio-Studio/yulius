@@ -1068,7 +1068,8 @@ mod tests {
                 .to_lowercase();
             for stated in [
                 "own code",
-                "round limit",
+                "re-review until approval",
+                "after 3 rounds",
                 "pre-existing",
                 "flaky test",
                 "the change did not cause",
@@ -1093,6 +1094,11 @@ mod tests {
                 "the author decides on the rest",
                 "follow-ups, bugs you find",
                 "at most 3 rounds.",
+                "up to 3 rounds",
+                "or ask a person",
+                "or asks a person",
+                "or stop and ask",
+                "or stops and asks",
             ] {
                 assert!(!text.contains(gone), "{rel} still says {gone:?}");
             }
