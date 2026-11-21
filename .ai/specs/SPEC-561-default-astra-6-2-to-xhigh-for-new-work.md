@@ -5,6 +5,8 @@ status: done
 
 # SPEC-561 — GPT-6.2 Astra inherits extra high effort
 
+[SPEC-607](SPEC-607-codex-tasks-run-at-high-effort-unless-th.md) supersedes the inherited effort rule. This spec records the comparison release.
+
 ## Goal
 
 Give the owner an identifiable release in which ordinary GPT-6.2 Astra tasks inherit

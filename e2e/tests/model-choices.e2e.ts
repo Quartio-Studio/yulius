@@ -27,7 +27,7 @@ test('an untouched new task inherits the Codex model and effort', async ({ app, 
   expect(lastTaskCreate.harness).toBe('codex');
   expect(Object.hasOwn(lastTaskCreate, 'model')).toBe(false);
   expect(Object.hasOwn(lastTaskCreate, 'effort')).toBe(false);
-  expect(task).toMatchObject({ harness: 'codex', harness_choice: 'chosen', model: 'gpt-6.2-astra', model_default: true, effort: 'xhigh' });
+  expect(task).toMatchObject({ harness: 'codex', harness_choice: 'chosen', model: 'gpt-6.2-astra', model_default: true, effort: 'high' });
 });
 
 test('unrecognized and unreadable saved models recover to Codex', async ({ app, browser, screen }) => {
@@ -50,17 +50,19 @@ test('the untouched composer offers the Codex connection when no subscription is
 });
 
 for (const choice of [
+  { label: 'GPT-6.2 Astra', query: '6.2 Astra', id: 'gpt-6.2-astra', provider: 'openai', harness: 'codex', tier: 'Max', effort: 'max' },
+  { label: 'GPT-6.2 Sol', query: '6.2 Sol', id: 'gpt-6.2-sol', provider: 'openai', harness: 'codex', tier: 'Max', effort: 'max' },
   { label: 'GPT-6.2 Sol', query: '6.2 Sol', id: 'gpt-6.2-sol', provider: 'openai', harness: 'codex', tier: 'Ultra', effort: 'ultra' },
   { label: 'Gemini 4 Hydrogen', query: 'Hydrogen', id: 'gemini-4-hydrogen', provider: 'google', harness: 'antigravity', tier: 'Extra high', effort: 'xhigh' },
 ]) {
-  test(`starting a task on ${choice.label} uses its model and effort`, async ({ app, browser, screen }) => {
+  test(`starting a task on ${choice.label} at ${choice.tier} uses its model and effort`, async ({ app, browser, screen }) => {
     await app.open(mock('/s/studio'));
     await browser.evaluate((provider) => {
       (window as unknown as Mocked).__yuliusMock.accounts.push({ id: 'acc_test', provider, label: 'Test', status: 'ok' });
     }, choice.provider);
     await screen.getByRole('button', /^Model:/).click();
     await screen.getByRole('searchbox', 'Filter').fill(choice.query);
-    await screen.getByRole('menuitemradio', new RegExp(choice.label)).click();
+    await screen.getByRole('menuitemradio', new RegExp('^' + choice.label)).click();
     await screen.getByRole('button', /^Effort:/).click();
     await expect(screen.getByRole('menuitemradio', /^Default/)).toContainText('High');
     await screen.getByRole('menuitemradio', new RegExp('^' + choice.tier)).click();
@@ -82,7 +84,7 @@ test('Settings preserves compatible effort and clears incompatible choices in th
   await model.click();
   await screen.getByRole('menuitemradio', /^GPT-6.2 Astra/).click();
   await effort.click();
-  await expect(screen.getByRole('menuitemradio', /^Default/)).toContainText('Extra high');
+  await expect(screen.getByRole('menuitemradio', /^Default/)).toContainText('High');
   await screen.getByRole('menuitemradio', /^Ultra/).click();
   await model.click();
   await screen.getByRole('menuitemradio', /^GPT-6.1 Terra/).click();
@@ -99,7 +101,7 @@ test('Settings preserves compatible effort and clears incompatible choices in th
   await screen.getByRole('menuitemradio', /^Random/).click();
   await expect(screen.getByRole('button', 'Effort: Default effort')).toBeVisible();
   await screen.getByRole('button', /^Effort:/).click();
-  await expect(screen.getByRole('menuitemradio', /^Default/)).toContainText('Depends on the drawn model');
+  await expect(screen.getByRole('menuitemradio', /^Default/)).toContainText('High');
   const randomEfforts = await browser.evaluate(() => Array.from(document.querySelectorAll('.menu .menu-label'), (el) => el.textContent));
   expect(randomEfforts).toEqual(['Default', 'Low', 'Medium', 'High', 'Extra high']);
   await screen.getByRole('menuitemradio', /^Default/).press('Escape');

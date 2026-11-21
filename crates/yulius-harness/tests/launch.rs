@@ -1583,7 +1583,7 @@ fn codex_ultrafast_follows_the_assigned_subscription() -> TestResult {
     Ok(())
 }
 
-/// SPEC-561: resolve effort from the effective model on each process start.
+/// SPEC-607: inherit High or pass the chosen effort on each Codex process start.
 #[test]
 fn codex_resolves_effort_for_new_and_resumed_tasks() -> TestResult {
     let modes = [
@@ -1600,8 +1600,17 @@ fn codex_resolves_effort_for_new_and_resumed_tasks() -> TestResult {
     for mode in modes {
         let mut request = codex_request(mode, true);
         for (model, effort, expected_model, expected_effort) in [
-            (None, None, "gpt-6.2-astra", "xhigh"),
-            (Some("gpt-6.2-astra"), None, "gpt-6.2-astra", "xhigh"),
+            (None, None, "gpt-6.2-astra", "high"),
+            (Some("gpt-6.2-astra"), None, "gpt-6.2-astra", "high"),
+            (
+                Some("gpt-6.2-astra"),
+                Some("xhigh"),
+                "gpt-6.2-astra",
+                "xhigh",
+            ),
+            (Some("gpt-6.2-astra"), Some("max"), "gpt-6.2-astra", "max"),
+            (Some("gpt-6.2-sol"), None, "gpt-6.2-sol", "high"),
+            (Some("gpt-6.2-sol"), Some("max"), "gpt-6.2-sol", "max"),
             (None, Some("high"), "gpt-6.2-astra", "high"),
             (Some("gpt-6.2-astra"), Some("low"), "gpt-6.2-astra", "low"),
             (Some("gpt-6-astra"), None, "gpt-6-astra", "high"),
@@ -1626,7 +1635,8 @@ fn codex_resolves_effort_for_new_and_resumed_tasks() -> TestResult {
             assert_eq!(
                 efforts,
                 [format!("model_reasoning_effort=\"{expected_effort}\"")],
-                "{model:?} {effort:?}"
+                "{:?}: {model:?} {effort:?}",
+                request.mode
             );
         }
     }

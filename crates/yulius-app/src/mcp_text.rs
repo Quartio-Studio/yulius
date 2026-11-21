@@ -973,6 +973,9 @@ fn task_line(task: &Value) -> Option<String> {
 /// Claude Code's own.
 fn waits_why(task: &Value) -> Vec<String> {
     let mut parts = Vec::new();
+    if let Some(stage) = text(task, "staging_wait") {
+        parts.push(stage.to_owned());
+    }
     if text(task, "shows") == Some("needs_you") {
         parts.push("NEEDS ITS PERSON".to_owned());
         if let Some(reason) = text(task, "wait_reason") {

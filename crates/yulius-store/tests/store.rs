@@ -3351,12 +3351,58 @@ async fn staging_requests_are_idempotent_and_move_once() -> R {
         ["a", "a3"],
         "a superseded request is told too"
     );
-    assert!(store.mark_staging_told("a").await?);
-    assert!(!store.mark_staging_told("a").await?);
-    assert!(store.mark_staging_told("a3").await?);
+    assert!(store.mark_staging_told(&untold[0]).await?);
+    assert!(!store.mark_staging_told(&untold[0]).await?);
+    assert!(store.mark_staging_told(&untold[1]).await?);
     assert!(store.untold_staging_requests().await?.is_empty());
     let recent = store.recent_staging_requests(&sid, "staging", 2).await?;
     assert_eq!(recent.len(), 2);
+    Ok(())
+}
+
+/// A notification that already wrote to an agent can only acknowledge the outcome it read.
+/// Even another failure on the same request and wall-clock tick has its own delivery.
+#[tokio::test]
+async fn an_old_staging_acknowledgment_leaves_the_retried_verdict_untold() -> R {
+    use yulius_app::ports::store_ext::{StagingChange, StagingStore as _};
+    use yulius_domain::staging::StagingState::{DeployFailed, Deploying, Ready};
+    let store = SqliteStore::open_in_memory()?;
+    let (sid, uid) = seed(&store).await?;
+    let task = task("retry", &sid, &uid)?;
+    store.insert_task(&task).await?;
+    let first = staging_request("retry", &sid, Some(&task.id), "r1", DeployFailed);
+    assert!(store.insert_staging_request(&first).await?);
+    for (from, to) in [
+        (DeployFailed, Ready),
+        (Ready, Deploying),
+        (Deploying, DeployFailed),
+    ] {
+        assert!(
+            store
+                .move_staging_request(
+                    &first.id,
+                    from,
+                    to,
+                    &StagingChange::default(),
+                    first.updated_at
+                )
+                .await?
+        );
+    }
+    assert!(
+        !store.mark_staging_told(&first).await?,
+        "the first notification cannot acknowledge the retried verdict"
+    );
+    let current = store
+        .staging_request(&first.id)
+        .await?
+        .ok_or("retried request")?;
+    assert_eq!(
+        store.untold_staging_requests().await?.as_slice(),
+        std::slice::from_ref(&current)
+    );
+    assert!(store.mark_staging_told(&current).await?);
+    assert!(store.untold_staging_requests().await?.is_empty());
     Ok(())
 }
 

@@ -71,7 +71,7 @@ test('approved tasks inherit the Codex defaults and honor explicit settings', as
   await app.open(mock('/s/studio/tasks'));
   await openSuperagent(browser, screen);
   for (const [choice, expected] of [
-    [{}, { harness: 'codex', harness_choice: 'chosen', model: 'gpt-6.2-astra', effort: 'xhigh', effort_default: true }],
+    [{}, { harness: 'codex', harness_choice: 'chosen', model: 'gpt-6.2-astra', effort: 'high', effort_default: true }],
     [{ effort: 'high' }, { harness: 'codex', model: 'gpt-6.2-astra', effort: 'high', effort_default: false }],
     [{ harness: 'codex', model: 'codex' }, { harness: 'codex', model: 'codex', effort: 'high', effort_default: true }],
     [{ model: 'gemini-4-neon' }, { harness: 'antigravity', harness_choice: 'chosen', model: 'gemini-4-neon' }],

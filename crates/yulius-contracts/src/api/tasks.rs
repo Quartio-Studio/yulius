@@ -41,7 +41,7 @@ pub struct ParkedPr {
 /// A task in lists and events.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskSummary {
-    /// The server's group for a parked task (true for Needs you, false for Done).
+    /// Whether the server groups a parked task under Needs you. Staging can wake a parked task.
     /// Other tasks and summaries from earlier servers omit it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parked_needs_you: Option<bool>,
@@ -139,6 +139,9 @@ pub struct TaskSummary {
     /// when Yulius has news, so the task is neither Done nor the person's turn (SPEC-085 STT-002).
     #[serde(default)]
     pub yulius_wait: bool,
+    /// The stage of the durable wait for a merge-first staging outcome.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staging_wait: Option<String>,
     /// While the agent is idle: its merge is armed, so Yulius merges it and tells the agent; the
     /// task is not Done, an achieved goal neither (SPEC-487 CHN-001, SPEC-483 GRP-003).
     #[serde(default)]

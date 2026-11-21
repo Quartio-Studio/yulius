@@ -18,4 +18,4 @@ Supplying model, effort and tier at each caller would duplicate launch policy an
 
 ## Consequences
 
-These tasks inherit GPT-6.2 Astra at extra high effort and Ultrafast on a ChatGPT Pro 500 subscription. Starting one requires an eligible Codex sign-in. A prepared task can acquire its subscription when started. Explicit choices and automation creation keep their existing precedence.
+These tasks inherit the Codex defaults for model and effort, plus Ultrafast on a ChatGPT Pro 500 subscription. [ADR-0444](0444-codex-tasks-inherit-high-effort-on-every-model.md) defines the current effort default. Starting one requires an eligible Codex sign-in. A prepared task can acquire its subscription when started. Explicit choices and automation creation keep their existing precedence.
