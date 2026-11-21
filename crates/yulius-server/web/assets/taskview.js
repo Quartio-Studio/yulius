@@ -1188,7 +1188,7 @@ export function mountTaskView(ctx, sandbox, task) {
       const previousStatus = current.status;
       const previousUpdate = current.updated_at;
       const previousOwner = owner();
-      current = { ...current, ...next, account_id: next.account_id, needs_you_notice: next.needs_you_notice,
+      current = { ...current, ...next, account_id: next.account_id, needs_you_notice: next.needs_you_notice, staging_wait: next.staging_wait,
         parked_needs_you: next.parked_needs_you, parked_pr: next.parked_pr };
       // Whether the task started is the detail's: a status with a run means it has, and any status
       // change reads the detail again (a start that found no capacity has not). A message someone
@@ -1230,7 +1230,7 @@ export function mountTaskView(ctx, sandbox, task) {
 function pickSummary(detail) {
   const keys = ['status', 'activity', 'title', 'steps', 'account_label', 'account_email', 'harness', 'branch', 'updated_at', 'archived', 'mode', 'after', 'next', 'held_prompt', 'auto', 'owner', 'control_request', 'control_from'];
   // The server omits the subscription ID when a task is no longer attached.
-  const out = { account_id: detail.account_id };
+  const out = { account_id: detail.account_id, staging_wait: detail.staging_wait };
   for (const key of keys) if (key in detail) out[key] = detail[key];
   return out;
 }
