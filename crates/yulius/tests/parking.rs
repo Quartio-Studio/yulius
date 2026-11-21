@@ -3785,6 +3785,31 @@ fn a_staging_outcome_reaches_its_task_once() -> TestResult {
             ..store.staging_request("sr_1").await?.ok_or("staging request")?
         };
         assert!(store.insert_staging_request(&retry).await?);
+        // A resize holds the real terminal writer. Check whether this pass defers before
+        // a decision or retry can overtake the paste.
+        let (entered_writer, free_writer) = pause_watch_or_queue(Point::TerminalResizeOwnsWriter, &id);
+        let resize = {
+            let app = app.clone();
+            let id = id.clone();
+            tokio::spawn(async move { app.resize_run(&id, 100, 40).await })
+        };
+        tokio::time::timeout(Duration::from_secs(30), entered_writer.notified()).await?;
+        let mut writer_pass = {
+            let app = app.clone();
+            tokio::spawn(async move { app.tell_staging_outcomes().await })
+        };
+        let while_held = tokio::time::timeout(Duration::from_secs(5), &mut writer_pass).await;
+        ask(&app, &id).await?;
+        free_writer.notify_one();
+        resize.await??;
+        if while_held.is_err() {
+            let sent = writer_pass.await?;
+            return Err(format!("the pass waited for the writer and sent {sent} obsolete notifications").into());
+        }
+        assert_eq!(while_held??, 0);
+        assert!(!screen(&app, &id).contains("first-deploy"));
+        assert_eq!(app.tell_staging_outcomes().await, 0, "the late human decision still holds the failure");
+        store.set_task_needs_you(&id, None, app.now()).await?;
         let (check, entered, release) = check_with_busy_browser();
         tokio::time::timeout(Duration::from_secs(30), entered.notified()).await?;
         let change = StagingChange::default();

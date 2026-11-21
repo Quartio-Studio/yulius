@@ -1174,24 +1174,31 @@ impl App {
                 let _ = store.mark_staging_told(&request).await;
                 continue;
             }
-            if !browser.is_ok_and(|requests| !requests.contains(task_id.as_str()))
-                || task.activity == Some(Activity::NeedsAttention)
-                || self.update_holds_starts()
-                || self.is_paused(&task).await
-                || !matches!(store.pending_hold(task_id).await, Ok(None))
-                || !matches!(store.task_needs_you(task_id).await, Ok(None))
-            {
+            if !browser.is_ok_and(|requests| !requests.contains(task_id.as_str())) {
                 continue;
             }
-            // A failed deploy may have been retried under this ID during the browser lookup.
+            // Check the current recipient, their holds and the exact outcome immediately before
+            // waking a parked task or pasting into the observed live attempt.
             let still_due = || async {
-                matches!(store.staging_request(&request.id).await, Ok(Some(current)) if current == request)
+                let Ok(Some(current)) = store.task(task_id).await else {
+                    return false;
+                };
+                current.status == task.status
+                    && current.activity != Some(Activity::NeedsAttention)
+                    && !self.update_holds_starts()
+                    && !self.is_paused(&current).await
+                    && matches!(store.pending_hold(task_id).await, Ok(None))
+                    && matches!(store.task_needs_you(task_id).await, Ok(None))
+                    && matches!(store.staging_request(&request.id).await, Ok(Some(current)) if current == request)
             };
             let delivered = match task.status {
                 TaskStatus::Parked if still_due().await => {
                     self.resume_parked(&task, Some(text)).await.unwrap_or(false)
                 }
                 TaskStatus::Running => {
+                    let Ok(Some(attempt)) = store.live_attempt(task_id).await else {
+                        continue;
+                    };
                     let paste = format!(
                         "\x1b[200~{}\x1b[201~",
                         crate::task_message::clean_message(&text)
@@ -1199,7 +1206,7 @@ impl App {
                     self.type_into_session_if(
                         &task,
                         paste.as_bytes(),
-                        Typed::Prompt,
+                        Typed::Notice(&attempt.id),
                         Sender::Yulius,
                         Some(still_due()),
                     )

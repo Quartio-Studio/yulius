@@ -944,7 +944,7 @@ impl App {
                         self.type_into_session_if(
                             &task,
                             paste.as_bytes(),
-                            Typed::PrNotice(&attempt.id),
+                            Typed::Notice(&attempt.id),
                             Sender::Yulius,
                             Some(admit),
                         )
@@ -954,7 +954,7 @@ impl App {
                         self.type_into_session(
                             &task,
                             paste.as_bytes(),
-                            Typed::PrNotice(&attempt.id),
+                            Typed::Notice(&attempt.id),
                             Sender::Yulius,
                         )
                         .await

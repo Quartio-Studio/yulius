@@ -113,3 +113,5 @@ With the retry guards removed, the real agent received the previous deployment f
 The full Chromium suite on the final staging slice passed 1,318 tests with zero retries. One model-dependent case was skipped. The run took 3m35s alongside the Rust build.
 
 After restoration, both retry regressions passed. Scoped CI-profile nextest passed all 76 cases across staging, merge receipts, goal Stop, wake delivery and SQLite. Repository and format checks passed.
+
+The held-terminal-writer regression failed on the previous notifier. A real resize kept the writer while a decision opened, and the notifier sent one obsolete failure after release. Staging now uses the same immediate, attempt-bound paste as PR notices and rechecks the recipient, human holds and exact outcome before it writes.

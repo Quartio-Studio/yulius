@@ -3397,7 +3397,10 @@ async fn an_old_staging_acknowledgment_leaves_the_retried_verdict_untold() -> R 
         .staging_request(&first.id)
         .await?
         .ok_or("retried request")?;
-    assert_eq!(store.untold_staging_requests().await?, [current.clone()]);
+    assert_eq!(
+        store.untold_staging_requests().await?.as_slice(),
+        std::slice::from_ref(&current)
+    );
     assert!(store.mark_staging_told(&current).await?);
     assert!(store.untold_staging_requests().await?.is_empty());
     Ok(())
