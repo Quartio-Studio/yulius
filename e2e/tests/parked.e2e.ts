@@ -1807,3 +1807,74 @@ test('a missed resume from task detail preserves live work across an older parke
   });
   expect(seen).toEqual(['running', 1, null, false]);
 });
+
+test('Task Info verifies a missed park when a PR rerun was announced during its detail read', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&ambient=0&pullgap=0&pullclock=manual'));
+  await expect(screen.getByRole('link', /Improve the code/).first()).toBeVisible();
+  type Fixture = {
+    releaseDetail: () => void; releaseList?: () => void; listReads: number;
+    __yuliusTaskListReply?: (url: string) => Promise<void>;
+    __yuliusMock: { tasks: { id: string; parked_needs_you?: boolean }[]; holdDetail?: Promise<void>; holdGitReads: boolean;
+      changePull(s: string, n: number, fields: object): void; touchTask(s: string, n: number, fields: object): void };
+  };
+  await browser.evaluate(() => {
+    const w = window as unknown as Fixture;
+    const db = w.__yuliusMock;
+    db.holdGitReads = true;
+    Object.assign(db.tasks.find(t => t.id === 'tsk_studio_13')!, {
+      status: 'parked', activity: 'done', parked_needs_you: false, parked_pr: { number: 520, open: true },
+    });
+    db.holdDetail = new Promise<void>(resolve => { w.releaseDetail = resolve; });
+    location.hash = '/s/studio/tasks/13';
+  });
+  await expect.poll(() => browser.evaluate(() => !(window as unknown as Fixture).__yuliusMock.holdDetail)).toBe(true);
+  await browser.evaluate(() => {
+    const w = window as unknown as Fixture;
+    const db = w.__yuliusMock;
+    w.listReads = 0;
+    w.__yuliusTaskListReply = async url => {
+      if (url.includes('/sb_studio/tasks?archived=false') && ++w.listReads === 1) {
+        await new Promise<void>(resolve => { w.releaseList = resolve; });
+      }
+    };
+    db.tasks.find(t => t.id === 'tsk_studio_13')!.parked_needs_you = true;
+    db.changePull('sb_studio', 520, { checks: 'failure' });
+    db.touchTask('sb_studio', 12, { title: 'Rerun announced' });
+  });
+  await expect(browser.locator('.task-row').getByText('Rerun announced')).toBeVisible();
+  await browser.evaluate(() => (window as unknown as Fixture).releaseDetail());
+  await expect(browser.locator('.gt-state')).toHaveText(/Your turn.*parked|checks.*parked/);
+  await expect.poll(() => browser.evaluate(() => Boolean((window as unknown as Fixture).releaseList))).toBe(true);
+  await browser.evaluate(() => (window as unknown as Fixture).releaseList!());
+  await expect(screen.getByRole('region', 'Needs you').getByRole('link', /parked.*Improve the code/i)).toBeVisible();
+  expect(await browser.evaluate(() => (window as unknown as Fixture).listReads)).toBe(1);
+});
+
+test('a detail discovering an archive removes the parked row through older lists and later Undo', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const initial = { id: 'p', sandbox_id: 's', status: 'parked', archived: false, parked_needs_you: true };
+    const results = [];
+    for (const undo of [false, true]) {
+      let reads = 0;
+      const held = Promise.withResolvers<void>();
+      const store = createStore({ get: async () => {
+        if (++reads === 1) return [initial];
+        if (reads === 2) { await held.promise; return [initial]; }
+        return undo ? [initial] : [];
+      } });
+      await store.loadTasks('s');
+      const pending = store.loadTasks('s', true);
+      store.beginParkedDetail()({ ...initial, status: 'closed', archived: true });
+      const removed = store.tasksOf('s').length === 0;
+      if (undo) store.upsertTask(initial);
+      held.resolve();
+      await pending;
+      results.push([removed, store.tasksOf('s').length, store.findTask('p')?.archived ?? null]);
+    }
+    return results;
+  });
+  expect(seen).toEqual([[true, 0, null], [true, 1, false]]);
+});

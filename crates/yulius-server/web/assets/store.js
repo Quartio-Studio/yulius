@@ -246,7 +246,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   // Keep detail-only data (runs, transcripts, etc.) out of the shared task list.
   function parkedFacts(task) {
     return {
-      status: task.status, activity: task.activity, steps: task.steps, spec_unfinished: task.spec_unfinished,
+      status: task.status, archived: task.archived, activity: task.activity, steps: task.steps, spec_unfinished: task.spec_unfinished,
       goal_unfinished: task.goal_unfinished, held_prompt: task.held_prompt,
       needs_you: task.needs_you, needs_you_notice: task.needs_you_notice,
       parked_needs_you: task.parked_needs_you, parked_pr: task.parked_pr,
@@ -284,8 +284,15 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
         // already exposed by the summary (the detail can include private fields).
         for (const key of Object.keys(row)) if (key in detail) updated[key] = detail[key];
       }
-      if (detail.status === 'parked' && typeof detail.parked_needs_you !== 'boolean') {
-        updated = awaitingVerification(updated, row, order);
+      if (updated.archived) {
+        upsertTask(updated); // Apply the same removal and Undo ordering as an archive event.
+        return parkedFacts(updated);
+      }
+      const hintOrder = pullWatch.get(detail.sandbox_id)?.changeBeforeParkedRows ?? 0;
+      const missedChange = updated.status === 'parked' && hintOrder > order;
+      const verifyDiscovered = missedChange && !hasParkedRows(map);
+      if (missedChange || (detail.status === 'parked' && typeof detail.parked_needs_you !== 'boolean')) {
+        updated = awaitingVerification(updated, row, Math.max(order, hintOrder));
       }
       rowOrder.set(updated, order);
       map.set(row.id, updated);
@@ -294,6 +301,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
         emit('tasks', detail.sandbox_id);
         scheduleCountsRefresh();
       }
+      if (verifyDiscovered) requestRead(detail.sandbox_id, refreshParkedGroups, true, true);
       return parkedFacts(updated);
     };
   }
