@@ -20,4 +20,4 @@ Reading rows sequentially lets a single stalled PR use the entire deadline. Star
 
 ## Consequences
 
-A completed row can show Done even when an earlier PR cannot be read. A timeout leaves its row awaiting verification on the next read. A slow local Git process can retain a worker after the requesting client disconnects.
+The browser keeps a verified Needs you row under Needs you even when its Git chip is green. It also checks the plan, spec and goal in a parked summary before displaying Done. A completed row can show Done even when an earlier PR cannot be read. A timeout leaves its row awaiting verification on the next read. A slow local Git process can retain a worker after the requesting client disconnects.

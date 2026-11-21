@@ -173,7 +173,7 @@ export function statusInfo(task) {
     // Without an idle activity (the Dashboard's Outcomes bucket counts statuses alone) it reads
     // what it is: parked, waiting for a person to resume it.
     if (task.activity !== 'waiting' && task.activity !== 'done') return { glyph: '◐', icon: 'st-paused', tone: 'queued', label: 'Parked', group: 'needs', parked: true };
-    return { ...statusInfo(asIdleRun(task)), parked: true };
+    return { ...parkedWorkStatus(task, statusInfo(asIdleRun(task))), parked: true };
   }
   const status = task.status;
   const activity = task.activity;
@@ -259,8 +259,16 @@ export function statusInfo(task) {
 
 /** A parked task as the idle running task it was, with no live overlay (SPEC-512 PRK-004). */
 function asIdleRun(task) {
-  const activity = task.activity === 'done' && (workLeft(task) || task.goal_unfinished) ? 'waiting' : task.activity;
-  return { ...task, activity, status: 'running', background_shells: 0, yulius_wait: false, merge_armed: false, pause: null };
+  return { ...task, status: 'running', background_shells: 0, yulius_wait: false, merge_armed: false, pause: null };
+}
+
+// Keep the more specific reason already shown for a person's decision or failing PR.
+function parkedWorkStatus(task, shown) {
+  if (shown.group !== 'done') return shown;
+  if (workLeft(task) || task.goal_unfinished === true) {
+    return statusInfo({ ...asIdleRun(task), activity: 'waiting' });
+  }
+  return task.parked_needs_you === true ? YOUR_TURN : shown;
 }
 
 /** What a parked task's row says (SPEC-512 PRK-005). */
@@ -392,14 +400,7 @@ export function supertaskLine(task) {
 export function taskInfo(task, actionRequests, pr) {
   // A parked task is shown where it was, as its idle run would be, marked parked (SPEC-512 PRK-004).
   if (task.status === 'parked') {
-    const idle = asIdleRun(task);
-    let shown = taskInfo(idle, actionRequests, pr);
-    if (shown.group === 'done' && task.goal_unfinished) shown = statusInfo(idle);
-    if (task.parked_needs_you === false && shown.pr && task.parked_pr?.number === shown.pr.number && !workLeft(task) && !task.goal_unfinished && shown.group !== 'done') {
-      shown = statusInfo({ ...idle, activity: 'done' });
-    } else if (shown.group === 'done' && task.parked_needs_you) {
-      shown = YOUR_TURN;
-    }
+    const shown = parkedWorkStatus(task, taskInfo(asIdleRun(task), actionRequests, pr));
     // Nothing of it goes on by itself: what would keep a running agent busy (its checks, a
     // conflict it is told of, a CI run to run again) is a person's now, never Working (review
     // round 1 of SPEC-512 part 1; the server's `parked_group`).

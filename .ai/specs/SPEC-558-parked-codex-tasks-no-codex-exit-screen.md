@@ -40,6 +40,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Filter and explain verified parked rows in MCP task reads
 - [x] Reproduce parked-page refresh races with a held Git overview
 - [x] Keep the newest successful full task list and recover the cold task page
+- [ ] Keep verified unfinished parked rows out of Done in the browser
 - [ ] Reconcile parked lifecycle changes and refresh the sidebar independently of Git
 - [ ] Publish verified parked task detail to the terminal and Task Info
 - [ ] Keep failed integration candidates with their original owner
@@ -69,14 +70,8 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
-- On `dbd8a0d89`, a watch hint received before the first list arrived could be lost. A parked rename could also discard open replacement PR #8 when the old watch reply arrived. Each failed in Chromium. Seven focused cases now pass, including one follow-up when a cold list discovers parked rows and no additional request for a list of running rows.
-
-- Sidebar review of `30271602d` found two list-ordering cases. An archive confirmation that saw Undo lost its restored row to an older empty list in either completion order. A parked rename received during a cold read discarded the open PR when confirmation failed. Chromium reproduced both, then retained the restored task and kept the renamed task under Needs you for PR #42. The focused correction runs passed six ordering cases and five fallback cases. The pre-correction sidebar, onboarding and Git scope passed 65 tests. Vidoc was disabled. The mutation command found no changed Rust code.
-
-- The sidebar slice confirms a parked lifecycle change during a list read at most once. Same-second archive/Undo, a resumed row and a delayed update after permanent removal were tested with held responses. A later failed verification keeps a known open PR under Needs you in both completion orders with an older list. Scoped Chromium checks covered these races and independent Git and summary response timing. The terminal and Task Info detail reconciliation has its own remaining delivery step.
-
-- PR #1548 landed in dev at `d54e2f190`. Its integration candidate and the delivery commit passed quality, both test shards and browser e2e. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/d54e2f1909c84093bc2fd0cf2bcba80cac425805)
-- On that base, Chromium saw a running task park with a green open PR and make zero verification reads. A held list reverted a resumed task to Parked and resurrected an archived task. The parked-watch regressions drive Git and summary replies independently and cover same-second archive/Undo, permanent deletion and bounded confirmation. [ADR-0417](../../docs/decisions/0417-refresh-parked-task-status-alongside-the-git-overview.md)
+- PR #1548 landed in dev at `d54e2f190` on green Yulius CI. Its integration candidate and delivery commit passed quality, both test shards and browser e2e. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/d54e2f1909c84093bc2fd0cf2bcba80cac425805)
+- The browser classification slice consumes the parked work reported by the task summary. An open plan, unfinished spec or unfinished goal keeps an idle parked task out of Done. A verified Needs you group also takes precedence over a healthy Git chip. Independent polling, lifecycle reconciliation and task-detail ordering have their own remaining steps. Two Chromium regressions failed with the previous status classifier. Both passed with the correction, including a mounted sidebar moving from Done to Needs you and back on verified summaries while the Git chip stayed healthy.
 
 - On `25015275f`, a successful retry list could show active task #13 in the sidebar while the cold task page still applied an empty or failed archive lookup. Both held-lookup regressions failed. Returning the retry list after the archive had already reported the task missing reproduced the opposite ordering too. The page now checks the current active list at archive completion and reopens a missing task when a subsequent list contains it. All six direct-route recovery cases passed. Each requested at most one archive lookup.
 

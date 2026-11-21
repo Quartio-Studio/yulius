@@ -6,7 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
-- The sidebar follows a parked task’s CI reruns even while the Git overview is loading. Overlapping list reads reconcile resumes, archives, Undo and deletions (SPEC-558).
+- Browser task rows keep verified unfinished parked work under Needs you, including when the Git overview shows healthy checks (SPEC-558).
 
 ## 2026-11-20
 
