@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- Instance disk upkeep clears idle Rust compiler stores over 20 GiB or under remaining disk pressure. Removing a store refreshes sandbox quota usage and gives a blocked task one admission retry. [SPEC-595](../.ai/specs/SPEC-595-share-compiled-rust-across-worktrees-and.md)
 - The seven-day API estimate includes recorded GPT-6 Codex runs at Standard prices and shows what the pool would cost if eligible runs used Ultrafast. [SPEC-602](../.ai/specs/SPEC-602-it-doesnt-seem-real-verify-i-think-it-s.md)
 
 - Load-sensitive browser and merge-train tests wait for observable progress under contention.
