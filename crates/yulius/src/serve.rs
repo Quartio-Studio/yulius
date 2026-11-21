@@ -524,6 +524,7 @@ pub fn build_app(
     config.park_after_ms = u64::from(args.park_after_minutes) * 60_000;
     config.agent_cpus = args.agent_cpus;
     config.contained = args.contained;
+    config.bootstrap_upgrades = true;
     config.upload_max_bytes = args.upload_max_mb * 1024 * 1024;
     config.ci = yulius_app::ci::CiSettings {
         enabled: args.ci == "on",

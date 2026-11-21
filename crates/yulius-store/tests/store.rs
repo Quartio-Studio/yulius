@@ -3392,3 +3392,73 @@ async fn deleted_tasks_keep_their_staging_requests() -> R {
     );
     Ok(())
 }
+
+/// SPEC-575 MFS-012 (review round 1 of slice 4): the bootstrap record. A claim is made once per
+/// revision and stays until its task is linked, exactly once. A laid revision is never claimed
+/// at that revision, and a higher revision claims again, whatever the state.
+#[tokio::test]
+async fn bootstrap_upgrades_claim_lay_and_link_once_per_revision() -> R {
+    use yulius_app::ports::store_ext::StagingStore;
+    let store = SqliteStore::open_in_memory()?;
+    let (sid, uid) = seed(&store).await?;
+    let t1 = task("t1", &sid, &uid)?;
+    store.insert_task(&t1).await?;
+    assert!(
+        store
+            .claim_bootstrap_upgrade(&sid, 1, Timestamp(10))
+            .await?
+    );
+    assert!(
+        !store
+            .claim_bootstrap_upgrade(&sid, 1, Timestamp(11))
+            .await?
+    );
+    let claim = store.bootstrap_upgrade(&sid).await?.ok_or("claim")?;
+    assert_eq!(
+        (claim.revision, claim.state.as_str(), claim.claimed_at),
+        (1, "claimed", Timestamp(10))
+    );
+    store.lay_bootstrap_revision(&sid, 1, Timestamp(12)).await?;
+    assert_eq!(
+        store.bootstrap_upgrade(&sid).await?.ok_or("kept")?.state,
+        "claimed",
+        "a claim at that revision is not laid over"
+    );
+    assert!(store.link_bootstrap_task(&sid, 1, &t1.id).await?);
+    assert!(
+        !store.link_bootstrap_task(&sid, 1, &t1.id).await?,
+        "linked once"
+    );
+    // A higher revision claims again.
+    assert!(
+        store
+            .claim_bootstrap_upgrade(&sid, 2, Timestamp(20))
+            .await?
+    );
+    let again = store.bootstrap_upgrade(&sid).await?.ok_or("again")?;
+    assert_eq!(
+        (again.revision, again.state.as_str(), again.task_id),
+        (2, "claimed", None)
+    );
+    // A laid revision is never claimed at it.
+    let other = SandboxId::parse("s2")?;
+    let mut second = store.sandbox(&sid).await?.ok_or("s1")?;
+    second.id = other.clone();
+    second.slug = "studio-2".into();
+    second.repo_name = "studio-2".into();
+    second.port_base += 100;
+    store.insert_sandbox(&second).await?;
+    store
+        .lay_bootstrap_revision(&other, 2, Timestamp(30))
+        .await?;
+    assert!(
+        !store
+            .claim_bootstrap_upgrade(&other, 2, Timestamp(31))
+            .await?
+    );
+    assert_eq!(
+        store.bootstrap_upgrade(&other).await?.ok_or("laid")?.state,
+        "laid"
+    );
+    Ok(())
+}

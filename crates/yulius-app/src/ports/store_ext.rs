@@ -844,6 +844,19 @@ pub struct StagingChange {
     pub clear_cd_run: bool,
 }
 
+/// A sandbox's recorded Infra bootstrap revision (SPEC-575 MFS-012, migration 0079).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BootstrapUpgrade {
+    /// The revision.
+    pub revision: u32,
+    /// `laid`, `claimed` or `linked`.
+    pub state: String,
+    /// Its upgrade task, once linked (and not deleted since).
+    pub task_id: Option<TaskId>,
+    /// When it was recorded (for a claim: claimed).
+    pub claimed_at: Timestamp,
+}
+
 /// Merge-first staging requests (SPEC-575 MFS-005, MFS-008, migration 0078). Every move is a
 /// compare-and-set from the state it was decided on, so a restart or a second tick never moves a
 /// request twice.
@@ -895,6 +908,33 @@ pub trait StagingStore: Send + Sync {
     async fn untold_staging_requests(&self) -> AppResult<Vec<StagingRequestRecord>>;
     /// Records the outcome as told; `false` when it already was.
     async fn mark_staging_told(&self, id: &str) -> AppResult<bool>;
+    /// Claims making the upgrade task of Infra bootstrap `revision` for `sandbox` (SPEC-575
+    /// MFS-012, migration 0079): `true` when it recorded the claim, which happens only while
+    /// its recorded revision is older (or none). A claim stays until its task is linked.
+    async fn claim_bootstrap_upgrade(
+        &self,
+        sandbox: &SandboxId,
+        revision: u32,
+        at: Timestamp,
+    ) -> AppResult<bool>;
+    /// Records that `sandbox` is at `revision` with nothing to upgrade (created or onboarded at
+    /// it), unless a record at it or later exists.
+    async fn lay_bootstrap_revision(
+        &self,
+        sandbox: &SandboxId,
+        revision: u32,
+        at: Timestamp,
+    ) -> AppResult<()>;
+    /// Links the upgrade task of a claimed revision, only while it is claimed: `false`
+    /// otherwise, so a task is adopted or linked exactly once.
+    async fn link_bootstrap_task(
+        &self,
+        sandbox: &SandboxId,
+        revision: u32,
+        task: &TaskId,
+    ) -> AppResult<bool>;
+    /// The sandbox's recorded bootstrap revision, its state, task and when it was recorded.
+    async fn bootstrap_upgrade(&self, sandbox: &SandboxId) -> AppResult<Option<BootstrapUpgrade>>;
     /// The commits a task's pull requests landed on `branch` (migration 0077), in landing order.
     async fn task_landings(&self, task: &TaskId, branch: &str) -> AppResult<Vec<String>>;
 }

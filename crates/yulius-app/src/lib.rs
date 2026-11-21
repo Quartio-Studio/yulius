@@ -17,6 +17,7 @@ pub mod auth;
 pub mod auto_choice;
 pub mod automations;
 pub mod background;
+pub mod bootstrap_upgrade;
 pub mod browser;
 pub mod capacity;
 pub mod chains;

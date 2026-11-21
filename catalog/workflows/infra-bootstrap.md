@@ -21,15 +21,16 @@ Follow `infra-bootstrap` for the content and `delivery-pipeline` for the deliver
 
 - Respect what exists: map existing scripts, tests and docs instead of replacing them, and pick
   what is state of the art for this stack. Every choice gets an ADR.
-- One gate runs everything a merge depends on, the same way locally, in the sandbox and on Yulius
-  CI: `[commands] gate` or `[[ci.jobs]]` in `yulius.toml`. Translate every
-  `.github/workflows/*` job into it (`ci_setup` lists them), run it, then delete the workflows in
-  the same pull request. Never add GitHub Actions or anything that needs a paid GitHub plan.
-- CD is `[cd.dev]` and `[cd.prod]` in `yulius.toml`, both explicit (empty with an `about` when
-  nothing deploys yet), with idempotent deploy, verify and rollback scripts under `scripts/cd/`
-  (and `migrations`) and secrets named in `secrets`. Move what deploys today there; ask with
-  `needs_you` for what only a person gives. A merge deploys nothing; production is a person's.
+- One gate runs everything a merge depends on, the same way everywhere: `[commands] gate` or
+  `[[ci.jobs]]` in `yulius.toml`. Translate every `.github/workflows/*` job into it (`ci_setup`
+  lists them), run it, then delete the workflows in the same pull request. Never add GitHub
+  Actions or anything that needs a paid GitHub plan.
+- CD is `[cd.dev]` and `[cd.prod]`, both explicit (empty with an `about` when nothing deploys
+  yet), with idempotent deploy, verify and rollback scripts under `scripts/cd/` (and
+  `migrations`), secrets named in `secrets`; ask with `needs_you` for what only a person gives.
   App keys: an ignored `.env` (`secret_copy_to_env`).
+- A shared staging target is merge-first (skill step 3: `merge_first`, `after_merge`,
+  `[local]`); without one, say so in `[cd.dev] about`.
 - Security scan: with a `## Security scan` briefing section, CI runs the built-in job
   (`yulius security-scan --ci`): add only the rule to scan before delivery; else note: no Vidoc
   key on this instance.
