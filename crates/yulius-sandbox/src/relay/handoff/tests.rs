@@ -186,3 +186,118 @@ async fn shutdown_quiesces_a_replacement_relay_and_holders_registered_late() -> 
     })
     .await?
 }
+
+fn registered_table(places: &Arc<Places>) -> OutboundRelays {
+    OutboundRelays(Mutex::new(Holders {
+        stopping: false,
+        relays: BTreeMap::from([("fixture".into(), Arc::clone(places))]),
+    }))
+}
+
+#[test]
+fn an_ambiguous_internal_link_leaves_both_capture_controls_unconsumed() -> io::Result<()> {
+    let places = Places::new(2, IDLE_FLOOR);
+    let hub = registered_table(&places);
+    let _first = places.admit().ok_or_else(invalid)?;
+    let _second = places.admit().ok_or_else(invalid)?;
+    let link = TcpLink {
+        relay: ([127, 0, 0, 1], 20113).into(),
+        proxy: ([127, 0, 0, 1], 20114).into(),
+    };
+    let mut requests = Vec::new();
+    {
+        let mut slots = places.table.lock().unwrap_or_else(PoisonError::into_inner);
+        for (_, control) in slots.connections.controls_mut() {
+            let (send, request) = oneshot::channel();
+            control.capture = Some((link, send));
+            requests.push(request);
+        }
+    }
+    hub.stop_admissions();
+    assert!(
+        hub.capture("fixture", link, monotonic_ms() + 5_000)
+            .is_none()
+    );
+    assert_eq!(requests.len(), 2);
+    for request in &mut requests {
+        assert!(matches!(
+            request.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn capture_saves_the_reply_already_read_into_the_blocked_unix_writer() -> io::Result<()> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let places = Places::new(1, IDLE_FLOOR);
+        let hub = registered_table(&places);
+        let (place, _ended, _) = places.admit().ok_or_else(invalid)?;
+        let (mut client, writer) = UnixStream::pair()?;
+        rustix::net::sockopt::set_socket_send_buffer_size(&writer, 4096)?;
+        writer.writable().await?;
+        let mut queued = Vec::new();
+        loop {
+            match writer.try_write(&[0x35; 4096]) {
+                Ok(count) => queued.extend(std::iter::repeat_n(0x35, count)),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) => return Err(error),
+            }
+        }
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let upstream = TcpStream::connect(listener.local_addr()?).await?;
+        let (mut peer, _) = listener.accept().await?;
+        let link = TcpLink::at_proxy(&peer)?;
+        let inspect = upstream.as_fd().try_clone_to_owned()?;
+        let marker = b"synthetic pending reply";
+        peer.write_all(marker).await?;
+        while rustix::io::ioctl_fionread(&inspect)? != marker.len() as u64 {
+            tokio::task::yield_now().await;
+        }
+        let holder = holder()?;
+        let copying = tokio::spawn(async move {
+            transfer(
+                Tracked {
+                    inner: writer,
+                    place,
+                },
+                upstream,
+                &holder,
+            )
+            .await
+        });
+        while rustix::io::ioctl_fionread(&inspect)? != 0 {
+            tokio::task::yield_now().await;
+        }
+        hub.stop_admissions();
+        let pair = hub
+            .capture("fixture", link, monotonic_ms() + 5_000)
+            .ok_or_else(invalid)?
+            .await
+            .map_err(io::Error::other)?;
+        copying.await.map_err(io::Error::other)??;
+        let (_, saved) = Owner::decode(&pair.state)?;
+        assert!(
+            saved.ends_with(marker),
+            "capture lost the pending Unix write"
+        );
+        let mut copy = CopyState::decode(saved)?;
+        let [left, right] = pair.sockets;
+        let mut left = UnixStream::from_std(left.into())?;
+        let mut right = TcpStream::from_std(right.into())?;
+        let resumed = tokio::spawn(async move { copy.transfer(&mut left, &mut right).await });
+        peer.write_all(b" next").await?;
+        peer.shutdown().await?;
+        client.shutdown().await?;
+        let mut reply = Vec::new();
+        client.read_to_end(&mut reply).await?;
+        queued.extend_from_slice(marker);
+        queued.extend_from_slice(b" next");
+        assert_eq!(reply, queued);
+        assert_eq!(peer.read(&mut [0]).await?, 0);
+        resumed.await.map_err(io::Error::other)??;
+        Ok(())
+    })
+    .await?
+}

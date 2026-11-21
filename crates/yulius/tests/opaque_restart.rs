@@ -210,18 +210,23 @@ async fn check_quiet_shutdown(
     seed(data)?;
     let destination = TcpListener::bind((fixture_ip()?, 0)).await?;
     let origin = destination.local_addr()?;
-    let mut client = BufReader::new(TcpStream::connect(forward).await?);
-    let auth = base64::engine::general_purpose::STANDARD.encode(format!("fixture:{TOKEN}"));
-    client.get_mut().write_all(format!(
-        "GET http://{origin}/hold HTTP/1.1\r\nHost: {origin}\r\nProxy-Authorization: Basic {auth}\r\n\r\n"
-    ).as_bytes()).await?;
-    let mut peer = BufReader::new(destination.accept().await?.0);
-    read_head(&mut peer, "GET /hold ").await?;
-    peer.get_mut()
-        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nh")
-        .await?;
-    read_head(&mut client, "HTTP/1.1 200 ").await?;
-    assert_eq!(client.read_u8().await?, b'h');
+    let http = reqwest::Client::builder()
+        .no_proxy()
+        .proxy(reqwest::Proxy::http(format!("http://{forward}"))?.basic_auth("fixture", TOKEN))
+        .build()?;
+    let request = http.get(format!("http://{origin}/hold")).send();
+    let respond = async {
+        let mut peer = BufReader::new(destination.accept().await?.0);
+        read_head(&mut peer, "GET /hold ").await?;
+        peer.get_mut()
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nh")
+            .await?;
+        Ok::<_, Error>(peer)
+    };
+    let (download, peer) = tokio::join!(request, respond);
+    let peer = peer?;
+    let mut download = download?.error_for_status()?;
+    assert_eq!(download.chunk().await?.as_deref(), Some(b"h".as_slice()));
 
     let mut idle = BufReader::new(TcpStream::connect(internal).await?);
     idle.get_mut()
@@ -244,7 +249,7 @@ async fn check_quiet_shutdown(
         0
     );
     drop(peer);
-    drop(client);
+    drop(download);
     assert!(server.wait().await?.success());
     assert!(
         !std::fs::read_to_string(data.join("fixture-serve.log"))?

@@ -193,7 +193,7 @@ impl OutboundRelays {
         }
     }
 
-    /// Request the matching original relay, if it is still admitted for this sandbox.
+    /// Request the uniquely matching original relay still admitted for this sandbox.
     pub fn capture(
         &self,
         sandbox: &str,
@@ -203,10 +203,15 @@ impl OutboundRelays {
         let holders = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         let places = holders.relays.get(sandbox)?;
         let mut slots = places.table.lock().unwrap_or_else(PoisonError::into_inner);
-        let (_, control) = slots
+        let mut matches = slots
             .connections
             .controls_mut()
-            .find(|(_, c)| c.capture.as_ref().is_some_and(|(k, _)| *k == link))?;
+            .filter(|(_, c)| c.capture.as_ref().is_some_and(|(k, _)| *k == link));
+        let (_, control) = matches.next()?;
+        // A terminal TCP tuple can be reused while the old Unix client is still draining.
+        if matches.next().is_some() {
+            return None;
+        }
         let (_, capture) = control.capture.take()?;
         let (send, receive) = oneshot::channel();
         capture.send((expires, send)).ok()?;

@@ -571,3 +571,12 @@ matched relay and proxy restoration has its own review and CI.
   the final internal receive queue after both FINs, and exercised replacement and late
   registration against an empty stopping table. The process-wide capacity count stayed
   unchanged. The successor's joined relay and proxy restoration has a separate delivery.
+- Independent review of `25118872c` found that two admitted relays could have the
+  same internal addresses after a terminal TCP tuple became reusable. A synthetic two-place
+  table reproduced capture choosing the first entry. Capture now requires a unique match
+  and leaves both controls intact on ambiguity. The reviewer also requested proof that
+  application bytes already read from TCP survive a blocked Unix write. Filling the Unix
+  send queue and observing the TCP receive queue empty made that state deterministic.
+  Substituting an empty copy state in the reviewed code failed the saved-suffix assertion.
+  All five relay cases passed with the real captured state, including the complete ordered
+  reply and FIN on the original client.
