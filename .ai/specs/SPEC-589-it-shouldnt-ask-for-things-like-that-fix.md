@@ -1,6 +1,6 @@
 ---
 yulius-task: b2d041b9-f438-4630-8b8c-a686f9c0ef0d
-status: in-progress
+status: done
 ---
 
 # SPEC-589 Continue authorized work at the end of a goal turn
@@ -34,8 +34,8 @@ Earlier user requests establish the ownership rule. Task #534 concerned automate
 - [x] Distinguish owner input from native goal restoration and preserve prompt-mode rotation
 - [x] Keep a submitted owner instruction through concurrent typing and capacity holds
 - [x] Carry the source of a continuation across launch and delayed hook delivery
-- [ ] Protect goal attempts while owners draft and workers complete steps
-- [ ] Verify the fix and obtain independent approval
+- [x] Protect goal attempts while owners draft and workers complete steps
+- [x] Verify the fix and obtain independent approval
 
 ## Acceptance criteria
 
@@ -96,3 +96,7 @@ Make the continuation decision where the agent can act on it, at the shared Stop
 - The twelfth review reproduced a lost automatic callback response that was retried after the owner submitted a different instruction. Earlier, acknowledging the first callback discarded its source and the retry took the owner’s Enter. The run now retains its last 16 distinct issued fingerprints through acknowledgments. The integration fixture delivers the first callback before the owner enters text and replays it twice afterward.
 - The thirteenth review reproduced a fresh edited copy of an earlier machine instruction. The prior run-level fingerprint correctly rejected a replay but also rejected the new owner invocation. The transport regression failed because a held submit had no invocation header. The client now assigns each submit a random ID and uses it throughout its retries. The authenticated handler associates acknowledgments and held owner input with their invocation. Older clients retain the conservative fingerprint fallback.
 - The fourteenth review reproduced two distinct edited owner submissions claiming the first Enter during a hold. The reservation control returned sequence 1 for the second invocation, expected 2. The selected Enter now transfers to its invocation while the input queue is locked. Both exact-method controls pass, including releasing the original Enter after a separate invocation.
+- Independent review approved product head `9ee06c90681391ccef5b0762345fac9ba7d42d2b`. The preceding integrated build passed 40 of 41 controls and reproduced the two-hold regression. The exact-head app and HTTP control binaries passed both the edited-copy and the two-held-owner regression. All 23 hook-client tests passed with the new transport header. Clippy passed on the reviewed head across app, store, executable, server and harness, all targets and features with warnings denied.
+- The reviewed head passed all 41 focused goal, retry, owner-input and recovery controls. An earlier broad compatibility run passed all 294 controls. Fourteen Chromium end-to-end tests passed. Provider behavior used recorded or synthetic fixtures and local subprocesses. No paid provider session was used. The project disables Vidoc, so `scripts/dev security` reported that nothing was scanned.
+- The frozen terminal-framing mutation run reported 14 listed, 1 caught, 0 missed, 1 unviable and 12 not reached within its bound. A later campaign stopped at its unmodified baseline on the previously identified editor normalization regression. The normalized-input follow-up reported 11 listed, 2 caught, 0 missed and 9 not reached. The replay follow-up reported 9 listed, 1 caught, 0 missed and 8 not reached. Both had zero timeouts and zero unviable mutations.
+- The invocation mutation run reported 44 listed, 4 caught, 2 missed, 0 timed out, 5 unviable and 33 not reached at 18 minutes. Both surviving predicate inversions discarded the first machine instruction when a second was issued. A new hook regression retains both instructions and replays the first ahead of an edited owner reply. The unmodified methods passed that sequence and each predicate inversion failed it. The integration fixture also passed. The final reservation mutation run reported 16 listed, 2 caught, 0 missed, 0 timed out, 0 unviable and 14 not reached at 12 minutes.

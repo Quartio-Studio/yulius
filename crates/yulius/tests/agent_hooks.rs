@@ -3305,6 +3305,68 @@ async fn goal_stop_releases_two_held_owner_submissions_independently() -> TestRe
     Ok(())
 }
 
+/// Two automatic instructions can be issued before either submit hook arrives.
+/// The older acknowledgment must leave a later viewer edit available to its own hook.
+#[tokio::test]
+async fn goal_stop_keeps_both_issued_instructions_until_their_callbacks_arrive() -> TestResult {
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify dev").await?;
+    let app = &f.h.app;
+    let ctx = app.agent_context(TOKEN).await?;
+    let first = stop_of(&f, Agent::Codex).await?["reason"]
+        .as_str()
+        .ok_or("first instruction")?
+        .to_owned();
+    app.tool_steps_set(
+        &ctx,
+        &json!({"steps": [{"title":"Record verification", "status":"in_progress"}]}),
+    )
+    .await?;
+    let second = stop_of(&f, Agent::Codex).await?["reason"]
+        .as_str()
+        .ok_or("second instruction")?
+        .to_owned();
+    assert_ne!(first, second);
+    let spent = app
+        .deps
+        .store
+        .task(&f.task)
+        .await?
+        .ok_or("task")?
+        .gate_blocks;
+    assert!(spent > 0);
+    app.record_terminal_frame(&f.task, &UserId::parse("u1")?, b"Review checkoutx\x7f\r");
+    for (id, text, expected) in [
+        (1, first.as_str(), spent),
+        (2, second.as_str(), spent),
+        (1, first.as_str(), spent),
+        (3, "Review checkout", 0),
+    ] {
+        app.hook_event(
+            TOKEN,
+            "codex",
+            "UserPromptSubmit",
+            &yulius_contracts::hooks::HookInput {
+                prompt: Some(text.to_owned()),
+                invocation: Some(id),
+                ..Default::default()
+            },
+            None,
+        )
+        .await?;
+        assert_eq!(
+            app.deps
+                .store
+                .task(&f.task)
+                .await?
+                .ok_or("task")?
+                .gate_blocks,
+            expected
+        );
+    }
+    assert!(!app.has_draft(&f.task));
+    Ok(())
+}
+
 /// The client has already sent Enter when the next draft reaches Yulius. The HTTP
 /// callback arrives later, carrying the client's send time.
 #[tokio::test]
