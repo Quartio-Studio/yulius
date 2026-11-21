@@ -1,6 +1,6 @@
 ---
 yulius-task: 1f417829-d430-4e66-9a47-52c44c4ed39c
-status: in-progress
+status: done
 ---
 
 # SPEC-596 Automatic answers for Claude scratch cleanup
@@ -32,7 +32,7 @@ Task #586 shows a background reviewer resetting two scratch directories in a loo
 - [x] Keep shell functions and asynchronous commands out of deletion retries
 - [x] Recognize foreground cleanup before another command’s Bash redirect
 - [x] Distinguish Bash redirects from quoted and here-document text
-- [ ] Independent review approves the verified change for delivery
+- [x] Independent review approves the verified change for delivery
 
 ## Acceptance criteria
 
@@ -48,26 +48,25 @@ Exercise the generated Claude launch settings and local hook entry point with sy
 
 Use Claude's structured PermissionRequest event. Its decision belongs to the pending tool call and can return the cleanup instruction directly to the agent. The existing helper determines ownership at execution time. [ADR-0435](../../docs/decisions/0435-claude-returns-variable-path-cleanup-to-the-calling-agent.md) [ADR-0155](../../docs/decisions/0155-a-task-removes-its-own-files-with-yulius-remove.md)
 
-
 ## Evidence
 
-- Before the change, the hook regression received zero bytes and the contained launch snapshot found no PermissionRequest hook. Both tests failed. The interactive-removal negative case also failed before restricting the recognized flags.
-- `cargo test --locked -p yulius-harness --test hook_client --test launch` passed all 51 tests. `cargo clippy --locked -p yulius-harness --all-targets -- -D warnings` passed. That first implementation used conch-parser 0.1.1. The delivered parser uses the Tree-sitter Bash grammar.
-- Real Claude Code 2.1.330, using a loopback model stub, ran the test as the main agent and as an asynchronous reviewer. Both received the checked retry, removed two populated scratch directories, rebuilt the test folders and preserved the sibling marker. The stub issued the retry only after it received the hook's message. This exercises Claude's real hook and Bash execution without a paid model or an operator response.
-- In this contained run, an empty child stopped Bash before removal, a checked retry deleted a populated directory, repeating it reported already gone, and the helper refused a tracked worktree file.
-- `python3 scripts/check_repository.py` passed.
+- The hook test initially returned zero bytes for the pictured removal. The launch test found no PermissionRequest registration. Both regressions now pass for contained Claude runs. Separate cases exercise other tools, harnesses, hook events, permission modes and malformed input.
+- Claude Code 2.1.330 ran the loop as a main agent and as an asynchronous reviewer using a loopback model stub. Both received the retry, deleted populated scratch copies, rebuilt them and preserved a sibling marker without operator input. A conditional reviewer run rebuilt only its selected copy and retained its Bash logging redirect. The stub waited for the hook decision before issuing the retry.
+- Tests initially reproduced incomplete retries for conditional commands, missing support for file-only retries, trailing slashes removing regular files and option-like expansions removing two files. The corrected helper preserves the force and recursion flags, checks all operands for ambiguous options before touching a file and preserves trailing-slash requirements. The CLI integration asserts exit status, output and both filesystem markers. A contained run also verified an empty child variable stops Bash, an already-removed path succeeds under force and a tracked file is refused.
+- Review regressions initially reproduced lost redirects, function and asynchronous command misclassification, a quoted or commented `<<` hiding a cleanup, a lost literal dollar suffix and positional parameters being rewritten as named variables. The corrected tests exercise actual system-command resolution in Bash, conditional lists, aliases, redirects, here-documents, path fragments and positional parameters. Only named variables receive the nonempty guard.
+- Independent review approved `fbad865a8` after inspecting the Bash parser, permission routing, command resolution and removal semantics and rerunning the hook and product integration tests. Subsequent regression tests cover redirect ownership, literal operands with spaces, identifier-length boundaries, hook dispatch and the existing public removal entry point.
+- All 51 hook and launch tests, all 15 removal unit tests and the binary CLI integration test passed. `scripts/dev quick` verified repository contracts and formatting. Harness Clippy passed on Linux and for the aarch64 macOS target. The macOS check was a cross-compilation. Dependency bans and licenses passed. `scripts/dev security` reported Vidoc disabled and scanned no code.
 
-- The first independent review requested coverage for single-variable, variable-plus-literal and root-level scratch operands, and an explicit in-place retry for conditional commands. Both findings were in the change. Before the fixes, equivalent cleanup requests had no hook decision, the message omitted the in-place instruction and the CLI rejected both new options. The regression now exercises these shapes and the helper's recursive and missing-target behavior.
-- After the review fixes, the 51 hook and launch tests and the 12 `remove_cli` tests passed. In a real Claude Code 2.1.330 asynchronous reviewer with a loopback model stub, a conditional inside the original loop selected one scratch copy. The checked retry rebuilt that copy, preserved the other copy and left the sibling marker intact.
-- `scripts/dev quick` passed. `cargo deny check bans licenses` passed. `scripts/dev security` reported Vidoc disabled for this project and scanned no code.
+### Mutation evidence
 
-- The second review found that trimming a trailing slash could unlink a regular file. Before the correction, both forced and unforced retries removed the disposable marker. Tests now cover expanded operands ending in one or several slashes, regular files, dangling links, links to files, directory symlinks and actual directories. The original helper's default trailing-slash test still covers its existing callers.
-- After the trailing-slash correction, all 51 hook and launch tests and all 13 removal tests passed.
-- The third review found that a variable expanding to `--help` could remove that filename and another operand. A binary fixture reproduced both deletions on the prior head while the original rm kept both markers. The checked retry now verifies all expanded arguments first. Original explicit option termination still permits that filename.
-- The third review also reproduced a prompt for a root-level directory ending in a slash, and a retry that dropped a required input redirect. Both new hook regressions failed on the old implementation. The hook recognizes root-level paths with trailing slashes and preserves their spelling. A redirect or environment assignment attached to the removal goes to the normal permission handler.
-- A further independent review reproduced two cases where a deletion retry could change Bash behavior. The hook tests failed before excluding shell jobs (including Bash combined redirects) and defined removal functions. A native Bash test executes the complete returned retry against a recording helper. It calls the helper only for the system executable and preserves the function and alias cases. An absolute system executable is still recognized in a script defining a bare rm function.
-- An independent review distinguished a combined redirect on the removal from one on a later command in a foreground conditional list. The old hook returned no answer for `rm -rf "$scratch" && echo rebuilt &>result`. The regression exercises `&&`, `||`, append, an actual asynchronous list, and a here-document with a redirect-like delimiter. The agent resubmits the original script with its redirections intact.
-- The quoted/comment `<<` regression failed with the earlier POSIX parser. With the Bash grammar, the same redirect is recognized beside quoted text, comments and a real heredoc containing a deletion as data. During the change a test also caught a dropped literal dollar suffix. An operand with an unrecognized fragment now falls through without generating a replacement. The Bash grammar compiled with Clippy for aarch64 macOS. The dependency license and ban checks passed.
-- The Bash grammar represents positional parameters as variable-name nodes. An independent review reproduced that `"$10"` could be rewritten to `"${10:?}"`, which Bash resolves differently. The hook now uses the harness’s shell-identifier check for named variables. Tests for quoted, unquoted and braced positional parameters failed before the fix.
-- A mutation that replaced the binary command dispatch with an immediate successful exit survived the workspace test filter. The product integration suite now calls the real cleanup CLI, checks both exit codes and output, and verifies that a rejection preserves both disposable markers.
-- A subsequent mutation replaced the existing public removal entry point with a constant exit code. A compatibility test now invokes that entry point and checks both its usage error and the successful already-gone result, including the output. The same calls exercise the options-aware implementation it delegates to.
+The first two workspace runs listed 53 and 54 mutations respectively. Both passed their unmutated baseline and were interrupted before a summary. Later bounded workspace runs produced the following summaries.
+
+- Full branch at `0272ee2d1` — `mutants: 98 listed, 32 caught, 7 missed, 0 timed out, 1 unviable, 58 not reached (bound 30 min, took 1815 s)`
+- Trailing-slash handling — `mutants: 19 listed, 17 caught, 0 missed, 0 timed out, 1 unviable, 1 not reached (bound 30 min, took 1806 s)`
+- Expanded operands — `mutants: 10 listed, 10 caught, 0 missed, 0 timed out, 0 unviable, 0 not reached (bound 30 min, took 1512 s)`
+- System command resolution — `mutants: 14 listed, 12 caught, 0 missed, 0 timed out, 2 unviable, 0 not reached (bound 30 min, took 1617 s)`
+- Foreground redirects — `mutants: 7 listed, 7 caught, 0 missed, 0 timed out, 0 unviable, 0 not reached (bound 30 min, took 1167 s)`
+- Bash grammar — `mutants: 52 listed, 28 caught, 1 missed, 0 timed out, 2 unviable, 21 not reached (bound 30 min, took 1801 s)`
+- Named variables — `mutants: 15 listed, 15 caught, 0 missed, 0 timed out, 0 unviable, 0 not reached (bound 30 min, took 1470 s)`
+
+Across the delivered Rust changes, pinned cargo-mutants listed 135 mutations. Focused runs and replays detected 131 and classified four as unviable. In the harness, seven focused replays caught both previously missed mutations and five previously timed-out mutations. In the CLI, the regression for dispatch caught the no-op binary and the public entry-point regression caught the six constant-return mutations. The full changed removal module recorded 27 caught and one unviable. The focused outcomes were matched to the complete mutation list for the delivered product diff.
