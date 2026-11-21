@@ -651,10 +651,23 @@ fn jobs_cover_target(reference: &CiRef, gate: &Gate, jobs: &[CiJobRecord]) -> bo
     }
     // Every job of the gate ran there as it is defined now: a pull request judged by the
     // jobs its merge then changed never ran the new ones (SPEC-504, review round 1).
-    let all_ran = gate
-        .jobs
-        .iter()
-        .all(|job| jobs.iter().any(|t| ran_as(t, job)));
+    let all_ran = gate.jobs.iter().all(|job| {
+        jobs.iter().any(|ran| {
+            ran_as(ran, job)
+                && (!merged
+                    || match ran.state {
+                        RunState::Passed => true,
+                        RunState::Skipped => {
+                            ran.exit_code == Some(dom::SKIP_EXIT_CODE)
+                                && ran
+                                    .reason
+                                    .as_deref()
+                                    .is_none_or(|why| why.starts_with(dom::EXECUTED_SKIP_REASON))
+                        }
+                        _ => false,
+                    })
+        })
+    });
     !branch || all_ran
 }
 
@@ -1799,7 +1812,7 @@ impl App {
                 let source = tested.iter().find(|t| ran_as(t, job));
                 let (state, exit_code) = dom::copied_job_verdict(source.map(|t| t.state));
                 let reason =
-                    dom::copied_job_reason(source.and_then(|t| t.reason.as_deref()), &note);
+                    dom::copied_job_reason(state, source.and_then(|t| t.reason.as_deref()), &note);
                 CiJobRecord {
                     id: self.deps.crypto.new_id(),
                     run_id: run.id.clone(),

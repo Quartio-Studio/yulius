@@ -326,17 +326,30 @@ pub fn after_merge_skip(job: &Job, reference: &CiRef) -> Option<String> {
     (job.after_merge && off_the_merge).then(|| AFTER_MERGE_SKIP_REASON.to_owned())
 }
 
-/// The reason a copy of a job's verdict records (a tree reused, a merge train's verdict):
-/// `note`, after the full suite's reason when the source job was skipped as part of it, so the
-/// copy still says it never ran the job (SPEC-575 MFS-002, review round 1).
+/// A job ran and returned the CI skip exit code. A copied verdict retains this
+/// distinction from a job the scheduler excluded before execution.
+pub const EXECUTED_SKIP_REASON: &str = "job exited with the CI skip code";
+
+/// Carry the origin of a skipped verdict across tree reuse and merge trains.
+/// Old copies with ambiguous reasons remain ambiguous.
 #[must_use]
-pub fn copied_job_reason(source: Option<&str>, note: &str) -> String {
-    match source {
-        Some(reason) if reason.starts_with(AFTER_MERGE_SKIP_REASON) => {
-            format!("{AFTER_MERGE_SKIP_REASON}; {note}")
+pub fn copied_job_reason(state: RunState, source: Option<&str>, note: &str) -> String {
+    if state == RunState::Skipped {
+        let kind = match source {
+            None => Some(EXECUTED_SKIP_REASON),
+            Some(reason) => [
+                AFTER_MERGE_SKIP_REASON,
+                PATHS_SKIP_REASON,
+                EXECUTED_SKIP_REASON,
+            ]
+            .into_iter()
+            .find(|prefix| reason.starts_with(prefix)),
+        };
+        if let Some(kind) = kind {
+            return format!("{kind}; {note}");
         }
-        _ => note.to_owned(),
     }
+    note.to_owned()
 }
 
 /// Whether a job of a run was skipped as part of the full suite there (its own skip, or a copy
@@ -1356,19 +1369,34 @@ mod tests {
     #[test]
     fn a_copied_verdict_keeps_the_full_suites_skip() {
         let own = after_merge_skip(&plain("e2e", true), &CiRef::PullRequest(1));
-        let copied = copied_job_reason(own.as_deref(), "not run again: same tree");
+        let copied = copied_job_reason(
+            RunState::Skipped,
+            own.as_deref(),
+            "not run again: same tree",
+        );
         assert!(
             skipped_after_merge(RunState::Skipped, Some(&copied)),
             "{copied}"
         );
         assert!(copied.ends_with("not run again: same tree"), "{copied}");
-        let twice = copied_job_reason(Some(&copied), "a train's verdict");
+        let twice = copied_job_reason(RunState::Skipped, Some(&copied), "a train's verdict");
         assert!(
             skipped_after_merge(RunState::Skipped, Some(&twice)),
             "{twice}"
         );
-        assert_eq!(copied_job_reason(Some(PATHS_SKIP_REASON), "n"), "n");
-        assert_eq!(copied_job_reason(None, "n"), "n");
+        let paths = copied_job_reason(RunState::Skipped, Some(PATHS_SKIP_REASON), "n");
+        assert!(paths.starts_with(PATHS_SKIP_REASON));
+        assert!(
+            copied_job_reason(RunState::Skipped, Some(&paths), "again")
+                .starts_with(PATHS_SKIP_REASON)
+        );
+        let runtime = copied_job_reason(RunState::Skipped, None, "n");
+        assert!(runtime.starts_with(EXECUTED_SKIP_REASON));
+        assert!(
+            copied_job_reason(RunState::Skipped, Some(&runtime), "copy")
+                .starts_with(EXECUTED_SKIP_REASON)
+        );
+        assert_eq!(copied_job_reason(RunState::Passed, None, "n"), "n");
         assert!(!skipped_after_merge(RunState::Passed, Some(&copied)));
         assert!(!skipped_after_merge(
             RunState::Skipped,

@@ -609,7 +609,9 @@ impl App {
             .await;
         if matches!(
             verdict,
-            yulius_domain::ci::GateResult::Run(None | Some(RunState::Queued | RunState::Running))
+            yulius_domain::ci::GateResult::Run(
+                None | Some(RunState::Queued | RunState::Running | RunState::Passed)
+            )
         ) {
             // Each batch advances towards the root of this fixed history. The bound covers
             // both Git and inspection of saved job verdicts, including the current commit.
@@ -625,7 +627,7 @@ impl App {
                     commits = self.deps.git.preceding_commits(repo, oldest).await?;
                 }
                 Err(AppError::Conflict(format!(
-                    "nothing ran: {branch} is checking and has no preceding verified revision"
+                    "nothing ran: no verified revision in {branch} covers its required CI jobs"
                 )))
             };
             return tokio::time::timeout(std::time::Duration::from_secs(30), search)
@@ -653,21 +655,17 @@ impl App {
             let mut runs = store
                 .ci_runs_for_pull_head(&sandbox.id, super::PullHead::Exact(&sha))
                 .await?;
-            if let Some(own) = runs.iter().find(|run| &run.reference == reference) {
-                if own.state == RunState::Passed
-                    && !store.ci_jobs(&own.id, false).await?.iter().any(|job| {
-                        yulius_domain::ci::skipped_after_merge(job.state, job.reason.as_deref())
-                    })
-                {
-                    return Ok(Some(sha));
-                }
-                continue;
+            if let Some(index) = runs.iter().position(|run| &run.reference == reference) {
+                // A rerun of an older dev commit can execute the current dev gate. Even
+                // the branch's own latest verdict must cover this commit's jobs.
+                runs = vec![runs.swap_remove(index)];
+            } else {
+                runs.retain(|run| {
+                    super::ordinary_scheduler_ref(&run.reference)
+                        && yulius_domain::ci::covers_shared_commit(run.state)
+                        && run.requested_by != crate::merge_train::TRAIN_VERDICT_BY
+                });
             }
-            runs.retain(|run| {
-                super::ordinary_scheduler_ref(&run.reference)
-                    && yulius_domain::ci::covers_shared_commit(run.state)
-                    && run.requested_by != crate::merge_train::TRAIN_VERDICT_BY
-            });
             if runs.is_empty() {
                 continue;
             }

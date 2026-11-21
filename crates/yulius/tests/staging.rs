@@ -773,7 +773,7 @@ async fn production_is_promoted_only_from_the_verified_staging_revision() -> Tes
 #[tokio::test]
 async fn running_dev_ci_releases_only_the_preceding_green_revision() -> TestResult {
     let f = fixture(
-        "[[ci.jobs]]\nname = \"checks\"\ncommand = \"true\"\n[cd.dev]\n[cd.prod]\npromote = true\n",
+        "[[ci.jobs]]\nname = \"full\"\ncommand = \"true\"\n[cd.dev]\n[cd.prod]\npromote = true\n",
     )
     .await?;
     fast_forward_profile(&f, false).await?;
@@ -850,7 +850,7 @@ async fn deploy_with_shared_ci(newer_pending: bool) -> TestResult {
     let id = gate(&f, &a, RunState::Passed).await?;
     // A disabled security scan is a legitimate skip of the configured job.
     f.h.store.execute_for_tests(&format!("UPDATE ci_jobs SET name='security', job_key='security', command='yulius security-scan --ci',
-        state='skipped', reason='security scan disabled' WHERE run_id='{id}' AND name='quick'")).await?;
+        state='skipped', reason=NULL, exit_code=78 WHERE run_id='{id}' AND name='quick'")).await?;
     if newer_pending {
         let b = f.push("dev", &[("pending.txt", Some("B"))])?;
         gate(&f, &b, RunState::Running).await?;
@@ -961,6 +961,90 @@ async fn dev_head_accepts_its_full_shared_ci_verdict() -> TestResult {
 #[tokio::test]
 async fn prior_dev_revision_accepts_its_full_shared_ci_verdict() -> TestResult {
     deploy_with_shared_ci(true).await
+}
+
+/// Rerunning A while B is current can apply B's job configuration to A.
+async fn historical_rerun_covers_the_release(branch: bool) -> TestResult {
+    let config = "[[ci.jobs]]\nname = \"full\"\ncommand = \"true\"\n[cd.prod]\npromote = true\n";
+    let f = fixture(config).await?;
+    fast_forward_profile(&f, false).await?;
+    let a = f.push("dev", &[("candidate.txt", Some("A"))])?;
+    let original = gate(&f, &a, RunState::Failed).await?;
+    let revised = if branch {
+        config.replace("command = \"true\"", "command = \"echo easier\"")
+    } else {
+        config.replace("[cd.prod]", "paths = [\"src/**\"]\n[cd.prod]")
+    };
+    let b = f.push("dev", &[("yulius.toml", Some(&revised))])?;
+    gate(&f, &b, RunState::Running).await?;
+    let mut run = f.h.store.ci_run(&original).await?.ok_or("old run")?;
+    if !branch {
+        run.reference = CiRef::PullRequest(17);
+        f.h.store
+            .execute_for_tests(&format!(
+                "UPDATE ci_runs SET reference='pr/17' WHERE id='{original}'"
+            ))
+            .await?;
+    }
+    run.id = "historical-rerun".into();
+    run.state = RunState::Passed;
+    let mut jobs = f.h.store.ci_jobs(&original, false).await?;
+    for job in &mut jobs {
+        job.id = format!("rerun-{}", job.key);
+        job.run_id.clone_from(&run.id);
+        if job.key == "full" {
+            if branch {
+                job.state = RunState::Passed;
+                job.exit_code = Some(0);
+                job.command = "echo easier".into();
+            } else {
+                job.state = RunState::Skipped;
+                job.exit_code = Some(yulius_domain::ci::SKIP_EXIT_CODE);
+                job.reason = Some(yulius_domain::ci::PATHS_SKIP_REASON.into());
+            }
+        }
+    }
+    f.h.store.insert_ci_run(&run, &jobs).await?;
+    let production = f.head("main")?;
+    let refused = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(
+        refused.status,
+        axum::http::StatusCode::CONFLICT,
+        "{}",
+        refused.body
+    );
+    assert_eq!(f.head("main")?, production);
+    if !branch {
+        // Old copied verdicts have lost the reason for their skip.
+        f.h.store
+            .execute_for_tests(
+                "UPDATE ci_jobs SET reason='not run again: same tree' WHERE id='rerun-full'",
+            )
+            .await?;
+        let ambiguous = f.deploy(&f.bob, "prod", Some("app")).await?;
+        assert_eq!(
+            ambiguous.status,
+            axum::http::StatusCode::CONFLICT,
+            "{}",
+            ambiguous.body
+        );
+        assert_eq!(f.head("main")?, production);
+    }
+    f.h.store.execute_for_tests("UPDATE ci_jobs SET state='passed', command='true', reason=NULL, exit_code=0 WHERE id='rerun-full'").await?;
+    let released = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert!(released.status.is_success(), "{}", released.body);
+    assert_eq!(f.head("main")?, a);
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_explicit_dev_rerun_must_execute_the_releases_own_job() -> TestResult {
+    historical_rerun_covers_the_release(true).await
+}
+
+#[tokio::test]
+async fn a_pr_rerun_cannot_skip_an_unscoped_release_job() -> TestResult {
+    historical_rerun_covers_the_release(false).await
 }
 
 /// Removing staging in a newer commit cannot release a candidate whose own staging never passed.
