@@ -560,6 +560,13 @@ impl TaskRuntime {
             .map(|(_, request)| request)
     }
 
+    /// Reattaching the same host preserves its park. A new attempt retires it.
+    fn retain_park_for_attached_run(&self, attempt_id: &AttemptId) {
+        if let Ok(mut kept) = self.parked_activity.lock() {
+            kept.take_if(|(parked, _)| parked != attempt_id);
+        }
+    }
+
     /// A reader can take the end intent before it writes the parked task state.
     pub(crate) fn park_committed(&self) -> bool {
         self.parked_activity
@@ -3854,10 +3861,7 @@ impl App {
             attempt_id: attempt.id.clone(),
             writer: attached.writer,
         });
-        // A previous attempt whose settlement was interrupted cannot own a new run.
-        if let Ok(mut kept) = runtime.parked_activity.lock() {
-            kept.take_if(|(parked, _)| parked != &attempt.id);
-        }
+        runtime.retain_park_for_attached_run(&attempt.id);
         crate::race::reached(crate::race::Point::RunAttached, Path::new(task_id.as_str()));
         // What the sandbox's limits counted so far: a rise by the run's end says it was at one.
         let counters = self.limit_counters(&sandbox).await;
@@ -4261,6 +4265,9 @@ impl App {
                 return;
             };
             let Some(to) = next(&task) else {
+                if task.status.is_resting() {
+                    self.clear_settled_park(task_id, attempt_id);
+                }
                 return;
             };
             crate::race::reached(crate::race::Point::EndDecided, Path::new(task_id.as_str()));
@@ -4316,7 +4323,12 @@ impl App {
                 Ok(parked) => (parked, task.activity.or(decided)),
                 Err(_) => match task.status.apply(TaskEvent::Exited { normal: true }) {
                     Ok(rests) => (rests, None),
-                    Err(_) => return,
+                    Err(_) => {
+                        if task.status.is_resting() {
+                            self.clear_settled_park(task_id, attempt_id);
+                        }
+                        return;
+                    }
                 },
             };
             // The goal's state is in the run's directory before anyone reads the task parked.
@@ -8372,6 +8384,21 @@ mod tests {
     }
 
     use super::branch_for;
+
+    #[test]
+    fn reattachment_preserves_only_the_attached_attempts_unsettled_park()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = super::TaskRuntime::new();
+        let parked = super::AttemptId::parse("previous-owner")?;
+        let replacement = super::AttemptId::parse("continued-owner")?;
+        *runtime.parked_activity.lock().map_err(|_| "park lock")? =
+            Some((parked.clone(), super::Activity::Waiting));
+        runtime.retain_park_for_attached_run(&parked);
+        assert!(runtime.park_committed());
+        runtime.retain_park_for_attached_run(&replacement);
+        assert!(!runtime.park_committed());
+        Ok(())
+    }
 
     #[test]
     fn a_taken_request_belongs_to_one_attempt_and_is_consumed_once()

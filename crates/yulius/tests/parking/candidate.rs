@@ -369,29 +369,121 @@ fn a_closed_owner_can_arm_during_a_capacity_delayed_continue_after_a_superseded_
             super::status_of(app, &id).await.0 == Some(TaskStatus::Closed)
         })
         .await?;
-        let account = yulius_domain::ids::AccountId::parse("a-only")?;
-        let usage = json!({"primary":{"used_percent":100.0,"window_minutes":300,"resets_at":app.now().plus_millis(3_600_000).0}}).to_string();
-        app.deps
-            .store
-            .set_account_state(
-                &account,
-                yulius_app::model::AccountStatus::Limited,
-                Some(&usage),
-                None,
-                app.now(),
-            )
-            .await?;
-        app.continue_task(&ctx, id.as_str(), &serde_json::from_value(json!({}))?)
-            .await?;
-        assert_eq!(
-            super::status_of(app, &id).await.0,
-            Some(TaskStatus::WaitingCapacity)
-        );
-        assert!(app.deps.store.live_attempt(&id).await?.is_none());
-        let response = app.merge_for_person(&ctx, id.as_str()).await?;
-        assert_eq!(response["armed"], true);
+        arm_capacity_delayed_continuation(app, &id, &ctx).await?;
         Ok(())
     })
+}
+
+#[test]
+fn stop_before_the_parked_run_is_reaped_releases_the_continued_owner() -> TestResult {
+    continued_after_capacity_stop(false)
+}
+
+#[test]
+fn stop_after_the_parked_run_is_reaped_releases_the_continued_owner() -> TestResult {
+    continued_after_capacity_stop(true)
+}
+
+fn continued_after_capacity_stop(after_reap: bool) -> TestResult {
+    use yulius_domain::task::{StopReason, TaskStatus};
+    with_idle_candidate(async |_, app, remote, id, head| {
+        let ctx = pending_owner_merge(app, remote, &id, &head).await?;
+        let mut frames = app.runtime(&id).hub.watch();
+        let pause_app = app.clone();
+        let pause_id = id.clone();
+        let handle = tokio::runtime::Handle::current();
+        yulius_app::race::on(
+            super::Point::ParkDecided,
+            Path::new(id.as_str()),
+            move || {
+                let stopped = tokio::task::block_in_place(|| {
+                    handle.block_on(async {
+                        pause_app
+                            .pause_task(&pause_id, yulius_app::model::PauseKind::Prompt, None, None)
+                            .await?;
+                        if !after_reap {
+                            assert!(
+                                pause_app
+                                    .deps
+                                    .store
+                                    .live_attempt(&pause_id)
+                                    .await?
+                                    .is_some()
+                            );
+                            pause_app.stop_task_now(&pause_id).await?;
+                        }
+                        Ok::<_, yulius_app::error::AppError>(())
+                    })
+                });
+                assert!(stopped.is_ok(), "{stopped:?}");
+            },
+        );
+        if after_reap {
+            let stop_app = app.clone();
+            let stop_id = id.clone();
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                super::Point::EndDecided,
+                Path::new(id.as_str()),
+                move || {
+                    let stopped = tokio::task::block_in_place(|| {
+                        handle.block_on(async {
+                            assert!(stop_app.deps.store.live_attempt(&stop_id).await?.is_none());
+                            stop_app.stop_task_now(&stop_id).await
+                        })
+                    });
+                    assert!(stopped.is_ok(), "{stopped:?}");
+                },
+            );
+        }
+        super::wait_for("the park before Stop", Duration::from_secs(20), || async {
+            app.park_idle_sessions_now().await == 1
+        })
+        .await?;
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                if matches!(frames.recv().await?, yulius_app::hub::HubFrame::Exit { .. }) {
+                    return Ok::<(), tokio::sync::broadcast::error::RecvError>(());
+                }
+            }
+        })
+        .await??;
+        assert_eq!(
+            super::status_of(app, &id).await.0,
+            Some(TaskStatus::Stopped(StopReason::Cancelled))
+        );
+        arm_capacity_delayed_continuation(app, &id, &ctx).await
+    })
+}
+
+async fn arm_capacity_delayed_continuation(
+    app: &Arc<yulius_app::context::App>,
+    id: &TaskId,
+    ctx: &yulius_app::auth::AuthContext,
+) -> TestResult {
+    use yulius_domain::task::TaskStatus;
+    let account = yulius_domain::ids::AccountId::parse("a-only")?;
+    let usage = json!({"primary":{"used_percent":100.0,"window_minutes":300,"resets_at":app.now().plus_millis(3_600_000).0}}).to_string();
+    app.deps
+        .store
+        .set_account_state(
+            &account,
+            yulius_app::model::AccountStatus::Limited,
+            Some(&usage),
+            None,
+            app.now(),
+        )
+        .await?;
+    app.continue_task(ctx, id.as_str(), &serde_json::from_value(json!({}))?)
+        .await?;
+    assert_eq!(
+        super::status_of(app, id).await.0,
+        Some(TaskStatus::WaitingCapacity)
+    );
+    assert!(app.deps.store.live_attempt(id).await?.is_none());
+    let response = app.merge_for_person(ctx, id.as_str()).await?;
+    assert_eq!(response["armed"], true);
+    Ok(())
 }
 
 async fn pending_owner_merge(
@@ -2362,12 +2454,27 @@ async fn check_recorded_decision(
         return Ok(());
     }
     if matches!(case, ColdCandidate::Stall) {
+        assert_eq!(notices.len(), 1, "initial candidate notice: {notices:?}");
         let bounds = WatchBounds {
             stall_quiet_ms: 0,
             stall_after_ms: 0,
             ..WatchBounds::default()
         };
-        let stalled = Box::pin(cold.watch_prs(&bounds)).await;
+        // Delivery of the first notice can overlap its provider turn. Drive the
+        // regular watch until the first check-in, checking that very notice below.
+        let stalled = std::cell::RefCell::new(Vec::new());
+        super::wait_for(
+            "the first check-in after the candidate diagnosis",
+            Duration::from_secs(20),
+            || async {
+                let notices = cold.watch_prs(&bounds).await;
+                let heard = !notices.is_empty();
+                stalled.replace(notices);
+                heard
+            },
+        )
+        .await?;
+        let stalled = stalled.into_inner();
         assert_eq!(
             stalled.len(),
             1,

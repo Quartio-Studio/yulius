@@ -114,6 +114,11 @@ The final parking decision and replacement merge admission share the task’s me
 
 ## Evidence
 
+- Initial admission mutation campaign on `140ea234f` reported 27 listed, 6 caught, 2 missed, 19 unviable, no timeouts or unreached mutations. Inverting the attempt comparison failed the reattachment regression. Removing the final armed-state check failed the completed replacement regression.
+
+- Review at `41e393f07` found that a capacity pause followed by Stop could persist a resting task before the old reader settled it. In two tests, Stop arrived on opposite sides of the attempt-end write. After the terminal reported exit, Continue waited for a subscription and the old park refused the owner’s merge. Both tests passed after the readers honored the already-settled state. All 13 focused admission, switch, Stop and capacity cases passed.
+- The first mutation run’s inverted attempt comparison let a reattachment discard its own pending park. The new reattachment test failed with that mutation. It verifies both retaining the same attempt and retiring an interrupted park on a new attempt.
+
 - On `140ea234f`, the seven merge-admission cases and all 278 scoped tests passed. Independent review then found a stale park marker after Close superseded parking and Continue waited for a subscription. The new regression reached WaitingCapacity with no live attempt, then received the stale parking refusal. A second regression removed the final armed-state check and let a replacement finish between eligibility and the park writer. It reproduced the original owner being parked. A successful run settlement now clears the matching attempt’s record for park, Close, Stop and loss.
 
 - On the tree of dev `f5d772b6c`, five real parking/merge races failed. An arm writer lost its live owner, and a pending merge was admitted during a committed park, during an overtaken switch or capacity pause, and after the task had settled parked. The ordinary switch and capacity pause controls passed.
