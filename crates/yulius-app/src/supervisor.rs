@@ -2041,15 +2041,8 @@ impl App {
             };
             let launching = Launching::start(&self.supervisor.launching, &task.id);
             let result = self.launch_attempt(&task, start, account, rest).await;
-            drop(launching);
-            drop(guard);
-            crate::race::reached(
-                crate::race::Point::StartLockReleased,
-                Path::new(task.id.as_str()),
-            );
             if let Err(err) = &result {
-                // The launch failed: the task waits for nothing any more, whatever pause it
-                // was started from (one the launch would have ended with its subscription).
+                // Settle the failed launch before another Continue can install a new pause.
                 self.end_pause(task_id, "ended").await;
                 let reason = crate::account_gate::fail_reason(err);
                 if let Ok(Some(current)) = self.deps.store.task(task_id).await
@@ -2067,6 +2060,14 @@ impl App {
                         )
                         .await;
                 }
+            }
+            drop(launching);
+            drop(guard);
+            crate::race::reached(
+                crate::race::Point::StartLockReleased,
+                Path::new(task.id.as_str()),
+            );
+            if let Err(err) = &result {
                 self.runtime(task_id)
                     .hub
                     .notice(format!("Could not start: {}", err.public_message()));
@@ -2074,7 +2075,7 @@ impl App {
                 // A supertask that could not start no longer holds its project (SUP-005).
                 self.drain_queue().await;
             }
-            result.map(|()| true)
+            result
         })
     }
 
@@ -2110,7 +2111,7 @@ impl App {
         start: RunStart,
         requested: Option<AccountId>,
         rest: Option<IdleRest>,
-    ) -> AppResult<()> {
+    ) -> AppResult<bool> {
         let store = &self.deps.store;
         let relaunch = start.clone();
         let sandbox = store
@@ -2146,7 +2147,8 @@ impl App {
                 .transition_task(&task.id, Some(task.status), next, None, self.now())
                 .await?
             {
-                return Err(AppError::Conflict("task state changed concurrently".into()));
+                // Stop won the claim. This start owns neither the task nor a replacement pause.
+                return Ok(false);
             }
             self.publish_task(&task.id).await;
         }
@@ -2186,7 +2188,7 @@ impl App {
                 RunStart::Fresh { .. } => (PauseKind::Start, None),
             };
             self.pause_task(&task.id, kind, None, continuation).await?;
-            return Ok(());
+            return Ok(true);
         };
         // The run has its subscription: a pause the task waited in is over. Only here, so that
         // a start the full queue refused, and one that finds no capacity after all (the branch
@@ -2873,7 +2875,7 @@ impl App {
                 }
             });
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Writes the task's request file into the sandbox home (`.yulius/tasks/<number>.md`: the

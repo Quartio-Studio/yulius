@@ -478,12 +478,11 @@ fn moving_idle_working_and_held_codex_turns_selects_their_own_prompts() -> TestR
                 Path::new(&run.run_dir).join("fake-launch.txt"),
             )?)
         };
-        let idle = async || {
-            task(&app, &id)
-                .await
-                .is_ok_and(|t| t.activity == Some(yulius_domain::task::Activity::Waiting))
-        };
-        wait_for("the idle Codex conversation", Duration::from_secs(30), idle).await?;
+        app.close_task_and_wait(&id).await?;
+        let opened = app
+            .continue_task(&ctx, id.as_str(), &Default::default())
+            .await?;
+        assert_eq!(opened.activity.as_deref(), Some("waiting"));
         let reopened = move_to(&alternate).await?;
         assert!(reopened.contains("prompt: None"), "{reopened}");
         app.send_input(&id, b"/work 60000 Active turn\r").await?;
@@ -499,12 +498,10 @@ fn moving_idle_working_and_held_codex_turns_selects_their_own_prompts() -> TestR
             continued.contains("Continue the task exactly where you left off."),
             "{continued}"
         );
-        wait_for(
-            "the continued turn to finish",
-            Duration::from_secs(30),
-            idle,
-        )
-        .await?;
+        assert_eq!(
+            task(&app, &id).await?.activity,
+            Some(yulius_domain::task::Activity::Working)
+        );
 
         let record = task(&app, &id).await?;
         let worktree = Path::new(record.worktree_path.as_deref().ok_or("worktree")?);
