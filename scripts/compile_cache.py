@@ -11,6 +11,7 @@ from pathlib import Path
 import shutil
 import tarfile
 import tempfile
+import time
 
 from home_lock import exclusive
 
@@ -52,6 +53,64 @@ def open_store(cache, checkout):
             return stat.S_ISREG(os.fstat(owner.fileno()).st_mode) and owner.read(len(contents) + 1) == contents
     finally:
         os.close(directory)
+
+
+class UnreapedBuild(RuntimeError):
+    """A build group may still be using its scratch target."""
+
+
+def stop_build_group(group, requested=None):
+    """The leader is still waitable, so the kernel cannot recycle its group ID."""
+    def send(sig):
+        try:
+            os.killpg(group, sig)
+        except ProcessLookupError:
+            pass
+
+    def stopped_within(seconds, *, force):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if force:
+                send(signal.SIGKILL)
+            try:
+                rows = subprocess.check_output(["/bin/ps", "-A", "-o", "pgid=,stat="],
+                                               text=True, timeout=max(0.01, deadline - time.monotonic()))
+            except (OSError, subprocess.SubprocessError) as error:
+                raise UnreapedBuild(f"cannot verify build group {group}: {error}") from error
+            if not any(pgid == str(group) and not state.startswith("Z")
+                       for pgid, state in (row.split() for row in rows.splitlines() if row.strip())):
+                return True
+            time.sleep(0.05)
+        return False
+
+    if requested is not None:
+        send(requested)
+        try:
+            if stopped_within(3, force=False):
+                return
+        except UnreapedBuild:
+            pass  # Still escalate if process observation failed during graceful shutdown.
+    if not stopped_within(3, force=True):
+        raise UnreapedBuild(f"build group {group} still has live workers after SIGKILL")
+
+
+def observe_build_exit(pid):
+    """Observe exit while the unreaped leader still pins the process group."""
+    if hasattr(os, "waitid"):
+        os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT)
+        return
+    # Python 3.11 and 3.12 on macOS expose kqueue but not waitid.
+    import select
+    with select.kqueue() as events:
+        exit_event = select.kevent(pid, filter=select.KQ_FILTER_PROC,
+                                   flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                                   fflags=select.KQ_NOTE_EXIT)
+        try:
+            event, = events.control([exit_event], 1, None)
+            if event.flags & select.KQ_EV_ERROR and event.data != errno.ESRCH:
+                raise OSError(event.data, os.strerror(event.data))
+        except ProcessLookupError:
+            pass  # The child had already exited before registration.
 
 
 def run_session(command, env, lease=None, *, interactive=False):
@@ -96,21 +155,31 @@ def run_session(command, env, lease=None, *, interactive=False):
                 pass
         if requested is not None:
             raise Cancelled
+        # Terminal Ctrl-C goes straight to the foreground group. Cargo may
+        # report a signal or translate it to an ordinary exit code.
+        observe_build_exit(child.pid)
+        if interactive:
+            stop_build_group(child.pid)
+        # The last group operation precedes reaping. A delayed cancellation must
+        # never signal a process group whose leader PID the kernel can reuse.
+        for sig in signals:
+            signal.signal(sig, signal.SIG_IGN)
         return child.wait()
     except Cancelled:
         for sig in signals:
             signal.signal(sig, signal.SIG_IGN)
-        try:
-            os.killpg(child.pid, requested)
-            child.wait(timeout=3)
-        except (ProcessLookupError, subprocess.TimeoutExpired):
-            pass
-        try:
-            os.killpg(child.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        stop_build_group(child.pid, requested)
         child.wait()
         return -requested
+    except UnreapedBuild:
+        raise
+    except BaseException:
+        if child is not None and child.returncode is None:
+            for sig in signals:
+                signal.signal(sig, signal.SIG_IGN)
+            stop_build_group(child.pid)
+            child.wait()
+        raise
     finally:
         if terminal is not None:
             try:

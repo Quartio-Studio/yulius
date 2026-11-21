@@ -6,7 +6,7 @@ import shutil
 import sys
 import tempfile
 
-from compile_cache import foreground_terminal, installed, open_store, run_session, sandbox_for
+from compile_cache import UnreapedBuild, foreground_terminal, installed, open_store, run_session, sandbox_for
 
 root = Path(__file__).resolve().parent.parent
 args = sys.argv[1:]
@@ -22,8 +22,26 @@ def run_build(command, env, lease=None):
         return run_session(command, env, lease)
     parent = Path(env.get("YULIUS_BUILD_SCRATCH", root / "target"))
     parent.mkdir(exist_ok=True, parents=True)
-    with tempfile.TemporaryDirectory(prefix="cargo-", dir=parent) as build:
-        return run_session(command, dict(env, CARGO_TARGET_DIR=build), lease, interactive=True)
+    build = tempfile.mkdtemp(prefix="cargo-", dir=parent)
+    try:
+        result = run_session(command, dict(env, CARGO_TARGET_DIR=build), lease, interactive=True)
+    except UnreapedBuild as error:
+        # The containing session can reclaim this target once its processes end.
+        raise UnreapedBuild(f"{error}; retained build target {build}") from error
+    except BaseException:
+        remove_target(build, parent)
+        raise
+    remove_target(build, parent)
+    return result
+
+
+def remove_target(build, parent):
+    try:
+        shutil.rmtree(build)
+    except PermissionError:
+        # TemporaryDirectory's cleanup also handles owner-read-only dependencies.
+        with tempfile.TemporaryDirectory(prefix="cargo-clean-", dir=parent) as disposal:
+            os.rename(build, Path(disposal) / "target")
 
 
 def plain(cargo):
@@ -97,7 +115,12 @@ try:
                    MBX_RESTORE_HARDLINK="0", MBX_SCHEDULER="0", MBX_BUILD_SCRIPT_EXECUTION="0",
                    MBX_CC="0", MBX_SHARE_WORKSPACE_ROOT="0", MBX_SHARE_OUT_DIR="0",
                    MBX_LEARNED_INCREMENTAL="0", MBX_DISPLAY="plain", MBX_SUMMARY="full")
-        status = run_build([mbx, *args], env, lease)
+        try:
+            status = run_build([mbx, *args], env, lease)
+        except OSError as error:
+            if marker.exists():
+                raise RuntimeError(f"dispatched Cargo command failed: {error}") from error
+            raise
         bypasses = sum(1 for _ in Path(scratch).glob("bypass.*"))
         if bypasses:
             print(f"yulius[cache]: {bypasses} compiler invocations bypassed for unknown or procedural-macro inputs",

@@ -67,6 +67,24 @@ class CompileCache(unittest.TestCase):
             self.assertEqual(target.parent, parent)
             self.assertFalse(target.exists())
 
+    def test_unconfirmed_shutdown_retains_its_target_and_runs_cargo_once(self):
+        root = self.sandbox / "scratch"
+        env = self.caller_fixture("from pathlib import Path\n"
+                                  "target = Path(os.environ['CARGO_TARGET_DIR'])\n"
+                                  "with open(os.environ['RECORD'], 'a') as record: print(target, file=record)\n"
+                                  "(target / 'keep').write_text('build')")
+        env.update(RECORD=str(self.record), YULIUS_BUILD_SCRATCH=str(root))
+        with (self.task / "scripts/compile_cache.py").open("a") as fixture:
+            fixture.write("\ndef stop_build_group(group, requested=None):\n"
+                          "    raise UnreapedBuild('process observation unavailable')\n")
+        result = subprocess.run([self.task / "scripts/cargo", "--scratch-target", "build"],
+                                env=env, capture_output=True, text=True, timeout=5, start_new_session=True)
+        self.assertNotEqual(result.returncode, 0)
+        targets = self.record.read_text().splitlines()
+        self.assertEqual(len(targets), 1)
+        self.assertIn("retained build target " + targets[0], result.stderr)
+        self.assertTrue((Path(targets[0]) / "keep").is_file())
+
     def test_worktree_and_ci_lane_share_only_their_sandbox_store(self):
         import_script = ("print(__import__('json').dumps([os.environ['MBX_CACHE_DIR'], os.getcwd()]), flush=True)\n"
                          "os.execv(os.environ['CARGO'], [os.environ['CARGO'], *sys.argv[1:]])")
@@ -258,6 +276,65 @@ class CompileCache(unittest.TestCase):
 
     def test_disposable_target_read_from_tty_and_cleanup_on_term(self):
         self.check_foreground_terminal(redirect_stdin=False, scratch=True)
+
+    def test_terminal_ctrl_c_reaps_a_resistant_worker_before_releasing_scratch(self):
+        self.check_terminal_interrupt("signal.SIG_DFL")
+
+    def test_a_handled_terminal_interrupt_reaps_workers_before_releasing_scratch(self):
+        self.check_terminal_interrupt("lambda *_: sys.exit(130)")
+
+    def check_terminal_interrupt(self, handler):
+        import pty
+        import select
+        import signal
+        import socket
+        ready = self.sandbox.parent / "worker.sock"
+        root = self.sandbox / "scratch"
+        env = self.caller_fixture(f"""
+import signal, socket
+signal.signal(signal.SIGINT, {handler})
+if os.fork() == 0:
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    with socket.socket(socket.AF_UNIX) as conn:
+        conn.connect(os.environ["READY"])
+        conn.sendall(str(os.getpid()).encode())
+        signal.pause()
+signal.pause()
+""")
+        env.update(READY=str(ready), YULIUS_BUILD_SCRATCH=str(root))
+        with socket.socket(socket.AF_UNIX) as listener:
+            listener.bind(str(ready))
+            listener.listen()
+            listener.settimeout(6)
+            pid, terminal = pty.fork()
+            if pid == 0:
+                os.execve(self.task / "scripts/cargo", ["cargo", "--scratch-target", "build"], env)
+            worker = None
+            reaped = False
+            try:
+                conn, _ = listener.accept()
+                with conn, os.fdopen(os.pidfd_open(pid), "rb", buffering=0) as launcher:
+                    worker = int(conn.recv(32))
+                    os.write(terminal, b"\x03")
+                    self.assertTrue(select.select([launcher], [], [], 8)[0], "launcher missed Ctrl-C")
+                    _, status = os.waitpid(pid, 0)
+                    reaped = True
+                    self.assertEqual(os.waitstatus_to_exitcode(status), 130)
+                    self.assertTrue(select.select([conn], [], [], 0)[0], "worker survived launcher exit")
+                    self.assertEqual(conn.recv(1), b"")
+                    worker = None
+                    self.assertEqual(list(root.iterdir()), [])
+            finally:
+                if worker is not None:
+                    try:
+                        os.kill(worker, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                if not reaped:
+                    os.kill(pid, signal.SIGKILL)
+                    os.waitpid(pid, 0)
+                os.close(terminal)
 
     def check_foreground_terminal(self, redirect_stdin, scratch=False):
         import pty
