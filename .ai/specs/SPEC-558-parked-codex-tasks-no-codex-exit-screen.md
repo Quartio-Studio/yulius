@@ -56,6 +56,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Recover the recorded singleton decision and its replacement arm
 - [x] Preserve the ordinary armed merge outcome after a person merges through HTTP
 - [x] Keep failed integration candidates with their original owner
+- [ ] Replay the original owner’s recorded candidate decision and preserve replacement-head news
 - [ ] Verify candidate status before parking, showing Done or resuming a parked owner
 - [ ] Deliver bounded Codex goal continuation to dev
 - [ ] Recover screens from tasks parked before the upgrade
@@ -94,6 +95,8 @@ The hourly telemetry cleanup retains the latest merge wait for each existing tas
 The queue writes the accepted singleton to the owner’s completed merge wait before releasing the original arm. The receipt carries the redacted reason and exact tested inputs. A reviewed head move preserves its activation time. A new request saves a strictly later activation before retiring the earlier receipt. The queue verifies retirement against the observed row and detail before taking the replacement. A direct merge or already-merged retry also reconciles pending retirement. Unreadable evidence leaves the saved request available to the next pass. A restarted watcher verifies the recorded PR, head, hosted integration base, ordinary run and current request before delivering the saved outcome through the existing owner notification. Its fingerprint is shared with the live queue. Held-candidate notices describe the current train’s members and activation. A historical CI run alone cannot establish that a task is still held.
 
 ## Evidence
+
+- The live queue and completed-decision replay are separate deliveries. The watcher identifies a holding train from its PR, task, head and activation. The free-arm outage regression passed on the intact implementation and failed when a generated mutation removed the queue note. All 12 restart cases retained for the live-queue delivery passed, including a PR left out of a train. The remaining replay step includes the replacement conflict from final review. That fixture produced no notice on `9d3ca52b4`, then passed alongside the moved-head test on the replay prototype. The combined prototype verification below records review history.
 
 - PR #1566 landed on dev at `1d97b363c`. Its exact head `d5e330a97` passed Yulius CI `69ec975a-f1ec-4f47-adb4-a24d56a29607` including quality, both Rust shards and browser e2e. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/1d97b363cf2012a58af48c780093f85caf498688)
 - The two final #1566 mutation runs each listed eight mutations. The ordinary HTTP repair caught three with five unviable (341 s). The guarded receipt repair caught four with four unviable (370 s). Neither missed or timed out. Separate application of the remaining earlier mutations made the person’s retry and the replacement’s completed wait regressions fail.

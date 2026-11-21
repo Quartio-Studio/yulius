@@ -1168,13 +1168,13 @@ impl App {
                 text: red_candidate_text(run, members, &jobs, &integration),
             });
         }
-        if !armed && let Some((head, text)) = &outcome {
-            let key = outcome_key(head, text);
+        if !armed && let Some((head, text)) = outcome {
+            let key = outcome_key(&head, &text);
             if !told_key("outcome", &key) {
                 events.push(Event {
                     kind: "outcome",
                     key,
-                    text: text.clone(),
+                    text,
                 });
             }
         }
@@ -1263,7 +1263,7 @@ impl App {
             .load(Ordering::SeqCst)
             .max(runtime.spawned_ms.load(Ordering::SeqCst));
         let check_ins = !runtime.goal_achieved.load(Ordering::SeqCst) && !needs_you;
-        let mut facts = PrFacts {
+        let facts = PrFacts {
             now_ms,
             pr,
             events,
@@ -1278,29 +1278,14 @@ impl App {
             has_ci,
             head: own.map(|run| run.sha.clone()).unwrap_or_default(),
         };
-        if !armed
-            && !person_must_act
-            && let Some(span) = self.deps.store.latest_merge_wait(&task.id).await.ok()?
-            && let Some(decision) = crate::merge_train::SingletonDecision::from_span(&span).ok()?
-        {
-            self.apply_singleton_news(
-                task,
-                &sandbox,
-                &integration,
-                outcome.as_ref(),
-                (span, decision),
-                &mut facts,
-            )
-            .await?;
-        } else if train.is_some() && !person_must_act {
+        crate::race::reached(
+            crate::race::Point::LivePrFactsRead,
+            std::path::Path::new(task.id.as_str()),
+        );
+        if train.is_some() && !person_must_act {
             let expected = red_candidate_head.map(|head| (head.as_str(), own));
             self.confirm_candidate_news(task, &sandbox, pr, expected)
                 .await?;
-        } else {
-            crate::race::reached(
-                crate::race::Point::LivePrFactsRead,
-                std::path::Path::new(task.id.as_str()),
-            );
         }
         if self.armed_now(&task.id) != activation
             || self.merge_is_armed(&task.id) != armed
@@ -1311,114 +1296,7 @@ impl App {
         Some(facts)
     }
 
-    /// A saved decision belongs to this owner only while the tested inputs and original
-    /// delivery still match. Use the same outcome key the live queue already told.
-    async fn apply_singleton_news(
-        &self,
-        task: &TaskRecord,
-        sandbox: &SandboxRecord,
-        integration: &str,
-        outcome: Option<&(String, String)>,
-        (span, decision): (
-            crate::stages::SpanRecord,
-            crate::merge_train::SingletonDecision,
-        ),
-        facts: &mut PrFacts,
-    ) -> Option<()> {
-        use crate::merge_train::SingletonObservation;
-        if outcome.is_some_and(|(head, text)| *head != decision.head || *text != decision.message) {
-            return Some(());
-        }
-        let key = outcome_key(&decision.head, &decision.message);
-        facts
-            .events
-            .retain(|event| event.kind != "outcome" || event.key != key);
-        if decision.superseded_at.is_some() || decision.singleton.pr != facts.pr {
-            return Some(());
-        }
-        let observation = self
-            .singleton_observation(
-                sandbox,
-                &task.id,
-                (facts.pr, &decision.head),
-                integration,
-                &decision.singleton.base,
-            )
-            .await?;
-        let ordinary_failure = match &observation {
-            SingletonObservation::Current(Some(run)) if run.state == RunState::Failed => {
-                let jobs = self.deps.store.ci_jobs(&run.id, true).await.ok()?;
-                Some(Event {
-                    kind: "run",
-                    key: run.id.clone(),
-                    text: red_run_text(run, &jobs),
-                })
-            }
-            _ => None,
-        };
-        let expected = match &observation {
-            SingletonObservation::Current(ordinary) => {
-                Some((decision.head.as_str(), ordinary.as_deref()))
-            }
-            SingletonObservation::Changed(_) => None,
-        };
-        self.confirm_candidate_news(task, sandbox, facts.pr, expected)
-            .await?;
-        if self
-            .deps
-            .store
-            .latest_merge_wait(&task.id)
-            .await
-            .ok()?
-            .as_ref()
-            != Some(&span)
-            || self.merge_is_armed(&task.id)
-            || self.armed_view(&task.id).1.as_ref() != outcome
-        {
-            return None;
-        }
-        let ordinary = match observation {
-            SingletonObservation::Changed(hosted_head) => {
-                return (hosted_head.as_deref() == Some(facts.head.as_str())).then_some(());
-            }
-            SingletonObservation::Current(ordinary) => ordinary,
-        };
-        facts.events.retain(|event| {
-            event.kind != "green"
-                && (event.kind != "run"
-                    || ordinary_failure.is_none()
-                        && ordinary.as_ref().is_some_and(|run| run.id == event.key))
-        });
-        if let Some(run) = ordinary {
-            if run.state.is_active() && decision.expired_ordinary_run.as_ref() != Some(&run.id) {
-                return None;
-            }
-            if let Some(failure) = ordinary_failure {
-                facts.status = status_text(Some(&run), false, Hold::Free, None, integration);
-                facts.progress.push_str(&format!("|{}", run.id));
-                facts.ci_busy = false;
-                facts.head.clone_from(&run.sha);
-                facts.events.push(failure);
-                return Some(());
-            }
-        }
-        facts
-            .progress
-            .push_str(&format!("|{}", decision.singleton.run));
-        facts.status = format!(
-            "The integration candidate failed for pull request #{}.",
-            facts.pr
-        );
-        facts.head.clone_from(&decision.head);
-        facts.events.push(Event {
-            kind: "outcome",
-            key,
-            text: decision.message,
-        });
-        Some(())
-    }
-
-    /// Recheck the owner and the ordinary CI used for a train or a recovered decision.
+    /// Recheck the held PR owner and the ordinary CI used by the train.
     /// A change during verification leaves the notice unheard for the next pass.
     async fn confirm_candidate_news(
         &self,
@@ -1427,10 +1305,6 @@ impl App {
         pr: u64,
         expected: Option<(&str, Option<&CiRunRecord>)>,
     ) -> Option<()> {
-        crate::race::reached(
-            crate::race::Point::LivePrFactsRead,
-            std::path::Path::new(task.id.as_str()),
-        );
         let fresh = self.deps.store.task(&task.id).await.ok()??;
         if fresh.status != TaskStatus::Running
             || fresh.archived_at.is_some()

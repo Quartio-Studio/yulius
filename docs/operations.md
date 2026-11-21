@@ -180,8 +180,8 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # receipt write keeps the original request recoverable. A later request keeps its queue position
 # while its earlier receipt is retired, including when a retry finds the PR already merged.
 # When a person merges the armed head from the task page, yulius wait reports the accepted merge.
-# After restart the watcher can tell the original session the recorded failing job once.
-# A new merge request or a changed PR head or integration base supersedes that diagnosis.
+# A running owner hears about the train that holds its current request. If ordinary CI fails,
+# it gets that failure once. A pending human decision or a merge being decided holds the notice.
 # Hourly history cleanup retains the latest merge wait of each existing task, even when
 # its activation began more than 180 days ago. Removing the task releases this history.
 # The PR watcher delivers actionable failures once and waits for a pending human decision.

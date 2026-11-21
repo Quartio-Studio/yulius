@@ -57,7 +57,7 @@ use yulius_domain::vault::redact::{PlainMatcher, redact_text};
 
 use crate::agent_wait::{ArmedMerge, ArmedNow, Deciding, QUEUE_BASE_GUIDANCE, QueueNote, Verdict};
 use crate::auth::AuthContext;
-use crate::ci::{CiJobRecord, CiRunRecord};
+use crate::ci::{CiJobRecord, CiRunRecord, PullHead, run_for_pull_head};
 use crate::context::App;
 use crate::delivery::{MergeFailure, delivery_profile, past_merge};
 use crate::model::{SandboxRecord, TaskRecord};
@@ -352,9 +352,9 @@ impl SingletonDecision {
 }
 
 /// Result of observing a singleton's hosted inputs and ordinary CI at its exact head.
-pub(crate) enum SingletonObservation {
-    Changed(Option<String>),
-    Current(Option<Box<CiRunRecord>>),
+enum SingletonObservation {
+    Changed,
+    Current(Option<(RunState, String)>),
 }
 
 /// Fold redacted CI text to a bounded line that can be typed into the owner's terminal.
@@ -895,21 +895,15 @@ impl App {
         let unavailable_since = train.waiting_since;
         let mut expired_ordinary_run = None;
         let text = match self
-            .singleton_observation(
-                sandbox,
-                &task,
-                (member.pr, &member.head),
-                &integration,
-                &train.base,
-            )
+            .singleton_observation(sandbox, &task, member, &integration, &train.base)
             .await
         {
-            Some(SingletonObservation::Changed(_)) => {
+            Some(SingletonObservation::Changed) => {
                 self.dissolve(sandbox, &train, "its tested head or base changed")
                     .await;
                 return None;
             }
-            Some(SingletonObservation::Current(Some(run))) if run.state == RunState::Failed => {
+            Some(SingletonObservation::Current(Some((RunState::Failed, _)))) => {
                 state.limit = None;
                 state.suspect = None;
                 self.dissolve(
@@ -927,11 +921,11 @@ impl App {
                 if text.is_some() {
                     train.waiting_since = None;
                 }
-                if let Some(run) = ordinary.filter(|run| run.state.is_active()) {
+                if let Some((RunState::Queued | RunState::Running, id)) = ordinary {
                     if train.wait_for_own(pr, self.now().0) && text.is_some() {
                         return Some(train);
                     }
-                    expired_ordinary_run = Some(run.id);
+                    expired_ordinary_run = Some(id);
                 }
                 text
             }
@@ -1054,11 +1048,11 @@ impl App {
 
     /// Before dropping an arm, confirm the PR still has the inputs the singleton tested.
     /// A changed input invalidates the attribution. An unavailable read leaves it undecided.
-    pub(crate) async fn singleton_observation(
+    async fn singleton_observation(
         &self,
         sandbox: &SandboxRecord,
         task: &TaskId,
-        (pr, head): (u64, &str),
+        member: &Member,
         integration: &str,
         base: &str,
     ) -> Option<SingletonObservation> {
@@ -1067,13 +1061,13 @@ impl App {
             let pull = self
                 .deps
                 .github
-                .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, pr)
+                .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, member.pr)
                 .await
                 .ok()?;
             let delivery = self.deps.store.delivery(task).await.ok()?;
             let current = delivery.is_some_and(|record| {
-                record.stage == DeliveryStage::PrOpen && record.pr_number == Some(pr)
-            }) && pull.number == pr
+                record.stage == DeliveryStage::PrOpen && record.pr_number == Some(member.pr)
+            }) && pull.number == member.pr
                 && pull.state == "open"
                 && !pull.merged
                 && !pull.from_fork
@@ -1081,14 +1075,19 @@ impl App {
             if current && (pull.head_sha.is_empty() || pull.base_sha.is_empty()) {
                 return None;
             }
-            if !current || pull.head_sha != head || pull.base_sha != base {
-                return Some(SingletonObservation::Changed(
-                    current.then_some(pull.head_sha),
-                ));
+            if !current || pull.head_sha != member.head || pull.base_sha != base {
+                return Some(SingletonObservation::Changed);
             }
             // A failed read cannot establish that the owner's earlier running check ended.
-            let ordinary = self.ordinary_pull_run(sandbox, pr, head).await.ok()?;
-            Some(SingletonObservation::Current(ordinary.map(Box::new)))
+            let runs = self
+                .deps
+                .store
+                .ci_runs_for_pull_head(&sandbox.id, PullHead::Exact(&member.head))
+                .await
+                .ok()?;
+            Some(SingletonObservation::Current(
+                run_for_pull_head(&runs, member.pr).map(|run| (run.state, run.id.clone())),
+            ))
         };
         tokio::time::timeout(Duration::from_secs(5), confirm)
             .await
