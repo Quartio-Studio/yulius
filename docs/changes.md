@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- The seven-day API estimate includes recorded GPT-6 Codex runs at Standard prices and shows what the pool would cost if eligible runs used Ultrafast. [SPEC-602](../.ai/specs/SPEC-602-it-doesnt-seem-real-verify-i-think-it-s.md)
+
 - Load-sensitive browser and merge-train tests wait for observable progress under contention.
   The Docker smoke fixture holds its first result until the browser displays it.
   [SPEC-597](../.ai/specs/SPEC-597-tests-that-hold-under-a-loaded-host-and.md)
