@@ -1,6 +1,6 @@
 ---
 yulius-task: ba2b5b3f-2b04-4241-8917-82815c6f57af
-status: in-progress
+status: done
 ---
 
 # SPEC-600 Disk build scratch and by-hand mutation checks
@@ -31,7 +31,7 @@ On 2026-11-21 the owner measured 105 minutes waiting for mutation tests in 22 Co
 - [x] Deliver the by-hand mutation policy and bootstrap
 - [x] Deliver disk build scratch, the tmpfs cap and on-request campaign cleanup
 - [x] Deliver disposable targets for built-in Cargo commands
-- [ ] Deliver external Cargo commands and cache reuse, then request staging
+- [x] Deliver external Cargo commands and cache reuse, then request staging
 
 ## Acceptance criteria
 
@@ -155,3 +155,6 @@ Review of befc825c6 reproduced a real cached cargo run exiting 101 when its exec
 During a concurrent local suite run an existing offline cargo run fixture exceeded its 15-second command deadline. The suite took 658 seconds and returned an error. The output recorded the timeout without identifying which child was delayed. That fixture now uses the same 120-second ceiling as the other real compilation fixture.
 
 A second review finding left the sandbox's shared lease held during a plain scratch build after cache startup failed or upkeep had removed the ownership stamp. In both cases the backend's exclusive nonblocking lock failed with EAGAIN. The cache attempt now closes its lease before invoking any direct fallback. Removing the close by hand reproduced both failures. Closing caller descriptors by hand restored ENOENT in the inherited-input regression. The cancellation fixture previously used an eight-second watchdog for a supervisor with up to twelve seconds of shutdown waits. Its twenty-second watchdog checks exit 143 as well as worker termination, target cleanup and lock release.
+
+
+The final independent review approved b9c15e428 on dev base 13a632c40. All 49 launcher and compiler-cache tests passed locally in 38.756 seconds and in the independent review. Repository contracts and formatting passed. Vidoc was disabled. Yulius records the final exact-head CI, merged revision and single post-merge staging request in the task delivery record.
