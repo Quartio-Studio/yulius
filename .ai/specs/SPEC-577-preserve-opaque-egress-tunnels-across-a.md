@@ -603,3 +603,19 @@ matched relay and proxy restoration has its own review and CI.
   69 mutations in 18 minutes. It caught 30 and found 39 unviable. The follow-up
   against the reviewed head for the unique-link correction reached all six mutations,
   caught two and found four unviable. Both runs reported zero missed or timed out.
+
+- PR #1573 merged at dev `4e6095745` with the same tree as reviewed head `7d53333a2`.
+  PR run `7d035774-e362-41d3-8964-ce678f9f5234` and dev run
+  `647eab7e-5495-44b6-b092-db32111b6771` passed quality, both test shards and e2e.
+  The security scan was disabled.
+  [Dev verification](https://yulius.quartio.ai/api/tasks/35adb14d-65fe-4a9f-b9fa-370d776d4139/delivery/evidence/4e6095745150d9233b5f1a4958a013bf7c8fc0f6?run_id=647eab7e-5495-44b6-b092-db32111b6771)
+
+### Matched successor restoration
+
+- The stopped-client regression failed with BrokenPipe on the shipped capture-only tree.
+  Its destination listener accepts once and closes, so the test requires both original
+  peers to exchange bytes through the replacement server.
+- The earlier pairing implementation retained both the healthy tunnel and an ambiguous
+  one in a mixed batch containing duplicate records. The new selection rejects duplicate
+  internal endpoints before requesting a relay or starting either restored copy. The
+  updated fixture kept only the healthy tunnel. Both rejected external peers observed EOF.

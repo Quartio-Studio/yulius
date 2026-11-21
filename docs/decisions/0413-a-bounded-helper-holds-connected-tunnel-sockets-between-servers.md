@@ -60,14 +60,17 @@ TLS session.
 
 ## Consequences
 
-An established direct HTTP/1.1 CONNECT in Linux legacy mode gives the opaque agent tunnel its
-own socket pair. It retains pending bytes, write-half state, admission owner, byte activity and
-absolute expiry. HTTP/2 inside this tunnel is ordinary payload. An outer HTTP/2 CONNECT
-shares its transport and HTTP session state with other streams, so it reconnects on restart.
-In namespace mode, the active host-side relay registers the internal TCP endpoints in its
-holder’s admission table before copying bytes. An orderly stop closes new accepts and keeps
-the original relay selectable, including pending bytes and write-half state. If a terminal
-relay and a newer connection share the same internal TCP addresses, capture declines the
-ambiguous match. Namespace continuity also requires the successor to match the saved relay
-to the authorized proxy copy. An incompatible successor, an elapsed deadline or a crash before deposit can end a tunnel. Intercepted traffic
-reconnects through the successor's host-bound credential checks.
+An established opaque HTTP/1.1 CONNECT retains its connected sockets, pending bytes,
+write-half state, admission owner, byte activity and absolute expiry. In namespace mode
+the server also transfers the matching host-side relay. It checks the internal TCP
+endpoints and the surviving holder's identity. Duplicate proxy or relay records for those
+endpoints are discarded. The replacement reserves each accepted relay's original place
+in admission order before it accepts new connections. Eviction or administrative
+cancellation releases both restored copies, even when the external peers keep their write
+halves open. A FIN leaves the opposite direction available for a final reply.
+
+Continuity requires compatible handoff support in both server versions. HTTP/2 inside
+the opaque tunnel is ordinary payload. An outer HTTP/2 CONNECT shares its transport
+and HTTP session state with other streams, so it reconnects. A lost holder, an elapsed
+deadline, or a crash before deposit can end a tunnel. Intercepted streams reconnect
+through the successor's host-bound injection and redaction policy.
