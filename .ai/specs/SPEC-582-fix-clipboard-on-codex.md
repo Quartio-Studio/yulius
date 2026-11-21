@@ -1,6 +1,6 @@
 ---
 yulius-task: ca67b86c-bf72-4b4b-bed2-acdb5ac9962b
-status: in-progress
+status: done
 ---
 
 # SPEC-582. Paste from the viewer’s clipboard in a Codex terminal
@@ -28,8 +28,8 @@ handling and browser paste events. [Issue #1584](https://github.com/Quartio-Stud
 
 - [x] Reproduce the Codex terminal clipboard error and specify the fix
 - [x] Capture the clipboard failure in a regression test
-- [ ] Restore clipboard behavior in the Codex terminal and verify it
-- [ ] Independently review the fix and deliver it to dev
+- [x] Restore clipboard behavior in the Codex terminal and verify it
+- [x] Independently review the fix and deliver it to dev
 
 ## Acceptance criteria
 
@@ -53,3 +53,6 @@ harness in its state message. The Codex PTY needs only ordinary paste input. [AD
 - An isolated Codex CLI 0.170.0 PTY with a synthetic login and no display printed “clipboard text is unavailable” after an SGR right-button press and release. Sending bracketed text to the same PTY inserted it in the composer.
 - Before the fix, the Chromium regression failed because the Paste menu item was absent. After the fix, the Codex right-click, Claude clipboard and read-only paste cases all passed. The Codex test observed one bracketed multiline paste at the socket and the native shortcut hint after a denied read.
 - A separate Chromium run with clipboard permission wrote a marker through the real Clipboard API. Right-click and Paste placed that marker once in the mock Codex task draft.
+- `npm ci --ignore-scripts` and `npx e2e run` completed. All 33 terminal tests passed. Across the full Chromium suite, 1,298 tests passed and one model-backed test was skipped. Safari and Firefox were not exercised.
+- `scripts/dev quick` passed. `scripts/dev security` reported Vidoc disabled. `scripts/dev mutants` reported “No Rust code changed against origin/dev: nothing to mutate.”
+- Independent review approved `324a2d5bdcd794ee3b76d8a757ca1ea518a622b8` with no findings. The reviewer ran the three focused clipboard tests. Yulius records the merge and its CI verdict in the task’s delivery evidence.
