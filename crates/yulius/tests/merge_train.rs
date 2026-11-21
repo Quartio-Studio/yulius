@@ -1704,7 +1704,19 @@ async fn an_unreadable_arm_file_keeps_the_singleton_until_the_file_recovers() ->
     Box::pin(reused_singleton(SingletonChange::ArmFileRead)).await
 }
 
+#[tokio::test]
+async fn a_damaged_singleton_receipt_keeps_the_consumed_arm_in_recovery() -> TestResult {
+    Box::pin(reused_singleton(SingletonChange::DamagedReceipt)).await
+}
+
+#[tokio::test]
+async fn a_singleton_decision_survives_span_pruning_before_arm_cleanup() -> TestResult {
+    Box::pin(reused_singleton(SingletonChange::PrunedReceipt)).await
+}
+
 enum SingletonChange {
+    DamagedReceipt,
+    PrunedReceipt,
     ArmFileRead,
     HistoryRead,
     HistoryWrite,
@@ -1787,7 +1799,15 @@ async fn check_recovered_singleton_arm(
         .execute_for_tests("DROP TRIGGER refuse_retirement")
         .await?;
     if restart_during_rearm {
-        live.restore_armed_merges().await;
+        f.h.clock.0.fetch_add(500, Ordering::SeqCst);
+        let retry_ctx = live.agent_context("tok-t1").await?;
+        let retry = Box::pin(live.tool_delivery_merge(&retry_ctx, &args)).await?;
+        assert_eq!(retry["armed"], true, "{retry}");
+        assert_eq!(
+            saved_armed(&live, 1)?,
+            Some((head.to_owned(), stamp)),
+            "a retry before the next queue pass changed the saved replacement's place"
+        );
     } else {
         Box::pin(live.merge_armed(&f.sandbox)).await;
     }
@@ -1896,6 +1916,43 @@ async fn check_singleton_history(
         json!({"pr":1,"base":base,"tree":tree,"run":run_id}),
         "the accepted singleton decision must survive the failed write and restart"
     );
+    if matches!(change, SingletonChange::DamagedReceipt) {
+        f.h.store.execute_for_tests("CREATE TEMP TABLE accepted_detail AS SELECT id, detail FROM spans WHERE name='merge_armed' AND subject_id='t1' AND outcome='dropped'").await?;
+        for damage in [
+            "UPDATE spans SET detail='{' WHERE id IN (SELECT id FROM accepted_detail)",
+            "UPDATE spans SET detail=json_remove(detail,'$.singleton.tree') WHERE id IN (SELECT id FROM accepted_detail)",
+        ] {
+            std::fs::write(&arms, &original_arms)?;
+            f.h.store.execute_for_tests(damage).await?;
+            let recovering = restart(&cold).await;
+            assert!(
+                saved_armed(&recovering, 1)?.is_some(),
+                "keep the saved identity until the receipt is readable"
+            );
+            f.h.store.execute_for_tests("UPDATE spans SET detail=(SELECT detail FROM accepted_detail WHERE accepted_detail.id=spans.id) WHERE id IN (SELECT id FROM accepted_detail)").await?;
+            recovering.restore_armed_merges().await;
+            assert!(
+                saved_armed(&recovering, 1)?.is_none(),
+                "unreadable accepted receipt reactivated a consumed arm: {damage}"
+            );
+        }
+        return Ok(());
+    }
+    if matches!(change, SingletonChange::PrunedReceipt) {
+        let entries: Value = serde_json::from_slice(&original_arms)?;
+        let stamp = entries[0]["armed_at"].as_i64().ok_or("original stamp")?;
+        cold.deps
+            .store
+            .prune_spans(yulius_domain::time::Timestamp(stamp + 1))
+            .await?;
+        std::fs::write(&arms, &original_arms)?;
+        let recovering = restart(&cold).await;
+        assert!(
+            saved_armed(&recovering, 1)?.is_none(),
+            "telemetry pruning reactivated the consumed arm"
+        );
+        return Ok(());
+    }
     Box::pin(check_recovered_singleton_arm(
         f,
         matches!(change, SingletonChange::HistoryRead),
@@ -1996,7 +2053,11 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
     app.merge_armed(&f.sandbox).await;
     if matches!(
         change,
-        SingletonChange::HistoryWrite | SingletonChange::HistoryRead | SingletonChange::ArmFileRead
+        SingletonChange::HistoryWrite
+            | SingletonChange::HistoryRead
+            | SingletonChange::ArmFileRead
+            | SingletonChange::DamagedReceipt
+            | SingletonChange::PrunedReceipt
     ) {
         return Box::pin(check_singleton_history(
             &f, &change, &head, &base, &tree, run_id, secret,
@@ -2400,6 +2461,8 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
             SingletonChange::HistoryWrite
             | SingletonChange::HistoryRead
             | SingletonChange::ArmFileRead
+            | SingletonChange::DamagedReceipt
+            | SingletonChange::PrunedReceipt
             | SingletonChange::Rearmed
             | SingletonChange::Pruned
             | SingletonChange::JobRead

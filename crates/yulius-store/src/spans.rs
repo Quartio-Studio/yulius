@@ -267,7 +267,13 @@ impl SpanStore for SqliteStore {
         self.call(move |c| {
             let deleted = c
                 .execute(
-                    "DELETE FROM spans WHERE started_at < ?1 AND (ended_at IS NOT NULL OR started_at < ?2)",
+                    // Keep one indexed queue decision per extant owner, including a newer
+                    // ordinary wait that superseded a singleton. Its arm can predate retention.
+                    "DELETE FROM spans WHERE started_at < ?1 AND (ended_at IS NOT NULL OR started_at < ?2)
+                     AND NOT (subject_kind='task' AND kind='wait' AND name='merge_armed'
+                       AND EXISTS (SELECT 1 FROM tasks WHERE id=spans.subject_id)
+                       AND id=(SELECT w.id FROM spans w WHERE w.subject_kind='task' AND w.subject_id=spans.subject_id
+                         AND w.kind='wait' AND w.name='merge_armed' ORDER BY w.started_at DESC, w.id DESC LIMIT 1))",
                     params![before.0, before.0 - yulius_domain::stages::RETAIN_MS],
                 )
                 .map_err(db)?;
@@ -444,6 +450,29 @@ mod tests {
             "wait@20"
         );
         assert_eq!(store.retire_singleton(&owner, Timestamp(24)).await?, None);
+        store.prune_spans(Timestamp(100)).await?;
+        let retained = store
+            .subject_spans(
+                &SandboxId::parse("s1")?,
+                SubjectKind::Task,
+                owner.as_str(),
+                20,
+            )
+            .await?;
+        let waits = retained
+            .iter()
+            .filter(|span| span.name == "merge_armed")
+            .map(|span| span.key.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            waits,
+            ["wait@20"],
+            "only the latest decision outlives the telemetry window"
+        );
+        assert!(
+            store.latest_merge_wait(&peer).await?.is_none(),
+            "no task remains for this owner"
+        );
         Ok(())
     }
 

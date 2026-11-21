@@ -305,11 +305,42 @@ pub(crate) struct TestedSingleton {
 }
 
 impl SingletonDecision {
-    pub(crate) fn from_span(span: &crate::stages::SpanRecord) -> Option<Self> {
+    /// An ordinary dropped arm recorded only its head. A malformed decision
+    /// cannot establish whether a saved activation was already consumed.
+    pub(crate) fn from_span(
+        span: &crate::stages::SpanRecord,
+    ) -> crate::error::AppResult<Option<Self>> {
+        use crate::error::AppError;
         if span.outcome.as_deref() != Some("dropped") {
-            return None;
+            return Ok(None);
         }
-        serde_json::from_str(span.detail.as_deref()?).ok()
+        let unreadable = || AppError::internal("unreadable merge wait decision");
+        let fields: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(span.detail.as_deref().ok_or_else(unreadable)?)
+                .map_err(|_| unreadable())?;
+        if fields.len() == 1
+            && fields
+                .get("head")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|head| !head.is_empty())
+        {
+            return Ok(None);
+        }
+        let decision: Self =
+            serde_json::from_value(serde_json::Value::Object(fields)).map_err(|_| unreadable())?;
+        if [
+            &decision.head,
+            &decision.message,
+            &decision.singleton.base,
+            &decision.singleton.tree,
+            &decision.singleton.run,
+        ]
+        .iter()
+        .any(|value| value.is_empty())
+        {
+            return Err(unreadable());
+        }
+        Ok(Some(decision))
     }
 }
 

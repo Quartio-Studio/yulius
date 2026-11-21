@@ -343,8 +343,22 @@ impl App {
         summary: &str,
         by: Option<String>,
     ) -> AppResult<bool> {
+        if !self
+            .armed_restored
+            .load(std::sync::atomic::Ordering::SeqCst)
+            && self.merge_is_armed(&task.id)
+        {
+            self.restore_armed_merges().await;
+        }
         let runtime = self.runtime(&task.id);
         let _writer = runtime.arm_writer.lock().await;
+        let untouched = lock_slot(&runtime).generation == 0;
+        if untouched && self.merge_is_armed(&task.id) {
+            return Err(crate::error::AppError::Conflict(
+                "The saved merge arm is still being restored. Retry once its history is readable."
+                    .into(),
+            ));
+        }
         self.finish_retirement(&task.id, &runtime).await?;
         if lock_slot(&runtime)
             .merge
@@ -356,7 +370,9 @@ impl App {
         let last = self.deps.store.latest_merge_wait(&task.id).await?;
         let prior = last
             .as_ref()
-            .and_then(crate::merge_train::SingletonDecision::from_span);
+            .map(crate::merge_train::SingletonDecision::from_span)
+            .transpose()?
+            .flatten();
         {
             let mut slot = lock_slot(&runtime);
             if let Some(span) = &last {
@@ -482,9 +498,19 @@ impl App {
                 complete = false;
                 continue;
             };
-            if let Some(span) = last
-                && let Some(receipt) = crate::merge_train::SingletonDecision::from_span(&span)
+            let receipt = match last
+                .as_ref()
+                .map(crate::merge_train::SingletonDecision::from_span)
+                .transpose()
             {
+                Ok(value) => value.flatten(),
+                Err(err) => {
+                    tracing::warn!(task = %task_id, error=%err, "could not restore the recorded merge decision");
+                    complete = false;
+                    continue;
+                }
+            };
+            if let (Some(span), Some(receipt)) = (last, receipt) {
                 if span.started_at.0 == entry.armed_at && receipt.head == entry.head {
                     self.save_armed(&task_id, None);
                     lock_slot(&runtime).last_armed_at = entry.armed_at;
@@ -786,7 +812,10 @@ impl App {
                 .flatten()
                 .is_some_and(|old| {
                     old.started_at == started_at
-                        && crate::merge_train::SingletonDecision::from_span(&old).as_ref()
+                        && crate::merge_train::SingletonDecision::from_span(&old)
+                            .ok()
+                            .flatten()
+                            .as_ref()
                             == Some(decision)
                 }),
             Err(err) => {
