@@ -1137,6 +1137,195 @@ async fn a_bisection_executes_the_failed_tree_only_once() -> TestResult {
     Ok(())
 }
 
+/// The owner of the singleton gets the verdict even when CI was executed for another train.
+#[tokio::test]
+async fn a_reused_failed_candidate_records_the_singleton_owner_and_cause() -> TestResult {
+    reused_singleton(SingletonChange::None).await
+}
+
+#[tokio::test]
+async fn a_reused_failure_on_an_obsolete_base_keeps_the_owner_armed() -> TestResult {
+    reused_singleton(SingletonChange::Base).await
+}
+
+#[tokio::test]
+async fn a_reused_failure_does_not_blame_a_retargeted_owner_pr() -> TestResult {
+    reused_singleton(SingletonChange::Retarget).await
+}
+
+#[tokio::test]
+async fn a_reused_failure_does_not_blame_the_owners_new_head() -> TestResult {
+    reused_singleton(SingletonChange::Head).await
+}
+
+#[tokio::test]
+async fn the_owners_ordinary_failure_wins_during_singleton_verification() -> TestResult {
+    reused_singleton(SingletonChange::Ordinary).await
+}
+
+enum SingletonChange {
+    Ordinary,
+    None,
+    Base,
+    Retarget,
+    Head,
+}
+
+async fn reused_singleton(change: SingletonChange) -> TestResult {
+    use yulius_domain::stages::SubjectKind;
+    let f = fixture().await?;
+    let app = &f.h.app;
+    let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+    f.arm(1, &worktree).await?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?;
+    f.record_passed(app, 1, &head).await?;
+    f.advance_dev("other.txt")?;
+    git(&f.repo, &["fetch", "-q", "origin"])?;
+    let base = git(&f.repo, &["rev-parse", "origin/dev"])?;
+    let tree = git(&f.repo, &["merge-tree", "--write-tree", &base, &head])?;
+    let sha = git(&f.repo, &["commit-tree", &tree, "-m", "previous train"])?;
+    let secret = "synthetic-candidate-secret";
+    let created = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name":"CHECK_KEY", "value":secret})),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let failure = format!(
+        "FAIL [0.292s] (1/1) search latency\n  stderr ───\n    thread panicked at search.rs\n    search took 292.1 ms, limit 200 ms ({secret})\n    {} beyond-limit",
+        "x".repeat(512)
+    );
+    let (mut red, mut job) =
+        crate::pr_watch::run(&f.sandbox, "prior-train", &sha, RunState::Failed, None, 1);
+    red.reference = CiRef::Train(vec![8, 9]);
+    job.name = "shard 2".into();
+    job.state = RunState::Running;
+    let job_id = job.id.clone();
+    app.deps.store.insert_ci_run(&red, &[job]).await?;
+    assert!(
+        app.deps
+            .store
+            .transition_ci_job(
+                &job_id,
+                &[RunState::Running],
+                RunState::Failed,
+                &yulius_app::ci::CiJobUpdate {
+                    exit_code: Some(100),
+                    failures: Some(failure),
+                    output: Some("unrelated raw CI output".into()),
+                    ended_at: Some(app.now()),
+                    ..Default::default()
+                }
+            )
+            .await?
+    );
+    app.merge_armed(&f.sandbox).await;
+    if matches!(change, SingletonChange::Ordinary) {
+        let hold = Arc::new(tokio::sync::Notify::new());
+        *f.h.github.pull_read_hold.lock().map_err(|_| "hold")? = Some(hold.clone());
+        let change_run = async {
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                f.h.github.pull_read_entered.notified(),
+            )
+            .await?;
+            let (mut failed, job) = crate::pr_watch::run(
+                &f.sandbox,
+                "ordinary-rerun",
+                &head,
+                RunState::Failed,
+                None,
+                app.now().0 + 1,
+            );
+            failed.reference = CiRef::PullRequest(1);
+            let written = app.deps.store.insert_ci_run(&failed, &[job]).await;
+            *f.h.github.pull_read_hold.lock().map_err(|_| "hold")? = None;
+            hold.notify_one();
+            written?;
+            Ok::<_, Box<dyn std::error::Error>>(())
+        };
+        let (changed, ()) = tokio::time::timeout(Duration::from_secs(12), async {
+            tokio::join!(change_run, app.merge_armed(&f.sandbox))
+        })
+        .await?;
+        changed?;
+        let state = f.wait(1, &worktree).await?;
+        let outcome = state["merge_outcome"].as_str().ok_or("ordinary outcome")?;
+        assert!(
+            outcome.contains("checks") && !outcome.contains("prior-train"),
+            "{state}"
+        );
+        return Ok(());
+    }
+    if !matches!(change, SingletonChange::None) {
+        match change {
+            SingletonChange::Base => f.advance_dev("new-base.txt")?,
+            SingletonChange::Retarget => {
+                f.h.github.pulls.lock().map_err(|_| "pulls")?[0].base = "main".into()
+            }
+            SingletonChange::Head => {
+                git(&worktree, &["commit", "--allow-empty", "-qm", "later head"])?;
+                git(&worktree, &["push", "-q", "origin", "HEAD"])?;
+            }
+            SingletonChange::None | SingletonChange::Ordinary => unreachable!(),
+        }
+        app.merge_armed(&f.sandbox).await;
+        let state = f.wait(1, &worktree).await?;
+        if matches!(change, SingletonChange::Base) {
+            assert_eq!(state["merge_armed"], true, "{state}");
+        }
+        assert!(
+            !state["merge_outcome"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("prior-train"),
+            "{state}"
+        );
+        return Ok(());
+    }
+    f.decide_until(app, || async {
+        Ok(f.wait(1, &worktree).await?["merge_armed"] == false)
+    })
+    .await?;
+    let state = f.wait(1, &worktree).await?;
+    let outcome = state["merge_outcome"].as_str().ok_or("singleton outcome")?;
+    assert!(
+        outcome.contains("prior-train")
+            && outcome.contains("shard 2")
+            && outcome.contains("search took 292.1 ms, limit 200 ms"),
+        "{outcome}"
+    );
+    assert!(outcome.contains("[secret:CHECK_KEY]"), "{outcome}");
+    assert!(
+        !outcome.contains(secret)
+            && !outcome.contains("beyond-limit")
+            && !outcome.contains("unrelated raw CI output"),
+        "{outcome}"
+    );
+    assert_eq!(f.train_runs(app).await?, [red]);
+    let cold = restart(app).await;
+    let spans = cold
+        .deps
+        .store
+        .subject_spans(&f.sandbox, SubjectKind::Task, "t1", 100)
+        .await?;
+    let waits: Vec<_> = spans
+        .iter()
+        .filter(|s| s.name == "merge_armed" && s.outcome.as_deref() == Some("dropped"))
+        .collect();
+    assert_eq!(waits.len(), 1);
+    let detail: Value =
+        serde_json::from_str(waits[0].detail.as_deref().ok_or("merge wait detail")?)?;
+    assert_eq!(
+        detail,
+        json!({"head": head, "singleton": {"pr": 1, "base": base, "tree": tree, "run": "prior-train"}})
+    );
+    Ok(())
+}
+
 /// A previous candidate may have lost its worker or been cancelled while testing this tree.
 /// A pull request's own failure also belongs to a different reference.
 #[tokio::test]

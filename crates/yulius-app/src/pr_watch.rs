@@ -94,8 +94,6 @@ pub struct PrFacts {
     pub pr: u64,
     /// What happened (keys already told may be in it; [`decide`] skips them).
     pub events: Vec<Event>,
-    /// A verified singleton run and the fingerprint used by older merge-outcome notices.
-    pub integration_identity: Option<(String, String)>,
     /// Its runs, delivery and armed merge, in one string: a change is progress.
     pub progress: String,
     /// A run of its head, or of a merge candidate holding it, is queued or running.
@@ -175,11 +173,6 @@ pub fn decide(facts: &PrFacts, told: &Told, bounds: &WatchBounds) -> (Option<Str
         .iter()
         .filter(|event| next.keys.get(event.kind) != Some(&event.key))
         .collect();
-    // Keep both identities. A failed paste restores the original keys through untold().
-    if let Some((run, outcome)) = &facts.integration_identity {
-        next.keys.insert("integration".into(), run.clone());
-        next.keys.insert("outcome".into(), outcome.clone());
-    }
     if !new.is_empty() {
         for event in &new {
             next.keys.insert(event.kind.to_owned(), event.key.clone());
@@ -592,7 +585,7 @@ impl App {
             let held =
                 update_holds || !matches!(self.deps.store.open_pause(&task.id).await, Ok(None));
             let facts = if task.status == TaskStatus::Running && !held {
-                self.pr_facts(&task, &told).await
+                self.pr_facts(&task, &told, &mut runs).await
             } else {
                 None
             };
@@ -983,114 +976,14 @@ impl App {
         }
     }
 
-    /// Reconstruct a singleton failure from the tested tree and the current owner PR.
-    /// Failed reads defer the notice until the next watch pass.
-    async fn integration_failure_event(
+    /// What the watch knows of `task`'s pull request, or `None` when it has no open one (nor
+    /// one the watch saw open that just merged). `runs` caches each sandbox's runs for the pass.
+    async fn pr_facts(
         &self,
         task: &TaskRecord,
-        sandbox: &SandboxRecord,
-        runs: &[CiRunRecord],
-        pr: u64,
-        verdict: &str,
-    ) -> crate::error::AppResult<Option<Event>> {
-        let [candidate, ordinary] = runs else {
-            return Ok(None);
-        };
-        let repo = self.sandbox_repo(&sandbox.id);
-        let integration = delivery_profile(sandbox).integration_branch;
-        let base = self
-            .deps
-            .git
-            .resolve_commit(&repo, &format!("origin/{integration}"))
-            .await?
-            .ok_or(AppError::NotFound)?;
-        let tree = self
-            .deps
-            .git
-            .tree_of(&repo, &candidate.sha)
-            .await?
-            .ok_or(AppError::NotFound)?;
-        let matches_tree = matches!(self.deps.git.preview_merge(&repo, &ordinary.sha, &base).await?,
-            crate::ports::git::TrainStep::Clean { tree: merged } if merged == tree);
-        let jobs = self.deps.store.ci_jobs(&candidate.id, true).await?;
-        let (pull, remote_base) = tokio::time::timeout(Duration::from_secs(5), async {
-            let token = self.dlv_installation_token(sandbox).await?;
-            let pull = self
-                .deps
-                .github
-                .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, pr)
-                .await?;
-            let base = self
-                .deps
-                .github
-                .branch_sha(
-                    &token,
-                    &sandbox.repo_owner,
-                    &sandbox.repo_name,
-                    &integration,
-                )
-                .await?;
-            Ok::<_, AppError>((pull, base))
-        })
-        .await
-        .map_err(AppError::internal)??;
-        let store = &self.deps.store;
-        if remote_base.as_ref() != Some(&base)
-            || pull.state != "open"
-            || pull.merged
-            || pull.from_fork
-            || pull.head_sha != ordinary.sha
-            || task.branch.as_deref() != Some(&pull.head)
-            || store.ci_runs_for_pr(&sandbox.id, pr).await? != runs
-            || !store
-                .delivery(&task.id)
-                .await?
-                .is_some_and(|d| d.stage == DeliveryStage::PrOpen && d.pr_number == Some(pr))
-            || !store.task(&task.id).await?.is_some_and(|t| {
-                t.status == TaskStatus::Running
-                    && t.archived_at.is_none()
-                    && t.activity != Some(yulius_domain::task::Activity::NeedsAttention)
-            })
-            || store.open_pause(&task.id).await?.is_some()
-            || store.task_needs_you(&task.id).await?.is_some()
-            || store.pending_hold(&task.id).await?.is_some()
-            || self
-                .browser_tab_request_for(&sandbox.id, &task.id)
-                .await
-                .is_some()
-            || self.merge_is_armed(&task.id)
-            || self.train_hold(task) != Hold::Free
-        {
-            return Err(AppError::Conflict(
-                "integration failure is no longer actionable".into(),
-            ));
-        }
-        if pull.base != integration || !matches_tree {
-            return Ok(None);
-        }
-        let evidence: String = jobs
-            .iter()
-            .filter(|j| j.state == RunState::Failed)
-            .filter_map(|j| j.failures.as_deref())
-            .flat_map(str::lines)
-            .map(str::trim)
-            .find(|line| !line.is_empty() && !line.starts_with("FAIL") && !line.contains("───"))
-            .unwrap_or_default()
-            .chars()
-            .filter(|c| !c.is_control())
-            .take(320)
-            .collect();
-        Ok(Some(Event {
-            kind: "integration",
-            key: candidate.id.clone(),
-            text: format!("{verdict} {}. {evidence}", failed_jobs(&jobs))
-                .trim_end()
-                .to_owned(),
-        }))
-    }
-
-    /// Facts for a task's live attempt, including CI history retained across a restart.
-    async fn pr_facts(&self, task: &TaskRecord, told: &Told) -> Option<PrFacts> {
+        told: &Told,
+        runs: &mut BTreeMap<String, Vec<CiRunRecord>>,
+    ) -> Option<PrFacts> {
         // The slot before the delivery: a merge decided in between then reads as merged, never
         // as "no merge armed" on an open pull request (review minor 8).
         let (armed, outcome) = self.armed_view(&task.id);
@@ -1137,13 +1030,30 @@ impl App {
             return None;
         }
         let integration = delivery_profile(&sandbox).integration_branch;
-        let mut runs = self.deps.store.ci_runs_for_pr(&sandbox.id, pr).await.ok()?;
-        let ordinary = |runs: &[CiRunRecord]| {
-            runs.iter()
-                .find(|run| run.reference == CiRef::PullRequest(pr))
-                .cloned()
-        };
-        let mut own = ordinary(&runs);
+        if !runs.contains_key(sandbox.id.as_str()) {
+            let read = self
+                .deps
+                .store
+                .ci_runs(&sandbox.id, RUNS_READ)
+                .await
+                .unwrap_or_default();
+            runs.insert(sandbox.id.as_str().to_owned(), read);
+        }
+        let sandbox_runs = runs.get(sandbox.id.as_str()).map_or(&[][..], Vec::as_slice);
+        let mut own = sandbox_runs
+            .iter()
+            .find(|run| run.reference == CiRef::PullRequest(pr))
+            .cloned();
+        if own.is_none() && !told.head.is_empty() {
+            own = self
+                .deps
+                .store
+                .ci_runs_for_sha(&sandbox.id, &told.head)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .find(|run| run.reference == CiRef::PullRequest(pr));
+        }
         // SPEC-553 REP-004: recover an idle task whose clean committed CI repair on a failing
         // open PR missed turn-end publication (for example across a server restart). Reads only
         // local HEAD unless it differs from the failing PR run's SHA.
@@ -1156,8 +1066,18 @@ impl App {
                 .map(|run| run.sha.clone())
             && self.maybe_publish_repair_for_watch(task, &failed_sha).await
         {
-            runs = self.deps.store.ci_runs_for_pr(&sandbox.id, pr).await.ok()?;
-            own = ordinary(&runs);
+            let read = self
+                .deps
+                .store
+                .ci_runs(&sandbox.id, RUNS_READ)
+                .await
+                .unwrap_or_default();
+            runs.insert(sandbox.id.as_str().to_owned(), read);
+            let refreshed = runs.get(sandbox.id.as_str()).map_or(&[][..], Vec::as_slice);
+            own = refreshed
+                .iter()
+                .find(|run| run.reference == CiRef::PullRequest(pr))
+                .cloned();
         }
         if let Some(run) = own.as_ref()
             && run.state == RunState::Failed
@@ -1165,11 +1085,13 @@ impl App {
         {
             own = None;
         }
+        let sandbox_runs = runs.get(sandbox.id.as_str()).map_or(&[][..], Vec::as_slice);
         let own = own.as_ref();
-        // Queue priority can change. The first row is the newest insertion for this PR.
-        let candidate = runs
-            .first()
-            .filter(|run| matches!(run.reference, CiRef::Train(_)));
+        // A candidate older than the pull request's own newest run is about an earlier head.
+        let candidate = sandbox_runs
+            .iter()
+            .find(|run| matches!(&run.reference, CiRef::Train(members) if members.contains(&pr)))
+            .filter(|run| own.is_none_or(|own| run.queued_at >= own.queued_at));
         let hold = self.train_hold(task);
         let mut events = Vec::new();
         let told_key = |kind: &str, key: &str| told.keys.get(kind).is_some_and(|k| k == key);
@@ -1214,13 +1136,13 @@ impl App {
                 text: red_candidate_text(run, members, &jobs, &integration),
             });
         }
-        if !armed && let Some((head, text)) = &outcome {
-            let key = outcome_key(head, text);
+        if !armed && let Some((head, text)) = outcome {
+            let key = outcome_key(&head, &text);
             if !told_key("outcome", &key) {
                 events.push(Event {
                     kind: "outcome",
                     key,
-                    text: text.clone(),
+                    text,
                 });
             }
         }
@@ -1303,55 +1225,10 @@ impl App {
             .load(Ordering::SeqCst)
             .max(runtime.spawned_ms.load(Ordering::SeqCst));
         let check_ins = !runtime.goal_achieved.load(Ordering::SeqCst) && !needs_you;
-        let mut integration_identity = None;
-        // The slot loses its outcome on restart. The ordinary green instruction and the
-        // singleton verdict describe the same delivery decision, so type only the verified one.
-        if !armed
-            && hold == Hold::Free
-            && !person_must_act
-            && let [candidate, ordinary] = runs.as_slice()
-            && ordinary.state == RunState::Passed
-            && ordinary.reference == CiRef::PullRequest(pr)
-            && candidate.state == RunState::Failed
-            && matches!(&candidate.reference, CiRef::Train(members) if members.as_slice() == [pr])
-        {
-            let verdict = crate::merge_train::singleton_failure(
-                pr,
-                &ordinary.sha,
-                &integration,
-                &candidate.id,
-            );
-            if outcome.as_ref().is_none_or(|(at, text)| {
-                at != &ordinary.sha
-                    || text == &verdict
-                    || told_key("outcome", &outcome_key(at, text))
-            }) {
-                let key = outcome_key(&ordinary.sha, &verdict);
-                let already_told =
-                    told_key("integration", &candidate.id) || told_key("outcome", &key);
-                let event = if already_told {
-                    None
-                } else {
-                    self.integration_failure_event(task, &sandbox, &runs, pr, &verdict)
-                        .await
-                        .ok()?
-                };
-                events.retain(|e| {
-                    !(e.kind == "outcome" && e.key == key
-                        || e.kind == "green" && (already_told || event.is_some()))
-                });
-                if already_told || event.is_some() {
-                    integration_identity = Some((candidate.id.clone(), key));
-                    events.retain(|e| e.kind != "outcome");
-                }
-                events.extend(event);
-            }
-        }
         Some(PrFacts {
             now_ms,
             pr,
             events,
-            integration_identity,
             progress,
             ci_busy,
             status,

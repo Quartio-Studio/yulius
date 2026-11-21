@@ -1618,7 +1618,7 @@ person must act first (a prompt on screen, `needs_you`) or may have a draft in t
   the kept failures, partial observations from siblings stopped by a failed job, and the exact
   `ci_status` run), or one that errored;
 - a red merge candidate of two or more holding it, with "do not re-arm, merge or push";
-- a failed singleton candidate recovered after a restart, with its run ID and failing job, once the watcher verifies the open owner PR and the tested integration tree;
+- a singleton that fails on the integration base, with the queue’s run ID, failing job and a bounded excerpt of the retained failure;
 - a conflict with the integration branch (checked in the task's worktree), once per head;
 - how its armed merge ended (the slot's outcome), and its merge (`merged_text`), after which the
   watch is over for it;

@@ -270,8 +270,17 @@ fn short(sha: &str) -> &str {
     sha.get(..9).unwrap_or(sha)
 }
 
-/// The watch uses this original verdict as its durable identity, including after a restart.
-pub(crate) fn singleton_failure(pr: u64, head: &str, integration: &str, run: &str) -> String {
+/// The candidate the queue actually decided. A reused CI run can have different members.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct FailedSingleton {
+    pr: u64,
+    base: String,
+    tree: String,
+    run: String,
+}
+
+/// The instructions an owner gets when their head failed on top of the integration base.
+fn singleton_failure(pr: u64, head: &str, integration: &str, run: &str) -> String {
     format!(
         "The merge you armed was dropped: pull request #{pr} passed its own run at {}, but \
          merged into the current `{integration}` it fails (merge candidate run {run}). Read \
@@ -729,28 +738,120 @@ impl App {
             return;
         }
         state.limit = None;
-        self.dissolve(sandbox, train, "its CI run failed").await;
         let Some(member) = train.members.first() else {
             return;
         };
         let Ok(task) = TaskId::parse(&member.task) else {
             return;
         };
+        let integration = delivery_profile(sandbox).integration_branch;
+        let text = self
+            .singleton_failure_text(sandbox, member, &integration, &train.run)
+            .await;
+        if !self
+            .singleton_inputs_match(sandbox, &task, member, &integration, &train.base)
+            .await
+        {
+            self.dissolve(
+                sandbox,
+                train,
+                "its tested head or base cannot be confirmed",
+            )
+            .await;
+            return;
+        }
+        // The head's own rerun may have failed during the hosted PR lookup.
+        if let Some(reason) = self.own_run_failed(sandbox, member).await {
+            self.dissolve(sandbox, train, &reason).await;
+            return;
+        }
+        self.dissolve(sandbox, train, "its CI run failed").await;
         let Some(deciding) = self.take_armed(&task) else {
             return;
         };
-        let integration = delivery_profile(sandbox).integration_branch;
-        let verdict = if deciding.merge.armed_at == member.armed_at {
-            Verdict::Decided(singleton_failure(
-                member.pr,
-                &member.head,
-                &integration,
-                &train.run,
-            ))
-        } else {
-            Verdict::Keep(deciding.merge.clone())
-        };
+        let verdict =
+            if deciding.merge.armed_at == member.armed_at && deciding.merge.head == member.head {
+                Verdict::FailedSingleton(
+                    text,
+                    FailedSingleton {
+                        pr: member.pr,
+                        base: train.base.clone(),
+                        tree: member.tree.clone(),
+                        run: train.run.clone(),
+                    },
+                )
+            } else {
+                Verdict::Keep(deciding.merge.clone())
+            };
         self.finish_armed(&task, &deciding, verdict).await;
+    }
+
+    /// Attach a bounded, redacted diagnostic from the actual source run to the repair instructions.
+    async fn singleton_failure_text(
+        &self,
+        sandbox: &SandboxRecord,
+        member: &Member,
+        integration: &str,
+        run: &str,
+    ) -> String {
+        let mut text = singleton_failure(member.pr, &member.head, integration, run);
+        if let Ok(jobs) = self.deps.store.ci_jobs(run, true).await
+            && !jobs.is_empty()
+        {
+            let summary = crate::pr_watch::failed_jobs(&jobs);
+            // Only retained test failures, never the general CI output. Redact before
+            // truncating so a secret crossing the display limit cannot leak a prefix.
+            let excerpt = jobs
+                .iter()
+                .filter(|job| job.state == RunState::Failed)
+                .filter_map(|job| job.failures.as_deref())
+                .next()
+                .unwrap_or_default();
+            let reason = self
+                .redact_for_sandbox(&sandbox.id, &format!("{summary}. {excerpt}"))
+                .await;
+            let compact = reason.split_whitespace().collect::<Vec<_>>().join(" ");
+            text.push(' ');
+            text.extend(compact.chars().filter(|c| !c.is_control()).take(512));
+        }
+        text
+    }
+
+    /// Before dropping an arm, confirm the PR still has the inputs the singleton tested.
+    /// An unavailable or changed input leaves the arm for the ordinary queue pass to decide.
+    async fn singleton_inputs_match(
+        &self,
+        sandbox: &SandboxRecord,
+        task: &TaskId,
+        member: &Member,
+        integration: &str,
+        base: &str,
+    ) -> bool {
+        let confirm = async {
+            let token = self.dlv_installation_token(sandbox).await.ok()?;
+            let github = &self.deps.github;
+            let (pull, tip) = tokio::try_join!(
+                github.get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, member.pr),
+                github.branch_sha(&token, &sandbox.repo_owner, &sandbox.repo_name, integration)
+            )
+            .ok()?;
+            let delivery = self.deps.store.delivery(task).await.ok()??;
+            Some(
+                delivery.stage == DeliveryStage::PrOpen
+                    && delivery.pr_number == Some(member.pr)
+                    && pull.number == member.pr
+                    && pull.state == "open"
+                    && !pull.merged
+                    && !pull.from_fork
+                    && pull.base == integration
+                    && pull.head_sha == member.head
+                    && tip.as_deref() == Some(base),
+            )
+        };
+        matches!(
+            tokio::time::timeout(Duration::from_secs(5), confirm).await,
+            Ok(Some(true))
+        )
     }
 
     /// Ends the armed merge of `suspect`, the member a red train's bisection left out, once the

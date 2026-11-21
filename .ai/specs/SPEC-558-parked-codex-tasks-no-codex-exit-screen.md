@@ -49,6 +49,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Restore resting tasks when terminal detail or the active list discovers Undo
 - [x] Publish terminal-discovered archive removal after Closed
 - [x] Publish verified parked task detail to Task Info
+- [ ] Record the singleton queue decision and its failing job for the original owner
 - [ ] Keep failed integration candidates with their original owner
 - [ ] Verify candidate status before parking, showing Done or resuming a parked owner
 - [ ] Deliver bounded Codex goal continuation to dev
@@ -75,7 +76,13 @@ Capture a separate screen at the park decision because exiting can clear the ent
 
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
+The merge queue owns the decision that a singleton failed on the integration base. A reused failed CI run retains its original PR membership. Record the decided singleton on the original task’s merge wait span and read the source run’s retained failure for its live verdict. The span follows the existing stage-history retention and write path. A crash between clearing the saved arm and writing the span can leave that decision absent. A later watch pass must verify current eligibility and handle missing evidence before acting on an older candidate.
+
 ## Evidence
+
+- The hosted-input regressions originally delivered the obsolete failure after a base advance, a PR retarget or a head change. A held PR read also reproduced the singleton verdict saying the ordinary head passed while its new ordinary CI run was already red.
+
+- The queue regression rebuilt singleton PR #1 with the tree of an earlier failed run for PRs #8 and #9. Before the change its owner received the source run ID and repair instructions but neither the failing shard nor the latency measurement.
 
 - At dev `437188043` the cold #331 fixture reattached the existing attempt, with all four steps complete, ordinary CI green and a failed singleton train in SQLite. Its only message said the ordinary head passed and no merge was armed. It omitted the candidate run, shard and latency failure.
 

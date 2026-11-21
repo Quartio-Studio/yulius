@@ -24,7 +24,7 @@ planned to merge by hand.
   tests, where to read the log), a conflict with the integration branch, how its armed merge ended,
   its merge, and why a green head is not merging (with "Hands off" while a candidate holds it).
 - Each event is typed once, by key, kept in `<data>/pr-notices.json`.
-- For a live task, select the newest ordinary run and the newest train containing its PR by insertion order. Train queue priority can be backdated. Recover a failed singleton only for an open, unarmed owner PR whose current integration tree matches the failed run. Use the merge queue’s verdict identity so a verdict already delivered before restart counts. [SPEC-558](../../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
+- Record the failed singleton’s PR, base, tree and run on the original task’s dropped merge wait span. The queue can reuse a CI run whose original PR membership differs from the candidate it decided. Include the retained failure in that owner’s existing merge outcome. [SPEC-558](../../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
 - A session quiet for 45 minutes with an open pull request gets a check-in; a pull request with no
   progress for 60 minutes while its CI is idle is stalled: told once and shown on the task list
   (`pr_stalled`).
