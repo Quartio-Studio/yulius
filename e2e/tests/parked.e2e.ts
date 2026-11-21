@@ -2387,3 +2387,41 @@ test('a live event overtaking parked terminal detail remains working through an 
   const working = ['running', 'working', 'running', 'working'];
   expect(seen).toEqual([working, working]);
 });
+
+test('a live event and a stale parked detail preserve the list confirmation of an owner action', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const results = [];
+    for (const confirmed of [true, false]) {
+      for (const detailFirst of [true, false]) {
+        const running = { id: 'p', sandbox_id: 's', status: 'running', activity: 'waiting' };
+        const resumed = { ...running, activity: 'working' };
+        const parked = { ...running, status: 'parked', parked_needs_you: false };
+        const owner = { ...parked, parked_needs_you: true, needs_you: { action: 'Review the delivery' } };
+        const held = Promise.withResolvers<void>();
+        let reads = 0;
+        const store = createStore({ get: async () => {
+          if (++reads === 1) return [running];
+          if (reads === 2) { await held.promise; return [parked]; }
+          if (confirmed) return [owner];
+          throw new Error('confirmation unavailable');
+        } });
+        await store.loadTasks('s');
+        const list = store.loadTasks('s');
+        const publish = store.beginParkedDetail(running);
+        store.upsertTask(resumed);
+        if (detailFirst) publish(parked);
+        held.resolve(); await list;
+        if (!detailFirst) publish(parked);
+        const row = store.findTask('p');
+        results.push([reads, row.status, row.needs_you?.action ?? null]);
+      }
+    }
+    return results;
+  });
+  const owner = [3, 'parked', 'Review the delivery'];
+  const resumed = [3, 'running', null];
+  expect(seen).toEqual([owner, owner, resumed, resumed]);
+});

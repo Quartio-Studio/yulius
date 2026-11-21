@@ -189,7 +189,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       }
       for (const [id, task] of read.changes) {
         const listed = map.get(id);
-        if (!watching && !confirming && !read.parked.has(id) && listed && listed.status !== 'parked') continue;
+        if (!watching && !confirming && !read.parked.has(id) && !read.transitions.has(id) && listed && listed.status !== 'parked') continue;
         if (task.archived) {
           map.delete(id);
           continue;
@@ -355,10 +355,14 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     const order = rowOrder.get(row);
     for (const read of activeLists) {
       if (read.sandboxId !== row.sandbox_id || read.order >= order) continue;
-      // A failed confirmation may replay events from either buffer.
-      read.beforeConfirmation?.delete(row.id);
-      read.changes.delete(row.id);
-      read.parked.add(row.id);
+      // An older detail may retain a newer event. Keep that event available
+      // for confirmation and replay, including any PR the detail supplied.
+      for (const events of [read.beforeConfirmation, read.changes]) {
+        if (!events?.has(row.id)) continue;
+        if (rowOrder.get(events.get(row.id)) === order) events.set(row.id, row);
+        else events.delete(row.id);
+      }
+      if (row.status === 'parked') read.parked.add(row.id);
       read.transitions.set(row.id, row);
     }
   }
