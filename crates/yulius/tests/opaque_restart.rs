@@ -11,7 +11,7 @@ use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use sha2::{Digest as _, Sha256};
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::process::{Child, Command};
 
 type Error = Box<dyn std::error::Error>;
@@ -40,8 +40,29 @@ impl Route {
     }
 }
 
-async fn start(data: &Path, internal: SocketAddr, route: Route) -> Result<Child, Error> {
-    let log = std::fs::File::create(data.join("fixture-serve.log"))?;
+// A bound, non-listening Linux socket keeps the port out of ephemeral allocation during
+// startup and downtime. Each real server can listen on it using SO_REUSEADDR.
+struct InternalPort {
+    address: SocketAddr,
+    _reservation: TcpSocket,
+}
+
+impl InternalPort {
+    fn reserve() -> std::io::Result<Self> {
+        let socket = TcpSocket::new_v4()?;
+        socket.set_reuseaddr(true)?;
+        socket.bind((Ipv4Addr::LOCALHOST, 0).into())?;
+        Ok(Self {
+            address: socket.local_addr()?,
+            _reservation: socket,
+        })
+    }
+}
+
+async fn start(data: &Path, port: &InternalPort, route: Route) -> Result<Child, Error> {
+    let internal = port.address;
+    let log_path = data.join("fixture-serve.log");
+    let log = std::fs::File::create(&log_path)?;
     let mut child = Command::new(env!("CARGO_BIN_EXE_yulius"))
         .args(["serve", "--bind", "127.0.0.1:0", "--internal-bind"])
         .arg(internal.to_string())
@@ -52,7 +73,7 @@ async fn start(data: &Path, internal: SocketAddr, route: Route) -> Result<Child,
         .env("HOME", data)
         .env("PATH", "/usr/bin:/bin")
         .stdin(Stdio::null())
-        .env("RUST_LOG", "warn")
+        .env("RUST_LOG", "warn,yulius::serve=info")
         .stdout(log.try_clone()?)
         .stderr(log)
         .kill_on_drop(true)
@@ -62,10 +83,15 @@ async fn start(data: &Path, internal: SocketAddr, route: Route) -> Result<Child,
     let http = reqwest::Client::builder().no_proxy().build()?;
     loop {
         if let Some(status) = child.try_wait()? {
-            return Err(format!("server exited during startup with {status}").into());
+            let log = std::fs::read_to_string(&log_path)?;
+            let message = log.lines().last().unwrap_or("no startup diagnostic");
+            return Err(format!("server exited during startup with {status}: {message}").into());
         }
-        if let Ok(response) = http.get(&health).send().await
+        if std::fs::read_to_string(&log_path)?.contains("yulius listening")
+            && let Ok(response) = http.get(&health).send().await
+            && response.status().is_success()
             && response.text().await? == "ok"
+            && child.try_wait()?.is_none()
         {
             return Ok(child);
         }
@@ -80,6 +106,63 @@ async fn stop(child: &mut Child) -> Result<(), Error> {
     )?;
     assert!(child.wait().await?.success());
     Ok(())
+}
+
+#[tokio::test]
+async fn the_restart_fixture_keeps_its_port_before_the_child_listens() -> Result<(), Error> {
+    let port = InternalPort::reserve()?;
+    let internal = port.address;
+    let other = TcpSocket::new_v4()?;
+    assert_eq!(
+        other.bind(internal).err().map(|error| error.kind()),
+        Some(std::io::ErrorKind::AddrInUse),
+        "the fixture released its port before the child could bind"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn another_servers_health_response_cannot_start_the_restart_fixture() -> Result<(), Error> {
+    let data = tempfile::tempdir()?;
+    let port = InternalPort::reserve()?;
+    let internal = port.address;
+    // An explicit reusable bind can still take this port. Only our child can attest its bind.
+    let foreign = TcpListener::bind(internal).await?;
+    std::fs::write(data.path().join("fixture-serve.log"), "yulius listening\n")?;
+    let router =
+        axum::Router::new().route("/internal/healthz", axum::routing::get(|| async { "ok" }));
+    let check = async {
+        let error = match start(data.path(), &port, Route::Direct).await {
+            Err(error) => error,
+            Ok(mut child) => {
+                let mut client = BufReader::new(TcpStream::connect(internal).await?);
+                client
+                    .get_mut()
+                    .write_all(
+                        b"CONNECT fixture.test:443 HTTP/1.1\r\nHost: fixture.test:443\r\n\r\n",
+                    )
+                    .await?;
+                let mut status = String::new();
+                client.read_line(&mut status).await?;
+                child.kill().await?;
+                return Err(format!(
+                    "fixture accepted the other server as ready; CONNECT returned {}",
+                    status.trim()
+                )
+                .into());
+            }
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains(&format!("cannot bind {internal}")),
+            "{message}"
+        );
+        Ok(())
+    };
+    tokio::select! {
+        checked = tokio::time::timeout(Duration::from_secs(30), check) => checked?,
+        result = axum::serve(foreign, router).into_future() => Err(format!("fixture listener exited: {result:?}").into()),
+    }
 }
 
 fn seed(data: &Path) -> Result<(), Error> {
@@ -196,11 +279,10 @@ async fn strict_namespace_startup_adopts_the_holder_or_reports_missing_prerequis
 -> Result<(), Error> {
     tokio::time::timeout(Duration::from_secs(15), async {
         let dir = tempfile::tempdir()?;
-        let internal = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-            .await?
-            .local_addr()?;
+        let port = InternalPort::reserve()?;
+        let internal = port.address;
         let holder = live_holder(dir.path(), internal.port()).await?;
-        match start(dir.path(), internal, Route::Holder).await {
+        match start(dir.path(), &port, Route::Holder).await {
             Ok(mut server) => {
                 // A healthy legacy listener alone cannot serve this original holder.
                 let health = format!("http://{}/internal/healthz", holder.address);
@@ -332,12 +414,11 @@ async fn a_stopped_client_keeps_its_original_tunnel_through_the_holder() -> Resu
 
     tokio::time::timeout(Duration::from_secs(30), async {
         let data = tempfile::tempdir()?;
-        let internal = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-            .await?
-            .local_addr()?;
+        let port = InternalPort::reserve()?;
+        let internal = port.address;
         let holder = live_holder(data.path(), internal.port()).await?;
         let listener = TcpListener::bind((fixture_ip()?, 0)).await?;
-        let mut first = start(data.path(), internal, Route::Holder).await?;
+        let mut first = start(data.path(), &port, Route::Holder).await?;
         let first_pid = first.id();
         seed(data.path())?;
         let (client, mut peer) =
@@ -369,7 +450,7 @@ async fn a_stopped_client_keeps_its_original_tunnel_through_the_holder() -> Resu
             queued > 0 && queued < payload.len(),
             "partial write during restart: {queued}"
         );
-        let mut next = start(data.path(), internal, Route::Holder).await?;
+        let mut next = start(data.path(), &port, Route::Holder).await?;
         assert_ne!(next.id(), first_pid);
         assert_eq!(
             waitid(Id::Pid(pid), flags | WaitPidFlag::WNOHANG)?,
@@ -393,12 +474,11 @@ async fn a_final_reply_already_sent_before_shutdown_drains_through_the_original_
 -> Result<(), Error> {
     tokio::time::timeout(Duration::from_secs(30), async {
         let data = tempfile::tempdir()?;
-        let internal = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-            .await?
-            .local_addr()?;
+        let port = InternalPort::reserve()?;
+        let internal = port.address;
         let _holder = live_holder(data.path(), internal.port()).await?;
         let listener = TcpListener::bind((fixture_ip()?, 0)).await?;
-        let mut first = start(data.path(), internal, Route::Holder).await?;
+        let mut first = start(data.path(), &port, Route::Holder).await?;
         seed(data.path())?;
         let mut unix =
             tokio::net::UnixStream::connect(data.path().join("runtime/sandboxes/s1/out.sock"))
@@ -454,7 +534,7 @@ async fn a_final_reply_already_sent_before_shutdown_drains_through_the_original_
         .await
         .map_err(|_| "proxy did not finish its internal write half")??;
         stop(&mut first).await?;
-        let mut next = start(data.path(), internal, Route::Holder).await?;
+        let mut next = start(data.path(), &port, Route::Holder).await?;
         let mut received = Vec::new();
         client
             .take(u64::try_from(reply.len())? + 1)
@@ -480,12 +560,13 @@ async fn check_restart(route: Route) -> Result<(), Error> {
         let local = fixture_ip()?;
         let listener = TcpListener::bind((local, 0)).await?;
         let target = listener.local_addr()?;
-        let internal = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?.local_addr()?;
+        let port = InternalPort::reserve()?;
+        let internal = port.address;
         let dir = tempfile::tempdir()?;
         let holder = holder_for(route, dir.path(), internal).await?;
         let endpoint = holder.as_ref().map_or(internal, |h| h.address);
         let mut helper = holder.as_ref().map(|_| record_fixture_helper(dir.path())).transpose()?;
-        let mut first = start(dir.path(), internal, route).await?;
+        let mut first = start(dir.path(), &port, route).await?;
         let first_pid = first.id();
         assert!(!std::fs::read_to_string(dir.path().join("fixture-serve.log"))?
             .contains("cannot adopt opaque tunnels"), "an ordinary cold start is quiet");
@@ -513,7 +594,7 @@ async fn check_restart(route: Route) -> Result<(), Error> {
         assert_eq!(client.read_u32().await?.to_be_bytes(), *b"LIVE");
         stop(&mut first).await?;
         peer.write_all(b"DOWN").await?;
-        let mut next = start(dir.path(), internal, route).await?;
+        let mut next = start(dir.path(), &port, route).await?;
         assert_ne!(next.id(), first_pid);
         let queued = client.read_u32().await.map_err(|e| format!("original client reading downtime marker: {e}"))?;
         assert_eq!(queued.to_be_bytes(), *b"DOWN");
@@ -541,10 +622,8 @@ async fn an_invalid_handoff_directory_reports_the_kind_and_still_serves() -> Res
     tokio::time::timeout(Duration::from_secs(15), async {
         let dir = tempfile::tempdir()?;
         std::fs::write(dir.path().join("tunnel-handoff"), b"synthetic fixture")?;
-        let addr = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-            .await?
-            .local_addr()?;
-        let mut server = start(dir.path(), addr, Route::Direct).await?;
+        let port = InternalPort::reserve()?;
+        let mut server = start(dir.path(), &port, Route::Direct).await?;
         stop(&mut server).await?;
         let warnings = std::fs::read_to_string(dir.path().join("fixture-serve.log"))?;
         assert!(
@@ -602,13 +681,12 @@ async fn check_reset_during_restart(route: Route) -> Result<(), Error> {
         let local = fixture_ip()?;
         let listener = TcpListener::bind((local, 0)).await?;
         let target = listener.local_addr()?;
-        let internal = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-            .await?
-            .local_addr()?;
+        let port = InternalPort::reserve()?;
+        let internal = port.address;
         let dir = tempfile::tempdir()?;
         let holder = holder_for(route, dir.path(), internal).await?;
         let endpoint = holder.as_ref().map_or(internal, |h| h.address);
-        let mut first = start(dir.path(), internal, route).await?;
+        let mut first = start(dir.path(), &port, route).await?;
         seed(dir.path())?;
         let (mut ended, resetting) = open_tunnel(endpoint, target, &listener).await?;
         let (mut client, mut peer) = open_tunnel(endpoint, target, &listener).await?;
@@ -624,7 +702,7 @@ async fn check_reset_during_restart(route: Route) -> Result<(), Error> {
         )?;
         drop(resetting);
         peer.write_all(b"DOWN").await?;
-        let mut next = start(dir.path(), internal, route).await?;
+        let mut next = start(dir.path(), &port, route).await?;
         assert_eq!(client.read_u32().await?.to_be_bytes(), *b"DOWN");
         client.get_mut().write_all(b"NEXT").await?;
         assert_eq!(peer.read_u32().await?.to_be_bytes(), *b"NEXT");
@@ -640,11 +718,10 @@ async fn an_unfinished_http_download_cannot_delay_opaque_handoff_or_shutdown() -
     tokio::time::timeout(Duration::from_secs(25), async {
         let local = fixture_ip()?;
         let dest = TcpListener::bind((local, 0)).await?;
-        let internal = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-            .await?
-            .local_addr()?;
+        let port = InternalPort::reserve()?;
+        let internal = port.address;
         let dir = tempfile::tempdir()?;
-        let mut first = start(dir.path(), internal, Route::Direct).await?;
+        let mut first = start(dir.path(), &port, Route::Direct).await?;
         seed(dir.path())?;
         let (mut client, mut peer) = open_tunnel(internal, dest.local_addr()?, &dest).await?;
         let origin = dest.local_addr()?;
@@ -675,7 +752,7 @@ async fn an_unfinished_http_download_cannot_delay_opaque_handoff_or_shutdown() -
             .await
             .map_err(|_| "unfinished HTTP download kept the old service running")??;
         peer.write_all(b"DOWN").await?;
-        let mut next = start(dir.path(), internal, Route::Direct).await?;
+        let mut next = start(dir.path(), &port, Route::Direct).await?;
         assert_eq!(client.read_u32().await?.to_be_bytes(), *b"DOWN");
         client.get_mut().write_all(b"NEXT").await?;
         assert_eq!(peer.read_u32().await?.to_be_bytes(), *b"NEXT");
@@ -699,13 +776,12 @@ async fn check_final_fin(route: Route) -> Result<(), Error> {
     tokio::time::timeout(Duration::from_secs(30), async {
         let listener = TcpListener::bind((fixture_ip()?, 0)).await?;
         let target = listener.local_addr()?;
-        let internal = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-            .await?
-            .local_addr()?;
+        let port = InternalPort::reserve()?;
+        let internal = port.address;
         let dir = tempfile::tempdir()?;
         let holder = holder_for(route, dir.path(), internal).await?;
         let endpoint = holder.as_ref().map_or(internal, |h| h.address);
-        let mut first = start(dir.path(), internal, route).await?;
+        let mut first = start(dir.path(), &port, route).await?;
         seed(dir.path())?;
         let (mut client, mut origin) = open_tunnel(endpoint, target, &listener).await?;
         let (mut sender, mut recipient) = open_tunnel(endpoint, target, &listener).await?;
@@ -719,7 +795,7 @@ async fn check_final_fin(route: Route) -> Result<(), Error> {
         origin.shutdown().await?;
         sender.get_mut().write_all(b"last request").await?;
         sender.get_mut().shutdown().await?;
-        let mut next = start(dir.path(), internal, route).await?;
+        let mut next = start(dir.path(), &port, route).await?;
         let mut delivered = Vec::new();
         client.read_to_end(&mut delivered).await?;
         assert_eq!(
