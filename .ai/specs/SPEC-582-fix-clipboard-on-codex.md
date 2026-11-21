@@ -1,0 +1,49 @@
+---
+yulius-task: ca67b86c-bf72-4b4b-bed2-acdb5ac9962b
+status: in-progress
+---
+
+# SPEC-582. Paste from the viewer’s clipboard in a Codex terminal
+
+## Goal
+
+A person using the Codex web terminal can right-click and paste text into the draft.
+
+## Context
+
+The screenshot shows two “clipboard text is unavailable” errors. A plain right-button
+press reproduced that error on Codex CLI 0.170.0 in an isolated Linux PTY with no display.
+The same composer accepted a bracketed paste. Yulius gives a mouse-tracking program the
+right-button press and suppresses its own clipboard menu. Codex consequently tries to
+read the sandbox’s desktop clipboard. Earlier terminal tests exercised Claude’s mouse
+handling and browser paste events. [Issue #1584](https://github.com/Quartio-Studio/yulius/issues/1584)
+
+## Requirements
+
+- **CLP-001** A plain right-click in a mouse-tracking Codex terminal opens the viewer’s clipboard menu. The PTY receives no right-button press or release from that gesture.
+- **CLP-002** Choosing Paste in a writable terminal inserts the viewer’s clipboard text once through xterm’s paste path. A refused clipboard read offers the native paste shortcut. Read-only viewers cannot paste.
+- **CLP-003** Primary clicks and other programs’ mouse handling continue to follow [ADR-0079](../../docs/decisions/0079-the-terminal-mouse-is-the-programs.md).
+
+## Plan
+
+- [x] Reproduce the Codex terminal clipboard error and specify the fix
+- [x] Capture the clipboard failure in a regression test
+- [ ] Restore clipboard behavior in the Codex terminal and verify it
+- [ ] Independently review the fix and deliver it to dev
+
+## Acceptance criteria
+
+- **AC-1 (CLP-001, CLP-002)** With mouse tracking and bracketed paste enabled, right-click then choose Paste. The PTY receives the bracketed clipboard text once. Cancelling the menu or denying the read sends no clipboard text.
+- **AC-2 (CLP-002, CLP-003)** A read-only viewer cannot send paste input. Codex still receives a primary click. A mouse-tracking Claude terminal still receives an unmodified right-click.
+
+## Test plan
+
+Drive real mouse events in the Chromium task view and observe input at the terminal socket.
+Exercise a successful clipboard read, browser refusal and existing read-only paste coverage.
+Run the terminal and web suites, the repository quick checks and Yulius CI.
+
+## Decisions
+
+Use the existing Copy, Paste and Select all menu. Choosing Paste explicitly gives the
+browser permission to request clipboard text. The terminal already receives the session’s
+harness in its state message. The Codex PTY needs only ordinary paste input.
