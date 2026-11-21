@@ -847,6 +847,43 @@ async fn newer_dev_drill_leaves_the_proven_revision_deployable() -> TestResult {
     Ok(())
 }
 
+/// A direct prod deploy of the very commit still drilling cannot borrow a same-tree proof.
+#[tokio::test]
+async fn a_direct_deploy_waits_for_its_own_drill_only() -> TestResult {
+    let f = fixture(&full_cd().replace("promote = true", "promote = false")).await?;
+    let a = f.push("dev", &[("a.txt", Some("verified"))])?;
+    f.prove("dev").await?;
+    f.push("dev", &[("temporary.txt", Some("temporary"))])?;
+    let b = f.push("dev", &[("temporary.txt", None)])?;
+    let mut drill =
+        f.h.store
+            .cd_run(&format!("drill-{}", &a[..12]), false)
+            .await?
+            .ok_or("drill")?;
+    drill.id = "drilling-current-production".into();
+    drill.sha = b.clone();
+    drill.state = RunState::Running;
+    drill.ended_at = None;
+    f.h.store.insert_cd_run(&drill).await?;
+    git(&f.origin, &["update-ref", "refs/heads/main", &b])?;
+    let same_commit = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(
+        same_commit.status,
+        StatusCode::CONFLICT,
+        "{}",
+        same_commit.body
+    );
+    git(&f.origin, &["update-ref", "refs/heads/main", &a, &b])?;
+    let prior = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(prior.status, StatusCode::OK, "{}", prior.body);
+    assert_eq!(
+        f.ended(prior.body["run_id"].as_str().ok_or("prod")?)
+            .await?["state"],
+        "passed"
+    );
+    Ok(())
+}
+
 /// AC4 (CDA-002): production is a person's with administrator access who typed the project's
 /// slug; the deploy promotes the integration branch (the promotion pull request, merged at once
 /// when its checks passed) and runs the scripts at the new production head.

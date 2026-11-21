@@ -656,6 +656,25 @@ async fn production_is_promoted_only_from_the_verified_staging_revision() -> Tes
     assert_eq!(crate::cd::git(&f.origin, &["rev-parse", &pin])?, r2);
     assert!(!git_contains(&f, "main", &r1)?);
     crate::cd::git(&f.origin, &["update-ref", "-d", &pin, &r2])?;
+    // An open promotion PR for the moving dev head remains independent of A's release.
+    use yulius_app::ports::github::{GitHubPort as _, NewPull};
+    let current_head_pr =
+        f.h.github
+            .create_pull(
+                &yulius_app::model::Secret("fixture-bob".into()),
+                "acme",
+                "app",
+                &NewPull {
+                    head: "dev".into(),
+                    base: "main".into(),
+                    title: "release: promote dev to main".into(),
+                    body: String::new(),
+                },
+            )
+            .await?;
+    f.h.github
+        .concurrent_release_ref
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     // GitHub lands the release, then reading its resulting commit fails. A retry must
     // reconcile the landed tasks after confirming the tree, without another merge.
     f.h.github
@@ -664,6 +683,43 @@ async fn production_is_promoted_only_from_the_verified_staging_revision() -> Tes
     let uncertain = f.deploy(&f.bob, "prod", Some("app")).await?;
     assert!(!uncertain.status.is_success(), "{}", uncertain.body);
     assert!(git_contains(&f, "main", &r1)?);
+    assert_eq!(
+        f.h.github
+            .pull(current_head_pr.number)
+            .ok_or("other promotion")?
+            .state,
+        "open"
+    );
+
+    // The release reached GitHub, but its required checks must still permit the retry.
+    let mut recheck =
+        f.h.store
+            .ci_run(&format!("ci-{}", &r1[..12]))
+            .await?
+            .ok_or("first gate")?;
+    recheck.id = "recheck-staged-release".into();
+    recheck.state = RunState::Failed;
+    f.h.store.insert_ci_run(&recheck, &[]).await?;
+    let refused = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(
+        refused.status,
+        axum::http::StatusCode::CONFLICT,
+        "{}",
+        refused.body
+    );
+    assert_eq!(
+        f.h.store
+            .delivery(&TaskId::parse("t1")?)
+            .await?
+            .ok_or("t1")?
+            .stage,
+        yulius_domain::delivery::DeliveryStage::MergedIntegration
+    );
+    f.h.store
+        .execute_for_tests(
+            "UPDATE ci_runs SET state = 'passed' WHERE id = 'recheck-staged-release'",
+        )
+        .await?;
 
     let deploy = f.deploy(&f.bob, "prod", Some("app")).await?;
     assert!(deploy.status.is_success(), "{}", deploy.body);
@@ -808,6 +864,41 @@ async fn the_release_keeps_its_own_staging_requirement() -> TestResult {
         .find(|env| env["name"] == "prod")
         .ok_or("prod")?;
     assert!(prod["promotes_from"].is_null(), "{prod}");
+    Ok(())
+}
+
+/// When dev retires staging, a previously verified staging release remains eligible while
+/// its unstaged successor and the new configuration cannot qualify.
+#[tokio::test]
+async fn retiring_staging_keeps_its_last_verified_release_available() -> TestResult {
+    let f = fixture(&promoting_toml()).await?;
+    agent(&f, "t1").await?;
+    let a = land(&f, "t1", "staged.txt").await?;
+    gate(&f, &a, RunState::Passed).await?;
+    ask(&f, "t1").await?;
+    settle(&f).await?;
+    let b = f.push("dev", &[("unstaged.txt", Some("only CI passed"))])?;
+    gate(&f, &b, RunState::Passed).await?;
+    let config = "[[ci.jobs]]\nname = \"checks\"\ncommand = \"true\"\n[cd.prod]\npromote = true\n";
+    let c = f.push("dev", &[("yulius.toml", Some(config))])?;
+    gate(&f, &c, RunState::Running).await?;
+    crate::cd::git(
+        &f.h.app.config.data_dir.join("sandboxes/s1/repo"),
+        &["fetch", "-q", "origin"],
+    )?;
+    let overview = f.get("/api/sandboxes/s1/cd").await?;
+    let prod = overview["environments"]
+        .as_array()
+        .ok_or("environments")?
+        .iter()
+        .find(|env| env["name"] == "prod")
+        .ok_or("prod")?;
+    assert_eq!(prod["promotes_from"], a, "{prod}");
+    let released = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert!(released.status.is_success(), "{}", released.body);
+    assert!(git_contains(&f, "main", &a)?);
+    assert!(!git_contains(&f, "main", &b)?);
+    assert!(!git_contains(&f, "main", &c)?);
     Ok(())
 }
 

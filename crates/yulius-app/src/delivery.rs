@@ -5554,6 +5554,10 @@ impl App {
         let contained = production_sha.as_deref() == Some(integration_sha.as_str())
             || relation.is_some_and(|(ahead, _)| ahead == 0);
         if contained {
+            if matches!(source, PromotionSource::Verified { .. }) && profile.require_checks {
+                self.dlv_checks_allow(sandbox, token, &integration_sha, false)
+                    .await?;
+            }
             if candidates.is_empty() && matches!(source, PromotionSource::Verified { .. }) {
                 return Ok(PromoteResult {
                     result: "already_promoted".into(),

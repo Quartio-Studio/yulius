@@ -654,49 +654,54 @@ impl App {
         prod: &CdTarget,
         repo: &Path,
     ) -> AppResult<(String, CdConfig)> {
-        let sha = self
+        let mut sha = self
             .cd_promotion_revision(sandbox, branch, head, config, prod, repo)
             .await?;
         if sha == head {
             return Ok((sha, config.clone()));
         }
-        if self
-            .deps
-            .git
-            .first_parent_position(repo, head, &sha)
-            .await
-            .ok()
-            .flatten()
-            .is_none()
-        {
-            return Err(AppError::Conflict(format!(
-                "nothing ran: verified revision {sha} cannot be confirmed on {branch}'s history"
-            )));
+        let mut upper = head.to_owned();
+        // A newer configuration can remove staging. The latest branch-green candidate may
+        // then lead back to an earlier staged release. Each step must move strictly backwards.
+        loop {
+            if self
+                .deps
+                .git
+                .first_parent_position(repo, &upper, &sha)
+                .await
+                .ok()
+                .flatten()
+                .is_none()
+            {
+                return Err(AppError::Conflict(format!(
+                    "nothing ran: verified revision {sha} cannot be confirmed on {branch}'s history"
+                )));
+            }
+            let config = self
+                .cd_config_at(repo, &sha)
+                .await
+                .map_err(AppError::Conflict)?;
+            let target = config
+                .target_of(&prod.name, CdStage::Prod)
+                .filter(|target| target.promote)
+                .ok_or_else(|| {
+                    AppError::Conflict(format!(
+                        "nothing ran: the verified revision does not configure a promotion for {}",
+                        prod.name
+                    ))
+                })?;
+            if config.merge_first().is_some() {
+                let staged = self
+                    .cd_promotion_revision(sandbox, branch, &sha, &config, target, repo)
+                    .await?;
+                if staged != sha {
+                    upper = sha;
+                    sha = staged;
+                    continue;
+                }
+            }
+            return Ok((sha, config));
         }
-        let config = self
-            .cd_config_at(repo, &sha)
-            .await
-            .map_err(AppError::Conflict)?;
-        let target = config
-            .target_of(&prod.name, CdStage::Prod)
-            .filter(|target| target.promote)
-            .ok_or_else(|| {
-                AppError::Conflict(format!(
-                    "nothing ran: the verified revision does not configure a promotion for {}",
-                    prod.name
-                ))
-            })?;
-        if config.merge_first().is_some()
-            && self
-                .cd_promotion_revision(sandbox, branch, head, &config, target, repo)
-                .await?
-                != sha
-        {
-            return Err(AppError::Conflict(
-                "nothing ran: the release revision lacks its own staging verification".into(),
-            ));
-        }
-        Ok((sha, config))
     }
 
     /// The CD of `sandbox` as its protected branches define it, with recent runs (SPEC-134

@@ -438,7 +438,8 @@ impl App {
             Some(run) if run.state == RunState::Running => {
                 let git = &self.deps.git;
                 let deploying = git.tree_of(repo, sha).await?;
-                if let Some(tree) = deploying
+                if run.sha != sha
+                    && let Some(tree) = deploying
                     && let Some(proof) = self
                         .deps
                         .store

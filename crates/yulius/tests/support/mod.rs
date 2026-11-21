@@ -76,6 +76,8 @@ pub struct FakeGitHub {
     pub retarget_on_merge: Mutex<Option<String>>,
     /// A concurrent GitHub write to the base immediately before merging a pull request.
     pub advance_base_on_merge: Mutex<Option<String>>,
+    /// Another release request creates the same ref before the provider answers the POST.
+    pub concurrent_release_ref: std::sync::atomic::AtomicBool,
     /// Refuse one production head read following a pinned release merge.
     pub fail_pinned_merge_read: std::sync::atomic::AtomicBool,
     /// GitHub accepted the merge, but reading the closed PR fails until it recovers.
@@ -686,6 +688,11 @@ impl GitHubPort for FakeGitHub {
         let remote = self
             .remote()
             .ok_or_else(|| AppError::Upstream("no remote".into()))?;
+        if self.concurrent_release_ref.swap(false, Ordering::SeqCst) {
+            remote
+                .create_branch(branch, sha)
+                .map_err(AppError::Conflict)?;
+        }
         remote
             .create_branch(branch, sha)
             .map_err(AppError::Conflict)
