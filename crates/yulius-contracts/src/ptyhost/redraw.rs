@@ -62,6 +62,26 @@ mod tests {
     use super::Redraw;
 
     #[test]
+    fn a_codex_erase_from_home_proves_a_repaint_across_read_boundaries() {
+        let full = b"\x1b[1;1H\x1b[J";
+        for split in 0..=full.len() {
+            let mut grid = vt100::Parser::new(6, 40, 0);
+            grid.process(b"\x1b[?1049h\x1b[1;31Hdraft");
+            grid.screen_mut().set_size(6, 20);
+            let mut redraw = Redraw::restored(false);
+            redraw.process(&mut grid, b"\x1b[2;1H\x1b[J");
+            assert!(!redraw.rendered(), "partial erase on an already blank crop");
+            redraw.process(&mut grid, &full[..split]);
+            redraw.process(&mut grid, &full[split..]);
+            assert!(redraw.rendered(), "split at {split}");
+        }
+        let mut primary = vt100::Parser::new(6, 40, 0);
+        let mut redraw = Redraw::restored(false);
+        redraw.process(&mut primary, full);
+        assert!(!redraw.rendered());
+    }
+
+    #[test]
     fn clearing_the_primary_screen_cannot_certify_a_cropped_alternate_screen() {
         let mut grid = vt100::Parser::new(6, 40, 0);
         grid.process(b"\x1b[?47hretained\x1b[1;31Hstashed");

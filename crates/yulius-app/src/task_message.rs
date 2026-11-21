@@ -1070,6 +1070,49 @@ mod tests {
     }
 
     #[test]
+    fn only_the_focused_codex_placeholder_proves_its_composer_empty() {
+        let rt = super::TaskRuntime::new();
+        let frame = concat!(
+            "\x1b[?1049h\x1b[2J",
+            "\x1b[18;1H\x1b[1m›\x1b[22m \x1b[2mAsk Codex to do anything\x1b[22m",
+            "\x1b[20;1H  GPT-6.2-Sol default · project",
+            "\x1b[18;3H\x1b[?25h",
+        );
+        for (edit, empty) in [
+            ("", true),
+            ("\x1b[?25l", false),
+            ("\x1b[?1049l", false),
+            ("\x1b[18;4H", false),
+            ("\x1b[17;3H", false),
+            ("\x1b[18;1H›\x1b[18;3H", false),
+            ("\x1b[18;1H\x1b[1;2m›\x1b[0m\x1b[18;3H", false),
+            ("\x1b[18;2Hx\x1b[18;3H", false),
+            ("A\x1b[18;3H", false),
+            ("\x1b[18;26Hg\x1b[18;3H", false),
+            ("Ask Codex to do anything\x1b[18;3H", false),
+            ("\x1b[2mTry another command\x1b[0m\x1b[K\x1b[18;3H", false),
+            ("\x1b[K[Image #1]\x1b[18;3H", false),
+            ("\x1b[18;30Hmore text\x1b[18;3H", false),
+            ("\x1b[19;1Hcontinued draft\x1b[18;3H", false),
+        ] {
+            rt.hub.output(1, frame.as_bytes());
+            rt.hub.output(2, edit.as_bytes());
+            assert_eq!(
+                super::shows_empty(super::Harness::Codex, &rt),
+                empty,
+                "{edit:?}"
+            );
+            assert!(!super::shows_empty(super::Harness::ClaudeCode, &rt));
+            assert!(!super::shows_empty(super::Harness::Antigravity, &rt));
+        }
+        // The same cells in the primary buffer can be transcript output.
+        rt.hub.output(3, b"\x1b[?1049l");
+        rt.hub
+            .output(4, frame.trim_start_matches("\x1b[?1049h").as_bytes());
+        assert!(!super::shows_empty(super::Harness::Codex, &rt));
+    }
+
+    #[test]
     fn only_the_two_stored_draft_reasons_allow_a_pr_notice_to_retry() {
         for problem in [super::DRAFT_HOLDS_PROBLEM, super::VISIBLE_DRAFT_PROBLEM] {
             let held = super::AttentionRecord::yulius(problem, super::DRAFT_HOLDS_ACTION);

@@ -447,6 +447,7 @@ If a reservation skips past all available slots, land an empty extension first w
 - [0418](0418-keep-the-newest-successful-task-list.md) keeps the newest successful browser task list when full reads overlap.
 <!-- ADR 0418 -->
 <!-- ADR 0419 -->
+- [0420](0420-recognize-the-empty-codex-composer.md) recognizes the focused Codex placeholder and its full repaint after resize (SPEC-581).
 <!-- ADR 0420 -->
 <!-- ADR 0421 -->
 <!-- ADR 0422 -->
