@@ -1549,6 +1549,56 @@ impl UsageProbe for FirstAccountNearLimit {
     }
 }
 
+/// An unreadable optional attempt field cannot change an observed clean host exit.
+#[test]
+fn a_clean_exit_keeps_its_outcome_when_attempt_metadata_is_unreadable() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
+    let data = dir.path().canonicalize()?;
+    let rt = runtime()?;
+    let result = rt.block_on(async {
+        let app = build_tuned(&data, Some(&fake), FakeAgentOptions::default(), |_| {})?;
+        let (sandbox, user) = seed_records(&app).await?;
+        seed_repo(&data, &sandbox)?;
+        let sender = new_task(&app, &sandbox, &user, "Sender").await?;
+        wait_for("the sender's banner", Duration::from_secs(30), || {
+            screen_contains(&app, &sender, "FAKE-AGENT READY")
+        })
+        .await?;
+        let db = rusqlite::Connection::open(data.join("yulius.db"))?;
+        assert_eq!(
+            db.execute(
+                "UPDATE attempts SET model = x'00' WHERE task_id = ?1 AND state = 'live'",
+                [sender.as_str()]
+            )?,
+            1
+        );
+        app.send_input(&sender, b"/exit\r").await?;
+        wait_for("the task to finish", Duration::from_secs(20), || async {
+            task(&app, &sender)
+                .await
+                .is_ok_and(|t| t.status.is_resting())
+        })
+        .await?;
+        let outcome = db.query_row(
+            "SELECT state, exit_code, exit_reason FROM attempts WHERE task_id = ?1",
+            [sender.as_str()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<i32>>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )?;
+        assert_eq!(outcome, ("exited".into(), Some(0), "exited".into()));
+        assert_eq!(task(&app, &sender).await?.status, TaskStatus::Closed);
+        Ok::<_, Box<dyn std::error::Error>>(())
+    });
+    rt.shutdown_timeout(Duration::from_secs(5));
+    result
+}
+
 /// AC-ROT-2 (proactive path): refreshed usage puts the task's account at the 98 % threshold; at
 /// the next turn boundary the session moves to the next Claude account with a native resume of
 /// the same session.

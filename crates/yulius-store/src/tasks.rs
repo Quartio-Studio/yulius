@@ -61,6 +61,12 @@ const TASK_COLS: &str = "id, sandbox_id, number, title, prompt, harness, model, 
     status, activity, branch, worktree_path, spec_path, origin, automation_run, created_by, created_at, \
     updated_at, closed_at, archived_at, queued_at, gate_blocks, wake_enabled, mode, supertask, owner_id";
 
+// The task and its parked run form one SQLite snapshot. Running and queued
+// task reads skip the attempt lookup. The existing (task_id, seq) index serves it.
+const PARKED_ATTEMPT: &str = "CASE WHEN tasks.status = 'parked' THEN
+    (SELECT id FROM attempts WHERE task_id = tasks.id ORDER BY seq DESC LIMIT 1)
+    END AS parked_attempt_id";
+
 const ATTEMPT_COLS: &str = "id, task_id, seq, harness, account_id, provider_session_id, launch_kind, \
     state, run_dir, token_hash, host_token, ptyhost_pid, child_pid, started_at, ended_at, exit_code, exit_reason, model";
 
@@ -87,6 +93,11 @@ fn task_from_row(row: &Row<'_>) -> rusqlite::Result<TaskRecord> {
     let harness_text: String = row.get("harness")?;
     Ok(TaskRecord {
         id: parse_id("task id", &id, TaskId::parse)?,
+        parked_attempt_id: row
+            .get::<_, Option<String>>("parked_attempt_id")?
+            .as_deref()
+            .map(|id| parse_id("parked attempt id", id, AttemptId::parse))
+            .transpose()?,
         sandbox_id: parse_id("sandbox id", &sandbox, SandboxId::parse)?,
         number: to_u32(row.get("number")?),
         title: row.get("title")?,
@@ -277,7 +288,7 @@ impl TaskStore for SqliteStore {
             )
             .map_err(db)?;
             let stored = tx
-                .query_row(&format!("SELECT {TASK_COLS} FROM tasks WHERE id = ?1"), [t.id.as_str()], task_from_row)
+                .query_row(&format!("SELECT {TASK_COLS}, {PARKED_ATTEMPT} FROM tasks WHERE id = ?1"), [t.id.as_str()], task_from_row)
                 .map_err(db)?;
             tx.commit().map_err(db)?;
             Ok(stored)
@@ -289,7 +300,7 @@ impl TaskStore for SqliteStore {
         let id = id.as_str().to_owned();
         self.call(move |c| {
             c.query_row(
-                &format!("SELECT {TASK_COLS} FROM tasks WHERE id = ?1"),
+                &format!("SELECT {TASK_COLS}, {PARKED_ATTEMPT} FROM tasks WHERE id = ?1"),
                 [id],
                 task_from_row,
             )
@@ -307,7 +318,7 @@ impl TaskStore for SqliteStore {
         let s = sandbox.as_str().to_owned();
         self.call(move |c| {
             c.query_row(
-                &format!("SELECT {TASK_COLS} FROM tasks WHERE sandbox_id = ?1 AND number = ?2"),
+                &format!("SELECT {TASK_COLS}, {PARKED_ATTEMPT} FROM tasks WHERE sandbox_id = ?1 AND number = ?2"),
                 params![s, i64::from(number)],
                 task_from_row,
             )
@@ -324,7 +335,7 @@ impl TaskStore for SqliteStore {
             "archived_at IS NULL"
         };
         self.tasks_query(
-            format!("SELECT {TASK_COLS} FROM tasks WHERE sandbox_id = ?1 AND {clause} ORDER BY number DESC"),
+            format!("SELECT {TASK_COLS}, {PARKED_ATTEMPT} FROM tasks WHERE sandbox_id = ?1 AND {clause} ORDER BY number DESC"),
             vec![sandbox.as_str().to_owned()],
         )
         .await
@@ -341,7 +352,7 @@ impl TaskStore for SqliteStore {
         self.tasks_query(
             // Tasks that share a place (queued in the same millisecond) keep the order
             // they were created in: the queue's order is one order, whoever reads it.
-            format!("SELECT {TASK_COLS} FROM tasks WHERE status IN ({marks}) ORDER BY COALESCE(queued_at, created_at), rowid"),
+            format!("SELECT {TASK_COLS}, {PARKED_ATTEMPT} FROM tasks WHERE status IN ({marks}) ORDER BY COALESCE(queued_at, created_at), rowid"),
             statuses.iter().map(|s| s.as_str().to_owned()).collect(),
         )
         .await

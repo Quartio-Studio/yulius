@@ -153,6 +153,7 @@ async fn fixture_with_read_budget(
                    status: TaskStatus|
      -> Result<TaskRecord, Box<dyn std::error::Error>> {
         Ok(TaskRecord {
+            parked_attempt_id: None,
             id: TaskId::parse(id)?,
             sandbox_id: sandbox.id.clone(),
             number,

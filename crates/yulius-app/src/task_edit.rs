@@ -492,8 +492,12 @@ impl App {
                     .await
                     .map(|_| json!({})),
                 BulkAction::Message => {
+                    crate::race::reached(
+                        crate::race::Point::SelectedTaskDispatched,
+                        std::path::Path::new(task.id.as_str()),
+                    );
                     let args = json!({"task_id": id, "text": text.unwrap_or_default()});
-                    self.tool_task_message(caller, &args)
+                    self.task_message_as(caller, &args, None, Some(&task))
                         .await
                         .map(|answer| json!({"delivered": answer["delivered"]}))
                 }

@@ -62,6 +62,7 @@ impl Fixture {
 
 fn task_record(id: &str) -> Result<TaskRecord, Box<dyn std::error::Error>> {
     Ok(TaskRecord {
+        parked_attempt_id: None,
         id: TaskId::parse(id)?,
         sandbox_id: SandboxId::parse("s1")?,
         number: 7,

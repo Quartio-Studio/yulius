@@ -62,6 +62,9 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Report the active singleton and replay its recorded failure for the original owner
 - [x] Reproduce candidate status across restart on the live and parked PR owner
 - [x] Verify the failed integration candidate before parking its original owner
+- [x] Bind a parked message to the attempt its caller observed
+- [ ] Resume only the parked run whose screen finished saving
+- [ ] Preserve a continuation while its previous parked run settles
 - [ ] Order parking and replacement merge requests through run settlement
 - [ ] Deliver the recorded integration failure once to an already parked owner
 - [ ] Hold the original owner’s session and successor while its open delivery cannot be verified
@@ -110,7 +113,40 @@ The live watcher resolves ordinary CI for the owner at the armed head and reads 
 
 The final parking check compares the owner’s saved singleton decision with the verified PR head and integration base. A change to the saved merge decision during hosted verification defers the pass. A changed base or published repair retires the old failure for this decision.
 
+The SQLite query returning a parked task includes the latest attempt ID in the same snapshot. Admission checks that ID under the launch lock after caller preflight. A message can wait while another turn resumes and parks, so task status alone cannot identify the session the sender observed. Only a matching parked attempt can restore Codex lineage or accept the prompt. Bulk messages, Telegram replies and remote restarts carry the attempt from their first task lookup through dispatch. They check the caller’s current access before acting.
+
 ## Evidence
+
+- PR #1621 CI run `c387d03f-e4bc-47df-b485-9d4bdaf5ed0e` failed the workspace Clippy check on two `expect()` calls in the replacement-turn fixture. The same check reproduced both findings locally and passed after the fixture asserted each store result with its error detail. All five dispatch tests that use the fixture passed in run `5bfa3015-04c0-48ba-b8b7-ab198d8c4fea`.
+
+- Independent review approved `60166b3d725bcfc6687b7818782203b50aa1fc3e` against dev `00ff06cbf`. It traced parked messages to the recorded attempt under the launch lock and checked the separate ended-run, capacity and Move paths introduced on dev. Local run `a27d66ee-a845-4982-be86-e9408c6e3c0b` passed 330 of 331 tests with a previously built fake agent. The closed-conversation test timed out after interrupting a resumed Codex turn. The current fixture writes Codex’s `turn_aborted` record for that interrupt.
+
+- After `cargo build -p fake-agent`, the same 331 tests all passed in run `bee02f70-f2a4-4ad0-ae0a-3416cd2848dd` on the reviewed code. The reopened Codex conversation returned to Waiting after interruption. The suite also covered native rollout reuse, rejection of late parked messages, capacity and Move, and the remote and Telegram paths.
+
+- The dispatch fix’s mutation run listed 46 changes, caught 10, and found 36 unviable. None were missed, timed out or left untested at the 30-minute bound. Its unmutated baseline passed all 3,370 selected tests.
+- For the following screen-saving step, isolated run `4e5541b2-94cb-4c3b-bf7a-56b1d029c3cc` reproduced three failures on the approved dispatch code. A wake succeeded while the old screen was still being published, another started while an exit reader still held the old run, and a late exit reader overwrote the old run’s saved screen after resume. The successor’s held PR lookup allowed the owner to resume as expected.
+
+- The final test-hook change listed 4 mutations. All 4 were unviable because their generated replacements could not construct `AppResult<TaskSummary>`. Its unmutated baseline passed all 3,364 selected tests.
+
+- Independent review approved `f5fa3bda47763275e51e7d9dd82d85765e8927b5` against dev `e19ea9f18`. Integrated nextest run `7e90b82a-bf36-4581-9996-eb98d886b7df` passed all 280 selected Rust tests. All five dispatch regressions also passed together in one threaded test process. The integrated base’s 40 local CD-script tests passed, as did repository contracts and Rust formatting. Vidoc was disabled.
+
+- With the two parked-attempt checks removed only for the reproduction, run `6c0b82ed-75ae-4457-9067-9a1467084e04` failed both named-teammate regressions. The browser returned HTTP 200 and cleared the replacement question. Bulk reported the replacement question as answered. Both requests omitted the optional question timestamp and the same teammate was named on both turns.
+
+- Run `1ef5966e-9f82-47d9-b4b7-e2033fa8344a` on `89c62550c` passed all 276 selected parking, provider, remote MCP, Telegram, message, exit and delivery tests. The three dispatch regressions also passed together under threaded libtest. Independent review traced the three public paths through authorization and admission, and requested cases for a named teammate and distinct per-test hook keys.
+
+- On `fb5da81b0`, three dispatch regressions failed in run `7bcd2287-0ac3-4d53-8ef4-1e594e4eb4ef`. Bulk reported the replacement target as resumed, Telegram acknowledged the stale reply with “Sent to #1”, and remote restart moved the replacement to Waiting for capacity. The tests use two recorded attempts, an outstanding decision on the second and an exhausted test subscription.
+- The earlier identity suite passed all 201 scoped tests. Its first mutation campaign stopped during the unmutated baseline when the real-PTY admission regression timed out. No mutants were tested in that run. The regression now drives one accepted park at a time, observes its terminal exit and reports an early message refusal directly.
+
+- Parked attempt identity and final-screen ownership have separate delivery steps. The identity change retains the existing supervisor exit path. The combined prototype at `89fdfcecb` incorrectly recorded a confirmed clean host exit as lost when its optional model value could not be decoded. The exit ownership step preserves that outcome alongside both delayed-reader regressions.
+
+- At `44b61d2de` a message selected before caller preflight still started a third turn, and holding a successor’s PR check caused a false screen-saving timeout. Both public-path regressions passed on `d00c1a484`, along with all 203 selected parking, provider, message, handoff and chain tests. Independent review then reproduced an exit reader overwriting the lost attempt’s final screen with the next turn, both when the park intent was already taken and when the old exit arrived after the new host attached.
+
+- Two real-PTY tests failed on the prototype at `dc1fec449` because an old message started a third turn. At `44b61d2de` both passed, together with deadline/retry, Codex rollout and capacity coverage. All 149 parking, Codex and Antigravity integration tests passed on that head. Independent review identified an earlier observation in the public message handler and a later successor lookup after terminal exit.
+
+- Independent review of the combined Continue prototype found that a second turn could resume and park between preflight and launch. The parked-message regression holds a real PTY reader before screen restoration and also exercises admission after the replacement reader finishes. Continue after Stop is tracked separately.
+
+- PR #1597 landed on dev at `03661c9dc`. PR run `bfbedf0a-3e2a-4aec-bf84-15a2f70b8ab6` passed on `84a430398`. Train run `2efca3b9-8474-44d2-aa83-7a1e74ae94fe` passed quality, both test shards and browser E2E. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/03661c9dcf52a7ad1d4562f0873a8b9cd8cc994e)
+- Independent review of `5656ac726` found that Continue could queue after Stop recorded the task as resting, before the run reader finished its task transition. The continuation ordering and merge admission are now separate deliveries. Merge admission remains open.
 
 - Independent review approved the parking decision at `9bdbd5bc1e8c6be3b41713e904f4ed21563166d7`. All seven parking controls passed independently on the prior binary with the same candidate behavior. The full product tree for this delivery matches `e740eb5db`. The bounded mutation run and its focused replays continue separately. Vidoc was disabled. The historical Quartio instance needs a release containing the change for a live check.
 

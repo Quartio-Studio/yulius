@@ -10,6 +10,14 @@ use std::path::Path;
 /// Where the server pauses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Point {
+    /// A question’s answer passed task authorization, before the current task is read.
+    AnswerAuthorized,
+    /// A bulk message, Telegram reply or remote restart is about to dispatch a selected task.
+    SelectedTaskDispatched,
+    /// An owner's message selected its parked task before caller preflight.
+    ParkedMessageSelected,
+    /// A parked resume prepared to start before acquiring the launch lock.
+    ParkedResumePrepared,
     /// A parked read classified the task, before the response renders its plan. Keyed by task ID.
     ParkedStatusRead,
     /// A queued row reads session capacity to explain its wait. Keyed by task ID.
