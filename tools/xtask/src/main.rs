@@ -269,15 +269,16 @@ fn execute_in(task: &str, after_quick: bool) -> io::Result<()> {
             // Its own stage, first (the quarantine's listing builds the tests), so the test
             // stage's history goes on in the shards' job (SPEC-137).
             stage("test");
-            let mut args = vec![
-                "nextest",
-                "run",
-                "--locked",
-                "--workspace",
-                "--all-features",
-                "--profile",
-                "ci",
-            ];
+            let archive = env::var("YULIUS_CI_TEST_ARCHIVE").ok();
+            let mut args = vec!["nextest", "run"];
+            if let Some(archive) = archive.as_deref() {
+                // The archive carries all build options. Fixtures and JUnit belong to this
+                // shard's checkout even when the other shard built the binaries.
+                args.extend(["--archive-file", archive, "--workspace-remap", "."]);
+            } else {
+                args.extend(["--locked", "--workspace", "--all-features"]);
+            }
+            args.extend(["--profile", "ci"]);
             // Tests Yulius CI quarantined as flaky are left out (SPEC-497 OFC-002), each in its
             // own binary where this head builds it.
             let names = std::env::var("YULIUS_CI_QUARANTINE").unwrap_or_default();

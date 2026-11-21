@@ -305,3 +305,42 @@ fn the_checkers_tests_run_beside_the_build() -> std::io::Result<()> {
     assert!(docs < stage, "{text}");
     Ok(())
 }
+
+#[cfg(unix)]
+#[test]
+fn both_shards_list_quarantine_and_run_using_the_archive() -> std::io::Result<()> {
+    let stubs = Stubs::new("archive")?;
+    let record = stubs.dir.join("archive-calls");
+    for index in 1..=2 {
+        std::fs::write(&record, "")?;
+        let out = Command::new(env!("CARGO_BIN_EXE_xtask"))
+            .arg("test")
+            .env("CARGO", stubs.dir.join("cargo"))
+            .env("PYTHON", stubs.dir.join("python"))
+            .env("XT_RECORD", &record)
+            .env("YULIUS_CI_TEST_ARCHIVE", "test build.tar.zst")
+            .env("YULIUS_CI_MATRIX", format!("{index}/2"))
+            .env("YULIUS_CI_QUARANTINE", "flaky_test")
+            .output()?;
+        assert!(out.status.success(), "{out:?}");
+        let calls = std::fs::read_to_string(&record)?;
+        for command in ["list", "run"] {
+            assert!(calls.contains(&format!(
+                "cargo nextest {command} --archive-file test build.tar.zst --workspace-remap . --profile ci"
+            )), "{calls}");
+        }
+        assert!(
+            calls.contains(&format!(
+                "-E not (test(=flaky_test)) --partition hash:{index}/2"
+            )),
+            "{calls}"
+        );
+        assert!(!calls.contains("--workspace --all-features"), "{calls}");
+        assert_eq!(
+            calls.contains("python scripts/doctests.py"),
+            index == 1,
+            "{calls}"
+        );
+    }
+    Ok(())
+}
