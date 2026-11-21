@@ -27,6 +27,7 @@ use crate::delivery::{RepoReadError, read_spec};
 use crate::error::{AppError, AppResult};
 use crate::model::{PauseKind, TaskMode, TaskRecord};
 use crate::ports::store::TaskFieldUpdate;
+use crate::supervisor::RunStart;
 
 /// Consecutive Stop-hook blocks per turn before the task needs attention (AC-DSC-3).
 pub const MAX_GATE_BLOCKS: u32 = 3;
@@ -62,7 +63,7 @@ pub(crate) fn defer_task_update(task: &yulius_domain::ids::TaskId, steps: bool) 
         .unwrap_or(false)
 }
 
-/// Identifies a carried Stop instruction when a new run submits its launch prompt.
+/// The agent-facing introduction to the goal's Stop instruction.
 pub(crate) const GOAL_CONTINUATION: &str = "Continue the authorized goal. ";
 /// Largest repository document read for the briefing or the gate.
 const MAX_DOC_BYTES: u64 = 256 * 1024;
@@ -217,13 +218,13 @@ impl App {
             return Err(AppError::NotFound);
         };
         // Capture the ordering boundary before the token lookup yields to a viewer key.
-        let keys = (event == events::USER_PROMPT_SUBMIT).then(|| self.viewer_keys_at_submit());
         // Never later than now: the client's clock is the host's (loopback only), and a time
         // from the future would order nothing. One not after the epoch is none (SPEC-346 LPH-001).
         let now = self.now().0;
         let sent = sent_ms
             .filter(|sent| *sent > 0)
             .map_or(now, |sent| sent.min(now));
+        let keys = (event == events::USER_PROMPT_SUBMIT).then(|| self.viewer_keys_at_submit(sent));
         let ctx = self.agent_context(token).await?;
         let key = keys
             .and_then(|keys| keys.get(&ctx.task.id).copied())
@@ -475,6 +476,7 @@ impl App {
                 runtime.typed_at_ms.fetch_max(inherited, Ordering::SeqCst);
                 mark.written = true;
             } else {
+                self.consume_viewer_keys(&ctx.task.id, keys);
                 if emptied >= runtime.box_emptied_ms.fetch_max(emptied, Ordering::SeqCst) {
                     runtime.emptied_seq.fetch_max(keys, Ordering::SeqCst);
                 }
@@ -1466,17 +1468,15 @@ impl App {
         let gate_continues = continuation.is_some();
         let continues = gate_continues || (task.follows_goal() && !failed);
         if let Some(account) = move_reviewer {
-            let continuation = continuation.cloned();
+            let start = RunStart::Resume {
+                prompt: continuation.cloned(),
+            }
+            .with_goal_continuation(task.mode == TaskMode::Goal);
             let app = Arc::clone(self);
             let task_id = task.id.clone();
             tokio::spawn(async move {
                 if let Err(err) = app
-                    .switch_task_now(
-                        &task_id,
-                        Some(account),
-                        crate::review::REVIEW_RESUME,
-                        continuation,
-                    )
+                    .switch_with(&task_id, Some(account), crate::review::REVIEW_RESUME, start)
                     .await
                 {
                     tracing::warn!(error = %err, task = %task_id, "the move for a cut-off reviewer failed");
@@ -1495,13 +1495,15 @@ impl App {
                     && self.goal_is_open(&task.id)
                     && !runtime.goal_achieved.load(Ordering::SeqCst)))
         {
-            let continuation = continuation.cloned();
+            let start = RunStart::Resume {
+                prompt: continuation.cloned(),
+            }
+            .with_goal_continuation(task.mode == TaskMode::Goal);
             let app = Arc::clone(self);
             let task_id = task.id.clone();
             let run = (ctx.attempt.id.clone(), current.clone());
             tokio::spawn(async move {
-                app.move_to_claude_code(&task_id, run, version, continuation)
-                    .await;
+                app.move_to_claude_code(&task_id, run, version, start).await;
             });
             return Ok(self.hold_for(&task.id));
         }
@@ -1521,13 +1523,16 @@ impl App {
             (Decision::Switch { account }, reason) => {
                 // The agent waits here while it moves; the resumed session gets the gate's
                 // reasons as its prompt when the gate would have kept it working.
-                let continuation = continuation.cloned();
+                let start = RunStart::Resume {
+                    prompt: continuation.cloned(),
+                }
+                .with_goal_continuation(task.mode == TaskMode::Goal);
                 let app = Arc::clone(self);
                 let task_id = task.id.clone();
                 let reason = format!("{reason:?}");
                 tokio::spawn(async move {
                     if let Err(err) = app
-                        .switch_task_now(&task_id, Some(account), &reason, continuation)
+                        .switch_with(&task_id, Some(account), &reason, start)
                         .await
                     {
                         tracing::warn!(error = %err, task = %task_id, "switch at the turn boundary failed");

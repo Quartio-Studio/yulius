@@ -674,6 +674,10 @@ pub enum QueuedStartKind {
     Fresh,
     /// A resume of the task's latest session.
     Resume,
+    /// A goal Stop continuation admitted in a fresh session.
+    GoalFresh,
+    /// A goal Stop continuation admitted in a resumed session.
+    GoalResume,
     /// A resume past the usage limit that cut the turn (SPEC-034).
     AfterLimit,
 }
@@ -685,6 +689,8 @@ impl QueuedStartKind {
         match self {
             Self::Fresh => "fresh",
             Self::Resume => "resume",
+            Self::GoalFresh => "goal_fresh",
+            Self::GoalResume => "goal_resume",
             Self::AfterLimit => "after_limit",
         }
     }
@@ -695,6 +701,8 @@ impl QueuedStartKind {
         match text {
             "fresh" => Some(Self::Fresh),
             "resume" => Some(Self::Resume),
+            "goal_fresh" => Some(Self::GoalFresh),
+            "goal_resume" => Some(Self::GoalResume),
             "after_limit" => Some(Self::AfterLimit),
             _ => None,
         }

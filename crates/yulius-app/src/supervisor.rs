@@ -6,7 +6,7 @@
 //! - every attempt records exactly one terminal outcome;
 //! - a record that says "running" is never respawned automatically after a restart.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -885,6 +885,16 @@ pub enum RunStart {
         /// Continuation prompt.
         prompt: Option<String>,
     },
+    /// A fresh session carrying an automatic goal Stop instruction.
+    GoalFresh {
+        /// Instruction issued by the goal's Stop gate.
+        prompt: String,
+    },
+    /// A resumed session carrying an automatic goal Stop instruction.
+    GoalResume {
+        /// Instruction issued by the goal's Stop gate.
+        prompt: String,
+    },
     /// Resume the latest provider session past the usage limit that cut its turn (SPEC-034):
     /// the transcript steps back over the limit and the agent redoes the lost turn by itself,
     /// with nothing typed or sent.
@@ -892,17 +902,46 @@ pub enum RunStart {
 }
 
 impl RunStart {
+    fn prompt(&self) -> Option<&str> {
+        match self {
+            Self::Fresh { prompt } | Self::Resume { prompt } => prompt.as_deref(),
+            Self::GoalFresh { prompt } | Self::GoalResume { prompt } => Some(prompt),
+            Self::AfterLimit => None,
+        }
+    }
+
+    /// Mark a prompt supplied by the goal's Stop gate, where its source is known.
+    pub(crate) fn with_goal_continuation(self, issued_by_goal: bool) -> Self {
+        match (self, issued_by_goal) {
+            (
+                Self::Fresh {
+                    prompt: Some(prompt),
+                },
+                true,
+            ) => Self::GoalFresh { prompt },
+            (
+                Self::Resume {
+                    prompt: Some(prompt),
+                },
+                true,
+            ) => Self::GoalResume { prompt },
+            (start, _) => start,
+        }
+    }
+
     /// This start for `account`, as the queue keeps it for a task whose start has to wait
     /// (SPEC-483 QST-001).
     fn kept(&self, account: Option<&AccountId>) -> QueuedStart {
-        let (kind, prompt) = match self {
-            Self::Fresh { prompt } => (QueuedStartKind::Fresh, prompt.clone()),
-            Self::Resume { prompt } => (QueuedStartKind::Resume, prompt.clone()),
-            Self::AfterLimit => (QueuedStartKind::AfterLimit, None),
+        let kind = match self {
+            Self::Fresh { .. } => QueuedStartKind::Fresh,
+            Self::Resume { .. } => QueuedStartKind::Resume,
+            Self::GoalFresh { .. } => QueuedStartKind::GoalFresh,
+            Self::GoalResume { .. } => QueuedStartKind::GoalResume,
+            Self::AfterLimit => QueuedStartKind::AfterLimit,
         };
         QueuedStart {
             kind,
-            prompt,
+            prompt: self.prompt().map(str::to_owned),
             account_id: account.cloned(),
         }
     }
@@ -916,6 +955,14 @@ impl RunStart {
             QueuedStartKind::Resume => Self::Resume {
                 prompt: kept.prompt,
             },
+            QueuedStartKind::GoalFresh => Self::Fresh {
+                prompt: kept.prompt,
+            }
+            .with_goal_continuation(true),
+            QueuedStartKind::GoalResume => Self::Resume {
+                prompt: kept.prompt,
+            }
+            .with_goal_continuation(true),
             QueuedStartKind::AfterLimit => Self::AfterLimit,
         };
         (start, kept.account_id)
@@ -950,9 +997,8 @@ const LIVE_WITH_A_RUN: [TaskStatus; 4] = [
 /// Supervisor-owned per-process state.
 #[derive(Default)]
 pub struct SupervisorState {
-    /// Latest viewer key per task. A submit keeps an immutable snapshot through its token
-    /// lookup. A later key goes into the next snapshot and still belongs to the next draft.
-    viewer_keys: Mutex<Arc<HashMap<TaskId, (i64, u64)>>>,
+    /// Unsubmitted viewer key times and sequence numbers. Only ordering metadata is kept.
+    viewer_keys: Mutex<HashMap<TaskId, VecDeque<(i64, u64)>>>,
     input_seq: AtomicU64,
     runtimes: Mutex<HashMap<TaskId, Arc<TaskRuntime>>>,
     /// Shared, so an install on the blocking pool can own its guard (SPEC-507 SKR-005).
@@ -1550,30 +1596,55 @@ impl App {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let seq = self.supervisor.input_seq.fetch_add(1, Ordering::SeqCst) + 1;
-        Arc::make_mut(&mut keys).insert(task.clone(), (at, seq));
+        let pending = keys.entry(task.clone()).or_default();
+        if let Some(last) = pending.back_mut()
+            && last.0 == at
+        {
+            last.1 = seq;
+        } else {
+            // Preserve the first key of long drafts and recent keys for delayed callbacks.
+            // One timestamp suffices for all keys observed in the same millisecond.
+            const MAX_KEY_TIMES: usize = 256;
+            if pending.len() == MAX_KEY_TIMES {
+                pending.remove(1);
+            }
+            pending.push_back((at, seq));
+        }
         seq
     }
 
-    pub(crate) fn viewer_keys_at_submit(&self) -> Arc<HashMap<TaskId, (i64, u64)>> {
+    pub(crate) fn viewer_keys_at_submit(&self, sent: i64) -> HashMap<TaskId, (i64, u64)> {
         self.supervisor
             .viewer_keys
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+            .iter()
+            .filter_map(|(task, keys)| {
+                keys.iter()
+                    .rev()
+                    .find(|(at, _)| *at <= sent)
+                    .map(|key| (task.clone(), *key))
+            })
+            .collect()
     }
 
-    fn clear_viewer_key(&self, task: &TaskId) {
+    pub(crate) fn consume_viewer_keys(&self, task: &TaskId, through: u64) {
         let mut keys = self
             .supervisor
             .viewer_keys
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Arc::make_mut(&mut keys).remove(task);
+        if let Some(pending) = keys.get_mut(task) {
+            pending.retain(|(_, seq)| *seq > through);
+            if pending.is_empty() {
+                keys.remove(task);
+            }
+        }
     }
 
     /// Drops a deleted task's runtime state.
     pub(crate) fn forget_runtime(&self, task: &TaskId) {
-        self.clear_viewer_key(task);
+        self.consume_viewer_keys(task, u64::MAX);
         if let Ok(mut map) = self.supervisor.runtimes.lock() {
             map.remove(task);
         }
@@ -1959,7 +2030,9 @@ impl App {
             // A fresh start is for a task that waits to start (queued, paused for capacity). One
             // that ended meanwhile — closed before the start spawned at its creation ran — stays
             // ended: only Continue (a resume) brings a resting task back.
-            if task.status.is_resting() && matches!(start, RunStart::Fresh { .. }) {
+            if task.status.is_resting()
+                && matches!(start, RunStart::Fresh { .. } | RunStart::GoalFresh { .. })
+            {
                 tracing::info!(
                     task = %task.id,
                     status = task.status.as_str(),
@@ -2124,7 +2197,10 @@ impl App {
             }
             self.publish_task(&task.id).await;
         }
-        if matches!(start, RunStart::Resume { .. } | RunStart::AfterLimit) {
+        if matches!(
+            start,
+            RunStart::Resume { .. } | RunStart::GoalResume { .. } | RunStart::AfterLimit
+        ) {
             // Imported sessions get a native transcript and a worktree from the imported state.
             self.prepare_imported_resume(&task.id).await?;
         }
@@ -2151,14 +2227,17 @@ impl App {
             // No subscription has capacity: the task waits before starting, without a process
             // (ROT-010); the resume loop starts it when capacity returns. A turn a limit cut
             // keeps its `limit` pause, so it still resumes past the limit (SPEC-034).
-            let kind = if matches!(start, RunStart::AfterLimit) {
-                PauseKind::Limit
-            } else {
-                PauseKind::Start
+            let kind = match start {
+                RunStart::AfterLimit => PauseKind::Limit,
+                RunStart::GoalFresh { .. } | RunStart::GoalResume { .. } => PauseKind::Turn,
+                _ => PauseKind::Start,
             };
             // A resume's text (a held prompt a move carried, SPEC-447) is typed when it starts.
             let continuation = match &start {
                 RunStart::Resume { prompt } => prompt.clone(),
+                RunStart::GoalFresh { prompt } | RunStart::GoalResume { prompt } => {
+                    Some(prompt.clone())
+                }
                 _ => None,
             };
             self.pause_task(&task.id, kind, None, continuation).await?;
@@ -2229,12 +2308,13 @@ impl App {
         // here, or runs again for another subscription, still tells its session. A fresh
         // session has none: a run is resumed in its own session only.
         let unfinished = match (&start, &previous) {
-            (RunStart::Resume { .. } | RunStart::AfterLimit, Some(_)) => {
-                self.runtime(&task.id).with_workflows(|workflows| {
-                    workflows.relaunched();
-                    workflows.runs()
-                })
-            }
+            (
+                RunStart::Resume { .. } | RunStart::GoalResume { .. } | RunStart::AfterLimit,
+                Some(_),
+            ) => self.runtime(&task.id).with_workflows(|workflows| {
+                workflows.relaunched();
+                workflows.runs()
+            }),
             _ => {
                 self.runtime(&task.id)
                     .with_workflows(|workflows| *workflows = Default::default());
@@ -2246,7 +2326,10 @@ impl App {
         // Only while its round is still open; a session that starts afresh has none (review
         // round 1 of fix 7).
         let reviewer = match (&start, &previous) {
-            (RunStart::Resume { .. } | RunStart::AfterLimit, Some(_)) => {
+            (
+                RunStart::Resume { .. } | RunStart::GoalResume { .. } | RunStart::AfterLimit,
+                Some(_),
+            ) => {
                 let cut = self.runtime(&task.id).cut_off_reviewer.lock().await.clone();
                 match cut {
                     Some(cut) => {
@@ -2277,10 +2360,10 @@ impl App {
         };
         let told = !unfinished.is_empty() || reviewer.is_some();
         let (mode, launch_kind) = match (&start, &previous) {
-            (RunStart::Resume { prompt }, Some(prev)) => (
+            (RunStart::Resume { .. } | RunStart::GoalResume { .. }, Some(prev)) => (
                 SessionMode::Resume {
                     session_id: prev.session_id.clone(),
-                    prompt: resumes(prompt.as_deref()),
+                    prompt: resumes(start.prompt()),
                     continue_interrupted: false,
                 },
                 LaunchKind::Resume,
@@ -2294,12 +2377,12 @@ impl App {
                 LaunchKind::Resume,
             ),
             // Without a recorded session there is nothing to resume: the task starts afresh.
-            (RunStart::Resume { .. } | RunStart::AfterLimit, None)
-            | (RunStart::Fresh { .. }, _) => {
-                let prompt = match &start {
-                    RunStart::Resume { prompt } | RunStart::Fresh { prompt } => prompt.clone(),
-                    RunStart::AfterLimit => None,
-                };
+            (
+                RunStart::Resume { .. } | RunStart::GoalResume { .. } | RunStart::AfterLimit,
+                None,
+            )
+            | (RunStart::Fresh { .. } | RunStart::GoalFresh { .. }, _) => {
+                let prompt = start.prompt().map(str::to_owned);
                 // In goal mode the task starts with its `/goal` as the launch prompt: the whole
                 // request, each attached file at its place, and the definition of done in one
                 // first message, with nothing typed (SPEC-011, SPEC-117, SPEC-212). Otherwise the
@@ -2687,8 +2770,10 @@ impl App {
         // process. Charge its continuation here, after admission and before the new
         // process can submit it. A queued start or a capacity poll spends no attempt.
         if task.mode == TaskMode::Goal
-            && matches!(&start, RunStart::Fresh { prompt: Some(prompt) } | RunStart::Resume { prompt: Some(prompt) }
-                if prompt.starts_with(crate::hooks::GOAL_CONTINUATION))
+            && matches!(
+                start,
+                RunStart::GoalFresh { .. } | RunStart::GoalResume { .. }
+            )
         {
             store
                 .update_task(
@@ -2780,7 +2865,7 @@ impl App {
         // Typing from now on, once viewers can write to this run, is a person's draft in it
         // (SPEC-068): its prompt box starts empty (SPEC-468 CCF-010).
         let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
-        self.clear_viewer_key(&task.id);
+        self.consume_viewer_keys(&task.id, u64::MAX);
         runtime.run_starts(self.now().0).await;
         self.attach_run(&task.id, &attempt, &host_token).await?;
         runtime.hub.state_changed();
@@ -5304,7 +5389,11 @@ impl App {
             .await
     }
 
-    pub(crate) async fn switch_with(
+    /// Switches a live task with an explicitly selected session start.
+    ///
+    /// # Errors
+    /// Refuses an unavailable account or a task that cannot switch.
+    pub async fn switch_with(
         self: &Arc<Self>,
         task_id: &TaskId,
         account: Option<AccountId>,
@@ -5441,7 +5530,7 @@ impl App {
         // The policy may pick the same subscription (a limit that reset): no "another" then.
         let elsewhere = account.is_some()
             && attempt.as_ref().map(|a| a.account_id.as_ref()) != Some(account.as_ref());
-        let fresh = matches!(start, RunStart::Fresh { .. });
+        let fresh = matches!(start, RunStart::Fresh { .. } | RunStart::GoalFresh { .. });
         // A restart for a newer Claude Code says that, in its one line (SPEC-461 CCM-013).
         let for_claude_code = reason == crate::claude_code::MOVE_REASON;
         if for_claude_code {

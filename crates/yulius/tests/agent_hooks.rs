@@ -2933,8 +2933,12 @@ async fn a_delayed_goal_submit_retains_the_owner_and_the_next_draft() -> TestRes
     app.record_typing(&f.task, &owner);
     f.h.clock.0.fetch_add(1, Ordering::SeqCst);
     let sent = app.now().0;
-    f.h.clock.0.fetch_add(1, Ordering::SeqCst);
-    app.record_typing(&f.task, &owner);
+    // A long next draft exceeds the bounded recent-key history. Its input must
+    // preserve the first key of the instruction that was already sent.
+    for _ in 0..300 {
+        f.h.clock.0.fetch_add(1, Ordering::SeqCst);
+        app.record_typing(&f.task, &owner);
+    }
     let input = yulius_contracts::hooks::HookInput {
         prompt: Some("Verify dev".into()),
         ..Default::default()

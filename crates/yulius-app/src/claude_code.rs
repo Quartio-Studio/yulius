@@ -28,6 +28,7 @@ use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::{TaskMode, TaskRecord};
 use crate::ports::agent_cli::{AgentCli, AgentCliStatus, CheckResult, CliSource};
+use crate::supervisor::RunStart;
 
 /// The audit target of channel changes (`claude_code.channel`).
 pub const CLAUDE_CODE_TARGET: &str = "instance:claude-code";
@@ -564,7 +565,7 @@ impl App {
         task_id: &TaskId,
         (from, account): (AttemptId, Option<AccountId>),
         version: Version,
-        prompt: Option<String>,
+        start_run: RunStart,
     ) {
         let Some(services) = self.agent_cli.get() else {
             return;
@@ -594,7 +595,7 @@ impl App {
             return;
         };
         if let Err(err) = self
-            .switch_task_now(task_id, account, MOVE_REASON, prompt)
+            .switch_with(task_id, account, MOVE_REASON, start_run)
             .await
         {
             tracing::warn!(error = %err, task = %task_id, %version, "the session did not move to the new Claude Code");
@@ -828,8 +829,13 @@ impl App {
         if !matches!(store.task(task_id).await, Ok(Some(task)) if idle(&task)) {
             return;
         }
-        self.move_to_claude_code(task_id, (attempt.id, attempt.account_id), version, None)
-            .await;
+        self.move_to_claude_code(
+            task_id,
+            (attempt.id, attempt.account_id),
+            version,
+            RunStart::Resume { prompt: None },
+        )
+        .await;
     }
 
     /// `PUT /api/admin/claude-code/channel` (superadmin, SPEC-461 CCM-009): follows `channel`

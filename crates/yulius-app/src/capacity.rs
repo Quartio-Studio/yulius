@@ -910,8 +910,19 @@ impl App {
                                 PauseKind::Turn => self.stop_continuation(&task).await,
                                 PauseKind::Limit | PauseKind::Start => None,
                             };
-                            self.switch_task_now(&task.id, account, &reason, continuation)
-                                .await
+                            self.switch_with(
+                                &task.id,
+                                account,
+                                &reason,
+                                RunStart::Resume {
+                                    prompt: continuation,
+                                }
+                                .with_goal_continuation(
+                                    task.mode == crate::model::TaskMode::Goal
+                                        && kind == PauseKind::Turn,
+                                ),
+                            )
+                            .await
                         }
                     };
                     if let Err(err) = switched {
@@ -948,6 +959,9 @@ impl App {
                             return Resume::Waiting(None);
                         }
                     };
+                    let start = start.with_goal_continuation(
+                        task.mode == crate::model::TaskMode::Goal && pause.kind == PauseKind::Turn,
+                    );
                     if let Err(err) = self.start_run(&task.id, start, account).await {
                         tracing::warn!(error = %err, task = %task.id, "paused task failed to start");
                         // Nothing was resumed: the next task of this round need not wait the

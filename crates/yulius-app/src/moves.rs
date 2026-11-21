@@ -187,6 +187,10 @@ impl App {
             return self.switch_with(task_id, account, reason, start).await;
         }
         let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
+        let goal_stop = task.mode == crate::model::TaskMode::Goal
+            && pause
+                .as_ref()
+                .is_some_and(|pause| pause.kind == PauseKind::Turn);
         let prompt = match pause {
             Some(pause) if pause.kind == PauseKind::Prompt => pause.continuation,
             Some(pause) if pause.kind == PauseKind::Turn => self.stop_continuation(&task).await,
@@ -195,8 +199,13 @@ impl App {
             }
             _ => None,
         };
-        self.switch_with(task_id, account, reason, RunStart::Resume { prompt })
-            .await
+        self.switch_with(
+            task_id,
+            account,
+            reason,
+            RunStart::Resume { prompt }.with_goal_continuation(goal_stop),
+        )
+        .await
     }
 
     /// Says in the task's terminal, in one line, why it left its subscription and where it went

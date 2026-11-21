@@ -723,7 +723,8 @@ fn a_goal_continuation_delivered_by_a_move_counts_once() -> TestResult {
             ..Default::default()
         }, app.now()).await?;
         let prompt = "Continue the authorized goal. The next unfinished step is \"Verify dev\". Record the evidence and update the step when its work is complete.";
-        app.switch_task_now(&id, Some(AccountId::parse("b-second")?), "Capacity", Some(prompt.to_owned())).await?;
+        app.switch_with(&id, Some(AccountId::parse("b-second")?), "Capacity",
+            yulius_app::supervisor::RunStart::GoalResume { prompt: prompt.to_owned() }).await?;
         let second = app.deps.store.live_attempt(&id).await?.ok_or("resumed run")?;
         wait_for("the resumed launch", Duration::from_secs(30), || async {
             std::fs::read_to_string(Path::new(&second.run_dir).join("fake-launch.txt"))
