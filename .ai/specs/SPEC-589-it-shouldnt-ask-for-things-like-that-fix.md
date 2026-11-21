@@ -31,7 +31,8 @@ Earlier user requests establish the ownership rule. Task #534 concerned automate
 - [x] Preserve goal continuation through capacity recovery and a busy browser
 - [x] Track completed background work and concurrent plan progress at Stop
 - [x] Preserve the in-flight turn during spec publication and a requested subscription switch
-- [ ] Distinguish owner input from native goal restoration and preserve prompt-mode rotation
+- [x] Distinguish owner input from native goal restoration and preserve prompt-mode rotation
+- [ ] Keep a submitted owner instruction through concurrent typing and capacity holds
 - [ ] Verify the fix and obtain independent approval
 
 ## Acceptance criteria
@@ -71,3 +72,4 @@ Make the continuation decision where the agent can act on it, at the shared Stop
 - The fourth review at `a46889ab8` showed that restoring a native goal reset the count after the opening turn. A text comparison also classified identical words from the owner as an automatic resume. The public switch test now observes the actual restored goal, submits its generated command and submits the same resume text as a person. Trusted owner messages delivered through the task tool also restore the budget. Four controls failed before the fix, covering native restoration, tool delivery, machine waits and prompt-mode rotation at exhaustion.
 - The shared hook now identifies a fresh owner submission from recorded terminal input. Tool delivery uses its authenticated sender and successful send. Automatic launches, restored goals and background handoffs retain the existing attempts. Prompt-mode rotation still runs at its original place in the spec gate.
 - A frozen whole-change mutation run reported `104 listed, 23 caught, 6 missed, 0 timed out, 18 unviable, 57 not reached` at its 30-minute bound. The six surviving mutations concerned capacity release, input attribution and the deadline for a live browser action. The recovery, owner-input and live-tab tests now check those outcomes. The spec publication test also checks its StepsUpdated event. An earlier follow-up mutation run stopped at its baseline because the browser fixture lacked usable capacity. The live-tab test now provisions capacity and observes the browser request in flight.
+- At `82d06c58c`, all 29 focused Stop, owner-input and recovery controls passed. Clippy passed for the app, store and executable with all targets, all features and warnings denied. The next frozen follow-up mutation run reported `64 listed, 13 caught, 1 missed, 0 timed out, 19 unviable, 31 not reached` at its 30-minute bound. The surviving removal of step publication is covered by the StepsUpdated assertion.

@@ -2862,7 +2862,11 @@ fn a_key_during_submit_context_lookup_keeps_its_mark() -> TestResult {
         .max_blocking_threads(1)
         .build()?
         .block_on(async {
-            let f = fixture().await?;
+            let f = fixture_with_task(None, |task| {
+                task.mode = TaskMode::Goal;
+                task.gate_blocks = 3;
+            })
+            .await?;
             let app = &f.h.app;
             let run = app.agent_context(TOKEN).await?.attempt.run_dir;
             std::fs::create_dir_all(&run)?;
@@ -2901,6 +2905,16 @@ fn a_key_during_submit_context_lookup_keeps_its_mark() -> TestResult {
                 "the submit erased a key received during lookup"
             );
             assert!(app.has_draft(&f.task));
+            assert_eq!(
+                app.deps
+                    .store
+                    .task(&f.task)
+                    .await?
+                    .ok_or("task")?
+                    .gate_blocks,
+                0,
+                "the already-submitted owner prompt starts its own budget"
+            );
             Ok(())
         })
 }

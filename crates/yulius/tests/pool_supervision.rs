@@ -835,6 +835,78 @@ fn a_goal_continuation_budget_survives_a_public_subscription_switch() -> TestRes
         app.hook_event(token, "claude", "UserPromptSubmit", &submit(prompt), None)
             .await?;
         assert_eq!(task(&app, &id).await?.gate_blocks, 0);
+        // An accepted viewer instruction held for capacity belongs to the new work even
+        // when it is delivered by a replacement process with an empty prompt box.
+        let store = &app.deps.store;
+        store
+            .update_task(
+                &id,
+                &yulius_app::ports::store::TaskFieldUpdate {
+                    gate_blocks: Some(3),
+                    ..Default::default()
+                },
+                app.now(),
+            )
+            .await?;
+        let limited = serde_json::json!({"primary": {"used_percent": 98.0,
+            "window_minutes": 300, "resets_at": app.now().plus_millis(HOUR).0}})
+        .to_string();
+        for account in ["a-first", "b-second"] {
+            store
+                .set_account_state(
+                    &AccountId::parse(account)?,
+                    AccountStatus::Ok,
+                    Some(&limited),
+                    None,
+                    app.now(),
+                )
+                .await?;
+        }
+        let fresh = "Verify the corrected revision";
+        let terminal = app.terminal_open(&ctx, id.as_str(), None).await?;
+        app.terminal_input(&ctx, &terminal, format!("{fresh}\r").as_bytes(), false)
+            .await?;
+        assert!(matches!(
+            app.hook_event(token, "claude", "UserPromptSubmit", &submit(fresh), None)
+                .await?,
+            yulius_app::hooks::HookReply::Hold { .. }
+        ));
+        store
+            .set_account_state(
+                &AccountId::parse("a-first")?,
+                AccountStatus::Ok,
+                None,
+                None,
+                app.now(),
+            )
+            .await?;
+        app.resume_round().await;
+        wait_for(
+            "the new owner instruction on the returned subscription",
+            Duration::from_secs(30),
+            || async {
+                store
+                    .live_attempt(&id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|run| {
+                        run.account_id
+                            .as_ref()
+                            .is_some_and(|account| account.as_str() == "a-first")
+                            && std::fs::read_to_string(
+                                Path::new(&run.run_dir).join("fake-launch.txt"),
+                            )
+                            .is_ok_and(|launch| launch.contains(fresh))
+                    })
+            },
+        )
+        .await?;
+        assert_eq!(
+            task(&app, &id).await?.gate_blocks,
+            0,
+            "the held owner instruction"
+        );
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
