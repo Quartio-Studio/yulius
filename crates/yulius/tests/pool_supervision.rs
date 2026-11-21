@@ -670,6 +670,13 @@ fn a_goal_continuation_recovers_a_process_free_capacity_hold() -> TestResult {
             .await?
             .ok_or("replacement")?;
         assert_eq!(moved.account_id, Some(second));
+        let replacement =
+            std::fs::read_to_string(Path::new(&moved.run_dir).join("fake-launch.txt"))?;
+        assert!(
+            replacement.contains("Continue the authorized goal.")
+                && replacement.contains("Verify dev"),
+            "the replacement must receive the unfinished opening turn: {replacement}"
+        );
         assert_eq!(app.deps.store.task(id).await?.ok_or("task")?.gate_blocks, 2);
         stop(&app, id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
