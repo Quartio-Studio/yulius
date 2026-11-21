@@ -77,6 +77,17 @@ pub enum BrowserError {
         /// Last bytes of stderr.
         stderr: String,
     },
+    /// The start failed while a running process of this host held the profile's
+    /// `SingletonLock` (SPEC-593): Chrome hands over to it or waits for it.
+    #[error(
+        "the browser profile is in use by process {pid} on this host (its SingletonLock), so Chromium did not start: {error}"
+    )]
+    ProfileInUse {
+        /// The process the lock names.
+        pid: u32,
+        /// How the start failed.
+        error: Box<BrowserError>,
+    },
     /// CDP failure.
     #[error(transparent)]
     Cdp(#[from] CdpError),
@@ -216,6 +227,7 @@ impl BrowserError {
             | Self::Spawn(_)
             | Self::StartupTimeout { .. }
             | Self::ExitedEarly { .. }
+            | Self::ProfileInUse { .. }
             | Self::Display(_)
             | Self::Network(_) => ViewerErrorCode::Upstream,
             Self::Profile(_) | Self::NotReaped { .. } => ViewerErrorCode::Internal,

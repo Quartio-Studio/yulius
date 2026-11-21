@@ -72,6 +72,8 @@ account is left there. If a session document predates its rollout, transcript re
 file by session ID and the next index refresh saves its path on the same document.
 [SPEC-538](../.ai/specs/SPEC-538-repair-codex-session-documents-when-the.md)
 
+For an explicit restart of stopped Codex work, the supervisor carries a continuation prompt through admission and into the native resume. It derives initial activity from the launch mode and observes subsequent turns in the rollout. [Decision 0429](decisions/0429-continue-stopped-codex-work-in-its-saved-session.md)
+
 ```mermaid
 flowchart LR
   ACC["openai account (vault: auth.json)"] -->|"written before each run"| HOME["sandbox/codex/account: auth.json, config.toml, hooks.json"]
@@ -558,6 +560,7 @@ blocks; `yulius_browser::policy`, written by `yulius host setup`;
 [ADR-0318](decisions/0318-viewers-input-reaches-a-sandbox-browser-only-under-the-hosts-managed-policy.md)).
 The private X display watches for a fresh CLIPBOARD owner after a viewer’s primary click. The viewer receives a one-use offer. Accepting it reads the selection and returns plain text on that socket. [ADR-0423](decisions/0423-a-webpage-copy-returns-through-the-clicking-viewers-connection.md)
 A writer can restart this sandbox's browser through the same grant. The manager reaps its process and display, reuses the profile, and installs the address guard before reopening the tabs. [ADR-0404](decisions/0404-restart-one-sandbox-browser-through-its-viewer-grant.md)
+Before each start the manager removes the profile's Chrome lock entries (`SingletonLock`, `SingletonCookie`, `SingletonSocket`) unless a running process of this host holds the lock, so a profile carried from another host starts. This happens before the display starts (`yulius_browser::profile`). [ADR-0432](decisions/0432-a-browser-start-clears-chrome-profile-locks-no-live-process-holds.md)
 
 Sandbox browsers skip default app installation. On a virtual display they also leave profile
 extensions unloaded, so a later policy reload can take effect without a native administrator
@@ -3262,6 +3265,28 @@ stateDiagram-v2
   - Its record in `bootstrap_upgrades` (migration 0079) is `laid` at creation or before
     onboarding, `claimed` while the task is being made, and `linked` once it is made.
   - Every start finishes a claim left unfinished: it adopts a task made since, else makes it.
+
+### Yulius's own staging
+
+Yulius's own `[cd.dev]` deploys to a staging VM, a Yulius instance no person relies on
+([decision 0430](decisions/0430-yuliuss-staging-builds-in-cds-builder-and-installs-a-kept-release-with-its-store.md),
+[SPEC-591](../.ai/specs/SPEC-591-yulius-gets-its-own-staging-instance-and.md); operations in
+[Yulius's own staging VM](operations.md#yuliuss-own-staging-vm)). The scripts are `scripts/cd/`,
+the build `deploy/build/Dockerfile`, and the tests `scripts/test_cd.py`, which run against a fake
+root. Production is still a promotion of `dev` to `main` that each instance installs through
+its update helper (decision 0264).
+
+```mermaid
+flowchart LR
+  RUN["dev CD run (sandbox)"] -->|"build.sh: docker build, Ubuntu 24.04"| BIN["release binary (YULIUS_CD_CACHE, last 10)"]
+  BIN -->|"ssh, pinned host key: upload by SHA-256"| KEPT["VM: /var/lib/yulius-releases/&lt;commit&gt;"]
+  RUN -->|"remote.sh activate"| CHK["the new binary migrates a copy of the live store: no rows lost"]
+  CHK --> SW["stop yulius.service, keep the replaced binary and its store, install, start"]
+  SW -->|"/internal/version = commit"| OK["recorded current"]
+  SW -->|"no answer in 2 min"| BACK["previous binary and store put back"]
+  OK --> VER["verify: commit, HTTPS /healthz, contained doctor, store check and schema, Docker smoke"]
+  VER --> DRILL["Yulius's drill: rollback.sh back (its own store across a schema change), verify, forward, verify"]
+```
 
 ### Rollback
 

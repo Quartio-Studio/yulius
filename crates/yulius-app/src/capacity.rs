@@ -455,7 +455,7 @@ impl App {
             // A start with no account to run on waits for one to be connected, and says so
             // (SPEC-246 CLA-004); otherwise (or when the accounts cannot be read) the pool is only
             // out of capacity.
-            let accounts = if kind == PauseKind::Start {
+            let accounts = if !kind.holds_process() {
                 self.agent_accounts(task.harness.provider())
                     .await
                     .unwrap_or(crate::account_gate::AgentAccounts::Usable)
@@ -829,11 +829,22 @@ impl App {
         if !self.pause_open(pause).await {
             return Resume::Gone;
         }
+        crate::race::reached(
+            crate::race::Point::CapacityPauseObserved,
+            std::path::Path::new(pause.task_id.as_str()),
+        );
         let store = &self.deps.store;
         let task = match store.task(&pause.task_id).await {
             Ok(Some(task)) if task.status == TaskStatus::WaitingCapacity => task,
             Ok(_) => {
-                self.end_pause(&pause.task_id, "ended").await;
+                crate::race::reached(
+                    crate::race::Point::CapacityStaleCleanup,
+                    std::path::Path::new(pause.task_id.as_str()),
+                );
+                if let Err(err) = self.end_stale_pause(pause).await {
+                    tracing::warn!(error = %err, task = %pause.task_id, "could not close the observed capacity pause");
+                    return Resume::Waiting(None);
+                }
                 return Resume::Gone;
             }
             Err(_) => return Resume::Waiting(None),
@@ -908,7 +919,7 @@ impl App {
                             let continuation = match kind {
                                 PauseKind::Prompt => pause.continuation.clone(),
                                 PauseKind::Turn => self.stop_continuation(&task).await,
-                                PauseKind::Limit | PauseKind::Start => None,
+                                PauseKind::Limit | PauseKind::Start | PauseKind::FreshStart => None,
                             };
                             self.switch_with(
                                 &task.id,
@@ -943,6 +954,9 @@ impl App {
                         pause.continuation.clone()
                     };
                     let start = match store.provider_sessions(&task.id).await {
+                        Ok(_) if pause.kind == PauseKind::FreshStart => RunStart::Fresh {
+                            prompt: pause.continuation.clone(),
+                        },
                         Ok(_)
                             if pause.kind == PauseKind::Prompt
                                 && self.held_opening(&task.id).await =>
@@ -962,11 +976,17 @@ impl App {
                     let start = start.with_goal_continuation(
                         task.mode == crate::model::TaskMode::Goal && pause.kind == PauseKind::Turn,
                     );
-                    if let Err(err) = self.start_run(&task.id, start, account).await {
-                        tracing::warn!(error = %err, task = %task.id, "paused task failed to start");
-                        // Nothing was resumed: the next task of this round need not wait the
-                        // stagger for it.
-                        return Resume::Waiting(None);
+                    crate::race::reached(
+                        crate::race::Point::CapacityStartReady,
+                        std::path::Path::new(task.id.as_str()),
+                    );
+                    match self.start_paused_run(pause, start, account).await {
+                        Ok(true) => {}
+                        Ok(false) => return Resume::Gone,
+                        Err(err) => {
+                            tracing::warn!(error = %err, task = %task.id, "paused task failed to start");
+                            return Resume::Waiting(None);
+                        }
                     }
                 }
                 Resume::Resumed
@@ -983,8 +1003,25 @@ impl App {
         self.prompt_waits_for_turns_end(task_id, prompts_before)
     }
 
+    /// An ended task may already have continued into a different pause by the time the
+    /// worker cleans up. End the observed row and its observed subscription request only.
+    async fn end_stale_pause(&self, pause: &PauseRecord) -> AppResult<()> {
+        let store = &self.deps.store;
+        let request = store.task_needs_you(&pause.task_id).await?;
+        if store
+            .end_pause_if(&pause.task_id, Some(&pause.id), self.now(), "ended")
+            .await?
+            && let Some(request) =
+                request.filter(|r| crate::moves::is_no_subscription_action(&r.action))
+        {
+            self.end_needs_you_asked_at(&pause.task_id, request.at, request.cause)
+                .await;
+        }
+        Ok(())
+    }
+
     /// Whether `pause` is still the task's open pause.
-    async fn pause_open(&self, pause: &PauseRecord) -> bool {
+    pub(crate) async fn pause_open(&self, pause: &PauseRecord) -> bool {
         matches!(
             self.deps.store.open_pause(&pause.task_id).await,
             Ok(Some(open)) if open.id == pause.id
@@ -1300,6 +1337,22 @@ fn rollout_reading(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn persisted_pause_kinds_identify_which_pauses_hold_a_process() {
+        for (kind, holds_process) in [
+            (PauseKind::Start, false),
+            (PauseKind::FreshStart, false),
+            (PauseKind::Prompt, true),
+            (PauseKind::Turn, true),
+            (PauseKind::Limit, true),
+        ] {
+            assert_eq!(
+                PauseKind::parse(kind.as_str()).holds_process(),
+                holds_process
+            );
+        }
+    }
 
     /// SPEC-503 CDX-004: a Codex rollout's windows replace the stored ones only when they are not
     /// older than what is stored (a watch reads its rollout again from the start after a

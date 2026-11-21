@@ -622,6 +622,8 @@ pub enum PauseKind {
     /// No process: the task waits to start (new task, Continue, a switch that found no
     /// account).
     Start,
+    /// No process: keep an explicit fresh launch even if a session ID is already recorded.
+    FreshStart,
 }
 
 impl PauseKind {
@@ -633,6 +635,7 @@ impl PauseKind {
             Self::Prompt => "prompt",
             Self::Limit => "limit",
             Self::Start => "start",
+            Self::FreshStart => "fresh_start",
         }
     }
 
@@ -643,6 +646,7 @@ impl PauseKind {
             "turn" => Self::Turn,
             "prompt" => Self::Prompt,
             "limit" => Self::Limit,
+            "fresh_start" => Self::FreshStart,
             _ => Self::Start,
         }
     }
@@ -650,7 +654,7 @@ impl PauseKind {
     /// Whether the agent's process stays alive during the pause.
     #[must_use]
     pub fn holds_process(self) -> bool {
-        !matches!(self, Self::Start)
+        !matches!(self, Self::Start | Self::FreshStart)
     }
 }
 

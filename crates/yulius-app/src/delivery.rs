@@ -4322,6 +4322,21 @@ impl App {
         observed
     }
 
+    /// Waits for all dispatched parked-display Git work to return its permits.
+    ///
+    /// # Errors
+    /// The pool closed or its configured size cannot be represented.
+    #[cfg(feature = "test-support")]
+    pub async fn wait_for_parked_git_workers_for_test(&self) -> AppResult<()> {
+        let count = u32::try_from(crate::sandboxes::PARKED_READS).map_err(AppError::internal)?;
+        let _permits = self
+            .parked_git
+            .acquire_many(count)
+            .await
+            .map_err(AppError::internal)?;
+        Ok(())
+    }
+
     /// List reads can be cancelled while Git is still running. Release their
     /// permit only when the dispatched Git work has returned.
     async fn verification_git<

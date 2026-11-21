@@ -118,6 +118,7 @@ mod skills_mcp;
 mod stages;
 mod staging;
 mod start_change;
+mod store_migrate;
 mod strays;
 mod subscription_moves;
 mod subscription_pool;

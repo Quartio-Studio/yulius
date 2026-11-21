@@ -1,6 +1,6 @@
 ---
 yulius-task: b2d041b9-f438-4630-8b8c-a686f9c0ef0d
-status: done
+status: in-progress
 ---
 
 # SPEC-589 Continue authorized work at the end of a goal turn
@@ -36,6 +36,7 @@ Earlier user requests establish the ownership rule. Task #534 concerned automate
 - [x] Carry the source of a continuation across launch and delayed hook delivery
 - [x] Protect goal attempts while owners draft and workers complete steps
 - [x] Verify the fix and obtain independent approval
+- [ ] Integrate and verify the updated Codex resume and capacity behavior
 
 ## Acceptance criteria
 
@@ -100,3 +101,4 @@ Make the continuation decision where the agent can act on it, at the shared Stop
 - The reviewed head passed all 41 focused goal, retry, owner-input and recovery controls. An earlier broad compatibility run passed all 294 controls. Fourteen Chromium end-to-end tests passed. Provider behavior used recorded or synthetic fixtures and local subprocesses. No paid provider session was used. The project disables Vidoc, so `scripts/dev security` reported that nothing was scanned.
 - The frozen terminal-framing mutation run reported 14 listed, 1 caught, 0 missed, 1 unviable and 12 not reached within its bound. A later campaign stopped at its unmodified baseline on the previously identified editor normalization regression. The normalized-input follow-up reported 11 listed, 2 caught, 0 missed and 9 not reached. The replay follow-up reported 9 listed, 1 caught, 0 missed and 8 not reached. Both had zero timeouts and zero unviable mutations.
 - The invocation mutation run reported 44 listed, 4 caught, 2 missed, 0 timed out, 5 unviable and 33 not reached at 18 minutes. Both surviving predicate inversions discarded the first machine instruction when a second was issued. A new hook regression retains both instructions and replays the first ahead of an edited owner reply. The unmodified methods passed that sequence and each predicate inversion failed it. The integration fixture also passed. The final reservation mutation run reported 16 listed, 2 caught, 0 missed, 0 timed out, 0 unviable and 14 not reached at 12 minutes.
+- Dev advanced to `7383920f0` with SPEC-590 while PR #1616 was in CI. The conflict resolution passes the goal continuation’s origin through Codex’s guarded capacity launch. It keeps the explicit fresh-start pause and idle state of a bare Codex resume alongside the goal retry budget and submit history.
