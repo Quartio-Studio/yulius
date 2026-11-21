@@ -331,3 +331,19 @@ Slice 2 (merge-first and the promotion rule), test-first:
 - Review round 3's minor and nits, test-first: 9 new failures against 16e28a937's scripts, then
   42 pass. The tests caught one real bug: `restore` called inside a condition ran on past a
   failed copy, because sh suspends `-e` there. It now returns each failure.
+
+**The second staging deploy through Yulius CD and Yulius's rollback drill:**
+
+- **Deploy:** run `f3129b43-0e36-4d08-80eb-0acfdf3891ae` of `[cd.dev]` at
+  `7383920f0d9286b99e4f72387f10065889430b9a`, which includes #577's Chrome-lock fix, asked by this
+  task. It passed.
+- **Drill:** Yulius drilled the rollback by itself, run `8946704a-03d6-411f-a4b0-88c70bb5d356`
+  (kind drill, by yulius, 2026-11-21T18:38:30Z), and it passed.
+  - **Back:** `scripts/cd/rollback.sh dev` to `e19ea9f18b0523474024fd9cfe11d42ef2f7e5ec`. It kept
+    the store 7383920f0 left and kept the live store (same schema 82). `::yulius-rolled-back 0`.
+  - **Verify:** the commit, HTTPS 200 and the contained doctor passed, with "the store has
+    schema 82, the one release e19ea9f18 left".
+  - **Forward:** to `7383920f0`, with the store e19ea9f18 left kept. `::yulius-rolled-back 1`.
+  - **Verify again:** it passed.
+- **After it:** `cd_status` shows releases 7383920 (current) and e19ea9f, and "drill: passed at
+  7383920 (dev)".
