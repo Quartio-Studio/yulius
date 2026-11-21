@@ -186,6 +186,8 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # A parked task with unfinished work in its summary stays under Needs you even if its Git chip is green.
 # A CI rerun refreshes the open sidebar while its Git overview is loading. If the task list
 # cannot verify a known open PR, the row stays under Needs you until verification succeeds.
+# Opening a parked terminal or Task Info also verifies progress and status for the sidebar.
+# A delayed response preserves a newer verification or a decision the owner received in the meantime.
 # Use task_get for the current parked wait reason or tasks_list with scope needs_you
 # for the ordered page of tasks that currently need attention.
 #Environment=YULIUS_PARK_AFTER_MINUTES=30

@@ -70,6 +70,10 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- On dev after #1550, Chromium reproduced six failures in eight detail cases and all four reversals of a held watch against a later detail on the terminal and Task Info. The mounted terminal also kept Step 2/7 after a watched completion, and Task Info displayed six finished plan steps out of seven. After correction all 15 focused cases passed. A partial detail initially cleared a previously verified Needs you without a known PR. Its added regression passed when the shared row kept that group until a verified recovery. Earlier in this slice the parked and Done suites passed 80 tests.
+
+- PR #1550 delivered sidebar lifecycle reconciliation to dev at `d1be51c7d`. CI run `6cabd3e8-4802-4e57-905b-62ad535f80b1` passed quality, both Rust shards and browser e2e. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/d1be51c7d7c3642b991e3bbf4b596ca55125cdee)
+
 - PR #1550 CI run `08d1a211-76c5-4327-901b-b5ebedbf1b7e` failed when Chromium exhausted the startup recovery budget inside `browser.reload`. A regression interrupted the first entry script and held the recovery request open. Before the fix it reproduced CI's `operation timed out in browser.reload`. After the fix all 10 tests in `tests/initial-load.e2e.ts` passed, including persistent interruptions, ordinary failures and later navigations.
 
 - Independent review approved step 20 at `a2c8c0182`. The reviewer verified cold and cached rename outcomes, recovery after an unavailable verifier and both group transitions while the Git request remained pending. The remaining terminal/detail ordering, failed integration candidate, Codex goal and legacy screen deliveries stay open.
