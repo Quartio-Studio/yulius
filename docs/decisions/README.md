@@ -494,6 +494,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0441 -->
 - [0442](0442-identify-codex-reviewers-by-their-child-rollout.md): identify Codex reviewers by their child rollout.
 <!-- ADR 0442 -->
+- [0443](0443-hold-codex-input-at-the-rate-limit-model-picker.md). Codex starts with the model reminder hidden and a visible reminder holds automated terminal input.
 <!-- ADR 0443 -->
 - [0444](0444-codex-tasks-inherit-high-effort-on-every-model.md) Codex tasks inherit High effort on every model. A task can explicitly choose Extra high or Max on GPT-6.2 Astra and Sol.
 <!-- ADR 0444 -->
