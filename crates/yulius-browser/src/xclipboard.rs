@@ -257,6 +257,9 @@ impl Transfer {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    mod native;
+
     use super::*;
 
     const UTF8: Atom = 9;

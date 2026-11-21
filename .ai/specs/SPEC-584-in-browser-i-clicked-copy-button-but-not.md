@@ -40,7 +40,7 @@ Exercise the button through the streamed panel using separate sandbox and viewer
 
 ## Decisions
 
-The report names the browser without identifying a site. Use a synthetic page in the sandbox Browser panel with a native plain-text clipboard write. Restrict clipboard access to that sandbox’s private virtual display. X reports a change of clipboard owner without attributing it to a webpage or person. The local action explicitly requests a transfer from the shared sandbox clipboard.
+The person confirmed the Copy button was on a webpage inside the Yulius Browser panel. The regression uses a synthetic page with a native plain-text clipboard write. Restrict clipboard access to that sandbox’s private virtual display. X reports a change of clipboard owner without attributing it to a webpage or person. The local action explicitly requests a transfer from the shared sandbox clipboard.
 
 [ADR-0423](../../docs/decisions/0423-a-webpage-copy-returns-through-the-clicking-viewers-connection.md) records the display transfer and its lifetime.
 
@@ -56,3 +56,6 @@ The report names the browser without identifying a site. Use a synthetic page in
 - On the disposable Linux display, two Chromium processes exercised a page button with no DOM selection, the exact pre-existing device value before acceptance, the multiline UTF-8 result after acceptance, and keyboard copy. The stream used JPEG fallback. All 39 browser socket integration tests passed. The full Chromium UI suite passed 1,300 tests and skipped one opt-in agent test.
 - The private Xvfb selection-owner fixture passed. It exercises the native event path with an existing selection, verifies there is no selection request before confirmation, and checks wrong, consumed and replaced offers.
 - Review of the Xvfb fixture added server round trips before both negative assertions. A synthetic request queued on the fixture’s own display made the check fail with “selection requested before acceptance”. Removing the synthetic request restored the passing test.
+- The review-fix mutation run listed 6 mutants, caught 4, missed 1 and found 1 unviable. The new private-display fixture catches the missed no-op X command. A package-scoped rerun of that exact mutant reported “1 mutant tested in 13s: 1 caught”.
+- The first whole-change mutation run overlapped edits and some copies mixed source revisions. Its results were discarded. A detached checkout of the corrected implementation supplied the repeat run.
+- Focused mutation testing of native clipboard handling initially missed 15 changes to expiry, cancellation and late X events. A real private-display fixture now checks expired and abandoned requests, wrong windows and properties, and a complete incremental transfer. The repeat covered all 56 native clipboard mutants: 50 caught, 6 unviable, 0 missed. All 66 browser crate unit tests passed.
