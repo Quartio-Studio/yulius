@@ -2493,3 +2493,37 @@ test('an unverified park event retains the owner action and the PR identified by
   const requested = ['Renamed', 42, true, 'needs', 'Choose a version'];
   expect(seen).toEqual([red, red, requested, requested]);
 });
+
+test('a live event overtaking parked terminal detail remains working through an older explicit list', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const results = [];
+    for (const listFirst of [false, true]) {
+      const running = { id: 'p', sandbox_id: 's', status: 'running', activity: 'waiting' };
+      const working = { ...running, activity: 'working', title: 'Resumed' };
+      const parked = { ...running, status: 'parked', activity: 'done', parked_needs_you: false };
+      let reads = 0;
+      const held = Promise.withResolvers<void>();
+      const store = createStore({ get: async () => {
+        if (++reads === 1) return [running];
+        await held.promise;
+        return [running];
+      } });
+      await store.loadTasks('s');
+      const stale = store.loadTasks('s');
+      const publish = store.beginParkedDetail(running);
+      store.upsertTask(working);
+      let terminal;
+      if (!listFirst) terminal = publish(parked, working);
+      held.resolve(); await stale;
+      if (listFirst) terminal = publish(parked, working);
+      const row = store.findTask('p');
+      results.push([row.status, row.activity, terminal.status, terminal.activity]);
+    }
+    return results;
+  });
+  const working = ['running', 'working', 'running', 'working'];
+  expect(seen).toEqual([working, working]);
+});

@@ -345,6 +345,18 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     return summary;
   }
 
+  function rememberTransition(row) {
+    const order = rowOrder.get(row);
+    for (const read of activeLists) {
+      if (read.sandboxId !== row.sandbox_id || read.order >= order) continue;
+      // A failed confirmation may replay events from either buffer.
+      read.beforeConfirmation?.delete(row.id);
+      read.changes.delete(row.id);
+      read.parked.add(row.id);
+      read.transitions.set(row.id, row);
+    }
+  }
+
   function beginParkedDetail(startingRow) {
     const order = ++nextListRead;
     const read = { row: state.tasks.get(startingRow?.sandbox_id)?.get(startingRow?.id) };
@@ -356,8 +368,11 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       if (!map || detail.archived) return view;
       // Only a row actually visible at request start can survive omission by
       // an older list. Archive/delete invalidates that reference synchronously.
-      const omitted = read.row?.id === detail.id && listOrder.get(map) < order ? read.row : null;
-      const row = map.get(detail.id) ?? omitted;
+      const retained = read.row?.id === detail.id ? read.row : null;
+      const listed = map.get(detail.id);
+      const listVersion = listOrder.get(map) ?? 0;
+      const laterEvent = rowOrder.get(retained) > Math.max(listVersion, rowOrder.get(listed) ?? 0);
+      const row = laterEvent ? retained : listed ?? (listVersion < order ? retained : null);
       if (!row || (detail.status !== 'parked' && row.status !== 'parked' && startingRow?.status !== 'parked')) return view;
       const transition = row.status !== 'parked' || detail.status !== 'parked' ||
         (startingRow && startingRow.status !== detail.status);
@@ -367,7 +382,9 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
         // still identify the open PR that an unverified update could not name.
         const supplement = row.status === 'parked' && detail.status === 'parked' &&
           unverified.has(row) && (verifiedGroup.get(row)?.order ?? 0) < order;
-        const latest = supplement ? publishParkedRow(map, row, awaitingVerification(row, detail)) : row;
+        const latest = supplement ? awaitingVerification(row, detail) : row;
+        if (transition) rememberTransition(latest);
+        publishParkedRow(map, listed ?? row, latest);
         return { ...view, ...(transition ? lifecycleSummary(latest, latest) : parkedFacts(latest)) };
       }
       let updated = transition ? lifecycleSummary(detail, row) : { ...row, ...parkedFacts(detail) };
@@ -378,16 +395,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
         updated = awaitingVerification(updated, row, Math.max(order, fallbackOrder));
       }
       rowOrder.set(updated, order);
-      if (transition) {
-        for (const read of activeLists) {
-          if (read.sandboxId !== detail.sandbox_id || read.order >= order) continue;
-          // A failed confirmation may replay events from either buffer.
-          read.beforeConfirmation?.delete(row.id);
-          read.changes.delete(row.id);
-          read.parked.add(row.id);
-          read.transitions.set(row.id, updated);
-        }
-      }
+      if (transition) rememberTransition(updated);
       const missedHint = detail.status === 'parked' && hintOrder > order && !hasParkedRows(map);
       publishParkedRow(map, row, updated);
       if (missedHint) requestRead(detail.sandbox_id, refreshParkedGroups, true, true);
@@ -425,6 +433,9 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     recordVerification(task, order);
     if (recheck) task = awaitingVerification(task, prior, order);
     rowOrder.set(task, order);
+    // A live list can replace a newer live event before a detail reveals that
+    // the task crossed a park. Keep that event with the outstanding read.
+    for (const read of activeDetails) if (read.row?.id === task.id) read.row = task;
     for (const read of pending) {
       if (task.status === 'parked' || prior?.status === 'parked') read.parked.add(task.id);
       read.changes.set(task.id, task);

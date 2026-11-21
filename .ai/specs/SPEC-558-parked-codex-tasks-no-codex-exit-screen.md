@@ -74,6 +74,8 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- At `61e81ef4c`, an explicit list replaced a newer running/working event during a pending parked detail. In Chromium the list-first order made the terminal and sidebar parked/done, and the opposite order left the sidebar running/waiting. Retaining that event with the outstanding detail restores running/working to both views and carries the later transition through an older list that is still pending.
+
 - Third-round review at `d4864c7a2` reproduced a missing row when an older empty list answered before the detail. The expanded Chromium regression runs both reply orders for park and resume and checks a subsequent archive, permanent removal and newer empty list. A detail retains its starting public row only for the duration of the read. An archive or deletion invalidates that reference. Terminal-discovered archives and Undo are a separate delivery after the park/resume change. Their implementation and tests are retained at the reviewed prototype.
 
 - Review at `74549c9ff` reproduced a park event arriving during a terminal read begun while the task was running. When subsequent verification failed, the event-first order kept the owner’s rename but lost the older detail’s open PR. The regression checks both orders and a genuine owner decision. A late detail can now supply that PR to the unverified parked row while preserving the event’s public fields.
