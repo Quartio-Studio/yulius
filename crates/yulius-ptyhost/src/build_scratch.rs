@@ -1,29 +1,22 @@
 //! Private run records identify disk build trees after a host is killed. Receipts
 //! stay with the run's metadata. A delayed cleanup never removes a receipt.
-use std::ffi::CString;
 #[cfg(test)]
 use std::fs;
 use std::fs::File;
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-use nix::dir::Dir;
 use nix::errno::Errno;
 use nix::fcntl::{OFlag, openat};
 use nix::sys::stat::{Mode, mkdirat};
-use nix::unistd::{UnlinkatFlags, unlinkat};
 use serde::{Deserialize, Serialize};
 use yulius_contracts::ptyhost::StatusRecord;
+use yulius_sandbox::build_tree::{BuildTree, OWNER_MARKER};
 
 use crate::files::{atomic_write_at, read_record};
 
 const RECEIPT: &str = "build-scratch.json";
-const OWNER: &str = ".yulius-build-owner";
-const DIRECTORY: OFlag = OFlag::O_DIRECTORY
-    .union(OFlag::O_NOFOLLOW)
-    .union(OFlag::O_CLOEXEC);
-
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Receipt {
     path: PathBuf,
@@ -44,9 +37,40 @@ impl Receipt {
             && self.boot_id.as_deref() == Some(status.boot_id.as_str())
     }
 
+    pub(crate) fn open_tree(&self) -> io::Result<Option<BuildTree>> {
+        let Some(opened) = BuildTree::open(&self.path)? else {
+            return Ok(None);
+        };
+        let tree = opened.directory();
+        let meta = tree.metadata()?;
+        if (meta.dev(), meta.ino()) != (self.device, self.inode) {
+            return Err(io::Error::other("build scratch directory identity changed"));
+        }
+        let marker = match openat(
+            tree,
+            OWNER_MARKER,
+            OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(fd) => File::from(fd),
+            // Other reapers remove the launch marker only after clearing the payload.
+            Err(Errno::ENOENT) => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        let mut owner = Vec::new();
+        if !marker.metadata()?.is_file() {
+            return Err(io::Error::other("invalid build scratch owner marker"));
+        }
+        marker.take(65).read_to_end(&mut owner)?;
+        if owner != self.token_sha256.as_bytes() {
+            return Err(io::Error::other("build scratch launch identity changed"));
+        }
+        Ok(Some(opened))
+    }
+
     pub(crate) fn reclaim(&self) -> io::Result<()> {
-        if let Some(tree) = OpenedTree::open(self)? {
-            tree.clear(self)?;
+        if let Some(tree) = self.open_tree()? {
+            tree.clear_registered()?;
         }
         Ok(())
     }
@@ -63,7 +87,7 @@ pub(crate) fn read(run_dir: &Path) -> io::Result<Option<Receipt>> {
 /// Retain ownership when CI removes its run record after the exit frame.
 pub(crate) struct Guard {
     receipt: Receipt,
-    tree: OpenedTree,
+    tree: BuildTree,
     released: bool,
 }
 
@@ -79,14 +103,14 @@ impl Guard {
 
     pub(crate) fn close(mut self) -> io::Result<()> {
         self.released = true;
-        self.tree.clear(&self.receipt)
+        self.tree.clear_registered()
     }
 }
 
 impl Drop for Guard {
     fn drop(&mut self) {
         if !self.released
-            && let Err(error) = self.tree.clear(&self.receipt)
+            && let Err(error) = self.tree.clear_registered()
         {
             eprintln!("cannot reclaim host build scratch: {error}");
         }
@@ -99,10 +123,10 @@ pub(crate) fn own(
     pid: u32,
     token: &str,
 ) -> io::Result<Guard> {
-    let path = dir.keep();
-    let tree = OpenedTree::at(&path)?
+    let tree = BuildTree::open(dir.path())?
         .ok_or_else(|| io::Error::other("scratch disappeared during allocation"))?;
-    let meta = tree.tree.metadata()?;
+    let meta = tree.directory().metadata()?;
+    let path = dir.keep();
     let guard = Guard {
         receipt: Receipt {
             path,
@@ -118,16 +142,16 @@ pub(crate) fn own(
     // Pin the launch to this tree even if a released inode is later reused.
     // A current launch always has this entry before the child sees its root.
     let mut marker = File::from(openat(
-        &guard.tree.tree,
-        OWNER,
+        guard.tree.directory(),
+        OWNER_MARKER,
         OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
         Mode::from_bits_truncate(0o600),
     )?);
     marker.write_all(token.as_bytes())?;
     marker.sync_all()?;
-    mkdirat(&guard.tree.tree, "payload", Mode::S_IRWXU)?;
-    guard.tree.tree.sync_all()?;
-    guard.tree.parent.sync_all()?;
+    mkdirat(guard.tree.directory(), "payload", Mode::S_IRWXU)?;
+    guard.tree.directory().sync_all()?;
+    guard.tree.sync_parent()?;
     atomic_write_at(
         run_dir,
         RECEIPT,
@@ -156,166 +180,6 @@ pub(crate) fn reclaim_unrecorded(run_dir: &Path) -> io::Result<()> {
         receipt.reclaim()?;
     }
     Ok(())
-}
-
-pub(crate) struct OpenedTree {
-    parent: File,
-    tree: File,
-}
-
-impl OpenedTree {
-    fn at(path: &Path) -> io::Result<Option<Self>> {
-        let parent = File::open(
-            path.parent()
-                .ok_or_else(|| io::Error::other("missing scratch parent"))?,
-        )?;
-        let name = path
-            .file_name()
-            .ok_or_else(|| io::Error::other("missing scratch name"))?;
-        let tree = match openat(&parent, name, DIRECTORY, Mode::empty()) {
-            Ok(fd) => File::from(fd),
-            Err(Errno::ENOENT) => return Ok(None),
-            Err(e) => return Err(e.into()),
-        };
-        Ok(Some(Self { parent, tree }))
-    }
-
-    pub(crate) fn open(receipt: &Receipt) -> io::Result<Option<Self>> {
-        let Some(opened) = Self::at(&receipt.path)? else {
-            return Ok(None);
-        };
-        let tree = &opened.tree;
-        let meta = tree.metadata()?;
-        if (meta.dev(), meta.ino()) != (receipt.device, receipt.inode) {
-            return Err(io::Error::other("build scratch directory identity changed"));
-        }
-        let marker = match openat(
-            tree,
-            OWNER,
-            OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
-            Mode::empty(),
-        ) {
-            Ok(fd) => File::from(fd),
-            // Other reapers remove the launch marker only after clearing the payload.
-            Err(Errno::ENOENT) => return Ok(None),
-            Err(e) => return Err(e.into()),
-        };
-        let mut owner = Vec::new();
-        if !marker.metadata()?.is_file() {
-            return Err(io::Error::other("invalid build scratch owner marker"));
-        }
-        marker.take(65).read_to_end(&mut owner)?;
-        if owner != receipt.token_sha256.as_bytes() {
-            return Err(io::Error::other("build scratch launch identity changed"));
-        }
-        Ok(Some(opened))
-    }
-
-    pub(crate) fn clear(&self, receipt: &Receipt) -> io::Result<()> {
-        // Even if the name is exchanged after open(), all recursive deletion
-        // is relative to the verified original directory.
-        if self.tree.metadata()?.nlink() == 0 {
-            return Ok(());
-        }
-        clear_contents(&self.tree)?;
-        missing_ok(unlinkat(&self.tree, OWNER, UnlinkatFlags::NoRemoveDir))?;
-        let name = receipt
-            .path
-            .file_name()
-            .ok_or_else(|| io::Error::other("missing scratch name"))?;
-        match openat(&self.parent, name, DIRECTORY, Mode::empty()) {
-            Ok(fd) => {
-                let meta = File::from(fd).metadata()?;
-                if (meta.dev(), meta.ino()) == (receipt.device, receipt.inode) {
-                    // Only remove an empty directory entry. Never recurse through its name.
-                    missing_ok(unlinkat(&self.parent, name, UnlinkatFlags::RemoveDir))?;
-                }
-            }
-            Err(Errno::ENOENT | Errno::ENOTDIR | Errno::ELOOP) => {}
-            Err(e) => return Err(e.into()),
-        }
-        Ok(())
-    }
-}
-
-/// Stream each directory relative to its opened parent; workspace sizes and
-/// nesting do not dictate Rust call-stack or per-directory listing sizes.
-fn clear_contents(root: &File) -> io::Result<()> {
-    struct Level {
-        folder: File,
-        entries: nix::dir::OwningIter,
-        name: Option<CString>,
-    }
-    let level = |folder: File, name| -> io::Result<Level> {
-        // Dependency managers commonly make completed packages read-only.
-        if folder.metadata()?.mode() & 0o700 != 0o700 {
-            folder.set_permissions(std::fs::Permissions::from_mode(0o700))?;
-        }
-        let entries = Dir::openat(&folder, ".", DIRECTORY, Mode::empty())?.into_iter();
-        Ok(Level {
-            folder,
-            entries,
-            name,
-        })
-    };
-    let mut stack = vec![level(root.try_clone()?, None)?];
-    while let Some(current) = stack.last_mut() {
-        let Some(entry) = current.entries.next() else {
-            let name = current.name.take();
-            stack.pop();
-            if let (Some(parent), Some(name)) = (stack.last(), name) {
-                missing_ok(unlinkat(
-                    &parent.folder,
-                    name.as_c_str(),
-                    UnlinkatFlags::RemoveDir,
-                ))?;
-            }
-            continue;
-        };
-        let entry = entry?;
-        let name = entry.file_name();
-        if matches!(name.to_bytes(), b"." | b"..")
-            || (current.name.is_none() && name.to_bytes() == OWNER.as_bytes())
-        {
-            continue;
-        }
-        match open_for_cleanup(&current.folder, name) {
-            Ok(child) => stack.push(level(File::from(child), Some(name.to_owned()))?),
-            Err(Errno::ENOTDIR | Errno::ELOOP) => {
-                missing_ok(unlinkat(&current.folder, name, UnlinkatFlags::NoRemoveDir))?;
-            }
-            Err(Errno::ENOENT) => {}
-            Err(e) => return Err(e.into()),
-        }
-    }
-    Ok(())
-}
-
-fn open_for_cleanup(parent: &File, name: &std::ffi::CStr) -> nix::Result<std::os::fd::OwnedFd> {
-    let opened = openat(parent, name, DIRECTORY, Mode::empty());
-    #[cfg(target_os = "linux")]
-    if matches!(opened, Err(Errno::EACCES)) {
-        use std::os::fd::AsRawFd;
-        // O_PATH pins even an unreadable owned directory. chmod through its
-        // procfs descriptor, then reopen that same directory for enumeration.
-        let handle = openat(parent, name, DIRECTORY | OFlag::O_PATH, Mode::empty())?;
-        let pinned = format!("/proc/self/fd/{}", handle.as_raw_fd());
-        nix::sys::stat::fchmodat(
-            nix::fcntl::AT_FDCWD,
-            pinned.as_str(),
-            Mode::S_IRWXU,
-            nix::sys::stat::FchmodatFlags::FollowSymlink,
-        )?;
-        return openat(&handle, ".", DIRECTORY, Mode::empty());
-    }
-    opened
-}
-
-fn missing_ok(result: nix::Result<()>) -> io::Result<()> {
-    match result {
-        Ok(()) | Err(Errno::ENOENT) => Ok(()),
-        Err(e) => Err(e.into()),
-    }
 }
 
 #[cfg(test)]
@@ -431,12 +295,14 @@ mod tests {
         )?;
         fs::write(original.path().join("old"), b"finished")?;
         let moved = sandbox.path().join("moved");
-        let tree = OpenedTree::open(&original.receipt)?
+        let tree = original
+            .receipt
+            .open_tree()?
             .ok_or_else(|| io::Error::other("scratch absent"))?;
         fs::rename(original.path(), &moved)?;
         fs::create_dir(original.path())?;
         fs::write(original.path().join("new"), b"live")?;
-        tree.clear(&original.receipt)?;
+        tree.clear_registered()?;
         assert!(
             original.path().join("new").exists(),
             "replacement contents were deleted"

@@ -484,9 +484,7 @@ fn campaign(
     let scratch_parent = std::env::var_os("YULIUS_BUILD_SCRATCH")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| dir.clone());
-    let scratch = tempfile::Builder::new()
-        .prefix("mut-")
-        .tempdir_in(scratch_parent)?;
+    let scratch = allocate_campaign_scratch(&scratch_parent)?;
     let disk = scratch.path().canonicalize()?;
     let cargo_config = disk.join("test-env.toml");
     std::fs::write(
@@ -613,12 +611,93 @@ pub fn exit_code(outcomes: Option<&Outcomes>) -> ExitCode {
     }
 }
 
+struct CampaignScratch {
+    path: std::path::PathBuf,
+    tree: Option<yulius_sandbox::build_tree::BuildTree>,
+}
+
+fn allocate_campaign_scratch(parent: &Path) -> io::Result<CampaignScratch> {
+    let dir = tempfile::Builder::new().prefix("mut-").tempdir_in(parent)?;
+    let tree = yulius_sandbox::build_tree::BuildTree::open(dir.path())?
+        .ok_or_else(|| io::Error::other("campaign scratch disappeared during allocation"))?;
+    Ok(CampaignScratch {
+        path: dir.keep(),
+        tree: Some(tree),
+    })
+}
+
+impl CampaignScratch {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn close(mut self) -> io::Result<()> {
+        self.reclaim()
+    }
+
+    fn reclaim(&mut self) -> io::Result<()> {
+        if let Some(tree) = &self.tree {
+            tree.clear()?;
+            self.tree = None;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for CampaignScratch {
+    fn drop(&mut self) {
+        if let Err(error) = self.reclaim() {
+            eprintln!("cannot reclaim campaign scratch: {error}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn run(root: &Path, cargo: &str, settings: &Settings) -> io::Result<Option<Outcomes>> {
         campaign(root, cargo, settings, &AtomicBool::new(false))
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn command_scratch_reclaims_read_only_builds_before_returning() -> io::Result<()> {
+        use rustix::thread::{CapabilitySet, capabilities, set_capabilities};
+        use std::fs;
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let parent = tempfile::tempdir()?;
+        let outside = parent.path().join("outside");
+        fs::create_dir(&outside)?;
+        fs::write(outside.join("keep"), b"live")?;
+        for completed in [true, false] {
+            let scratch = allocate_campaign_scratch(parent.path())?;
+            let path = scratch.path().to_owned();
+            let dependency = path.join("target");
+            fs::create_dir(&dependency)?;
+            symlink(&outside, dependency.join("other"))?;
+            fs::write(dependency.join("build"), b"artifact")?;
+            fs::set_permissions(dependency, fs::Permissions::from_mode(0o555))?;
+            let original = capabilities(None)?;
+            let mut limited = original;
+            limited
+                .effective
+                .remove(CapabilitySet::DAC_OVERRIDE | CapabilitySet::DAC_READ_SEARCH);
+            set_capabilities(None, limited)?;
+            let result = if completed {
+                scratch.close()
+            } else {
+                // An early error in command setup or supervision drops its owner.
+                drop(scratch);
+                Ok(())
+            };
+            set_capabilities(None, original)?;
+            result?;
+            assert!(!path.exists());
+            assert!(outside.join("keep").is_file());
+        }
+        Ok(())
     }
 
     /// SPEC-493 MUT-001: the product's tests a branch added or changed are the ones each mutant
