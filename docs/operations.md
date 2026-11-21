@@ -208,6 +208,10 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # rerun for the owner takes precedence in yulius wait and in its merge queue decision.
 # If a later run finds the integration CI configuration invalid, earlier completed runs
 # at that head become obsolete. After repair, even an owner that passed can show queued.
+# If a parked task resumes and parks again while your message is being prepared,
+# read the current screen and send the message again. Its current decision stays open.
+# A bulk message lists the changed task under refused. A Telegram reply or remote restart
+# also reports the change so you can check the latest turn.
 # A partial Git overview keeps a known failing PR under Needs you. A complete lookup
 # can clear it. Refreshing this display sends no message to the parked task.
 # A successor waiting for Done (after_task or #N done) stays chained while its parked predecessor

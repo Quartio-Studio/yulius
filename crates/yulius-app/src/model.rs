@@ -353,6 +353,8 @@ pub struct TaskTimes {
 /// A task.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskRecord {
+    /// Latest attempt when this read saw the task parked. Derived from the attempt history.
+    pub parked_attempt_id: Option<AttemptId>,
     /// Id.
     pub id: TaskId,
     /// Sandbox.
@@ -412,6 +414,20 @@ pub struct TaskRecord {
 }
 
 impl TaskRecord {
+    /// Preserve the parked turn a caller selected across a later lookup of the task.
+    pub(crate) fn check_selected_park(&self, selected: &Self) -> crate::error::AppResult<()> {
+        if selected.status == TaskStatus::Parked
+            && (self.status != TaskStatus::Parked
+                || self.parked_attempt_id != selected.parked_attempt_id)
+        {
+            return Err(crate::error::AppError::Conflict(format!(
+                "task #{} changed since it was selected. Read the current task and try again.",
+                self.number
+            )));
+        }
+        Ok(())
+    }
+
     /// Whether Yulius launches and follows the native Claude goal evaluator. Codex and
     /// Antigravity receive the request as their first message. All goal-mode tasks use the
     /// shared Stop gate for unfinished declared work (SPEC-589).

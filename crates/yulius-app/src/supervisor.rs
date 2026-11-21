@@ -1000,6 +1000,12 @@ impl RunStart {
     }
 }
 
+enum StartCondition {
+    Any,
+    Status(TaskStatus),
+    Parked(Option<AttemptId>),
+}
+
 /// A capacity worker selects its subscription again if queued. A Move keeps its person's choice.
 #[derive(Clone, Copy)]
 enum PausedStart<'a> {
@@ -2150,7 +2156,7 @@ impl App {
         account: Option<AccountId>,
     ) -> BoxFuture<'a, AppResult<()>> {
         Box::pin(async move {
-            self.start_run_if(task_id, start, account, None, None, None)
+            self.start_run_if(task_id, start, account, StartCondition::Any, None, None)
                 .await
                 .map(|_| ())
         })
@@ -2164,7 +2170,14 @@ impl App {
         account: Option<AccountId>,
     ) -> AppResult<()> {
         if self
-            .start_run_if(&task.id, start, account, Some(task.status), None, None)
+            .start_run_if(
+                &task.id,
+                start,
+                account,
+                StartCondition::Status(task.status),
+                None,
+                None,
+            )
             .await?
         {
             Ok(())
@@ -2187,14 +2200,14 @@ impl App {
             &pause.task_id,
             start,
             account,
-            Some(TaskStatus::WaitingCapacity),
+            StartCondition::Status(TaskStatus::WaitingCapacity),
             None,
             Some(PausedStart::Capacity(pause)),
         )
         .await
     }
 
-    /// [`App::start_run`], only while the task still has the status `only` (when given), checked
+    /// [`App::start_run`], only while the task still meets its start condition, checked
     /// under the launch lock: `false` when it no longer has it, so nothing was done. With
     /// `rest`, the run's task is idle again from its launch on ([`IdleRest`]).
     fn start_run_if<'a>(
@@ -2202,12 +2215,19 @@ impl App {
         task_id: &'a TaskId,
         start: RunStart,
         account: Option<AccountId>,
-        only: Option<TaskStatus>,
+        condition: StartCondition,
         rest: Option<IdleRest>,
         pause: Option<PausedStart<'a>>,
     ) -> BoxFuture<'a, AppResult<bool>> {
         Box::pin(async move {
-            self.settle_resting_run(task_id).await?;
+            if matches!(condition, StartCondition::Parked(_)) {
+                crate::race::reached(
+                    crate::race::Point::ParkedResumePrepared,
+                    Path::new(task_id.as_str()),
+                );
+            } else {
+                self.settle_resting_run(task_id).await?;
+            }
             // The Codex CLI is installed before the launch lock, so a first install does not hold
             // other tasks' starts (SPEC-503 CLI-002); the launch asks again and reports a failure.
             if let Ok(Some(task)) = self.deps.store.task(task_id).await {
@@ -2229,8 +2249,19 @@ impl App {
                 .task(task_id)
                 .await?
                 .ok_or(AppError::NotFound)?;
-            if only.is_some_and(|status| status != task.status) {
-                return Ok(false);
+            match &condition {
+                StartCondition::Status(status) if *status != task.status => return Ok(false),
+                StartCondition::Parked(expected) => {
+                    if task.status != TaskStatus::Parked
+                        || task.parked_attempt_id.as_ref() != expected.as_ref()
+                    {
+                        return Ok(false);
+                    }
+                    if task.harness == Harness::Codex {
+                        self.codex_resume_session(&task).await?;
+                    }
+                }
+                _ => {}
             }
             if let Some(PausedStart::Capacity(record) | PausedStart::Move(record)) = pause
                 && !self.pause_open(record).await
@@ -2247,7 +2278,7 @@ impl App {
             // A fresh start is for a task that waits to start (queued, paused for capacity). One
             // that ended meanwhile — closed before the start spawned at its creation ran — stays
             // ended. Only Continue authorizes a fresh start from the observed resting state.
-            if only.is_none()
+            if matches!(condition, StartCondition::Any)
                 && task.status.is_resting()
                 && matches!(start, RunStart::Fresh { .. } | RunStart::GoalFresh { .. })
             {
@@ -5036,7 +5067,14 @@ impl App {
             // Only while it is still queued, checked under the launch lock: a task stopped or
             // started meanwhile is not resumed here.
             if let Err(err) = self
-                .start_run_if(&task.id, start, None, Some(TaskStatus::Queued), None, None)
+                .start_run_if(
+                    &task.id,
+                    start,
+                    None,
+                    StartCondition::Status(TaskStatus::Queued),
+                    None,
+                    None,
+                )
                 .await
             {
                 tracing::warn!(error = %err, task = %task.id, "queued task failed to start");
@@ -5223,7 +5261,12 @@ impl App {
                 task.status.as_str()
             ))
         };
-        let run = store.attempts(&task.id).await?.pop();
+        let run = if task.status == TaskStatus::Parked {
+            let id = task.parked_attempt_id.as_ref().ok_or_else(missing)?;
+            store.attempt(id).await?
+        } else {
+            store.attempts(&task.id).await?.pop()
+        };
         let sessions = store.provider_sessions(&task.id).await?;
         let latest = sessions
             .last()
@@ -5245,7 +5288,8 @@ impl App {
             if latest.is_none_or(|entry| entry.session_id != id) {
                 self.record_lineage(task, Harness::Codex, &id, "native")
                     .await?;
-                // The store preserves another task's claim on a rollout.
+                // The store preserves another task's claim on a rollout. Confirm
+                // that the launch will actually read this attempt's identity.
                 if !store
                     .provider_sessions(&task.id)
                     .await?
@@ -5300,22 +5344,13 @@ impl App {
     /// As [`App::start_run`].
     pub(crate) async fn resume_parked(
         self: &Arc<Self>,
-        task_id: &TaskId,
+        task: &TaskRecord,
         prompt: Option<String>,
     ) -> AppResult<bool> {
-        let task = self
-            .deps
-            .store
-            .task(task_id)
-            .await?
-            .ok_or(AppError::NotFound)?;
         if task.status != TaskStatus::Parked {
             return Ok(false);
         }
-        if task.harness == Harness::Codex {
-            self.codex_resume_session(&task).await?;
-        }
-        let goal_unfinished = self.goal_unfinished_of(&task).await;
+        let goal_unfinished = self.goal_unfinished_of(task).await;
         let rest = task
             .activity
             .filter(|activity| {
@@ -5326,10 +5361,10 @@ impl App {
                 goal_unfinished,
             });
         self.start_run_if(
-            task_id,
+            &task.id,
             RunStart::Resume { prompt },
             None,
-            Some(TaskStatus::Parked),
+            StartCondition::Parked(task.parked_attempt_id.clone()),
             rest,
             None,
         )
@@ -5974,7 +6009,7 @@ impl App {
             task_id,
             start,
             account,
-            Some(from),
+            StartCondition::Status(from),
             rest,
             pause.map(PausedStart::Move),
         );

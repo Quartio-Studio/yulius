@@ -314,6 +314,97 @@ fn an_answered_task_parks_and_its_slot_starts_a_queued_task() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn a_parked_message_checked_on_an_earlier_run_is_refused_after_settlement() -> TestResult {
+    replaced_parked_message(Point::ParkedResumePrepared)
+}
+
+#[test]
+fn a_message_selected_before_preflight_cannot_answer_a_later_park() -> TestResult {
+    replaced_parked_message(Point::ParkedMessageSelected)
+}
+fn replaced_parked_message(checkpoint: Point) -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    let result = rt.block_on(async {
+        let app = app(&data, 8, 1).await?;
+        let (id, caller) = answered(&app, &data).await?;
+        park_through_terminal_exit(&app, &id).await?;
+        let (prepared, submit) = pause_watch_or_queue(checkpoint, &id);
+        let first = app.clone();
+        let first_caller = caller.clone();
+        let mut first = tokio::spawn(async move {
+            first
+                .tool_task_message(
+                    &first_caller,
+                    &json!({"number": 1, "text": "Old pending message"}),
+                )
+                .await
+        });
+        tokio::select! {
+            result = &mut first => return Err(format!("message finished before {checkpoint:?}: {result:?}").into()),
+            reached = tokio::time::timeout(Duration::from_secs(30), prepared.notified()) =>
+                reached.map_err(|_| format!("message did not reach {checkpoint:?}"))?,
+        }
+        let accepted = app
+            .tool_task_message(&caller, &json!({"number": 1, "text": "Intervening turn"}))
+            .await?;
+        assert_eq!(accepted["delivered"], "resumed");
+        wait_for(
+            "the intervening answer",
+            Duration::from_secs(20),
+            || async {
+                screen(&app, &id).contains("Intervening turn")
+                    && status_of(&app, &id).await.1 == Some(Activity::Waiting)
+            },
+        )
+        .await?;
+        park_through_terminal_exit(&app, &id).await?;
+        ask(&app, &id).await?;
+        submit.notify_one();
+        let stale = tokio::time::timeout(Duration::from_secs(10), first).await??;
+        assert!(
+            matches!(stale, Err(yulius_app::error::AppError::Conflict(_))),
+            "message prepared for the old park was accepted"
+        );
+        assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Parked));
+        assert_eq!(app.deps.store.attempts(&id).await?.len(), 2);
+        assert!(asks(&app, &id).await?);
+        let fresh = app
+            .tool_task_message(
+                &caller,
+                &json!({"number": 1, "text": "Message for the latest park"}),
+            )
+            .await?;
+        assert_eq!(fresh["delivered"], "resumed");
+        app.stop_task_now(&id).await?;
+        Ok::<_, Error>(())
+    });
+    rt.shutdown_timeout(Duration::from_secs(5));
+    result
+}
+
+async fn park_through_terminal_exit(app: &Arc<App>, id: &TaskId) -> TestResult {
+    let mut frames = app.runtime(id).hub.watch();
+    // Issue one successful park request, then observe its completion. Looking for the final
+    // status by running more parking passes could overlap this run's exit reader.
+    wait_for("the parking request", Duration::from_secs(30), || async {
+        app.park_idle_sessions_now().await == 1
+    })
+    .await?;
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if matches!(frames.recv().await?, yulius_app::hub::HubFrame::Exit { .. }) {
+                return Ok::<_, tokio::sync::broadcast::error::RecvError>(());
+            }
+        }
+    })
+    .await
+    .map_err(|_| "the accepted park did not publish its terminal exit")??;
+    assert_eq!(status_of(app, id).await.0, Some(TaskStatus::Parked));
+    Ok(())
+}
+
 /// PRK-005: `task_message` to a parked task resumes it in the same provider session with the
 /// message as its first prompt, and ends the request it had open.
 #[test]

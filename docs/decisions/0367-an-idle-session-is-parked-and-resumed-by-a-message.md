@@ -44,6 +44,8 @@ issue #1412. Extends SPEC-050 SES-101 (Done tasks' sessions do not count toward 
 - A queued task says what it waits for (`queue_reason`), and the Capacity card shows working,
   parked, idle and queued sessions apart.
 
+Capture the attempt ID in the task read that sees Parked, then check it at launch. Another turn can start and park during account or permission checks. Its outstanding decision belongs to that later turn.
+
 ## Alternatives
 
 - **Count only working sessions, keep the processes.** Frees slots, not memory: the small host of

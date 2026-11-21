@@ -2188,6 +2188,71 @@ async fn a_reply_reaches_its_task_under_the_owner_rule() -> TestResult {
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_telegram_reply_keeps_the_selected_park() -> TestResult {
+    use yulius_app::ports::notify::SentAbout;
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    link(&w, &w.alice, 100).await?;
+    intake_on(&w, &w.alice, "s1").await?;
+    support::exhausted_subscription(&w.h).await?;
+    let alice = user_id(&w, "alice").await?;
+    let target = seed_task(
+        &w.h,
+        "t-telegram-dispatch-target",
+        "s1",
+        &alice,
+        TaskStatus::Parked,
+        None,
+    )
+    .await?;
+    w.h.store
+        .record_sent(
+            "100",
+            "9001",
+            &SentAbout {
+                task: target.id.clone(),
+                asked_at: None,
+            },
+            w.h.app.now(),
+        )
+        .await?;
+    support::replace_park_at(
+        &w.h,
+        yulius_app::race::Point::SelectedTaskDispatched,
+        &target.id,
+        &target,
+    )
+    .await?;
+    let before = w.fake.sent_to(100).len();
+    w.fake.raw(
+        100,
+        json!({"text":"For the parked turn","reply_to_message":{"message_id":9001}}),
+    );
+    // The task can also send its Needs you notice before the reply acknowledgement.
+    let answer = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let sent = w.fake.sent_changed.notified();
+            if let Some(answer) = w
+                .fake
+                .sent_to(100)
+                .into_iter()
+                .skip(before)
+                .find(|s| s.starts_with("Sent to #") || s.starts_with("Not sent to #"))
+            {
+                return answer;
+            }
+            sent.await;
+        }
+    })
+    .await?;
+    assert!(
+        answer.starts_with("Not sent to #") && answer.contains("changed"),
+        "{answer}"
+    );
+    support::assert_replacement_parked(&w.h, &target.id).await
+}
+
 /// SPEC-512 TGI-002 (review round 1): a reply is delivered: to a task that has not started it
 /// joins the request as the person's message, labelled from Telegram and audited; a reply to
 /// the bot's own answer about a task reaches that task too; a reply to a message about no task
