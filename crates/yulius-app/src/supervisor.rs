@@ -4201,11 +4201,17 @@ impl App {
             replace_intent(&mut intent, None, SwitchEnd::Lost);
         }
         match request {
-            Some(TakenRequest::Close) => self.settle_ended(task_id, now, after_close).await,
-            Some(TakenRequest::Cancel) => self.settle_ended(task_id, now, after_cancel).await,
+            Some(TakenRequest::Close) => {
+                self.settle_ended(task_id, attempt_id, now, after_close)
+                    .await
+            }
+            Some(TakenRequest::Cancel) => {
+                self.settle_ended(task_id, attempt_id, now, after_cancel)
+                    .await
+            }
             Some(TakenRequest::Park) => self.settle_parked(task_id, attempt_id, now).await,
             None => {
-                self.settle_ended(task_id, now, |task| {
+                self.settle_ended(task_id, attempt_id, now, |task| {
                     task.status.after_loss(task.activity, reason).ok()
                 })
                 .await;
@@ -4230,6 +4236,15 @@ impl App {
         self.drain_queue().await;
     }
 
+    /// A close, stop or loss can settle the run that originally committed to park.
+    fn clear_settled_park(&self, task_id: &TaskId, attempt_id: &AttemptId) {
+        if let Some(runtime) = self.existing_runtime(task_id)
+            && let Ok(mut kept) = runtime.parked_activity.lock()
+        {
+            kept.take_if(|(run, _)| run == attempt_id);
+        }
+    }
+
     /// Moves the task whose run ended to `next` of the status read (`None`: no change). A change
     /// that loses to a concurrent one (a stop landing meanwhile) is made again from the status read
     /// anew, so an ended run never leaves its task live (SPEC-250 STW-005); the rounds are bounded
@@ -4237,6 +4252,7 @@ impl App {
     async fn settle_ended(
         &self,
         task_id: &TaskId,
+        attempt_id: &AttemptId,
         now: Timestamp,
         next: impl Fn(&TaskRecord) -> Option<TaskStatus>,
     ) {
@@ -4255,7 +4271,10 @@ impl App {
                 .await
             {
                 Ok(false) => {}
-                Ok(true) => return,
+                Ok(true) => {
+                    self.clear_settled_park(task_id, attempt_id);
+                    return;
+                }
                 Err(err) => {
                     tracing::warn!(task = %task_id, error = %err, "the ended run's task was not moved");
                     return;
@@ -4270,8 +4289,7 @@ impl App {
     /// meanwhile rests as that run's end leaves it.
     async fn settle_parked(&self, task_id: &TaskId, attempt_id: &AttemptId, now: Timestamp) {
         let attempt = self.deps.store.attempt(attempt_id).await.ok().flatten();
-        let runtime = self.existing_runtime(task_id);
-        let decided = runtime.as_ref().and_then(|runtime| {
+        let decided = self.existing_runtime(task_id).and_then(|runtime| {
             runtime
                 .parked_activity
                 .lock()
@@ -4313,11 +4331,7 @@ impl App {
             {
                 Ok(false) => {}
                 Ok(true) => {
-                    if let Some(runtime) = &runtime
-                        && let Ok(mut kept) = runtime.parked_activity.lock()
-                    {
-                        kept.take_if(|(run, _)| run == attempt_id);
-                    }
+                    self.clear_settled_park(task_id, attempt_id);
                     if to == TaskStatus::Parked {
                         if let Some(run) = &attempt
                             && let Some((cols, rows, screen)) =
@@ -4493,22 +4507,28 @@ impl App {
                 // The run ended while the switch that gave it up was ending it: the task rests
                 // as it does when that switch records the loss itself, from `Switching` or, after
                 // a refused kill, from `Running` (SPEC-483 SWT-002).
-                self.settle_ended(task_id, now, |task| {
+                self.settle_ended(task_id, attempt_id, now, |task| {
                     task.status
                         .apply(TaskEvent::Lost(StopReason::SwitchTimeout))
                         .ok()
                 })
                 .await;
             }
-            Some(EndIntent::Close) => self.settle_ended(task_id, now, after_close).await,
+            Some(EndIntent::Close) => {
+                self.settle_ended(task_id, attempt_id, now, after_close)
+                    .await
+            }
             Some(EndIntent::Park) => self.settle_parked(task_id, attempt_id, now).await,
-            Some(EndIntent::Cancel) => self.settle_ended(task_id, now, after_cancel).await,
+            Some(EndIntent::Cancel) => {
+                self.settle_ended(task_id, attempt_id, now, after_cancel)
+                    .await
+            }
             None => {
                 // A run that ends by itself while a switch that has not claimed its end yet
                 // holds the task `Switching` ends the task as from `Running`: the switch finds
                 // it resting and gives way (SPEC-483 SWT-002).
                 let event = exit_event(&exit, session_end.as_deref());
-                self.settle_ended(task_id, now, |task| {
+                self.settle_ended(task_id, attempt_id, now, |task| {
                     task.status
                         .apply(event)
                         .or_else(|_| {

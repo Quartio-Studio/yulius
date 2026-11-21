@@ -114,6 +114,8 @@ The final parking decision and replacement merge admission share the task’s me
 
 ## Evidence
 
+- On `140ea234f`, the seven merge-admission cases and all 278 scoped tests passed. Independent review then found a stale park marker after Close superseded parking and Continue waited for a subscription. The new regression reached WaitingCapacity with no live attempt, then received the stale parking refusal. A second regression removed the final armed-state check and let a replacement finish between eligibility and the park writer. It reproduced the original owner being parked. A successful run settlement now clears the matching attempt’s record for park, Close, Stop and loss.
+
 - On the tree of dev `f5d772b6c`, five real parking/merge races failed. An arm writer lost its live owner, and a pending merge was admitted during a committed park, during an overtaken switch or capacity pause, and after the task had settled parked. The ordinary switch and capacity pause controls passed.
 - The preceding parking verification campaign reported 79 mutations, with 19 caught, 12 missed and 48 unviable. Targeted replays caught all 12 survivors. The retained regressions cover a changed base SHA during checks and a live queue decision whose head or reason differs from the saved failure.
 

@@ -315,6 +315,85 @@ fn a_merge_prepared_while_running_checks_the_settled_park_before_arming() -> Tes
     })
 }
 
+#[test]
+fn a_completed_replacement_arm_keeps_its_owner_when_parking_takes_the_writer() -> TestResult {
+    with_idle_candidate(async |_, app, remote, id, head| {
+        let ctx = pending_owner_merge(app, remote, &id, &head).await?;
+        let pending_ctx = ctx.clone();
+        let arming_app = app.clone();
+        let arming_id = id.clone();
+        let handle = tokio::runtime::Handle::current();
+        expect_park_deferred(app, &id, move || {
+            let armed = tokio::task::block_in_place(|| {
+                handle.block_on(arming_app.merge_for_person(&ctx, arming_id.as_str()))
+            });
+            assert!(armed.is_ok_and(|answer| answer["armed"] == true));
+        })
+        .await?;
+        assert_eq!(
+            super::status_of(app, &id).await.0,
+            Some(yulius_domain::task::TaskStatus::Running)
+        );
+        assert_eq!(
+            app.merge_state_for_person(&pending_ctx, id.as_str())
+                .await?["armed"],
+            true
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn a_closed_owner_can_arm_during_a_capacity_delayed_continue_after_a_superseded_park() -> TestResult
+{
+    use yulius_domain::task::TaskStatus;
+    with_idle_candidate(async |_, app, remote, id, head| {
+        let ctx = pending_owner_merge(app, remote, &id, &head).await?;
+        let close_app = app.clone();
+        let close_id = id.clone();
+        let handle = tokio::runtime::Handle::current();
+        yulius_app::race::on(
+            super::Point::ParkDecided,
+            Path::new(id.as_str()),
+            move || {
+                let result = tokio::task::block_in_place(|| {
+                    handle.block_on(close_app.close_task_now(&close_id))
+                });
+                assert!(result.is_ok(), "{result:?}");
+            },
+        );
+        super::wait_for("the superseding close", Duration::from_secs(30), || async {
+            if super::status_of(app, &id).await.0 == Some(TaskStatus::Running) {
+                app.park_idle_sessions_now().await;
+            }
+            super::status_of(app, &id).await.0 == Some(TaskStatus::Closed)
+        })
+        .await?;
+        let account = yulius_domain::ids::AccountId::parse("a-only")?;
+        let usage = json!({"primary":{"used_percent":100.0,"window_minutes":300,"resets_at":app.now().plus_millis(3_600_000).0}}).to_string();
+        app.deps
+            .store
+            .set_account_state(
+                &account,
+                yulius_app::model::AccountStatus::Limited,
+                Some(&usage),
+                None,
+                app.now(),
+            )
+            .await?;
+        app.continue_task(&ctx, id.as_str(), &serde_json::from_value(json!({}))?)
+            .await?;
+        assert_eq!(
+            super::status_of(app, &id).await.0,
+            Some(TaskStatus::WaitingCapacity)
+        );
+        assert!(app.deps.store.live_attempt(&id).await?.is_none());
+        let response = app.merge_for_person(&ctx, id.as_str()).await?;
+        assert_eq!(response["armed"], true);
+        Ok(())
+    })
+}
+
 async fn pending_owner_merge(
     app: &Arc<yulius_app::context::App>,
     remote: &Arc<crate::support::FakeGitHub>,
