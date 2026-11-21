@@ -1689,7 +1689,13 @@ async fn a_reused_failure_cannot_blame_the_tasks_replacement_pr_at_the_same_head
     reused_singleton(SingletonChange::ReplacementPr).await
 }
 
+#[tokio::test]
+async fn a_singleton_decision_recovers_an_interrupted_history_write() -> TestResult {
+    reused_singleton(SingletonChange::HistoryWrite).await
+}
+
 enum SingletonChange {
+    HistoryWrite,
     ReplacementPr,
     Rearmed,
     Pruned,
@@ -1794,6 +1800,86 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
             .await?
     );
     app.merge_armed(&f.sandbox).await;
+    if matches!(change, SingletonChange::HistoryWrite) {
+        let arms = app
+            .config
+            .data_dir
+            .join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+        let original_arms = std::fs::read(&arms)?;
+        f.h.store.execute_for_tests(
+            "CREATE TRIGGER refuse_merge_span BEFORE INSERT ON spans WHEN NEW.name = 'merge_armed' BEGIN SELECT RAISE(ABORT, 'temporarily unavailable'); END",
+        ).await?;
+        app.merge_armed(&f.sandbox).await;
+        f.h.store
+            .execute_for_tests("DROP TRIGGER refuse_merge_span")
+            .await?;
+        let cold = restart(app).await;
+        cold.merge_armed(&f.sandbox).await;
+        cold.merge_armed(&f.sandbox).await;
+        let spans = cold
+            .deps
+            .store
+            .subject_spans(&f.sandbox, SubjectKind::Task, "t1", 100)
+            .await?;
+        let recorded: Vec<Value> = spans
+            .iter()
+            .filter(|s| s.name == "merge_armed" && s.outcome.as_deref() == Some("dropped"))
+            .filter_map(|s| serde_json::from_str(s.detail.as_deref()?).ok())
+            .collect();
+        assert_eq!(recorded.len(), 1, "one accepted decision");
+        assert_eq!(recorded[0]["head"], head);
+        assert!(
+            recorded[0]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("292.1 ms") && !message.contains(secret))
+        );
+        assert_eq!(
+            recorded[0]["singleton"],
+            json!({"pr":1,"base":base,"tree":tree,"run":run_id}),
+            "the accepted singleton decision must survive the failed write and restart"
+        );
+        // A process exit after the SQL commit can leave the original arm on disk.
+        std::fs::write(&arms, &original_arms)?;
+        let recovered = restart(&cold).await;
+        assert!(
+            saved_armed(&recovered, 1)?.is_none(),
+            "committed arm restored twice"
+        );
+        // The same receipt must leave a newer arm of the identical SHA alone.
+        let mut newer: Vec<Value> = serde_json::from_slice(&original_arms)?;
+        let entry = newer
+            .iter_mut()
+            .find(|e| e["task"] == "t1")
+            .ok_or("owner arm")?;
+        let stamp = entry["armed_at"].as_i64().ok_or("arm stamp")? + 1;
+        entry["armed_at"] = json!(stamp);
+        std::fs::write(&arms, serde_json::to_vec(&newer)?)?;
+        let rearmed = restart(&recovered).await;
+        assert_eq!(saved_armed(&rearmed, 1)?, Some((head.clone(), stamp)));
+        // A genuine new activation supersedes the prior receipt even when its own
+        // eventual ordinary timing span is unavailable.
+        std::fs::write(&arms, b"[]")?;
+        let ctx = recovered.agent_context("tok-t1").await?;
+        let result = recovered
+            .tool_delivery_merge(
+                &ctx,
+                &json!({"reviewed_head":head,"review_summary":"approve"}),
+            )
+            .await?;
+        assert_eq!(result["armed"], true, "{result}");
+        let latest = app
+            .deps
+            .store
+            .latest_merge_wait(&TaskId::parse("t1")?)
+            .await?
+            .ok_or("previous receipt")?;
+        let detail: Value = serde_json::from_str(latest.detail.as_deref().ok_or("detail")?)?;
+        assert!(
+            detail["superseded_at"].is_i64(),
+            "rearming must retire the old receipt: {detail}"
+        );
+        return Ok(());
+    }
     if matches!(change, SingletonChange::Rearmed) {
         // A later arm is persisted before restart, while the previous train still names the old arm.
         let path = app
@@ -2179,7 +2265,8 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
                 git(&worktree, &["commit", "--allow-empty", "-qm", "later head"])?;
                 git(&worktree, &["push", "-q", "origin", "HEAD"])?;
             }
-            SingletonChange::Rearmed
+            SingletonChange::HistoryWrite
+            | SingletonChange::Rearmed
             | SingletonChange::Pruned
             | SingletonChange::JobRead
             | SingletonChange::MatcherRead

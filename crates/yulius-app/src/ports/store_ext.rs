@@ -1129,6 +1129,14 @@ pub trait SpanStore: Send + Sync {
         figures: &[(String, f64)],
         add: bool,
     ) -> AppResult<()>;
+    /// Retires a previously accepted singleton on a new activation and returns its arm stamp.
+    async fn retire_singleton(&self, task: &TaskId, now: Timestamp)
+    -> AppResult<Option<Timestamp>>;
+    /// Latest merge wait for this task, including ordinary decisions that supersede a singleton.
+    async fn latest_merge_wait(
+        &self,
+        task: &TaskId,
+    ) -> AppResult<Option<crate::stages::SpanRecord>>;
     /// A subject's newest `limit` spans, in start order.
     async fn subject_spans(
         &self,

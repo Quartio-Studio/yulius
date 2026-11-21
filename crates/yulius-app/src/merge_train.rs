@@ -283,8 +283,35 @@ fn short(sha: &str) -> &str {
     sha.get(..9).unwrap_or(sha)
 }
 
+/// An accepted queue decision and the redacted instructions its original owner received.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SingletonDecision {
+    pub head: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_at: Option<i64>,
+    pub singleton: TestedSingleton,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct TestedSingleton {
+    pub pr: u64,
+    pub base: String,
+    pub tree: String,
+    pub run: String,
+}
+
+impl SingletonDecision {
+    pub(crate) fn from_span(span: &crate::stages::SpanRecord) -> Option<Self> {
+        if span.outcome.as_deref() != Some("dropped") {
+            return None;
+        }
+        serde_json::from_str(span.detail.as_deref()?).ok()
+    }
+}
+
 /// Result of observing a singleton's hosted inputs and ordinary CI at its exact head.
-enum SingletonObservation {
+pub(crate) enum SingletonObservation {
     Changed,
     Current(Option<RunState>),
 }
@@ -782,8 +809,15 @@ impl App {
         .ok()
         .flatten();
         let pr = member.pr;
+        let unavailable_since = train.waiting_since;
         let text = match self
-            .singleton_observation(sandbox, &task, member, &integration, &train.base)
+            .singleton_observation(
+                sandbox,
+                &task,
+                (pr, &member.head),
+                &integration,
+                &train.base,
+            )
             .await
         {
             Some(SingletonObservation::Changed) => {
@@ -819,38 +853,64 @@ impl App {
             }
             None => None,
         };
-        let Some(text) = text else {
-            let now = self.now().0;
-            let since = *train.waiting_since.get_or_insert(now);
-            if now.saturating_sub(since) <= WAIT_LIMIT_MS {
-                return Some(train);
-            }
-            // Let the original arm proceed one by one on a continuous observation outage.
+        if let Some(text) = text {
+            state.limit = None;
+            state.suspect = None;
             let member = train.members.first()?;
-            state.held_back.push((member.task.clone(), member.armed_at));
-            self.dissolve(
-                sandbox,
-                &train,
-                "its tested inputs or failure stayed unavailable",
-            )
-            .await;
-            return None;
-        };
-        state.limit = None;
-        state.suspect = None;
-        let member = train.members.first()?;
-        // Consume the arm at the final CI observation, before dissolution does I/O.
-        if let Some(deciding) = self.take_armed(&task) {
-            let verdict = if deciding.merge.armed_at == member.armed_at
-                && deciding.merge.head == member.head
-            {
-                Verdict::Decided(text)
-            } else {
-                Verdict::Keep(deciding.merge.clone())
+            let decision = SingletonDecision {
+                head: member.head.clone(),
+                message: text,
+                superseded_at: None,
+                singleton: TestedSingleton {
+                    pr,
+                    base: train.base.clone(),
+                    tree: member.tree.clone(),
+                    run: train.run.clone(),
+                },
             };
-            self.finish_armed(&task, &deciding, verdict).await;
+            if let Some(deciding) = self.take_armed(&task) {
+                if deciding.merge.armed_at != member.armed_at || deciding.merge.head != member.head
+                {
+                    self.finish_armed(&task, &deciding, Verdict::Keep(deciding.merge.clone()))
+                        .await;
+                } else if !self
+                    .finish_singleton(&task, &sandbox.id, &deciding, &decision)
+                    .await
+                {
+                    train.waiting_since = unavailable_since;
+                    return self
+                        .wait_for_singleton_evidence(sandbox, state, train)
+                        .await;
+                }
+            }
+        } else {
+            return self
+                .wait_for_singleton_evidence(sandbox, state, train)
+                .await;
         }
         self.dissolve(sandbox, &train, "its CI run failed").await;
+        None
+    }
+
+    async fn wait_for_singleton_evidence(
+        &self,
+        sandbox: &SandboxRecord,
+        state: &mut SandboxTrains,
+        mut train: Train,
+    ) -> Option<Train> {
+        let now = self.now().0;
+        let since = *train.waiting_since.get_or_insert(now);
+        if now.saturating_sub(since) <= WAIT_LIMIT_MS {
+            return Some(train);
+        }
+        let member = train.members.first()?;
+        state.held_back.push((member.task.clone(), member.armed_at));
+        self.dissolve(
+            sandbox,
+            &train,
+            "its tested inputs, failure or decision record stayed unavailable",
+        )
+        .await;
         None
     }
 
@@ -909,11 +969,11 @@ impl App {
 
     /// Before dropping an arm, confirm the PR still has the inputs the singleton tested.
     /// A changed input invalidates the attribution. An unavailable read leaves it undecided.
-    async fn singleton_observation(
+    pub(crate) async fn singleton_observation(
         &self,
         sandbox: &SandboxRecord,
         task: &TaskId,
-        member: &Member,
+        (pr, head): (u64, &str),
         integration: &str,
         base: &str,
     ) -> Option<SingletonObservation> {
@@ -922,13 +982,13 @@ impl App {
             let pull = self
                 .deps
                 .github
-                .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, member.pr)
+                .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, pr)
                 .await
                 .ok()?;
             let delivery = self.deps.store.delivery(task).await.ok()?;
             let current = delivery.is_some_and(|record| {
-                record.stage == DeliveryStage::PrOpen && record.pr_number == Some(member.pr)
-            }) && pull.number == member.pr
+                record.stage == DeliveryStage::PrOpen && record.pr_number == Some(pr)
+            }) && pull.number == pr
                 && pull.state == "open"
                 && !pull.merged
                 && !pull.from_fork
@@ -936,18 +996,18 @@ impl App {
             if current && (pull.head_sha.is_empty() || pull.base_sha.is_empty()) {
                 return None;
             }
-            if !current || pull.head_sha != member.head || pull.base_sha != base {
+            if !current || pull.head_sha != head || pull.base_sha != base {
                 return Some(SingletonObservation::Changed);
             }
             // A failed read cannot establish that the owner's earlier running check ended.
             let runs = self
                 .deps
                 .store
-                .ci_runs_for_pull_head(&sandbox.id, PullHead::Exact(&member.head))
+                .ci_runs_for_pull_head(&sandbox.id, PullHead::Exact(head))
                 .await
                 .ok()?;
             Some(SingletonObservation::Current(
-                run_for_pull_head(&runs, member.pr).map(|run| run.state),
+                run_for_pull_head(&runs, pr).map(|run| run.state),
             ))
         };
         tokio::time::timeout(Duration::from_secs(5), confirm)

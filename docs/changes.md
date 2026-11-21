@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- After a daemon restart, an open PR’s existing owner can receive the recorded failure of its single-PR merge candidate. The watcher verifies the PR head and integration base and respects rearming and requests for a person (SPEC-558).
+
 - A failed single-PR merge candidate tells its original owner which job failed. It verifies the current PR head and integration base and retries unreadable diagnostics, including when a multi-PR run tested the same tree (SPEC-558).
 
 - When open PRs share a commit, the merge queue and `yulius wait` use the owner’s ordinary CI result. A PR without its own run can use the shared result for that commit (SPEC-558).

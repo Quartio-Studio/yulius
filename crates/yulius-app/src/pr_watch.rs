@@ -1136,13 +1136,13 @@ impl App {
                 text: red_candidate_text(run, members, &jobs, &integration),
             });
         }
-        if !armed && let Some((head, text)) = outcome {
-            let key = outcome_key(&head, &text);
+        if !armed && let Some((head, text)) = &outcome {
+            let key = outcome_key(head, text);
             if !told_key("outcome", &key) {
                 events.push(Event {
                     kind: "outcome",
                     key,
-                    text,
+                    text: text.clone(),
                 });
             }
         }
@@ -1225,7 +1225,7 @@ impl App {
             .load(Ordering::SeqCst)
             .max(runtime.spawned_ms.load(Ordering::SeqCst));
         let check_ins = !runtime.goal_achieved.load(Ordering::SeqCst) && !needs_you;
-        Some(PrFacts {
+        let mut facts = PrFacts {
             now_ms,
             pr,
             events,
@@ -1239,7 +1239,107 @@ impl App {
             working: runtime.turn_in_progress(),
             has_ci,
             head: own.map(|run| run.sha.clone()).unwrap_or_default(),
-        })
+        };
+        if !armed && !person_must_act {
+            self.apply_singleton_news(task, &sandbox, &integration, outcome.as_ref(), &mut facts)
+                .await?;
+        }
+        Some(facts)
+    }
+
+    /// A saved decision belongs to this owner only while the tested inputs and original
+    /// delivery still match. Use the same outcome key the live queue already told.
+    async fn apply_singleton_news(
+        &self,
+        task: &TaskRecord,
+        sandbox: &SandboxRecord,
+        integration: &str,
+        outcome: Option<&(String, String)>,
+        facts: &mut PrFacts,
+    ) -> Option<()> {
+        use crate::merge_train::{SingletonDecision, SingletonObservation};
+        let Some(span) = self.deps.store.latest_merge_wait(&task.id).await.ok()? else {
+            return Some(());
+        };
+        let Some(decision) = SingletonDecision::from_span(&span) else {
+            return Some(());
+        };
+        if outcome.is_some_and(|(head, text)| *head != decision.head || *text != decision.message) {
+            return Some(());
+        }
+        let key = outcome_key(&decision.head, &decision.message);
+        facts
+            .events
+            .retain(|event| event.kind != "outcome" || event.key != key);
+        if decision.superseded_at.is_some() || facts.pr != decision.singleton.pr {
+            return Some(());
+        }
+        let observation = self
+            .singleton_observation(
+                sandbox,
+                &task.id,
+                (facts.pr, &decision.head),
+                integration,
+                &decision.singleton.base,
+            )
+            .await?;
+        let fresh = self.deps.store.task(&task.id).await.ok()??;
+        if fresh.status != TaskStatus::Running
+            || fresh.archived_at.is_some()
+            || self
+                .deps
+                .store
+                .task_needs_you(&task.id)
+                .await
+                .ok()?
+                .is_some()
+            || self.deps.store.open_pause(&task.id).await.ok()?.is_some()
+            || self
+                .browser_tab_request_for(&task.sandbox_id, &task.id)
+                .await
+                .is_some()
+            || fresh.activity == Some(yulius_domain::task::Activity::NeedsAttention)
+                && !self.held_message_flag_outlived(&fresh).await
+            || self
+                .deps
+                .store
+                .latest_merge_wait(&task.id)
+                .await
+                .ok()?
+                .as_ref()
+                != Some(&span)
+            || self.merge_is_armed(&task.id)
+            || self.armed_view(&task.id).1.as_ref() != outcome
+        {
+            return None;
+        }
+        match observation {
+            SingletonObservation::Changed => return Some(()),
+            SingletonObservation::Current(Some(
+                RunState::Running
+                | RunState::Queued
+                | RunState::Failed
+                | RunState::Error
+                | RunState::Cancelled,
+            )) => {
+                // If the ordinary observation just changed, start with fresh facts on the
+                // next pass. A pending or red rerun cannot produce a green-unarmed notice.
+                return (!facts.events.iter().any(|event| event.kind == "green")).then_some(());
+            }
+            SingletonObservation::Current(_) => {}
+        }
+        facts.events.retain(|event| event.kind != "green");
+        facts
+            .progress
+            .push_str(&format!("|{}", decision.singleton.run));
+        facts.status.clone_from(&decision.message);
+        facts.head.clone_from(&decision.head);
+        facts.events.push(Event {
+            kind: "outcome",
+            key,
+            text: decision.message,
+        });
+        Some(())
     }
 
     /// The merge notice of `task`'s pull request `pr` (`merged_text`), read from GitHub once and
