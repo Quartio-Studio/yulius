@@ -73,7 +73,7 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
-- On dev the parked terminal kept Step 2/7 after the sidebar observed all seven steps complete. A subsequent CI failure also displayed an already resolved owner notice. Both Chromium cases passed after correction. Review at `f937f0efc` reproduced the reverse case: finishing step seven while step two was active incorrectly displayed Step 7/7. Its regression observed the new six-of-seven count before checking the ordinal. The terminal now retains the ordinal while the active step still matches.
+- On dev the parked terminal kept Step 2/7 after the sidebar observed all seven steps complete. A subsequent CI failure also displayed an already resolved owner notice. Both Chromium cases passed after correction. Review at `f937f0efc` reproduced the reverse case: finishing step seven while step two was active incorrectly displayed Step 7/7. Its regression observed the new six-of-seven count before checking the ordinal. Review of the first correction reproduced that reversal after a case-only title edit. The terminal now compares the active title using the same lowercase comparison as the domain’s step identity rule.
 
 - PR #1550 delivered sidebar lifecycle reconciliation to dev at `d1be51c7d`. CI run `6cabd3e8-4802-4e57-905b-62ad535f80b1` passed quality, both Rust shards and browser e2e. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/d1be51c7d7c3642b991e3bbf4b596ca55125cdee)
 

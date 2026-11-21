@@ -1008,7 +1008,10 @@ export function mountTaskView(ctx, sandbox, task) {
       const ordered = [...detail.steps_list].sort((a, b) => a.ordinal - b.ordinal);
       const index = ordered.findIndex((s) => s.status === 'in_progress');
       // On a parked task the list can observe completion while detail still has the old active step.
-      if (index >= 0 && (current.status !== 'parked' || (index < total && ordered[index].title === steps.current))) n = index + 1;
+      if (index >= 0) {
+        const matchesActive = steps.current && ordered[index].title.toLowerCase() === steps.current.toLowerCase();
+        if (current.status !== 'parked' || (index < total && matchesActive)) n = index + 1;
+      }
     }
     // A plan that grew since its first step was finished says what it had then (SPEC-484): the
     // server sends `first_total` only for such a plan.

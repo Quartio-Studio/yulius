@@ -1433,11 +1433,14 @@ test('a parked rename preserves a verified Needs you without a PR until a health
   expect(seen).toEqual([['Renamed', 'needs', 'done'], ['Renamed', 'needs', 'done']]);
 });
 
-for (const finishActive of [true, false]) {
-  test(finishActive ? 'the parked terminal shows a completed plan after the watch observes the last step finish'
-    : 'the parked terminal keeps the active ordinal when a later step finishes', async ({ app, browser, screen }) => {
+for (const [name, finishActive, rename] of [
+  ['the parked terminal shows a completed plan after the watch observes the last step finish', true, false],
+  ['the parked terminal keeps the active ordinal when a later step finishes', false, false],
+  ['the parked terminal keeps the active ordinal after a case-only title edit', false, true],
+] as const) {
+  test(name, async ({ app, browser, screen }) => {
     await app.open(mock('/s/studio', '&ambient=0&pullgap=0&pullclock=manual'));
-    type Fixture = { releaseDetail: () => void; __yuliusMock: { holdDetail?: Promise<void>; tasks: { id: string; stepsList: { status: string }[] }[];
+    type Fixture = { releaseDetail: () => void; __yuliusMock: { holdDetail?: Promise<void>; tasks: { id: string; stepsList: { status: string; title: string }[] }[];
       holdGitReads: boolean; changePull(s: string, n: number, fields: object): void;
       touchTask(s: string, n: number, fields: object): void } };
     await browser.evaluate(finishActive => {
@@ -1448,15 +1451,16 @@ for (const finishActive of [true, false]) {
       location.hash = `/s/studio/t/13`;
     }, finishActive);
     await expect(browser.locator('.step-count')).toHaveText('Step 2/7');
-    await browser.evaluate(finishActive => {
+    await browser.evaluate(({ finishActive, rename }) => {
       const db = (window as unknown as Fixture).__yuliusMock;
       db.holdGitReads = true;
       db.holdDetail = new Promise<void>(resolve => { (window as unknown as Fixture).releaseDetail = resolve; });
       const task = db.tasks.find(t => t.id === 'tsk_studio_13')!;
       task.stepsList[finishActive ? 1 : 6].status = 'done';
+      if (rename) task.stepsList[1].title = task.stepsList[1].title.toUpperCase();
       Object.assign(task, { parked_needs_you: !finishActive });
       db.changePull('sb_studio', 520, { checks: 'success' });
-    }, finishActive);
+    }, { finishActive, rename });
     await expect(browser.locator('.stepstrip [role=progressbar]')).toHaveAttribute('aria-label', finishActive ? /^7 of 7 steps done/ : /^6 of 7 steps done/);
     await expect(screen.getByRole('region', finishActive ? 'Done' : 'Needs you').getByRole('link', /Improve the code/)).toBeVisible();
     await expect(browser.locator('.step-count')).toHaveText(finishActive ? 'Step 7/7' : 'Step 2/7');
