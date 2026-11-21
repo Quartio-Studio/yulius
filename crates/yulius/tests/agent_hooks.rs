@@ -3128,6 +3128,66 @@ async fn goal_stop_preserves_a_multiline_draft_after_a_pause_in_typing() -> Test
     Ok(())
 }
 
+/// History and cursor editing belong to the provider composer. Its submission
+/// confirms which of the owner's edited instructions actually went through.
+#[tokio::test]
+async fn goal_stop_accepts_recalled_and_cursor_edited_owner_work() -> TestResult {
+    for (frames, prompt) in [
+        (vec![b"\x1b[A".as_slice(), b"\r"], "Verify dev"),
+        (vec![b"x".as_slice(), b"\x1b[D", b"\x7f", b"\r"], "x"),
+    ] {
+        let f = task_with_open_step(Agent::Codex, TaskMode::Goal, prompt).await?;
+        let owner = UserId::parse("u1")?;
+        let submit = |text: &str| yulius_contracts::hooks::HookInput {
+            prompt: Some(text.into()),
+            ..Default::default()
+        };
+        f.h.app
+            .record_terminal_frame(&f.task, &owner, format!("{prompt}\r").as_bytes());
+        f.h.app
+            .hook_event(TOKEN, "codex", "UserPromptSubmit", &submit(prompt), None)
+            .await?;
+        let reason = stop_of(&f, Agent::Codex).await?["reason"]
+            .as_str()
+            .ok_or("continuation")?
+            .to_owned();
+        for frame in frames {
+            f.h.app.record_terminal_frame(&f.task, &owner, frame);
+        }
+        // The provider can report the automatic instruction before acknowledging
+        // the recalled or edited owner's submission.
+        f.h.app
+            .hook_event(TOKEN, "codex", "UserPromptSubmit", &submit(&reason), None)
+            .await?;
+        assert_eq!(
+            f.h.app
+                .deps
+                .store
+                .task(&f.task)
+                .await?
+                .ok_or("task")?
+                .gate_blocks,
+            1
+        );
+        f.h.app
+            .hook_event(TOKEN, "codex", "UserPromptSubmit", &submit(prompt), None)
+            .await?;
+        assert_eq!(
+            f.h.app
+                .deps
+                .store
+                .task(&f.task)
+                .await?
+                .ok_or("task")?
+                .gate_blocks,
+            0,
+            "{prompt}"
+        );
+        assert!(!f.h.app.has_draft(&f.task));
+    }
+    Ok(())
+}
+
 /// The client has already sent Enter when the next draft reaches Yulius. The HTTP
 /// callback arrives later, carrying the client's send time.
 #[tokio::test]
