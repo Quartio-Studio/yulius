@@ -481,6 +481,14 @@ fn invalid_requests_are_rejected_without_echoing_values() {
     );
     let error = format!("{:?}", plan_launch(&bad_prompt));
     assert!(!error.contains("a\\0b"));
+    for (length, valid) in [(128, true), (129, false)] {
+        let name = format!("_{}", "1".repeat(length - 1));
+        bad_env.mcp_servers[0].transport = McpTransport::Http {
+            url: "https://example.invalid/mcp".into(),
+            bearer_env: Some(name),
+        };
+        assert_eq!(plan_launch(&bad_env).is_ok(), valid, "{length}");
+    }
 }
 
 #[test]
