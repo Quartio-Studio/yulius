@@ -93,6 +93,21 @@ class CompileCache(unittest.TestCase):
                 self.assertFalse(outside.exists(), "intermediate artifacts escaped disk scratch")
                 self.assertFalse(list(parent.iterdir()))
 
+    def test_disposable_build_rejects_an_alias_with_external_outputs(self):
+        self.create_fixture(self.task, "fn main() {}")
+        cargo = Path(subprocess.check_output(["rustup", "which", "cargo"], text=True).strip())
+        outside = self.sandbox / "outside"
+        (self.task / ".cargo").mkdir()
+        (self.task / ".cargo/config.toml").write_text(
+            f'[alias]\nfast-build=["build","--target-dir","{outside}"]'
+        )
+        env = self.cargo_env(self.sandbox / "home", cargo)
+        env.update(YULIUS_BUILD_SCRATCH=str(self.sandbox / "scratch"), RUSTC=str(cargo.with_name("rustc")))
+        result = subprocess.run([self.task / "scripts/cargo", "--scratch-target", "fast-build", "--offline"],
+                                cwd=self.task, env=env, capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0, "alias wrote outside scratch")
+        self.assertFalse(outside.exists())
+
     def test_unconfirmed_shutdown_retains_its_target_and_runs_cargo_once(self):
         root = self.sandbox / "scratch"
         env = self.caller_fixture("from pathlib import Path\n"
@@ -361,7 +376,13 @@ def group_snapshot(*args, **kwargs):
     def test_interrupt_sent_to_launcher_reaches_cargo(self):
         self.check_single_interrupt(terminal_signal=False)
 
-    def check_single_interrupt(self, terminal_signal):
+    def test_group_directed_interrupt_reaches_the_build_handler_once(self):
+        self.check_single_interrupt(terminal_signal=True, group=True)
+
+    def test_portable_supervisor_forwards_the_original_launcher_interrupt(self):
+        self.check_single_interrupt(terminal_signal=False, portable=True)
+
+    def check_single_interrupt(self, terminal_signal, group=False, portable=False):
         import pty
         import select
         import signal
@@ -395,6 +416,9 @@ def wait_after_forwarding(self, timeout=None):
     return original_wait(self, timeout=timeout)
 subprocess.Popen.wait = wait_after_forwarding
 """)
+        if portable:
+            with (self.task / "scripts/compile_cache.py").open("a") as source:
+                source.write("\nif hasattr(signal, 'sigtimedwait'): del signal.sigtimedwait\n")
         pid, terminal = pty.fork()
         if pid == 0:
             os.execve(self.task / "scripts/cargo", ["cargo", "--scratch-target", "run"], env)
@@ -404,7 +428,10 @@ subprocess.Popen.wait = wait_after_forwarding
             if terminal_signal:
                 os.kill(pid, signal.SIGSTOP)
                 os.waitpid(pid, os.WUNTRACED)
-                os.write(terminal, b'\x03')
+                if group:
+                    os.killpg(pid, signal.SIGINT)
+                else:
+                    os.write(terminal, b'\x03')
                 deadline = time.monotonic() + 3
                 while not self.record.exists():
                     self.assertLess(time.monotonic(), deadline, "Cargo missed the terminal interrupt")

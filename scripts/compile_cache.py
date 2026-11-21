@@ -99,16 +99,13 @@ def run_disposable(command, env):
                     except subprocess.TimeoutExpired:
                         continue
             if requested is not None and child.poll() is None:
-                # Terminal signals reach the inherited foreground job directly.
-                # With unknown provenance give its handler the same grace before
-                # escalating. An explicit signal to the launcher reaches Cargo.
-                if origin_pid or (origin_pid is None and requested == signal.SIGTERM):
-                    child.send_signal(requested)
+                # A signal from another process can target the PID or the
+                # whole job. Let a handler already running in Cargo finish.
                 try:
                     child.wait(timeout=3)
                 except subprocess.TimeoutExpired:
-                    if origin_pid is None and requested != signal.SIGTERM:
-                        child.terminate()
+                    if origin_pid != 0:
+                        child.send_signal(requested)
                         try:
                             child.wait(timeout=3)
                         except subprocess.TimeoutExpired:
