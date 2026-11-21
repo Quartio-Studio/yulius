@@ -1992,3 +1992,68 @@ test('parked verification keeps a confirmed closure through old list fallback an
   });
   expect(seen).toEqual([['done', 42, false], ['done', 42, false]]);
 });
+
+test('a verified closure clears the open PR inherited by an overlapping parked rename', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const storeModule = '/assets/store.js', statusModule = '/assets/status.js';
+    const { createStore } = await import(storeModule);
+    const { taskInfo } = await import(statusModule);
+    const results = [];
+    for (const source of ['detail', 'list']) {
+      for (const owner of [false, true]) {
+        const base = { id: 'p', sandbox_id: 's', status: 'parked', activity: 'done' };
+        const open = { ...base, parked_needs_you: true, parked_pr: { number: 42, open: true } };
+        const closed = { ...base, parked_needs_you: false, parked_pr: { number: 42, open: false } };
+        const held = Promise.withResolvers<void>();
+        let reads = 0;
+        const store = createStore({ get: async () => {
+          if (++reads === 1) return [open];
+          await held.promise;
+          return [closed];
+        } });
+        await store.loadTasks('s');
+        const detail = source === 'detail' ? store.beginParkedDetail() : null;
+        const list = detail ? null : store.loadTasks('s', true);
+        store.upsertTask({ ...base, title: 'Renamed', needs_you: owner ? { action: 'Choose a version' } : null });
+        held.resolve();
+        if (detail) detail(closed);
+        else await list;
+        const row = store.findTask('p');
+        results.push([row.title, row.parked_pr?.open, taskInfo(row).group, row.needs_you?.action ?? null]);
+      }
+    }
+    return results;
+  });
+  const pair = [['Renamed', false, 'done', null], ['Renamed', false, 'needs', 'Choose a version']];
+  expect(seen).toEqual([...pair, ...pair]);
+});
+
+test('a failed watch keeps a verified closure ahead of its older failing Git chip', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const storeModule = '/assets/store.js', statusModule = '/assets/status.js';
+    const { createStore } = await import(storeModule);
+    const { taskInfo } = await import(statusModule);
+    const base = { id: 'p', sandbox_id: 's', status: 'parked', activity: 'done' };
+    const open = { ...base, parked_needs_you: true, parked_pr: { number: 42, open: true } };
+    let unavailable = false;
+    const store = createStore({ get: async (path: string) => {
+      if (path.endsWith('/git')) return { tasks: [{ task_id: 'p', pr: { number: 42, state: 'open', checks: 'failure' } }] };
+      if (unavailable) throw new Error('watch unavailable');
+      return [open];
+    } });
+    await store.loadTasks('s');
+    const git = Promise.withResolvers<void>();
+    store.on('pulls', () => git.resolve());
+    const stop = store.watchPulls('s');
+    await git.promise;
+    store.beginParkedDetail()({ ...base, parked_needs_you: false, parked_pr: { number: 42, open: false } });
+    unavailable = true;
+    await store.loadTasks('s', true);
+    const row = store.findTask('p');
+    stop();
+    return [row.parked_pr.open, taskInfo(row, null, store.pullForStatus(row)).group, store.pullsOf('s').get('p').checks];
+  });
+  expect(seen).toEqual([false, 'done', 'failure']);
+});

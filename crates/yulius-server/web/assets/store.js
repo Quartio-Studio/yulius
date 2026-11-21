@@ -135,7 +135,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   const listOrder = new WeakMap();
   const failedWatchOrder = new WeakMap();
   const rowOrder = new WeakMap();
-  const verifiedOrder = new WeakMap();
+  const verifiedGroup = new WeakMap(); // last verifier answer, before a failed read inferred Needs you
   const overviewOrder = new WeakMap();
   const prOrder = new WeakMap();
 
@@ -263,18 +263,31 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     };
   }
 
+  function recordVerification(task, order) {
+    if (typeof task.parked_needs_you === 'boolean') {
+      verifiedGroup.set(task, { order, needsYou: task.parked_needs_you });
+    }
+    if (task.parked_pr) prOrder.set(task.parked_pr, order);
+  }
+
+  function latestVerification(task, other) {
+    const first = verifiedGroup.get(task);
+    const second = verifiedGroup.get(other);
+    return (second?.order ?? 0) > (first?.order ?? 0) ? second : first;
+  }
+
   function orderedListRow(listed, prior, snapshotOrder, failureOrder) {
     // A detail or lifecycle event that started later supplies the parked state.
     // The list can still carry a new title or discover an open PR.
-    if (listed.parked_pr) prOrder.set(listed.parked_pr, snapshotOrder);
-    if (typeof listed.parked_needs_you === 'boolean') verifiedOrder.set(listed, snapshotOrder);
+    recordVerification(listed, snapshotOrder);
     const priorOrder = rowOrder.get(prior) ?? 0;
     const keepPrior = priorOrder > snapshotOrder && prior?.status === 'parked' && listed.status === 'parked';
     const order = keepPrior ? priorOrder : snapshotOrder;
     let row = listed;
     if (keepPrior) {
       row = { ...listed, ...parkedFacts(prior) };
-      verifiedOrder.set(row, verifiedOrder.get(prior) ?? 0);
+      verifiedGroup.set(row, latestVerification(prior, listed));
+      if (unverified.has(prior)) unverified.set(row, unverified.get(prior));
     }
     const fallbackOrder = Math.max(failureOrder, unverified.get(prior) ?? 0);
     if (row.status === 'parked' && fallbackOrder >= order) {
@@ -283,7 +296,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       unverified.delete(row);
     }
     rowOrder.set(row, order);
-    verifiedOrder.set(row, Math.max(verifiedOrder.get(prior) ?? 0, typeof listed.parked_needs_you === 'boolean' ? snapshotOrder : 0));
+    verifiedGroup.set(row, latestVerification(row, prior));
     return row;
   }
 
@@ -314,19 +327,18 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       const map = state.tasks.get(detail.sandbox_id);
       const row = map?.get(detail.id);
       if (detail.status !== 'parked') return view;
-      if (detail.parked_pr) prOrder.set(detail.parked_pr, order);
-      if (typeof detail.parked_needs_you === 'boolean') verifiedOrder.set(detail, order);
+      recordVerification(detail, order);
       if (rowOrder.get(row) > order) {
         // Preserve the newer event's work and decisions. An older detail may
         // still identify the open PR that an unverified update could not name.
-        if (row.status === 'parked' && unverified.has(row) && (verifiedOrder.get(row) ?? 0) < order) {
+        if (row.status === 'parked' && unverified.has(row) && (verifiedGroup.get(row)?.order ?? 0) < order) {
           return parkedView(view, publishParkedRow(map, row, awaitingVerification(row, detail)));
         }
         return parkedView(view, row);
       }
       let updated = { ...row, ...parkedFacts(detail), id: detail.id, sandbox_id: detail.sandbox_id };
       const hintOrder = pullWatch.get(detail.sandbox_id)?.changeBeforeParkedRows ?? 0;
-      verifiedOrder.set(updated, verifiedOrder.get(detail) ?? verifiedOrder.get(row) ?? 0);
+      verifiedGroup.set(updated, latestVerification(detail, row));
       const fallbackOrder = Math.max(hintOrder, unverified.get(row) ?? 0, failedWatchOrder.get(map) ?? 0);
       if (fallbackOrder > order || typeof detail.parked_needs_you !== 'boolean') {
         updated = awaitingVerification(updated, row, Math.max(order, fallbackOrder));
@@ -334,13 +346,12 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       // Publish verified work into an existing parked row. The list and lifecycle
       // events own membership; the terminal can already display its fresh detail.
       rowOrder.set(updated, order);
-      verifiedOrder.set(updated, typeof detail.parked_needs_you === 'boolean' ? order : verifiedOrder.get(row) ?? 0);
       if (row?.status === 'parked' && !detail.archived) publishParkedRow(map, row, updated);
       return parkedView(view, updated);
     };
   }
 
-  function knownOpenPr(task, snapshot) {
+  function observedPr(task, snapshot) {
     // An unverified group may inherit its PR from a different read. Compare
     // the PR observations themselves, independently of grouping and chip text.
     const candidates = [task.parked_pr, snapshot?.parked_pr].filter(Boolean);
@@ -353,7 +364,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     }
     candidates.sort((a, b) => (prOrder.get(b) ?? 0) - (prOrder.get(a) ?? 0));
     // A newer closure rules out an older observation of the same open PR.
-    return candidates.find((pr, i) => pr.open && !candidates.slice(0, i).some(newer => newer.number === pr.number));
+    return candidates.find((pr, i) => pr.open && !candidates.slice(0, i).some(newer => newer.number === pr.number)) ?? candidates[0];
   }
 
   function upsertTask(task) {
@@ -364,10 +375,9 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     if (pending.some(read => read.deleted.has(task.id))) return;
     const recheck = task.status === 'parked' && !task.archived && typeof task.parked_needs_you !== 'boolean';
     const order = ++nextListRead;
-    if (task.parked_pr) prOrder.set(task.parked_pr, order);
+    recordVerification(task, order);
     if (recheck) task = awaitingVerification(task, prior, order);
     rowOrder.set(task, order);
-    verifiedOrder.set(task, recheck ? verifiedOrder.get(prior) ?? 0 : order);
     for (const read of pending) {
       if (task.status === 'parked' || prior?.status === 'parked') read.parked.add(task.id);
       read.changes.set(task.id, task);
@@ -532,8 +542,9 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     // Mounted views add detail-only fields to a copy of the list row.
     const row = rowOrder.has(task) ? task : state.tasks.get(task.sandbox_id)?.get(task.id);
     if (pr?.state === 'open' && task.parked_needs_you === false && task.parked_pr?.number === pr.number &&
-        row?.parked_needs_you === false && row.parked_pr?.number === pr.number && !unverified.has(row) &&
-        rowOrder.get(row) > (overviewOrder.get(pulls) ?? 0) &&
+        row?.parked_needs_you === false && row.parked_pr?.number === pr.number &&
+        ((!unverified.has(row) && rowOrder.get(row) > (overviewOrder.get(pulls) ?? 0)) ||
+         (row.parked_pr.open === false && prOrder.get(row.parked_pr) > (overviewOrder.get(pulls) ?? 0))) &&
         (pr.conflicts || !['success', 'none'].includes(pr.checks))) return null;
     return pr;
   }
@@ -558,23 +569,23 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   }
 
   function awaitingVerification(task, snapshot, order = unverified.get(task) ?? 0) {
-    const pr = knownOpenPr(task, snapshot);
-    const alreadyWaiting = task.parked_needs_you && task.parked_pr?.open && task.parked_pr.number === pr?.number;
-    if (alreadyWaiting) prOrder.set(task.parked_pr, prOrder.get(pr) ?? 0);
+    const pr = observedPr(task, snapshot);
+    const verification = latestVerification(task, snapshot);
+    // A verification can time out before naming the blocker. Keep that
+    // unresolved decision until a later verifier answers it.
+    const unnamedBlocker = [task, snapshot].some(row => row?.parked_needs_you === true && !row.parked_pr?.open &&
+      (unverified.get(row) ?? 0) > (verification?.order ?? 0));
+    const needsYou = pr?.open || unnamedBlocker || verification?.needsYou;
+    // A fallback to an open PR is temporary. A later verification can close
+    // that PR without overwriting a rename, plan or decision received meanwhile.
     let updated = task;
-    if (pr && !alreadyWaiting) updated = { ...task, parked_needs_you: true, parked_pr: pr };
-    else if (snapshot?.parked_needs_you === true && task.parked_needs_you !== true &&
-        (verifiedOrder.get(task) ?? 0) <= Math.max(verifiedOrder.get(snapshot) ?? 0, unverified.get(snapshot) ?? 0)) {
-      // Verification can time out before discovering which PR blocks Done.
-      updated = { ...task, parked_needs_you: true };
-    }
-    if (!pr && !updated.parked_pr && snapshot?.parked_pr?.open === false) {
-      updated = { ...updated, parked_pr: snapshot.parked_pr };
-    }
-    if (updated !== task) {
+    if (needsYou !== task.parked_needs_you || pr?.open !== task.parked_pr?.open || pr?.number !== task.parked_pr?.number) {
+      updated = { ...task, parked_needs_you: needsYou, parked_pr: pr };
       if (rowOrder.has(task)) rowOrder.set(updated, rowOrder.get(task));
+    } else if (pr && task.parked_pr) {
+      prOrder.set(task.parked_pr, prOrder.get(pr) ?? 0);
     }
-    verifiedOrder.set(updated, Math.max(verifiedOrder.get(task) ?? 0, verifiedOrder.get(snapshot) ?? 0));
+    verifiedGroup.set(updated, verification);
     unverified.set(updated, order);
     return updated;
   }

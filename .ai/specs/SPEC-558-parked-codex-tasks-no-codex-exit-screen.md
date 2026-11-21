@@ -73,6 +73,8 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- On the dev base the mounted terminal showed PR #520 failing after the detail verified recovery, and showed Done for merged #520 after a successful detail found open #521 during a failed resync. The initial publication change passed 81 parked, progress and attention cases and 25 Done cases. Review of `7ca1b7e56` reproduced an inherited open PR surviving a confirmed closure in both the detail and watched-list reply orders. A failed watch also restored the older failing chip as the group reason. The Chromium regressions check the actual group and PR identity, retaining a concurrent human decision and the visible Git chip. The store now keeps the verifier’s answer separately from its temporary open-PR fallback.
+
 - PR #1552 landed on dev at `71ee007e9`. Yulius CI run `6b56f233-daf0-4290-84f9-a5250a12eb8b` passed quality, both Rust shards and browser e2e on PR head `3f7f153a4`. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe704d71f9/delivery/evidence/71ee007e98464f0b9156846fc76fad4bcc3daf8c)
 
 - Independent review approved `cfaf7ee89` and ran all four mounted Chromium regressions. The parked terminal showed Step 7/7 on completion, retained Step 2/7 while another step finished (including a case-only edit), and cleared the resolved notice before a later failing check. Repository contracts and formatting passed. This browser change has no Rust mutation targets. Vidoc was disabled.
