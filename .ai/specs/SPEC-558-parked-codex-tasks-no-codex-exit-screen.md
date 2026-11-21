@@ -42,7 +42,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Keep the newest successful full task list and recover the cold task page
 - [x] Keep verified unfinished parked rows out of Done in the browser
 - [x] Reconcile parked lifecycle changes and refresh the sidebar independently of Git
-- [ ] Show current parked progress and owner notices in the terminal
+- [x] Show current parked progress and owner notices in the terminal
 - [ ] Publish verified parked task detail to the terminal
 - [ ] Reconcile missed parks, resumes and archives discovered by terminal detail
 - [ ] Publish verified parked task detail to Task Info
@@ -72,6 +72,8 @@ Capture a separate screen at the park decision because exiting can clear the ent
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
 ## Evidence
+
+- Independent review approved `cfaf7ee89` and ran all four mounted Chromium regressions. The parked terminal showed Step 7/7 on completion, retained Step 2/7 while another step finished (including a case-only edit), and cleared the resolved notice before a later failing check. Repository contracts and formatting passed. This browser change has no Rust mutation targets. Vidoc was disabled.
 
 - On dev the parked terminal kept Step 2/7 after the sidebar observed all seven steps complete. A subsequent CI failure also displayed an already resolved owner notice. Both Chromium cases passed after correction. Review at `f937f0efc` reproduced the reverse case: finishing step seven while step two was active incorrectly displayed Step 7/7. Its regression observed the new six-of-seven count before checking the ordinal. Review of the first correction reproduced that reversal after a case-only title edit. The terminal now compares the active title using the same lowercase comparison as the domain’s step identity rule.
 
