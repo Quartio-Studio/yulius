@@ -46,6 +46,7 @@ async fn world(wait_ms: u64) -> Result<World, Error> {
         c.cross_request_wait_ms = wait_ms;
     })?;
     support::exhausted_subscription(&h).await?;
+    crate::codex::connect_codex(&h.app).await?;
     for (id, slug, port) in [
         ("s1", "studio", 20000),
         ("s2", "website", 20020),
@@ -215,6 +216,8 @@ async fn an_approved_request_creates_the_task_in_the_other_sandbox() -> TestResu
     assert_eq!(task.sandbox_id, SandboxId::parse("s2")?);
     assert_eq!(task.prompt, prompt);
     assert_eq!(task.title, "API client v2");
+    assert_eq!(task.harness, yulius_domain::harness::Harness::Codex);
+    assert_eq!(w.h.app.task_summary(&task).await?.harness_choice, "chosen");
     assert_eq!(task.created_by, w.alice_id);
     assert_eq!(task.origin, TaskOrigin::Agent);
     assert!(

@@ -1799,6 +1799,38 @@ async fn the_cli_drives_the_remote_mcp_with_a_stored_token() -> TestResult {
     )
     .await?;
     assert_eq!(code, Some(0), "{out}{err}");
+    let create = [
+        "task",
+        "create",
+        "Check the docs",
+        "-p",
+        "acme/shop",
+        "--json",
+    ];
+    let (code, out, err) = yulius_cli(home, &create, "").await?;
+    assert_eq!(code, Some(1), "{out}{err}");
+    assert!(format!("{out}{err}").contains("Codex"), "{out}{err}");
+    crate::codex::connect_codex(&w.h.app).await?;
+    let (code, out, err) = yulius_cli(home, &create, "").await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    let created: Value = serde_json::from_str(&out)?;
+    assert_eq!(created["task"]["harness"], "codex");
+    let id = created["task"]["task_id"].as_str().ok_or("task id")?;
+    let detail = call(
+        &w.h.router,
+        Method::GET,
+        &format!("/api/tasks/{id}"),
+        None,
+        &browser,
+    )
+    .await?;
+    assert_eq!(detail.status, StatusCode::OK, "{}", detail.body);
+    assert_eq!(detail.body["harness_choice"], "chosen");
+    assert_eq!(detail.body["model"], "gpt-6.2-astra");
+    assert_eq!(detail.body["model_default"], true);
+    assert_eq!(detail.body["effort"], "xhigh");
+    assert_eq!(detail.body["effort_default"], true);
+
     let (code, out, _) = yulius_cli(home, &["remote", "tools"], "").await?;
     assert_eq!(code, Some(0));
     assert!(
@@ -2006,7 +2038,7 @@ async fn a_repository_is_onboarded_end_to_end_from_a_laptop() -> TestResult {
         &w,
         &agent,
         "task_create",
-        shop(json!({"prompt": "Add a /health endpoint that answers 200 with the version", "title": "Health endpoint"})),
+        shop(json!({"prompt": "Add a /health endpoint that answers 200 with the version", "harness": "claude", "title": "Health endpoint"})),
     )
     .await?)?;
     let number = created["task"]["number"]
@@ -3056,7 +3088,7 @@ async fn a_hand_over_is_added_once_and_only_where_it_can_be_read() -> TestResult
         &w,
         &agent,
         "task_create",
-        shop(json!({"prompt": "Add a /health endpoint"})),
+        shop(json!({"prompt": "Add a /health endpoint", "harness": "claude"})),
     )
     .await?;
     assert!(!error, "{said}");
