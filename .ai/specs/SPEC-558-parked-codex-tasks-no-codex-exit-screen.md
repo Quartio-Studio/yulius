@@ -59,7 +59,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Verify restored merge requests and their train positions
 - [x] Defer live PR notices while the session writer is busy
 - [x] Verify restored arms and deliver current ordinary CI and train notices to the owner
-- [ ] Report the active singleton and replay its recorded failure for the original owner
+- [x] Report the active singleton and replay its recorded failure for the original owner
 - [ ] Verify candidate status before parking, showing Done or resuming a parked owner
 - [ ] Deliver bounded Codex goal continuation to dev
 - [ ] Recover screens from tasks parked before the upgrade
@@ -104,6 +104,24 @@ A live PR notice that finds the terminal writer busy leaves its event unheard. T
 The live watcher resolves ordinary CI for the owner at the armed head and reads the active train’s recorded membership. Before delivering advice, it verifies the published head, the current queue request, its CI observations and the original recipient. A human decision or unverifiable observation leaves the event pending.
 
 ## Evidence
+
+- Independent review approved `12b1ea674`. All 420 scoped parking, delivery, train, message and PR-watch tests passed on that head with the default stack. Clippy passed for the app and integration targets with warnings denied. The #331 fixture delivers the accepted shard failure once to the reattached author. It preserves a pending human decision and excludes an obsolete candidate. The historical instance was not exercised. A live check needs a disposable task on an instance running the fix.
+
+- The initial watcher campaign reported `mutants: 53 listed, 34 caught, 11 missed, 0 timed out, 8 unviable, 0 not reached (bound 30 min, took 1198 s)`. The strengthened fixtures exercise agreement between the in-memory queue result and the durable receipt, withdrawal during dispatch, independent changes to the hosted PR fields, and an integration base that advances during the final read. All 409 tests in the follow-up delivery, train, parking, PR-watch and message scope passed.
+
+- The first review fix reported `mutants: 13 listed, 9 caught, 1 missed, 0 timed out, 3 unviable, 0 not reached (bound 30 min, took 601 s)`. Replaying the missed notice-key inversion made the strengthened upgrade fixture fail because its stored larger-train key was absent. The intact implementation passed it.
+
+- The final review fix reported `mutants: 23 listed, 19 caught, 1 missed, 0 timed out, 3 unviable, 0 not reached (bound 30 min, took 838 s)`. The deadline fixture now admits a second ordinary rerun for the original decision and later records a new queue decision for the same rerun. Each gets its own full wait after restart, and the eventual failure reaches the original owner once.
+
+- On `eabcb9322`, 420 scoped tests passed. Two further regressions reproduced a promoted ordinary rerun receiving the diagnosis immediately and a singleton verification prompt including a synthetic secret from a 4 KiB job reason. The watcher now persists its first observation of the ordinary run and queue decision. Queue ordering can change independently of that timer. The preliminary notice uses the PR number and run ID. The accepted outcome supplies the queue’s bounded, redacted diagnostic.
+
+- Head `f2a33fd11` passed all 419 scoped delivery, parking, train, message and PR-watch tests on the default test stack. Independent review identified two additional orders. A failed larger train consumed the singleton verification notice when both used the same CI run. A newer ordinary run still queued after restart suppressed the accepted failure beyond its 15-minute wait. Both regressions failed on that head. The singleton now has a distinct persisted notice kind. That revision timed the wait from the CI queue position. The later priority regression above replaced it with a persisted first observation.
+
+- With a recorded singleton and a failing ordinary PR run, the first replay implementation left a clean committed repair unpublished. The bare origin still pointed to the failed head. The watcher now uses the existing repair publication path and defers the notice until it reads the newly published head.
+
+- On the #1578 dev tree, 17 of 40 candidate regressions failed. The owner could receive an unarmed-green instruction after its train had failed, and the active singleton supplied no verification notice. The tests use synthetic tasks, a real Git origin, a local database and the original reattached session. The first combined fixture exceeded the default Rust test stack. An 8 MiB diagnostic run established the behavioral failures, and the fixture now runs setup, live queue checks and recorded-decision checks separately.
+
+- PR #1578 landed at `0c53d8243`. Train run `2bb13e83-2d98-4fb8-90e8-acabb8544b6b` passed quality, both Rust test shards and browser E2E. PR run `9455b033-1c79-4a53-88c0-8c752f319ef8` and dev run `7e7db4ec-66f1-4418-8443-065bc2642d0a` reused the verified tree. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/0c53d8243fe6322e250b008a8c7ac6251034c15a)
 
 - Independent review approved `1da356a01` after running 39 restored-arm and candidate regressions. All 401 scoped tests passed on the reviewed head and again after removing a duplicate queue-note comparison. The strengthened regressions hold publication while a late queue retry returns the same arm and note, or while an instance update starts. Both keep the notice pending. The ordinary merge fixture also verified that a human decision preserves progress and that the eventual notice records its delivery time. Scoped Clippy passed. Vidoc was disabled.
 

@@ -1,5 +1,5 @@
 //! Original-owner PR notifications across restart with real Git, SQLite and PTYs.
-use super::{Error, answered, app_with_pulls, ask, data_dir, open_pull_at, runtime};
+use super::{Error, answered, app_with_pulls, ask, data_dir, open_pull_at, runtime, set_pull_head};
 use crate::support::TestResult;
 use serde_json::json;
 use std::path::Path;
@@ -128,7 +128,259 @@ fn a_reported_ordinary_infrastructure_error_leaves_the_train_failure_due() -> Te
     cold_candidate_case(ColdCandidate::OrdinaryErrorThenTrainFailure)
 }
 
+#[test]
+fn a_cold_owner_receives_its_recorded_integration_failure_after_its_rerun() -> TestResult {
+    cold_candidate_case(ColdCandidate::OwnerRerun)
+}
+
+#[test]
+fn a_passed_ordinary_rerun_does_not_send_its_obsolete_failure_with_the_candidate_reason()
+-> TestResult {
+    cold_candidate_case(ColdCandidate::ReplacedOrdinaryError)
+}
+
+#[test]
+fn a_backdated_queue_position_does_not_hide_the_newer_failed_candidate() -> TestResult {
+    cold_candidate_case(ColdCandidate::Backdated)
+}
+
+#[test]
+fn an_ordinary_failure_beyond_the_recent_window_precedes_the_saved_candidate() -> TestResult {
+    cold_candidate_case(ColdCandidate::OlderOrdinaryFailure)
+}
+
+#[test]
+fn unrelated_ci_runs_do_not_hide_a_current_candidate() -> TestResult {
+    cold_candidate_case(ColdCandidate::UnrelatedRuns)
+}
+
+#[test]
+fn a_failed_candidate_reaches_its_owner_after_an_ordinary_green_notice() -> TestResult {
+    cold_candidate_case(ColdCandidate::PriorNotice)
+}
+
+#[test]
+fn a_cancelled_ordinary_run_preserves_the_accepted_singleton_diagnosis() -> TestResult {
+    cold_candidate_case(ColdCandidate::OrdinaryCancelled)
+}
+
+#[test]
+fn an_ordinary_infrastructure_error_preserves_the_accepted_singleton_diagnosis() -> TestResult {
+    cold_candidate_case(ColdCandidate::OrdinaryError)
+}
+
+#[test]
+fn an_accepted_singleton_resolves_its_source_trains_hands_off_notice() -> TestResult {
+    cold_candidate_case(ColdCandidate::SourceIncludesOwner)
+}
+
+#[test]
+fn a_moved_hosted_head_cannot_rearm_an_obsolete_ordinary_green() -> TestResult {
+    cold_candidate_case(ColdCandidate::MovedHead)
+}
+
+#[test]
+fn a_singleton_accepted_after_its_ordinary_deadline_reaches_the_owner() -> TestResult {
+    cold_candidate_case(ColdCandidate::TimedOutOrdinary)
+}
+
+#[test]
+fn an_accepted_singleton_resolves_its_earlier_bisected_train() -> TestResult {
+    cold_candidate_case(ColdCandidate::PriorBisection)
+}
+
+#[test]
+fn a_later_stall_reports_the_singleton_status_without_retyping_its_diagnosis() -> TestResult {
+    cold_candidate_case(ColdCandidate::Stall)
+}
+
+#[test]
+fn a_new_ordinary_run_after_a_singleton_deadline_gets_its_own_wait() -> TestResult {
+    cold_candidate_case(ColdCandidate::NewerRunAfterExpiry)
+}
+
+#[test]
+fn a_recorded_candidate_waits_for_an_ordinary_rerun_admitted_at_final_verification() -> TestResult {
+    cold_candidate_case(ColdCandidate::LateReceiptRerun)
+}
+
+#[test]
+fn a_conflicting_replacement_head_without_ordinary_ci_reaches_the_original_owner() -> TestResult {
+    cold_candidate_case(ColdCandidate::ReplacementConflict)
+}
+
+#[test]
+fn a_conflicting_replacement_with_an_older_green_run_reaches_the_original_owner_once() -> TestResult
+{
+    cold_candidate_case(ColdCandidate::ReplacementWithOldGreen)
+}
+
+#[test]
+fn a_new_ordinary_reruns_deadline_survives_restart_and_delivers_the_singleton_once() -> TestResult {
+    use yulius_app::merge_train::WAIT_LIMIT_MS;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    let (id, head, original) = rt.block_on(Box::pin(seed_candidate(
+        &data,
+        &ColdCandidate::TimedOutOrdinary,
+    )))?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    let queued = 1_200_000;
+    let rerun_at = queued + WAIT_LIMIT_MS + 1;
+    let new_decision_at = rerun_at + WAIT_LIMIT_MS + 1;
+    for (now, expect_diagnosis) in [
+        (queued, false),
+        (queued + WAIT_LIMIT_MS, false),
+        (rerun_at, false),
+        (new_decision_at, false),
+        (new_decision_at + WAIT_LIMIT_MS, false),
+        (new_decision_at + WAIT_LIMIT_MS + 1, true),
+    ] {
+        let rt = runtime()?;
+        rt.block_on(async {
+            let clock = Arc::new(crate::support::TestClock(now.into()));
+            let (app, remote) = super::app_with_pulls_and_clock(&data, 8, 1, clock, |_| {}).await?;
+            remote.set_remote(Arc::new(crate::delivery::BareRemote {
+                origin: data.join("origin.git"),
+            }));
+            open_pull_at(&app, &remote, &id, 1481, &head).await?;
+            remote.set_checks(&head, ChecksState::Success);
+            app.reconcile().await?;
+            assert_eq!(
+                app.deps
+                    .store
+                    .live_attempt(&id)
+                    .await?
+                    .ok_or("original attempt")?
+                    .id,
+                original
+            );
+            if now == queued {
+                let owner = app.deps.store.task(&id).await?.ok_or("owner")?;
+                let (mut run, job) = crate::pr_watch::run(
+                    &owner.sandbox_id,
+                    "still-queued",
+                    &head,
+                    RunState::Queued,
+                    None,
+                    queued,
+                );
+                run.reference = CiRef::PullRequest(1481);
+                run.started_at = None;
+                run.ended_at = None;
+                app.deps.store.insert_ci_run(&run, &[job]).await?;
+                let (peer, job) = crate::pr_watch::run(
+                    &owner.sandbox_id,
+                    "unrelated-queued",
+                    "peer-head",
+                    RunState::Queued,
+                    None,
+                    30_000,
+                );
+                app.deps.store.insert_ci_run(&peer, &[job]).await?;
+                assert!(app.deps.store.ci_run_to_front(&run.id).await?);
+                let promoted = app
+                    .deps
+                    .store
+                    .ci_run(&run.id)
+                    .await?
+                    .ok_or("promoted rerun")?;
+                assert!(promoted.queued_at.0 < now - WAIT_LIMIT_MS);
+            }
+            if now == rerun_at {
+                let owner = app.deps.store.task(&id).await?.ok_or("owner")?;
+                assert!(
+                    app.deps
+                        .store
+                        .transition_ci_run(
+                            "still-queued",
+                            &[RunState::Queued],
+                            RunState::Cancelled,
+                            &yulius_app::ci::CiRunUpdate {
+                                ended_at: Some(app.now()),
+                                ..Default::default()
+                            }
+                        )
+                        .await?
+                );
+                let (mut run, job) = crate::pr_watch::run(
+                    &owner.sandbox_id,
+                    "second-rerun",
+                    &head,
+                    RunState::Running,
+                    None,
+                    now,
+                );
+                run.reference = CiRef::PullRequest(1481);
+                app.deps.store.insert_ci_run(&run, &[job]).await?;
+            }
+            if now == new_decision_at {
+                let prior = app
+                    .deps
+                    .store
+                    .latest_merge_wait(&id)
+                    .await?
+                    .ok_or("decision")?;
+                // A later arm tests the same inputs while this rerun is still active.
+                app.deps
+                    .store
+                    .insert_span(&yulius_app::stages::NewSpan {
+                        key: format!("wait@{now}"),
+                        started_at: app.now(),
+                        ended_at: Some(app.now()),
+                        sandbox_id: prior.sandbox_id,
+                        subject_kind: prior.subject_kind,
+                        subject_id: prior.subject_id,
+                        parent_key: prior.parent_key,
+                        kind: prior.kind,
+                        name: prior.name,
+                        environment: prior.environment,
+                        job: prior.job,
+                        outcome: prior.outcome,
+                        detail: prior.detail,
+                    })
+                    .await?;
+            }
+            let bounds = WatchBounds::default();
+            let news = Box::pin(app.watch_prs(&bounds)).await;
+            if expect_diagnosis {
+                assert_eq!(
+                    news.len(),
+                    1,
+                    "expired rerun suppressed the decision: {news:?}"
+                );
+                assert!(news[0].1.contains("292.1 ms"), "{news:?}");
+                assert!(Box::pin(app.watch_prs(&bounds)).await.is_empty());
+                app.stop_task_now(&id).await?;
+            } else {
+                assert!(news.is_empty(), "rerun still within its wait: {news:?}");
+            }
+            Ok::<_, Error>(())
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+    }
+    Ok(())
+}
+
 enum ColdCandidate {
+    ReplacementConflict,
+    ReplacementWithOldGreen,
+    LateReceiptRerun,
+    OlderOrdinaryFailure,
+    ReplacedOrdinaryError,
+    NewerRunAfterExpiry,
+    TimedOutOrdinary,
+    PriorBisection,
+    Stall,
+    MovedHead,
+    OwnerRerun,
+    Backdated,
+    UnrelatedRuns,
+    PriorNotice,
+    OrdinaryCancelled,
+    OrdinaryError,
+    SourceIncludesOwner,
+
     OrdinaryErrorThenTrainFailure,
     UpdateHold,
     HostedPullUnavailable,
@@ -155,13 +407,83 @@ enum ColdCandidate {
 }
 
 fn cold_candidate_case(case: ColdCandidate) -> TestResult {
+    let prior_notice = matches!(case, ColdCandidate::PriorNotice);
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
-    let (id, head, original) = rt.block_on(seed_candidate(&data, &case))?;
+    let (id, head, original) = rt.block_on(Box::pin(seed_candidate(&data, &case)))?;
     rt.shutdown_timeout(Duration::from_secs(5));
     let rt = runtime()?;
-    rt.block_on(check_after_restart(&data, &case, &id, &head, &original))?;
+    let (cold, remote) =
+        rt.block_on(Box::pin(restore_owner(&data, &case, &id, &head, &original)))?;
+    if matches!(
+        case,
+        ColdCandidate::OlderOrdinaryFailure
+            | ColdCandidate::ReplacedOrdinaryError
+            | ColdCandidate::NewerRunAfterExpiry
+            | ColdCandidate::TimedOutOrdinary
+            | ColdCandidate::PriorBisection
+            | ColdCandidate::Stall
+            | ColdCandidate::MovedHead
+            | ColdCandidate::OwnerRerun
+            | ColdCandidate::Backdated
+            | ColdCandidate::UnrelatedRuns
+            | ColdCandidate::PriorNotice
+            | ColdCandidate::OrdinaryCancelled
+            | ColdCandidate::OrdinaryError
+            | ColdCandidate::SourceIncludesOwner
+            | ColdCandidate::LateReceiptRerun
+            | ColdCandidate::ReplacementConflict
+            | ColdCandidate::ReplacementWithOldGreen
+    ) {
+        rt.block_on(Box::pin(check_recorded_decision(
+            &data, &case, &id, &head, cold, remote,
+        )))?;
+    } else {
+        rt.block_on(Box::pin(check_live_queue(
+            &data, &case, &id, &head, cold, remote,
+        )))?;
+    }
     rt.shutdown_timeout(Duration::from_secs(5));
+    if prior_notice {
+        // Earlier releases stored the live train decision under "outcome". The same run
+        // must stay heard after restart with that historical key and no armed slot.
+        let path = data.join(yulius_app::pr_watch::PR_NOTICES_FILE);
+        let entries: std::collections::BTreeMap<String, yulius_app::pr_watch::Told> =
+            serde_json::from_slice(&std::fs::read(&path)?)?;
+        let told = entries.get(id.as_str()).ok_or("saved owner notice")?;
+        assert!(
+            told.keys.contains_key("outcome"),
+            "legacy outcome fingerprint"
+        );
+        let rt = runtime()?;
+        rt.block_on(async {
+            let (again, remote) = app_with_pulls(&data, 8, 1).await?;
+            open_pull_at(&again, &remote, &id, 1481, &head).await?;
+            remote.set_remote(Arc::new(crate::delivery::BareRemote {
+                origin: data.join("origin.git"),
+            }));
+            remote.set_checks(&head, ChecksState::Success);
+            again.reconcile().await?;
+            assert_eq!(
+                again
+                    .deps
+                    .store
+                    .live_attempt(&id)
+                    .await?
+                    .ok_or("reattached")?
+                    .id,
+                original
+            );
+            let duplicate = Box::pin(again.watch_prs(&WatchBounds::default())).await;
+            again.stop_task_now(&id).await?;
+            assert!(
+                duplicate.is_empty(),
+                "legacy verdict repeated: {duplicate:?}"
+            );
+            Ok::<_, Error>(())
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+    }
     Ok(())
 }
 
@@ -226,13 +548,25 @@ async fn seed_candidate(
         &caller.sandbox,
         "ordinary-green",
         &head,
-        RunState::Passed,
+        match case {
+            ColdCandidate::TimedOutOrdinary | ColdCandidate::NewerRunAfterExpiry => {
+                RunState::Running
+            }
+            ColdCandidate::OlderOrdinaryFailure => RunState::Failed,
+            ColdCandidate::OrdinaryCancelled => RunState::Cancelled,
+            ColdCandidate::OrdinaryError | ColdCandidate::ReplacedOrdinaryError => RunState::Error,
+            _ => RunState::Passed,
+        },
         None,
         10,
     );
     green.started_at = Some(yulius_domain::time::Timestamp(11));
     green.ended_at = Some(yulius_domain::time::Timestamp(12));
-    green.reference = CiRef::PullRequest(1481);
+    green.reference = CiRef::PullRequest(if matches!(case, ColdCandidate::ReplacementConflict) {
+        99
+    } else {
+        1481
+    });
     if matches!(
         case,
         ColdCandidate::SharedOrdinaryFailure
@@ -287,9 +621,15 @@ async fn seed_candidate(
         Some(failures),
         20,
     );
+    if matches!(case, ColdCandidate::PriorNotice) {
+        let notice = Box::pin(app.watch_prs(&WatchBounds::default())).await;
+        assert_eq!(notice.len(), 1);
+        assert!(notice[0].1.contains("no merge is armed"), "{notice:?}");
+    }
     if matches!(
         case,
-        ColdCandidate::OrdinaryDropAfterRearm
+        ColdCandidate::PriorBisection
+            | ColdCandidate::OrdinaryDropAfterRearm
             | ColdCandidate::UnreadableArm
             | ColdCandidate::RearmedOutsideTrain
             | ColdCandidate::RearmedInTrain
@@ -305,9 +645,19 @@ async fn seed_candidate(
         prior.reference = CiRef::Train(vec![1481, 99]);
         app.deps.store.insert_ci_run(&prior, &[job]).await?;
     }
+    candidate.queued_at =
+        yulius_domain::time::Timestamp(if matches!(case, ColdCandidate::Backdated) {
+            9
+        } else {
+            20
+        });
     candidate.started_at = Some(yulius_domain::time::Timestamp(21));
     candidate.ended_at = Some(yulius_domain::time::Timestamp(22));
-    candidate.reference = CiRef::Train(vec![88, 99]);
+    candidate.reference = CiRef::Train(if matches!(case, ColdCandidate::SourceIncludesOwner) {
+        vec![1481, 99]
+    } else {
+        vec![88, 99]
+    });
     job.name = "shard 2".into();
     app.deps.store.insert_ci_run(&candidate, &[job]).await?;
     app.deps
@@ -343,13 +693,18 @@ async fn seed_candidate(
         ended_at: Some(yulius_domain::time::Timestamp(23)),
         outcome: Some("dropped".into()),
         detail: Some(
-            json!({"head":head, "message":"Merge candidate candidate-red failed in shard 2: search took 292.1 ms, limit 200 ms. Read the failing job with ci_status.", "singleton":{"pr":1481, "base":base,
+            json!({"head":head, "expired_ordinary_run":matches!(case, ColdCandidate::TimedOutOrdinary | ColdCandidate::NewerRunAfterExpiry).then_some("ordinary-green"), "message":"Merge candidate candidate-red failed in shard 2: search took 292.1 ms, limit 200 ms. Read the failing job with ci_status.", "singleton":{"pr":1481, "base":base,
         "tree":tested_tree,"run":"candidate-red"}})
             .to_string(),
         ),
     })
     .await?;
-    let later_runs = if matches!(case, ColdCandidate::SharedOrdinaryFailure) {
+    let later_runs = if matches!(
+        case,
+        ColdCandidate::UnrelatedRuns
+            | ColdCandidate::OlderOrdinaryFailure
+            | ColdCandidate::SharedOrdinaryFailure
+    ) {
         101
     } else {
         0
@@ -375,13 +730,19 @@ async fn seed_candidate(
     Ok((id, head, original))
 }
 
-async fn check_after_restart(
+async fn restore_owner(
     data: &Path,
     case: &ColdCandidate,
     id: &TaskId,
     head: &str,
     original: &AttemptId,
-) -> TestResult {
+) -> Result<
+    (
+        Arc<yulius_app::context::App>,
+        Arc<crate::support::FakeGitHub>,
+    ),
+    Error,
+> {
     let (cold, remote) = super::configured_app_with_pulls(data, 8, 1, |config| {
         if matches!(case, ColdCandidate::DisabledSharedFailure) {
             config.ci.enabled = false;
@@ -411,6 +772,19 @@ async fn check_after_restart(
         .store
         .set_task_needs_you(id, None, cold.now())
         .await?;
+    Ok((cold, remote))
+}
+
+async fn check_live_queue(
+    data: &Path,
+    case: &ColdCandidate,
+    id: &TaskId,
+    head: &str,
+    cold: Arc<yulius_app::context::App>,
+    remote: Arc<crate::support::FakeGitHub>,
+) -> TestResult {
+    let bounds = WatchBounds::default();
+    let origin = data.join("origin.git");
     if matches!(
         case,
         ColdCandidate::FreeArmTaken
@@ -530,7 +904,7 @@ async fn check_after_restart(
                 None
             };
             let pulls = std::mem::take(&mut *remote.pulls.lock().map_err(|_| "pulls")?);
-            cold.merge_armed(&sandbox).await;
+            Box::pin(cold.merge_armed(&sandbox)).await;
             *remote.pulls.lock().map_err(|_| "pulls")? = pulls;
             if let Some((release, pass)) = waiting {
                 release.notify_one();
@@ -549,7 +923,7 @@ async fn check_after_restart(
                 let pass = tokio::spawn(async move { watcher.watch_prs(&bounds).await });
                 tokio::time::timeout(Duration::from_secs(10), entered.notified()).await?;
                 let pulls = std::mem::take(&mut *remote.pulls.lock().map_err(|_| "pulls")?);
-                cold.merge_armed(&sandbox).await;
+                Box::pin(cold.merge_armed(&sandbox)).await;
                 *remote.pulls.lock().map_err(|_| "pulls")? = pulls;
                 release.notify_one();
                 let stale = pass.await?;
@@ -1143,7 +1517,7 @@ async fn check_after_restart(
                 "{seen:?}"
             );
             let receipt = data.join(yulius_app::pr_watch::PR_NOTICES_FILE);
-            let told: serde_json::Value = serde_json::from_slice(&std::fs::read(receipt)?)?;
+            let told: serde_json::Value = serde_json::from_slice(&std::fs::read(&receipt)?)?;
             assert_eq!(
                 told[id.as_str()]["keys"]["green"],
                 format!("{head}:held"),
@@ -1153,12 +1527,44 @@ async fn check_after_restart(
             let path = data.join(yulius_app::merge_train::MERGE_TRAINS_FILE);
             let mut current: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
             current[task.sandbox_id.as_str()]["train"]["run"] = json!("earlier-bisection");
+            let mut larger = current.clone();
+            larger[task.sandbox_id.as_str()]["train"]["members"]
+                .as_array_mut().ok_or("members")?
+                .push(json!({"task":"peer","pr":99,"head":"peer-head","armed_at":30,"tree":"peer-tree"}));
+            std::fs::write(&path, serde_json::to_vec(&larger)?)?;
+            let larger_notice = cold.watch_prs(&bounds).await;
+            assert_eq!(larger_notice.len(), 1, "{larger_notice:?}");
+            assert!(
+                larger_notice[0].1.contains("smaller candidates"),
+                "{larger_notice:?}"
+            );
+            let heard: serde_json::Value = serde_json::from_slice(&std::fs::read(&receipt)?)?;
+            assert_eq!(
+                heard[id.as_str()]["keys"]["candidate"],
+                "earlier-bisection",
+                "a larger candidate keeps the notice key saved by previous releases"
+            );
+            assert!(cold.watch_prs(&bounds).await.is_empty());
+            // The source run has not been attributed to this member yet. Its raw job
+            // reason must stay out of the preliminary verification prompt.
+            let private_reason = format!("synthetic-CHECK_KEY-{}", "x".repeat(4096));
+            let connection = rusqlite::Connection::open(data.join("yulius.db"))?;
+            assert_eq!(connection.execute("UPDATE ci_jobs SET exit_code = NULL, reason = ?1 WHERE run_id = 'earlier-bisection'", [&private_reason])?, 1);
+            drop(connection);
             std::fs::write(&path, serde_json::to_vec(&current)?)?;
             let held = cold.watch_prs(&bounds).await;
+            assert_eq!(held.len(), 1, "current failed singleton: {held:?}");
             assert!(
-                held.is_empty(),
-                "the queue is verifying its sole member: {held:?}"
+                held[0].1.contains("earlier-bisection")
+                    && held[0].1.contains("verifying")
+                    && !held[0].1.contains("smaller candidates"),
+                "{held:?}"
             );
+            assert!(
+                !held[0].1.contains("synthetic-CHECK_KEY") && held[0].1.len() < 1024,
+                "preliminary notice included the raw job reason"
+            );
+            assert!(cold.watch_prs(&bounds).await.is_empty());
             current[task.sandbox_id.as_str()]["train"]["run"] = json!("gone");
             rusqlite::Connection::open(data.join("yulius.db"))?.execute(
                 "UPDATE ci_runs SET reference = 'pr/0' WHERE id = 'earlier-bisection'",
@@ -1204,5 +1610,351 @@ async fn check_after_restart(
         cold.stop_task_now(id).await?;
         return Ok(());
     }
-    Err("the cold candidate case was not exercised".into())
+    Err("the live queue case was not exercised".into())
+}
+
+async fn check_recorded_decision(
+    data: &Path,
+    case: &ColdCandidate,
+    id: &TaskId,
+    head: &str,
+    cold: Arc<yulius_app::context::App>,
+    remote: Arc<crate::support::FakeGitHub>,
+) -> TestResult {
+    let bounds = WatchBounds::default();
+    let prior_notice = matches!(case, ColdCandidate::PriorNotice);
+    if matches!(
+        case,
+        ColdCandidate::ReplacementConflict | ColdCandidate::ReplacementWithOldGreen
+    ) {
+        let task = cold.deps.store.task(id).await?.ok_or("task")?;
+        let tree = Path::new(task.worktree_path.as_deref().ok_or("checkout")?);
+        let seed = data.join("seed");
+        for (checkout, contents) in [(tree, "replacement"), (seed.as_path(), "integration")] {
+            std::fs::write(checkout.join("replacement-check"), contents)?;
+            crate::pr_watch::git(checkout, &["add", "replacement-check"])?;
+            crate::pr_watch::git(checkout, &["commit", "-qm", contents])?;
+        }
+        crate::pr_watch::git(&seed, &["push", "-q", "origin", "HEAD:dev"])?;
+        let branch = task.branch.as_deref().ok_or("branch")?;
+        crate::pr_watch::git(
+            tree,
+            &["push", "-q", "origin", &format!("HEAD:refs/heads/{branch}")],
+        )?;
+        crate::pr_watch::git(tree, &["fetch", "-q", "origin"])?;
+        let new_head = crate::pr_watch::git(tree, &["rev-parse", "HEAD"])?;
+        set_pull_head(&remote, 1481, &new_head)?;
+        let news = Box::pin(cold.watch_prs(&bounds)).await;
+        let repeated = Box::pin(cold.watch_prs(&bounds)).await;
+        cold.stop_task_now(id).await?;
+        assert_eq!(news.len(), 1, "replacement conflict: {news:?}");
+        assert!(
+            news[0].1.contains(&new_head[..9])
+                && news[0].1.contains("conflicts with")
+                && !news[0].1.contains("candidate-red")
+                && !news[0].1.contains("passed its own"),
+            "{news:?}"
+        );
+        assert!(repeated.is_empty(), "{repeated:?}");
+        return Ok(());
+    }
+    if matches!(case, ColdCandidate::MovedHead) {
+        let saved_remote = remote.remote.lock().map_err(|_| "remote")?.take();
+        set_pull_head(&remote, 1481, "replacement")?;
+        let obsolete = Box::pin(cold.watch_prs(&bounds)).await;
+        assert!(
+            obsolete.is_empty(),
+            "green notice for the replaced head: {obsolete:?}"
+        );
+        set_pull_head(&remote, 1481, head)?;
+        *remote.remote.lock().map_err(|_| "remote")? = saved_remote;
+    }
+    if matches!(
+        case,
+        ColdCandidate::OwnerRerun
+            | ColdCandidate::NewerRunAfterExpiry
+            | ColdCandidate::LateReceiptRerun
+    ) {
+        let late = matches!(case, ColdCandidate::LateReceiptRerun);
+        let (entered, gate) = if late {
+            let (entered, gate) = super::pause_watch_or_queue(super::Point::LivePrFactsRead, id);
+            (Some(entered), gate)
+        } else {
+            let gate = Arc::new(tokio::sync::Notify::new());
+            *remote.pull_read_hold.lock().map_err(|_| "PR gate")? = Some(gate.clone());
+            (None, gate)
+        };
+        let watcher = cold.clone();
+        let pass = tokio::spawn(async move { watcher.watch_prs(&WatchBounds::default()).await });
+        let entered = entered.as_deref().unwrap_or(&remote.pull_read_entered);
+        tokio::time::timeout(Duration::from_secs(10), entered.notified()).await?;
+        let task = cold.deps.store.task(id).await?.ok_or("owner")?;
+        let (mut rerun, job) = crate::pr_watch::run(
+            &task.sandbox_id,
+            "ordinary-rerun",
+            head,
+            RunState::Running,
+            None,
+            cold.now().0,
+        );
+        rerun.reference = CiRef::PullRequest(1481);
+        cold.deps.store.insert_ci_run(&rerun, &[job]).await?;
+        *remote.pull_read_hold.lock().map_err(|_| "PR gate")? = None;
+        gate.notify_one();
+        let typed = tokio::time::timeout(Duration::from_secs(10), pass).await??;
+        assert!(
+            typed.is_empty(),
+            "the owner rerun supersedes a stale green notice: {typed:?}"
+        );
+        assert!(
+            cold.deps
+                .store
+                .transition_ci_run(
+                    "ordinary-rerun",
+                    &[RunState::Running],
+                    RunState::Passed,
+                    &yulius_app::ci::CiRunUpdate {
+                        ended_at: Some(cold.now()),
+                        ..Default::default()
+                    }
+                )
+                .await?
+        );
+    }
+    if matches!(case, ColdCandidate::ReplacedOrdinaryError) {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        *remote.pull_read_hold.lock().map_err(|_| "PR gate")? = Some(gate.clone());
+        let watcher = cold.clone();
+        let pass = tokio::spawn(async move { watcher.watch_prs(&WatchBounds::default()).await });
+        tokio::time::timeout(Duration::from_secs(5), remote.pull_read_entered.notified()).await?;
+        let sandbox = cold.deps.store.task(id).await?.ok_or("owner")?.sandbox_id;
+        let (mut rerun, job) = crate::pr_watch::run(
+            &sandbox,
+            "superseding-green",
+            head,
+            RunState::Passed,
+            None,
+            30,
+        );
+        rerun.reference = CiRef::PullRequest(1481);
+        cold.deps.store.insert_ci_run(&rerun, &[job]).await?;
+        *remote.pull_read_hold.lock().map_err(|_| "PR gate")? = None;
+        gate.notify_one();
+        let mut typed = tokio::time::timeout(Duration::from_secs(10), pass).await??;
+        typed.extend(Box::pin(cold.watch_prs(&bounds)).await);
+        assert_eq!(typed.len(), 1, "{typed:?}");
+        assert!(
+            typed[0].1.contains("292.1 ms") && !typed[0].1.contains("ordinary-green"),
+            "{typed:?}"
+        );
+        cold.stop_task_now(id).await?;
+        return Ok(());
+    }
+    if matches!(case, ColdCandidate::SourceIncludesOwner) {
+        let saved_remote = remote.remote.lock().map_err(|_| "remote")?.take();
+        {
+            let mut pulls = remote.pulls.lock().map_err(|_| "fixture pull")?;
+            pulls.first_mut().ok_or("pull")?.base_sha = "later-base".into();
+        }
+        let stale = Box::pin(cold.watch_prs(&bounds)).await;
+        assert!(
+            stale
+                .iter()
+                .all(|(_, text)| !text.contains("Do not re-arm")),
+            "obsolete source after a base change: {stale:?}"
+        );
+        *remote.remote.lock().map_err(|_| "remote")? = saved_remote;
+    }
+    if prior_notice {
+        Box::pin(check_changed_owner_inputs(data, id, head, &cold, &remote)).await?;
+    }
+    let notices = Box::pin(cold.watch_prs(&bounds)).await;
+    let repeated = Box::pin(cold.watch_prs(&bounds)).await;
+    if matches!(case, ColdCandidate::OlderOrdinaryFailure) {
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert!(
+            notices[0].1.contains("ordinary-green") && !notices[0].1.contains("candidate-red"),
+            "{notices:?}"
+        );
+        assert!(repeated.is_empty(), "{repeated:?}");
+        cold.stop_task_now(id).await?;
+        return Ok(());
+    }
+    if matches!(case, ColdCandidate::Stall) {
+        let bounds = WatchBounds {
+            stall_quiet_ms: 0,
+            stall_after_ms: 0,
+            ..WatchBounds::default()
+        };
+        let stalled = Box::pin(cold.watch_prs(&bounds)).await;
+        assert_eq!(
+            stalled.len(),
+            1,
+            "expected bounded stall check-in: {stalled:?}"
+        );
+        assert!(
+            stalled[0].1.contains("stalled") && stalled[0].1.contains("candidate"),
+            "{stalled:?}"
+        );
+        assert!(
+            !stalled[0].1.contains("292.1") && !stalled[0].1.contains("Read the failing job"),
+            "repeated actionable diagnosis: {stalled:?}"
+        );
+    }
+    let attempts = cold.deps.store.attempts(id).await?;
+    if !prior_notice {
+        cold.stop_task_now(id).await?;
+    }
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert_eq!(&notices[0].0, id);
+    assert!(
+        !notices[0].1.contains("Do not re-arm"),
+        "resolved source: {notices:?}"
+    );
+    for evidence in ["candidate-red", "shard 2", "292.1 ms"] {
+        assert!(notices[0].1.contains(evidence), "{notices:?}");
+    }
+    assert!(repeated.is_empty(), "{repeated:?}");
+    assert_eq!(attempts.len(), 1);
+    Ok(())
+}
+
+/// A previously notified author's old green status cannot validate the trained head.
+async fn check_changed_owner_inputs(
+    data: &Path,
+    id: &TaskId,
+    head: &str,
+    cold: &Arc<yulius_app::context::App>,
+    remote: &Arc<crate::support::FakeGitHub>,
+) -> TestResult {
+    let bounds = WatchBounds::default();
+    let origin = data.join("origin.git");
+    // The remote base advanced while the daemon's origin/dev still names the tested base.
+    let seed = data.join("seed");
+    let base = crate::pr_watch::git(&origin, &["rev-parse", "dev"])?;
+    std::fs::write(seed.join("changed-base"), b"new integration tree")?;
+    crate::pr_watch::git(&seed, &["add", "changed-base"])?;
+    crate::pr_watch::git(&seed, &["commit", "-qm", "Advance integration"])?;
+    crate::pr_watch::git(&seed, &["push", "-q", "origin", "HEAD:dev"])?;
+    let obsolete = Box::pin(cold.watch_prs(&bounds)).await;
+    crate::pr_watch::git(&origin, &["update-ref", "refs/heads/dev", &base])?;
+    assert!(
+        obsolete.is_empty(),
+        "superseded integration tree: {obsolete:?}"
+    );
+    let saved_remote = remote.remote.lock().map_err(|_| "remote")?.take();
+    let mut original_pull = remote.pull(1481).ok_or("owner PR")?;
+    original_pull.base_sha = base;
+    let changes: [fn(&mut yulius_app::ports::github::GhPull); 7] = [
+        |pull| pull.base = "release".into(),
+        |pull| pull.head_sha = "superseding-head".into(),
+        |pull| pull.head = "feat/another-owner".into(),
+        |pull| pull.from_fork = true,
+        |pull| pull.merged = true,
+        |pull| pull.state = "closed".into(),
+        |pull| pull.base_sha.clear(),
+    ];
+    for change in changes {
+        let mut other = original_pull.clone();
+        change(&mut other);
+        remote.pulls.lock().map_err(|_| "fixture pull")?[0] = other.clone();
+        assert!(
+            Box::pin(cold.watch_prs(&bounds)).await.is_empty(),
+            "unverified owner PR: {other:?}"
+        );
+    }
+    remote.pulls.lock().map_err(|_| "fixture pull")?[0] = original_pull.clone();
+    let (entered, gate) = super::pause_watch_or_queue(super::Point::ArmedNoticePublicationRead, id);
+    let watcher = cold.clone();
+    let pass = tokio::spawn(async move { watcher.watch_prs(&WatchBounds::default()).await });
+    tokio::time::timeout(Duration::from_secs(5), entered.notified()).await?;
+    remote.pulls.lock().map_err(|_| "fixture pull")?[0].base_sha = "new-base".into();
+    gate.notify_one();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(10), pass)
+            .await??
+            .is_empty()
+    );
+    remote.pulls.lock().map_err(|_| "fixture pull")?[0] = original_pull;
+    *remote.remote.lock().map_err(|_| "remote")? = saved_remote;
+    // Retirement can land after the watcher prepares the diagnosis and before it
+    // obtains the original writer. The next pass must also leave it unheard.
+    let span = cold
+        .deps
+        .store
+        .latest_merge_wait(id)
+        .await?
+        .ok_or("recorded decision")?;
+    let (entered, gate) = super::pause_watch_or_queue(super::Point::ArmedNoticePublicationRead, id);
+    let watcher = cold.clone();
+    let pass = tokio::spawn(async move { watcher.watch_prs(&WatchBounds::default()).await });
+    tokio::time::timeout(Duration::from_secs(5), entered.notified()).await?;
+    assert!(
+        cold.deps
+            .store
+            .retire_singleton(id, &span, cold.now())
+            .await?
+    );
+    gate.notify_one();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(10), pass)
+            .await??
+            .is_empty()
+    );
+    assert!(Box::pin(cold.watch_prs(&bounds)).await.is_empty());
+    let db = rusqlite::Connection::open(data.join("yulius.db"))?;
+    assert_eq!(
+        db.execute(
+            "UPDATE spans SET detail=?1 WHERE subject_id=?2 AND key=?3",
+            rusqlite::params![span.detail, id.as_str(), span.key]
+        )?,
+        1
+    );
+    drop(db);
+    let arms = data.join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+    for (rearmed, final_read) in [(false, false), (true, false), (true, true)] {
+        let (entered, gate) = if final_read {
+            let (entered, gate) =
+                super::pause_watch_or_queue(super::Point::ArmedNoticePublicationRead, id);
+            (Some(entered), gate)
+        } else {
+            let gate = Arc::new(tokio::sync::Notify::new());
+            *remote.pull_read_hold.lock().map_err(|_| "PR gate")? = Some(gate.clone());
+            (None, gate)
+        };
+        let watcher = cold.clone();
+        let pass = tokio::spawn(async move { watcher.watch_prs(&WatchBounds::default()).await });
+        let entered = tokio::time::timeout(
+            Duration::from_secs(5),
+            entered
+                .as_deref()
+                .unwrap_or(&remote.pull_read_entered)
+                .notified(),
+        )
+        .await;
+        if rearmed {
+            std::fs::write(
+                &arms,
+                serde_json::to_vec(
+                    &json!([{"task":id.as_str(),"head":head,"summary":"approved"}]),
+                )?,
+            )?;
+        } else {
+            ask(cold, id).await?;
+        }
+        *remote.pull_read_hold.lock().map_err(|_| "PR gate")? = None;
+        gate.notify_one();
+        let typed = tokio::time::timeout(Duration::from_secs(10), pass).await??;
+        entered?;
+        assert!(typed.is_empty(), "decision crossed the PR read: {typed:?}");
+        if rearmed {
+            std::fs::write(&arms, b"[]")?;
+        } else {
+            cold.deps
+                .store
+                .set_task_needs_you(id, None, cold.now())
+                .await?;
+        }
+    }
+    Ok(())
 }

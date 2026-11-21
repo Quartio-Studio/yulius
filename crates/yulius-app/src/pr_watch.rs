@@ -134,6 +134,8 @@ pub struct PrFacts {
     pub working: bool,
     /// The project has Yulius CI: without it no run ever comes, which is no stall (review M2).
     pub has_ci: bool,
+    /// A newly observed ordinary rerun whose wait must survive the next pass and restart.
+    pub singleton_wait: Option<SingletonWait>,
     /// The pull request's head, from its newest run (empty when none).
     pub head: String,
     /// An armed green PR with no active candidate in the sandbox that has not yet been tested or
@@ -149,8 +151,18 @@ pub struct PrFacts {
     pub deferred: bool,
 }
 
-/// Inputs whose identity must still match when advice for a live armed PR reaches its owner.
-struct ArmedNoticeSource {
+/// First watcher observation of an ordinary rerun holding a recorded queue decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SingletonWait {
+    request: String,
+    run: String,
+    since_ms: i64,
+}
+
+/// Evidence for a notice from a live merge request or the queue's last completed decision.
+struct QueueNoticeSource {
+    head: String,
+    decision: Option<(crate::stages::SpanRecord, String)>,
     ordinary: Option<CiRunRecord>,
     candidate_id: Option<String>,
     candidate: Option<CiRunRecord>,
@@ -162,6 +174,9 @@ struct ArmedNoticeSource {
 pub struct Told {
     /// The pull request it is about: another one starts afresh.
     pub pr: u64,
+    /// The ordinary rerun holding the last observed singleton and when its wait started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub singleton_wait: Option<SingletonWait>,
     /// The last key typed of each kind.
     #[serde(default)]
     pub keys: BTreeMap<String, String>,
@@ -318,6 +333,9 @@ pub fn decide(facts: &PrFacts, told: &Told, bounds: &WatchBounds) -> (Option<Str
             ..Told::default()
         }
     };
+    if let Some(wait) = &facts.singleton_wait {
+        next.singleton_wait = Some(wait.clone());
+    }
     if !facts.head.is_empty() {
         next.head.clone_from(&facts.head);
     }
@@ -834,18 +852,14 @@ impl App {
                         );
                     };
 
-                    let result = if let ArmedNow::Armed(arm) = &slot
-                        && let Some(source) = &source
-                    {
+                    let result = if let Some(source) = &source {
                         let admit = async {
                             let Ok(Some(sandbox)) = self.deps.store.sandbox(&task.sandbox_id).await
                             else {
                                 return false;
                             };
                             let Some(recipient) = self
-                                .armed_notice_recipient(
-                                    &task, &sandbox, facts.pr, &arm.head, source,
-                                )
+                                .armed_notice_recipient(&task, &sandbox, facts.pr, source)
                                 .await
                             else {
                                 return false;
@@ -856,6 +870,7 @@ impl App {
                                 || self.arm_observation(&task.id) != activation
                                 || self.armed_now(&task.id) != slot
                                 || self.watched_train(&task, facts.pr) != source.train
+                                || source.decision.is_some() && self.merge_is_armed(&task.id)
                             {
                                 return false;
                             }
@@ -1284,10 +1299,10 @@ impl App {
         runs: &mut BTreeMap<String, Vec<CiRunRecord>>,
         activation: &ArmObservation,
         slot: &ArmedNow,
-    ) -> Option<(PrFacts, Option<ArmedNoticeSource>)> {
+    ) -> Option<(PrFacts, Option<QueueNoticeSource>)> {
         // The slot before the delivery: a merge decided in between then reads as merged, never
         // as "no merge armed" on an open pull request (review minor 8).
-        let (armed, outcome) = self.armed_view(&task.id);
+        let (armed, mut outcome) = self.armed_view(&task.id);
         // A saved arm may still await restoration (SPEC-487, review round 2).
         let armed = armed || self.merge_is_armed(&task.id);
         let record = self.deps.store.delivery(&task.id).await.ok()??;
@@ -1347,19 +1362,24 @@ impl App {
             .await
             .is_some();
         let flagged = task.activity == Some(yulius_domain::task::Activity::NeedsAttention);
+        let flagged_active = flagged && !self.held_message_flag_outlived(task).await;
+        let mut person_must_act = needs_you || browser_req || flagged_active;
         // A deferred pass remembers the open PR and leaves its existing stall clock alone.
+        let observed = || PrFacts {
+            pr,
+            now_ms,
+            progress: if told.pr == pr {
+                told.progress.clone()
+            } else {
+                String::new()
+            },
+            ..PrFacts::default()
+        };
         let observed_only = || {
             Some((
                 PrFacts {
-                    pr,
-                    now_ms,
-                    progress: if told.pr == pr {
-                        told.progress.clone()
-                    } else {
-                        String::new()
-                    },
                     deferred: true,
-                    ..PrFacts::default()
+                    ..observed()
                 },
                 None,
             ))
@@ -1373,7 +1393,50 @@ impl App {
             _ => None,
         };
         let integration = delivery_profile(&sandbox).integration_branch;
-        let mut own = if let Some(head) = arm_head {
+        // A dropped singleton belongs to the task whose wait ended, even when CI reused
+        // a different train's result. Verify the hosted inputs before choosing ordinary CI.
+        let mut receipt = None;
+        if !armed {
+            // Disarmed PR leaves armed-green waiting immediately: clear any earlier armed-stall
+            // Needs You before checking `person_must_act` on the dropped-singleton receipt.
+            if told.armed_needs_you_at > 0 {
+                self.end_needs_you_asked_at(&task.id, told.armed_needs_you_at, None)
+                    .await;
+                told.armed_needs_you_at = 0;
+                needs_you = !matches!(self.deps.store.task_needs_you(&task.id).await, Ok(None));
+                person_must_act = needs_you || browser_req || flagged_active;
+            }
+            let Ok(latest) = self.deps.store.latest_merge_wait(&task.id).await else {
+                return observed_only();
+            };
+            if let Some(span) = latest {
+                let Ok(decision) = crate::merge_train::SingletonDecision::from_span(&span) else {
+                    return observed_only();
+                };
+                if let Some(decision) = decision
+                    && outcome.as_ref().is_none_or(|(head, message)| {
+                        head == &decision.head && message == &decision.message
+                    })
+                {
+                    outcome = None;
+                    if decision.superseded_at.is_none() && decision.singleton.pr == pr {
+                        if person_must_act {
+                            return observed_only();
+                        }
+                        let Some(pull) = self.hosted_owner_pull(task, &sandbox, pr).await else {
+                            return observed_only();
+                        };
+                        if pull.base_sha.is_empty() {
+                            return observed_only();
+                        }
+                        receipt = Some((span, decision, pull));
+                    }
+                }
+            }
+        }
+        let verified_head =
+            arm_head.or_else(|| receipt.as_ref().map(|(_, _, pull)| pull.head_sha.as_str()));
+        let mut own = if let Some(head) = verified_head {
             // Every armed owner follows the queue's ordinary run at that head, including
             // a run shared by the scheduler or one outside the recent sandbox window.
             match self.ordinary_pull_run(&sandbox, pr, head).await {
@@ -1419,6 +1482,10 @@ impl App {
                 .map(|run| run.sha.clone())
             && self.maybe_publish_repair_for_watch(task, &failed_sha).await
         {
+            if receipt.is_some() {
+                // The watcher just pushed a repair. Read the new hosted head on the next pass.
+                return observed_only();
+            }
             let read = self
                 .deps
                 .store
@@ -1435,6 +1502,13 @@ impl App {
         let train_read = self.watched_train(task, pr);
         let train = train_read.as_ref().ok().and_then(Option::as_ref);
         let holding = train.and_then(|train| train.candidate.as_ref());
+        // A narrowed train may reuse its larger predecessor's run. Its verification
+        // notice is a separate event; larger candidates retain their persisted key.
+        let candidate_kind = if holding.is_some_and(|(_, members)| members.len() == 1) {
+            "singleton"
+        } else {
+            "candidate"
+        };
         // An ordinary failure is actionable even when the holding CI record cannot be decoded.
         let ordinary_takes_precedence = own.as_ref().is_some_and(|run| {
             run.state == RunState::Failed
@@ -1490,14 +1564,12 @@ impl App {
         if train_read.is_err() && events.is_empty() {
             return observed_only();
         }
-        // A disappearing train, or one awaiting its singleton decision, has no
-        // instructions for its member. An untold ordinary failure still takes priority.
+        // Dissolving or already reported trains have no new instructions for this member.
         if events.is_empty()
-            && holding.is_some_and(|(_, members)| match candidate.map(|run| run.state) {
+            && holding.is_some_and(|_| match candidate.map(|run| run.state) {
                 Some(RunState::Queued | RunState::Running | RunState::Passed) => false,
                 Some(RunState::Failed) => {
-                    members.len() == 1
-                        || candidate.is_some_and(|run| told_key("candidate", &run.id))
+                    candidate.is_some_and(|run| told_key(candidate_kind, &run.id))
                 }
                 Some(RunState::Error | RunState::Cancelled | RunState::Skipped) | None => true,
             })
@@ -1505,21 +1577,28 @@ impl App {
             return observed_only();
         }
         if let (Some(run), Some((_, members))) = (candidate, holding)
-            && members.len() > 1
             && run.state == RunState::Failed
             && !own.is_some_and(|run| run.state == RunState::Failed)
-            && !told_key("candidate", &run.id)
+            && !told_key(candidate_kind, &run.id)
         {
-            let jobs = self
-                .deps
-                .store
-                .ci_jobs(&run.id, true)
-                .await
-                .unwrap_or_default();
+            let text = if let [pr] = members.as_slice() {
+                format!(
+                    "Merge candidate #{pr} (run {}) failed. Yulius is verifying this pull request's head and checks before reporting the failure. Do not re-arm, merge `{integration}` or push to this branch meanwhile.",
+                    run.id
+                )
+            } else {
+                let jobs = self
+                    .deps
+                    .store
+                    .ci_jobs(&run.id, true)
+                    .await
+                    .unwrap_or_default();
+                red_candidate_text(run, members, &jobs, &integration)
+            };
             events.push(Event {
-                kind: "candidate",
+                kind: candidate_kind,
                 key: run.id.clone(),
-                text: red_candidate_text(run, members, &jobs, &integration),
+                text,
             });
         }
         if !armed && let Some((head, text)) = outcome {
@@ -1536,7 +1615,7 @@ impl App {
         // Without a run at its head (a project without Yulius CI) the branch's pushed head is
         // asked: a conflicting pull request is not tested (SPEC-491 DON-003), so its agent has
         // to hear of it there too.
-        let conflict_head = match arm_head.or(head.as_deref()) {
+        let conflict_head = match verified_head.or(head.as_deref()) {
             Some(head) => Some(head.to_owned()),
             None => self.branch_head(task).await,
         };
@@ -1641,9 +1720,8 @@ impl App {
                 .await;
             told.armed_needs_you_at = 0;
             needs_you = !matches!(self.deps.store.task_needs_you(&task.id).await, Ok(None));
+            person_must_act = needs_you || browser_req || flagged_active;
         }
-        let person_must_act =
-            needs_you || browser_req || (flagged && !self.held_message_flag_outlived(task).await);
         let armed_wait_reason = if armed_green_waiting {
             self.armed_wait_reason(task, queue_note, &integration).await
         } else {
@@ -1668,6 +1746,51 @@ impl App {
             deferred: false,
             ..PrFacts::default()
         };
+        if let Some((span, decision, pull)) = &receipt {
+            facts.head.clone_from(&pull.head_sha);
+            if pull.head_sha == decision.head && pull.base_sha == decision.singleton.base {
+                if let Some(run) = own
+                    && run.state.is_active()
+                    && decision.expired_ordinary_run.as_ref() != Some(&run.id)
+                {
+                    // queued_at is a mutable queue position. Persist the first observation
+                    // of this run and request, as the active train does for its ordinary wait.
+                    let prior = told
+                        .singleton_wait
+                        .as_ref()
+                        .filter(|wait| wait.request == span.key && wait.run == run.id);
+                    if now_ms.saturating_sub(prior.map_or(now_ms, |wait| wait.since_ms))
+                        <= crate::merge_train::WAIT_LIMIT_MS
+                    {
+                        return Some((
+                            PrFacts {
+                                singleton_wait: prior.is_none().then(|| SingletonWait {
+                                    request: span.key.clone(),
+                                    run: run.id.clone(),
+                                    since_ms: now_ms,
+                                }),
+                                ..observed()
+                            },
+                            None,
+                        ));
+                    }
+                }
+                facts.events.retain(|event| event.kind != "green");
+                if !own.is_some_and(|run| run.state == RunState::Failed) {
+                    facts
+                        .progress
+                        .push_str(&format!("|{}", decision.singleton.run));
+                    facts.status =
+                        format!("The integration candidate failed for pull request #{pr}.");
+                    facts.ci_busy = false;
+                    facts.events.push(Event {
+                        kind: "outcome",
+                        key: outcome_key(&decision.head, &decision.message),
+                        text: decision.message.clone(),
+                    });
+                }
+            }
+        }
         self.refresh_notice_activity(&task.id, &runtime, &mut facts);
         crate::race::reached(
             crate::race::Point::LivePrFactsRead,
@@ -1681,12 +1804,16 @@ impl App {
             return observed_only();
         }
         let candidate_id = candidate_id.map(str::to_owned);
-        let source = arm_head.map(|_| ArmedNoticeSource {
-            ordinary: own.cloned(),
-            candidate_id,
-            candidate: candidate.cloned(),
-            train: train_read,
-        });
+        let source = verified_head
+            .map(|head| head.to_owned())
+            .map(|head| QueueNoticeSource {
+                head,
+                decision: receipt.map(|(span, _, pull)| (span, pull.base_sha)),
+                ordinary: own.cloned(),
+                candidate_id,
+                candidate: candidate.cloned(),
+                train: train_read,
+            });
         Some((facts, source))
     }
 
@@ -1722,13 +1849,12 @@ impl App {
 
     /// A second clone can publish a repair without advancing this checkout's tracking ref.
     /// Only a notice ready to type needs a hosted read. Keep outages bounded per notice.
-    async fn hosted_arm_is_current(
+    async fn hosted_owner_pull(
         &self,
         task: &TaskRecord,
         sandbox: &SandboxRecord,
         pr: u64,
-        head: &str,
-    ) -> bool {
+    ) -> Option<crate::ports::github::GhPull> {
         let read = async {
             let token = self.dlv_installation_token(sandbox).await?;
             self.deps
@@ -1736,10 +1862,18 @@ impl App {
                 .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, pr)
                 .await
         };
-        matches!(tokio::time::timeout(Duration::from_secs(5), read).await,
-            Ok(Ok(pull)) if pull.number == pr && pull.state == "open" && !pull.merged
-                && !pull.from_fork && pull.base == delivery_profile(sandbox).integration_branch
-                && task.branch.as_deref() == Some(pull.head.as_str()) && pull.head_sha.eq_ignore_ascii_case(head))
+        let pull = tokio::time::timeout(Duration::from_secs(5), read)
+            .await
+            .ok()?
+            .ok()?;
+        (pull.number == pr
+            && pull.state == "open"
+            && !pull.merged
+            && !pull.from_fork
+            && pull.base == delivery_profile(sandbox).integration_branch
+            && task.branch.as_deref() == Some(pull.head.as_str())
+            && !pull.head_sha.is_empty())
+        .then_some(pull)
     }
 
     /// Recheck the recipient after the hosted read, before recording anything as heard.
@@ -1748,9 +1882,9 @@ impl App {
         task: &TaskRecord,
         sandbox: &SandboxRecord,
         pr: u64,
-        head: &str,
-        source: &ArmedNoticeSource,
+        source: &QueueNoticeSource,
     ) -> Option<NoticeRecipient> {
+        let head = &source.head;
         if self.run_superseded_by_pushed_head(task, head).await {
             return None;
         }
@@ -1758,7 +1892,21 @@ impl App {
             crate::race::Point::ArmedNoticePublicationRead,
             std::path::Path::new(task.id.as_str()),
         );
-        if !self.hosted_arm_is_current(task, sandbox, pr, head).await {
+        let pull = self.hosted_owner_pull(task, sandbox, pr).await?;
+        if !pull.head_sha.eq_ignore_ascii_case(head) {
+            return None;
+        }
+        if let Some((span, base)) = &source.decision
+            && (&pull.base_sha != base
+                || self
+                    .deps
+                    .store
+                    .latest_merge_wait(&task.id)
+                    .await
+                    .ok()?
+                    .as_ref()
+                    != Some(span))
+        {
             return None;
         }
         let (ordinary, candidate) = tokio::try_join!(
