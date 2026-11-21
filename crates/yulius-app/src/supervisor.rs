@@ -158,6 +158,11 @@ impl ObservationSource {
     }
 }
 
+pub(crate) enum PrNoticeInput<'a> {
+    Paste(&'a [u8]),
+    Submit,
+}
+
 struct ActiveRun {
     attempt_id: AttemptId,
     writer: Box<dyn RunWriter>,
@@ -516,17 +521,31 @@ impl Drop for Finalizing<'_> {
 pub const SWITCH_COOLDOWN_MS: i64 = 10 * 60 * 1000;
 
 impl TaskRuntime {
-    /// PR advice must be reconsidered if another operation owns the writer at paste time.
-    pub(crate) async fn try_paste_pr_notice(&self, now: Timestamp, paste: &[u8]) -> AppResult<()> {
-        let mut run = self
-            .run
-            .try_lock()
-            .map_err(|_| AppError::Conflict("the session writer is busy".into()))?;
+    /// The paste needs immediate writer access. Its Enter can wait, but both belong to the
+    /// attempt that the watcher observed. A switch attaches a new writer to this runtime.
+    pub(crate) async fn write_pr_notice(
+        &self,
+        attempt: &AttemptId,
+        now: Timestamp,
+        input: PrNoticeInput<'_>,
+    ) -> AppResult<()> {
+        let (mut run, bytes) = match input {
+            PrNoticeInput::Paste(bytes) => (
+                self.run
+                    .try_lock()
+                    .map_err(|_| AppError::Conflict("the session writer is busy".into()))?,
+                bytes,
+            ),
+            PrNoticeInput::Submit => (self.run.lock().await, b"\r".as_slice()),
+        };
         let run = run
             .as_mut()
-            .ok_or_else(|| AppError::Conflict("the task is not running".into()))?;
+            .filter(|run| &run.attempt_id == attempt)
+            .ok_or_else(|| {
+                AppError::Conflict("the observed session is no longer attached".into())
+            })?;
         self.last_input_ms.store(now.0, Ordering::SeqCst);
-        run.writer.input(paste).await
+        run.writer.input(bytes).await
     }
 
     /// Consumes the reader's request only for the attempt whose end was recorded.

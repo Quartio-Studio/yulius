@@ -190,6 +190,12 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # Hourly history cleanup retains the latest merge wait of each existing task, even when
 # its activation began more than 180 days ago. Removing the task releases this history.
 # The PR watcher delivers actionable failures once and waits for a pending human decision.
+# The armed owner hears an ordinary CI failure once, even while its train runs or the train
+# registry cannot be read. A train failure names the PRs currently held by its run.
+# An armed notice checks the hosted PR head even if another clone published the repair.
+# A pending scope decision holds the notice until the person resolves it. Once a train failure
+# has been reported, further check-ins wait for the queue to act on it.
+
 # A busy terminal writer defers the notice. On its next pass the watcher checks the owner again.
 # When PRs share a head, their tasks can wait on the same ordinary CI run. An explicit
 # rerun for the owner takes precedence in yulius wait and in its merge queue decision.
