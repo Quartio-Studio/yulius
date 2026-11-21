@@ -66,7 +66,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Resume only the parked run whose screen finished saving
 - [x] Preserve a continuation while its previous parked run settles
 - [x] Verify the current model and subscription before accepting a named Continue
-- [ ] Order parking and replacement merge requests through run settlement
+- [x] Order parking and replacement merge requests through run settlement
 - [ ] Deliver the recorded integration failure once to an already parked owner
 - [ ] Hold the original owner’s session and successor while its open delivery cannot be verified
 - [ ] Render verified live integration status in the terminal, sidebar and Task Info
@@ -91,6 +91,8 @@ The failed-integration-candidate step covers the owner's November 20 observation
 Use the fake Codex executable, its rollout, real PTY shutdown and the application Stop hook. Exercise saved-screen and terminal readers, terminal restoration, step and pull combinations and historical statuses. Run scoped Rust and web tests, repository quick checks, the security command and Yulius CI.
 
 ## Decisions
+
+Parking and a replacement merge request share the task’s merge writer at admission. If the writer is busy or a merge is armed, the idle pass leaves the session live. Once the park commits, a new merge request checks the committed run and durable task state before it can arm. Stop, close, or loss can settle that same run and release its park marker. Final admission checks the attached attempt while holding the end-intent lock. An exit reader already settling the run takes precedence over an earlier idle observation.
 
 A named Continue checks the current model and the requested subscription when Yulius accepts the start or queue entry. A refusal preserves the resting state, archive and question. The queue checks availability again at dispatch through its existing subscription policy. An immediate launch uses the model and account admitted together.
 
@@ -121,6 +123,16 @@ The final parking check compares the owner’s saved singleton decision with the
 The SQLite query returning a parked task includes the latest attempt ID in the same snapshot. Admission checks that ID under the launch lock after caller preflight. A message can wait while another turn resumes and parks, so task status alone cannot identify the session the sender observed. Only a matching parked attempt can restore Codex lineage or accept the prompt. Bulk messages, Telegram replies and remote restarts carry the attempt from their first task lookup through dispatch. They check the caller’s current access before acting.
 
 ## Evidence
+
+- With the reviewed source restored and the delivered-review assertion updated, `37f11fe5-c165-4961-bda7-d77889767c76` passed all 467 parking, delivery, merge-train, Antigravity and playground checks. Clippy passed for `yulius-app` and `yulius` with all targets, all features and warnings denied. Vidoc was disabled on this project.
+- On the reviewed base, `e7587059-8ab5-46c3-8dd1-82df3ed425c4` passed 466 of 467 scoped tests. The gated delivery test still expected an empty review list after merge. SPEC-605 retains the delivered PR’s approval. The fixture now verifies that approval and that no round remains open for the next PR.
+- Independent review approved `37d89deee8b393762f6a17a794aa3a5de6e7e2da` against `3b95efbd8` after replaying both Close cases. Run `48787152-18d8-43a0-8948-d3dacfa9616c` passed all 64 candidate and gated-merge tests. Removing the selected-attachment and active-reader checks by hand reproduced both failures in `cd32f197-afea-4e61-bef4-eaef05aa125d`. The supervisor was restored to the approved head.
+- Independent review of `3ff7f52cf` found that Close could settle the selected run after the idle pass read it. In `4f7ccb57-8954-42c6-936a-74b788a22f0f`, one case left a stale park blocking a capacity-delayed continuation's merge request. The other committed a park after the reader took Close. The earlier integrated run `c395d83e-8e31-4789-b2b4-5ab351a77efd` had passed all 465 tests, including the corrected live delivery fixtures.
+- The hand check on dev base `13a632c40` removed the writer and final arm check from parking and removed the committed-run and durable-status checks from arming. All six focused cases failed in `c38fb6e7-bd8a-47d3-b180-39c62daa8fcc`. Both source files were restored.
+- Before the merge writer and run checks, six regression cases failed in `2f5c9b57-8f74-4967-bb0d-75c1054e0ce8`. They covered a pending writer, an installed replacement arm, a committed park, a settled park, a switch and a capacity pause. The existing obsolete-PR fixture also timed out. The same baseline binary passed all four obsolete-PR cases under isolated observation in 6.64 seconds. [Issue #1649](https://github.com/Quartio-Studio/yulius/issues/1649)
+- With admission ordered, all parking and merge-train cases passed in `ac714fde-1f14-4238-ace4-d4625bb2a1c8`. Five delivery assertions exposed fixtures that inserted a live attempt on a Closed task. Those fixtures now use the running task and live attempt setup from the existing armed-merge tests.
+
+- PR #1638 delivered named Continue on dev `21e580070`. Its head passed CI run `626c72ad-54a8-4204-be61-0d6e29e53a9f`. The merged revision passed quality, both test shards and e2e in `bd5b55c7-ef1f-4baa-8e5c-060c6b4d0fd3`. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/21e580070b129943e914fa8fb02b2ef5911ec2e6)
 
 - The named-Continue hand check used the earlier model, allowed a refused placement through the claim, and discarded the admitted launch model. All five focused regressions failed in `7b1d5a68-7dcb-4b24-8e10-95706bae88df`. The affected source files were restored to the reviewed commit.
 - Independent review approved `156cb1b43c23a60f2617fdc2cf11ac3aa2554d54` against dev `3b72387f1` and ran 22 integration and store checks. Run `1d21f3e2-e866-4def-8c0e-9264054d775c` passed all 241 scoped tests, including the actual model and subscription delivered through the real PTY to a fake agent. Repository quick checks and spec validation passed. Vidoc was disabled.

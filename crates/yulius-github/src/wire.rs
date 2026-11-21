@@ -114,6 +114,7 @@ pub(crate) struct WireManifestConversion {
     pub(crate) client_id: String,
     pub(crate) client_secret: String,
     pub(crate) pem: String,
+    pub(crate) webhook_secret: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -490,6 +490,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0439 -->
 - [0440](0440-estimate-codex-work-at-standard-and-ultrafast-api-prices.md). Recorded GPT-6 work enters the standard API estimate and the pool shows the cost of using Ultrafast for eligible runs.
 <!-- ADR 0440 -->
+- [0441](0441-github-pr-openings-trigger-exact-head-ci.md): signed GitHub PR openings queue the exact head using the existing CI gate (SPEC-606)
 <!-- ADR 0441 -->
 - [0442](0442-identify-codex-reviewers-by-their-child-rollout.md): identify Codex reviewers by their child rollout.
 <!-- ADR 0442 -->
@@ -500,7 +501,9 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0445 -->
 <!-- ADR 0446 -->
 <!-- ADR 0447 -->
+- [0448](0448-repository-file-readers-run-before-merge.md): Repository file readers run before merge.
 <!-- ADR 0448 -->
+- [0449](0449-use-codex-quota-headroom-and-preserve-idle-moves.md) Automatic Codex placement prefers the most remaining quota in the tightest binding window. A moved idle Codex task keeps its activity when the replacement opens without a turn.
 <!-- ADR 0449 -->
 <!-- ADR 0450 -->
 <!-- ADR 0451 -->

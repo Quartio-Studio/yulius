@@ -52,6 +52,7 @@ flowchart LR
   AG -->|"MCP (yulius mcp stdio bridge) + hooks"| INT
   AG -->|"HTTP(S) via the egress proxy: secrets for bound hosts"| INT
   APP <--> GH["GitHub App + REST"]
+  GH -->|"signed PR opening"| API
   APP -->|"long poll getUpdates, sendMessage, getFile"| TG["Telegram Bot API"]
   AG <--> AN["Anthropic"]
   AG <--> OA["OpenAI (Codex)"]
@@ -1037,11 +1038,18 @@ flowchart LR
   R -->|"launch credential still current"| A["Mark subscription relogin"]
   M -->|"switch_from: end run, start_run_if"| C{"choose_account"}
   C -->|"a subscription"| RUN["Same session on it"]
+  RUN -->|"idle Codex resume without a turn"| I["Restore Waiting or Done"]
   C -->|"none"| W["waiting_capacity"]
   D --> T["tell_left: one line"]
   R --> T
   T -->|"nothing usable left"| N["Needs you, ended with the pause"]
 ```
+
+A live Codex task resumed without a turn keeps its saved Waiting or Done activity, including in
+Goal mode. The supervisor determines activity from the final launch mode, so a recovered reviewer
+or another opening instruction still starts a turn. Automatic Codex placement ranks eligible
+subscriptions by headroom in the tightest binding window before considering reset urgency.
+[Decision 0449](decisions/0449-use-codex-quota-headroom-and-preserve-idle-moves.md)
 
 ## Subscription names and emails
 
@@ -2152,6 +2160,8 @@ rollout history leaves its pause and prompt in place for the next capacity round
 Each parked task read includes the latest attempt ID from the same SQLite snapshot. A resume carries that ID through permission and account checks, including when a bulk operation, Telegram reply or remote restart first resolves the target. Under the launch lock it checks that the same attempt is still parked before restoring Codex lineage, starting a process or queueing its prompt.
 
 Continue also binds the owner’s selection to the latest attempt and archive state on an ended task. Exit and loss release terminal cleanup before successor checks. Once that cleanup finishes, the store compares the selection and records Starting or a queued start together with clearing the archive and question. A named Continue applies the pool’s manual placement policy to the task model and subscription records in that transaction. An immediate launch uses the accepted model and subscription. A queued start retains its subscription choice for the normal dispatch check.
+
+Parking takes the task’s merge writer for the final eligibility check and releases it before requesting terminal shutdown. It verifies that the selected attempt is still attached and its reader has not started settling it. The shutdown request names that attempt. The runtime records which attempt committed to park until its exit or loss settles. A new merge request checks that marker and the durable status while holding the same writer.
 
 `park_task_now` asks again under the launch lock, sets the run's end intent `Park` and ends the
 session as a close does (graceful shutdown, then the escalation). The run's end, by its exit or
@@ -4245,6 +4255,8 @@ flowchart TD
   K -->|yes| R["run with the gate in force, its own changed jobs beside (never instead)"]
   R -->|"merge-first target at the integration head"| Q["after_merge jobs skipped: they run on the merged revision"]
 ```
+
+Yulius’s own `file-contracts` job looks up Rust tests that read paths in the candidate’s diff. Its path filters cover the UI, catalog, documentation and other repository inputs. The full Rust shards cover those tests on dev. [Decision 0448](decisions/0448-repository-file-readers-run-before-merge.md)
 
 ## CI job output
 
