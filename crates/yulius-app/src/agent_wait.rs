@@ -464,11 +464,10 @@ impl App {
             };
             let runtime = self.runtime(&task_id);
             let _writer = runtime.arm_writer.lock().await;
-            {
-                let slot = lock_slot(&runtime);
-                if slot.generation != 0 || slot.merge.is_some() || slot.deciding != 0 {
-                    continue;
-                }
+            // Every activation, including restoration, has a generation. The writer
+            // keeps this snapshot from displacing any decision made in this process.
+            if lock_slot(&runtime).generation != 0 {
+                continue;
             }
             let Ok(last) = self.deps.store.latest_merge_wait(&task_id).await else {
                 complete = false;
@@ -503,19 +502,13 @@ impl App {
                 self.save_armed(&task_id, None);
                 continue;
             }
-            let mut slot = lock_slot(&runtime);
-            // Only when nothing was armed or cleared in this process yet: what was armed or
-            // decided since this file was read is newer than it.
-            if slot.generation == 0 && slot.merge.is_none() && slot.deciding == 0 {
-                slot.last_armed_at = entry.armed_at;
-                slot.merge = Some(ArmedMerge {
-                    head: entry.head,
-                    summary: entry.summary,
-                    armed_at: entry.armed_at,
-                    by: entry.by,
-                });
-                tracing::info!(task = %task_id, "armed merge restored after a restart");
-            }
+            lock_slot(&runtime).arm(ArmedMerge {
+                head: entry.head,
+                summary: entry.summary,
+                armed_at: entry.armed_at,
+                by: entry.by,
+            });
+            tracing::info!(task = %task_id, "armed merge restored after a restart");
         }
         self.armed_restored
             .store(complete, std::sync::atomic::Ordering::SeqCst);

@@ -1092,7 +1092,20 @@ impl App {
             .iter()
             .find(|run| matches!(&run.reference, CiRef::Train(members) if members.contains(&pr)))
             .filter(|run| own.is_none_or(|own| run.queued_at >= own.queued_at));
-        let hold = self.train_hold(task);
+        let (hold, holding_run) = self.train_hold_and_run(task);
+        let accepted = if !person_must_act && (!armed || candidate.is_some()) {
+            self.deps
+                .store
+                .latest_merge_wait(&task.id)
+                .await
+                .ok()?
+                .and_then(|span| {
+                    let decision = crate::merge_train::SingletonDecision::from_span(&span)?;
+                    (decision.singleton.pr == pr).then_some((span, decision))
+                })
+        } else {
+            None
+        };
         let mut events = Vec::new();
         let told_key = |kind: &str, key: &str| told.keys.get(kind).is_some_and(|k| k == key);
         if let Some(run) = own {
@@ -1123,6 +1136,8 @@ impl App {
             && run.state == RunState::Failed
             && members.len() > 1
             && !told_key("candidate", &run.id)
+            && (accepted.is_none()
+                || (armed && hold == Hold::Held && holding_run.as_deref() == Some(run.id.as_str())))
         {
             let jobs = self
                 .deps
@@ -1240,9 +1255,16 @@ impl App {
             has_ci,
             head: own.map(|run| run.sha.clone()).unwrap_or_default(),
         };
-        if !armed && !person_must_act {
-            self.apply_singleton_news(task, &sandbox, &integration, outcome.as_ref(), &mut facts)
-                .await?;
+        if !armed && let Some(accepted) = accepted {
+            self.apply_singleton_news(
+                task,
+                &sandbox,
+                &integration,
+                outcome.as_ref(),
+                accepted,
+                &mut facts,
+            )
+            .await?;
         }
         Some(facts)
     }
@@ -1255,15 +1277,13 @@ impl App {
         sandbox: &SandboxRecord,
         integration: &str,
         outcome: Option<&(String, String)>,
+        (span, decision): (
+            crate::stages::SpanRecord,
+            crate::merge_train::SingletonDecision,
+        ),
         facts: &mut PrFacts,
     ) -> Option<()> {
-        use crate::merge_train::{SingletonDecision, SingletonObservation};
-        let Some(span) = self.deps.store.latest_merge_wait(&task.id).await.ok()? else {
-            return Some(());
-        };
-        let Some(decision) = SingletonDecision::from_span(&span) else {
-            return Some(());
-        };
+        use crate::merge_train::SingletonObservation;
         if outcome.is_some_and(|(head, text)| *head != decision.head || *text != decision.message) {
             return Some(());
         }
@@ -1271,12 +1291,6 @@ impl App {
         facts
             .events
             .retain(|event| event.kind != "outcome" || event.key != key);
-        if facts.pr != decision.singleton.pr {
-            return Some(());
-        }
-        facts
-            .events
-            .retain(|event| event.kind != "candidate" || event.key != decision.singleton.run);
         if decision.superseded_at.is_some() {
             return Some(());
         }
@@ -1323,9 +1337,11 @@ impl App {
             SingletonObservation::Changed(hosted_head) => {
                 return (hosted_head.as_deref() == Some(facts.head.as_str())).then_some(());
             }
-            SingletonObservation::Current(Some(
-                RunState::Running | RunState::Queued | RunState::Failed,
-            )) => {
+            SingletonObservation::Current(Some((state, run)))
+                if state == RunState::Failed
+                    || (state.is_active()
+                        && decision.expired_ordinary_run.as_ref() != Some(&run)) =>
+            {
                 // If the ordinary observation just changed, start with fresh facts on the
                 // next pass. A pending or red rerun cannot produce a green-unarmed notice.
                 return (!facts.events.iter().any(|event| event.kind == "green")).then_some(());
@@ -1336,7 +1352,10 @@ impl App {
         facts
             .progress
             .push_str(&format!("|{}", decision.singleton.run));
-        facts.status.clone_from(&decision.message);
+        facts.status = format!(
+            "The integration candidate failed for pull request #{}.",
+            facts.pr
+        );
         facts.head.clone_from(&decision.head);
         facts.events.push(Event {
             kind: "outcome",

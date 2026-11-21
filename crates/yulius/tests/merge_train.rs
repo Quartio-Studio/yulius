@@ -2306,6 +2306,15 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
                     text.contains("prior-train") && !text.contains("passed its own run"),
                     "{text}"
                 );
+                let receipt = app
+                    .deps
+                    .store
+                    .latest_merge_wait(&TaskId::parse("t1")?)
+                    .await?
+                    .ok_or("expired singleton receipt")?;
+                let detail: Value =
+                    serde_json::from_str(receipt.detail.as_deref().ok_or("decision")?)?;
+                assert_eq!(detail["expired_ordinary_run"], "ordinary-rerun", "{detail}");
                 return Ok(());
             }
             end_own_run(app, "ordinary-rerun", RunState::Failed).await?;

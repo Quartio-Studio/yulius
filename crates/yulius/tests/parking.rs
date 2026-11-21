@@ -3059,7 +3059,43 @@ fn a_moved_hosted_head_cannot_rearm_an_obsolete_ordinary_green() -> TestResult {
     cold_candidate_case(ColdCandidate::MovedHead)
 }
 
+#[test]
+fn a_singleton_accepted_after_its_ordinary_deadline_reaches_the_owner() -> TestResult {
+    cold_candidate_case(ColdCandidate::TimedOutOrdinary)
+}
+
+#[test]
+fn an_accepted_singleton_resolves_its_earlier_bisected_train() -> TestResult {
+    cold_candidate_case(ColdCandidate::PriorBisection)
+}
+
+#[test]
+fn a_later_stall_reports_the_singleton_status_without_retyping_its_diagnosis() -> TestResult {
+    cold_candidate_case(ColdCandidate::Stall)
+}
+
+#[test]
+fn a_later_arm_outside_a_train_gets_no_prior_singleton_hands_off_notice() -> TestResult {
+    cold_candidate_case(ColdCandidate::RearmedOutsideTrain)
+}
+
+#[test]
+fn a_later_train_holding_the_rearmed_owner_does_not_revive_a_bisected_candidate() -> TestResult {
+    cold_candidate_case(ColdCandidate::RearmedInTrain)
+}
+
+#[test]
+fn a_new_ordinary_run_after_a_singleton_deadline_gets_its_own_wait() -> TestResult {
+    cold_candidate_case(ColdCandidate::NewerRunAfterExpiry)
+}
+
 enum ColdCandidate {
+    NewerRunAfterExpiry,
+    RearmedInTrain,
+    RearmedOutsideTrain,
+    TimedOutOrdinary,
+    PriorBisection,
+    Stall,
     MovedHead,
     OwnerRerun,
     Backdated,
@@ -3133,6 +3169,7 @@ fn cold_candidate_case(case: ColdCandidate) -> TestResult {
             "ordinary-green",
             &head,
             match case {
+                ColdCandidate::TimedOutOrdinary | ColdCandidate::NewerRunAfterExpiry => RunState::Running,
                 ColdCandidate::OrdinaryCancelled => RunState::Cancelled,
                 ColdCandidate::OrdinaryError => RunState::Error,
                 _ => RunState::Passed,
@@ -3173,6 +3210,11 @@ fn cold_candidate_case(case: ColdCandidate) -> TestResult {
             assert_eq!(notice.len(), 1);
             assert!(notice[0].1.contains("no merge is armed"), "{notice:?}");
         }
+        if matches!(case, ColdCandidate::PriorBisection | ColdCandidate::RearmedOutsideTrain | ColdCandidate::RearmedInTrain) {
+            let (mut prior, job) = crate::pr_watch::run(&caller.sandbox, "earlier-bisection", &integrated, RunState::Failed, Some(failures), 17);
+            prior.reference = CiRef::Train(vec![1481, 99]);
+            app.deps.store.insert_ci_run(&prior, &[job]).await?;
+        }
         candidate.queued_at = yulius_domain::time::Timestamp(if matches!(case, ColdCandidate::Backdated) { 9 } else { 20 });
         candidate.started_at = Some(yulius_domain::time::Timestamp(21));
         candidate.ended_at = Some(yulius_domain::time::Timestamp(22));
@@ -3212,7 +3254,7 @@ fn cold_candidate_case(case: ColdCandidate) -> TestResult {
                 ended_at: Some(yulius_domain::time::Timestamp(23)),
                 outcome: Some("dropped".into()),
                 detail: Some(
-                    json!({"head":head, "message":"Merge candidate candidate-red failed in shard 2: search took 292.1 ms, limit 200 ms. Read the failing job with ci_status.", "singleton":{"pr":1481, "base":base,
+                    json!({"head":head, "expired_ordinary_run":matches!(case, ColdCandidate::TimedOutOrdinary | ColdCandidate::NewerRunAfterExpiry).then_some("ordinary-green"), "message":"Merge candidate candidate-red failed in shard 2: search took 292.1 ms, limit 200 ms. Read the failing job with ci_status.", "singleton":{"pr":1481, "base":base,
                 "tree":tested_tree,"run":"candidate-red"}})
                     .to_string(),
                 ),
@@ -3275,7 +3317,7 @@ fn cold_candidate_case(case: ColdCandidate) -> TestResult {
             );
             set_pull_head(&remote, 1481, &head)?;
         }
-        if matches!(case, ColdCandidate::OwnerRerun) {
+        if matches!(case, ColdCandidate::OwnerRerun | ColdCandidate::NewerRunAfterExpiry) {
             let gate = Arc::new(tokio::sync::Notify::new());
             *remote.pull_read_hold.lock().map_err(|_| "PR gate")? = Some(gate.clone());
             let watcher = cold.clone();
@@ -3395,8 +3437,60 @@ fn cold_candidate_case(case: ColdCandidate) -> TestResult {
                 }
             }
         }
+        if matches!(case, ColdCandidate::RearmedOutsideTrain | ColdCandidate::RearmedInTrain) {
+            std::fs::write(
+                data.join(yulius_app::agent_wait::ARMED_MERGES_FILE),
+                serde_json::to_vec(
+                    &json!([{"task":id.as_str(),"head":head,"summary":"reviewed","armed_at":30}]),
+                )?,
+            )?;
+            cold.restore_armed_merges().await;
+            if matches!(case, ColdCandidate::RearmedInTrain) {
+                let task = cold.deps.store.task(&id).await?.ok_or("owner")?;
+                let current = json!({task.sandbox_id.as_str(): {"train":{"run":"later-train","commit":"merge","base":"base","base_tree":"tree","members":[{"task":id.as_str(),"pr":1481,"head":head,"armed_at":30,"tree":"candidate-tree"}]}}});
+                std::fs::write(data.join(yulius_app::merge_train::MERGE_TRAINS_FILE), serde_json::to_vec(&current)?)?;
+            }
+            let seen = cold.watch_prs(&bounds).await;
+            assert!(
+                seen.iter()
+                    .all(|(_, text)| !text.contains("earlier-bisection") && !text.contains("292.1")),
+                "resolved bisection after rearm: {seen:?}"
+            );
+            if matches!(case, ColdCandidate::RearmedInTrain) {
+                let task = cold.deps.store.task(&id).await?.ok_or("owner")?;
+                let path = data.join(yulius_app::merge_train::MERGE_TRAINS_FILE);
+                let mut current: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+                current[task.sandbox_id.as_str()]["train"]["run"] = json!("earlier-bisection");
+                std::fs::write(path, serde_json::to_vec(&current)?)?;
+                let held = cold.watch_prs(&bounds).await;
+                assert!(held.iter().any(|(_, text)| text.contains("earlier-bisection") && text.contains("Do not re-arm")), "the current holding train: {held:?}");
+            }
+            cold.stop_task_now(&id).await?;
+            return Ok(());
+        }
         let notices = cold.watch_prs(&bounds).await;
         let repeated = cold.watch_prs(&bounds).await;
+        if matches!(case, ColdCandidate::Stall) {
+            let bounds = WatchBounds {
+                stall_quiet_ms: 0,
+                stall_after_ms: 0,
+                ..WatchBounds::default()
+            };
+            let stalled = cold.watch_prs(&bounds).await;
+            assert_eq!(
+                stalled.len(),
+                1,
+                "expected bounded stall check-in: {stalled:?}"
+            );
+            assert!(
+                stalled[0].1.contains("stalled") && stalled[0].1.contains("candidate"),
+                "{stalled:?}"
+            );
+            assert!(
+                !stalled[0].1.contains("292.1") && !stalled[0].1.contains("Read the failing job"),
+                "repeated actionable diagnosis: {stalled:?}"
+            );
+        }
         let attempts = cold.deps.store.attempts(&id).await?;
         if !prior_notice {
             cold.stop_task_now(&id).await?;

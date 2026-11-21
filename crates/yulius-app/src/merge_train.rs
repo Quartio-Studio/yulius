@@ -290,6 +290,9 @@ pub(crate) struct SingletonDecision {
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub superseded_at: Option<i64>,
+    /// The ordinary run still active when the queue exhausted its original wait.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expired_ordinary_run: Option<String>,
     pub singleton: TestedSingleton,
 }
 
@@ -314,7 +317,7 @@ impl SingletonDecision {
 pub(crate) enum SingletonObservation {
     /// Hosted inputs changed. An open delivery on the integration branch supplies its current head.
     Changed(Option<String>),
-    Current(Option<RunState>),
+    Current(Option<(RunState, String)>),
 }
 
 /// Fold redacted CI text to a bounded line that can be typed into the owner's terminal.
@@ -445,13 +448,18 @@ impl App {
 
     /// How a merge train holds `task`'s armed merge (SPEC-084 TRN-004).
     pub(crate) fn train_hold(&self, task: &TaskRecord) -> Hold {
-        // No CI on this instance: no train advances, so none may hold anything.
+        self.train_hold_and_run(task).0
+    }
+
+    /// The same train snapshot provides both its hold and the run allowed to issue hands-off guidance.
+    pub(crate) fn train_hold_and_run(&self, task: &TaskRecord) -> (Hold, Option<String>) {
         if !self.config.ci.enabled {
-            return Hold::Free;
+            return (Hold::Free, None);
         }
-        hold_of(
-            self.read_trains(&task.sandbox_id).train.as_ref(),
-            task.id.as_str(),
+        let train = self.read_trains(&task.sandbox_id).train;
+        (
+            hold_of(train.as_ref(), task.id.as_str()),
+            train.map(|train| train.run),
         )
     }
 
@@ -822,6 +830,7 @@ impl App {
         .flatten();
         let pr = member.pr;
         let unavailable_since = train.waiting_since;
+        let mut expired_ordinary_run = None;
         let text = match self
             .singleton_observation(
                 sandbox,
@@ -837,7 +846,7 @@ impl App {
                     .await;
                 return None;
             }
-            Some(SingletonObservation::Current(Some(RunState::Failed))) => {
+            Some(SingletonObservation::Current(Some((RunState::Failed, _)))) => {
                 state.limit = None;
                 state.suspect = None;
                 self.dissolve(
@@ -855,11 +864,11 @@ impl App {
                 if text.is_some() {
                     train.waiting_since = None;
                 }
-                if matches!(ordinary, Some(RunState::Queued | RunState::Running))
-                    && train.wait_for_own(pr, self.now().0)
-                    && text.is_some()
-                {
-                    return Some(train);
+                if let Some((RunState::Queued | RunState::Running, id)) = ordinary {
+                    if train.wait_for_own(pr, self.now().0) && text.is_some() {
+                        return Some(train);
+                    }
+                    expired_ordinary_run = Some(id);
                 }
                 text
             }
@@ -873,6 +882,7 @@ impl App {
                 head: member.head.clone(),
                 message: text,
                 superseded_at: None,
+                expired_ordinary_run,
                 singleton: TestedSingleton {
                     pr,
                     base: train.base.clone(),
@@ -1021,7 +1031,7 @@ impl App {
                 .await
                 .ok()?;
             Some(SingletonObservation::Current(
-                run_for_pull_head(&runs, pr).map(|run| run.state),
+                run_for_pull_head(&runs, pr).map(|run| (run.state, run.id.clone())),
             ))
         };
         tokio::time::timeout(Duration::from_secs(5), confirm)
