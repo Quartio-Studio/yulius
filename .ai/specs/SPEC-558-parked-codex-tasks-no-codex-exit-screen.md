@@ -61,7 +61,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Verify restored arms and deliver current ordinary CI and train notices to the owner
 - [x] Report the active singleton and replay its recorded failure for the original owner
 - [x] Reproduce candidate status across restart on the live and parked PR owner
-- [ ] Verify the failed integration candidate before parking its original owner
+- [x] Verify the failed integration candidate before parking its original owner
 - [ ] Order parking and replacement merge requests through run settlement
 - [ ] Deliver the recorded integration failure once to an already parked owner
 - [ ] Hold the original owner’s session and successor while its open delivery cannot be verified
@@ -111,6 +111,8 @@ The live watcher resolves ordinary CI for the owner at the armed head and reads 
 The final parking check compares the owner’s saved singleton decision with the verified PR head and integration base. A change to the saved merge decision during hosted verification defers the pass. A changed base or published repair retires the old failure for this decision.
 
 ## Evidence
+
+- Independent review approved the parking decision at `9bdbd5bc1e8c6be3b41713e904f4ed21563166d7`. All seven parking controls passed independently on the prior binary with the same candidate behavior. The full product tree for this delivery matches `e740eb5db`. The bounded mutation run and its focused replays continue separately. Vidoc was disabled. The historical Quartio instance needs a release containing the change for a live check.
 
 - The parking decision uses the same Rust product code as `e740eb5db`, independently of how the owner page describes an ordinary CI failure. The parking fixtures cover a matching red candidate, a change during verification, a missing branch, a merged or forked PR, both branch names, a new PR at the same commit and a repaired commit on the original PR. Dropping the PR number or commit comparison caused both replacement controls to time out. The unattended parking fixtures use real Git, SQLite and PTY hosts.
 - The twelve focused cases at `694053c3a` passed. Review traced a separate ordinary CI explanation lost on a subsequent page refresh when the PR already reads behind. The candidate parking slice leaves the existing display policy in place. The one-time owner notice and parked-detail step includes the repeat-read regression and both CI sources.
