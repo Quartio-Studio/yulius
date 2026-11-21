@@ -897,9 +897,12 @@ function tokenTiles(tokens) {
       `last 24 h: ${compact(spent(day))}${unknown ? ` · ${unknown} ${unknown === 1 ? 'run' : 'runs'} reported no usage` : ''}`,
     ] : 'not known yet', 'ok', perDay && weekChart('Tokens', perDay.map(spent), compact)),
     capacityTile('zap', 'API cost (7 days)', cost === null ? '—' : `≈ ${usd(cost)}`, [
-      'at Claude API list prices',
-      cost === null ? (week && spent(week) ? 'no run’s model has a price' : null)
-        : `${day && Number.isFinite(day.cost_usd) ? `last 24 h ≈ ${usd(day.cost_usd)}` : 'last 24 h: —'}${unpriced ? ` · ${unpriced} ${unpriced === 1 ? 'run' : 'runs'} of unknown models not counted` : ''}`,
+      'Recorded runs at standard API prices',
+      Number.isFinite(t.ultrafast_cost_usd) ? `≈ ${usd(t.ultrafast_cost_usd)} if eligible Codex runs used Ultrafast` : null,
+      week ? 'Separate Codex subagent sessions excluded' : null,
+      day && Number.isFinite(day.cost_usd) ? `last 24 h ≈ ${usd(day.cost_usd)}` : 'last 24 h: —',
+      [unpriced && `${unpriced} ${unpriced === 1 ? 'run' : 'runs'} without a model price`,
+        unknown && `${unknown} ${unknown === 1 ? 'run' : 'runs'} without usage`].filter(Boolean).join(' · '),
     ], 'ok', perDay && weekChart('API cost', perDay.map((d) => (Number.isFinite(d.cost_usd) ? d.cost_usd : null)), usd)),
   ];
 }
