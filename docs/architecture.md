@@ -36,7 +36,7 @@ flowchart LR
   CD -->|"dev: deploy + verify, allowed secrets"| SB
   CD -->|"production: deploy + verify (or rollback), allowed secrets"| PSB
   APP -->|"prune caches, quota"| SB
-  CI -->|"jobs in its ci/ leaf, job slots"| SB
+  CI -->|"job slots and per-job CPU and memory budgets"| SB
   SUP <-->|"Unix socket"| PH["yulius ptyhost (per run)"]
   subgraph SB["Sandbox (namespace holder)"]
     PH --> AG["claude, codex or agy TUI"]
@@ -2123,7 +2123,7 @@ rollout history leaves its pause and prompt in place for the next capacity round
 
 Each parked task read includes the latest attempt ID from the same SQLite snapshot. A resume carries that ID through permission and account checks, including when a bulk operation, Telegram reply or remote restart first resolves the target. Under the launch lock it checks that the same attempt is still parked before restoring Codex lineage, starting a process or queueing its prompt.
 
-Continue also binds the owner’s selection to the latest attempt and archive state on an ended task. Exit and loss release terminal cleanup before successor checks. Once that cleanup finishes, the store compares the selection and records Starting or a queued start together with clearing the archive and question.
+Continue also binds the owner’s selection to the latest attempt and archive state on an ended task. Exit and loss release terminal cleanup before successor checks. Once that cleanup finishes, the store compares the selection and records Starting or a queued start together with clearing the archive and question. A named Continue applies the pool’s manual placement policy to the task model and subscription records in that transaction. An immediate launch uses the accepted model and subscription. A queued start retains its subscription choice for the normal dispatch check.
 
 `park_task_now` asks again under the launch lock, sets the run's end intent `Park` and ends the
 session as a close does (graceful shutdown, then the escalation). The run's end, by its exit or
@@ -3299,8 +3299,8 @@ Yulius's own `[cd.dev]` deploys to a staging VM, a Yulius instance no person rel
 [Yulius's own staging VM](operations.md#yuliuss-own-staging-vm)). The scripts are `scripts/cd/`,
 the build `deploy/build/Dockerfile`, and the tests `scripts/test_cd.py`, which run against a fake
 root. Production is still a promotion of `dev` to `main` that each instance installs through
-its update helper (decision 0264). `[cd.dev]` is Yulius's merge-first target: both test shards
-and e2e are `after_merge`, and a promotion comes only from the revision staging verified
+its update helper (decision 0264). `[cd.dev]` is Yulius's merge-first target: the two test jobs share one run-scoped nextest archive,
+and both shards and e2e are `after_merge`, and a promotion comes only from the revision staging verified
 ([decision 0436](decisions/0436-yuliuss-full-suite-runs-after-the-merge-and-promotion-comes-from-verified-staging.md)).
 
 ```mermaid

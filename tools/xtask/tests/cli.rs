@@ -305,3 +305,126 @@ fn the_checkers_tests_run_beside_the_build() -> std::io::Result<()> {
     assert!(docs < stage, "{text}");
     Ok(())
 }
+
+#[cfg(unix)]
+#[test]
+fn both_shards_list_quarantine_and_run_using_the_archive() -> std::io::Result<()> {
+    let stubs = Stubs::new("archive")?;
+    let record = stubs.dir.join("archive-calls");
+    for index in 1..=2 {
+        std::fs::write(&record, "")?;
+        let out = Command::new(env!("CARGO_BIN_EXE_xtask"))
+            .args(["test", "--archive-file", "test build.tar.zst"])
+            .env("CARGO", stubs.dir.join("cargo"))
+            .env("PYTHON", stubs.dir.join("python"))
+            .env("XT_RECORD", &record)
+            .env("YULIUS_CI_MATRIX", format!("{index}/2"))
+            .env("YULIUS_CI_QUARANTINE", "flaky_test")
+            .output()?;
+        assert!(out.status.success(), "{out:?}");
+        let calls = std::fs::read_to_string(&record)?;
+        for command in ["list", "run"] {
+            assert!(calls.contains(&format!(
+                "cargo nextest {command} --archive-file test build.tar.zst --workspace-remap . --profile ci"
+            )), "{calls}");
+        }
+        assert!(
+            calls.contains(&format!(
+                "-E not (test(=flaky_test)) --partition hash:{index}/2"
+            )),
+            "{calls}"
+        );
+        assert!(!calls.contains("--workspace --all-features"), "{calls}");
+        assert_eq!(
+            calls.contains("python scripts/doctests.py"),
+            index == 1,
+            "{calls}"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn the_independent_docs_and_archive_jobs_enter_through_the_pinned_dev_runner() -> std::io::Result<()>
+{
+    use std::os::unix::fs::{PermissionsExt as _, symlink};
+    use std::path::Path;
+
+    let home = tempfile::tempdir()?;
+    let system = home.path().join("system-bin");
+    let pin = home.path().join("pinned-bin");
+    let cargo_bin = home.path().join(".cargo/bin");
+    for dir in [&system, &pin, &cargo_bin] {
+        std::fs::create_dir_all(dir)?;
+    }
+    let python = Command::new("python3")
+        .args(["-c", "import sys; print(sys.executable)"])
+        .output()?;
+    symlink(
+        String::from_utf8_lossy(&python.stdout).trim(),
+        system.join("python3"),
+    )?;
+    let write_tool = |path: &Path, script| {
+        std::fs::write(path, script)?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+    };
+    write_tool(
+        &cargo_bin.join("rustup"),
+        r#"#!/bin/sh
+case "$1" in
+    which) echo "$PIN/rustc" ;;
+    run) shift 2; exec "$@" ;;
+    *) exit 2 ;;
+esac
+"#,
+    )?;
+    write_tool(
+        &pin.join("cargo"),
+        r#"#!/bin/sh
+if [ "$1" = xtask ]; then shift; exec "$XTASK_BIN" "$@"; fi
+echo "$*" >> "$CALLS"
+if [ "$1 $2" = "nextest archive" ]; then
+    if [ "$YULIUS_CI_RUN" = fail ]; then exit 1; fi
+    for archive do :; done
+    echo archive > "$archive"
+fi
+"#,
+    )?;
+    let calls = home.path().join("calls");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for (gate, index, run, expected) in [
+        ("docs", 2, "ok", 0),
+        ("test-shard", 2, "ok", 0),
+        ("test-shard", 2, "fail", 1),
+        ("test-shard", 1, "fail", 78),
+    ] {
+        let out = Command::new(root.join("scripts/dev"))
+            .arg(gate)
+            .env("HOME", home.path())
+            .env("PATH", &system) // CI's initial path contains neither rustup nor Cargo.
+            .env("PIN", &pin)
+            .env("CALLS", &calls)
+            .env("XTASK_BIN", env!("CARGO_BIN_EXE_xtask"))
+            .env("YULIUS_CI_CACHE", home.path().join(format!("test.{index}")))
+            .env("YULIUS_CI_MATRIX", format!("{index}/2"))
+            .env("YULIUS_CI_RUN", run)
+            .env("YULIUS_CI_SKIP_CODE", "78")
+            .env("YULIUS_CI_SHA", "sha")
+            .env("CARGO_INCREMENTAL", "1")
+            .env_remove("CARGO")
+            .env_remove("PYTHON")
+            .env_remove("YULIUS_CI_QUARANTINE")
+            .output()?;
+        assert_eq!(out.status.code(), Some(expected), "{gate}: {out:?}");
+    }
+    let calls = std::fs::read_to_string(calls)?;
+    for command in [
+        "doc --locked --workspace --all-features --no-deps",
+        "nextest archive --locked --workspace --all-features",
+        "nextest run --archive-file",
+    ] {
+        assert!(calls.contains(command), "{calls}");
+    }
+    Ok(())
+}

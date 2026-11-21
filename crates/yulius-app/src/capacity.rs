@@ -32,7 +32,7 @@ use yulius_domain::capacity::{
     ForecastInput, PoolMember, PoolTokens, Span, TokenRun, TokenSpend, WeeklySample,
 };
 use yulius_domain::ids::{AccountId, TaskId};
-use yulius_domain::rotation::{self, Decision, RotationInput, Trigger};
+use yulius_domain::rotation::{self, AccountView, Decision, RotationInput, Trigger};
 use yulius_domain::task::{Activity, TaskEvent, TaskStatus};
 use yulius_domain::time::Timestamp;
 use yulius_domain::usage::{AccountUsage, LIMIT_RESET_MAX_MS, ModelFamily, UsageWindow};
@@ -40,8 +40,10 @@ use yulius_domain::usage::{AccountUsage, LIMIT_RESET_MAX_MS, ModelFamily, UsageW
 use crate::accounts::{account_usage, in_use_count, usage_view};
 use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
-use crate::error::AppResult;
-use crate::model::{PauseKind, PauseRecord, TaskRecord, USAGE_FROM_SESSION, UsageSampleRecord};
+use crate::error::{AppError, AppResult};
+use crate::model::{
+    AccountRecord, PauseKind, PauseRecord, TaskRecord, USAGE_FROM_SESSION, UsageSampleRecord,
+};
 use crate::supervisor::RunStart;
 
 /// Default wait between two resumes of paused tasks ("resumed gently").
@@ -224,6 +226,88 @@ pub(crate) fn task_model(task: &TaskRecord) -> Option<&str> {
     })
 }
 
+/// The result of accepting a resting owner's Continue in the store.
+pub enum ContinuationAdmission {
+    /// The pool will choose the subscription at launch.
+    Pool,
+    /// Placement from the model and subscription records at acceptance.
+    Named {
+        /// The subscription the owner requested.
+        account: Box<AccountRecord>,
+        /// The task's model at acceptance.
+        model: Option<String>,
+        /// The fallback chosen by the pool policy for this launch.
+        fallback: Option<&'static str>,
+    },
+}
+
+pub(crate) fn rotation_view(account: &AccountRecord, in_use: u32) -> AccountView {
+    AccountView {
+        id: account.id.clone(),
+        provider: account.provider,
+        healthy: account.status.healthy(),
+        usage: account_usage(account),
+        in_use,
+    }
+}
+
+fn start_input(task: &TaskRecord, accounts: Vec<AccountView>, at: Timestamp) -> RotationInput {
+    let model = task_model(task);
+    RotationInput {
+        current: None,
+        task_provider: task.harness.provider(),
+        family: model_family(model),
+        fallback: fallback_of(model).map(|fallback| model_family(Some(fallback))),
+        running: None,
+        accounts,
+        now: at,
+        threshold: rotation::THRESHOLD,
+    }
+}
+
+impl ContinuationAdmission {
+    /// Decide a named start from one transaction's task and account records. A manual
+    /// choice needs eligibility and the pool's fallback family, neither of which ranks load.
+    ///
+    /// # Errors
+    /// Returns the usual subscription refusal when the selected account cannot take the task.
+    pub fn named(
+        task: &TaskRecord,
+        accounts: Vec<AccountRecord>,
+        requested: &AccountId,
+        at: Timestamp,
+    ) -> AppResult<Self> {
+        let views = accounts
+            .iter()
+            .filter(|account| account.credential.is_some())
+            .map(|account| rotation_view(account, 0))
+            .collect();
+        let input = start_input(task, views, at);
+        let (decision, reason) = rotation::decide(
+            &input,
+            Trigger::Manual {
+                account: requested.clone(),
+            },
+        );
+        let account = accounts
+            .into_iter()
+            .find(|account| &account.id == requested);
+        if !matches!(decision, Decision::Switch { .. }) {
+            return Err(AppError::Capacity(crate::supervisor::refused_choice(
+                account.as_ref().map(|account| account.label.as_str()),
+                input.task_provider,
+                &reason,
+            )));
+        }
+        Ok(Self::Named {
+            account: Box::new(account.ok_or(AppError::NotFound)?),
+            model: task.model.clone(),
+            fallback: fallback_of(task.model.as_deref())
+                .filter(|_| rotation::placing_family(&input) != input.family),
+        })
+    }
+}
+
 impl App {
     /// Wakes the resume loop: usage changed, an account was added or removed, a task paused.
     pub fn capacity_changed(&self) {
@@ -254,14 +338,8 @@ impl App {
         };
         Ok(RotationInput {
             current,
-            task_provider: task.harness.provider(),
-            // A task without a model runs the default, Opus 5.5.
-            family: model_family(model),
-            fallback: fallback_of(model).map(|fallback| model_family(Some(fallback))),
             running,
-            accounts: self.account_views().await?,
-            now: self.now(),
-            threshold: rotation::THRESHOLD,
+            ..start_input(task, self.account_views().await?, self.now())
         })
     }
 

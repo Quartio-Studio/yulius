@@ -365,8 +365,9 @@ pub trait TaskStore: Send + Sync {
         &self,
         selected: &TaskRecord,
         queue: Option<&crate::model::QueuedStart>,
+        requested: Option<&AccountId>,
         at: Timestamp,
-    ) -> AppResult<bool>;
+    ) -> AppResult<Option<crate::capacity::ContinuationAdmission>>;
     /// Queues the task `id`, which must read `expected`, and keeps how it is to start, in one
     /// step (SPEC-483 QST-001): [`Self::transition_task`] to `queued` and the start. `false`,
     /// and nothing changed, when the task no longer reads `expected`.
