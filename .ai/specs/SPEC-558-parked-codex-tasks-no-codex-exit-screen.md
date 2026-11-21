@@ -68,6 +68,8 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- Three Chromium lifecycle regressions passed after running red. They cover a running task newly parked on a green PR, same-second archive/Undo and a cold snapshot overlapping resume. A fourth regression exposed stale fallback state after successful verification of a replacement PR. Both reply orders now pass. The mutation command reported “No Rust code changed … nothing to mutate”. The browser regressions exercised the changed JavaScript directly. Vidoc was disabled.
+
 - PR #1548 landed in dev at `d54e2f190`. Its integration candidate and the delivery commit passed quality, both test shards and browser e2e. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/d54e2f1909c84093bc2fd0cf2bcba80cac425805)
 - On that base, Chromium saw a running task park with a green open PR and make zero verification reads. A held list reverted a resumed task to Parked and resurrected an archived task. The parked-watch regressions drive Git and summary replies independently and cover same-second archive/Undo, permanent deletion and bounded confirmation. [ADR-0417](../../docs/decisions/0417-refresh-parked-task-status-alongside-the-git-overview.md)
 

@@ -159,7 +159,11 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       const current = state.tasks.get(sandboxId);
       if (listOrder.get(current) > order) return current;
       const map = new Map();
-      for (const task of Array.isArray(list) ? list : []) if (!task.archived) map.set(task.id, task);
+      for (const task of Array.isArray(list) ? list : []) {
+        if (task.archived) continue;
+        unverified.delete(task);
+        map.set(task.id, task);
+      }
       for (const [id, task] of read.changes) {
         if (!watching && !read.parked.has(id) && map.get(id)?.status !== 'parked') continue;
         if (task.archived) map.delete(id);
