@@ -1747,6 +1747,7 @@ impl App {
                     state,
                     // A full-suite skip stays one through the copy (SPEC-575 MFS-002).
                     reason: Some(yulius_domain::ci::copied_job_reason(
+                        state,
                         job.reason.as_deref(),
                         &note,
                     )),

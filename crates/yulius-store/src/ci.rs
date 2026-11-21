@@ -266,6 +266,25 @@ impl CiStore for SqliteStore {
         .await
     }
 
+    async fn ci_shas_with_pass(
+        &self,
+        sandbox: &SandboxId,
+        commits: &[String],
+    ) -> AppResult<Vec<String>> {
+        let sandbox = sandbox.to_string();
+        let commits = serde_json::to_string(commits).map_err(AppError::internal)?;
+        self.call(move |c| {
+            let mut statement = c.prepare(
+                "SELECT value FROM json_each(?2) AS history WHERE EXISTS (
+                    SELECT 1 FROM ci_runs r WHERE r.sandbox_id = ?1 AND r.sha = history.value AND r.state = 'passed'
+                 ) ORDER BY history.key",
+            ).map_err(db)?;
+            statement.query_map(params![sandbox, commits], |row| row.get(0))
+                .map_err(db)?.collect::<Result<Vec<_>, _>>().map_err(db)
+        })
+        .await
+    }
+
     async fn ci_planning_runs(
         &self,
         sandbox: &SandboxId,
