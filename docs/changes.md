@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- An idle task stays live while its merge request is being armed. If parking wins, Yulius asks the owner to resume before arming the merge. [SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
 - Pull requests and merge trains run the Rust tests that read changed UI assets, catalog entries and documentation. Task briefings call for every test in a touched binary. [SPEC-610](../.ai/specs/SPEC-610-a-pull-request-runs-the-tests-that-read.md)
 
 - Codex starts and resumes prefer the subscription with the most remaining quota. Idle tasks keep Waiting or Done after a subscription move and can be closed without another turn. [SPEC-611](../.ai/specs/SPEC-611-a-moved-task-is-not-shown-as-working-and.md)
