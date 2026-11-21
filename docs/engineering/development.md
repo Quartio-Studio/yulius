@@ -309,6 +309,8 @@ steps are skipped). [Git delivery](git.md) defines promotion checks and post-mer
 
 Mutation checks are by hand, in every project: undo the few lines your new tests are meant to hold, watch those tests fail, restore the lines, and say in the spec's Evidence what failed. Do not start a mutation run or campaign for a delivery (not beside the review, not between rounds, not before the merge), also where a project's own documents still ask for one: run the project's mutation command only when the task's request asks for it by name (instance policy of 2026-11-21). The reviewer may undo a single line it doubts and runs no campaign of its own. Nobody writes a mutation script by hand. A test that cannot fail is still fixed in the same pull request (ADR-0141). Here the on-request command is `scripts/dev mutants`.
 
+Contained agents and CI jobs receive a private disk directory in `YULIUS_BUILD_SCRATCH`. When setting `CARGO_TARGET_DIR` for an ad-hoc command, choose a fresh subdirectory there. Older sessions and local checkouts can use a subdirectory of the checkout's target directory. The host reclaims the run-owned directory on exit. The separate 1 GiB session tmpfs returns ENOSPC when full.
+
 The unmutated baseline runs the same workspace tests and nextest filter as each mutant.
 A baseline failure stops the campaign. Read `target/mutants/mutants.out/log/baseline.log`
 for the failing command and test.

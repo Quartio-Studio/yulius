@@ -1,6 +1,6 @@
 //! Restart reconciliation of run directories (SPEC-002 §7.1, DATA-002, AC-NFR-2).
 //!
-//! Reconciliation only observes and, when asked, terminates; it never respawns anything.
+//! Reconciliation observes process identity, terminates when asked and reclaims stopped build scratch.
 
 use std::path::Path;
 use std::time::Duration;
@@ -97,15 +97,36 @@ fn parse_boottime(text: &str) -> Option<String> {
 /// mistaken for the run.
 #[must_use]
 pub fn inspect_run_dir(run_dir: &Path) -> RunDirState {
-    if let Ok(Some(exit)) = read_exit(run_dir) {
-        return RunDirState::Exited(exit);
+    let exit = read_exit(run_dir).ok().flatten();
+    if let Some(exit) = &exit
+        && !crate::build_scratch::recorded(run_dir)
+    {
+        return RunDirState::Exited(exit.clone());
     }
-    let Ok(Some(status)) = read_status(&run_dir.join(STATUS_FILE)) else {
-        return RunDirState::Missing;
+    let status = match read_status(&run_dir.join(STATUS_FILE)) {
+        Ok(Some(status)) => status,
+        Ok(None) => {
+            if let Err(error) = crate::build_scratch::reclaim_unrecorded(run_dir) {
+                eprintln!("cannot reclaim unrecorded build scratch: {error}");
+            }
+            return exit.map_or(RunDirState::Missing, RunDirState::Exited);
+        }
+        Err(_) => return exit.map_or(RunDirState::Missing, RunDirState::Exited),
     };
-    let same_boot = current_boot_id().is_some_and(|id| id == status.boot_id);
+    let boot = current_boot_id();
+    let same_boot = boot.as_deref() == Some(status.boot_id.as_str());
     let host_alive = same_boot && host_matches(&status).is_some();
     let child_alive = same_boot && child_matches(&status).is_some();
+    if boot.is_some()
+        && !host_alive
+        && !child_alive
+        && let Err(error) = crate::build_scratch::reclaim_recorded(run_dir, &status)
+    {
+        eprintln!("cannot reclaim finished build scratch: {error}");
+    }
+    if let Some(exit) = exit {
+        return RunDirState::Exited(exit);
+    }
     RunDirState::Recorded {
         status,
         host_alive,
@@ -126,7 +147,13 @@ fn host_matches(status: &StatusRecord) -> Option<Pid> {
 }
 
 fn child_matches(status: &StatusRecord) -> Option<Pid> {
-    process::pid(status.child_pid).filter(|pid| matches_record(*pid, status.started_at_ms, false))
+    process::pid(status.child_pid).filter(|pid| {
+        matches_record(*pid, status.started_at_ms, false)
+            && status
+                .child_birth
+                .as_ref()
+                .is_none_or(|birth| process::birth_identity(*pid).as_ref() == Some(birth))
+    })
 }
 
 /// Failure to terminate a recorded run.
@@ -135,6 +162,9 @@ pub enum TerminateError {
     /// The recorded process identities could not be read.
     #[error("cannot read the process status: {0}")]
     Status(String),
+    /// The run stopped but removing its recorded scratch failed.
+    #[error("cannot reclaim build scratch: {0}")]
+    Scratch(#[from] std::io::Error),
     /// A signal could not be delivered.
     #[error("cannot signal process {pid}: {errno}")]
     Signal {
@@ -161,6 +191,77 @@ pub fn terminate_run_dir(run_dir: &Path) -> Result<(), TerminateError> {
         .map_err(|error| TerminateError::Status(error.to_string()))?
     {
         terminate_recorded(&status)?;
+        crate::build_scratch::reclaim_recorded(run_dir, &status)?;
+    }
+    Ok(())
+}
+
+/// These values belong to the launch acknowledged by the server. CI may remove
+/// or reuse the control directory before the process waiter gets CPU time.
+pub(crate) struct BuildOwner {
+    tree: yulius_sandbox::build_tree::BuildTree,
+    status: Option<StatusRecord>,
+}
+
+impl BuildOwner {
+    pub(crate) fn capture(
+        run_dir: &Path,
+        host_pid: u32,
+        token: &str,
+        status: Option<StatusRecord>,
+    ) -> Result<Option<Self>, TerminateError> {
+        let Some(receipt) = crate::build_scratch::read(run_dir)? else {
+            return Ok(None);
+        };
+        if !receipt.belongs_to(host_pid, token) {
+            return Ok(None);
+        }
+        let Some(tree) = receipt.open_tree()? else {
+            return Ok(None);
+        };
+        let status = match status {
+            Some(status) => Some(status),
+            None => read_status(&run_dir.join(STATUS_FILE))
+                .map_err(|error| TerminateError::Status(error.to_string()))?,
+        }
+        .filter(|status| receipt.matches_status(status));
+        Ok(Some(Self { tree, status }))
+    }
+
+    /// Bubblewrap dies with its host. Wait for the original child to disappear.
+    /// A delayed process waiter has no reason to signal any host or child.
+    pub(crate) fn reclaim(self) -> Result<(), TerminateError> {
+        if let Some(status) = self.status {
+            let boot = current_boot_id()
+                .ok_or_else(|| TerminateError::Status("unknown boot identity".into()))?;
+            let deadline = std::time::Instant::now() + TERMINATE_WAIT;
+            while boot == status.boot_id
+                && !crate::build_scratch::child_session_gone(
+                    status.child_pid,
+                    status.child_birth.as_deref(),
+                )
+            {
+                if std::time::Instant::now() >= deadline {
+                    return Err(TerminateError::StillAlive {
+                        pid: status.child_pid,
+                    });
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+        self.tree.clear_registered()?;
+        Ok(())
+    }
+}
+
+/// If startup failed before the ready handshake, recover only this launch's receipt.
+pub(crate) fn reclaim_after_host_exit(
+    run_dir: &Path,
+    host_pid: u32,
+    token: &str,
+) -> Result<(), TerminateError> {
+    if let Some(owner) = BuildOwner::capture(run_dir, host_pid, token, None)? {
+        owner.reclaim()?;
     }
     Ok(())
 }
