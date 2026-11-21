@@ -788,10 +788,11 @@ fn a_goal_continuation_delivered_by_a_move_counts_once() -> TestResult {
             release.send(())?;
             Ok::<_, Box<dyn std::error::Error>>(())
         };
+        let account = AccountId::parse("b-second")?;
         let (moved, progressed) = tokio::join!(tokio::spawn({
             let app = app.clone();
             let id = id.clone();
-            async move { app.switch_with(&id, Some(AccountId::parse("b-second").expect("fixture account")), "Capacity",
+            async move { app.switch_with(&id, Some(account), "Capacity",
                 yulius_app::supervisor::RunStart::GoalResume { prompt: prompt.to_owned() }).await }
         }), progress);
         moved??;
