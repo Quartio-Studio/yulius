@@ -388,6 +388,23 @@ async fn a_changed_holder_or_clock_releases_its_original_sockets_without_admitti
 
 #[tokio::test]
 async fn shutdown_quiesces_a_replacement_relay_and_holders_registered_late() -> io::Result<()> {
+    // Capacity notices go to process stderr and use a process-wide counter. Isolate both
+    // observations from tests that intentionally fill a relay.
+    const CHILD: &str = "YULIUS_TEST_QUIET_RELAY_STOP";
+    if std::env::var_os(CHILD).is_none() {
+        let output = tokio::time::timeout(Duration::from_secs(8),
+            tokio::process::Command::new(std::env::current_exe()?)
+                .args(["--exact", "relay::handoff::tests::shutdown_quiesces_a_replacement_relay_and_holders_registered_late", "--nocapture"])
+                .env(CHILD, "1").kill_on_drop(true).output()).await??;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !stderr.contains("connection was dropped at the limit"),
+            "{stderr}"
+        );
+        assert!(output.status.success(), "{stderr}");
+        return Ok(());
+    }
+    let before = super::super::dropped_connections();
     tokio::time::timeout(Duration::from_secs(3), async {
         let holder = holder()?;
         let relays = Arc::new(OutboundRelays::default());
@@ -424,6 +441,7 @@ async fn shutdown_quiesces_a_replacement_relay_and_holders_registered_late() -> 
                 .relays
                 .is_empty()
         );
+        assert_eq!(super::super::dropped_connections(), before);
         Ok(())
     })
     .await?

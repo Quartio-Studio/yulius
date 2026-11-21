@@ -58,6 +58,9 @@ new request after the old sockets reach EOF. The issue requires the original con
 - [x] Obtain independent approval for the proxy restart slice
 - [x] Hand established opaque connections and matching relay sockets to the restarted server
 - [x] Verify same-socket continuity, admission limits and intercepted traffic through restart
+- [ ] Quiesce outbound relay admissions without recording a capacity refusal
+- [ ] Obtain independent approval for the holder relay lifecycle slice
+- [ ] Restore matched proxy and relay pairs on the delivered holder lifecycle
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
@@ -542,3 +545,11 @@ without adoption support or a remote peer that times out can end a tunnel.
   ran all ten cases, including that positive startup check, in 12.10 seconds. The task
   host passed the prerequisite diagnostic. Six focused relay tests and four server-wiring
   tests passed.
+- The third review of the combined holder change approved the earlier corrections and
+  independently passed all ten native restart cases, six relay, four wiring and six
+  egress handoff tests. It found one remaining defect. Two empty stopping relays
+  emitted the 256-place capacity warning and incremented the process-wide drop count
+  from zero to two. A subprocess regression reproduced both the warning and the count.
+  Admission now distinguishes a stopped table from a full table under the same lock.
+  The regression passed with a zero delta and quiet stderr. The live relay capture
+  and the successor's matched restore are separate deliveries.

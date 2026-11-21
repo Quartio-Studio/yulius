@@ -71,8 +71,12 @@ pub(crate) struct Places {
 
 struct Admissions {
     connections: Connections<(), Control>,
-    #[cfg(target_os = "linux")]
     stopped: bool,
+}
+
+enum AdmissionRefusal {
+    Full,
+    Stopping,
 }
 
 struct Control {
@@ -127,7 +131,6 @@ impl Places {
         Arc::new(Self {
             table: Mutex::new(Admissions {
                 connections: Connections::new(max, max, floor),
-                #[cfg(target_os = "linux")]
                 stopped: false,
             }),
             #[cfg(not(target_os = "linux"))]
@@ -151,11 +154,16 @@ impl Places {
     /// A place, what resolves once its connection gave way, and how long the connection that
     /// gave way to it had been idle (ms); `None` when every connection was active lately.
     pub(crate) fn admit(self: &Arc<Self>) -> Option<(Place, oneshot::Receiver<()>, Option<u64>)> {
+        self.try_admit().ok()
+    }
+
+    fn try_admit(
+        self: &Arc<Self>,
+    ) -> Result<(Place, oneshot::Receiver<()>, Option<u64>), AdmissionRefusal> {
         let (end, ended) = oneshot::channel();
         let mut table = self.table.lock().unwrap_or_else(PoisonError::into_inner);
-        #[cfg(target_os = "linux")]
         if table.stopped {
-            return None;
+            return Err(AdmissionRefusal::Stopping);
         }
         let admitted = table.connections.admit((), Control::new(end), self.now());
         let Ok(admitted) = admitted else {
@@ -175,7 +183,7 @@ impl Places {
                 }
                 report.health.refused(refusal, wall_ms());
             }
-            return None;
+            return Err(AdmissionRefusal::Full);
         };
         drop(table);
         // Dropping the evicted sender ends that connection.
@@ -185,7 +193,7 @@ impl Places {
             id: admitted.id,
             activity: admitted.activity,
         };
-        Some((place, ended, idle))
+        Ok((place, ended, idle))
     }
 }
 
@@ -730,10 +738,15 @@ async fn outbound_loop(
             tokio::time::sleep(Duration::from_millis(100)).await;
             continue;
         };
-        let Some((place, ended, idle)) = places.admit() else {
-            drop(stream);
-            warn_dropped(&mut warned, "outbound", None, Some(&sandbox), max);
-            continue;
+        let (place, ended, idle) = match places.try_admit() {
+            Ok(place) => place,
+            Err(refusal) => {
+                drop(stream);
+                if let AdmissionRefusal::Full = refusal {
+                    warn_dropped(&mut warned, "outbound", None, Some(&sandbox), max);
+                }
+                continue;
+            }
         };
         if let Some(idle) = idle {
             warn_gave_way(&mut gave_way, "outbound", None, Some(&sandbox), idle);
