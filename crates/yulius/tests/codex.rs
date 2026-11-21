@@ -316,6 +316,90 @@ fn continuing_a_codex_task_stopped_before_launch_delivers_its_original_request()
 }
 
 #[test]
+fn a_stopped_codex_id_without_a_rollout_restarts_with_its_original_request() -> TestResult {
+    let (_dir, data) = temp()?;
+    runtime()?.block_on(async {
+        let (app, sandbox, user, id, session) = restart_fixture(&data).await?;
+        let ctx = admin_ctx(&app, &user).await?;
+        support::stop_tasks(&app, &[&id]).await?;
+        let sessions = data
+            .join("sandboxes")
+            .join(sandbox.as_str())
+            .join("codex/sessions");
+        let rollout = app
+            .deps
+            .harness
+            .find_codex_rollout(&sessions, &session)?
+            .ok_or("rollout")?;
+        // Reproduce the persisted state after SessionStart and before the first rollout write.
+        std::fs::remove_file(rollout)?;
+        let blocker = new_codex_task(&app, &sandbox, &user, "Occupy the slot").await?;
+        wait_for("the occupied slot", Duration::from_secs(30), || {
+            screen_contains(&app, &blocker, "ECHO: Occupy the slot")
+        })
+        .await?;
+        let queued = app
+            .continue_task(&ctx, id.as_str(), &Default::default())
+            .await?;
+        assert_eq!(queued.status, "queued");
+        let kept = app
+            .deps
+            .store
+            .queued_start(&id)
+            .await?
+            .ok_or("queued restart")?;
+        assert_eq!(kept.kind, yulius_app::model::QueuedStartKind::Fresh);
+        assert_eq!(kept.prompt, None);
+
+        let account = AccountId::parse("a-codex")?;
+        let usage = yulius_domain::usage::AccountUsage {
+            limit_reached: true,
+            limit_resets_at: Some(Timestamp(4_000_000_000_000)),
+            ..Default::default()
+        };
+        app.deps
+            .store
+            .set_account_state(
+                &account,
+                AccountStatus::Limited,
+                Some(&yulius_app::usage_json::to_json(&usage)),
+                None,
+                app.now(),
+            )
+            .await?;
+        support::stop_tasks(&app, &[&blocker]).await?;
+        wait_for(
+            "the admitted restart waiting for capacity",
+            Duration::from_secs(30),
+            || async {
+                task(&app, &id)
+                    .await
+                    .is_ok_and(|t| t.status == TaskStatus::WaitingCapacity)
+            },
+        )
+        .await?;
+        let replacement =
+            add_codex_account(&app, "replacement", &codex_auth("2026-11-01T10:00:00Z")).await?;
+        app.switch_task(
+            &ctx,
+            id.as_str(),
+            &yulius_contracts::api::tasks::ContinueTask {
+                account_id: Some(replacement.to_string()),
+                ..Default::default()
+            },
+        )
+        .await?;
+        let run = app.deps.store.live_attempt(&id).await?.ok_or("fresh run")?;
+        assert_eq!(run.launch_kind, LaunchKind::New);
+        wait_for("the full original request", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "ECHO: Original request: answer with an echo")
+        })
+        .await?;
+        support::stop_tasks(&app, &[&id]).await
+    })
+}
+
+#[test]
 fn retrying_a_failed_codex_restart_resumes_the_same_conversation() -> TestResult {
     let (_dir, data) = temp()?;
     runtime()?.block_on(async {
