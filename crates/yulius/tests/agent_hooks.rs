@@ -14,8 +14,8 @@ use serde_json::json;
 use support::{Creds, Harness, TestResult, call};
 use yulius_app::hub::HubFrame;
 use yulius_app::model::{
-    AttemptRecord, GitHubTokenRecord, LaunchKind, MessageRecord, SandboxRecord, TaskOrigin,
-    TaskRecord, UserRecord,
+    AttemptRecord, GitHubTokenRecord, LaunchKind, MessageRecord, SandboxRecord, TaskMode,
+    TaskOrigin, TaskRecord, UserRecord,
 };
 use yulius_app::ports::github::GitHubAppConfig;
 use yulius_domain::harness::Harness as Agent;
@@ -2029,25 +2029,193 @@ async fn codex_hooks_reach_yulius_for_codex_runs_only() -> TestResult {
     Ok(())
 }
 
-/// An Antigravity goal task running a step of its plan.
-async fn antigravity_goal() -> Result<Fixture, Box<dyn std::error::Error>> {
+/// A live turn with one actionable plan step.
+async fn task_with_open_step(
+    agent: Agent,
+    mode: TaskMode,
+    step: &str,
+) -> Result<Fixture, Box<dyn std::error::Error>> {
     let f = fixture_of(
         None,
         |task| {
-            task.mode = yulius_app::model::TaskMode::Goal;
+            task.mode = mode;
             task.activity = Some(Activity::Working);
         },
-        Agent::Antigravity,
+        agent,
     )
     .await?;
     let ctx = f.h.app.agent_context(TOKEN).await?;
     f.h.app
         .tool_steps_set(
             &ctx,
-            &json!({"steps": [{"title": "Run the tests", "status": "in_progress"}]}),
+            &json!({"steps": [{"title": step, "status": "in_progress"}]}),
         )
         .await?;
     Ok(f)
+}
+
+async fn stop_of(
+    f: &Fixture,
+    agent_kind: Agent,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    f.h.clock.0.fetch_add(1, Ordering::SeqCst);
+    let reply = call(
+        &f.h.internal,
+        Method::POST,
+        &format!("/hooks/{}/Stop", agent_kind.as_str()),
+        Some(json!({"fully_idle": true})),
+        &agent(),
+    )
+    .await?;
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    Ok(reply.body)
+}
+
+#[tokio::test]
+async fn goal_stop_continues_verification_after_merge_without_a_person() -> TestResult {
+    use yulius_domain::delivery::DeliveryStage;
+    let title = "Verify the merged revision on dev";
+    for agent_kind in Agent::ALL {
+        let f = task_with_open_step(agent_kind, TaskMode::Goal, title).await?;
+        f.h.app
+            .deps
+            .store
+            .transition_delivery(
+                &DeliveryStage::None,
+                &yulius_app::delivery::DeliveryRecord {
+                    task_id: f.task.clone(),
+                    stage: DeliveryStage::MergedIntegration,
+                    pr_number: Some(17),
+                    updated_at: f.h.app.now(),
+                },
+            )
+            .await?;
+        let stop = stop_of(&f, agent_kind).await?;
+        let brief = task_brief(&f).await?;
+        assert_eq!(stop["decision"], "block", "{agent_kind:?} settled: {brief}");
+        assert!(
+            stop["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains(title)),
+            "{stop}"
+        );
+        assert_eq!(brief["shows"], "working");
+        assert!(brief["needs_you_notice"].is_null());
+        assert!(
+            f.h.app
+                .deps
+                .store
+                .task_wait_messages(&f.task, 1)
+                .await?
+                .is_empty()
+        );
+        assert_eq!(
+            f.h.app.deps.store.steps(&f.task).await?[0].status,
+            "in_progress"
+        );
+
+        let ctx = f.h.app.agent_context(TOKEN).await?;
+        f.h.app
+            .tool_step_update(&ctx, &json!({"ordinal": 1, "status": "done"}))
+            .await?;
+        assert!(stop_of(&f, agent_kind).await?["decision"].is_null());
+        assert_eq!(task_brief(&f).await?["shows"], "done");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_continues_unfinished_spec_then_explains_the_retry_limit() -> TestResult {
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Write spec").await?;
+    std::fs::create_dir_all(f.worktree.join("docs/specs"))?;
+    std::fs::write(
+        f.worktree.join("docs/specs/checkout.md"),
+        "---\nyulius-task: t-main\nstatus: in-progress\n---\n# Checkout\n\n## Goal\n\nVerify checkout.\n\n## Context\n\nFixture.\n\n## Requirements\n\n- Verify.\n\n## Plan\n\n- [x] Write spec\n\n## Acceptance criteria\n\nCheckout verified.\n\n## Test plan\n\nRun tests.\n\n## Decisions\n\nUse fixtures.\n",
+    )?;
+    for _ in 0..yulius_app::hooks::MAX_GATE_BLOCKS {
+        let stop = stop_of(&f, Agent::Codex).await?;
+        assert_eq!(stop["decision"], "block", "{stop}");
+        assert!(
+            stop["reason"].as_str().is_some_and(|r| r.contains("spec")),
+            "{stop}"
+        );
+        assert_eq!(task_brief(&f).await?["shows"], "working");
+    }
+    assert!(stop_of(&f, Agent::Codex).await?["decision"].is_null());
+    let brief = task_brief(&f).await?;
+    assert_eq!(brief["shows"], "needs_you");
+    let problem = brief["attention"]["problem"]
+        .as_str()
+        .ok_or("retry limit explanation")?;
+    assert!(
+        problem.contains("3") && problem.contains("spec"),
+        "{problem}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_yields_to_a_live_yulius_wait_then_continues_the_step() -> TestResult {
+    use std::time::Duration;
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Check the build").await?;
+    let app = Arc::clone(&f.h.app);
+    let initial = app.agent_wait_state(TOKEN, None).await?;
+    let waiter = tokio::spawn(async move {
+        app.agent_wait(TOKEN, None, Some(&initial), Duration::from_secs(30))
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while f.h.app.active_waits_of(&f.task) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    assert!(stop_of(&f, Agent::Codex).await?["decision"].is_null());
+    assert_eq!(task_brief(&f).await?["shows"], "working");
+    waiter.abort();
+    assert!(waiter.await.is_err_and(|e| e.is_cancelled()));
+    assert_eq!(stop_of(&f, Agent::Codex).await?["decision"], "block");
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_preserves_a_request_for_an_external_permission() -> TestResult {
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Check the build").await?;
+    let action = "Grant the build account access to staging";
+    support::mcp_tool(&f.h, TOKEN, "needs_you", json!({"action": action})).await?;
+    assert!(stop_of(&f, Agent::Codex).await?["decision"].is_null());
+    let brief = task_brief(&f).await?;
+    assert_eq!(brief["shows"], "needs_you");
+    assert_eq!(brief["needs_you"]["action"], action);
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_keeps_a_held_scope_decision_with_its_owner() -> TestResult {
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify checkout").await?;
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    let store = &f.h.app.deps.store;
+    store
+        .insert_hold(&yulius_app::intake::HoldRecord {
+            id: "scope-decision".into(),
+            task_id: f.task.clone(),
+            class: yulius_domain::intake::PromptClass::NewScope,
+            prompt: "Support another platform".into(),
+            prompt_sha256: "0".repeat(64),
+            percent: 91,
+            typed_by: Some(ctx.task.owner),
+            state: yulius_app::intake::hold_state::PENDING.into(),
+            created_at: f.h.app.now(),
+            resolved_by: None,
+            resolved_at: None,
+            new_task_id: None,
+        })
+        .await?;
+    assert!(stop_of(&f, Agent::Codex).await?["decision"].is_null());
+    assert_eq!(task_brief(&f).await?["shows"], "needs_you");
+    assert!(store.pending_hold(&f.task).await?.is_some());
+    assert_eq!(store.task(&f.task).await?.ok_or("task")?.gate_blocks, 0);
+    Ok(())
 }
 
 async fn agy_event(f: &Fixture, name: &str, payload: serde_json::Value) -> TestResult {
@@ -2065,7 +2233,7 @@ async fn agy_event(f: &Fixture, name: &str, payload: serde_json::Value) -> TestR
     Ok(())
 }
 
-async fn agy_brief(f: &Fixture) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+async fn task_brief(f: &Fixture) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let reply = support::mcp_tool(&f.h, TOKEN, "task_get", json!({"number": 1})).await?;
     Ok(support::tool_text(&reply))
 }
@@ -2073,7 +2241,7 @@ async fn agy_brief(f: &Fixture) -> Result<serde_json::Value, Box<dyn std::error:
 /// SPEC-528: a background Stop and the agent's wake are both Working.
 #[tokio::test]
 async fn antigravity_background_stop_and_autonomous_invocation() -> TestResult {
-    let f = antigravity_goal().await?;
+    let f = task_with_open_step(Agent::Antigravity, TaskMode::Goal, "Run the tests").await?;
     agy_event(&f, "Stop", json!({"fully_idle": false})).await?;
     let caller = yulius_app::coordination::ProjectCaller {
         sandbox: f.sandbox.clone(),
@@ -2086,15 +2254,15 @@ async fn antigravity_background_stop_and_autonomous_invocation() -> TestResult {
     let scope = json!({"scope": "needs_you"});
     let list = f.h.app.tool_tasks_list(&caller, &scope).await?;
     assert_eq!(list["tasks"], json!([]), "{list}");
-    let busy = agy_brief(&f).await?;
+    let busy = task_brief(&f).await?;
     assert_eq!(busy["shows"], "working", "{busy}");
     agy_event(&f, "PreInvocation", json!({})).await?;
-    assert_eq!(agy_brief(&f).await?["activity"], "working");
+    assert_eq!(task_brief(&f).await?["activity"], "working");
     let action = "Approve access to the staging account";
     support::mcp_tool(&f.h, TOKEN, "needs_you", json!({"action": action})).await?;
     agy_event(&f, "Stop", json!({"fully_idle": false})).await?;
     agy_event(&f, "PreInvocation", json!({})).await?;
-    let requested = agy_brief(&f).await?;
+    let requested = task_brief(&f).await?;
     assert_eq!(requested["shows"], "needs_you");
     assert_eq!(requested["needs_you"]["action"], action);
     let list = f.h.app.tool_tasks_list(&caller, &scope).await?;
@@ -2105,10 +2273,10 @@ async fn antigravity_background_stop_and_autonomous_invocation() -> TestResult {
 
 /// SPEC-528: an idle Stop with open work gives its reason and only a newer wake reopens it.
 #[tokio::test]
-async fn antigravity_idle_stop_with_an_open_step_explains_the_wait() -> TestResult {
-    let f = antigravity_goal().await?;
+async fn antigravity_prompt_mode_idle_stop_with_an_open_step_explains_the_wait() -> TestResult {
+    let f = task_with_open_step(Agent::Antigravity, TaskMode::Prompt, "Run the tests").await?;
     agy_event(&f, "Stop", json!({"fully_idle": true})).await?;
-    let idle = agy_brief(&f).await?;
+    let idle = task_brief(&f).await?;
     assert_eq!(idle["activity"], "waiting");
     assert_eq!(idle["shows"], "needs_you");
     assert!(
@@ -2145,16 +2313,16 @@ async fn antigravity_idle_stop_with_an_open_step_explains_the_wait() -> TestResu
             Some(stale),
         )
         .await?;
-    assert_eq!(agy_brief(&f).await?["activity"], "waiting", "late wake");
+    assert_eq!(task_brief(&f).await?["activity"], "waiting", "late wake");
     agy_event(&f, "PreInvocation", json!({})).await?;
-    assert_eq!(agy_brief(&f).await?["shows"], "working");
+    assert_eq!(task_brief(&f).await?["shows"], "working");
     // Older clients omitted the idle bit. A model error also really ends the turn.
     for stop in [
         json!({}),
         json!({"fully_idle": false, "error": "Model unavailable"}),
     ] {
         agy_event(&f, "Stop", stop).await?;
-        assert_eq!(agy_brief(&f).await?["activity"], "waiting");
+        assert_eq!(task_brief(&f).await?["activity"], "waiting");
         agy_event(&f, "PreInvocation", json!({})).await?;
     }
     let ctx = f.h.app.agent_context(TOKEN).await?;
@@ -2165,7 +2333,7 @@ async fn antigravity_idle_stop_with_an_open_step_explains_the_wait() -> TestResu
         )
         .await?;
     agy_event(&f, "Stop", json!({"fully_idle": true})).await?;
-    let answered = agy_brief(&f).await?;
+    let answered = task_brief(&f).await?;
     assert_eq!(answered["shows"], "done");
     assert!(answered.get("wait_reason").is_none());
     Ok(())
@@ -2217,7 +2385,7 @@ async fn late_agy_stop(exhausted_gate: bool) -> TestResult {
     agy_event(&f, "PreInvocation", json!({})).await?;
     release.send(())?;
     stop.await??;
-    assert_eq!(agy_brief(&f).await?["activity"], "working");
+    assert_eq!(task_brief(&f).await?["activity"], "working");
     Ok(())
 }
 
