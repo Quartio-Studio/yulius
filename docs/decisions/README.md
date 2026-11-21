@@ -452,6 +452,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0420 -->
 - [0421](0421-codex-right-click-opens-the-viewers-clipboard-menu.md) reserves a plain right-click in a mouse-tracking Codex terminal for the viewer’s clipboard menu.
 <!-- ADR 0421 -->
+- [0422](0422-cli-and-superagent-task-creation-defaults-to-codex.md) defaults CLI and Superagent task creation to Codex and inherits its model, effort and subscription tier.
 <!-- ADR 0422 -->
 <!-- ADR 0423 -->
 <!-- ADR 0424 -->

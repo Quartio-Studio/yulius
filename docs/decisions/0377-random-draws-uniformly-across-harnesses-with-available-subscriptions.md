@@ -13,6 +13,8 @@ of [ADR-0368](0368-a-tasks-agent-is-set-never-drawn.md) and the two-harness draw
 that a task's agent is fixed once created, and that a running task agent's unadorned follow-up
 keeps the calling task's agent, stands.
 
+[ADR-0422](0422-cli-and-superagent-task-creation-defaults-to-codex.md) supersedes the default draw for direct CLI and Superagent task creation.
+
 ## Context
 
 - Task #496 ("make sure harnesses doesnt change themselves between tasks (like claude -> gemini)

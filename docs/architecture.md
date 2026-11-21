@@ -105,9 +105,12 @@ its model implies (Codex for `gpt-*`, Antigravity for `gemini-*`, otherwise Clau
 draws uniformly (`1 / k`, rejection-sampled over `random_bytes`) across the harnesses in `Harness::ALL` (`claude`, `codex`, `antigravity`) that have at least one healthy
 non-exhausted subscription for their default model (falling back to healthy `Usable` pools when
 every connected pool is temporarily limited, else `ClaudeCode`), recorded in `task_harness_draws`
-(`harness_choice: random`). A running task agent's `task_create` and `automation_create` without
-`harness` (or `model`) keep the calling task's agent (`chosen`), while explicit `auto`, Superagent
-calls and `auto` automations draw per created task.
+(`harness_choice: random`). With harness and model omitted, the shared `task_create` tool
+selects the parent task's harness for a follow-up and Codex for the CLI or either Superagent,
+including approved cross-sandbox requests. Codex then inherits its model, effort and tier as
+described above. Explicit `auto` still draws. An automation created by a task inherits its
+parent's harness by default. Other automations default to a draw on each run.
+[Decision 0422](decisions/0422-cli-and-superagent-task-creation-defaults-to-codex.md)
 
 An Antigravity task ([decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md),
 [decision 0373](decisions/0373-gemini-4-neon-is-antigravitys-default-model-on-agy-1-5-12.md))
