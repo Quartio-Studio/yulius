@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- Task Info updates the sidebar when it verifies a parked task. Its header and Now tile follow the latest verified status while the PR chip shows the last Git overview (SPEC-558).
+
 - A task leaves the active task list when its terminal discovers an archive, including when the browser received Closed but missed the subsequent Archived update (SPEC-558).
 
 - After Undo, a mounted terminal can restore a resting task to the active task list. A refreshed list also updates the terminal when the task reappears (SPEC-558).

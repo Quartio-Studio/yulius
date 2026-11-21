@@ -78,8 +78,9 @@ export function mountTaskInfoView(ctx, sandbox, task) {
       h('a', { class: 'btn btn-primary gt-go', href: href(taskPath), dataset: { route: taskPath } }, 'Go to task', icon('forward', { size: 14 }))),
     meta);
 
+  const statusInfo = () => taskInfo(current, ctx.store.state.actionRequests, ctx.store.pullForStatus(current));
   function renderHead() {
-    const info = taskInfo(current, ctx.store.state.actionRequests, ctx.store.pullsOf(current.sandbox_id).get(current.id));
+    const info = statusInfo();
     setChildren(titleEl, h('span', { class: 'muted' }, `#${current.number} `), current.title || `Task #${current.number}`);
     reviewButton.hidden = !reviewable(ctx.store.gitRowOf(sandbox.id, current.id));
     const pr = ctx.store.pullsOf(sandbox.id).get(current.id);
@@ -141,7 +142,7 @@ export function mountTaskInfoView(ctx, sandbox, task) {
     // Each time says what it measures (SPEC-087 TIM-003, MET-005): when the task was made, how
     // long it has been in its state, and the agent's work apart from the time its sessions stayed
     // open (idle included).
-    const state = taskTime(current, taskInfo(current, ctx.store.state.actionRequests, pr));
+    const state = taskTime(current, statusInfo());
     const facts = h('div', { class: 'stat-grid ti-facts' },
       tile('Created', relLong(current.created_at), dateTime(current.created_at)),
       tile('Now', state.text, state.since === null ? null : `since ${dateTime(new Date(state.since).toISOString())}`),
@@ -161,7 +162,7 @@ export function mountTaskInfoView(ctx, sandbox, task) {
       // Where it was handed off from and what it handed off (SPEC-512 HOF-005).
       ['Handoffs', handoffsInfo(ctx, current)],
       ['Mode', current.mode === 'prompt' ? 'Prompt' : 'Goal (works until it is met)'],
-      ['Subscription', accountRef(current.account_label, current.account_email, { unknown: ctx.isInstanceAdmin() }) || '—'],
+      ['Subscription', accountRef(current.account_label, sameAccount(current, detail) ? detail.account_email : undefined, { unknown: ctx.isInstanceAdmin() }) || '—'],
       // What the task asks Claude Code for, what answered (its transcripts' word) and which
       // Claude Code runs it (SPEC-461 CCM-012); while running tasks are no longer moved to the
       // newer one, only its next start is promised (SPEC-468 CCF-003).
@@ -225,16 +226,33 @@ export function mountTaskInfoView(ctx, sandbox, task) {
   }
 
   let alive = true;
+  let latestRead = 0;
+  let appliedRead = 0;
+  let latestSummary = task;
+  let publishing = false;
+  const sameAccount = (a, b) => a.account_id === b.account_id && a.account_label === b.account_label;
   async function load() {
+    const read = ++latestRead;
+    const summaryAtStart = latestSummary;
+    const publish = ctx.store.beginParkedDetail(current);
     try {
       const fresh = await ctx.api.get(`/api/tasks/${enc(task.id)}`, { signal: reads.signal });
-      if (!alive) return;
+      if (!alive || read < appliedRead) return;
+      appliedRead = read;
       detail = fresh;
-      current = { ...current, ...fresh };
+      detailError = null;
+      // A summary received during this request owns public changes such as a rename.
+      // Publishing echoes our own read synchronously. Its returned row already includes that update.
+      publishing = true;
+      current = publish(fresh, latestSummary === summaryAtStart ? fresh : current);
+      publishing = false;
       loadWaterfall(ctx, sandbox, `task:${task.id}`, stagesHost, { title: 'Stages of this task' });
     } catch (error) {
-      if (!alive || error.code === 'aborted') return;
+      if (!alive || read !== latestRead || error.code === 'aborted') return;
       detailError = error;
+    } finally {
+      publishing = false;
+      publish.release();
     }
     render();
   }
@@ -244,15 +262,16 @@ export function mountTaskInfoView(ctx, sandbox, task) {
     ctx.store.on('pulls', (sid) => { if (sid === sandbox.id) render(); }),
     // The task moves on while you read: its state, steps and times follow.
     ctx.store.on('task', (t) => {
-      if (t.id !== task.id) return;
+      if (t.id !== task.id || publishing) return;
+      latestSummary = t;
       // Summaries never carry the subscription's email (SPEC-244): a new subscription drops the
       // old one's until the detail is read again.
-      const moved = t.account_label !== current.account_label;
+      const moved = !sameAccount(t, current);
       // A session that starts again may run another model on the same subscription (the
       // fallback, SPEC-482), and is a new entry of the sessions: the detail is read again.
       const restarted = t.status !== current.status;
-      current = { ...current, ...t };
-      if (moved) delete current.account_email;
+      // TaskSummary is a complete snapshot. Omitted owner notices and PRs have cleared.
+      current = t;
       if (moved || restarted) load();
       render();
     }),
