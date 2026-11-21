@@ -79,8 +79,10 @@ was verified there.
   - The public URL of the unit answers `/healthz` 200 over HTTPS.
   - The contained doctor, run as the service user with the unit's environment, passes.
   - The live store's schema is the migrations count of the deployed tree (deploys).
-  - Every table of the snapshot the live store started from still exists with at least as many
-    rows (no loss in the migration from the previous release's store).
+  - Before anything stops, the release's migrations run on a consistent copy of the live store
+    (`yulius store-migrate`). No table may vanish, and none may lose rows but those a migration
+    deletes from by design. Verify finds that check kept and the live store sound, with the
+    release's schema.
   - On a deploy, the sandbox Docker smoke test (`yulius doctor --docker-smoke`) passes when the
     doctor offers sandboxes Docker. It does not apply otherwise and says so.
 - **STG-005 Rollback restores the release and its store.** `rollback` puts back
@@ -188,8 +190,11 @@ was verified there.
   and its store" without losing staging data when nothing needs it. Across a schema change, what
   the newer release wrote since its deploy is lost on staging. That is staging's accepted cost
   (a person's production keeps the helper's own rollback).
-- **No-loss check by row counts against the snapshot the live store started from:**
-  - It is a deterministic baseline (taken while the server is stopped).
+- **No-loss check on a migrated copy before the stop (review round 1):**
+  - The new binary migrates a copy of the live store (SQLite's backup) with
+    `yulius store-migrate`, so nothing the server does after its start (retention, a person's
+    delete) reads as loss, and a lossy migration refuses the deploy before staging changes.
+  - Tables a migration deletes from by design (`DELETE FROM` in the tree's migrations) may shrink.
   - It names the table that lost rows or vanished.
   - On a fresh instance it proves little until a person uses staging. That is reported, not
     hidden.

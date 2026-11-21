@@ -3,6 +3,7 @@
 # staging VM"): scripts/cd/deploy.sh dev
 # Builds the commit $YULIUS_CD_SHA with scripts/cd/build.sh (once: kept in $YULIUS_CD_CACHE),
 # copies it to the VM (checked by SHA-256, kept there for rollbacks), and has remote.sh install it:
+# the release's migrations checked on a copy of the live store first (no rows lost), then
 # yulius.service stopped, the replaced binary and its store kept, the release installed and
 # started (it migrates the store), put back when it does not report its commit. Prints
 # ::yulius-release <commit>. The same commit again changes nothing.
@@ -40,7 +41,11 @@ if kept_on_vm "$release"; then
 else
   upload "$release" "$binary"
 fi
-remote activate "$release"
+# Tables a migration deletes rows from by design (DELETE FROM in crates/yulius-store's migrations):
+# the migration check lets only those lose rows.
+deletes="$(grep -ohE 'DELETE FROM +[a-z_0-9]+' "$repo/crates/yulius-store/src/migrations"/*.sql 2>/dev/null |
+  awk '{ print $3 }' | sort -u | paste -sd , -)"
+remote activate "$release" "${deletes:--}"
 echo "::yulius-release $release"
 
 # The last 10 builds used stay in the cache (the VM keeps its own copies); never fails the deploy.

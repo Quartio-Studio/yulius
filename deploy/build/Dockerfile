@@ -4,7 +4,8 @@
 # 24.04 and every later Ubuntu (glibc 2.39 or newer), with the toolchain rust-toolchain.toml names.
 # The crate registry and the target directory are BuildKit cache mounts kept by the builder's Docker
 # engine between builds; the result is the binary alone.
-FROM ubuntu:24.04 AS build
+# ubuntu:24.04, pinned by its digest (2026-11-21).
+FROM ubuntu:24.04@sha256:9c7f200c07e3d4a03e7249d2c16bf66a51120fb876aa2242cf31451412543289 AS build
 RUN apt-get update -q && apt-get install -y -q --no-install-recommends \
       build-essential ca-certificates curl git pkg-config \
     && rm -rf /var/lib/apt/lists/*

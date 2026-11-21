@@ -4,9 +4,9 @@
 # On the VM (remote.sh verify): the release recorded current is the one this run deployed
 # ($YULIUS_CD_SHA) or rolled back to ($YULIUS_CD_RELEASE), and the installed binary is it;
 # /internal/version reports it; the public URL answers /healthz over HTTPS; the contained doctor
-# passes; no table of the store the release started from lost rows; after a deploy, the store's
-# schema is this tree's migrations count and the sandbox Docker smoke test passes where the doctor
-# offers sandboxes Docker.
+# passes; the live store is sound; after a deploy, its schema is this tree's migrations count, the
+# release's migration check (no rows lost, on a copy before the stop) is kept, and the sandbox
+# Docker smoke test passes where the doctor offers sandboxes Docker.
 set -eu
 . "$(dirname "$0")/lib.sh"
 cd_env "${1:-}"

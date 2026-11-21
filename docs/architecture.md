@@ -3277,10 +3277,11 @@ its update helper (decision 0264).
 flowchart LR
   RUN["dev CD run (sandbox)"] -->|"build.sh: docker build, Ubuntu 24.04"| BIN["release binary (YULIUS_CD_CACHE, last 10)"]
   BIN -->|"ssh, pinned host key: upload by SHA-256"| KEPT["VM: /var/lib/yulius-releases/&lt;commit&gt;"]
-  RUN -->|"remote.sh activate"| SW["stop yulius.service, keep the replaced binary and its store, install, start"]
+  RUN -->|"remote.sh activate"| CHK["the new binary migrates a copy of the live store: no rows lost"]
+  CHK --> SW["stop yulius.service, keep the replaced binary and its store, install, start"]
   SW -->|"/internal/version = commit"| OK["recorded current"]
   SW -->|"no answer in 2 min"| BACK["previous binary and store put back"]
-  OK --> VER["verify: commit, HTTPS /healthz, contained doctor, no lost rows, schema, Docker smoke"]
+  OK --> VER["verify: commit, HTTPS /healthz, contained doctor, store check and schema, Docker smoke"]
   VER --> DRILL["Yulius's drill: rollback.sh back (its own store across a schema change), verify, forward, verify"]
 ```
 

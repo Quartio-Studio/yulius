@@ -89,7 +89,7 @@ command = "python3 scripts/vidoc_scan.py --ci"
 # root@$STAGING_VM_HOST (a project variable; the host key pinned in scripts/cd/known_hosts), keeps
 # the replaced release with the store it left, and restarts only yulius.service. Verify: the
 # commit at /internal/version, /healthz over HTTPS, the contained doctor, the store migrated with
-# no table losing rows, and the sandbox Docker smoke test. Swapping the VM: docs/operations.md,
+# the migration checked on a copy before the stop (no rows lost), and the sandbox Docker smoke test. Swapping the VM: docs/operations.md,
 # "Yulius's own staging VM".
 [cd.dev]
 about = "Yulius's own staging VM (a fresh instance no person relies on): the exact build of a dev revision, its store migrated from the previous staging release; verify: commit, HTTPS, contained doctor, no lost rows, Docker smoke"

@@ -1780,14 +1780,19 @@ erased.
 2. It connects as `root@$STAGING_VM_HOST` with `STAGING_VM_SSH_KEY` in an ssh-agent and the host
    key pinned in `scripts/cd/known_hosts`.
 3. It uploads the binary to `/var/lib/yulius-releases/<commit>/yulius`, checked by SHA-256.
-4. It stops **only** `yulius.service`. Sessions live in `yulius-sandboxes.service`.
-5. It keeps the replaced binary and the store it left (`yulius.db` with its WAL) in
+4. Before anything stops, the new binary migrates a copy of the live store (`yulius store-migrate`).
+   No table may vanish or lose rows, but those a migration deletes from by design (`DELETE FROM`
+   in its migrations). Otherwise the deploy fails with nothing changed.
+5. It stops **only** `yulius.service`. Sessions live in `yulius-sandboxes.service`.
+6. It keeps the replaced binary and the store it left (`yulius.db` with its WAL) in
    `/var/lib/yulius-releases/<old commit>/`.
-6. It installs the new binary, starts the service and waits until `/internal/version` reports the
+7. It installs the new binary, starts the service and waits until `/internal/version` reports the
    commit; otherwise it puts the old binary and store back. The last 10 releases are kept.
 
 It does not pause tasks as the update helper's restart does: a staging instance's tasks see their
-server restart.
+server restart. A lost connection does not stop a switch half way, and any other failure after
+the stop starts the server again with a binary and store that belong together. One CD step runs
+at a time (`/var/lib/yulius-releases/.lock`).
 
 **What verify proves** (`scripts/cd/verify.sh dev`):
 
@@ -1795,8 +1800,9 @@ server restart.
 - the unit's `YULIUS_PUBLIC_URL` answers `/healthz` 200 over HTTPS (a Caddy that never loaded its
   configuration fails here);
 - `yulius doctor` passes as the service user with the unit's environment (contained);
-- no table of the store the release started from lost rows, and after a deploy the store's
-  schema is the number of the tree's migrations;
+- the live store passes SQLite's check; after a deploy its schema is the number of the tree's
+  migrations and the release's migration check is kept (`<commit>/migration.json`); after a
+  rollback its schema is the one the release left;
 - after a deploy, `yulius doctor --docker-smoke` passes where the doctor offers sandboxes Docker.
 
 **Rollback** (`scripts/cd/rollback.sh dev`; a person on the CD page, an agent with
@@ -1832,8 +1838,14 @@ or address beyond the variable and the pinned key.
 6. Pin the new host key in a pull request: the line `yulius-staging ssh-ed25519 <key>` from
    `/etc/ssh/ssh_host_ed25519_key.pub` in `scripts/cd/known_hosts`. Check its fingerprint on the
    VM (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`) before committing it.
-7. Deploy from the CD page. The first deploy keeps the binary it finds as a release a rollback
-   can return to.
+7. Deploy from the CD page. The first deploy keeps the binary it finds (and its store) on the
+   VM, but Yulius's CD never recorded it as a release: the CD page and `cd_rollback` cannot
+   return to it, and the first deploy has no drill (it needs two). Return to it by hand (above).
+
+**Who can reach it.** `STAGING_VM_SSH_KEY` may be copied to `.env` files, so dev CD runs get it,
+and so can every task of this project: an agent can be root on the staging VM. Keep nothing of
+value there. Never give its instance production's GitHub App or credentials; a GitHub App of its
+own is a credential such an agent could read.
 
 ## 6. Onboarding a repository and your Claude sessions (`yulius onboard`)
 

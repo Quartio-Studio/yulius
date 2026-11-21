@@ -7,22 +7,28 @@
 #   receive <release> <sha256>
 #                            the uploaded .incoming-<release> checked and kept as
 #                            /var/lib/yulius-releases/<release>/yulius (root's)
-#   activate <release>       yulius.service stopped; the replaced release's binary and the store it
-#                            left kept under it; the release installed and started (it migrates
-#                            the store at its start); put back with that store when it does not
-#                            report its commit; recorded current; the last 10 releases kept
+#   activate <release> <tables|->
+#                            before anything stops: the release's migrations run on a consistent
+#                            copy of the live store (`yulius store-migrate`), and no table may lose
+#                            rows but those a migration deletes from by design (<tables>, comma
+#                            separated); then yulius.service stopped, the replaced release's
+#                            binary and the store it left kept under it, the release installed and
+#                            started (it migrates the store), put back with that store when it does
+#                            not report its commit; recorded current; the last 10 releases kept
 #   rollback <release>       the same switch to a kept release, with the store that release left
 #                            when the live store has another schema, else with the live store
 #   verify <release|-> <schema|-> <0|1>
 #                            the release is current, installed and running (/internal/version);
-#                            the public URL answers /healthz; the contained doctor passes; no
-#                            table lost rows since the store the release started from; the
-#                            store's schema (when given); the Docker smoke test (when 1, where
-#                            the doctor offers sandboxes Docker)
+#                            the public URL answers /healthz; the contained doctor passes; the
+#                            live store is sound and has the release's schema; after a deploy
+#                            (schema given) its migration check passed; the Docker smoke test
+#                            (when 1, where the doctor offers sandboxes Docker)
 #
-# Only yulius.service is stopped and started: agent sessions live in yulius-sandboxes.service.
-# Everything is in functions and runs from the last line, so sh has read the whole script from
-# its standard input before any command could read from it.
+# Only yulius.service is stopped and started: agent sessions live in yulius-sandboxes.service. A
+# switch ignores a lost connection (HUP, PIPE) and runs to its end; any other exit between the
+# stop and the end of the switch starts the server again with a binary and store that belong
+# together. Everything is in functions and runs from the last line, so sh has read the whole
+# script from its standard input before any command could read from it.
 set -eu
 
 # YULIUS_CD_ROOT and YULIUS_CD_START_WAIT are for scripts/test_cd.py's fake root; SSH passes
@@ -34,10 +40,12 @@ service=yulius.service
 helper=yulius-update.service
 keep=10
 start_wait="${YULIUS_CD_START_WAIT:-120}"
+# Scratch space for store copies: beside the releases (a disk), never /tmp (often RAM).
+scratch="$releases/.scratch"
 
-say() { echo "vm: $*"; }
+say() { echo "vm: $*" || true; }
 die() {
-  echo "vm: $*" >&2
+  echo "vm: $*" >&2 || true
   exit 1
 }
 
@@ -59,7 +67,8 @@ unit() {
   unit_user="$(systemctl show "$service" -p User --value </dev/null)"
   unit_user="${unit_user:-yulius}"
   data="$(env_of YULIUS_DATA)"
-  store="$root${data:-/var/lib/yulius}"
+  data="${data:-/var/lib/yulius}"
+  store="$root$data"
   internal="$(env_of YULIUS_INTERNAL_BIND)"
   internal="${internal:-127.0.0.1:8081}"
   public="$(env_of YULIUS_PUBLIC_URL)"
@@ -94,16 +103,27 @@ wait_for() {
   done
 }
 
+# The update helper is a oneshot: while it runs, systemd says "activating" (and is-active exits
+# 3), so the state's word decides, never the exit code.
 refuse_while_updating() {
-  if systemctl is-active "$helper" </dev/null >/dev/null 2>&1; then
-    die "the update helper ($helper) runs: nothing changed; deploy again once it ended (on staging it stays disabled: docs/operations.md)"
-  fi
+  state="$(systemctl is-active "$helper" </dev/null 2>/dev/null || true)"
+  case "$state" in
+    active | activating | deactivating | reloading | refreshing)
+      die "the update helper ($helper) is $state: nothing changed; deploy again once it ended (on staging it stays disabled: docs/operations.md)"
+      ;;
+  esac
+}
+
+# py <args>: python3 with its temporary files in the scratch space.
+py() {
+  mkdir -p -m 0700 "$scratch"
+  TMPDIR="$scratch" python3 -I - "$@"
 }
 
 # counts <db> [live]: one JSON line, {"schema": n, "tables": {name: rows}}, of a copy of the store
 # (a live one through SQLite's backup, read-only; a stopped one with its WAL).
 counts() {
-  python3 -I - "$1" "${2:-}" <<'EOF'
+  py "$1" "${2:-}" <<'EOF'
 import json, os, shutil, sqlite3, sys, tempfile, urllib.parse
 path, live = sys.argv[1], sys.argv[2] == "live"
 with tempfile.TemporaryDirectory() as tmp:
@@ -131,6 +151,49 @@ EOF
 }
 
 schema_of() { sed -n 's/.*"schema": *\([0-9]*\).*/\1/p' "$1"; }
+
+# migration_check <release> <tables|->: the release migrates a consistent copy of the live store
+# (taken while it runs, so nothing has stopped yet); no table may vanish, and none may lose rows
+# but those a migration deletes from by design. The result is kept as <release>/migration.json.
+migration_check() {
+  [ -f "$store/yulius.db" ] || die "no store at $store/yulius.db"
+  rm -rf "$scratch/check"
+  mkdir -p -m 0700 "$scratch/check"
+  py "$store/yulius.db" "$scratch/check/yulius.db" <<'EOF'
+import sqlite3, sys, urllib.parse
+src = sqlite3.connect("file:" + urllib.parse.quote(sys.argv[1]) + "?mode=ro", uri=True)
+dst = sqlite3.connect(sys.argv[2])
+src.backup(dst)
+dst.close()
+src.close()
+EOF
+  counts "$scratch/check/yulius.db" >"$scratch/check/before.json"
+  rc=0
+  out="$("$releases/$1/yulius" store-migrate --db "$scratch/check/yulius.db" </dev/null 2>&1)" || rc=$?
+  [ "$rc" = 0 ] || die "release $1 cannot migrate a copy of the live store (exit $rc): $out; nothing changed"
+  counts "$scratch/check/yulius.db" >"$scratch/check/after.json"
+  py "$scratch/check/before.json" "$scratch/check/after.json" "$2" "$releases/$1/migration.json" <<'EOF'
+import json, sys
+before, after = (json.load(open(p)) for p in sys.argv[1:3])
+deletes = set() if sys.argv[3] == "-" else set(sys.argv[3].split(","))
+problems = []
+for name, rows in sorted(before["tables"].items()):
+    now = after["tables"].get(name)
+    if now is None:
+        problems.append("%s: gone" % name)
+    elif now < rows and name not in deletes:
+        problems.append("%s: %d rows before, %d now" % (name, rows, now))
+result = {"from": before["schema"], "to": after["schema"], "tables": len(after["tables"]),
+          "problems": problems}
+if problems:
+    sys.exit("vm: its migration loses data, so nothing changed: " + "; ".join(problems)
+             + " (a migration that deletes rows by design names the table in DELETE FROM)")
+json.dump(result, open(sys.argv[4], "w"), sort_keys=True)
+print("vm: release migrates a copy of the live store from schema %d to %d, %d tables, no rows lost"
+      % (result["from"], result["to"], result["tables"]))
+EOF
+  rm -rf "$scratch/check"
+}
 
 # snapshot <release>: the stopped store, as <release> left it, kept under it with its counts.
 snapshot() {
@@ -168,39 +231,74 @@ install_bin() {
   mv -f "$bin.new" "$bin"
 }
 
+# note <release>: in the history, unless it is its last line. The replaced release is noted before
+# anything stops, so pruning never takes the release an interrupted switch would go back to.
+note() {
+  if [ "$(tail -n 1 "$releases/history" 2>/dev/null || true)" != "$1" ]; then
+    echo "$1" >>"$releases/history"
+  fi
+}
+
 # keep_binary <release>: the running binary kept as that release (one CD did not install, such as
 # the operator's first, becomes a release a rollback can go back to).
 keep_binary() {
-  [ -f "$releases/$1/yulius" ] && return 0
-  mkdir -p -m 0700 "$releases/$1"
-  cp "$bin" "$releases/$1/yulius"
-  chmod 0755 "$releases/$1/yulius"
-  say "kept the running binary as release $1"
+  if [ ! -f "$releases/$1/yulius" ]; then
+    mkdir -p -m 0700 "$releases/$1"
+    cp "$bin" "$releases/$1/yulius"
+    chmod 0755 "$releases/$1/yulius"
+    say "kept the running binary as release $1"
+  fi
+  note "$1"
+}
+
+# What an exit between the stop and the end of the switch leaves: the server started again, with
+# the binary and store of $prev when the new binary was installed already.
+phase=none
+recover() {
+  rc=$?
+  case "$phase" in
+    stopped)
+      echo "vm: interrupted before anything changed: starting $service again" >&2 || true
+      systemctl start "$service" </dev/null || true
+      ;;
+    installed)
+      echo "vm: interrupted: putting back release $prev and its store" >&2 || true
+      systemctl stop "$service" </dev/null || true
+      install_bin "$prev" || true
+      restore "$prev" || true
+      systemctl start "$service" </dev/null || true
+      ;;
+  esac
+  exit "$rc"
 }
 
 stop_server() {
   say "stopping $service (agent sessions keep running in yulius-sandboxes.service)"
+  phase=stopped
   systemctl stop "$service" </dev/null
 }
 
-# switch <release> <previous>: install and start <release>; when it does not report its commit,
-# put <previous> and the store it left back and fail.
+# switch <release>: install and start <release> over $prev; when it does not report its commit,
+# put $prev and the store it left back and fail.
 switch() {
+  phase=installed
   install_bin "$1"
   say "starting $service with release $1"
   systemctl start "$service" </dev/null || true
   if wait_for "$1"; then
+    phase=done
     say "release $1 reports its commit at /internal/version"
     return 0
   fi
-  say "release $1 did not report its commit within ${start_wait}s: putting back release $2 and its store"
+  say "release $1 did not report its commit within ${start_wait}s: putting back release $prev and its store"
   systemctl stop "$service" </dev/null || true
-  install_bin "$2"
-  restore "$2"
+  install_bin "$prev"
+  restore "$prev"
+  phase=done
   systemctl start "$service" </dev/null || true
-  wait_for "$2" ||
-    die "release $1 did not start, and release $2 with its store does not answer either: restore by hand from $releases/$2 (journalctl -u $service)"
-  die "release $1 did not report its commit (journalctl -u $service): put back release $2 and its store, which run"
+  wait_for "$prev" ||
+    die "release $1 did not start, and release $prev with its store does not answer either: restore by hand from $releases/$prev (journalctl -u $service)"
+  die "release $1 did not report its commit (journalctl -u $service): put back release $prev and its store, which run"
 }
 
 # The installed release again: running it is all there is to do.
@@ -212,23 +310,19 @@ already() {
   fi
 }
 
-# record <release> <replaced>: the release is current; the last $keep releases used (deployed or
-# rolled back to), by their last use, are kept, and the current one.
+# record <release>: the release is current; the last $keep releases used (deployed, rolled back to
+# or replaced), by their last use, are kept, and the current one.
 record() {
-  mkdir -p -m 0700 "$releases"
-  last="$(tail -n 1 "$releases/history" 2>/dev/null || true)"
-  if [ -n "$2" ] && [ "$last" != "$2" ]; then
-    echo "$2" >>"$releases/history"
-    last="$2"
-  fi
+  note "$1"
   echo "$1" >"$releases/current.new"
   mv "$releases/current.new" "$releases/current"
-  [ "$last" = "$1" ] || echo "$1" >>"$releases/history"
   # Newest first, each release once, at its last use.
   wanted="$(tail -n 200 "$releases/history" | awk '{ l[n++] = $0 } END { for (i = n - 1; i >= 0; i--) if (!seen[l[i]]++) print l[i] }' | head -n "$keep")"
   find "$releases" -mindepth 1 -maxdepth 1 -type d | while read -r dir; do
     name="$(basename "$dir")"
     valid_release "$name" || continue
+    # Only a release the history names is pruned: an upload never deployed stays until it is.
+    grep -q -x -- "$name" "$releases/history" || continue
     if ! printf '%s\n' "$wanted" "$1" | grep -q -x -- "$name"; then
       rm -rf "${releases:?}/$name"
       say "removed kept release $name (more than $keep ago)"
@@ -266,22 +360,26 @@ receive() {
   say "kept release $1 as $releases/$1/yulius"
 }
 
+# The same release installed: the binary is its bytes.
+installed_is() { [ "$cur" = "$1" ] && [ "$(sha_of "$bin")" = "$(sha_of "$releases/$1/yulius")" ]; }
+
 activate() {
   kept_release "$1"
   refuse_while_updating
   unit
   current_release
-  if [ "$cur" = "$1" ] && [ "$(sha_of "$bin")" = "$(sha_of "$releases/$1/yulius")" ]; then
+  if installed_is "$1"; then
     already "$1"
-    record "$1" ""
+    record "$1"
     return 0
   fi
+  migration_check "$1" "$2"
   keep_binary "$cur"
+  prev="$cur"
   stop_server
   snapshot "$cur"
-  cp "$releases/$cur/store/counts.json" "$releases/base.json"
-  switch "$1" "$cur"
-  record "$1" "$cur"
+  switch "$1"
+  record "$1"
 }
 
 rollback() {
@@ -289,30 +387,28 @@ rollback() {
   refuse_while_updating
   unit
   current_release
-  if [ "$cur" = "$1" ] && [ "$(sha_of "$bin")" = "$(sha_of "$releases/$1/yulius")" ]; then
+  if installed_is "$1"; then
     already "$1"
-    record "$1" ""
+    record "$1"
     return 0
   fi
+  [ -f "$store/yulius.db" ] || die "no store at $store/yulius.db"
   keep_binary "$cur"
+  prev="$cur"
   stop_server
   snapshot "$cur"
   live_schema="$(schema_of "$releases/$cur/store/counts.json")"
   own="$releases/$1/store/counts.json"
   if [ -f "$own" ] && [ "$(schema_of "$own")" != "$live_schema" ]; then
     restore "$1"
-    cp "$own" "$releases/base.json"
     say "release $1 has schema $(schema_of "$own"), the live store $live_schema: the store release $1 left is restored (what $cur wrote is kept in $releases/$cur/store)"
+  elif [ -f "$own" ]; then
+    say "release $1 has the live store's schema $live_schema: the live store is kept"
   else
-    cp "$releases/$cur/store/counts.json" "$releases/base.json"
-    if [ -f "$own" ]; then
-      say "release $1 has the live store's schema $live_schema: the live store is kept"
-    else
-      say "no store of release $1 is kept: the live store (schema $live_schema) is kept, which it must read"
-    fi
+    say "no store of release $1 is kept: the live store (schema $live_schema) is kept, which it must read"
   fi
-  switch "$1" "$cur"
-  record "$1" "$cur"
+  switch "$1"
+  record "$1"
 }
 
 verify() {
@@ -333,34 +429,28 @@ verify() {
   say "${public%/}/healthz answers 200 over HTTPS"
 
   rc=0
+  set -f
   doctor="$(cd "$store" && runuser -u "$unit_user" -- env -i $unit_env "$bin" doctor </dev/null 2>&1)" || rc=$?
-  printf '%s\n' "$doctor"
+  set +f
+  printf '%s\n' "$doctor" || true
   [ "$rc" = 0 ] || die "the contained doctor (as $unit_user, with the unit's environment) failed (exit $rc): see its lines above"
   say "the contained doctor passes"
 
-  [ -f "$releases/base.json" ] || die "no counts of the store release $current started from ($releases/base.json)"
   live="$(counts "$store/yulius.db" live)"
-  printf '%s\n' "$live" >"$releases/live.json"
-  python3 -I - "$releases/base.json" "$releases/live.json" "$2" <<'EOF'
-import json, sys
-base, live = (json.load(open(p)) for p in sys.argv[1:3])
-want = sys.argv[3]
-problems = []
-for name, rows in sorted(base["tables"].items()):
-    now = live["tables"].get(name)
-    if now is None:
-        problems.append("%s: gone" % name)
-    elif now < rows:
-        problems.append("%s: %d rows before, %d now" % (name, rows, now))
-if live["schema"] < base["schema"]:
-    problems.append("schema %d, older than the %d it started from" % (live["schema"], base["schema"]))
-if want != "-" and live["schema"] != int(want):
-    problems.append("schema %d, not %s (the release's migrations)" % (live["schema"], want))
-if problems:
-    sys.exit("vm: the store lost data or did not migrate as the release says: " + "; ".join(problems))
-print("vm: the store: schema %d (from %d), %d tables, none lost rows since the store the release started from"
-      % (live["schema"], base["schema"], len(live["tables"])))
-EOF
+  printf '%s\n' "$live" >"$scratch/live.json"
+  live_schema="$(schema_of "$scratch/live.json")"
+  if [ "$2" != - ]; then
+    [ "$live_schema" = "$2" ] || die "the store has schema $live_schema, not $2 (the release's migrations)"
+    check="$releases/$current/migration.json"
+    [ -f "$check" ] || die "no migration check of release $current is kept ($check): deploy it again"
+    say "the store has schema $live_schema; the release's migration check: $(cat "$check")"
+  elif [ -f "$releases/$current/store/counts.json" ]; then
+    own="$(schema_of "$releases/$current/store/counts.json")"
+    [ "$live_schema" = "$own" ] || die "the store has schema $live_schema, not the $own release $current left"
+    say "the store has schema $live_schema, the one release $current left"
+  else
+    say "the store has schema $live_schema (no store of release $current is kept to compare)"
+  fi
 
   if [ "$3" = 1 ]; then
     line="$(printf '%s\n' "$doctor" | grep -E '^[a-zA-Z]+ +sandbox Docker ' | head -n 1 || true)"
@@ -368,13 +458,20 @@ EOF
       ok\ *)
         say "the sandbox Docker smoke test (yulius doctor --docker-smoke, as root)"
         rc=0
-        timeout 900 "$bin" doctor --docker-smoke </dev/null || rc=$?
+        timeout 900 "$bin" doctor --docker-smoke --data-dir "$store" </dev/null || rc=$?
         [ "$rc" = 0 ] || die "the sandbox Docker smoke test failed (exit $rc): see its lines above"
         ;;
       *) say "the sandbox Docker smoke test does not apply: the doctor offers sandboxes no Docker (${line:-no such line})" ;;
     esac
   fi
   say "release $current verified"
+}
+
+# lock: one CD step at a time on this VM (a run by hand beside a CD run waits for it, 10 minutes).
+lock() {
+  mkdir -p -m 0700 "$releases"
+  exec 9>"$releases/.lock"
+  flock -w 600 9 || die "another CD step holds $releases/.lock"
 }
 
 main() {
@@ -390,16 +487,29 @@ main() {
     receive)
       valid_release "$release" || die "not a release: $release"
       case "${3:-}" in '' | *[!0-9a-f]*) die "not a SHA-256: ${3:-}" ;; esac
+      lock
       receive "$release" "$3"
       ;;
     activate | rollback)
       valid_release "$release" || die "not a release: $release"
-      "$command" "$release"
+      tables=-
+      if [ "$command" = activate ]; then
+        tables="${3:-}"
+        case "$tables" in - | [a-z]*) ;; *) die "not a table list: $tables" ;; esac
+        case "$tables" in *[!a-z0-9_,-]*) die "not a table list: $tables" ;; esac
+      fi
+      # A lost connection does not stop a switch half way.
+      trap '' HUP PIPE
+      trap recover EXIT
+      trap 'exit 130' INT TERM
+      lock
+      if [ "$command" = activate ]; then activate "$release" "$tables"; else rollback "$release"; fi
       ;;
     verify)
       [ "$release" = - ] || valid_release "$release" || die "not a release: $release"
       case "${3:-}" in - | [0-9] | [0-9][0-9] | [0-9][0-9][0-9] | [0-9][0-9][0-9][0-9]) ;; *) die "not a schema: ${3:-}" ;; esac
       case "${4:-}" in 0 | 1) ;; *) die "not 0 or 1: ${4:-}" ;; esac
+      lock
       verify "$release" "$3" "$4"
       ;;
     *) die "unknown command: $command" ;;

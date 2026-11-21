@@ -76,11 +76,12 @@ ssh_start() {
   # A short path: a socket's path may not exceed about 100 bytes.
   agent_dir="$(mktemp -d /tmp/yulius-cd.XXXXXX)"
   trap ssh_stop EXIT
-  trap 'exit 130' INT TERM
+  trap 'exit 130' HUP INT TERM
   ssh-agent -a "$agent_dir/agent" -s >"$agent_dir/env" || die "ssh-agent does not start"
   . "$agent_dir/env" >/dev/null
-  # A key stored on one line has its line breaks as the two characters \n: put them back.
-  printf '%s\n' "$key" | awk '{ gsub(/\\n/, "\n"); print }' | ssh-add -q - 2>/dev/null ||
+  # A key stored on one line has its line breaks as the two characters \n: put them back. The
+  # agent forgets it after 2 hours, should a killed run leave the agent behind.
+  printf '%s\n' "$key" | awk '{ gsub(/\\n/, "\n"); print }' | ssh-add -q -t 7200 - 2>/dev/null ||
     die "STAGING_VM_SSH_KEY is not a private key ssh-add loads"
   say "$env_name is $host_alias ($user@<STAGING_VM_HOST>, port $port), its host key pinned"
 }

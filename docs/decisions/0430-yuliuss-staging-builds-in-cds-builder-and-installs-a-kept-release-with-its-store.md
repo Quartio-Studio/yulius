@@ -40,6 +40,12 @@ Two places could build it:
     `StrictHostKeyChecking=yes` and `HostKeyAlias`.
   - The key is `STAGING_VM_SSH_KEY`, held by an ssh-agent that the script starts and stops.
   - Every step on the VM is `scripts/cd/remote.sh`, piped to `sh` and never installed there.
+- **The migration is measured before anything stops.** The new binary migrates a consistent copy
+  of the live store (SQLite's backup, with a hidden `yulius store-migrate --db <copy>` that applies
+  the release's own migrations and never creates a store). No table may vanish, and none may lose
+  rows but those a migration deletes from by design (`DELETE FROM` in the tree's migrations). A
+  failed check refuses the deploy with nothing changed. The result is kept beside the release for
+  verify.
 - **The install is CD's own and follows the helper's contract.**
   - Stop `yulius.service` only. Agent sessions live in `yulius-sandboxes.service` and keep
     running.
@@ -48,12 +54,17 @@ Two places could build it:
   - Install, start, and wait up to 2 minutes until `/internal/version` reports the commit.
   - Otherwise put the previous binary and the snapshot back.
   - A second deploy of the running release changes nothing.
+  - A lost connection does not stop a switch half way (HUP and PIPE are ignored), and any other
+    exit after the stop starts the server again with a binary and store that belong together.
+  - The replaced release is in the kept history before anything stops, so pruning never removes
+    the release an interrupted switch goes back to. One CD step runs at a time (a lock on the VM).
 - **Verify proves the release.**
   - The recorded release is the installed binary and the commit at `/internal/version`.
   - The unit's public URL answers `/healthz` over HTTPS.
   - The contained doctor passes as the service user with the unit's environment.
-  - No table of the store the release started from lost rows.
-  - After a deploy, the schema is the tree's migrations count.
+  - The live store passes SQLite's check. After a deploy its schema is the tree's migrations
+    count and the release's migration check is kept. After a rollback its schema is the one the
+    release left. Rows deleted after the start (retention, a person) are no migration loss.
   - After a deploy, `yulius doctor --docker-smoke` passes where the doctor offers sandboxes Docker.
 - **Rollback restores the release with its store.** When the live store has another schema than
   the store the target release left, that store is restored. Otherwise the live store is kept,
@@ -77,6 +88,9 @@ Two places could build it:
 - **A new `yulius host install` command.** Cleaner than shell, but a product change and a
   privileged command to design. The script is small and tested against a fake root, and only
   Yulius's own CD needs it.
+- **Comparing the live store with the snapshot after the start.** Retention at the server's start
+  (CI runs, spans) and ordinary deletes would read as loss, and a lossy migration would have
+  served staging before it was caught.
 - **Always restoring the release's store on rollback.** That loses every staging write since
   the deploy, also when nothing needs it. Restoring only across a schema change keeps them when
   the older release can read the live store.
@@ -93,5 +107,7 @@ Two places could build it:
   its size or address.
 - A rollback across a schema change drops staging data the newer release wrote. The snapshot it
   replaced stays under the newer release until it is pruned.
-- On a fresh staging instance the no-loss check proves little until people use it. It names the
-  table that lost rows when it does.
+- On a fresh staging instance the migration check proves little until people use it. It names
+  the table that loses rows when it does, before staging changes.
+- `yulius store-migrate` is a hidden command for this check; it changes only the file it is
+  given.
