@@ -154,7 +154,7 @@ pub struct Delivery {
     /// Check sources of the pull request the GitHub App may not read (see [`ChecksAccess`]).
     #[serde(default)]
     pub checks_access: Option<ChecksAccess>,
-    /// Current review rounds, oldest first. Codex can also show its just-delivered PR's rounds.
+    /// The current review's rounds, or those of the just-delivered pull request, oldest first.
     #[serde(default)]
     pub review_rounds: Vec<ReviewRoundView>,
     /// Evidence of the current landing (SPEC-562). Absent until its identity is known.
