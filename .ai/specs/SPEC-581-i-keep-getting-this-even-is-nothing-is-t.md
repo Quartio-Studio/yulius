@@ -25,14 +25,14 @@ Task #565 shows a held-message warning alongside terminal output. The screenshot
 
 - [x] Reproduce the empty-box warning and specify the correction
 - [x] Prove the false hold and protect genuine drafts with regression tests
-- [ ] Correct the draft signal and verify queued delivery
+- [x] Correct the draft signal and verify queued delivery
 - [ ] Protect recalled images and recognize the Ultra prompt
 - [ ] Obtain independent approval for delivery to dev
 
 ## Acceptance criteria
 
 1. An automatic message held for a Codex draft reaches the session as its own prompt after the person clears the draft and the quiet minute expires. The warning clears.
-2. A Codex placeholder is recognized with its observed attributes and cursor. Typed lookalike text, an image token, a hidden or displaced cursor and unfamiliar screens still hold delivery.
+2. A Codex placeholder is recognized with its standard or Ultra marker, observed attributes, cursor and native empty-composer footer. Typed lookalike text, an image token, a recalled image with empty text, a hidden or displaced cursor and unfamiliar screens still hold delivery.
 3. Resizing cannot turn a cropped draft into evidence of emptiness. A full Codex repaint can reestablish evidence even when the PTY splits its erase sequence across reads.
 
 ## Test plan
@@ -42,3 +42,11 @@ Probe the pinned CLI with synthetic content. Replay its composer through the ren
 ## Decisions
 
 Use the existing one-minute and draft-mark rules with positive evidence from the pinned Codex renderer. A timeout cannot establish what is in the input. Record only synthetic screen examples in the repository.
+
+## Evidence
+
+The three new regressions failed on dev `6a566d9db` before the correction. The PR watch raised Needs your action with a draft, then returned no notice after Ctrl+U and a quiet minute. The screen test rejected the empty placeholder and the PTY tracker rejected the resize repaint.
+
+Independent review of `74a1c5c37` found two own-code issues. The reader accepted a placeholder with a recalled image and rejected an Ultra prompt. Both failed against that head in VT replay. Codex 0.170.0 draws recalled image labels above the text area and derives its navigation footer from both text and attachments. [Native composer](https://github.com/openai/codex/blob/rust-v0.170.0/codex-rs/tui/src/bottom_pane/chat_composer.rs#L1195-L1197) · [Footer hints](https://github.com/openai/codex/blob/rust-v0.170.0/codex-rs/tui/src/bottom_pane/chat_composer/passive_hints.rs#L316-L329)
+
+With synthetic credentials and a loopback model endpoint, Codex 0.170.0 displayed both its standard and Ultra empty markers. Typing the placeholder produced plain draft text. Pasting a PNG produced an image token. After clearing each, the native UserPromptSubmit hook received only the synthetic PR notice. The live resize capture replayed through the bounded VT reader at 90×28.

@@ -1026,7 +1026,7 @@ silent. It types none of them while a person's draft may sit in the session's pr
   last empty (the session's start, or the last prompt sent from the box), however long ago.
   A keystroke holds every message for one minute. After that, Yulius can release the hold
   when Claude Code shows its empty conversation input, including its dim suggestion.
-  Codex can also release it when the focused composer shows its dim “Ask Codex to do anything” placeholder. [ADR-0420](decisions/0420-recognize-the-empty-codex-composer.md)
+  Codex can also release it when the focused composer shows its dim “Ask Codex to do anything” placeholder and the footer offers agents or shortcuts. A recalled image keeps the hold. [ADR-0420](decisions/0420-recognize-the-empty-codex-composer.md)
   A stashed Claude draft, a named Claude input, a dialog or an unfamiliar layout keeps the hold.
   Text that Claude restores after a submit also holds a message. [ADR-0405](decisions/0405-a-confirmed-empty-claude-prompt-releases-a-held-message.md)
 - **Who is told.** A message sent with `task_message` is refused with that reason at once, and

@@ -2388,7 +2388,7 @@ possible draft leaves `person-typed` in the run folder, removed when a prompt is
 the box and read by `reconcile` for a reattached run). Claude’s scheduled hand-over preserves that mark even when its submit hook
 carries plain text (SPEC-541, [ADR-0388](decisions/0388-claude-scheduled-submits-use-the-transcript-hand-over.md)).
 After the typing minute, the exact empty conversation box can also end the key's hold,
-its recovery mark and its held-message flag. Codex's reader recognizes its focused, dim conversation placeholder on a fully rendered grid. [ADR-0420](decisions/0420-recognize-the-empty-codex-composer.md) · [ADR-0405](decisions/0405-a-confirmed-empty-claude-prompt-releases-a-held-message.md)
+its recovery mark and its held-message flag. Codex's reader recognizes its focused, dim conversation placeholder and empty-composer footer on a fully rendered grid. [ADR-0420](decisions/0420-recognize-the-empty-codex-composer.md) · [ADR-0405](decisions/0405-a-confirmed-empty-claude-prompt-releases-a-held-message.md)
 Before a paste, visible input in
 Claude Code’s conversation box also holds a message. This catches restores that generated no
 key. An automatic message flags the task immediately in this case

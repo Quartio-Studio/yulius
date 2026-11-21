@@ -10,7 +10,7 @@ The shared session typing path remembers a viewer keystroke until a prompt is su
 
 ## Decision
 
-Use a harness-specific reader for the focused Codex conversation input. Require a visible cursor in the first input cell, the bold prompt marker and the complete dim placeholder. A full repaint at the current geometry can establish this evidence. Codex uses an erase to the end of the display with its cursor at home during a resize. The shared tracker recognizes this form of a full alternate-screen erase.
+Use a harness-specific reader for the focused Codex conversation input. Require a visible cursor in the first input cell, a bold standard or Ultra prompt marker, and the complete dim placeholder. A recalled image can leave the editable text empty. Reject its label above the input and require the styled navigation hint in the footer, which the native composer displays only when both text and attachments are empty. A full repaint at the current geometry can establish this evidence. Codex uses an erase to the end of the display with its cursor at home during a resize. The shared tracker recognizes this form of a full alternate-screen erase.
 
 ## Alternatives
 
