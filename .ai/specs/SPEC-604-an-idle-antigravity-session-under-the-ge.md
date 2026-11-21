@@ -64,4 +64,4 @@ PR #1646 merged into dev at `13a632c40` after train run `21c0a1a2-1cb3-4932-b043
 
 All 11 Antigravity browser tests passed. A manual mutation marked the inherited effort as explicit. The new assertion failed on the inherited flag while the effective effort still read High. Restoring the mock made the same browser test pass.
 
-All twelve Rust UI contracts and the PTY idle-resume regression passed together on this branch with the shared correction.
+All twelve Rust UI contracts and the PTY idle-resume regression passed together on this branch with the shared correction. PR #1651 landed that same Rust change at `1f9314339`.
