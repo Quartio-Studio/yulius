@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted on 2026-11-21 for SPEC-600. Supersedes the per-pull-request and between-review campaign defaults of ADR-0347. ADR-0141's test-strength requirement continues to apply.
+Accepted on 2026-11-21 for SPEC-600. Supersedes the per-pull-request and between-review campaign defaults of ADR-0347, including the between-round campaign clause in [ADR-0362](0362-a-round-is-decided-by-the-code-not-by-ci-or-a-message.md). ADR-0141's test-strength requirement continues to apply.
 
 ## Context
 

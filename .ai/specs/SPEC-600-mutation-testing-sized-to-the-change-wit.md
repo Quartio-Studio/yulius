@@ -28,7 +28,7 @@ On 2026-11-21 the owner measured 105 minutes waiting for mutation tests in 22 Co
 - [x] Install the instance's by-hand delivery policy and bootstrap contract
 - [x] Preserve Cargo cancellation and inherited jobserver tokens
 - [x] Reclaim attempt scratch after forced host termination
-- [ ] Deliver the by-hand mutation policy and bootstrap
+- [x] Deliver the by-hand mutation policy and bootstrap
 - [ ] Deliver disk build scratch, the tmpfs cap and on-request campaign cleanup
 - [ ] Deliver disposable Cargo targets and request staging
 
@@ -103,3 +103,5 @@ Review of b7e4e88af reproduced a live nextest test worker outside Cargo's initia
 First-PR review of 0b19c4970 reproduced deletion under a newer scratch receipt version and retention under a reused host PID when status was absent. Both added regressions failed on that head. Receipt writers now stamp RECORD_VERSION and readers reject newer formats before opening a build tree. The receipt records the host's kernel birth identity. Missing status recovery distinguishes a confirmed process-group or birth mismatch from a failed observation. A genuine group-leading host and an unknown birth keep their builds. Older runs without a receipt remain readable. By-hand undo of the newer-version rejection and birth comparison failed both regressions, and restoration passed them. All 61 host unit tests and 16 supervision tests passed, alongside the two containment harness entry points. Host Clippy passed for Linux and the macOS compilation target.
 
 Review of 70ebaed7f shifted only the recorded wall time and reproduced reclamation while the real host and child were still running. The regression covers inspection, explicit termination and the reaped-host waiter. On the same boot, recovery checks the receipt's host birth and group and the child's session and birth before deleting scratch. Unconfirmed termination reports failure and retains the tree. An optional child birth in status.json distinguishes a reused child PID after restart. Older statuses without birth retain scratch while their recorded session leader could still own it. The regression also verifies a replacement child survives termination of the old record. Undoing the recorded-exit guard by hand failed the regression with termination reporting success while ownership was live. Restoration passed it. All 56 contract tests, 62 host unit tests and 16 supervision tests passed. The two containment harness entries passed with the earlier limitation. Clippy passed for the host and contracts on Linux and the macOS compilation target.
+
+The independent policy review approved 9e9d04340. Its documentation finding was addressed by identifying the superseded between-round campaign clause in ADR-0362 and ADR-0439. All seven affected catalog passages matched the installed wording byte for byte. All 43 skill, onboarding and workflow tests passed on this delivery. Repository contracts and formatting passed. Vidoc was disabled.
