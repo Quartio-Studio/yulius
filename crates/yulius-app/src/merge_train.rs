@@ -53,10 +53,11 @@ use yulius_domain::delivery::{DeliveryStage, MergeMethod};
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::task::{Activity, TaskStatus};
 use yulius_domain::time::Timestamp;
+use yulius_domain::vault::redact::{PlainMatcher, redact_text};
 
 use crate::agent_wait::{ArmedMerge, ArmedNow, Deciding, QUEUE_BASE_GUIDANCE, QueueNote, Verdict};
 use crate::auth::AuthContext;
-use crate::ci::{CiJobRecord, CiRunRecord};
+use crate::ci::{CiJobRecord, CiRunRecord, PullHead, run_for_pull_head};
 use crate::context::App;
 use crate::delivery::{MergeFailure, delivery_profile, past_merge};
 use crate::model::{SandboxRecord, TaskRecord};
@@ -166,7 +167,7 @@ struct Train {
     /// The run passed and the members are being merged.
     #[serde(default)]
     merging: bool,
-    /// Since when a passed train waits (for GitHub, a busy member or a run at a pushed head).
+    /// Since when a train waits for GitHub, a busy member or a run at a pushed head.
     #[serde(default)]
     waiting_since: Option<i64>,
     /// When it was formed (ms; 0 when unknown).
@@ -176,6 +177,18 @@ struct Train {
     /// the 20 s pass has nothing to decide meanwhile, and `yulius wait` says so.
     #[serde(default)]
     own_wait: Option<(u64, i64)>,
+}
+
+impl Train {
+    /// Keep a red candidate while the member's own run is active, within the original deadline.
+    fn wait_for_own(&mut self, pr: u64, now: i64) -> bool {
+        let since = self.own_wait.map_or(now, |(_, since)| since);
+        if now.saturating_sub(since) > WAIT_LIMIT_MS {
+            return false;
+        }
+        self.own_wait = Some((pr, since));
+        true
+    }
 }
 
 /// A pull request in a train.
@@ -268,6 +281,41 @@ fn listed(numbers: &[u64]) -> String {
 
 fn short(sha: &str) -> &str {
     sha.get(..9).unwrap_or(sha)
+}
+
+/// Result of observing a singleton's hosted inputs and ordinary CI at its exact head.
+enum SingletonObservation {
+    Changed,
+    Current(Option<RunState>),
+}
+
+/// Fold redacted CI text to a bounded line that can be typed into the owner's terminal.
+fn diagnostic_excerpt(text: &str, limit: usize, matcher: &PlainMatcher) -> String {
+    let normalized: String = text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect();
+    // Formatting can join fragments into a secret. Check the complete line before clipping it.
+    redact_text(matcher, &normalized)
+        .0
+        .chars()
+        .take(limit)
+        .collect()
+}
+
+/// The instructions an owner gets when their head failed on top of the integration base.
+fn singleton_failure(pr: u64, head: &str, integration: &str, run: &str) -> String {
+    format!(
+        "The merge you armed was dropped: pull request #{pr} was tested at {}. When \
+         merged into the current `{integration}` it fails (merge candidate run {run}). Read \
+         why with `ci_status`, merge `origin/{integration}` into your branch, fix it \
+         test-first, commit, then {}.",
+        short(head),
+        yulius_domain::review::KEEP_APPROVAL
+    )
 }
 
 /// What `yulius wait` says about `task`'s place in `train`.
@@ -514,6 +562,7 @@ impl App {
     /// Ends `train` for `reason`: its run is cancelled while it is still going, and every
     /// member goes back to the one-by-one flow.
     async fn dissolve(&self, sandbox: &SandboxRecord, train: &Train, reason: &str) {
+        crate::race::reached(crate::race::Point::TrainDissolving, Path::new(&train.run));
         let _ = self
             .ci_cancel(
                 &train.run,
@@ -581,6 +630,9 @@ impl App {
                     crate::race::Point::FailedTrainDeciding,
                     Path::new(&train.run),
                 );
+                if train.members.len() == 1 {
+                    return self.decide_failed_singleton(sandbox, state, train).await;
+                }
                 // A member's own run that still goes may say why: it is waited for (within the
                 // test limit), and a member whose own run fails then leaves instead of the
                 // candidate being halved (SPEC-493 MQC-002).
@@ -591,12 +643,10 @@ impl App {
                     }
                 }
                 let mut train = train;
-                if let Some(pr) = going {
-                    let since = train.own_wait.map_or(self.now().0, |(_, since)| since);
-                    if self.now().0 - since <= WAIT_LIMIT_MS {
-                        train.own_wait = Some((pr, since));
-                        return Some(train);
-                    }
+                if let Some(pr) = going
+                    && train.wait_for_own(pr, self.now().0)
+                {
+                    return Some(train);
                 }
                 // A member may have failed since the check at the start of this pass:
                 // its run then no longer counts as going. Read its verdict before splitting.
@@ -684,65 +734,226 @@ impl App {
         )
     }
 
-    /// A train whose run failed (SPEC-441 MQ-004): of two or more members, the next train takes
-    /// the first half; a member alone passed its own run but fails on top of the integration
-    /// branch, so its armed merge ends, saying so.
+    /// A failed candidate of multiple members tests its first half without the rest.
     async fn bisect(&self, sandbox: &SandboxRecord, state: &mut SandboxTrains, train: &Train) {
         state.suspect = None;
-        if train.members.len() > 1 {
-            let half = train.members.len().div_ceil(2);
-            state.limit = Some(half);
-            // One member left out: if the rest pass without it on this base, it is the one that
-            // breaks the combination (SPEC-497 MQW-003).
-            if let [last] = &train.members[half..] {
-                state.suspect = Some(Suspect {
-                    task: last.task.clone(),
-                    pr: last.pr,
-                    head: last.head.clone(),
-                    armed_at: last.armed_at,
-                    base: train.base.clone(),
-                    others: train.members[..half]
-                        .iter()
-                        .map(|m| (m.pr, m.head.clone()))
-                        .collect(),
-                    run: train.run.clone(),
-                });
+        let half = train.members.len().div_ceil(2);
+        state.limit = Some(half);
+        // One member left out: if the rest pass without it on this base, it is the one that
+        // breaks the combination (SPEC-497 MQW-003).
+        if let [last] = &train.members[half..] {
+            state.suspect = Some(Suspect {
+                task: last.task.clone(),
+                pr: last.pr,
+                head: last.head.clone(),
+                armed_at: last.armed_at,
+                base: train.base.clone(),
+                others: train.members[..half]
+                    .iter()
+                    .map(|m| (m.pr, m.head.clone()))
+                    .collect(),
+                run: train.run.clone(),
+            });
+        }
+        self.dissolve(
+            sandbox,
+            train,
+            &format!("its CI run failed; the first {half} are tested again without the rest"),
+        )
+        .await;
+    }
+
+    /// A red singleton is attributed to the current PR only after its hosted inputs
+    /// and its own CI run have been read. A new own run keeps the original wait budget.
+    async fn decide_failed_singleton(
+        &self,
+        sandbox: &SandboxRecord,
+        state: &mut SandboxTrains,
+        mut train: Train,
+    ) -> Option<Train> {
+        let member = train.members.first()?;
+        let task = TaskId::parse(&member.task).ok()?;
+        let integration = delivery_profile(sandbox).integration_branch;
+        let text = tokio::time::timeout(
+            Duration::from_secs(5),
+            self.singleton_failure_text(sandbox, member, &integration, &train.run),
+        )
+        .await
+        .ok()
+        .flatten();
+        let pr = member.pr;
+        let text = match self
+            .singleton_observation(sandbox, &task, member, &integration, &train.base)
+            .await
+        {
+            Some(SingletonObservation::Changed) => {
+                self.dissolve(sandbox, &train, "its tested head or base changed")
+                    .await;
+                return None;
             }
+            Some(SingletonObservation::Current(Some(RunState::Failed))) => {
+                state.limit = None;
+                state.suspect = None;
+                self.dissolve(
+                    sandbox,
+                    &train,
+                    &format!(
+                        "#{pr}'s own run at {} ended failed: it leaves the candidate",
+                        short(&member.head)
+                    ),
+                )
+                .await;
+                return None;
+            }
+            Some(SingletonObservation::Current(ordinary)) => {
+                if text.is_some() {
+                    train.waiting_since = None;
+                }
+                if matches!(ordinary, Some(RunState::Queued | RunState::Running))
+                    && train.wait_for_own(pr, self.now().0)
+                    && text.is_some()
+                {
+                    return Some(train);
+                }
+                text
+            }
+            None => None,
+        };
+        let Some(text) = text else {
+            let now = self.now().0;
+            let since = *train.waiting_since.get_or_insert(now);
+            if now.saturating_sub(since) <= WAIT_LIMIT_MS {
+                return Some(train);
+            }
+            // Let the original arm proceed one by one on a continuous observation outage.
+            let member = train.members.first()?;
+            state.held_back.push((member.task.clone(), member.armed_at));
             self.dissolve(
                 sandbox,
-                train,
-                &format!("its CI run failed; the first {half} are tested again without the rest"),
+                &train,
+                "its tested inputs or failure stayed unavailable",
             )
             .await;
-            return;
-        }
+            return None;
+        };
         state.limit = None;
-        self.dissolve(sandbox, train, "its CI run failed").await;
-        let Some(member) = train.members.first() else {
-            return;
-        };
-        let Ok(task) = TaskId::parse(&member.task) else {
-            return;
-        };
-        let Some(deciding) = self.take_armed(&task) else {
-            return;
-        };
-        let integration = delivery_profile(sandbox).integration_branch;
-        let verdict = if deciding.merge.armed_at == member.armed_at {
-            Verdict::Decided(format!(
-                "The merge you armed was dropped: pull request #{} passed its own run at {}, but \
-                 merged into the current `{integration}` it fails (merge candidate run {}). Read \
-                 why with `ci_status`, merge `origin/{integration}` into your branch, fix it \
-                 test-first, commit, then {}.",
-                member.pr,
-                short(&member.head),
-                train.run,
-                yulius_domain::review::KEEP_APPROVAL
-            ))
+        state.suspect = None;
+        let member = train.members.first()?;
+        // Consume the arm at the final CI observation, before dissolution does I/O.
+        if let Some(deciding) = self.take_armed(&task) {
+            let verdict = if deciding.merge.armed_at == member.armed_at
+                && deciding.merge.head == member.head
+            {
+                Verdict::Decided(text)
+            } else {
+                Verdict::Keep(deciding.merge.clone())
+            };
+            self.finish_armed(&task, &deciding, verdict).await;
+        }
+        self.dissolve(sandbox, &train, "its CI run failed").await;
+        None
+    }
+
+    /// Attach a bounded, redacted diagnostic from the actual source run to the repair instructions.
+    async fn singleton_failure_text(
+        &self,
+        sandbox: &SandboxRecord,
+        member: &Member,
+        integration: &str,
+        run: &str,
+    ) -> Option<String> {
+        let mut text = singleton_failure(member.pr, &member.head, integration, run);
+        let jobs = self.deps.store.ci_jobs(run, true).await.ok()?;
+        let mut failed = jobs.iter().filter(|job| job.state == RunState::Failed);
+        let has_text = |s: &str| !s.trim().is_empty();
+        let job = failed
+            .clone()
+            .find(|job| job.failures.as_deref().is_some_and(has_text))
+            .or_else(|| {
+                failed
+                    .clone()
+                    .find(|job| job.reason.as_deref().is_some_and(has_text))
+            })
+            .or_else(|| failed.next())?;
+        let failures = job.failures.as_deref().filter(|s| has_text(s));
+        let label = if failures.is_none() && job.exit_code.is_none() {
+            format!("`{}` failed", job.name)
         } else {
-            Verdict::Keep(deciding.merge.clone())
+            crate::pr_watch::failed_jobs(std::slice::from_ref(job))
         };
-        self.finish_armed(&task, &deciding, verdict).await;
+        let matcher = self.agent_secret_matcher(&sandbox.id).await.ok()?;
+        let retained = redact_text(
+            &matcher,
+            failures.or(job.reason.as_deref()).unwrap_or_default(),
+        )
+        .0;
+        // The scanner's first line names the test already in the label. A parser's
+        // structured refusal has no such header, so keep its first line.
+        let body = if failures.is_some() {
+            retained
+                .split_once('\n')
+                .map_or(retained.as_str(), |(_, body)| body)
+        } else {
+            retained.as_str()
+        };
+        let label = redact_text(&matcher, &label).0;
+        text.push(' ');
+        text.push_str(&diagnostic_excerpt(&label, 128, &matcher));
+        let excerpt = diagnostic_excerpt(body, 383, &matcher);
+        if !excerpt.is_empty() {
+            text.push(' ');
+            text.push_str(&excerpt);
+        }
+        Some(redact_text(&matcher, &text).0)
+    }
+
+    /// Before dropping an arm, confirm the PR still has the inputs the singleton tested.
+    /// A changed input invalidates the attribution. An unavailable read leaves it undecided.
+    async fn singleton_observation(
+        &self,
+        sandbox: &SandboxRecord,
+        task: &TaskId,
+        member: &Member,
+        integration: &str,
+        base: &str,
+    ) -> Option<SingletonObservation> {
+        let confirm = async {
+            let token = self.dlv_installation_token(sandbox).await.ok()?;
+            let pull = self
+                .deps
+                .github
+                .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, member.pr)
+                .await
+                .ok()?;
+            let delivery = self.deps.store.delivery(task).await.ok()?;
+            let current = delivery.is_some_and(|record| {
+                record.stage == DeliveryStage::PrOpen && record.pr_number == Some(member.pr)
+            }) && pull.number == member.pr
+                && pull.state == "open"
+                && !pull.merged
+                && !pull.from_fork
+                && pull.base == integration;
+            if current && (pull.head_sha.is_empty() || pull.base_sha.is_empty()) {
+                return None;
+            }
+            if !current || pull.head_sha != member.head || pull.base_sha != base {
+                return Some(SingletonObservation::Changed);
+            }
+            // A failed read cannot establish that the owner's earlier running check ended.
+            let runs = self
+                .deps
+                .store
+                .ci_runs_for_pull_head(&sandbox.id, PullHead::Exact(&member.head))
+                .await
+                .ok()?;
+            Some(SingletonObservation::Current(
+                run_for_pull_head(&runs, member.pr).map(|run| run.state),
+            ))
+        };
+        tokio::time::timeout(Duration::from_secs(5), confirm)
+            .await
+            .ok()
+            .flatten()
     }
 
     /// Ends the armed merge of `suspect`, the member a red train's bisection left out, once the

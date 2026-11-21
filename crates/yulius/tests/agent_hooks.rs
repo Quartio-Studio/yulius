@@ -2366,6 +2366,7 @@ fn compatibility_pull() -> yulius_app::ports::github::GhPull {
         state: "open".into(),
         merged: false,
         base: "dev".into(),
+        base_sha: String::new(),
         head: "feat/1-x".into(),
         head_sha: "abc123".into(),
         mergeable: Some(true),

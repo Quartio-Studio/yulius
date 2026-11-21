@@ -222,6 +222,8 @@ pub struct GhPull {
     pub merged: bool,
     /// Base branch.
     pub base: String,
+    /// Base commit in the same hosted PR observation as the head.
+    pub base_sha: String,
     /// Head branch.
     pub head: String,
     /// Head SHA.

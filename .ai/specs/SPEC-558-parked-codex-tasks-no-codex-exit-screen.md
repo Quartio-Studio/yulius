@@ -51,7 +51,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Publish verified parked task detail to Task Info
 - [x] Restore ordinary CI coverage after a repeated integration configuration repair
 - [x] Resolve shared ordinary CI for the original PR owner in the merge queue and wait
-- [ ] Record the singleton queue decision and its failing job for the original owner
+- [x] Report the failing singleton job to its live PR owner
 - [ ] Keep failed integration candidates with their original owner
 - [ ] Verify candidate status before parking, showing Done or resuming a parked owner
 - [ ] Deliver bounded Codex goal continuation to dev
@@ -68,6 +68,8 @@ The failed-integration-candidate step covers the owner's November 20 observation
 - AC-3 Five completed steps, two open steps and a failing PR produce a continuation at Stop. Either unfinished condition alone suffices. Retries stop at the existing bound and human requests keep control.
 - AC-4 Neither grace-period parking nor digest parking consumes an unfinished task. The sidebar and tools agree when an already parked task has open work.
 
+- AC-5 When a failed merge candidate is narrowed to one PR, its still-current owner receives the failing job and a bounded, redacted diagnostic. The recorded decision identifies the PR, head, integration base, tested tree and source run, including when a larger candidate supplied that run. A changed head or base invalidates the attribution.
+
 ## Test plan
 
 Use the fake Codex executable, its rollout, real PTY shutdown and the application Stop hook. Exercise saved-screen and terminal readers, terminal restoration, step and pull combinations and historical statuses. Run scoped Rust and web tests, repository quick checks, the security command and Yulius CI.
@@ -82,7 +84,27 @@ The scheduler discards older completed verdicts for a head after a later run was
 
 Yulius CI schedules one run per commit even when two PRs publish the same head. The queue and `yulius wait` prefer the owner’s own ordinary run when one exists. Otherwise they use the run that covers that commit under the scheduler’s rule. An ordinary integration configuration refusal invalidates earlier completed results for every PR at the commit. Active owner runs and explicit owner cancellations retain their meaning. A cancellation of a different reference cannot lend a verdict. Queue decisions and merged receipts use the full object name supplied by Git or the host. The wait endpoint also accepts a unique abbreviation. GitHub still enforces its required commit status when the queue submits the merge.
 
+A failed singleton can reuse the tested tree of a candidate with several members. The live queue verifies the PR’s hosted head and base in one lookup and attributes the failure to the member it decided. Restart recovery needs a durable decision written together with consumption of the original arm. A best-effort timing span cannot supply that guarantee. An ordinary owner rerun keeps its existing deadline. An unavailable or partial hosted read, an unreadable ordinary CI record at the exact PR head, or unavailable failure or redaction data retains the candidate and its original ordinary wait deadline. A continuous verification outage beyond the 15-minute merge wait lets the same arm proceed one by one. The owner message uses retained test failures or the failing job’s structured reason, redacts before and after formatting, and bounds the excerpt. A vanished source run cannot consume the arm. The queue consumes a confirmed arm at its final ordinary CI observation before writing the dissolution audit.
+
 ## Evidence
+
+- Independent review approved the live queue decision at `ce2bb4a37` and ran all 16 focused integration regressions. All 323 scoped queue, wait, PR-watch, delivery, local CI and stage tests passed. After adding the replacement-PR fixture, the same scope passed all 324. The invalid-configuration regression also passed with an explicit assertion for exit code 1 alongside the parser’s diagnosis. Scoped Clippy passed and Vidoc was disabled. The historical Quartio board was not exercised on a released instance.
+
+- The first queue campaign reported `mutants: 57 listed, 53 caught, 0 missed, 0 timed out, 4 unviable, 0 not reached (bound 30 min, took 1570 s)`. The first review fixes reported `mutants: 33 listed, 25 caught, 7 missed, 0 timed out, 1 unviable, 0 not reached (bound 30 min, took 1228 s)`. A restarted queue whose arm was replaced at the same head caught the weakened arm comparison. A replacement PR at the same head and a retargeted PR at the same base SHA caught all six weakened PR-identity comparisons on the approved implementation.
+
+- The ordinary read repair reported `mutants: 11 listed, 9 caught, 0 missed, 0 timed out, 2 unviable, 0 not reached (bound 30 min, took 882 s)`. The narrowed live decision reported `mutants: 13 listed, 12 caught, 0 missed, 0 timed out, 1 unviable, 0 not reached (bound 30 min, took 970 s)`. The final CI diagnosis campaign reported `mutants: 6 listed, 5 caught, 1 missed, 0 timed out, 0 unviable, 0 not reached (bound 30 min, took 446 s)`. Repeating its survivor with the parser regression caught it dropping the configuration job’s exit code.
+
+- Review of the live delivery at `d51ce67e2` found a retention race and a missing configuration diagnostic. The regression ran the real CI pruning operation after the failed source verdict was read. Its jobs disappeared and the original arm was dropped. A one-PR candidate with invalid `yulius.toml` also reported only exit code 1. The config job had recorded the parser's line number and rejection of simultaneous gate and job definitions. The corrected paths keep the arm when the failed job is absent and use the structured job reason when there is no test failure text.
+
+- At `665f884e7`, two regressions made the failing job or redaction matcher unreadable. Both lost the original arm. A third refused the merge wait span insert, restarted the application and found zero records linking the accepted singleton to its owner. The live delivery retries unreadable diagnostics within the existing verification budget. The separate original-owner recovery step covers durable recording across this interruption and replay of a later owner decision.
+
+- Second review of `812689dd3` found that a generic CI gate could turn a failed exact-head record read into an inconclusive result and drop the arm. A fixture put an unreadable reference in the owner’s running row and the arm disappeared. The singleton verifier now propagates that read error. The fixture repairs the row and checks recovery against the original deadline. The bookkeeping test uses its own run ID for its process-wide race hook.
+
+- First review of `f5fd9ab56` found three cases. A control character split a synthetic secret and formatting reassembled it in the wait response. An unavailable hosted read reset a running owner’s wait deadline. A rerun started during dissolution bookkeeping while the old arm was still present. Each regression failed before correction. A fourth fixture exercised a partial observation and a continuous verification outage to check bounded queue occupancy.
+
+- On dev `b5b821fdd`, the single-PR regression reused a failed run originally recorded for PRs 8 and 9. PR 1’s merge outcome named `prior-train` but omitted shard 2 and the observed 292.1 ms search against a 200 ms limit. The fixture also checks that an earlier failed job with no retained diagnostic, a cancelled sibling and raw job output cannot displace that reason.
+
+- PR #1562 passed Yulius CI on head `f7adf1343` in run `4ba14ab0-cbc4-4518-9666-da131ec47db3`. The dev squash `b5b821fdd` has the same tree, recorded in run `c9d24d51-a2de-4e82-aece-fae33785e579`. Quality, both Rust shards and browser e2e passed. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/b5b821fdd2dd15bf86e1180f77cf32ee3cc253ce)
 
 - The shared-owner mutation campaign reported `84 listed, 48 caught, 8 missed, 0 timed out, 28 unviable, 0 not reached` in 1,097 seconds. The shared-owner tests now exercise the fast queue pass directly, and parked detail verifies the owner’s green rerun beside a pending peer. Targeted mutation reruns caught all four fast-pass survivors and all four parked-reference and candidate survivors. The candidate rerun included the existing tests for an owner failing inside a passed candidate and the bounded wait for an ongoing owner run. All 361 scoped tests passed again with the added assertions.
 

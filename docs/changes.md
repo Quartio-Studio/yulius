@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- A failed single-PR merge candidate tells its original owner which job failed. It verifies the current PR head and integration base and retries unreadable diagnostics, including when a multi-PR run tested the same tree (SPEC-558).
+
 - When open PRs share a commit, the merge queue and `yulius wait` use the owner’s ordinary CI result. A PR without its own run can use the shared result for that commit (SPEC-558).
 
 - Repairing invalid integration CI schedules a fresh run for a refused PR head even when that head passed before the configuration broke (SPEC-558).
