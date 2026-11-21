@@ -95,6 +95,27 @@ impl CapacityStore for SqliteStore {
         .await
     }
 
+    async fn open_pause_with_process(
+        &self,
+        task: &TaskId,
+    ) -> AppResult<Option<(PauseRecord, bool)>> {
+        let task = task.as_str().to_owned();
+        self.call(move |c| {
+            c.query_row(
+                &format!(
+                    "SELECT {PAUSE_COLS}, EXISTS (SELECT 1 FROM attempts WHERE task_id = ?1 \
+                     AND state IN ('spawning', 'live')) AS has_process FROM capacity_pauses \
+                     WHERE task_id = ?1 AND ended_at IS NULL"
+                ),
+                [task],
+                |row| Ok((pause_from_row(row)?, row.get("has_process")?)),
+            )
+            .optional()
+            .map_err(db)
+        })
+        .await
+    }
+
     async fn open_pauses(&self) -> AppResult<Vec<PauseRecord>> {
         self.call(|c| {
             let mut stmt = c

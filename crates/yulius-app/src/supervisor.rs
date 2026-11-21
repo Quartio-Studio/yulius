@@ -947,13 +947,17 @@ impl RunStart {
                     prompt: Some(prompt),
                 },
                 true,
-            ) => Self::GoalFresh { prompt },
+            ) => Self::GoalFresh {
+                prompt: crate::hooks::retained_goal_instruction(Some(prompt)),
+            },
             (
                 Self::Resume {
                     prompt: Some(prompt),
                 },
                 true,
-            ) => Self::GoalResume { prompt },
+            ) => Self::GoalResume {
+                prompt: crate::hooks::retained_goal_instruction(Some(prompt)),
+            },
             (start, _) => start,
         }
     }
@@ -984,14 +988,12 @@ impl RunStart {
             QueuedStartKind::Resume => Self::Resume {
                 prompt: kept.prompt,
             },
-            QueuedStartKind::GoalFresh => Self::Fresh {
-                prompt: kept.prompt,
-            }
-            .with_goal_continuation(true),
-            QueuedStartKind::GoalResume => Self::Resume {
-                prompt: kept.prompt,
-            }
-            .with_goal_continuation(true),
+            QueuedStartKind::GoalFresh => Self::GoalFresh {
+                prompt: crate::hooks::retained_goal_instruction(kept.prompt),
+            },
+            QueuedStartKind::GoalResume => Self::GoalResume {
+                prompt: crate::hooks::retained_goal_instruction(kept.prompt),
+            },
             QueuedStartKind::AfterLimit => Self::AfterLimit,
         };
         (start, kept.account_id)

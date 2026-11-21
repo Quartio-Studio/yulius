@@ -65,6 +65,14 @@ pub(crate) fn defer_task_update(task: &yulius_domain::ids::TaskId, steps: bool) 
 
 /// The agent-facing introduction to the goal's Stop instruction.
 pub(crate) const GOAL_CONTINUATION: &str = "Continue the authorized goal. ";
+
+/// A goal instruction must fit both the capacity record and a provider CLI argument.
+/// The complete spec diagnostics and plan remain available through task tools.
+pub(crate) fn retained_goal_instruction(prompt: Option<String>) -> String {
+    prompt.filter(|text| !text.is_empty() && text.len() <= crate::capacity::CONTINUATION_MAX)
+        .unwrap_or_else(|| format!("{GOAL_CONTINUATION}Run spec_check and correct any reported problems. Use steps_get to continue the next unfinished step and record its evidence."))
+}
+
 /// Largest repository document read for the briefing or the gate.
 const MAX_DOC_BYTES: u64 = 256 * 1024;
 /// Largest number of decision records read.
@@ -1165,7 +1173,7 @@ impl App {
     async fn stop_gate(&self, task: &TaskRecord, reported_background: bool) -> AppResult<StopGate> {
         if let Some(reason) = self.spec_gate(task).await? {
             return Ok(StopGate::Continue(if task.mode == TaskMode::Goal {
-                format!("{GOAL_CONTINUATION}{reason}")
+                retained_goal_instruction(Some(format!("{GOAL_CONTINUATION}{reason}")))
             } else {
                 reason
             }));

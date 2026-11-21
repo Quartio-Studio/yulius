@@ -176,20 +176,21 @@ impl App {
         reason: &str,
     ) -> AppResult<()> {
         let store = &self.deps.store;
-        let pause = store.open_pause(task_id).await?;
+        let observed = store.open_pause_with_process(task_id).await?;
         let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
         crate::race::reached(
             crate::race::Point::MovePauseRead,
             std::path::Path::new(task_id.as_str()),
         );
-        // A saved Codex start has already chosen a fresh request or a native continuation.
-        // It takes precedence over observations left by the run that stopped.
-        if task.harness == Harness::Codex
-            && let Some(pause) = pause.as_ref()
-            && (!pause.kind.holds_process()
-                || (pause.kind == PauseKind::Turn
-                    && task.mode == crate::model::TaskMode::Goal
-                    && store.live_attempt(task_id).await?.is_none()))
+        // An admitted start owns its saved instruction and its pause row. Read a legacy
+        // goal turn's process with that row so a later run cannot turn it into a live move.
+        if let Some((pause, has_process)) = &observed
+            && match pause.kind {
+                PauseKind::GoalFreshStart | PauseKind::GoalResumeStart => true,
+                PauseKind::FreshStart | PauseKind::Start => task.harness == Harness::Codex,
+                PauseKind::Turn => task.mode == crate::model::TaskMode::Goal && !has_process,
+                PauseKind::Limit | PauseKind::Prompt => false,
+            }
         {
             let start = if pause.kind == PauseKind::Start {
                 RunStart::Resume {
@@ -209,6 +210,7 @@ impl App {
                 )
                 .await;
         }
+        let pause = observed.map(|(pause, _)| pause);
         let at_limit = pause.as_ref().is_some_and(|p| p.kind == PauseKind::Limit)
             || self.runtime(task_id).at_limit.load(Ordering::SeqCst);
         if at_limit {

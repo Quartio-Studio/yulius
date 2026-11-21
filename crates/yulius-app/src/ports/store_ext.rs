@@ -307,6 +307,11 @@ pub trait CapacityStore: Send + Sync {
     async fn insert_pause(&self, pause: &crate::model::PauseRecord) -> AppResult<bool>;
     /// The open pause of a task.
     async fn open_pause(&self, task: &TaskId) -> AppResult<Option<crate::model::PauseRecord>>;
+    /// The observed pause and whether it owned a live or spawning attempt, in one snapshot.
+    async fn open_pause_with_process(
+        &self,
+        task: &TaskId,
+    ) -> AppResult<Option<(crate::model::PauseRecord, bool)>>;
     /// Every open pause, oldest first.
     async fn open_pauses(&self) -> AppResult<Vec<crate::model::PauseRecord>>;
     /// Changes how an open pause holds its task; `false` when the task has none.

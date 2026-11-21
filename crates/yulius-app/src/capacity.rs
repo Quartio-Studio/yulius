@@ -984,10 +984,14 @@ impl App {
         match pause.kind {
             PauseKind::FreshStart => return Ok(RunStart::Fresh { prompt }),
             PauseKind::GoalFreshStart => {
-                return Ok(RunStart::Fresh { prompt }.with_goal_continuation(true));
+                return Ok(RunStart::GoalFresh {
+                    prompt: crate::hooks::retained_goal_instruction(prompt),
+                });
             }
             PauseKind::GoalResumeStart => {
-                return Ok(RunStart::Resume { prompt }.with_goal_continuation(true));
+                return Ok(RunStart::GoalResume {
+                    prompt: crate::hooks::retained_goal_instruction(prompt),
+                });
             }
             PauseKind::Prompt if self.held_opening(&task.id).await => {
                 return Ok(RunStart::Fresh { prompt: None });
