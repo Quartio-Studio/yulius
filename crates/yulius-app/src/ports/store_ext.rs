@@ -500,6 +500,12 @@ pub trait CiStore: Send + Sync {
         sandbox: &SandboxId,
         limit: u32,
     ) -> AppResult<Vec<crate::ci::CiRunRecord>>;
+    /// The commits in this bounded Git history batch with a retained passing CI run, in input order.
+    async fn ci_shas_with_pass(
+        &self,
+        sandbox: &SandboxId,
+        commits: &[String],
+    ) -> AppResult<Vec<String>>;
     /// Bounded scheduler history, most recently admitted first. A new run may
     /// inherit an older queue position from the head it superseded.
     async fn ci_planning_runs(
@@ -677,6 +683,17 @@ pub trait CiStore: Send + Sync {
     ) -> AppResult<()>;
 }
 
+/// Which CD outcomes can supply a historical run.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CdRunHistory {
+    /// Include the run in progress.
+    Latest,
+    /// The latest terminal verdict, including failures.
+    Finished,
+    /// Only a successful run.
+    Passed,
+}
+
 /// CD (deployment) runs (SPEC-134, table `cd_runs`).
 #[async_trait]
 pub trait CdStore: Send + Sync {
@@ -728,6 +745,7 @@ pub trait CdStore: Send + Sync {
         environment: &str,
         stage: yulius_domain::cd::CdStage,
         kind: yulius_domain::rollback::CdRunKind,
+        history: CdRunHistory,
     ) -> AppResult<Option<crate::ci::cd::CdRunRecord>>;
     /// Records releases of an environment of `stage` (in order, the last the newest) and keeps
     /// the newest [`yulius_domain::rollback::KEEP_RELEASE_RECORDS`] of each part.
@@ -908,6 +926,13 @@ pub trait StagingStore: Send + Sync {
     /// The sandboxes and environments with a pending request, or a deploy that failed since
     /// `failed_since` (staging is restored to its last verified release after it).
     async fn staging_queues(&self, failed_since: Timestamp) -> AppResult<Vec<(SandboxId, String)>>;
+    /// Whether staging recorded a successful request for this exact revision.
+    async fn staging_verified(
+        &self,
+        sandbox: &SandboxId,
+        environment: &str,
+        revision: &str,
+    ) -> AppResult<bool>;
     /// The newest requests of `environment`, newest first.
     async fn recent_staging_requests(
         &self,

@@ -515,6 +515,20 @@ pub trait GitHubPort: Send + Sync {
         method: &str,
         expected_head: &str,
     ) -> AppResult<String>;
+    /// Create a new branch at a commit without updating any existing ref.
+    async fn create_branch(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        sha: &str,
+    ) -> AppResult<()> {
+        let _ = (token, owner, repo, branch, sha);
+        Err(crate::error::AppError::Upstream(
+            "creating a branch is unavailable".into(),
+        ))
+    }
     /// Fast-forwards `branch` to `sha` (refuses non-fast-forward).
     async fn fast_forward(
         &self,

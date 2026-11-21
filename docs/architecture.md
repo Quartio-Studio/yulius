@@ -3176,7 +3176,7 @@ sequenceDiagram
 flowchart LR
   M["merge into dev"] -->|"deploys nothing"| DEV
   DEV["dev stage: [cd.dev], [cd.staging] … at the dev head"] -.->|"cd_deploy, CD page, nightly automation"| RUN1["CD run"]
-  P["a person on the CD page, slug typed"] --> PROMO["promote dev into main"] --> PROD["prod stage: [cd.prod], [cd.platform] … at the main head"] --> RUN2["CD run"]
+  P["a person on the CD page, slug typed"] --> PROMO["promote the confirmed dev revision into main"] --> PROD["prod stage: [cd.prod], [cd.platform] … at the main head"] --> RUN2["CD run"]
   AG["agent"] -.->|"refused"| P
 ```
 
@@ -3215,9 +3215,12 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
     (`staging_note`).
   - `cd_status` and the CD page (`CdEnvironment.staging`) list the queue with revisions and run
     ids.
-  - Every promotion waits until staging serves the integration head, verified, read through the
-    CD mirror: `cd_prepare` for a production deploy, `staging_promotion_head` for the Delivery
-    page and the automatic one.
+  - A production CD deploy selects the verified staging revision through the CD mirror.
+    If the integration branch has advanced, a fast-forward uses the selected SHA and a
+    merge-commit release uses a same-repository pull request pinned to it. CD checks the
+    production tree against the confirmed revision. [ADR-0425](decisions/0425-pin-a-production-deploy-to-verified-dev.md)
+  - The Delivery page and automatic promotion use `staging_promotion_head` and wait for the
+    verified integration head.
     - A head that cannot be read is refused.
     - The queue's verified deploy runs the automatic promotion that waited.
   - A failed deploy that announced a rollback barrier is not restored.
@@ -3275,8 +3278,9 @@ branch's verified head. Which release is previous, kept or behind a barrier is
 `yulius_domain::rollback::History`. When a dev-stage deploy passes, its execution starts the drill
 (`App::cd_start_drill`; back to the previous release and forward, `drill_steps`), and a
 production-stage deploy asks `App::cd_rollback_gate` (`yulius_domain::rollback::production_gate`)
-before any secret or promotion: rollback configured, and the newest drill passed at the tree it
-deploys. A person's production deploy refused only for that proof, where the drill environment can
+before it obtains secrets or promotes a revision. Rollback must be configured and the drill must
+have passed for the deployed tree. While another dev commit is drilling, the last completed drill
+can prove that tree. A person's production deploy refused only for that proof, where the drill environment can
 deploy the same tree (`yulius_domain::rollback::dev_can_prove`, `App::cd_dev_proof`), deploys that
 environment instead as the same person (`App::cd_start_or_prove`,
 `crates/yulius-app/src/ci/prove.rs`;
