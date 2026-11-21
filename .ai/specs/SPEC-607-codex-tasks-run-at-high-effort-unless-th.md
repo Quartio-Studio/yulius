@@ -1,6 +1,6 @@
 ---
 yulius-task: 8acbc127-7f7e-4736-84eb-46f1b6476024
-status: done
+status: in-progress
 ---
 
 # SPEC-607 — Codex tasks inherit high effort
@@ -46,6 +46,10 @@ Yulius stores the task effort as an option and resolves it when planning a proce
 - [x] Document the default and verify the affected flows
 - [x] Get independent approval for the delivery
 
+- [x] Reproduce the stale Antigravity mock contract on dev
+- [x] Verify Antigravity High against the shared default and run every UI contract
+- [ ] Get independent approval for the Antigravity contract correction
+
 ## Acceptance criteria
 
 - **AC-1** Fresh and resumed Codex argv contain High for omitted effort on implicit
@@ -57,6 +61,9 @@ Yulius stores the task effort as an option and resolves it when planning a proce
 - **AC-3** Details show High effort (default) for an omitted effort. Explicit choices
   appear without the default marker, including explicitly selected High (CEF-003).
 - **AC-4** Existing review and launch contracts still pass (CEF-004).
+- **AC-5** The UI contract proves that Antigravity uses the imported High
+  default when the mock receives no effort. The whole UI contract module
+  passes on the fix-forward branch.
 
 ## Test plan
 
@@ -105,3 +112,15 @@ replaces the Astra effort default of SPEC-561. [ADR-0444](../../docs/decisions/0
 - The second independent review approved `ce2b543d720a0a370602331f70078a1a71570f3a`
   after exercising the shared menus and tracing the fresh and resumed launch paths.
 - `scripts/dev security` reported that Vidoc was disabled for the project.
+
+### Fix forward for PR #1645
+
+- The merged dev run at `13a632c40` failed in the second Rust test partition.
+  Running `ui_contract::the_composer_offers_antigravity_on_its_default_model`
+  locally reproduced the stale assertion against the current mock. The mock
+  still uses High through the shared `DEFAULT_EFFORT` export.
+- `scripts/cargo test -p yulius --test main ui_contract::` passed all 12
+  tests. Changing the mock's shared export to `xhigh` made the corrected
+  assertion fail. Restoring High made all 12 pass again.
+- `npx e2e run antigravity` passed all 11 tests, including creation of
+  Gemini 4 Neon and Carbon tasks with inherited High.

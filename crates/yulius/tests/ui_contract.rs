@@ -560,10 +560,18 @@ fn the_composer_offers_antigravity_on_its_default_model() -> TestResult {
     assert!(
         mock.contains(&format!(
             "harness === 'antigravity' ? '{DEFAULT_ANTIGRAVITY_MODEL}'"
-        )) && mock.contains(&format!(
-            "harness === 'antigravity' ? '{DEFAULT_ANTIGRAVITY_EFFORT}'"
         )),
         "the mock creates an Antigravity task without a model on another default"
+    );
+    assert!(
+        mock.contains("import { DEFAULT_EFFORT } from './models.js';")
+            && mock.contains(
+                "const effort = options.effort || (harness === 'claude' ? 'default' : DEFAULT_EFFORT);"
+            )
+            && models.contains(&format!(
+                "export const DEFAULT_EFFORT = '{DEFAULT_ANTIGRAVITY_EFFORT}';"
+            )),
+        "the mock must use the shared {DEFAULT_ANTIGRAVITY_EFFORT} effort when Antigravity effort is omitted"
     );
     assert!(
         mock.contains(&format!(
