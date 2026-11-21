@@ -1129,11 +1129,9 @@ export function mountTaskView(ctx, sandbox, task) {
       appliedRead = read;
       detail = fresh;
       if (detail && detail.id === current.id) {
-        if (read === detailRead) {
-          const unchanged = changesHeard === heardBefore;
-          const facts = publishParked(detail);
-          current = { ...current, ...(unchanged ? pickSummary(detail) : {}), ...facts };
-        }
+        const unchanged = read === detailRead && changesHeard === heardBefore;
+        const summary = unchanged ? { ...current, ...pickSummary(detail) } : current;
+        current = publishParked(detail, summary);
         heldKey = '';
         renderStrip();
         // The end banner may name the limit the last run met (SPEC-268), known only from here.

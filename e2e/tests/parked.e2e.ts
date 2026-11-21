@@ -1871,3 +1871,79 @@ test('the terminal drops a resolved owner action when a parked PR later needs at
   }
   await expect(strip).not.toHaveText(/Old owner action/);
 });
+
+test('a failed watch cannot reopen a PR that a newer parked list verified closed', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const states = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const row = { id: 'p', sandbox_id: 's', status: 'parked', activity: 'done', parked_needs_you: false };
+    const seen = [];
+    for (const rename of [false, true]) {
+      let calls = 0;
+      const store = createStore({ get: async () => {
+        if (++calls === 1) return [row];
+        if (calls === 2) return [{ ...row, parked_pr: { number: 42, open: false } }];
+        throw new Error('live verification unavailable');
+      } });
+      await store.loadTasks('s');
+      const older = store.beginParkedDetail();
+      await store.loadTasks('s', true);
+      if (rename) store.upsertTask({ ...row, title: 'Renamed', parked_needs_you: undefined });
+      await store.loadTasks('s', true);
+      const facts = older({ ...row, parked_needs_you: true, parked_pr: { number: 42, open: true } });
+      const current = store.findTask('p');
+      seen.push([facts.parked_needs_you ?? false, Boolean(facts.parked_pr?.open), current.parked_needs_you ?? false, Boolean(current.parked_pr?.open)]);
+    }
+    return seen;
+  });
+  expect(states).toEqual([[false, false, false, false], [false, false, false, false]]);
+});
+
+test('a terminal first discovering a parked recovery shows Done beside its older failing PR chip', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&ambient=0&pullgap=0&pullclock=manual'));
+  type Fixture = { __yuliusMock: { tasks: { id: string }[]; holdGitReads: boolean; changePull(s: string, n: number, fields: object): void } };
+  await browser.evaluate(() => (window as unknown as Fixture).__yuliusMock.changePull('sb_studio', 520, { checks: 'failure' }));
+  await expect(screen.getByRole('link', /checks failing.*Improve the code/)).toBeVisible();
+  await browser.evaluate(() => {
+    const db = (window as unknown as Fixture).__yuliusMock;
+    db.holdGitReads = true;
+    Object.assign(db.tasks.find(t => t.id === 'tsk_studio_13')!, { title: 'Fresh parked detail', status: 'parked',
+      activity: 'done', parked_needs_you: false, parked_pr: { number: 520, open: true } });
+    location.hash = '/s/studio/t/13';
+  });
+  await expect(browser.locator('.step-task')).toHaveText(/Fresh parked detail/);
+  await expect(browser.locator('.strip-status')).toHaveText(/Done.*parked/);
+  await expect(screen.getByRole('link', /checks failing.*Improve the code/)).toBeVisible();
+});
+
+test('a successful parked detail still updates the terminal when resync reads fail', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&ambient=0&pullgap=0&pullclock=manual'));
+  type Fixture = { releaseDetail: () => void; __yuliusTaskListReply?: () => Promise<Response>;
+    __yuliusMock: { tasks: { id: string }[]; failNextDetail?: boolean; holdDetail?: Promise<void>; heldDetailAnswered?: boolean;
+      resyncNow(): void; changePull(s: string, n: number, fields: object): void; touchTask(s: string, n: number, fields: object): void } };
+  await browser.evaluate(() => {
+    const db = (window as unknown as Fixture).__yuliusMock;
+    db.changePull('sb_studio', 520, { state: 'merged', checks: 'success' });
+    db.touchTask('sb_studio', 13, { status: 'parked', activity: 'done', parked_needs_you: false, parked_pr: { number: 520, open: false } });
+  });
+  await expect(screen.getByRole('region', 'Done').getByRole('link', /Improve the code/)).toBeVisible();
+  await browser.evaluate(() => {
+    const w = window as unknown as Fixture;
+    Object.assign(w.__yuliusMock.tasks.find(t => t.id === 'tsk_studio_13')!, { parked_needs_you: true, parked_pr: { number: 521, open: true } });
+    w.__yuliusMock.holdDetail = new Promise<void>(resolve => { w.releaseDetail = resolve; });
+    location.hash = '/s/studio/t/13';
+  });
+  await expect.poll(() => browser.evaluate(() => !(window as unknown as Fixture).__yuliusMock.holdDetail)).toBe(true);
+  await browser.evaluate(() => {
+    const w = window as unknown as Fixture;
+    w.__yuliusTaskListReply = async () => Response.json({ error: { code: 'unavailable', message: 'list unavailable' } }, { status: 503 });
+    w.__yuliusMock.failNextDetail = true;
+    w.__yuliusMock.resyncNow();
+  });
+  await expect.poll(() => browser.evaluate(() => !(window as unknown as Fixture).__yuliusMock.failNextDetail)).toBe(true);
+  await browser.evaluate(() => (window as unknown as Fixture).releaseDetail());
+  await expect.poll(() => browser.evaluate(() => Boolean((window as unknown as Fixture).__yuliusMock.heldDetailAnswered))).toBe(true);
+  await expect(browser.locator('.strip-status')).toHaveText(/Your turn.*parked/);
+  await expect(screen.getByRole('region', 'Needs you').getByRole('link', /Improve the code/)).toBeVisible();
+});
