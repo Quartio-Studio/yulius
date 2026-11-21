@@ -81,6 +81,7 @@ async fn app_with_pulls_and_clock(
         agent,
         (0, Arc::new(ScriptedUsage::default()), clock),
         None,
+        None,
         |config| {
             config.max_live_sessions = slots;
             config.park_after_ms = park_after_ms;
@@ -3185,7 +3186,13 @@ fn a_staging_outcome_reaches_its_task_once() -> TestResult {
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
-        let app = app(&data, 8, 0).await?;
+        let browser = Arc::new(crate::delivery::HeldBrowserLookup::for_publication());
+        let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+        let (app, _, _) = crate::first_message::start_hosted_with_github(
+            &data, &fake, FakeAgentOptions { answers_first_message: true, ..hooked() },
+            (0, Arc::new(ScriptedUsage::default()), Arc::new(yulius::wiring::clock::SystemClock)),
+            None, Some(browser.clone()), |config| { config.max_live_sessions = 8; },
+        ).await?;
         let (id, caller) = answered(&app, &data).await?;
         let task = TaskStore::task(app.deps.store.as_ref(), &id)
             .await?
@@ -3241,9 +3248,33 @@ fn a_staging_outcome_reaches_its_task_once() -> TestResult {
             app.now(),
         )
         .await?;
+        // A human decision can arrive while Chromium is looking for requests in its tabs.
+        let check_with_busy_browser = || {
+            let (start, started) = tokio::sync::oneshot::channel();
+            let check = tokio::spawn({
+                let app = app.clone();
+                async move {
+                    started.await.expect("start the outcome check");
+                    app.tell_staging_outcomes().await
+                }
+            });
+            let (entered, release) = browser.hold_lookup_for(check.id());
+            start.send(()).expect("the checker is live");
+            (check, entered, release)
+        };
+        let (check, entered, release) = check_with_busy_browser();
+        tokio::time::timeout(Duration::from_secs(30), entered.notified()).await?;
         ask(&app, &id).await?;
+        release.notify_one();
+        assert_eq!(check.await?, 0, "the decision arrived during the browser read");
+        assert_eq!(app.deps.store.untold_staging_requests().await?.len(), 1);
         assert_eq!(app.tell_staging_outcomes().await, 0, "an explicit decision is outstanding");
         app.deps.store.set_task_needs_you(&id, None, app.now()).await?;
+        let (check, entered, _release) = check_with_busy_browser();
+        tokio::time::timeout(Duration::from_secs(30), entered.notified()).await?;
+        assert_eq!(tokio::time::timeout(Duration::from_secs(10), check).await??, 0,
+            "a busy browser defers the outcome to another tick");
+        assert_eq!(app.deps.store.untold_staging_requests().await?.len(), 1);
         wait_for("the outcome told", Duration::from_secs(30), || async {
             app.tell_staging_outcomes().await;
             let shown = screen(&app, &id);

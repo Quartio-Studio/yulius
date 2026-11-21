@@ -1159,6 +1159,16 @@ impl App {
             let Some(task_id) = &request.task_id else {
                 continue;
             };
+            let text = self
+                .redact_for_sandbox(&request.sandbox_id, &staging_outcome_text(&request))
+                .await;
+            // Chromium startup can hold the browser slot. Leave the outcome for another tick
+            // if its handoffs cannot be checked, and read the recipient after this slow lookup.
+            let browser = tokio::time::timeout(
+                std::time::Duration::from_millis(750),
+                self.browser_tab_requests(&request.sandbox_id),
+            )
+            .await;
             let task = match store.task(task_id).await {
                 Ok(Some(task)) => task,
                 Ok(None) => {
@@ -1171,21 +1181,15 @@ impl App {
                 let _ = store.mark_staging_told(&request.id).await;
                 continue;
             }
-            if task.activity == Some(Activity::NeedsAttention)
-                || !matches!(store.task_needs_you(&task.id).await, Ok(None))
-                || !matches!(store.pending_hold(&task.id).await, Ok(None))
-                || self
-                    .browser_tab_request_for(&task.sandbox_id, &task.id)
-                    .await
-                    .is_some()
-                || self.is_paused(&task).await
+            if !browser.is_ok_and(|requests| !requests.contains(task_id.as_str()))
+                || task.activity == Some(Activity::NeedsAttention)
                 || self.update_holds_starts()
+                || self.is_paused(&task).await
+                || !matches!(store.pending_hold(task_id).await, Ok(None))
+                || !matches!(store.task_needs_you(task_id).await, Ok(None))
             {
                 continue;
             }
-            let text = self
-                .redact_for_sandbox(&task.sandbox_id, &staging_outcome_text(&request))
-                .await;
             let delivered = match task.status {
                 TaskStatus::Parked => self.resume_parked(&task, Some(text)).await.unwrap_or(false),
                 TaskStatus::Running => {
@@ -1320,7 +1324,7 @@ fn run_ids_of(ci: Option<&str>, cd: Option<&str>) -> String {
 }
 
 /// What a task reads about its staging request's outcome, with the next step.
-fn staging_outcome_text(request: &StagingRequestRecord) -> String {
+pub(super) fn staging_outcome_text(request: &StagingRequestRecord) -> String {
     let what = format!(
         "Yulius: staging request {} for revision {} of [cd.{}] is {}",
         request.id,

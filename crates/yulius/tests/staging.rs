@@ -109,7 +109,7 @@ async fn gate(f: &Fixture, sha: &str, full: RunState) -> BoxResult<String> {
 }
 
 /// `task`'s agent asks for staging; the request it was given.
-async fn ask(f: &Fixture, task: &str) -> BoxResult<Value> {
+async fn staging_answer(f: &Fixture, task: &str) -> BoxResult<Value> {
     let answer = support::mcp_tool(
         &f.h,
         &token(task),
@@ -118,7 +118,11 @@ async fn ask(f: &Fixture, task: &str) -> BoxResult<Value> {
     )
     .await?;
     assert_eq!(answer["isError"], false, "{answer}");
-    Ok(support::tool_text(&answer)["staging"].clone())
+    Ok(support::tool_text(&answer))
+}
+
+async fn ask(f: &Fixture, task: &str) -> BoxResult<Value> {
+    Ok(staging_answer(f, task).await?["staging"].clone())
 }
 
 async fn request(f: &Fixture, id: &str) -> BoxResult<StagingRequestRecord> {
@@ -249,7 +253,18 @@ async fn a_failing_candidate_leaves_staging_on_its_release_and_the_fix_deploys()
         "the failing candidate never deployed"
     );
     // Asking again for the same failing revision deploys nothing: it is fixed forward.
-    assert_eq!(ask(&f, "t2").await?["id"], failing["id"]);
+    assert!(f.h.store.mark_staging_told(&failed.id).await?);
+    let repeated = staging_answer(&f, "t2").await?;
+    assert_eq!(repeated["staging"]["id"], failing["id"]);
+    let text = repeated["text"].as_str().ok_or("receipt text")?;
+    assert!(
+        text.contains("fix it forward") && text.contains(&ci2),
+        "{text}"
+    );
+    assert!(
+        !text.contains("End this turn") && !text.contains("wakes the task"),
+        "{text}"
+    );
 
     // The fix lands at r3 and passes: that tested revision is the one verified on staging.
     let r3 = land(&f, "t2", "fix.txt").await?;
@@ -266,9 +281,15 @@ async fn a_failing_candidate_leaves_staging_on_its_release_and_the_fix_deploys()
     assert_eq!(deployed(&f).await?, [r1.clone(), r3.clone()]);
 
     // A duplicate request is the same request; nothing deploys again.
-    let again = ask(&f, "t2").await?;
-    assert_eq!(again["id"], fixed["id"]);
-    assert_eq!(again["state"], "verified");
+    assert!(f.h.store.mark_staging_told(&three.id).await?);
+    let again = staging_answer(&f, "t2").await?;
+    assert_eq!(again["staging"]["id"], fixed["id"]);
+    let text = again["text"].as_str().ok_or("receipt text")?;
+    assert!(
+        text.contains("this task's staging deployment is done") && !text.contains("wakes the task"),
+        "{text}"
+    );
+    assert_eq!(again["staging"]["state"], "verified");
     settle(&f).await?;
     assert_eq!(deployed(&f).await?, [r1.clone(), r3.clone()]);
 

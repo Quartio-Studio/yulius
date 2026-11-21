@@ -5768,9 +5768,11 @@ async fn a_train_skips_the_full_suite_and_the_merged_head_runs_it() -> TestResul
         .as_str()
         .ok_or("merge outcome")?
         .to_owned();
+    let landed = git(&f.origin, &["rev-parse", f.integration])?;
     assert!(
         outcome.contains("cd_deploy {\"environment\":\"staging\"}")
-            && outcome.contains("final staging step"),
+            && outcome.contains(&format!("your merged revision {}", &landed[..12]))
+            && outcome.contains("If your final step requires the outcome, leave it in progress"),
         "{outcome}"
     );
     let mut trains = 0;

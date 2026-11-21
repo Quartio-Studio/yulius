@@ -2793,16 +2793,20 @@ impl App {
         {
             let request = self.staging_request(&sandbox, &env, ctx, &head).await?;
             self.publish_task(&ctx.task.id).await;
-            let text = format!(
-                "Staging request {} for revision {} of {}: {}. {}. The request is recorded. End this turn. If your final step requires the verdict, leave it in progress. Yulius wakes the task with the outcome. cd_status shows the run ids.",
-                request.id,
-                short_sha(&request.revision),
-                env_label(&env),
-                request.state.as_str(),
-                request.note.as_deref().unwrap_or(
-                    "Yulius runs the full gate on exactly that merged revision, then deploys and verifies it in revision order"
-                ),
-            );
+            let text = if request.state.is_pending() {
+                format!(
+                    "Staging request {} for revision {} of {}: {}. {}. The request is recorded. End this turn. If your final step requires the verdict, leave it in progress. Yulius wakes the task with the outcome. cd_status shows the run ids.",
+                    request.id,
+                    short_sha(&request.revision),
+                    env_label(&env),
+                    request.state.as_str(),
+                    request.note.as_deref().unwrap_or(
+                        "Yulius runs the full gate on exactly that merged revision, then deploys and verifies it in revision order"
+                    ),
+                )
+            } else {
+                super::staging::staging_outcome_text(&request)
+            };
             return Ok(serde_json::json!({
                 "text": text,
                 "staging": {
