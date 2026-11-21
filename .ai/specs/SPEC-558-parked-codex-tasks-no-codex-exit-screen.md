@@ -91,7 +91,7 @@ Use the fake Codex executable, its rollout, real PTY shutdown and the applicatio
 
 ## Decisions
 
-An owner can stop a task while its previous run is still finishing a park. Continue waits for that run's terminal cleanup before entering the queue or starting again. A timeout or a refused launch leaves the archive and outstanding question available for retry. The owner can also archive or close a replacement turn during admission. The start or queue claim checks the original attempt, archive and status together with the change that accepts the continuation.
+An owner can stop a task while its previous run is still finishing a park. Continue waits for that run's terminal cleanup before entering the queue or starting again. A timeout or a refused launch leaves the archive and outstanding question available for retry. The owner can also archive or close a replacement turn during admission. The start or queue claim checks the original attempt, archive and status together with the change that accepts the continuation. A remote restart keeps its first selection through the permission check. For an immediate start on a named subscription, the placement decision precedes acceptance. Answering the question records the timestamp of that acceptance.
 
 Capture a separate screen at the park decision because exiting can clear the entire alternate screen. Changing shutdown signals would couple presentation to the harness and could interfere with reaping. A separate snapshot lets an unsuccessful park keep its real terminal. Reuse native Codex resume and the Stop hook's persisted three-block budget. Older runs can only recover content still present in their saved screen. A parked owner terminal fits the saved grid to the viewport so the first row, last row and notice survive a smaller window. If the PR is the only remaining work and the Stop lookup cannot finish, the continuation asks the agent to verify its checks. Parking reads the current head before acquiring the launch lock and supplies that signal to the final eligibility check.
 
@@ -118,6 +118,8 @@ The final parking check compares the owner’s saved singleton decision with the
 The SQLite query returning a parked task includes the latest attempt ID in the same snapshot. Admission checks that ID under the launch lock after caller preflight. A message can wait while another turn resumes and parks, so task status alone cannot identify the session the sender observed. Only a matching parked attempt can restore Codex lineage or accept the prompt. Bulk messages, Telegram replies and remote restarts carry the attempt from their first task lookup through dispatch. They check the caller’s current access before acting.
 
 ## Evidence
+
+- On `339c789e1`, 210 scoped supervisor, parking and Codex tests passed in run `a8f4c1fd-be12-4292-96cb-d12cf17521ae`. The independent review identified three additional cases. In run `bd0d8c29-284c-4072-a132-c1a764cb9e4a`, the named subscription refusal changed the resting status, the remote restart went past a later archive, and a question answered at 5,400 ms recorded 1,100 ms. All three regressions failed on the reviewed implementation.
 
 - Nine continuation regressions failed before the repair. Run `5ac73ba1-8294-4050-88ed-fa7046f9eff1` exposed premature admission during terminal cleanup. Run `18e0d5cf-ae32-4aef-996e-3193f4489cab` admitted both a replacement attempt and a newly archived task. Run `78a8e6e5-8fdf-4029-8b53-a3d0813a3a81` cleared the archive on a live-run refusal.
 

@@ -3108,13 +3108,40 @@ fn a_continue_on_a_chosen_subscription_keeps_it_through_the_queue() -> TestResul
         );
         stop(&app, &id).await?;
 
-        let holder = slot_holder(&app, &sandbox, &user).await?;
         let ctx = AuthContext {
             user: app.deps.store.user(&user).await?.ok_or("user")?,
             csrf_token: None,
             session_hash: None,
             token: None,
         };
+        // A named refusal with a free slot keeps every part of the owner's decision.
+        app.archive_task(&ctx, id.as_str(), true).await?;
+        crate::parking::ask(&app, &id).await?;
+        let selected = task(&app, &id).await?;
+        probe.set("b-second", usage(100.0, 4 * HOUR, 30.0, 100));
+        refresh(&app, &user, "b-second").await?;
+        let refusal = app
+            .continue_task(
+                &ctx,
+                id.as_str(),
+                &yulius_contracts::api::tasks::ContinueTask {
+                    account_id: Some("b-second".into()),
+                    ..Default::default()
+                },
+            )
+            .await;
+        assert!(
+            matches!(refusal, Err(yulius_app::error::AppError::Capacity(_))),
+            "{refusal:?}"
+        );
+        let current = task(&app, &id).await?;
+        assert_eq!(current.status, selected.status);
+        assert_eq!(current.archived_at, selected.archived_at);
+        assert!(app.deps.store.task_needs_you(&id).await?.is_some());
+        assert_eq!(app.deps.store.attempts(&id).await?.len(), 1);
+        probe.set("b-second", usage(10.0, 4 * HOUR, 30.0, 100));
+        refresh(&app, &user, "b-second").await?;
+        let holder = slot_holder(&app, &sandbox, &user).await?;
         app.continue_task(
             &ctx,
             id.as_str(),

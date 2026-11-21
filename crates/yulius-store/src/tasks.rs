@@ -414,10 +414,10 @@ impl TaskStore for SqliteStore {
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
             let claimed = tx.execute(
-                "UPDATE tasks SET archived_at = NULL, needs_you = NULL WHERE id = ?1 AND status = ?2
+                "UPDATE tasks SET archived_at = NULL, needs_you = NULL, updated_at = ?5 WHERE id = ?1 AND status = ?2
                  AND archived_at IS ?3 AND (SELECT id FROM attempts WHERE task_id = ?1
                  ORDER BY seq DESC LIMIT 1) IS ?4",
-                params![id, status.as_str(), archive, attempt.as_ref().map(AttemptId::as_str)],
+                params![id, status.as_str(), archive, attempt.as_ref().map(AttemptId::as_str), at.0],
             ).map_err(db)?;
             if claimed == 0 {
                 return Ok(false);
