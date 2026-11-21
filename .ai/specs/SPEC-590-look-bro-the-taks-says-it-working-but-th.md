@@ -28,6 +28,8 @@ The page's Continue action and the Superagent's `task_restart` share `continue_t
 - [x] Trace and reproduce the stopped Codex task
 - [x] Prove the interruption and resume behavior with regression tests
 - [x] Keep task activity and resumed work in sync with Codex
+- [x] Recover missing history and cancel an overtaken capacity worker
+- [ ] Preserve the replacement continuation when Stop overtakes an account move
 - [ ] Verify and independently review the fix
 - [ ] Record verification evidence for the merge queue
 
@@ -63,3 +65,5 @@ The queue and both forms of capacity recovery preserved the fresh launch in run 
 The third review found the capacity worker could select a continuation, then launch it after Stop. Two deterministic tests held the worker immediately before launch. In nextest run `48d0706a-1b6a-471c-a795-a20b3212ff25`, both observed a second Codex attempt after cancellation. Admission now checks both the observed waiting state and the original pause ID under the launch lock.
 
 The fourth review identified a fresh host spawn failure after attempt insertion and an old capacity worker cleaning up a replacement pause. In run `133056e4-c38f-44f1-b7b1-7896c1cd3b43`, the previous two cancellation regressions passed. The new regressions returned a conflict on retry and lost the replacement pause. A fresh attempt that failed to spawn retries its original request. Stale cleanup closes only the observed pause and subscription request.
+
+All 93 selected Codex, account move, pool supervision, parking, persistence and native harness checks passed in run `e9bd4abf-2d88-4aca-a9ad-eaba8edf9a07`. The fifth review found another interleaving. Stop can win after a worker checks the pause and before it claims the status. In run `aa9dfb6d-8a27-403d-bbde-baa4196aa681`, that worker erased the replacement pause. A worker that loses the claim now reports that it started nothing. A genuine launch failure settles its own state while the launch lock still protects it.

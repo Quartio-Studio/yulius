@@ -190,6 +190,74 @@ async fn restart_fixture(
 }
 
 #[test]
+fn a_codex_restart_checks_the_harness_and_history_of_legacy_records() -> TestResult {
+    let (_dir, data) = temp()?;
+    runtime()?.block_on(async {
+        let (app, sandbox, user, id, _) = restart_fixture(&data).await?;
+        let ctx = admin_ctx(&app, &user).await?;
+        let legacy = new_codex_task(&app, &sandbox, &user, "Legacy conversation").await?;
+        assert_eq!(task(&app, &legacy).await?.status, TaskStatus::Queued);
+        support::stop_tasks(&app, &[&legacy, &id]).await?;
+        let db = rusqlite::Connection::open(data.join("yulius.db"))?;
+        let refused = async |task_id: &TaskId| {
+            matches!(
+                app.continue_task(&ctx, task_id.as_str(), &Default::default()).await,
+                Err(yulius_app::error::AppError::Conflict(_))
+            )
+        };
+        db.execute("UPDATE attempts SET harness = 'claude' WHERE task_id = ?1", [id.as_str()])?;
+        assert!(refused(&id).await);
+        db.execute("UPDATE attempts SET harness = 'codex', provider_session_id = NULL WHERE task_id = ?1", [id.as_str()])?;
+        db.execute("UPDATE provider_sessions SET harness = 'claude', last_seen = (SELECT started_at FROM attempts WHERE task_id = ?1) WHERE task_id = ?1", [id.as_str()])?;
+        assert!(refused(&id).await);
+
+        // Imported history can have a session entry and no local attempt.
+        db.execute("UPDATE provider_sessions SET task_id = ?1 WHERE task_id = ?2", [legacy.as_str(), id.as_str()])?;
+        assert!(refused(&legacy).await);
+        db.execute("UPDATE provider_sessions SET harness = 'codex' WHERE task_id = ?1", [legacy.as_str()])?;
+        let stopped = task(&app, &legacy).await?.status;
+        let store = &app.deps.store;
+        assert!(store.transition_task(&legacy, Some(stopped), TaskStatus::Parked, None, app.now()).await?);
+        assert!(refused(&legacy).await, "a parked session needs its attempt");
+        assert!(store.transition_task(&legacy, Some(TaskStatus::Parked), stopped, None, app.now()).await?);
+        let resumed = app.continue_task(&ctx, legacy.as_str(), &Default::default()).await?;
+        assert_eq!(resumed.activity.as_deref(), Some("working"));
+        let run = store.live_attempt(&legacy).await?.ok_or("legacy restart")?;
+        assert_eq!(run.launch_kind, LaunchKind::Resume);
+        support::stop_tasks(&app, &[&legacy]).await
+    })
+}
+
+#[test]
+fn moving_an_idle_codex_session_with_a_pending_reviewer_starts_a_turn() -> TestResult {
+    let (_dir, data) = temp()?;
+    runtime()?.block_on(async {
+        let (app, _, user, id, _) = restart_fixture(&data).await?;
+        let ctx = admin_ctx(&app, &user).await?;
+        app.close_task_and_wait(&id).await?;
+        let opened = app.continue_task(&ctx, id.as_str(), &Default::default()).await?;
+        assert_eq!(opened.activity.as_deref(), Some("waiting"));
+        let db = rusqlite::Connection::open(data.join("yulius.db"))?;
+        db.execute(
+            "INSERT INTO review_rounds (id, task_id, round, agent, model, reason, subagent_id, started_at, cut_off)
+             VALUES ('open-round', ?1, 1, 'reviewer', 'fable', 'round', 'fixture-reviewer', 0, 0)",
+            [id.as_str()],
+        )?;
+        app.cut_off_review_for_test(&id, "fixture-reviewer", None).await;
+        assert_eq!(app.review_recovery_for_test(&id).await.0.as_deref(), Some("fixture-reviewer"));
+        let other = add_codex_account(&app, "alternate", &codex_auth("2026-11-01T10:00:00Z")).await?;
+        let moved = app.switch_task(&ctx, id.as_str(), &yulius_contracts::api::tasks::ContinueTask {
+            account_id: Some(other.to_string()), ..Default::default()
+        }).await?;
+        let run = app.deps.store.live_attempt(&id).await?.ok_or("moved reviewer")?;
+        let mode = std::fs::read_to_string(Path::new(&run.run_dir).join("fake-launch.txt"))?;
+        assert!(mode.contains("Resume that reviewer now"), "{mode}");
+        assert_eq!(moved.activity.as_deref(), Some("working"));
+        support::stop_tasks(&app, &[&id]).await
+    })
+}
+
+#[test]
 fn continuing_a_stopped_codex_task_submits_one_turn_when_its_slot_opens() -> TestResult {
     let (_dir, data) = temp()?;
     runtime()?.block_on(async {
@@ -317,15 +385,27 @@ fn continuing_a_codex_task_stopped_before_launch_delivers_its_original_request()
 
 #[test]
 fn a_stopped_codex_id_without_a_rollout_restarts_with_its_original_request() -> TestResult {
-    restart_before_rollout(false)
+    restart_before_rollout(CapacityRestart::Automatic)
 }
 
 #[test]
 fn a_stopped_codex_id_without_a_rollout_moves_with_its_original_request() -> TestResult {
-    restart_before_rollout(true)
+    restart_before_rollout(CapacityRestart::Move)
 }
 
-fn restart_before_rollout(manual_move: bool) -> TestResult {
+#[test]
+fn an_overtaken_codex_move_preserves_the_replacement_native_resume() -> TestResult {
+    restart_before_rollout(CapacityRestart::CancelledMove)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CapacityRestart {
+    Automatic,
+    Move,
+    CancelledMove,
+}
+
+fn restart_before_rollout(restart: CapacityRestart) -> TestResult {
     let (_dir, data) = temp()?;
     runtime()?.block_on(async {
         let (app, sandbox, user, id, session) = restart_fixture(&data).await?;
@@ -408,7 +488,69 @@ fn restart_before_rollout(manual_move: bool) -> TestResult {
         std::fs::rename(saved, rollout)?;
         let replacement =
             add_codex_account(&app, "replacement", &codex_auth("2026-11-01T10:00:00Z")).await?;
-        if manual_move {
+        if restart == CapacityRestart::CancelledMove {
+            let (prepared, release) =
+                support::hold_point(yulius_app::race::Point::SwitchPrepared, id.as_str());
+            let moving = {
+                let (app, id, account) = (Arc::clone(&app), id.clone(), replacement.clone());
+                tokio::spawn(async move {
+                    app.switch_task(
+                        &ctx,
+                        id.as_str(),
+                        &yulius_contracts::api::tasks::ContinueTask {
+                            account_id: Some(account.to_string()),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                })
+            };
+            support::point_reached(prepared).await?;
+            support::stop_tasks(&app, &[&id]).await?;
+            let store = &app.deps.store;
+            let limited = yulius_app::usage_json::to_json(&usage);
+            store
+                .set_account_state(
+                    &replacement,
+                    AccountStatus::Limited,
+                    Some(&limited),
+                    None,
+                    app.now(),
+                )
+                .await?;
+            app.continue_task(
+                &admin_ctx(&app, &user).await?,
+                id.as_str(),
+                &Default::default(),
+            )
+            .await?;
+            let next = store.open_pause(&id).await?.ok_or("new resume")?;
+            assert_eq!(next.kind, yulius_app::model::PauseKind::Start);
+            assert!(next.continuation.is_some());
+            let available =
+                yulius_app::usage_json::to_json(&yulius_domain::usage::AccountUsage::default());
+            store
+                .set_account_state(
+                    &replacement,
+                    AccountStatus::Ok,
+                    Some(&available),
+                    None,
+                    app.now(),
+                )
+                .await?;
+            release.send(())?;
+            let _ = tokio::time::timeout(Duration::from_secs(60), moving).await??;
+            assert_eq!(
+                store.open_pause(&id).await?,
+                Some(next),
+                "the cancelled Move consumed the replacement"
+            );
+            let _ = app.resume_round().await;
+            let run = store.live_attempt(&id).await?.ok_or("new continuation")?;
+            assert_eq!(run.provider_session_id.as_deref(), Some(session.as_str()));
+            return support::stop_tasks(&app, &[&id]).await;
+        }
+        if restart == CapacityRestart::Move {
             app.switch_task(
                 &ctx,
                 id.as_str(),
@@ -526,9 +668,18 @@ fn moving_idle_working_and_held_codex_turns_selects_their_own_prompts() -> TestR
 
 #[test]
 fn moving_a_codex_restart_waiting_for_capacity_keeps_its_continuation() -> TestResult {
+    move_waiting_restart(false)
+}
+
+#[test]
+fn moving_a_codex_restart_into_the_session_queue_keeps_the_chosen_account() -> TestResult {
+    move_waiting_restart(true)
+}
+
+fn move_waiting_restart(queue: bool) -> TestResult {
     let (_dir, data) = temp()?;
     runtime()?.block_on(async {
-        let (app, _, user, id, session) = restart_fixture(&data).await?;
+        let (app, sandbox, user, id, session) = restart_fixture(&data).await?;
         let ctx = admin_ctx(&app, &user).await?;
         support::stop_tasks(&app, &[&id]).await?;
         let account = AccountId::parse("a-codex")?;
@@ -553,6 +704,16 @@ fn moving_a_codex_restart_waiting_for_capacity_keeps_its_continuation() -> TestR
         assert_eq!(waiting.status, "waiting_capacity");
         let replacement =
             add_codex_account(&app, "replacement", &codex_auth("2026-11-01T10:00:00Z")).await?;
+        let blocker = if queue {
+            let blocker = new_codex_task(&app, &sandbox, &user, "Occupy the slot").await?;
+            wait_for("the occupied slot", Duration::from_secs(30), || {
+                screen_contains(&app, &blocker, "ECHO: Occupy the slot")
+            })
+            .await?;
+            Some(blocker)
+        } else {
+            None
+        };
         let moved = app
             .switch_task(
                 &ctx,
@@ -563,7 +724,24 @@ fn moving_a_codex_restart_waiting_for_capacity_keeps_its_continuation() -> TestR
                 },
             )
             .await?;
-        assert_eq!(moved.status, "running");
+        if let Some(blocker) = &blocker {
+            assert_eq!(moved.status, "queued");
+            let queued = app
+                .deps
+                .store
+                .queued_start(&id)
+                .await?
+                .ok_or("queued move")?;
+            assert_eq!(queued.account_id.as_ref(), Some(&replacement));
+            assert!(queued.prompt.is_some());
+            support::stop_tasks(&app, &[blocker]).await?;
+            wait_for("the queued move", Duration::from_secs(30), || {
+                screen_contains(&app, &id, "ECHO: Continue")
+            })
+            .await?;
+        } else {
+            assert_eq!(moved.status, "running");
+        }
         let run = app.deps.store.live_attempt(&id).await?.ok_or("moved run")?;
         assert_eq!(run.account_id, Some(replacement));
         assert_eq!(run.provider_session_id.as_deref(), Some(session.as_str()));
