@@ -117,6 +117,8 @@ The SQLite query returning a parked task includes the latest attempt ID in the s
 
 ## Evidence
 
+- PR #1621 CI run `c387d03f-e4bc-47df-b485-9d4bdaf5ed0e` failed the workspace Clippy check on two `expect()` calls in the replacement-turn fixture. The same check reproduced both findings locally and passed after the fixture asserted each store result with its error detail. All five dispatch tests that use the fixture passed in run `5bfa3015-04c0-48ba-b8b7-ab198d8c4fea`.
+
 - Independent review approved `60166b3d725bcfc6687b7818782203b50aa1fc3e` against dev `00ff06cbf`. It traced parked messages to the recorded attempt under the launch lock and checked the separate ended-run, capacity and Move paths introduced on dev. Local run `a27d66ee-a845-4982-be86-e9408c6e3c0b` passed 330 of 331 tests with a previously built fake agent. The closed-conversation test timed out after interrupting a resumed Codex turn. The current fixture writes Codex’s `turn_aborted` record for that interrupt.
 
 - After `cargo build -p fake-agent`, the same 331 tests all passed in run `bee02f70-f2a4-4ad0-ae0a-3416cd2848dd` on the reviewed code. The reopened Codex conversation returned to Waiting after interruption. The suite also covered native rollout reuse, rejection of late parked messages, capacity and Move, and the remote and Telegram paths.

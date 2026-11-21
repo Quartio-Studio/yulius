@@ -2199,14 +2199,12 @@ pub async fn replace_park_at(
         move || {
             tokio::task::block_in_place(|| {
                 handle.block_on(async {
-                    store
-                        .insert_attempt(&run)
-                        .await
-                        .expect("replacement parked run");
-                    store
+                    let inserted = store.insert_attempt(&run).await;
+                    assert!(inserted.is_ok(), "replacement parked run: {inserted:?}");
+                    let asked = store
                         .set_task_needs_you(&run.task_id, Some(&question), now)
-                        .await
-                        .expect("replacement question");
+                        .await;
+                    assert!(asked.is_ok(), "replacement question: {asked:?}");
                 })
             });
         },
