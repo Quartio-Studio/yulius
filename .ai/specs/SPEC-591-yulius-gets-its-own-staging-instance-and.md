@@ -119,6 +119,7 @@ was verified there.
 - [x] Roll back to a kept release and its store, with dry run and refusals tested
 - [x] Run the scripts against the staging VM by hand and restore 3fc0e5976
 - [x] Fill [cd.dev], ADR-0430 and the staging VM's operations, architecture and AGENTS docs
+- [x] Answer review round 1 of the CD slice test-first and rerun on the VM
 - [ ] Independent review of the CD slice approved
 - [ ] First staging deploy through CD and the rollback drill of the next deploy recorded
 - [ ] Move the test shards and e2e to the merged revision with merge_first and an ADR
