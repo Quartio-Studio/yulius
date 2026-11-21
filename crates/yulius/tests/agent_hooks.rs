@@ -3930,6 +3930,43 @@ async fn a_parked_merge_survives_a_stalled_branch_lookup_and_finds_a_replacement
 }
 
 #[tokio::test]
+async fn a_parked_merge_rechecks_local_work_after_stalled_followup_discovery() -> TestResult {
+    let (f, owner) = parked_with_recorded_merge().await?;
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    let mut config = f.h.app.config.clone();
+    config.parked_pr_read_ms = 750;
+    let app = yulius_app::context::App::new(config, f.h.app.deps.clone());
+    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    *f.h.github
+        .branch_list_hold
+        .lock()
+        .map_err(|_| "branch fixture")? = Some(Arc::new(tokio::sync::Notify::new()));
+    let args = json!({"task_id":f.task.as_str()});
+    let read = app.tool_task_get(&caller, &args);
+    let reopen = async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            f.h.github.branch_list_entered.notified(),
+        )
+        .await?;
+        app.tool_steps_set(&ctx, &json!({"steps":["Inspect the follow-up"]}))
+            .await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    };
+    let (result, reopened) = tokio::join!(read, reopen);
+    reopened?;
+    let brief = result?;
+    assert_eq!(brief["shows"], "needs_you");
+    assert!(
+        brief["wait_reason"]
+            .as_str()
+            .ok_or("wait reason")?
+            .contains("Inspect the follow-up")
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_parked_task_with_open_steps_keeps_its_owner_observed_pr() -> TestResult {
     let (f, owner) = owner_observed_external_pr().await?;
     let ctx = f.h.app.agent_context(TOKEN).await?;

@@ -150,6 +150,7 @@ impl ParkedPullRead {
 
 #[derive(Default)]
 pub(crate) struct ParkingPrs {
+    pub(crate) followup_unverified: bool,
     checkout: Option<String>,
     watched: Option<u64>,
     pulls: Vec<(u64, String)>,
@@ -4185,7 +4186,7 @@ impl App {
         purpose: PrVerification,
     ) -> AppResult<Option<ParkingPrs>> {
         let mut observed = ParkedPullRead::recorded(record);
-        self.verify_task_prs(task, record, purpose, &mut observed)
+        self.verify_task_prs(task, record, purpose, &mut observed, None)
             .await
     }
 
@@ -4245,6 +4246,7 @@ impl App {
         record: Option<&DeliveryRecord>,
         purpose: PrVerification,
         observed: &mut ParkedPullRead,
+        display_deadline: Option<tokio::time::Instant>,
     ) -> AppResult<Option<ParkingPrs>> {
         let tracked = record
             .filter(|r| r.stage == DeliveryStage::PrOpen)
@@ -4263,20 +4265,19 @@ impl App {
         if sandbox.is_playground() || !self.github_configured().await? {
             return Ok((observed.pr.is_none_or(|pr| !pr.open)).then(ParkingPrs::default));
         }
-        let token = self.dlv_installation_token(&sandbox).await?;
-        let branch_pulls = || async {
+        let branch_pulls = async |token: &Secret| {
             let Some(branch) = task.branch.as_deref() else {
                 return Ok(Vec::new());
+            };
+            let observation = if display_deadline.is_some() && merged.is_some() {
+                Some(self.observed_pulls.begin(&sandbox.id)?)
+            } else {
+                None
             };
             let mut pulls = self
                 .deps
                 .github
-                .list_pulls(
-                    &token,
-                    &sandbox.repo_owner,
-                    &sandbox.repo_name,
-                    Some(branch),
-                )
+                .list_pulls(token, &sandbox.repo_owner, &sandbox.repo_name, Some(branch))
                 .await?;
             pulls.retain(|pull| {
                 !pull.from_fork
@@ -4285,12 +4286,35 @@ impl App {
                     && Some(pull.number) != merged
             });
             pulls.sort_unstable_by_key(|pull| pull.number);
+            if let (Some(observation), Some(merged)) = (observation, merged) {
+                observation.record_branch(&task.id, merged, pulls.last().map(|pr| pr.number));
+            }
             Ok::<_, AppError>(pulls)
         };
         // Branch-scoped discovery also finds PRs omitted by a partial sandbox overview
         // and new PRs opened externally while an older recorded delivery is being reconciled.
         let watched = tracked.filter(|_| purpose.watches_pending(self.config.ci.enabled));
-        let branch = branch_pulls().await?;
+        let discover = async {
+            let token = self.dlv_installation_token(&sandbox).await?;
+            let branch = branch_pulls(&token).await?;
+            Ok::<_, AppError>((token, branch))
+        };
+        let (token, branch) = if let Some(until) = display_deadline.filter(|_| merged.is_some()) {
+            // Leave time inside the existing display budget to reconfirm the task and delivery.
+            let remaining = until.saturating_duration_since(tokio::time::Instant::now());
+            match tokio::time::timeout_at(until - remaining / 4, discover).await {
+                Ok(Ok(found)) => found,
+                _ => {
+                    *observed = self.known_parked_pull(task, record);
+                    return Ok(observed.pr.filter(|pr| !pr.open).map(|_| ParkingPrs {
+                        followup_unverified: true,
+                        ..ParkingPrs::default()
+                    }));
+                }
+            }
+        } else {
+            discover.await?
+        };
         *observed = ParkedPullRead::recorded(record);
         observed.note_open_branch(&branch);
         if branch.len() > MAX_PULLS {
@@ -4348,11 +4372,12 @@ impl App {
             return Ok(None);
         }
         let mut facts = ParkingPrs {
+            followup_unverified: false,
             checkout,
             pulls,
             watched,
         };
-        let current = branch_pulls().await?;
+        let current = branch_pulls(&token).await?;
         if purpose != PrVerification::Display {
             return Ok((current == branch).then_some(facts));
         }
