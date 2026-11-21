@@ -137,6 +137,7 @@ mod tests {
             client_id: "Iv1.synthetic".into(),
             client_secret: Secret::new("secret"),
             private_key_pem: Secret::new(pem),
+            webhook_secret: None,
             slug: "yulius-test".into(),
         }
     }
