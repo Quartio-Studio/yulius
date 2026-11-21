@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use sysinfo::{Disks, System};
-use yulius_app::ports::system::{SystemProbe, SystemSnapshot};
+use yulius_app::ports::system::{SystemProbe, SystemSnapshot, TreeAllocation};
 
 struct State {
     system: System,
@@ -94,6 +94,14 @@ fn cpu_ticks_of(stat: &str) -> Option<(u64, u64)> {
 }
 
 impl SystemProbe for SysinfoProbe {
+    fn tree_allocation(&self, directory: &Path) -> TreeAllocation {
+        let usage = yulius_sandbox::usage::measure(&[(directory, Some("compiler store"))]);
+        TreeAllocation {
+            allocated: usage.bytes,
+            unshared: usage.bytes.saturating_sub(usage.shared_file_bytes),
+        }
+    }
+
     fn disk(&self, data_dir: &Path) -> Option<(u64, u64)> {
         volume_of(data_dir)
     }
