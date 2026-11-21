@@ -143,6 +143,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   // during an explicit list read once, then preserve any changes during confirmation.
   const activeLists = new Set();
   const activeDetails = new Set();
+  const detailResumes = new WeakSet();
 
   function forgetDetailRow(taskId) {
     for (const read of activeDetails) if (read.row?.id === taskId) read.row = null;
@@ -218,7 +219,11 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       if (current) {
         for (const task of map.values()) {
           const prior = current.get(task.id);
-          if (task.status !== 'parked' && prior?.status !== 'parked') continue;
+          // A newer list can supersede a resume discovered by terminal detail
+          // even when both observations are live (e.g. running → waiting_capacity).
+          const resumed = detailResumes.has(prior);
+          if (task.status !== 'parked' && prior?.status !== 'parked' && !resumed) continue;
+          if (resumed && task.status !== 'parked') detailResumes.add(task);
           if (!prior || JSON.stringify(task) !== JSON.stringify(prior) || pullForStatus(task) !== pullForStatus(prior)) {
             emit('task', task);
             changed = true;
@@ -346,6 +351,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   }
 
   function rememberTransition(row) {
+    if (row.status !== 'parked') detailResumes.add(row);
     const order = rowOrder.get(row);
     for (const read of activeLists) {
       if (read.sandboxId !== row.sandbox_id || read.order >= order) continue;

@@ -2527,3 +2527,36 @@ test('a live event overtaking parked terminal detail remains working through an 
   const working = ['running', 'working', 'running', 'working'];
   expect(seen).toEqual([working, working]);
 });
+
+test('a newer watched list notifies the terminal when it supersedes a detail-discovered resume', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const results = [];
+    for (const listFirst of [false, true]) {
+      const parked = { id: 'p', sandbox_id: 's', status: 'parked', activity: 'done' };
+      const running = { ...parked, status: 'running', activity: 'working' };
+      const waiting = { ...parked, status: 'waiting_capacity', activity: 'waiting' };
+      const held = Promise.withResolvers<void>();
+      let reads = 0, terminal = parked;
+      const store = createStore({ get: async () => {
+        if (++reads === 1) return [parked];
+        await held.promise;
+        return [waiting];
+      } });
+      await store.loadTasks('s');
+      store.on('task', (row: typeof parked) => { terminal = row; });
+      const publish = store.beginParkedDetail(parked);
+      const newerList = store.loadTasks('s', true);
+      if (!listFirst) terminal = publish(running, terminal);
+      held.resolve(); await newerList;
+      if (listFirst) terminal = publish(running, terminal);
+      const row = store.findTask('p');
+      results.push([row.status, row.activity, terminal.status, terminal.activity]);
+    }
+    return results;
+  });
+  const waiting = ['waiting_capacity', 'waiting', 'waiting_capacity', 'waiting'];
+  expect(seen).toEqual([waiting, waiting]);
+});

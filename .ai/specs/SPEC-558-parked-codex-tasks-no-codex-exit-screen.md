@@ -74,6 +74,8 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- On `63d02bb5b`, terminal detail observed Running before a newer watched list returned Waiting for capacity. The sidebar updated but the terminal kept Running. The added Chromium test verifies the terminal’s task subscription and the sidebar record in both reply orders. A list that supersedes a detail-discovered resume now notifies that subscriber about live status changes.
+
 - At `61e81ef4c`, an explicit list replaced a newer running/working event during a pending parked detail. In Chromium the list-first order made the terminal and sidebar parked/done, and the opposite order left the sidebar running/waiting. Retaining that event with the outstanding detail restores running/working to both views and carries the later transition through an older list that is still pending.
 
 - Third-round review at `d4864c7a2` reproduced a missing row when an older empty list answered before the detail. The expanded Chromium regression runs both reply orders for park and resume and checks a subsequent archive, permanent removal and newer empty list. A detail retains its starting public row only for the duration of the read. An archive or deletion invalidates that reference. Terminal-discovered archives and Undo are a separate delivery after the park/resume change. Their implementation and tests are retained at the reviewed prototype.
