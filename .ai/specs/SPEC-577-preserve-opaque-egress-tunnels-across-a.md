@@ -686,3 +686,15 @@ matched relay and proxy restoration has its own review and CI.
   Setting the same environment locally reproduced both failures. With the fixture
   passing `--ci off` explicitly, all six service-wiring cases passed under nextest
   with `YULIUS_CI=1`, including the original socket-closure and admission assertions.
+- PR #1575 run `36ba6f1e-42f4-47d5-9fe5-e533dbc8472a` on `33e3eaab2` passed
+  quality and both Rust shards. The Chromium job reported `route.fulfill: Route is
+  already handled!` during mock startup. The startup fixture was identical on the PR
+  and dev. Two held loopback responses reproduced the error in 0.404 seconds on the
+  branch. The final regression also checked a new request during teardown and failed
+  in 0.793 seconds on dev `d1ff0e4ee`. Removing interception let Chromium
+  continue the second request while its handler still owned the response. Teardown
+  now drains active handlers before unregistering routes, within the fixture's
+  30-second bound. All eight scheduled regression runs preserved both original
+  response markers and passed the new request through to the static server. All
+  14 startup and mock-readiness cases passed with retries disabled.
+  [Browser fixture report #1551](https://github.com/Quartio-Studio/yulius/issues/1551)
