@@ -34,7 +34,7 @@ use crate::error::{AppError, AppResult};
 use crate::finish::{SHELL_PROBE_MS, TranscriptFacts};
 use crate::hub::Hub;
 use crate::model::{
-    AccountRecord, AccountStatus, AttemptRecord, LaunchKind, MetricsRecord, PauseKind,
+    AccountRecord, AccountStatus, AttemptRecord, LaunchKind, MetricsRecord, PauseKind, PauseRecord,
     ProviderSessionRecord, QueuedStart, QueuedStartKind, SandboxRecord, Secret,
     SwitchDecisionRecord, TaskMode, TaskRecord,
 };
@@ -872,6 +872,9 @@ impl TaskRuntime {
 /// Longest gap between live metrics saves of a run in progress (#31).
 const LIVE_METRICS_MS: i64 = 30_000;
 
+/// Opens the next turn in a saved session whose work was stopped.
+pub(crate) const CONTINUE_TASK_PROMPT: &str = "Continue the task exactly where you left off.";
+
 /// How the next run starts.
 #[derive(Debug, Clone)]
 pub enum RunStart {
@@ -920,6 +923,13 @@ impl RunStart {
         };
         (start, kept.account_id)
     }
+}
+
+/// A capacity worker selects its subscription again if queued. A Move keeps its person's choice.
+#[derive(Clone, Copy)]
+enum PausedStart<'a> {
+    Capacity(&'a PauseRecord),
+    Move(&'a PauseRecord),
 }
 
 /// What an idle session is after a switch that types nothing into it (a person's move of an idle
@@ -1878,10 +1888,48 @@ impl App {
         account: Option<AccountId>,
     ) -> BoxFuture<'a, AppResult<()>> {
         Box::pin(async move {
-            self.start_run_if(task_id, start, account, None, None)
+            self.start_run_if(task_id, start, account, None, None, None)
                 .await
                 .map(|_| ())
         })
+    }
+
+    /// A person's Continue can start afresh if Codex stopped before creating its rollout.
+    pub(crate) async fn start_ended_run(
+        self: &Arc<Self>,
+        task: &TaskRecord,
+        start: RunStart,
+        account: Option<AccountId>,
+    ) -> AppResult<()> {
+        if self
+            .start_run_if(&task.id, start, account, Some(task.status), None, None)
+            .await?
+        {
+            Ok(())
+        } else {
+            Err(AppError::Conflict(
+                "the task changed while it was continued; try again".into(),
+            ))
+        }
+    }
+
+    /// Claims the capacity worker's observed pause under the launch lock. A Stop or a
+    /// subsequent Continue can end that pause before the worker gets the lock.
+    pub(crate) async fn start_paused_run(
+        self: &Arc<Self>,
+        pause: &PauseRecord,
+        start: RunStart,
+        account: Option<AccountId>,
+    ) -> AppResult<bool> {
+        self.start_run_if(
+            &pause.task_id,
+            start,
+            account,
+            Some(TaskStatus::WaitingCapacity),
+            None,
+            Some(PausedStart::Capacity(pause)),
+        )
+        .await
     }
 
     /// [`App::start_run`], only while the task still has the status `only` (when given), checked
@@ -1894,6 +1942,7 @@ impl App {
         account: Option<AccountId>,
         only: Option<TaskStatus>,
         rest: Option<IdleRest>,
+        pause: Option<PausedStart<'a>>,
     ) -> BoxFuture<'a, AppResult<bool>> {
         Box::pin(async move {
             self.settle_resting_run(task_id).await?;
@@ -1921,6 +1970,13 @@ impl App {
             if only.is_some_and(|status| status != task.status) {
                 return Ok(false);
             }
+            if let Some(PausedStart::Capacity(record) | PausedStart::Move(record)) = pause
+                && !self.pause_open(record).await
+            {
+                return Ok(false);
+            }
+            let moving_pause = matches!(pause, Some(PausedStart::Move(_)));
+            let pause_outcome = if moving_pause { "switched" } else { "started" };
             // Already running: another start won the race (the queue and a direct start).
             if task.status == TaskStatus::Running {
                 tracing::info!(task = %task.id, "start of a running task skipped");
@@ -1928,8 +1984,9 @@ impl App {
             }
             // A fresh start is for a task that waits to start (queued, paused for capacity). One
             // that ended meanwhile — closed before the start spawned at its creation ran — stays
-            // ended: only Continue (a resume) brings a resting task back.
-            if task.status.is_resting() && matches!(start, RunStart::Fresh { .. }) {
+            // ended. Only Continue authorizes a fresh start from the observed resting state.
+            if only.is_none() && task.status.is_resting() && matches!(start, RunStart::Fresh { .. })
+            {
                 tracing::info!(
                     task = %task.id,
                     status = task.status.as_str(),
@@ -1963,7 +2020,9 @@ impl App {
                     // (SPEC-483 QST-001). A subscription is kept when a person chose it (their
                     // Continue of a resting task); the pool's own choice for a paused task is
                     // made again at the launch, when it may be another.
-                    let chosen = account.as_ref().filter(|_| task.status.is_resting());
+                    let chosen = account
+                        .as_ref()
+                        .filter(|_| task.status.is_resting() || moving_pause);
                     let queued = self
                         .deps
                         .store
@@ -1974,7 +2033,7 @@ impl App {
                         return Ok(false);
                     }
                     // A paused task's start waits in the queue now, not for capacity.
-                    self.end_pause(&task.id, "started").await;
+                    self.end_pause(&task.id, pause_outcome).await;
                     self.publish_task(&task.id).await;
                 }
                 return Ok(true);
@@ -1992,12 +2051,11 @@ impl App {
                 _ => (start, account),
             };
             let launching = Launching::start(&self.supervisor.launching, &task.id);
-            let result = self.launch_attempt(&task, start, account, rest).await;
-            drop(launching);
-            drop(guard);
+            let result = self
+                .launch_attempt(&task, start, account, rest, pause_outcome)
+                .await;
             if let Err(err) = &result {
-                // The launch failed: the task waits for nothing any more, whatever pause it
-                // was started from (one the launch would have ended with its subscription).
+                // Settle the failed launch before another Continue can install a new pause.
                 self.end_pause(task_id, "ended").await;
                 let reason = crate::account_gate::fail_reason(err);
                 if let Ok(Some(current)) = self.deps.store.task(task_id).await
@@ -2015,6 +2073,14 @@ impl App {
                         )
                         .await;
                 }
+            }
+            drop(launching);
+            drop(guard);
+            crate::race::reached(
+                crate::race::Point::StartLockReleased,
+                Path::new(task.id.as_str()),
+            );
+            if let Err(err) = &result {
                 self.runtime(task_id)
                     .hub
                     .notice(format!("Could not start: {}", err.public_message()));
@@ -2022,7 +2088,7 @@ impl App {
                 // A supertask that could not start no longer holds its project (SUP-005).
                 self.drain_queue().await;
             }
-            result.map(|()| true)
+            result
         })
     }
 
@@ -2058,7 +2124,8 @@ impl App {
         start: RunStart,
         requested: Option<AccountId>,
         rest: Option<IdleRest>,
-    ) -> AppResult<()> {
+        pause_outcome: &'static str,
+    ) -> AppResult<bool> {
         let store = &self.deps.store;
         let relaunch = start.clone();
         let sandbox = store
@@ -2086,11 +2153,16 @@ impl App {
             {
                 *intent = None;
             }
+            crate::race::reached(
+                crate::race::Point::StartClaimReady,
+                Path::new(task.id.as_str()),
+            );
             if !store
                 .transition_task(&task.id, Some(task.status), next, None, self.now())
                 .await?
             {
-                return Err(AppError::Conflict("task state changed concurrently".into()));
+                // Stop won the claim. This start owns neither the task nor a replacement pause.
+                return Ok(false);
             }
             self.publish_task(&task.id).await;
         }
@@ -2121,24 +2193,22 @@ impl App {
             // No subscription has capacity: the task waits before starting, without a process
             // (ROT-010); the resume loop starts it when capacity returns. A turn a limit cut
             // keeps its `limit` pause, so it still resumes past the limit (SPEC-034).
-            let kind = if matches!(start, RunStart::AfterLimit) {
-                PauseKind::Limit
-            } else {
-                PauseKind::Start
-            };
-            // A resume's text (a held prompt a move carried, SPEC-447) is typed when it starts.
-            let continuation = match &start {
-                RunStart::Resume { prompt } => prompt.clone(),
-                _ => None,
+            let (kind, continuation) = match &start {
+                RunStart::AfterLimit => (PauseKind::Limit, None),
+                RunStart::Fresh { prompt } if harness == Harness::Codex => {
+                    (PauseKind::FreshStart, prompt.clone())
+                }
+                RunStart::Resume { prompt } => (PauseKind::Start, prompt.clone()),
+                RunStart::Fresh { .. } => (PauseKind::Start, None),
             };
             self.pause_task(&task.id, kind, None, continuation).await?;
-            return Ok(());
+            return Ok(true);
         };
         // The run has its subscription: a pause the task waited in is over. Only here, so that
         // a start the full queue refused, and one that finds no capacity after all (the branch
         // above, where an open pause keeps its kind and its text), leave it as it was
         // (SPEC-483 QST-002).
-        self.end_pause(&task.id, "started").await;
+        self.end_pause(&task.id, pause_outcome).await;
         let credential = self.open_credential(&account)?;
         crate::race::reached(
             crate::race::Point::AccountChosen,
@@ -2317,6 +2387,20 @@ impl App {
                     LaunchKind::New,
                 )
             }
+        };
+        let activity = match (harness, &mode) {
+            (
+                Harness::Codex,
+                SessionMode::Resume {
+                    prompt,
+                    continue_interrupted: false,
+                    ..
+                },
+            ) if prompt.as_deref().unwrap_or_default().is_empty() => {
+                rest.map_or(Activity::Waiting, |rest| rest.activity)
+            }
+            (Harness::Codex, _) => Activity::Working,
+            _ => rest.map_or(Activity::Working, |rest| rest.activity),
         };
         let goal_in_prompt = sets_goal(&mode);
         // A continued turn opens the run like a first message: the goal is set after its Stop.
@@ -2608,7 +2692,7 @@ impl App {
             store
                 .transition_attempt(&attempt_id, AttemptState::Exited, &update)
                 .await?;
-            return Box::pin(self.launch_attempt(&task, relaunch, None, rest)).await;
+            return Box::pin(self.launch_attempt(&task, relaunch, None, rest, pause_outcome)).await;
         }
         // Before the spawn, so the first prompt's hook always finds it (SPEC-068).
         if typed_opening.is_some()
@@ -2711,9 +2795,6 @@ impl App {
         } else {
             TaskEvent::Spawned
         };
-        // A run works from its launch on, except a session that was idle and got nothing typed:
-        // it is idle again (SPEC-468 CCF-008).
-        let activity = rest.map_or(Activity::Working, |rest| rest.activity);
         if let Ok(next) = current.status.apply(event) {
             store
                 .transition_task(
@@ -2808,7 +2889,7 @@ impl App {
                 }
             });
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Writes the task's request file into the sandbox home (`.yulius/tasks/<number>.md`: the
@@ -4654,7 +4735,7 @@ impl App {
             // Only while it is still queued, checked under the launch lock: a task stopped or
             // started meanwhile is not resumed here.
             if let Err(err) = self
-                .start_run_if(&task.id, start, None, Some(TaskStatus::Queued), None)
+                .start_run_if(&task.id, start, None, Some(TaskStatus::Queued), None, None)
                 .await
             {
                 tracing::warn!(error = %err, task = %task.id, "queued task failed to start");
@@ -4831,6 +4912,84 @@ impl App {
         })
     }
 
+    /// Confirms which Codex conversation a native resume will open. SessionStart may have
+    /// saved the attempt's ID before an outage interrupted the lineage write.
+    async fn codex_resume_session(&self, task: &TaskRecord) -> AppResult<Option<String>> {
+        let store = &self.deps.store;
+        let missing = || {
+            AppError::Conflict(format!(
+                "This {} Codex task has no recorded rollout to resume.",
+                task.status.as_str()
+            ))
+        };
+        let run = store.attempts(&task.id).await?.pop();
+        let sessions = store.provider_sessions(&task.id).await?;
+        let latest = sessions
+            .last()
+            .filter(|entry| entry.harness == Harness::Codex);
+        let Some(run) = run else {
+            return match (task.status, sessions.last()) {
+                (TaskStatus::Parked, _) => Err(missing()),
+                (_, None) => Ok(None),
+                (_, Some(entry)) if entry.harness == Harness::Codex => {
+                    Ok(Some(entry.session_id.clone()))
+                }
+                _ => Err(missing()),
+            };
+        };
+        if run.harness != Harness::Codex {
+            return Err(missing());
+        }
+        if let Some(id) = run.provider_session_id {
+            if latest.is_none_or(|entry| entry.session_id != id) {
+                self.record_lineage(task, Harness::Codex, &id, "native")
+                    .await?;
+                // The store preserves another task's claim on a rollout.
+                if !store
+                    .provider_sessions(&task.id)
+                    .await?
+                    .last()
+                    .is_some_and(|entry| entry.harness == Harness::Codex && entry.session_id == id)
+                {
+                    return Err(missing());
+                }
+            }
+            return Ok(Some(id));
+        }
+        // A failed fresh spawn opened no session. A previous attempt's lineage is still on
+        // record, but the failed launch must retry the original request.
+        let fresh_spawn_failed = run.launch_kind == LaunchKind::New
+            && run.exit_reason.as_deref() == Some("spawn_failed");
+        if task.status != TaskStatus::Parked && (sessions.is_empty() || fresh_spawn_failed) {
+            return Ok(None);
+        }
+        let entry = latest
+            .filter(|entry| {
+                run.ended_at
+                    .is_some_and(|end| (run.started_at..=end).contains(&entry.last_seen))
+            })
+            .ok_or_else(missing)?;
+        Ok(Some(entry.session_id.clone()))
+    }
+
+    /// SessionStart precedes the first rollout write. Only a saved rollout can receive the
+    /// continuation. An absent rollout starts the original request, including after admission.
+    pub(crate) async fn codex_restart(&self, task: &TaskRecord) -> AppResult<RunStart> {
+        if let Some(id) = self.codex_resume_session(task).await?
+            && self
+                .deps
+                .harness
+                .find_codex_rollout(&self.codex_sessions(&task.sandbox_id), &id)?
+                .is_some()
+        {
+            Ok(RunStart::Resume {
+                prompt: Some(CONTINUE_TASK_PROMPT.into()),
+            })
+        } else {
+            Ok(RunStart::Fresh { prompt: None })
+        }
+    }
+
     /// Resumes a parked task in its own session (SPEC-512 PRK-005), with `prompt` as the turn it
     /// opens with, or with nothing typed: a prompt-mode session that gets nothing reads as it
     /// did, idle, from its launch on ([`IdleRest`]). At the session limit it waits in the queue
@@ -4853,48 +5012,7 @@ impl App {
             return Ok(false);
         }
         if task.harness == Harness::Codex {
-            // Do not fall back to a fresh session if an old attempt has no lineage.
-            // SessionStart stores the attempt id before it records lineage, so a
-            // restart between those writes can recover from the parked attempt.
-            let store = &self.deps.store;
-            let missing = || {
-                AppError::Conflict(
-                    "This parked Codex task has no recorded rollout to resume.".into(),
-                )
-            };
-            let run = store
-                .attempts(task_id)
-                .await?
-                .pop()
-                .filter(|run| run.harness == Harness::Codex)
-                .ok_or_else(missing)?;
-            let sessions = store.provider_sessions(task_id).await?;
-            let latest = sessions
-                .last()
-                .filter(|entry| entry.harness == Harness::Codex);
-            if let Some(id) = run.provider_session_id {
-                if latest.is_none_or(|entry| entry.session_id != id) {
-                    self.record_lineage(&task, Harness::Codex, &id, "native")
-                        .await?;
-                    // The store preserves another task's claim on a rollout. Confirm
-                    // that the launch will actually read this attempt's identity.
-                    if !store
-                        .provider_sessions(task_id)
-                        .await?
-                        .last()
-                        .is_some_and(|entry| {
-                            entry.harness == Harness::Codex && entry.session_id == id
-                        })
-                    {
-                        return Err(missing());
-                    }
-                }
-            } else if latest.is_none_or(|entry| {
-                entry.last_seen < run.started_at
-                    || run.ended_at.is_none_or(|end| entry.last_seen > end)
-            }) {
-                return Err(missing());
-            }
+            self.codex_resume_session(&task).await?;
         }
         let goal_unfinished = self.goal_unfinished_of(&task).await;
         let rest = task
@@ -4912,6 +5030,7 @@ impl App {
             None,
             Some(TaskStatus::Parked),
             rest,
+            None,
         )
         .await
     }
@@ -5262,7 +5381,7 @@ impl App {
         reason: &str,
         start: RunStart,
     ) -> AppResult<()> {
-        self.switch_from(task_id, None, account, reason, start)
+        self.switch_from(task_id, None, account, reason, start, None)
             .await
     }
 
@@ -5284,19 +5403,21 @@ impl App {
             account,
             reason,
             RunStart::AfterLimit,
+            None,
         )
         .await
     }
 
     /// [`Self::switch_with`] of a task that must still be `expected` (any switchable status when
     /// `None`); the status change compares with what was read, so a concurrent change refuses.
-    async fn switch_from(
+    pub(crate) async fn switch_from(
         self: &Arc<Self>,
         task_id: &TaskId,
         expected: Option<TaskStatus>,
         account: Option<AccountId>,
         reason: &str,
         start: RunStart,
+        pause: Option<&PauseRecord>,
     ) -> AppResult<()> {
         let store = &self.deps.store;
         let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
@@ -5307,6 +5428,11 @@ impl App {
             )));
         }
         let attempt = store.live_attempt(task_id).await?;
+        if pause.is_some() && attempt.is_some() {
+            return Err(AppError::Conflict(
+                "the paused start has already run".into(),
+            ));
+        }
         let next = task
             .status
             .apply(TaskEvent::SwitchStarted)
@@ -5349,14 +5475,17 @@ impl App {
             crate::race::Point::SwitchPrepared,
             Path::new(task_id.as_str()),
         );
-        if !store
-            .transition_task(task_id, Some(task.status), next, None, self.now())
-            .await?
-        {
-            return Err(AppError::Conflict("task state changed concurrently".into()));
+        // A saved start has no live run to switch out. Keep its pause until the launch lock
+        // claims that exact pause, even if Stop and Continue created a new one during preflight.
+        if pause.is_none() {
+            if !store
+                .transition_task(task_id, Some(task.status), next, None, self.now())
+                .await?
+            {
+                return Err(AppError::Conflict("task state changed concurrently".into()));
+            }
+            self.end_pause(task_id, "switched").await;
         }
-        // A paused task that moves to another subscription is no longer paused.
-        self.end_pause(task_id, "switched").await;
         // The turn a limit cut is continued by the new session itself (SPEC-034): nobody has to
         // send the message a goal pause at that limit asked for (SPEC-464 UCL-007).
         if matches!(start, RunStart::AfterLimit) {
@@ -5508,8 +5637,12 @@ impl App {
         }
         // Only while the task is still switching, checked under the launch lock: one stopped or
         // closed meanwhile is not started again, nor queued (STW-006).
-        let Some(from) = self.switch_goes_on(task_id).await else {
-            return self.switch_overtaken(task_id, &decision_id, None).await;
+        let from = match pause {
+            Some(_) => TaskStatus::WaitingCapacity,
+            None => match self.switch_goes_on(task_id).await {
+                Some(status) => status,
+                None => return self.switch_overtaken(task_id, &decision_id, None).await,
+            },
         };
         crate::race::reached(
             crate::race::Point::SwitchLaunching,
@@ -5532,12 +5665,20 @@ impl App {
                 activity,
                 goal_unfinished: runtime.goal_unfinished.load(Ordering::SeqCst),
             });
-        let started = self.start_run_if(task_id, start, account, Some(from), rest);
+        let started = self.start_run_if(
+            task_id,
+            start,
+            account,
+            Some(from),
+            rest,
+            pause.map(PausedStart::Move),
+        );
         match started.await {
             // Another start (the capacity loop's) ran the paused task first: it won, the switch
             // is made.
             Ok(false)
-                if from != TaskStatus::WaitingCapacity
+                if pause.is_some()
+                    || from != TaskStatus::WaitingCapacity
                     || !matches!(
                         store.task(task_id).await,
                         Ok(Some(t)) if t.status == TaskStatus::Running
@@ -5549,7 +5690,7 @@ impl App {
                 // The switch found no subscription with capacity: the task paused instead.
                 let paused = matches!(
                     store.task(task_id).await,
-                    Ok(Some(t)) if t.status == TaskStatus::WaitingCapacity
+                    Ok(Some(t)) if matches!(t.status, TaskStatus::WaitingCapacity | TaskStatus::Queued)
                 );
                 if paused {
                     store.set_switch_outcome(&decision_id, "waiting").await?;
@@ -5577,7 +5718,8 @@ impl App {
                     "↻ The session could not continue: {}",
                     err.public_message()
                 ));
-                if let Ok(Some(current)) = store.task(task_id).await
+                if pause.is_none()
+                    && let Ok(Some(current)) = store.task(task_id).await
                     && current.status == TaskStatus::Switching
                 {
                     let _ = store
