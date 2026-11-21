@@ -532,6 +532,8 @@ fn stop_during_capacity_restart(continue_again: bool) -> TestResult {
             limit_resets_at: Some(Timestamp(4_000_000_000_000)),
             ..Default::default()
         });
+        let available =
+            yulius_app::usage_json::to_json(&yulius_domain::usage::AccountUsage::default());
         let store = &app.deps.store;
         store
             .set_account_state(
@@ -547,7 +549,13 @@ fn stop_during_capacity_restart(continue_again: bool) -> TestResult {
             .await?;
         assert_eq!(waiting.status, "waiting_capacity");
         store
-            .set_account_state(&account, AccountStatus::Ok, None, None, app.now())
+            .set_account_state(
+                &account,
+                AccountStatus::Ok,
+                Some(&available),
+                None,
+                app.now(),
+            )
             .await?;
         let (at, go) =
             support::hold_point(yulius_app::race::Point::CapacityStartReady, id.as_str());
@@ -570,7 +578,13 @@ fn stop_during_capacity_restart(continue_again: bool) -> TestResult {
                 .await?;
             assert_eq!(next.status, "waiting_capacity");
             store
-                .set_account_state(&account, AccountStatus::Ok, None, None, app.now())
+                .set_account_state(
+                    &account,
+                    AccountStatus::Ok,
+                    Some(&available),
+                    None,
+                    app.now(),
+                )
                 .await?;
         }
         go.send(())?;

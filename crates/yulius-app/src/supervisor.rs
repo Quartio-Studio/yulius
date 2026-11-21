@@ -1881,7 +1881,7 @@ impl App {
         account: Option<AccountId>,
     ) -> BoxFuture<'a, AppResult<()>> {
         Box::pin(async move {
-            self.start_run_if(task_id, start, account, None, None)
+            self.start_run_if(task_id, start, account, None, None, None)
                 .await
                 .map(|_| ())
         })
@@ -1895,7 +1895,7 @@ impl App {
         account: Option<AccountId>,
     ) -> AppResult<()> {
         if self
-            .start_run_if(&task.id, start, account, Some(task.status), None)
+            .start_run_if(&task.id, start, account, Some(task.status), None, None)
             .await?
         {
             Ok(())
@@ -1904,6 +1904,25 @@ impl App {
                 "the task changed while it was continued; try again".into(),
             ))
         }
+    }
+
+    /// Claims the capacity worker's observed pause under the launch lock. A Stop or a
+    /// subsequent Continue can end that pause before the worker gets the lock.
+    pub(crate) async fn start_paused_run(
+        self: &Arc<Self>,
+        pause: &crate::model::PauseRecord,
+        start: RunStart,
+        account: Option<AccountId>,
+    ) -> AppResult<bool> {
+        self.start_run_if(
+            &pause.task_id,
+            start,
+            account,
+            Some(TaskStatus::WaitingCapacity),
+            None,
+            Some(pause),
+        )
+        .await
     }
 
     /// [`App::start_run`], only while the task still has the status `only` (when given), checked
@@ -1916,6 +1935,7 @@ impl App {
         account: Option<AccountId>,
         only: Option<TaskStatus>,
         rest: Option<IdleRest>,
+        pause: Option<&'a crate::model::PauseRecord>,
     ) -> BoxFuture<'a, AppResult<bool>> {
         Box::pin(async move {
             self.settle_resting_run(task_id).await?;
@@ -1941,6 +1961,11 @@ impl App {
                 .await?
                 .ok_or(AppError::NotFound)?;
             if only.is_some_and(|status| status != task.status) {
+                return Ok(false);
+            }
+            if let Some(pause) = pause
+                && !self.pause_open(pause).await
+            {
                 return Ok(false);
             }
             // Already running: another start won the race (the queue and a direct start).
@@ -4686,7 +4711,7 @@ impl App {
             // Only while it is still queued, checked under the launch lock: a task stopped or
             // started meanwhile is not resumed here.
             if let Err(err) = self
-                .start_run_if(&task.id, start, None, Some(TaskStatus::Queued), None)
+                .start_run_if(&task.id, start, None, Some(TaskStatus::Queued), None, None)
                 .await
             {
                 tracing::warn!(error = %err, task = %task.id, "queued task failed to start");
@@ -4977,6 +5002,7 @@ impl App {
             None,
             Some(TaskStatus::Parked),
             rest,
+            None,
         )
         .await
     }
@@ -5597,7 +5623,7 @@ impl App {
                 activity,
                 goal_unfinished: runtime.goal_unfinished.load(Ordering::SeqCst),
             });
-        let started = self.start_run_if(task_id, start, account, Some(from), rest);
+        let started = self.start_run_if(task_id, start, account, Some(from), rest, None);
         match started.await {
             // Another start (the capacity loop's) ran the paused task first: it won, the switch
             // is made.

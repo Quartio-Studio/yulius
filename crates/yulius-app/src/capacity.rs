@@ -954,11 +954,13 @@ impl App {
                         crate::race::Point::CapacityStartReady,
                         std::path::Path::new(task.id.as_str()),
                     );
-                    if let Err(err) = self.start_run(&task.id, start, account).await {
-                        tracing::warn!(error = %err, task = %task.id, "paused task failed to start");
-                        // Nothing was resumed: the next task of this round need not wait the
-                        // stagger for it.
-                        return Resume::Waiting(None);
+                    match self.start_paused_run(pause, start, account).await {
+                        Ok(true) => {}
+                        Ok(false) => return Resume::Gone,
+                        Err(err) => {
+                            tracing::warn!(error = %err, task = %task.id, "paused task failed to start");
+                            return Resume::Waiting(None);
+                        }
                     }
                 }
                 Resume::Resumed
@@ -976,7 +978,7 @@ impl App {
     }
 
     /// Whether `pause` is still the task's open pause.
-    async fn pause_open(&self, pause: &PauseRecord) -> bool {
+    pub(crate) async fn pause_open(&self, pause: &PauseRecord) -> bool {
         matches!(
             self.deps.store.open_pause(&pause.task_id).await,
             Ok(Some(open)) if open.id == pause.id

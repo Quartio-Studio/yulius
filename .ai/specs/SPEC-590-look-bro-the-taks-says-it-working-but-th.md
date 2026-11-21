@@ -36,6 +36,7 @@ The page's Continue action and the Superagent's `task_restart` share `continue_t
 - AC-1. Stop a task with a known Codex session, then Continue. The resumed agent processes a continuation in the same session with no further operator input.
 - AC-2. Close and reopen a Codex conversation. It reports Waiting until work begins. A stopped task with no rollout starts with the full request.
 - AC-3. A restart queued for a session slot retains the continuation and submits it once. Moving a restart that waits for subscription capacity carries the saved prompt to the chosen account.
+- AC-4. Stop cancels a pending capacity restart, including after the worker selected its prompt. A later Continue owns its own pause.
 
 ## Test plan
 
@@ -56,3 +57,7 @@ Independent review of `19c85e1e7` found two recovery paths requiring changes. Ag
 After both corrections, the 159 Codex, parking, subscription move and native harness checks passed in nextest run `090c7c24-3bbb-493c-8320-65ced95d22e2`. They include recovery from the missing index write and refusal of an unrelated rollout. Repository quick checks passed. Vidoc was disabled for this project.
 
 The second independent review identified the interval between SessionStart recording an ID and the first rollout write. On `85a755963`, nextest run `64df5e76-7867-4bdf-8a46-0b2ba2d77b15` reproduced Continue queueing a native resume for an ID with no file. Continue checks the rollout lookup and admits a fresh start when Codex has no saved conversation. A lookup error is returned to the caller.
+
+The queue and both forms of capacity recovery preserved the fresh launch in run `1a1d81f6-e9b1-42cd-84b8-25cfddc9a5a1`, even when the first rollout appeared late. This wider run passed 198 of 200 checks. Two existing Claude parking fixtures intermittently failed before the Codex restart logic, tracked as [#1605](https://github.com/Quartio-Studio/yulius/issues/1605) and [#1606](https://github.com/Quartio-Studio/yulius/issues/1606). The affected application crate passed Clippy with warnings denied.
+
+The third review found the capacity worker could select a continuation, then launch it after Stop. Two deterministic tests held the worker immediately before launch. In nextest run `48d0706a-1b6a-471c-a795-a20b3212ff25`, both observed a second Codex attempt after cancellation. Admission now checks both the observed waiting state and the original pause ID under the launch lock.
