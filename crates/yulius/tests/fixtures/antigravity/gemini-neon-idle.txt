@@ -1,0 +1,8 @@
+● Used 3 tools (ReadBoard, PostMessage, SwarmWait) (ctrl+o to expand)
+ ┃ Introducing Gemini 4 Neon
+ ┃ Our best balance of intelligence, cost, and latency. Get building today with Neon.
+ ┃ esc to dismiss
+────────────────────
+> Auto mode: edits & safe commands auto-approved (shift+tab to cycle)
+────────────────────
+? for shortcuts                         auto · Gemini 4 Neon · high

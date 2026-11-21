@@ -922,6 +922,11 @@ pub trait StagingStore: Send + Sync {
     async fn insert_staging_request(&self, request: &StagingRequestRecord) -> AppResult<bool>;
     /// One request.
     async fn staging_request(&self, id: &str) -> AppResult<Option<StagingRequestRecord>>;
+    /// Latest staging request whose result still needs to reach this task.
+    async fn task_staging_wait(
+        &self,
+        task: &TaskId,
+    ) -> AppResult<Option<yulius_domain::staging::StagingState>>;
     /// The requests of `environment` asked by the same requester: the task's, or (for `None`) a
     /// person's for `revision`; oldest first.
     async fn staging_requests_of(
@@ -968,8 +973,8 @@ pub trait StagingStore: Send + Sync {
     /// The requests of tasks whose outcome (verified, included, gate failed, deploy failed,
     /// superseded) was not told yet, oldest first.
     async fn untold_staging_requests(&self) -> AppResult<Vec<StagingRequestRecord>>;
-    /// Records the outcome as told; `false` when it already was.
-    async fn mark_staging_told(&self, id: &str) -> AppResult<bool>;
+    /// Acknowledge exactly the observed terminal decision. A retried request owns its new outcome.
+    async fn mark_staging_told(&self, outcome: &StagingRequestRecord) -> AppResult<bool>;
     /// Claims making the upgrade task of Infra bootstrap `revision` for `sandbox` (SPEC-575
     /// MFS-012, migration 0079): `true` when it recorded the claim, which happens only while
     /// its recorded revision is older (or none). A claim stays until its task is linked.
@@ -997,8 +1002,14 @@ pub trait StagingStore: Send + Sync {
     ) -> AppResult<bool>;
     /// The sandbox's recorded bootstrap revision, its state, task and when it was recorded.
     async fn bootstrap_upgrade(&self, sandbox: &SandboxId) -> AppResult<Option<BootstrapUpgrade>>;
-    /// The commits a task's pull requests landed on `branch` (migration 0077), in landing order.
-    async fn task_landings(&self, task: &TaskId, branch: &str) -> AppResult<Vec<String>>;
+    /// Newest confirmed integration landing for the current merged PR. A merge receipt is
+    /// scoped to its own PR. An unconfirmed final merge never falls back to an older slice.
+    async fn staging_landing(
+        &self,
+        task: &TaskId,
+        branch: &str,
+        receipt_pr: Option<u64>,
+    ) -> AppResult<Option<String>>;
 }
 
 /// One person's stored digest (SPEC-512 DIG-005).

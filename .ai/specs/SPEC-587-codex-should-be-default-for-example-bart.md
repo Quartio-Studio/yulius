@@ -5,6 +5,8 @@ status: done
 
 # SPEC-587 — Codex is the initial model choice for a person's new tasks
 
+[SPEC-607](SPEC-607-codex-tasks-run-at-high-effort-unless-th.md) supersedes the inherited effort used in this release.
+
 ## Goal
 
 Opening Settings or the new-task composer in a browser with no saved choice shows Codex. Starting a task uses the Codex launch defaults.

@@ -31,7 +31,7 @@
 // movepoll=<ms> (how often the card reads a move in flight; 3 s without it).
 
 import { counter, taskInfo } from './status.js';
-import { defaultEffort } from './models.js';
+import { DEFAULT_EFFORT } from './models.js';
 import { plausibleEmail } from './format.js';
 import { agentOfHarness, agentOfProvider, aName } from './agents.js';
 import { parsePrompt } from './promptparts.js';
@@ -541,6 +541,7 @@ function summary(task) {
     // What the agent asked a person to do (`needs_you`, SPEC-134).
     needs_you: task.needs_you ? { ...task.needs_you } : null,
     ...(task.status === 'parked' && typeof task.parked_needs_you === 'boolean' ? { parked_needs_you: task.parked_needs_you, parked_pr: task.parked_pr } : {}),
+    ...(task.staging_wait ? { staging_wait: task.staging_wait } : {}),
     ...(task.needs_you_notice ? { needs_you_notice: { ...task.needs_you_notice } } : {}),
     // Why it reads needs_attention (SPEC-472): the flag's reason, only while it reads that flag.
     attention: task.status === 'running' && task.activity === 'needs_attention' && task.attention ? { ...task.attention } : null,
@@ -1509,7 +1510,7 @@ route('GET', `/api/sandboxes/${ID}/tasks`, ({ db, p, query }) => {
 /** The effective model and effort, retaining each omitted task setting (SPEC-561). */
 function taskModelSettings(harness, options = {}) {
   const model = options.model || (harness === 'codex' ? 'gpt-6.2-astra' : harness === 'antigravity' ? 'gemini-4-neon' : 'claude-opus-4');
-  const effort = options.effort || (harness === 'codex' ? defaultEffort(model) : harness === 'antigravity' ? 'high' : 'default');
+  const effort = options.effort || (harness === 'claude' ? 'default' : DEFAULT_EFFORT);
   return { model, model_default: !options.model, effort, effort_default: !options.effort };
 }
 route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {

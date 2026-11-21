@@ -668,6 +668,11 @@ impl App {
                     .is_some_and(|count| count > 0),
             yulius_wait: live
                 && (self.agent_waits_on_yulius(&task.id) || self.pr_news_due(task).await),
+            staging_wait: if finished {
+                store.task_staging_wait(&task.id).await?
+            } else {
+                None
+            },
             pull,
             paused: self.is_paused(task).await,
             awaits_start_onboarding: false,

@@ -158,7 +158,7 @@ impl ObservationSource {
     }
 }
 
-pub(crate) enum PrNoticeInput<'a> {
+pub(crate) enum NoticeInput<'a> {
     Paste(&'a [u8]),
     Submit,
 }
@@ -550,20 +550,20 @@ pub const SWITCH_COOLDOWN_MS: i64 = 10 * 60 * 1000;
 impl TaskRuntime {
     /// The paste needs immediate writer access. Its Enter can wait, but both belong to the
     /// attempt that the watcher observed. A switch attaches a new writer to this runtime.
-    pub(crate) async fn write_pr_notice(
+    pub(crate) async fn write_notice(
         &self,
         attempt: &AttemptId,
         now: Timestamp,
-        input: PrNoticeInput<'_>,
+        input: NoticeInput<'_>,
     ) -> AppResult<()> {
         let (mut run, bytes) = match input {
-            PrNoticeInput::Paste(bytes) => (
+            NoticeInput::Paste(bytes) => (
                 self.run
                     .try_lock()
                     .map_err(|_| AppError::Conflict("the session writer is busy".into()))?,
                 bytes,
             ),
-            PrNoticeInput::Submit => (self.run.lock().await, b"\r".as_slice()),
+            NoticeInput::Submit => (self.run.lock().await, b"\r".as_slice()),
         };
         let run = run
             .as_mut()
@@ -2809,8 +2809,9 @@ impl App {
             }
         }
         let activity = match (harness, &mode) {
+            // Opening either conversation without a message starts no turn to settle.
             (
-                Harness::Codex,
+                Harness::Codex | Harness::Antigravity,
                 SessionMode::Resume {
                     prompt,
                     continue_interrupted: false,
@@ -2819,8 +2820,8 @@ impl App {
             ) if prompt.as_deref().unwrap_or_default().is_empty() => {
                 rest.map_or(Activity::Waiting, |rest| rest.activity)
             }
-            (Harness::Codex, _) => Activity::Working,
-            _ => rest.map_or(Activity::Working, |rest| rest.activity),
+            (Harness::Codex | Harness::Antigravity, _) => Activity::Working,
+            (Harness::ClaudeCode, _) => rest.map_or(Activity::Working, |rest| rest.activity),
         };
         let goal_in_prompt = sets_goal(&mode);
         // A continued turn opens the run like a first message: the goal is set after its Stop.

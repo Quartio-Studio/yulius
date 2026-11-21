@@ -21,9 +21,9 @@ Task #592 reports two GitHub App quota resets on 21 November. During the second 
 
 ## Plan
 
-- [ ] Keep the last observed pull request state on unreadable task rows
+- [x] Keep the last observed pull request state on unreadable task rows
 - [x] Expose the GitHub App reset time in instance status
-- [ ] Show the shared wait in Status and task lists
+- [x] Show the shared wait in Status and task lists
 - [ ] Review and deliver the verified fix to dev
 
 ## Acceptance criteria
@@ -43,3 +43,5 @@ Use the existing delivery and pull observation paths for display and keep the qu
 - With the original display code, the parked-task regression changed `parked_needs_you` from false to true after a verified green PR became unreadable. The always-rate-limited HTTP fixture failed to find the reset timestamp in instance status. The new behavior also checks the finished live task, the absence of a task notice and the pending CI status publication.
 - A direct-read regression exposed a second failure mode. When the delivery record still said open, a failed read changed a previously observed merged PR back to open. The test checks the PR identity and state as well as the task group.
 - The browser test failed when the shared notice was absent. It also failed when opening Status left two notices visible. Chromium verifies the same UTC reset in each view and only one visible notice.
+- The scoped nextest run passed 65 tests across `yulius`, `yulius-app` and `yulius-github`. Coverage includes genuine CI errors, a changed head during HTTP 503s, the parked read deadline, fresh dependency checks, App versus personal credentials, and reset expiry under a controlled clock.
+- Manual check of the browser assertion temporarily suppressed the reset message. The task-list text assertion failed. Restoring the message passed the same test.
