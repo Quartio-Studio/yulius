@@ -57,7 +57,19 @@ class RepositoryTests(unittest.TestCase):
         self.assertIn("the_repositorys_own_cd_is_defined", names("yulius.toml"))
         self.assertIn("agents_manage_automations_through_mcp_tools", names("catalog/workflows/fix.md"))
         self.assertIn("ready_made_automations_are_enabled_in_one_call", names("catalog/automations/docs-up-to-date.md"))
+        policy = names("crates/yulius-server/src/content-security-policy.txt")
+        self.assertIn("public_responses_carry_security_headers", policy)
+        self.assertIn("yulius_is_never_shown_inside_itself", policy)
         self.assertFalse(names("some-unrelated-file.txt"))
+
+    def test_a_test_source_edit_runs_its_repo_reader_without_unrelated_cases(self):
+        from repository_tests import inventory, select
+        readers = inventory(ROOT)
+        delivery = "crates/yulius/tests/delivery.rs"
+        selected = select(readers, [delivery])
+        self.assertEqual({r.source for r in selected}, {"crates/yulius/tests/fixture_hygiene.rs"})
+        self.assertFalse(any("crates/x" in r.inputs for r in readers if r.source == delivery))
+
 
     def test_a_new_reader_and_a_shared_helper_need_no_registration(self):
         from repository_tests import inventory, select
@@ -141,6 +153,9 @@ fn reads_a_config() {
                 with self.subTest(body=body):
                     (crate / "src/lib.rs").write_text(f'#[test]\nfn pins_a_guide() {{\n    {body}\n}}\n')
                     self.assertEqual([r.name for r in select(inventory(root), ["docs/guide.md"])], ["pins_a_guide"])
+            (crate / "src/lib.rs").write_text(
+                'use std::fs::read;\n#[test]\nfn reads_imported() { read("../../docs/guide.md").unwrap(); }\n')
+            self.assertEqual([r.name for r in select(inventory(root), ["docs/guide.md"])], ["reads_imported"])
             (crate / "src/lib.rs").write_text(
                 '#[test]\nfn pins_a_fixture() {\n let path = "test-data"; std::fs::read(&path).unwrap();\n}\n')
             self.assertEqual([r.name for r in select(inventory(root), ["crates/sample/test-data"])], ["pins_a_fixture"])

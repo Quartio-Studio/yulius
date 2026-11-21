@@ -14,7 +14,7 @@ TEST = re.compile(
     r"(?m)^(?P<indent>[ \t]*)#\[(?:\w+::)?test(?:\([^\]]*\))?\]\s*"
     r"(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+(?P<name>\w+)"
 )
-READ_FUNCTION = r"\b(?:read_to_string|fs::read|read_dir|File::open)\s*\(\s*"
+READ_FUNCTION = r"\b(?:read(?:_to_string|_dir)?|File::open)\s*\(\s*"
 BOUND_READ = re.compile(READ_FUNCTION + r"&?(\w+)\s*\)")
 LITERAL_BINDING = re.compile(r'\blet\s+(?:mut\s+)?(\w+)\s*=\s*(?:r#*)?"([^"\\]+)"')
 READ_CALL = re.compile(READ_FUNCTION)
@@ -25,11 +25,13 @@ MANIFEST = re.compile(r'env!\s*\(\s*"CARGO_MANIFEST_DIR"\s*\)\s*\)')
 CONCAT_MANIFEST = re.compile(r'concat!\s*\(\s*env!\s*\(\s*"CARGO_MANIFEST_DIR"\s*\)\s*,\s*"/([^"\\]+)"')
 PATH_LITERAL = re.compile(r'"([\w./-]+)"')
 JOIN = re.compile(r'\s*\.join\(\s*"([\w./-]+)"\s*\)')
-# These accessors read the catalogs embedded by yulius-app's build script.
+# Compiled-in data also reaches tests through these accessors, routes and headers.
 EMBEDDED = {
     "catalog::default_workflow(": "catalog/workflows",
     "catalog::defaults(": "catalog/workflows",
     "/automation-templates": "catalog/automations",
+    '"content-security-policy"': "crates/yulius-server/src/content-security-policy.txt",
+    "header::CONTENT_SECURITY_POLICY": "crates/yulius-server/src/content-security-policy.txt",
     "templates::template(": "catalog/automations",
     "pack::PACKS": "catalog/skills",
 }
@@ -53,17 +55,16 @@ def inputs_for(root, crate, path, text, caller_text=None):
             inputs.add(absolute.relative_to(root).as_posix())
 
     # Rust concatenates these literals before resolving an include or a read.
-    text = LITERAL_CONCAT.sub(lambda m: '"' + "".join(re.findall(r'"([^"]*)"', m[1])) + '"', text)
+    if "concat!" in text:
+        text = LITERAL_CONCAT.sub(lambda m: '"' + "".join(re.findall(r'"([^"]*)"', m[1])) + '"', text)
     if READ_CALL.search(text):
         # Also cover a path passed via a local binding. The crate directory is
         # Cargo's working directory for the test.
         variables = set(BOUND_READ.findall(text))
-        for variable, literal in LITERAL_BINDING.findall(caller_text or text):
-            if variable in variables:
-                add(crate, literal)
-        for literal in PATH_LITERAL.findall(caller_text or text):
-            if literal.startswith("../"):
-                add(crate, literal)
+        if variables:
+            for variable, literal in LITERAL_BINDING.findall(caller_text or text):
+                if variable in variables:
+                    add(crate, literal)
     for literal in DIRECT_READ.findall(text):
         add(crate, literal)
     for literal in INCLUDE.findall(text):
@@ -157,12 +158,13 @@ def inventory(root):
                 target = cargo_target(crate, config, path)
                 source = path.relative_to(root).as_posix()
                 all_inputs = inputs_for(root, crate, path, text)
+                if not all_inputs:
+                    continue
                 if folder == "src":
                     # Unit tests can read the same inputs through their implementation
                     # (e.g. the embedded skill, workflow and automation catalogs).
-                    if all_inputs:
-                        readers.extend(Reader(package, target, source, all_inputs, match["name"])
-                                       for match in TEST.finditer(text))
+                    readers.extend(Reader(package, target, source, all_inputs, match["name"])
+                                   for match in TEST.finditer(text))
                     continue
                 sections, shared = test_sections(text)
                 common = inputs_for(root, crate, path, shared, caller_text=text)
@@ -184,7 +186,7 @@ def select(readers, paths):
     ancestors = changed.copy()
     for path in changed:
         ancestors.update(parent.as_posix() for parent in Path(path).parents)
-    return [reader for reader in readers if reader.source in changed or reader.inputs & ancestors]
+    return [reader for reader in readers if reader.inputs & ancestors]
 
 
 def changed_paths(root, base):
