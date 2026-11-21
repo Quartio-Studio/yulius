@@ -495,6 +495,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0443 -->
 - [0444](0444-codex-tasks-inherit-high-effort-on-every-model.md) Codex tasks inherit High effort on every model. A task can explicitly choose Extra high or Max on GPT-6.2 Astra and Sol.
 <!-- ADR 0444 -->
+- [0445](0445-antigravity-resume-activity-follows-its-launch-prompt.md) A bare Antigravity resume starts at its saved idle activity or Waiting.
 <!-- ADR 0445 -->
 <!-- ADR 0446 -->
 <!-- ADR 0447 -->
