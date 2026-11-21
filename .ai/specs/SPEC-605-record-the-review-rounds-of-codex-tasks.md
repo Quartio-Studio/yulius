@@ -1,6 +1,6 @@
 ---
 yulius-task: 390479b9-2747-4388-b326-779981ff5f47
-status: in-progress
+status: done
 ---
 
 # SPEC-605: Record the review rounds of Codex tasks
@@ -49,7 +49,7 @@ no observable role to distinguish a reviewer from other Codex subagents.
 - [x] Complete Codex review rounds with the reviewer verdict
 - [x] Verify review history through delivery and dashboard data
 - [x] Preserve review evidence across delayed hooks and successive pull requests
-- [ ] Approve the change for delivery
+- [x] Approve the change for delivery
 
 ## Acceptance criteria
 
@@ -109,3 +109,8 @@ subagent hooks. Its instrumentation is outside this slice.
 - After the follow-up, `scripts/cargo test` passed 41 focused hook and review integration
   tests, 23 app tests, 14 domain tests, the Codex launch test and four store tests
   including the migration-order check. `scripts/dev quick` passed.
+- The second independent review approved `e93c0cdb7` and independently passed the five
+  new Codex cases and 35 shared review cases. The API example now includes the Codex
+  reviewer and the round's timestamps and pull request number, answering its remaining
+  documentation finding. The project disables Vidoc, so `scripts/dev security` sent
+  nothing for scanning.

@@ -689,9 +689,10 @@ Delivery = {"evidence"?:MergeEvidence,"stage":"none|pr_open|merged_integration|e
   "next_actions":["open_pr|merge|run_env:<name>|confirm_env:<name>|promote"],
   "blocked":[{"action","reason"}], "notes":["…"], "checks_access":ChecksAccess|null,
   "review_rounds":[ReviewRound]}
-ReviewRound = {"round":1, "agent":"yulius-reviewer|yulius-reviewer-opus",
-  "model":"claude-fable-5-2", "model_answered":"claude-fable-5-2|null",
+ReviewRound = {"round":1, "agent":"yulius-reviewer|yulius-reviewer-opus|codex-reviewer",
+  "model":"<model-id>", "model_answered":"<model-id>|null",
   "reason":"round|kept|no_fable", "head":"<sha>|null",
+  "started_at":"<RFC3339>", "ended_at":"<RFC3339>|null", "pr_number":42|null,
   "verdict":"approve|request_changes|null", "reported":bool, "cut_off":bool}
 EnvironmentRun = {"run_id","environment","kind":"command|manual",
   "state":"running|succeeded|failed|error","command":"…|null","commit":"<sha>|null",
