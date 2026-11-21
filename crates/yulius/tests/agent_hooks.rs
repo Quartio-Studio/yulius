@@ -3133,6 +3133,11 @@ async fn goal_stop_preserves_a_multiline_draft_after_a_pause_in_typing() -> Test
 #[tokio::test]
 async fn goal_stop_accepts_recalled_and_cursor_edited_owner_work() -> TestResult {
     for (frames, prompt) in [
+        (
+            vec![b"\x1b[200~Verify dev\rRecord evidence\x1b[201~\r".as_slice()],
+            "Verify dev\nRecord evidence",
+        ),
+        (vec![b" x\x7fVerify dev\r".as_slice()], " Verify dev"),
         (vec![b"Review checkout\r".as_slice()], "Review checkout"),
         (vec![b"\x1b[A".as_slice(), b"\r"], "Verify dev"),
         (vec![b"x".as_slice(), b"\x1b[D", b"\x7f", b"\r"], "x"),
@@ -3143,10 +3148,11 @@ async fn goal_stop_accepts_recalled_and_cursor_edited_owner_work() -> TestResult
             prompt: Some(text.into()),
             ..Default::default()
         };
+        let previous = prompt.replace('\n', " ");
         f.h.app
-            .record_terminal_frame(&f.task, &owner, format!("{prompt}\r").as_bytes());
+            .record_terminal_frame(&f.task, &owner, format!("{previous}\r").as_bytes());
         f.h.app
-            .hook_event(TOKEN, "codex", "UserPromptSubmit", &submit(prompt), None)
+            .hook_event(TOKEN, "codex", "UserPromptSubmit", &submit(&previous), None)
             .await?;
         let reason = stop_of(&f, Agent::Codex).await?["reason"]
             .as_str()
@@ -3155,21 +3161,23 @@ async fn goal_stop_accepts_recalled_and_cursor_edited_owner_work() -> TestResult
         for frame in frames {
             f.h.app.record_terminal_frame(&f.task, &owner, frame);
         }
-        // The provider can report the automatic instruction before acknowledging
-        // the recalled or edited owner's submission.
-        f.h.app
-            .hook_event(TOKEN, "codex", "UserPromptSubmit", &submit(&reason), None)
-            .await?;
-        assert_eq!(
+        // Repeated callbacks for the same automatic send must leave the owner's
+        // pending submission available for the provider to acknowledge.
+        for _ in 0..2 {
             f.h.app
-                .deps
-                .store
-                .task(&f.task)
-                .await?
-                .ok_or("task")?
-                .gate_blocks,
-            1
-        );
+                .hook_event(TOKEN, "codex", "UserPromptSubmit", &submit(&reason), None)
+                .await?;
+            assert_eq!(
+                f.h.app
+                    .deps
+                    .store
+                    .task(&f.task)
+                    .await?
+                    .ok_or("task")?
+                    .gate_blocks,
+                1
+            );
+        }
         f.h.app
             .hook_event(TOKEN, "codex", "UserPromptSubmit", &submit(prompt), None)
             .await?;
