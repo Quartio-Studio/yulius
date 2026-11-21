@@ -325,14 +325,10 @@ fn red_candidate_text(
     integration: &str,
 ) -> String {
     let listed: Vec<String> = members.iter().map(|n| format!("#{n}")).collect();
-    let next = if members.len() > 1 {
-        "Yulius tests smaller candidates and tells the pull request that breaks it."
-    } else {
-        "Yulius is verifying this pull request's head and checks before reporting the failure."
-    };
     format!(
         "Merge candidate {} (run {}), which holds it, failed: {}. Read `ci_status` with run_id {}. \
-         Set job to a listed name for its full details. {next} Do not re-arm, merge `{integration}` or push \
+         Set job to a listed name for its full details. Yulius tests smaller candidates \
+         and tells the pull request that breaks it. Do not re-arm, merge `{integration}` or push \
          to this branch meanwhile.",
         listed.join(", "),
         run.id,
@@ -1113,6 +1109,14 @@ impl App {
             own = None;
         }
         let own = own.as_ref();
+        // The queue still verifies a single failing member before deciding its arm.
+        // Keep earlier green advice and check-ins quiet while that decision is pending.
+        if holding.is_some_and(|(_, members)| members.len() == 1)
+            && candidate.is_some_and(|run| run.state == RunState::Failed)
+            && own.is_none_or(|run| !matches!(run.state, RunState::Failed | RunState::Error))
+        {
+            return None;
+        }
         let hold = if train.is_some() {
             Hold::Held
         } else {
@@ -1144,6 +1148,7 @@ impl App {
             }
         }
         if let (Some(run), Some((_, members))) = (candidate, holding)
+            && members.len() > 1
             && run.state == RunState::Failed
             && !own.is_some_and(|run| run.state == RunState::Failed)
             && !told_key("candidate", &run.id)
@@ -1283,6 +1288,7 @@ impl App {
         if self.armed_now(&task.id) != activation
             || self.merge_is_armed(&task.id) != armed
             || (armed && self.watched_train(task, pr) != train)
+            || (armed && train.is_none() && self.arm_queue_note(&task.id) != arm_note)
         {
             return None;
         }

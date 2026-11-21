@@ -56,7 +56,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Recover the recorded singleton decision and its replacement arm
 - [x] Preserve the ordinary armed merge outcome after a person merges through HTTP
 - [x] Keep failed integration candidates with their original owner
-- [ ] Replay the original owner’s recorded candidate decision and preserve replacement-head news
+- [ ] Report the active singleton and replay its recorded failure for the original owner
 - [ ] Verify candidate status before parking, showing Done or resuming a parked owner
 - [ ] Deliver bounded Codex goal continuation to dev
 - [ ] Recover screens from tasks parked before the upgrade
@@ -96,6 +96,7 @@ The queue writes the accepted singleton to the owner’s completed merge wait be
 
 ## Evidence
 
+- The ordinary-CI and queue-state delivery defers a single failing candidate to the queue’s verification. The next delivery covers that singleton’s live diagnosis, recovered receipt and replacement-head conflict. Review of `3dc21577e` passed all 15 committed tests, then reproduced a false free-arm stall when a queue retry kept the same activation but recorded a PR-read outage. The watcher now checks the free arm’s effective queue note before dispatch.
 - All 14 restart fixtures passed against `0bb9ddf0b`. An additional fixture then reproduced a train failure during final verification while the owner’s ordinary CI stayed green. The old watcher sent the holding train’s earlier green instructions. The correction reads the candidate verdict alongside ordinary CI before delivery.
 - Review of the live-queue slice at `f6af94c5f` reproduced two remaining orderings. When an ordinary run shared at the armed head failed while candidate CI was still running, the owner received hands-off advice for its previous green head. A free queue notice was delivered while a new human decision was pending. Both regressions failed before the correction.
 - The live queue and completed-decision replay are separate deliveries. The watcher identifies a holding train from its PR, task, head and activation. The free-arm outage regression passed on the intact implementation and failed when a generated mutation removed the queue note. A separate run of four generated mutations weakening the left-out task and PR checks caught all four. The three mutation campaigns for the superseded combined scope were interrupted after the split. All 12 restart cases retained for the live-queue delivery passed, including a PR left out of a train. The remaining replay step includes the replacement conflict from final review. That fixture produced no notice on `9d3ca52b4`, then passed alongside the moved-head test on the replay prototype. The combined prototype verification below records review history.

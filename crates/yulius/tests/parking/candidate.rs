@@ -87,7 +87,13 @@ fn a_train_that_fails_during_final_verification_reaches_its_owner_once() -> Test
     cold_candidate_case(ColdCandidate::TrainFailsDuringRead)
 }
 
+#[test]
+fn a_free_arm_kept_with_a_new_queue_reason_defers_the_prepared_check_in() -> TestResult {
+    cold_candidate_case(ColdCandidate::FreeNoteChanges)
+}
+
 enum ColdCandidate {
+    FreeNoteChanges,
     TrainFailsDuringRead,
     SharedWhileRunning,
     FreeHumanDecision,
@@ -341,6 +347,7 @@ async fn check_after_restart(
         ColdCandidate::FreeArmTaken
             | ColdCandidate::LeftOut
             | ColdCandidate::TrainFailsDuringRead
+            | ColdCandidate::FreeNoteChanges
             | ColdCandidate::FreeHumanDecision
             | ColdCandidate::SharedWhileRunning
             | ColdCandidate::FreeArmNote
@@ -386,11 +393,38 @@ async fn check_after_restart(
         }
         if matches!(
             case,
-            ColdCandidate::FreeArmNote | ColdCandidate::FreeHumanDecision
+            ColdCandidate::FreeArmNote
+                | ColdCandidate::FreeHumanDecision
+                | ColdCandidate::FreeNoteChanges
         ) {
+            let waiting = if matches!(case, ColdCandidate::FreeNoteChanges) {
+                let (entered, release) = hold_at(super::Point::LivePrFactsRead, id);
+                let watcher = Arc::clone(&cold);
+                let pass = tokio::spawn(async move {
+                    watcher
+                        .watch_prs(&WatchBounds {
+                            check_in_after_ms: 0,
+                            stall_quiet_ms: 0,
+                            stall_after_ms: 0,
+                        })
+                        .await
+                });
+                tokio::time::timeout(Duration::from_secs(10), entered.notified()).await?;
+                Some((release, pass))
+            } else {
+                None
+            };
             let pulls = std::mem::take(&mut *remote.pulls.lock().map_err(|_| "pulls")?);
             cold.merge_armed(&sandbox).await;
             *remote.pulls.lock().map_err(|_| "pulls")? = pulls;
+            if let Some((release, pass)) = waiting {
+                release.notify_one();
+                let outdated = pass.await?;
+                assert!(
+                    outdated.is_empty(),
+                    "the queue kept the same arm with a new reason: {outdated:?}"
+                );
+            }
             if matches!(case, ColdCandidate::FreeHumanDecision) {
                 let (entered, release) = hold_at(super::Point::LivePrFactsRead, id);
                 let watcher = Arc::clone(&cold);
@@ -446,7 +480,15 @@ async fn check_after_restart(
             return Ok(());
         }
         let path = data.join(yulius_app::merge_train::MERGE_TRAINS_FILE);
-        let train = json!({sandbox.as_str(): {"train":{"run":"candidate-red","commit":"merge","base":"base","base_tree":"tree","members":[{"task":id.as_str(),"pr":1481,"head":head,"armed_at":30,"tree":"candidate-tree"}]}}});
+        let mut train = json!({sandbox.as_str(): {"train":{"run":"candidate-red","commit":"merge","base":"base","base_tree":"tree","members":[{"task":id.as_str(),"pr":1481,"head":head,"armed_at":30,"tree":"candidate-tree"}]}}});
+        if matches!(
+            case,
+            ColdCandidate::TrainFailsDuringRead | ColdCandidate::OrdinaryFailsDuringRead
+        ) {
+            train[sandbox.as_str()]["train"]["members"].as_array_mut().ok_or("train members")?.push(
+                json!({"task":"second-owner","pr":99,"head":"other","armed_at":29,"tree":"other-tree"})
+            );
+        }
         if matches!(case, ColdCandidate::TrainFailsDuringRead) {
             std::fs::write(&path, serde_json::to_vec(&train)?)?;
             let (entered, release) = hold_at(super::Point::LivePrFactsRead, id);
@@ -663,12 +705,8 @@ async fn check_after_restart(
             std::fs::write(path, serde_json::to_vec(&current)?)?;
             let held = cold.watch_prs(&bounds).await;
             assert!(
-                held.iter()
-                    .any(|(_, text)| text.contains("earlier-bisection")
-                        && text.contains("Do not re-arm")
-                        && !text.contains("#99")
-                        && !text.contains("smaller candidates")),
-                "the current holding train: {held:?}"
+                held.is_empty(),
+                "the queue is verifying its sole member: {held:?}"
             );
         }
         cold.stop_task_now(id).await?;
