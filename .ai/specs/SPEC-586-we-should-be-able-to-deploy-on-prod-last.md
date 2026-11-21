@@ -1,6 +1,6 @@
 ---
 yulius-task: b96672d5-d14f-4597-9c3b-e3e05d772e5f
-status: in-progress
+status: done
 ---
 
 # SPEC-586 Deploy the last verified dev revision to production
@@ -25,7 +25,7 @@ SPEC-575 records what the shared staging environment verified. Production CD cur
 - [x] Select and show the verified dev revision during a newer verification
 - [x] Promote exactly the selected revision and its included deliveries
 - [x] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -63,3 +63,8 @@ A person's production deployment carries an exact source revision. The staging q
 - The promotion fix delta against `d29ca70ee` listed 44, caught 6, missed 1 and found 37 unviable. The rollback and retry fix delta against `c98d45fba` listed 22, caught 2, missed 1 and found 19 unviable. Neither had timeouts or unreached mutants. The later receipt and optional-check regressions caught both surviving variants. A targeted cargo-mutants run also confirmed the competing PR selection and simultaneous release-ref creation regressions. All four selected mutants were caught.
 - The Chromium E2E suite passed 1,298 tests, including all 30 CD and release-page cases. Its model-dependent agent test was skipped. A separate mutation check confirmed the retry regression catches comparing production against the moving dev head instead of the pinned revision.
 - The real-Git staging and drill fixture selects A while staged B is being drilled, refuses a failed, same-revision or never-staged previous proof, and keeps B available while a later C drills.
+- The whole-change mutation run on `c0438e25c` completed in 2047 seconds within its 120-minute bound. It listed 176 variants, caught 35, missed 9, found 132 unviable, and had no timeouts or unreached variants. Follow-up cargo-mutants runs caught all nine: exact-revision ancestry on retry, optional checks, merge receipt identity, three automatic-promotion variants covered by existing tests, and three staging/drill variants covered by the new fixture.
+- Mutation testing of the final path-scoped skip correction against `d5b9516e1` listed and caught all five variants. It took 706 seconds within the 30-minute bound, with none missed, unviable, timed out or unreached.
+- The shared-job coverage delta against `c0438e25c` completed in 1300 seconds within its 60-minute bound, with 60 listed, 23 caught, 0 missed, 0 timed out, 37 unviable and 0 not reached.
+- After a clean merge of updated dev `f24514af2`, all 241 scoped Rust tests passed at `2569fc770`, including the GitHub release-ref client and the new staging/drill fixture. Both CD browser files passed again, 30 tests in total. The task's Delivery evidence identifies the hosted CI attempt and landed dev commit.
+- The historical-rerun delta against `b6c07f417` completed in 1489 seconds within the 30-minute bound, with 46 listed, 19 caught, 0 missed, 0 timed out, 27 unviable and 0 not reached. The corrected temporary-root configuration let the registered and scratch checkout tests run the same confined Git operations.
