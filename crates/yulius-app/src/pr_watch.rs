@@ -29,7 +29,7 @@ use crate::agent_wait::{ArmedNow, QueueNote};
 use crate::ci::{CiJobRecord, CiRunRecord};
 use crate::context::App;
 use crate::delivery::{delivery_profile, past_merge};
-use crate::error::AppError;
+use crate::error::{AppError, AppResult};
 use crate::merge_train::Hold;
 use crate::model::{SandboxRecord, TaskRecord};
 use crate::task_message::{Sender, Typed};
@@ -1100,16 +1100,8 @@ impl App {
         }
         let train = self.watched_train(task, pr);
         let holding = train.as_ref().and_then(|train| train.candidate.as_ref());
-        let candidate = match holding {
-            Some((id, _)) => self
-                .deps
-                .store
-                .ci_run(id)
-                .await
-                .ok()?
-                .filter(|run| run.sandbox_id == sandbox.id),
-            None => None,
-        };
+        let candidate_id = holding.map(|(id, _)| id.as_str());
+        let candidate = self.holding_run(&sandbox, candidate_id).await.ok()?;
         let candidate = candidate.as_ref();
         if let Some(run) = own.as_ref()
             && run.state == RunState::Failed
@@ -1285,7 +1277,7 @@ impl App {
         if let Some(head) = arm_head
             && !person_must_act
         {
-            self.confirm_armed_news(task, &sandbox, pr, head, own)
+            self.confirm_armed_news(task, &sandbox, pr, head, own, (candidate_id, candidate))
                 .await?;
         }
         if self.armed_now(&task.id) != activation
@@ -1297,6 +1289,21 @@ impl App {
         Some(facts)
     }
 
+    /// Read the CI run named by the holding train. A PR left out of it has no candidate run.
+    async fn holding_run(
+        &self,
+        sandbox: &SandboxRecord,
+        id: Option<&str>,
+    ) -> AppResult<Option<CiRunRecord>> {
+        let Some(id) = id else { return Ok(None) };
+        Ok(self
+            .deps
+            .store
+            .ci_run(id)
+            .await?
+            .filter(|run| run.sandbox_id == sandbox.id))
+    }
+
     /// Recheck the armed PR owner and the ordinary CI used by the queue.
     /// A change during verification leaves the notice unheard for the next pass.
     async fn confirm_armed_news(
@@ -1306,6 +1313,7 @@ impl App {
         pr: u64,
         head: &str,
         ordinary: Option<&CiRunRecord>,
+        (candidate_id, candidate): (Option<&str>, Option<&CiRunRecord>),
     ) -> Option<()> {
         let fresh = self.deps.store.task(&task.id).await.ok()??;
         if fresh.status != TaskStatus::Running
@@ -1327,16 +1335,13 @@ impl App {
         {
             return None;
         }
-        if self
-            .ordinary_pull_run(sandbox, pr, head)
-            .await
-            .ok()?
-            .as_ref()
-            != ordinary
-        {
-            return None;
-        }
-        Some(())
+        let (latest_ordinary, latest_candidate) = tokio::try_join!(
+            self.ordinary_pull_run(sandbox, pr, head),
+            self.holding_run(sandbox, candidate_id),
+        )
+        .ok()?;
+        (latest_ordinary.as_ref() == ordinary && latest_candidate.as_ref() == candidate)
+            .then_some(())
     }
 
     /// The merge notice of `task`'s pull request `pr` (`merged_text`), read from GitHub once and

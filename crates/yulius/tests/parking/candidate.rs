@@ -82,7 +82,13 @@ fn a_free_queue_note_waits_for_a_person_decision_that_arrives_during_verificatio
     cold_candidate_case(ColdCandidate::FreeHumanDecision)
 }
 
+#[test]
+fn a_train_that_fails_during_final_verification_reaches_its_owner_once() -> TestResult {
+    cold_candidate_case(ColdCandidate::TrainFailsDuringRead)
+}
+
 enum ColdCandidate {
+    TrainFailsDuringRead,
     SharedWhileRunning,
     FreeHumanDecision,
     LeftOut,
@@ -200,7 +206,10 @@ async fn seed_candidate(
         &caller.sandbox,
         "candidate-red",
         &integrated,
-        if matches!(case, ColdCandidate::SharedWhileRunning) {
+        if matches!(
+            case,
+            ColdCandidate::SharedWhileRunning | ColdCandidate::TrainFailsDuringRead
+        ) {
             RunState::Running
         } else {
             RunState::Failed
@@ -331,6 +340,7 @@ async fn check_after_restart(
         case,
         ColdCandidate::FreeArmTaken
             | ColdCandidate::LeftOut
+            | ColdCandidate::TrainFailsDuringRead
             | ColdCandidate::FreeHumanDecision
             | ColdCandidate::SharedWhileRunning
             | ColdCandidate::FreeArmNote
@@ -435,6 +445,42 @@ async fn check_after_restart(
             assert!(news.is_empty(), "stale free-arm check-in: {news:?}");
             return Ok(());
         }
+        let path = data.join(yulius_app::merge_train::MERGE_TRAINS_FILE);
+        let train = json!({sandbox.as_str(): {"train":{"run":"candidate-red","commit":"merge","base":"base","base_tree":"tree","members":[{"task":id.as_str(),"pr":1481,"head":head,"armed_at":30,"tree":"candidate-tree"}]}}});
+        if matches!(case, ColdCandidate::TrainFailsDuringRead) {
+            std::fs::write(&path, serde_json::to_vec(&train)?)?;
+            let (entered, release) = hold_at(super::Point::LivePrFactsRead, id);
+            let watcher = Arc::clone(&cold);
+            let pass = tokio::spawn(async move { watcher.watch_prs(&bounds).await });
+            tokio::time::timeout(Duration::from_secs(10), entered.notified()).await?;
+            assert!(
+                cold.deps
+                    .store
+                    .transition_ci_run(
+                        "candidate-red",
+                        &[RunState::Running],
+                        RunState::Failed,
+                        &yulius_app::ci::CiRunUpdate {
+                            ended_at: Some(cold.now()),
+                            ..Default::default()
+                        }
+                    )
+                    .await?
+            );
+            release.notify_one();
+            let obsolete = pass.await?;
+            let news = cold.watch_prs(&bounds).await;
+            let repeated = cold.watch_prs(&bounds).await;
+            cold.stop_task_now(id).await?;
+            assert!(obsolete.is_empty(), "outdated train status: {obsolete:?}");
+            assert_eq!(news.len(), 1, "{news:?}");
+            assert!(
+                news[0].1.contains("candidate-red") && news[0].1.contains("which holds it, failed"),
+                "{news:?}"
+            );
+            assert!(repeated.is_empty(), "{repeated:?}");
+            return Ok(());
+        }
         let heard = matches!(case, ColdCandidate::HeardOrdinaryFailure);
         let (mut red, job) =
             crate::pr_watch::run(&sandbox, "ordinary-red", head, RunState::Failed, None, 31);
@@ -470,11 +516,7 @@ async fn check_after_restart(
             assert_eq!(news.len(), 1, "{news:?}");
             assert!(news[0].1.contains("ordinary-red"), "{news:?}");
         }
-        let train = json!({sandbox.as_str(): {"train":{"run":"candidate-red","commit":"merge","base":"base","base_tree":"tree","members":[{"task":id.as_str(),"pr":1481,"head":head,"armed_at":30,"tree":"candidate-tree"}]}}});
-        std::fs::write(
-            data.join(yulius_app::merge_train::MERGE_TRAINS_FILE),
-            serde_json::to_vec(&train)?,
-        )?;
+        std::fs::write(path, serde_json::to_vec(&train)?)?;
         if matches!(case, ColdCandidate::HeldHumanDecision) {
             let (observed, finish_read) = hold_at(super::Point::LivePrFactsRead, id);
             let app = Arc::clone(&cold);
