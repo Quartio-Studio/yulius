@@ -1,7 +1,11 @@
 """The project's optional Linux compiler cache. The sandbox mount is the sharing boundary."""
 import hashlib
+import errno
 import os
 import platform
+import signal
+import stat
+import subprocess
 import tomllib
 from pathlib import Path
 import shutil
@@ -9,6 +13,71 @@ import tarfile
 import tempfile
 
 from home_lock import exclusive
+
+
+def open_store(cache, checkout):
+    """Publish the complete ownership stamp in one rename, even on competing first builds."""
+    stamp = ".yulius-mbx-v1"
+    contents = b"mbx-v1\n"
+    if not os.path.lexists(cache):
+        staging = checkout / ".tools"
+        staging.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=staging) as scratch:
+            new = Path(scratch) / "store"
+            new.mkdir(mode=0o700)
+            (new / stamp).write_bytes(contents)
+            try:
+                new.rename(cache)
+            except OSError as error:
+                if error.errno not in (errno.EEXIST, errno.ENOTEMPTY):
+                    raise
+    directory = os.open(cache, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        with os.fdopen(os.open(stamp, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
+                               dir_fd=directory), "rb") as owner:
+            return stat.S_ISREG(os.fstat(owner.fileno()).st_mode) and owner.read(len(contents) + 1) == contents
+    finally:
+        os.close(directory)
+
+
+def run_session(command, env, lease):
+    """Forward cancellation to the whole Cargo command, escalating any surviving descendants."""
+    child = None
+    requested = None
+
+    class Cancelled(BaseException):
+        pass
+
+    def cancel(signum, _frame):
+        nonlocal requested
+        requested = signum
+        if child is not None:
+            raise Cancelled
+
+    signals = (signal.SIGHUP, signal.SIGINT, signal.SIGQUIT, signal.SIGTERM)
+    previous = {sig: signal.signal(sig, cancel) for sig in signals}
+    try:
+        child = subprocess.Popen(command, env=env, pass_fds=(lease,), process_group=0)
+        if requested is not None:
+            raise Cancelled
+        return child.wait()
+    except Cancelled:
+        for sig in signals:
+            signal.signal(sig, signal.SIG_IGN)
+        try:
+            os.killpg(child.pid, requested)
+            child.wait(timeout=3)
+        except (ProcessLookupError, subprocess.TimeoutExpired):
+            pass
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        child.wait()
+        return -requested
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
 
 
 def sandbox_for(checkout, home):

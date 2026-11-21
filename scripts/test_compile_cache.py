@@ -27,7 +27,7 @@ class CompileCache(unittest.TestCase):
     @staticmethod
     def checkout(path):
         (path / "scripts").mkdir(parents=True)
-        for name in ("cargo", "compile_cache.py", "home_lock.py"):
+        for name in ("cargo", "cache-rustc", "compile_cache.py", "home_lock.py"):
             shutil.copy2(SCRIPTS / name, path / "scripts" / name)
         (path / ".tools/bin").mkdir(parents=True)
         (path / ".config").mkdir()
@@ -96,6 +96,68 @@ class CompileCache(unittest.TestCase):
         self.assertEqual(self.record.read_text().strip(), "build")
         self.assertEqual(list(cache.iterdir()), [cache / "keep"])
 
+    def test_builds_only_use_the_complete_disk_upkeep_stamp(self):
+        cache = self.sandbox / "rust-compile-cache"
+        cache.mkdir()
+        for contents in (b"", b"mbx-v1", b"mbx-v1\nextra"):
+            (cache / ".yulius-mbx-v1").write_bytes(contents)
+            result = self.launch(self.task, self.sandbox / "home", "print('unexpected cache')")
+            self.assertEqual(result.stdout, "")
+
+    def test_interrupted_publication_leaves_the_next_launcher_able_to_initialize(self):
+        from unittest.mock import patch
+        import compile_cache
+        cache = self.sandbox / "rust-compile-cache"
+        with patch.object(Path, "rename", side_effect=InterruptedError), self.assertRaises(InterruptedError):
+            compile_cache.open_store(cache, self.task)
+        self.assertFalse(cache.exists())
+        result = self.launch(self.task, self.sandbox / "home", "print('cached')")
+        self.assertEqual(result.stdout.strip(), "cached")
+        self.assertEqual((cache / ".yulius-mbx-v1").read_bytes(), b"mbx-v1\n")
+
+    def test_terminating_the_launcher_stops_its_descendants_and_keeps_the_lease_private(self):
+        import fcntl
+        import select
+        import signal
+        import socket
+        home = self.sandbox / "home"
+        home.mkdir()
+        ready = self.sandbox.parent / "ready"
+        with socket.socket(socket.AF_UNIX) as listener:
+            listener.bind(str(ready))
+            listener.listen()
+            listener.settimeout(5)
+            self.cargo.write_text("#!/usr/bin/env python3\nimport os,signal,socket,sys\n"
+                                  "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                                  "s=socket.socket(socket.AF_UNIX);s.connect(sys.argv[2])\n"
+                                  "s.sendall(repr([os.readlink('/proc/self/fd/'+x) for x in os.listdir('/proc/self/fd') "
+                                  "if os.path.exists('/proc/self/fd/'+x)]).encode());signal.pause()")
+            mbx = self.task / ".tools/bin/mbx"
+            mbx.write_text('#!/bin/sh\n"$CARGO" "$@"\n')
+            mbx.chmod(0o755)
+            env = dict(os.environ, HOME=str(home), YULIUS_SANDBOX="project", CARGO=str(self.cargo))
+            proc = subprocess.Popen([self.task / "scripts/cargo", "run", ready], env=env, start_new_session=True)
+            try:
+                conn, _ = listener.accept()
+                with conn:
+                    descriptors = conn.recv(4096).decode()
+                    proc.terminate()
+                    proc.wait(timeout=8)
+                    self.assertTrue(select.select([conn], [], [], 1)[0], "Cargo child survived cancellation")
+                    self.assertEqual(conn.recv(1), b"")
+                    self.assertNotIn(str(self.sandbox) + "'", descriptors)
+                    lease = os.open(self.sandbox, os.O_RDONLY | os.O_DIRECTORY)
+                    try:
+                        fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    finally:
+                        os.close(lease)
+            finally:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                proc.wait(timeout=5)
+
     def test_cache_startup_failure_falls_back_and_cargo_failure_runs_once(self):
         home = self.sandbox / "home"
         failed_start = self.launch(self.task, home, "sys.exit(1)")
@@ -152,6 +214,27 @@ class CompileCache(unittest.TestCase):
             b = jobs.submit(build, self.lane, "concurrent")
             self.assertEqual(a.result()[0], f"17 {self.task}")
             self.assertEqual(b.result()[0], f"29 {self.lane}")
+
+        # Rust does not record ambient I/O during procedural macro expansion in dep-info.
+        # Re-export the macro through a library so checking only direct .so inputs is insufficient.
+        for tree in (self.task, self.lane):
+            (tree / "macro/src").mkdir(parents=True)
+            (tree / "forward/src").mkdir(parents=True)
+            (tree / "macro/Cargo.toml").write_text('[package]\nname="location"\nversion="0.1.0"\nedition="2024"\n'
+                                                  '[lib]\nproc-macro=true\n')
+            (tree / "macro/src/lib.rs").write_text(
+                '#[proc_macro] pub fn location(_:proc_macro::TokenStream)->proc_macro::TokenStream {'
+                'proc_macro::TokenTree::Literal(proc_macro::Literal::string(&std::env::var("CARGO_MANIFEST_DIR").unwrap())).into()}')
+            (tree / "forward/Cargo.toml").write_text('[package]\nname="forward"\nversion="0.1.0"\nedition="2024"\n'
+                                                     '[dependencies]\nlocation={path="../macro"}\n')
+            (tree / "forward/src/lib.rs").write_text('pub use location::location;')
+            (tree / "Cargo.toml").write_text((tree / "Cargo.toml").read_text() + '[dependencies]\nforward={path="forward"}\n')
+            (tree / "src/lib.rs").write_text('pub use forward::location;')
+            (tree / "src/main.rs").write_text('fn main(){println!("{}",fixture::location!());}')
+        for tree in (self.task, self.lane):
+            value, report, _ = build(tree, "proc-macro")
+            self.assertEqual(value, str(tree))
+            self.assertRegex(report, r"yulius\[cache\]: [1-9][0-9]* compiler invocations bypassed")
 
 
 class ReleaseInstall(unittest.TestCase):
