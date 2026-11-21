@@ -707,6 +707,32 @@ fn read_notices(path: &std::path::Path) -> BTreeMap<String, Told> {
         .unwrap_or_default()
 }
 
+/// A newer live outcome or a retired queue decision supersedes the saved failure.
+pub(crate) fn candidate_from_wait(
+    wait: Option<crate::stages::SpanRecord>,
+    outcome: &mut Option<(String, String)>,
+) -> AppResult<
+    Option<(
+        crate::stages::SpanRecord,
+        crate::merge_train::SingletonDecision,
+    )>,
+> {
+    let Some(span) = wait else {
+        return Ok(None);
+    };
+    let Some(decision) = crate::merge_train::SingletonDecision::from_span(&span)? else {
+        return Ok(None);
+    };
+    if outcome
+        .as_ref()
+        .is_some_and(|(head, text)| head != &decision.head || text != &decision.message)
+    {
+        return Ok(None);
+    }
+    *outcome = None;
+    Ok(decision.superseded_at.is_none().then_some((span, decision)))
+}
+
 impl App {
     /// Runs [`Self::watch_prs`] every [`WATCH_EVERY`].
     pub fn start_pr_watch(self: &Arc<Self>) {
@@ -1420,7 +1446,13 @@ impl App {
                 needs_you = !matches!(self.deps.store.task_needs_you(&task.id).await, Ok(None));
                 person_must_act = needs_you || browser_req || flagged_active;
             }
-            let Ok(latest) = self.latest_candidate_decision(task, &mut outcome).await else {
+            let Ok(latest) = self
+                .deps
+                .store
+                .latest_merge_wait(&task.id)
+                .await
+                .and_then(|wait| candidate_from_wait(wait, &mut outcome))
+            else {
                 return observed_only();
             };
             if let Some((span, decision)) = latest
@@ -1849,33 +1881,6 @@ impl App {
             .ci_run(id)
             .await?
             .filter(|run| run.sandbox_id == sandbox.id))
-    }
-
-    /// A newer live outcome or a retired queue decision supersedes the saved failure.
-    pub(crate) async fn latest_candidate_decision(
-        &self,
-        task: &TaskRecord,
-        outcome: &mut Option<(String, String)>,
-    ) -> AppResult<
-        Option<(
-            crate::stages::SpanRecord,
-            crate::merge_train::SingletonDecision,
-        )>,
-    > {
-        let Some(span) = self.deps.store.latest_merge_wait(&task.id).await? else {
-            return Ok(None);
-        };
-        let Some(decision) = crate::merge_train::SingletonDecision::from_span(&span)? else {
-            return Ok(None);
-        };
-        if outcome
-            .as_ref()
-            .is_some_and(|(head, text)| head != &decision.head || text != &decision.message)
-        {
-            return Ok(None);
-        }
-        *outcome = None;
-        Ok(decision.superseded_at.is_none().then_some((span, decision)))
     }
 
     /// A second clone can publish a repair without advancing this checkout's tracking ref.

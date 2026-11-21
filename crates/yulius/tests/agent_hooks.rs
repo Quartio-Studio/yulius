@@ -4371,6 +4371,35 @@ async fn task_detail_keeps_attempt_and_session_evidence_of_starting() -> TestRes
 }
 
 #[tokio::test]
+async fn advancing_the_base_during_a_parked_detail_read_preserves_the_heads_ordinary_failure()
+-> TestResult {
+    let (f, owner) = owner_observed_external_pr().await?;
+    install_app(&f).await?;
+    f.h.github
+        .set_checks("abc123", yulius_app::ports::github::ChecksState::Failure);
+    let held = f.h.github.hold_checks();
+    let reading = f.h.app.task_detail(&owner, f.task.as_str());
+    let advance = async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            f.h.github.checks_entered.notified(),
+        )
+        .await?;
+        f.h.github.pulls.lock().map_err(|_| "pulls")?[0].base_sha = "new-base".into();
+        f.h.github.release_checks(&held);
+        Ok::<_, Box<dyn std::error::Error>>(())
+    };
+    let (detail, advanced) = tokio::join!(reading, advance);
+    advanced?;
+    let notice = detail?.summary.needs_you_notice.ok_or("parked notice")?;
+    assert_eq!(
+        notice.happened,
+        "The task is parked and pull request #1461 checks are failing."
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_parked_task_keeps_a_confirmed_failure_in_an_incomplete_check_report() -> TestResult {
     use yulius_app::ports::github::{ChecksReport, ChecksSource, ChecksState};
     let (f, owner) = owner_observed_external_pr().await?;

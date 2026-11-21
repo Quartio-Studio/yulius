@@ -560,6 +560,11 @@ impl TaskRuntime {
             .map(|(_, request)| request)
     }
 
+    /// The run reader has taken its end intent and is recording the terminal state.
+    pub(crate) fn finalizing(&self) -> bool {
+        *self.finalizing.borrow() > 0
+    }
+
     /// Whether the screen `hub` shows is not what the program drew: its output is withheld
     /// (agent secrets cannot be read) or some was dropped since the last whole screen. A state
     /// that cannot be read counts.
@@ -3983,7 +3988,7 @@ impl App {
         let runtime = self.runtime(task_id);
         runtime.has_run().await
             || runtime.watcher_alive.load(Ordering::SeqCst)
-            || *runtime.finalizing.borrow() > 0
+            || runtime.finalizing()
     }
 
     /// Before a start (SPEC-458 RUN-002, #439): a resting task with a run still on record. A run
@@ -4738,6 +4743,7 @@ impl App {
             return Ok(false);
         };
         let delivery = self.deps.store.delivery(task_id).await?;
+        let before = self.deps.store.latest_merge_wait(task_id).await?;
         // Neither a slow PR read nor the fresh process probe should hold up another launch.
         // Probe last so background work started during the PR read keeps its session.
         let Some(prs) = self
@@ -4789,9 +4795,15 @@ impl App {
         let Ok(work) = runtime.steps_lock.try_lock() else {
             return Ok(false);
         };
+        // A queue decision or replacement request must finish on one side of the park.
+        let Ok(arm_writer) = runtime.arm_writer.try_lock() else {
+            return Ok(false);
+        };
         if crate::sandboxes::plan_open(&self.deps.store.steps(task_id).await?)
             || self.read_spec_unfinished(task_id).await?
-            || !self.parking_prs_still_current(&task, &prs).await?
+            || !self
+                .parking_prs_still_current(&task, &prs, before.as_ref())
+                .await?
             || runtime.goal_unfinished.load(Ordering::SeqCst)
         {
             return Ok(false);
@@ -4810,6 +4822,7 @@ impl App {
                 *kept = task.activity;
             }
         }
+        drop(arm_writer);
         drop(work);
         crate::race::reached(crate::race::Point::ParkDecided, Path::new(task_id.as_str()));
         self.arm_escalation(task_id, Some(run.id));

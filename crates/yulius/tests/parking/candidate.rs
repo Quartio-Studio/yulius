@@ -23,6 +23,63 @@ fn a_replacement_arm_arriving_at_final_verification_keeps_the_original_owner_liv
 }
 
 fn park_after_candidate(rearm: bool) -> TestResult {
+    with_idle_candidate(async |data, app, remote, id, head| {
+        super::past_the_grace(&app, &id).await?;
+        if rearm {
+            let path = data.join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+            let db_path = data.join("yulius.db");
+            let arm = serde_json::to_vec(
+                &json!([{"task":id.as_str(), "head":head,"summary":"replacement"}]),
+            )?;
+            expect_park_deferred(app, &id, move || {
+                assert!(std::fs::write(&path, &arm).is_ok());
+                let retired = rusqlite::Connection::open(&db_path).and_then(|db| {
+                    db.execute("UPDATE spans SET detail=json_set(detail, '$.superseded_at', 1) WHERE key='wait@15'", [])
+                });
+                assert!(matches!(retired, Ok(1)));
+            }).await?;
+        } else {
+            expect_park_deferred(app, &id, || {}).await?;
+            let span = app
+                .deps
+                .store
+                .latest_merge_wait(&id)
+                .await?
+                .ok_or("candidate")?;
+            assert!(
+                app.deps
+                    .store
+                    .retire_singleton(&id, &span, app.now())
+                    .await?
+            );
+            let saved = span.detail.ok_or("decision detail")?;
+            let path = data.join("yulius.db");
+            expect_park_deferred(app, &id, move || {
+                let restored = rusqlite::Connection::open(&path).and_then(|db| {
+                    db.execute("UPDATE spans SET detail=?1 WHERE key='wait@15'", [&saved])
+                });
+                assert!(matches!(restored, Ok(1)));
+            })
+            .await?;
+            remote.remote.lock().map_err(|_| "remote")?.take();
+            remote.pulls.lock().map_err(|_| "PR")?[0].base_sha.clear();
+            expect_park_deferred(app, &id, || {}).await?;
+            remote.pulls.lock().map_err(|_| "PR")?[0].base_sha = "next-base".into();
+            super::parked(app, &id).await?;
+        }
+        Ok(())
+    })
+}
+
+fn with_idle_candidate(
+    check: impl AsyncFnOnce(
+        &Path,
+        &Arc<yulius_app::context::App>,
+        &Arc<crate::support::FakeGitHub>,
+        TaskId,
+        String,
+    ) -> TestResult,
+) -> TestResult {
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     let case = ColdCandidate::Backdated;
@@ -32,43 +89,133 @@ fn park_after_candidate(rearm: bool) -> TestResult {
     let (app, remote) =
         rt.block_on(Box::pin(restore_owner(&data, &case, &id, &head, &original)))?;
     rt.block_on(async {
-        super::past_the_grace(&app, &id).await?;
-        if rearm {
-            let path = data.join(yulius_app::agent_wait::ARMED_MERGES_FILE);
-            let db_path = data.join("yulius.db");
-            let arm = serde_json::to_vec(
-                &json!([{"task":id.as_str(), "head":head,"summary":"replacement"}]),
-            )?;
-            expect_park_deferred(&app, &id, move || {
-                assert!(std::fs::write(&path, &arm).is_ok());
-                let retired = rusqlite::Connection::open(&db_path).and_then(|db| {
-                    db.execute("UPDATE spans SET detail=json_set(detail, '$.superseded_at', 1) WHERE key='wait@15'", [])
-                });
-                assert!(matches!(retired, Ok(1)));
-            }).await?;
-        } else {
-            expect_park_deferred(&app, &id, || {}).await?;
-            let span = app.deps.store.latest_merge_wait(&id).await?.ok_or("candidate")?;
-            assert!(app.deps.store.retire_singleton(&id, &span, app.now()).await?);
-            let saved = span.detail.ok_or("decision detail")?;
-            let path = data.join("yulius.db");
-            expect_park_deferred(&app, &id, move || {
-                let restored = rusqlite::Connection::open(&path).and_then(|db| {
-                    db.execute("UPDATE spans SET detail=?1 WHERE key='wait@15'", [&saved])
-                });
-                assert!(matches!(restored, Ok(1)));
-            }).await?;
-            remote.remote.lock().map_err(|_| "remote")?.take();
-            remote.pulls.lock().map_err(|_| "PR")?[0].base_sha.clear();
-            expect_park_deferred(&app, &id, || {}).await?;
-            remote.pulls.lock().map_err(|_| "PR")?[0].base_sha = "next-base".into();
-            super::parked(&app, &id).await?;
-        }
+        let result = check(&data, &app, &remote, id.clone(), head).await;
         app.stop_task_now(&id).await?;
-        Ok::<_, Error>(())
+        result
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
+}
+
+#[test]
+fn a_singleton_decided_on_a_new_base_during_the_host_probe_keeps_the_owner_live() -> TestResult {
+    with_idle_candidate(async |data, app, remote, id, _| {
+        let span = app
+            .deps
+            .store
+            .latest_merge_wait(&id)
+            .await?
+            .ok_or("candidate")?;
+        assert!(
+            app.deps
+                .store
+                .retire_singleton(&id, &span, app.now())
+                .await?
+        );
+        let mut decision: serde_json::Value = serde_json::from_str(&span.detail.ok_or("receipt")?)?;
+        decision["singleton"]["base"] = json!("new-tested-base");
+        let saved = decision.to_string();
+        let path = data.join("yulius.db");
+        let remote = remote.clone();
+        expect_park_deferred(app, &id, move || {
+            if let Ok(mut origin) = remote.remote.lock() {
+                origin.take();
+            }
+            if let Ok(mut pulls) = remote.pulls.lock() {
+                pulls[0].base_sha = "new-tested-base".into();
+            }
+            let accepted = rusqlite::Connection::open(&path).and_then(|db| {
+                db.execute("UPDATE spans SET detail=?1 WHERE key='wait@15'", [&saved])
+            });
+            assert!(matches!(accepted, Ok(1)));
+        })
+        .await?;
+        expect_park_deferred(app, &id, || {}).await?;
+        Ok(())
+    })
+}
+
+#[test]
+fn the_owner_stays_live_while_its_replacement_merge_is_being_armed() -> TestResult {
+    contending_merge_request(true)
+}
+
+#[test]
+fn a_merge_requested_while_its_owner_is_committed_to_park_is_refused() -> TestResult {
+    contending_merge_request(false)
+}
+
+fn contending_merge_request(arm_first: bool) -> TestResult {
+    with_idle_candidate(async |_, app, remote, id, head| {
+        let task = app.deps.store.task(&id).await?.ok_or("task")?;
+        let span = app
+            .deps
+            .store
+            .latest_merge_wait(&id)
+            .await?
+            .ok_or("candidate")?;
+        assert!(
+            app.deps
+                .store
+                .retire_singleton(&id, &span, app.now())
+                .await?
+        );
+        let (mut rerun, job) = crate::pr_watch::run(
+            &task.sandbox_id,
+            "ordinary-rerun",
+            &head,
+            RunState::Running,
+            None,
+            app.now().0,
+        );
+        rerun.reference = CiRef::PullRequest(1481);
+        app.deps.store.insert_ci_run(&rerun, &[job]).await?;
+        remote.set_checks(&head, ChecksState::Pending);
+        remote.pulls.lock().map_err(|_| "pulls")?[0].title = "fix(search): repair latency".into();
+        let ctx = yulius_app::auth::AuthContext {
+            user: app.deps.store.user(&task.owner).await?.ok_or("owner")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        if !arm_first {
+            let (decided, release) = super::pause_watch_or_queue(super::Point::ParkDecided, &id);
+            let park = {
+                let app = app.clone();
+                let id = id.clone();
+                tokio::spawn(async move {
+                    super::parked(&app, &id)
+                        .await
+                        .map_err(|err| err.to_string())
+                })
+            };
+            tokio::time::timeout(Duration::from_secs(10), decided.notified()).await?;
+            let request = app.merge_for_person(&ctx, id.as_str()).await;
+            release.notify_one();
+            park.await??;
+            assert!(
+                matches!(&request, Err(yulius_app::error::AppError::Conflict(reason)) if reason.contains("park")),
+                "merge during park: {request:?}"
+            );
+            return Ok(());
+        }
+        let (entered, release) = super::pause_watch_or_queue(super::Point::ArmWriteStarted, &id);
+        let mut arming = {
+            let app = app.clone();
+            let id = id.clone();
+            tokio::spawn(async move { app.merge_for_person(&ctx, id.as_str()).await })
+        };
+        tokio::select! {
+            () = entered.notified() => (),
+            result = &mut arming => return Err(format!("merge completed before arm write: {:?}", result?).into()),
+        }
+        let decision = expect_park_deferred(app, &id, || {}).await;
+        release.notify_one();
+        let armed = arming.await??;
+        decision?;
+        assert_eq!(armed["armed"], true);
+        Ok(())
+    })
 }
 
 /// A restarted host can still be reattaching. Require an actual eligibility
@@ -89,19 +236,20 @@ async fn expect_park_deferred(
             reached.store(true, Ordering::SeqCst);
         },
     );
+    let started = std::cell::Cell::new(0);
     super::wait_for(
         "the original owner's final park decision",
-        Duration::from_secs(30),
+        Duration::from_secs(10),
         || async {
-            assert_eq!(
-                app.park_idle_sessions_now().await,
-                0,
-                "original PR owner was parked"
-            );
-            checked.load(Ordering::SeqCst)
+            started.set(app.park_idle_sessions_now().await);
+            checked.load(Ordering::SeqCst) || started.get() != 0
         },
     )
-    .await
+    .await?;
+    if started.get() != 0 {
+        return Err("original PR owner was parked during final verification".into());
+    }
+    Ok(())
 }
 
 #[test]

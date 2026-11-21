@@ -782,7 +782,6 @@ fn same_open_pull(before: &GhPull, after: &GhPull) -> bool {
         && before.head == after.head
         && before.from_fork == after.from_fork
         && before.base == after.base
-        && before.base_sha == after.base_sha
         && before.mergeable == after.mergeable
         && before.behind == after.behind
 }
@@ -3964,17 +3963,22 @@ impl App {
         &self,
         task: &TaskRecord,
         facts: &ParkingPrs,
+        before: Option<&crate::stages::SpanRecord>,
     ) -> AppResult<bool> {
         if !self.parking_checkout_matches(task, facts).await?
             || self.parking_ci_blocker(task, facts).await?.is_some()
         {
             return Ok(false);
         }
+        let wait = self.deps.store.latest_merge_wait(&task.id).await?;
+        if wait.as_ref() != before {
+            return Ok(false);
+        }
         if facts.pulls.is_empty() {
             return Ok(true);
         }
         let (_, mut outcome) = self.armed_view(&task.id);
-        let Some((_, decision)) = self.latest_candidate_decision(task, &mut outcome).await? else {
+        let Some((_, decision)) = crate::pr_watch::candidate_from_wait(wait, &mut outcome)? else {
             return Ok(true);
         };
         let Some(pull) = facts
@@ -4605,7 +4609,8 @@ impl App {
         // Checks and local conflict detection can take long enough for another push.
         let current = read().await?;
         observed.note_closed(&current);
-        let same_open_head = same_open_pull(&pull, &current);
+        let same_open_head = same_open_pull(&pull, &current)
+            && (purpose == PrVerification::Display || pull.base_sha == current.base_sha);
         if same_open_head && mergeable != Some(true) {
             let own = self
                 .parking_ci_signal(task, number, &current.head_sha, None)

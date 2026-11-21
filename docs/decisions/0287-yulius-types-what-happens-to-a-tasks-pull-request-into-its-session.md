@@ -40,7 +40,7 @@ Use the queue’s owner-preferred ordinary CI result at the armed head. A shared
   on its limit; with a merge armed it ends on its head's failure.
 - The PreToolUse guard refuses `gh pr merge` and `gh api …/pulls/N/merge`.
 
-The parking supervisor uses the latest singleton decision for the original owner. It compares the tested head and base with the verified PR and checks for a replacement merge arm before committing to shutdown. See SPEC-558.
+The parking supervisor uses the latest singleton decision for the original owner. It verifies the PR against one stable queue decision and takes the task’s merge writer through the park intent. A changed decision or a busy merge writer leaves the owner live for the next pass. See SPEC-558.
 
 ## Alternatives
 

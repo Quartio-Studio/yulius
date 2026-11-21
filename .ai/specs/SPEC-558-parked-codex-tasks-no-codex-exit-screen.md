@@ -60,7 +60,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Defer live PR notices while the session writer is busy
 - [x] Verify restored arms and deliver current ordinary CI and train notices to the owner
 - [x] Report the active singleton and replay its recorded failure for the original owner
-- [x] Verify candidate status before parking, showing Done or resuming a parked owner
+- [x] Reproduce candidate status across restart on the live and parked PR owner
 - [ ] Keep the original owner live across candidate failure and replacement merge arm
 - [ ] Deliver the recorded integration failure once to an already parked owner
 - [ ] Hold the original owner’s session and successor while its open delivery cannot be verified
@@ -107,9 +107,11 @@ A live PR notice that finds the terminal writer busy leaves its event unheard. T
 
 The live watcher resolves ordinary CI for the owner at the armed head and reads the active train’s recorded membership. Before delivering advice, it verifies the published head, the current queue request, its CI observations and the original recipient. A human decision or unverifiable observation leaves the event pending.
 
-The final parking check compares the owner’s saved singleton decision with the verified PR head and integration base. It also checks for a replacement merge arm immediately before recording the park intent. A changed base or published repair retires the old failure for this decision.
+The final parking check compares the owner’s saved singleton decision with the verified PR head and integration base. A change to the saved merge decision during hosted verification defers the pass. The final check and publication of the park intent share the original task’s merge writer. An ordinary PR check remains attributable to its unchanged head when the integration base advances. A changed base or published repair retires the old failure for this decision.
 
 ## Evidence
+
+- On `3eceb717f`, parking accepted a decision for a new base against the previous hosted observation. It also parked while the person's replacement merge request held the arm writer. In the opposite order the request returned `armed: true` after parking had committed its end intent. A separate parked-detail regression returned “could not be verified” for an unchanged ordinarily failing PR head after its base advanced. Each case failed before the fix. The request fixture uses a conventional PR title so it reaches merge admission.
 
 - On the integrated dev baseline `e55073a71`, both restart regressions reached the final parking decision and reported one park when zero were expected. One had a current failed singleton on ordinary green PR #1481. In the other, a replacement arm retired the failed decision at the final park hook. The fixture waits for the eligibility decision after host reattachment.
 
