@@ -10,7 +10,7 @@ use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::staging::StagingState;
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column, db, to_i64};
+use crate::{SqliteStore, bad_column, db};
 
 const COLUMNS: &str = "id, sandbox_id, environment, task_id, revision, state, ci_run_id, \
                        cd_run_id, attempts, note, requested_by, told, created_at, updated_at";
@@ -88,24 +88,6 @@ impl StagingStore for SqliteStore {
                 &format!("SELECT {COLUMNS} FROM staging_requests WHERE id = ?1"),
                 [id],
                 request_row,
-            )
-            .optional()
-            .map_err(db)
-        })
-        .await
-    }
-
-    async fn task_staging_wait(&self, task: &TaskId) -> AppResult<Option<StagingState>> {
-        let task = task.as_str().to_owned();
-        self.call(move |c| {
-            c.query_row(
-                "SELECT state FROM staging_requests WHERE task_id = ?1 AND told = 0 \
-                         ORDER BY created_at DESC, rowid DESC LIMIT 1",
-                [task],
-                |row| {
-                    let state: String = row.get(0)?;
-                    StagingState::parse(&state).ok_or_else(|| bad_column("staging state", &state))
-                },
             )
             .optional()
             .map_err(db)
@@ -280,27 +262,21 @@ impl StagingStore for SqliteStore {
         .await
     }
 
-    async fn staging_landing(
-        &self,
-        task: &TaskId,
-        branch: &str,
-        receipt_pr: Option<u64>,
-    ) -> AppResult<Option<String>> {
+    async fn task_landings(&self, task: &TaskId, branch: &str) -> AppResult<Vec<String>> {
         let (task, branch) = (task.as_str().to_owned(), branch.to_owned());
         self.call(move |c| {
-            // An open delivery may have merged externally since it was last read. Only its
-            // reconciled landing can stage, even when the task also owns an earlier revision.
-            c.query_row(
-                "SELECT m.merged_sha FROM task_merges m LEFT JOIN delivery d ON d.task_id = m.task_id
-                 WHERE m.task_id = ?1 AND m.branch = ?2
-                   AND (?3 IS NULL OR (m.pr_number = ?3 AND d.pr_number = ?3))
-                   AND (d.stage IS NULL OR d.stage != 'pr_open')
-                   AND (d.pr_number IS NULL OR m.pr_number = d.pr_number)
-                 ORDER BY m.rowid DESC LIMIT 1",
-                params![task, branch, receipt_pr.map(to_i64)],
-                |row| row.get(0),
-            ).optional().map_err(db)
-        }).await
+            let mut statement = c
+                .prepare(
+                    "SELECT merged_sha FROM task_merges WHERE task_id = ?1 AND branch = ?2 \
+                     ORDER BY rowid",
+                )
+                .map_err(db)?;
+            let rows = statement
+                .query_map(params![task, branch], |row| row.get::<_, String>(0))
+                .map_err(db)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+        })
+        .await
     }
 
     async fn claim_bootstrap_upgrade(

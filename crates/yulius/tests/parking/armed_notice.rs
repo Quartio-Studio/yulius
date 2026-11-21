@@ -686,7 +686,6 @@ fn a_decision_during_draft_readiness_keeps_the_armed_notice_unheard() -> TestRes
             crate::task_message::full_screen(),
             (0, Arc::new(super::ScriptedUsage::default()), clock.clone()),
             None,
-            None,
             |_| {},
         )
         .await?;

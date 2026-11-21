@@ -1017,9 +1017,7 @@ The merge-first environment changes only through its staging queue (ADR-0411):
 - A repeated request answers with the same one.
 - The request needs the task's owner to have write access, a merged landing and no pending or
   blocked step.
-- A final staging step can stay in progress. While an idle task waits, its summary’s optional
-  `staging_wait` describes the full suite, deployment queue, verification or outcome delivery.
-  Yulius delivers the outcome to the running session or resumes a parked one.
+- Its outcome is typed into the task's session once.
 - `delivery_status` of a task whose work merged has `staging`: the due request with the
   `cd_deploy` call, or the newest request's state, run ids and next step (MFS-013).
 - `GET …/cd` lists the queue as the environment's `staging` (`verified`: the revision it serves,

@@ -2223,40 +2223,6 @@ async fn goal_stop_continues_unfinished_spec_then_explains_the_retry_limit() -> 
 }
 
 #[tokio::test]
-async fn goal_stop_leaves_the_final_step_to_the_staging_outcome() -> TestResult {
-    use yulius_app::ports::store_ext::StagingRequestRecord;
-    use yulius_domain::staging::StagingState;
-
-    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify staging").await?;
-    record_verification_merge(&f).await?;
-    let store = &f.h.app.deps.store;
-    let request = StagingRequestRecord {
-        id: "sr_final".into(),
-        sandbox_id: f.sandbox.clone(),
-        environment: "staging".into(),
-        task_id: Some(f.task.clone()),
-        revision: "0123456789abcdef0123456789abcdef01234567".into(),
-        state: StagingState::GateFailed,
-        ci_run_id: Some("ci-final".into()),
-        cd_run_id: None,
-        attempts: 0,
-        note: None,
-        requested_by: "task:1".into(),
-        told: false,
-        created_at: f.h.app.now(),
-        updated_at: f.h.app.now(),
-    };
-    assert!(store.insert_staging_request(&request).await?);
-    let stop = stop_of(&f, Agent::Codex).await?;
-    assert!(stop["decision"].is_null(), "{stop}");
-    assert_eq!(task_brief(&f).await?["shows"], "working");
-    assert_eq!(store.task(&f.task).await?.ok_or("task")?.gate_blocks, 0);
-    assert!(store.mark_staging_told(&request.id).await?);
-    assert_eq!(stop_of(&f, Agent::Codex).await?["decision"], "block");
-    Ok(())
-}
-
-#[tokio::test]
 async fn goal_stop_yields_to_a_live_yulius_wait_then_continues_the_step() -> TestResult {
     use std::time::Duration;
     let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Check the build").await?;

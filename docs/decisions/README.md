@@ -482,7 +482,6 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0435 -->
 - [0436](0436-yuliuss-full-suite-runs-after-the-merge-and-promotion-comes-from-verified-staging.md): Yulius's `[cd.dev]` is merge-first; both `test` shards and `e2e` are `after_merge` (11.6 of 17.1 job-minutes per pull request head), `quality` and `security` stay on pull requests; promotion to `main` only from a revision whose full suite passed and that staging verified, tested with the repository's own `yulius.toml`; a red `dev` is fixed forward (SPEC-591).
 <!-- ADR 0436 -->
-- [0437](0437-the-staging-request-keeps-its-task-waiting-until-the-outcome-is-delivered.md): the staging request keeps its task waiting until the outcome is delivered (SPEC-597).
 <!-- ADR 0437 -->
 <!-- ADR 0438 -->
 <!-- ADR 0439 -->

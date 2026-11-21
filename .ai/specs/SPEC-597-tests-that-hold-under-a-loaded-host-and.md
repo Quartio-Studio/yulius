@@ -29,6 +29,8 @@ SPEC-575 already has a durable staging queue, explicit admission through `cd_dep
 - [x] Keep the merged task waiting for its gate and staging decision
 - [x] Approve the browser and merge-train test fixes for delivery
 - [x] Direct a superseding final staging request to the newer landing
+- [ ] Deliver staging receipts that identify a completed check or its fix-forward action
+- [ ] Preserve a retried deployment’s outcome when delivery overlaps a previous failure
 - [ ] Prove the staging failure and recovery paths and approve their delivery after the CI test merge
 - [ ] Package the reviewed staging change with its verification evidence
 
@@ -44,7 +46,7 @@ Trace the retained run output to each relevant fixture. Use controlled delays or
 
 ## Decisions
 
-Deliver the load-sensitive test fixes in the first PR and the staging behavior in the second PR. Keep the request mechanism and staging outcome notifier from SPEC-575. A task can have further slices after a merge, so the agent still decides when the whole delivery has landed. Use durable request state to explain an actual machine wait. For this delivery the owner asks for one staging request after the final merge. The request receipt belongs in the closing summary.
+Deliver the load-sensitive test fixes in the first PR and the staging behavior in subsequent PRs. Keep the request mechanism and staging outcome notifier from SPEC-575. A task can have further slices after a merge, so the agent still decides when the whole delivery has landed. Use durable request state to explain an actual machine wait. For this delivery the owner asks for one staging request after the final merge. The request receipt belongs in the closing summary.
 
 ## Quartio-v2 operator handoff
 
@@ -93,3 +95,9 @@ At `c4157acf0` the reviewer identified two outcome-delivery faults. Repeating `c
 Manual reversion checks failed on the merge instruction, subscription retention, task wait projection, goal Stop hook, both browser update paths and delivery during a newly raised decision. The original terminal receipt also failed its fix-forward assertion. With the fixes restored, all 72 CI-profile Rust cases and 1,318 Chromium cases passed. One model-dependent browser case was skipped. Repository contracts, formatting and spec validation passed.
 
 A second review found that the queue waited for a full task summary while Chromium was busy. The held-browser regression timed out after the failed gate was recorded. The deployment-event regression observed the ready and terminal labels but no deploying label. The two red regressions passed after restoration, as did all 73 scoped Rust cases. Each deploy transition now publishes its new state. A task update has a bounded wait and sends the existing sandbox-scoped resync event if viewers must refetch the summary.
+
+A third staging review confirmed the earlier fixes and identified a receipt loop when CI disappeared before a run existed, and a retry whose previous failure could consume its later success notification. The terminal receipts are delivered independently. The remaining wait and wake work retains the retry race as a regression.
+
+The merged load-test revision passed the full dev gate, including both Rust shards and e2e (run `953c3dd5-b1e6-4262-8185-f8156b86c7ff`). [PR #1630 verification](https://yulius.quartio.ai/api/tasks/4014aca0-70ee-4ff0-aae0-9347694f1f02/delivery/evidence/612f787b38fdfa3492cd5e0c4ecd87b23449d6fa)
+
+With the terminal receipt changes removed, the repeated failed-gate and no-run gate regressions both failed. The second fixture drove the queue with CI unavailable and repeated the same request after restoring CI.

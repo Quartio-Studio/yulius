@@ -81,14 +81,12 @@ never switch an existing worktree to another branch. Never work directly on
 a pull request merges on `quality` and `security` (and any job it adds or changes); both `test`
 shards and `e2e` run once on the merged revision. So before the review run the tests and e2e
 specs your change touches yourself. After the merge, ask for staging with `cd_deploy` when
-`delivery_status` says it is due. Submit one request before ending the turn. If the task explicitly
-requires the staging verdict, leave that step in progress. Yulius deploys the merged revision
-once its full suite passes and wakes the task with the outcome. A
+`delivery_status` says it is due: it deploys your merged revision once its full suite passed. A
 `gate_failed` answer means `dev` is red at your revision: fix it forward on a new pull request
 and ask again. Only a revision that passed the full suite and that staging verified is
 promoted to `main` (a person's). Green Yulius CI + an independent review in a fresh session of the exact head →
 `delivery_merge` → Yulius squashes the pull request into `dev` on green Yulius CI through its
-merge queue (`yulius wait` to wait; a hand merge is refused): the usual task finishes once its staging request is recorded. After an approval, fix the remaining nits within 20 product lines and merge without another round: `delivery_merge` with the approved head counts them (tests and documents do not count). More than that, or a file leaving the change, needs a new round.
+merge queue (`yulius wait` to wait; a hand merge is refused): a task's work ends there, once its staging request was answered. After an approval, fix the remaining nits within 20 product lines and merge without another round: `delivery_merge` with the approved head counts them (tests and documents do not count). More than that, or a file leaving the change, needs a new round.
 The task's delivery authorization covers every independent re-review of in-scope fixes. A usage limit can cut a reviewer off before its report: resume that same reviewer by its agent id, never start a new one for the same round. A reviewer runs at high effort, never max.
 Promotion (`dev` → `main`, merge commit) is a person's, on the CD page (ADR-0110); a task that
 needs it asks with `needs_you`. Yulius removes a closed task's worktree; for a branch made by

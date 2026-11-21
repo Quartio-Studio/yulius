@@ -1214,7 +1214,6 @@ impl App {
         let store = &self.deps.store;
         Ok(task.activity == Some(Activity::NeedsAttention)
             || self.active_waits_of(&task.id) > 0
-            || store.task_staging_wait(&task.id).await?.is_some()
             || store.task_needs_you(&task.id).await?.is_some()
             || store.pending_hold(&task.id).await?.is_some()
             || self.is_paused(task).await)

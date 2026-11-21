@@ -76,21 +76,6 @@ impl StagingState {
         Self::ALL.into_iter().find(|state| state.as_str() == text)
     }
 
-    /// The work Yulius owns until the request's outcome reaches its idle agent.
-    #[must_use]
-    pub fn task_wait_label(self) -> &'static str {
-        match self {
-            Self::Testing => "Waiting for the merged revision’s full suite",
-            Self::Ready => "Waiting for the staging deployment to start",
-            Self::Deploying => "Waiting for staging to deploy and verify",
-            Self::Verified
-            | Self::Included
-            | Self::GateFailed
-            | Self::DeployFailed
-            | Self::Superseded => "Waiting for the staging outcome to reach the agent",
-        }
-    }
-
     /// Still on its way to staging.
     #[must_use]
     pub fn is_pending(self) -> bool {
