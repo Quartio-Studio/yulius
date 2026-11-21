@@ -2221,42 +2221,13 @@ test('the terminal verifies a missed park when a PR rerun was announced during i
   expect(await browser.evaluate(() => (window as unknown as Fixture).listReads)).toBe(1);
 });
 
-test('a detail discovering an archive removes the parked row through older lists and later Undo', async ({ app, browser }) => {
-  await app.open(mock('/s/studio'));
-  const seen = await browser.evaluate(async () => {
-    const module = '/assets/store.js';
-    const { createStore } = await import(module);
-    const initial = { id: 'p', sandbox_id: 's', status: 'parked', archived: false, parked_needs_you: true };
-    const results = [];
-    for (const undo of [false, true]) {
-      let reads = 0;
-      const held = Promise.withResolvers<void>();
-      const store = createStore({ get: async () => {
-        if (++reads === 1) return [initial];
-        if (reads === 2) { await held.promise; return [initial]; }
-        return undo ? [initial] : [];
-      } });
-      await store.loadTasks('s');
-      const pending = store.loadTasks('s', true);
-      store.beginParkedDetail()({ ...initial, status: 'closed', archived: true });
-      const removed = store.tasksOf('s').length === 0;
-      if (undo) store.upsertTask(initial);
-      held.resolve();
-      await pending;
-      results.push([removed, store.tasksOf('s').length, store.findTask('p')?.archived ?? null]);
-    }
-    return results;
-  });
-  expect(seen).toEqual([[true, 0, null], [true, 1, false]]);
-});
-
-test('a failed parked watch preserves PR discovery, resume and archive from an earlier detail', async ({ app, browser }) => {
+test('a failed parked watch preserves PR discovery and resume from an earlier detail', async ({ app, browser }) => {
   await app.open(mock('/s/studio'));
   const seen = await browser.evaluate(async () => {
     const module = '/assets/store.js';
     const { createStore } = await import(module);
     const results = [];
-    for (const transition of ['discovery', 'resume', 'archive']) {
+    for (const transition of ['discovery', 'resume']) {
       const row = { id: 'p', sandbox_id: 's', status: 'parked', archived: false, parked_needs_you: false };
       let calls = 0;
       const store = createStore({ get: async () => {
@@ -2267,13 +2238,13 @@ test('a failed parked watch preserves PR discovery, resume and archive from an e
       const publish = store.beginParkedDetail();
       await store.loadTasks('s', true);
       const facts = publish(transition === 'discovery' ? { ...row, parked_pr: { number: 42, open: true } }
-        : { ...row, status: transition === 'resume' ? 'running' : 'closed', archived: transition === 'archive' });
+        : { ...row, status: 'running', archived: false });
       const current = store.findTask('p');
       results.push([facts.status, current?.status ?? null, current?.parked_pr?.number ?? null, current?.parked_needs_you ?? null]);
     }
     return results;
   });
-  expect(seen).toEqual([['parked', 'parked', 42, true], ['running', 'running', null, false], ['closed', null, null, null]]);
+  expect(seen).toEqual([['parked', 'parked', 42, true], ['running', 'running', null, false]]);
 });
 
 test('a failed watch protects a newly discovered park when another parked task already used the watch', async ({ app, browser }) => {
@@ -2397,7 +2368,10 @@ test('an older empty list cannot drop a missed park or resume that detail has pu
     const module = '/assets/store.js';
     const { createStore } = await import(module);
     const results = [];
-    for (const status of ['parked', 'running']) {
+    for (const [status, listFirst, removal] of [
+      ['parked', true, 'none'], ['parked', false, 'none'], ['running', true, 'none'], ['running', false, 'none'],
+      ['parked', true, 'archive'], ['parked', true, 'delete'], ['parked', true, 'newer list'],
+    ] as const) {
       const before = { id: 'p', sandbox_id: 's', status: status === 'parked' ? 'running' : 'parked', title: 'Before' };
       const held = Promise.withResolvers<void>();
       let reads = 0;
@@ -2408,15 +2382,23 @@ test('an older empty list cannot drop a missed park or resume that detail has pu
       } });
       await store.loadTasks('s');
       const stale = store.loadTasks('s', true);
-      store.beginParkedDetail(before)({ ...before, status, title: 'After', account_id: 'second', request: 'private' });
+      const publish = store.beginParkedDetail(before);
+      const detail = { ...before, status, title: 'After', account_id: 'second', request: 'private' };
+      if (!listFirst) publish(detail);
       held.resolve();
       await stale;
+      if (removal === 'archive') store.upsertTask({ ...before, archived: true });
+      if (removal === 'delete') store.removeTask('p');
+      if (removal === 'newer list') await store.loadTasks('s');
+      if (listFirst) publish(detail);
       const row = store.findTask('p');
-      results.push([row?.status, row?.title, row?.account_id, Object.hasOwn(row ?? {}, 'request')]);
+      results.push([row?.status ?? null, row?.title ?? null, row?.account_id ?? null, Object.hasOwn(row ?? {}, 'request')]);
     }
     return results;
   });
-  expect(seen).toEqual([['parked', 'After', 'second', false], ['running', 'After', 'second', false]]);
+  const park = ['parked', 'After', 'second', false], resume = ['running', 'After', 'second', false];
+  const removed = [null, null, null, false];
+  expect(seen).toEqual([park, park, resume, resume, removed, removed, removed]);
 });
 
 test('a live update after a missed resume survives an older explicit list and failed confirmation', async ({ app, browser }) => {
@@ -2443,40 +2425,6 @@ test('a live update after a missed resume survives an older explicit list and fa
     return [row.title, row.activity];
   });
   expect(seen).toEqual(['Owner renamed the resumed task', 'working']);
-});
-
-test('a failed confirmation cannot replay an earlier rename over a newly discovered archive', async ({ app, browser }) => {
-  await app.open(mock('/s/studio'));
-  const seen = await browser.evaluate(async () => {
-    const module = '/assets/store.js';
-    const { createStore } = await import(module);
-    const results = [];
-    for (const undo of [false, true]) {
-      const initial = { id: 'p', sandbox_id: 's', status: 'parked', archived: false, title: 'Before', parked_needs_you: false };
-      const first = Promise.withResolvers<void>(), confirming = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
-      let reads = 0;
-      const store = createStore({ get: async () => {
-        if (++reads === 1) return [initial];
-        if (reads === 2) { await first.promise; return [initial]; }
-        confirming.resolve();
-        await finish.promise;
-        throw new Error('confirmation unavailable');
-      } });
-      await store.loadTasks('s');
-      const refresh = store.loadTasks('s');
-      store.upsertTask({ ...initial, title: 'Earlier rename' });
-      first.resolve();
-      await confirming.promise;
-      store.beginParkedDetail(initial)({ ...initial, status: 'closed', archived: true });
-      const removed = !store.findTask('p');
-      if (undo) store.upsertTask({ ...initial, title: 'Restored' });
-      finish.resolve();
-      await refresh;
-      results.push([removed, store.findTask('p')?.title ?? null]);
-    }
-    return results;
-  });
-  expect(seen).toEqual([[true, null], [true, 'Restored']]);
 });
 
 test('a missed park keeps the PR discovered by an older list across a newer failed watch', async ({ app, browser }) => {

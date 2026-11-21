@@ -142,6 +142,11 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   // Events have second-resolution timestamps. Confirm a lifecycle change seen
   // during an explicit list read once, then preserve any changes during confirmation.
   const activeLists = new Set();
+  const activeDetails = new Set();
+
+  function forgetDetailRow(taskId) {
+    for (const read of activeDetails) if (read.row?.id === taskId) read.row = null;
+  }
 
   async function loadTasks(sandboxId, watching = false) {
     const atStart = state.tasks.get(sandboxId);
@@ -200,13 +205,10 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       // lists still take precedence. Permanent removal wins in either order.
       for (const [id, transition] of read.transitions) {
         if (rowOrder.get(transition) <= snapshotOrder || read.changes.has(id)) continue;
-        if (transition.archived) map.delete(id);
-        else {
-          const latest = current?.get(id) ?? transition;
-          // For two parked observations the list loop has already reconciled
-          // the PR and verification, keeping the newer lifecycle fields.
-          if (latest.status !== 'parked' || map.get(id)?.status !== 'parked') map.set(id, latest);
-        }
+        const latest = current?.get(id) ?? transition;
+        // For two parked observations the list loop has already reconciled
+        // the PR and verification, keeping the newer lifecycle fields.
+        if (latest.status !== 'parked' || map.get(id)?.status !== 'parked') map.set(id, latest);
       }
       for (const id of read.deleted) map.delete(id);
       state.taskErrors.delete(sandboxId);
@@ -316,8 +318,9 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
 
   function publishParkedRow(map, row, updated) {
     if (updated !== row) {
+      const restored = !map.has(row.id);
       map.set(row.id, updated);
-      if (JSON.stringify(updated) !== JSON.stringify(row) || pullForStatus(updated) !== pullForStatus(row)) {
+      if (restored || JSON.stringify(updated) !== JSON.stringify(row) || pullForStatus(updated) !== pullForStatus(row)) {
         emit('task', updated);
         emit('tasks', row.sandbox_id);
         scheduleCountsRefresh();
@@ -344,17 +347,25 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
 
   function beginParkedDetail(startingRow) {
     const order = ++nextListRead;
-    return (detail, view = {}) => {
+    const read = { row: state.tasks.get(startingRow?.sandbox_id)?.get(startingRow?.id) };
+    if (read.row) activeDetails.add(read);
+    const release = () => activeDetails.delete(read);
+    const publish = (detail, view = {}) => {
+      release();
       const map = state.tasks.get(detail.sandbox_id);
-      const row = map?.get(detail.id);
+      if (!map || detail.archived) return view;
+      // Only a row actually visible at request start can survive omission by
+      // an older list. Archive/delete invalidates that reference synchronously.
+      const omitted = read.row?.id === detail.id && listOrder.get(map) < order ? read.row : null;
+      const row = map.get(detail.id) ?? omitted;
       if (!row || (detail.status !== 'parked' && row.status !== 'parked' && startingRow?.status !== 'parked')) return view;
-      const transition = detail.archived || row.status !== 'parked' || detail.status !== 'parked' ||
+      const transition = row.status !== 'parked' || detail.status !== 'parked' ||
         (startingRow && startingRow.status !== detail.status);
       recordVerification(detail, order);
       if (rowOrder.get(row) > order) {
         // Preserve the newer event's work and decisions. An older detail may
         // still identify the open PR that an unverified update could not name.
-        const supplement = row.status === 'parked' && detail.status === 'parked' && !detail.archived &&
+        const supplement = row.status === 'parked' && detail.status === 'parked' &&
           unverified.has(row) && (verifiedGroup.get(row)?.order ?? 0) < order;
         const latest = supplement ? publishParkedRow(map, row, awaitingVerification(row, detail)) : row;
         return { ...view, ...(transition ? lifecycleSummary(latest, latest) : parkedFacts(latest)) };
@@ -378,17 +389,12 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
         }
       }
       const missedHint = detail.status === 'parked' && hintOrder > order && !hasParkedRows(map);
-      if (updated.archived) {
-        map.delete(row.id);
-        emit('task', updated);
-        emit('tasks', detail.sandbox_id);
-        scheduleCountsRefresh();
-      } else {
-        publishParkedRow(map, row, updated);
-      }
+      publishParkedRow(map, row, updated);
       if (missedHint) requestRead(detail.sandbox_id, refreshParkedGroups, true, true);
       return { ...view, ...(transition ? updated : parkedFacts(updated)) };
     };
+    publish.release = release;
+    return publish;
   }
 
   function observedPr(task, snapshot) {
@@ -409,6 +415,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
 
   function upsertTask(task) {
     if (!task?.id) return;
+    if (task.archived) forgetDetailRow(task.id);
     const map = state.tasks.get(task.sandbox_id);
     const prior = map?.get(task.id);
     const pending = [...activeLists].filter(read => read.sandboxId === task.sandbox_id);
@@ -433,6 +440,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
 
   /** Archive can be undone. A permanent deletion wins even over a delayed response. */
   function removeTask(taskId, { byUser = false, archived = false } = {}) {
+    forgetDetailRow(taskId);
     for (const read of activeLists) {
       if (!archived) read.deleted.add(taskId);
       else if (state.tasks.get(read.sandboxId)?.has(taskId)) {

@@ -1143,6 +1143,8 @@ export function mountTaskView(ctx, sandbox, task) {
       }
     } catch (error) {
       if (alive && read === detailRead && error.status !== 404) errorToast(error, 'Couldn’t load task details');
+    } finally {
+      publishParked.release();
     }
     if (alive) renderStepList();
   }

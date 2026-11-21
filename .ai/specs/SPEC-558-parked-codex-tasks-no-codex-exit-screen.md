@@ -44,7 +44,8 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Reconcile parked lifecycle changes and refresh the sidebar independently of Git
 - [x] Show current parked progress and owner notices in the terminal
 - [x] Publish verified parked task detail to the terminal
-- [ ] Reconcile missed parks, resumes and archives discovered by terminal detail
+- [ ] Reconcile missed parks and resumes discovered by terminal detail
+- [ ] Reconcile terminal-discovered archives and later Undo
 - [ ] Publish verified parked task detail to Task Info
 - [ ] Keep failed integration candidates with their original owner
 - [ ] Deliver bounded Codex goal continuation to dev
@@ -72,6 +73,8 @@ Capture a separate screen at the park decision because exiting can clear the ent
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
 ## Evidence
+
+- Third-round review at `d4864c7a2` reproduced a missing row when an older empty list answered before the detail. The expanded Chromium regression runs both reply orders for park and resume and checks a subsequent archive, permanent removal and newer empty list. A detail retains its starting public row only for the duration of the read. An archive or deletion invalidates that reference. Terminal-discovered archives and Undo are a separate delivery after the park/resume change. Their implementation and tests are retained at the reviewed prototype.
 
 - Review at `74549c9ff` reproduced a park event arriving during a terminal read begun while the task was running. When subsequent verification failed, the event-first order kept the owner’s rename but lost the older detail’s open PR. The regression checks both orders and a genuine owner decision. A late detail can now supply that PR to the unverified parked row while preserving the event’s public fields.
 
