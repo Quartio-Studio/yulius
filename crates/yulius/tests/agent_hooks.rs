@@ -2183,7 +2183,13 @@ async fn goal_stop_yields_to_a_live_yulius_wait_then_continues_the_step() -> Tes
     assert!(stop_of(&f, Agent::Codex).await?["decision"].is_null());
     assert_eq!(task_brief(&f).await?["shows"], "working");
     assert_eq!(
-        f.h.store.task(&f.task).await?.ok_or("task")?.gate_blocks,
+        f.h.app
+            .deps
+            .store
+            .task(&f.task)
+            .await?
+            .ok_or("task")?
+            .gate_blocks,
         1,
         "the same step waits for machine news"
     );
