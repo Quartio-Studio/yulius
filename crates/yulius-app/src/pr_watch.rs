@@ -25,7 +25,7 @@ use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::ids::TaskId;
 use yulius_domain::task::TaskStatus;
 
-use crate::agent_wait::QueueNote;
+use crate::agent_wait::{ArmedNow, QueueNote};
 use crate::ci::{CiJobRecord, CiRunRecord};
 use crate::context::App;
 use crate::delivery::{delivery_profile, past_merge};
@@ -987,6 +987,7 @@ impl App {
         // The slot before the delivery: a merge decided in between then reads as merged, never
         // as "no merge armed" on an open pull request (review minor 8).
         let activation = self.arm_observation(&task.id);
+        let slot = self.armed_now(&task.id);
         let (armed, outcome) = self.armed_view(&task.id);
         // A saved arm may still await restoration (SPEC-487, review round 2).
         let armed = armed || self.merge_is_armed(&task.id);
@@ -1042,7 +1043,7 @@ impl App {
                 ..PrFacts::default()
             })
         };
-        if activation.deciding {
+        if activation.deciding || (armed && !matches!(slot, ArmedNow::Armed(_))) {
             return observed_only();
         }
         let integration = delivery_profile(&sandbox).integration_branch;
@@ -1245,7 +1246,10 @@ impl App {
             crate::race::Point::LivePrFactsRead,
             std::path::Path::new(task.id.as_str()),
         );
-        if self.arm_observation(&task.id) != activation {
+        if self.arm_observation(&task.id) != activation
+            || self.armed_now(&task.id) != slot
+            || self.merge_is_armed(&task.id) != armed
+        {
             return observed_only();
         }
         Some(PrFacts {

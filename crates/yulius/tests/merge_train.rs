@@ -3055,6 +3055,32 @@ async fn a_pull_request_that_conflicts_in_the_train_is_left_out() -> TestResult 
     );
     assert_eq!(state["merge_armed"], true, "still armed: {state}");
     let third = git(&worktrees[2], &["rev-parse", "HEAD"])?;
+    let registry = app.config.data_dir.join(MERGE_TRAINS_FILE);
+    let saved: Value = serde_json::from_str(&f.trains_file(&app))?;
+    let (_, activation) = saved_armed(&app, 3)?.ok_or("excluded arm")?;
+    let original = &saved[f.sandbox.as_str()]["train"]["left_out"][0];
+    assert_eq!(original["head"], third);
+    assert_eq!(original["armed_at"], activation);
+    for (excluded_head, excluded_arm) in [
+        (json!("earlier"), json!(activation)),
+        (json!(third), json!(activation - 1)),
+        (Value::Null, Value::Null),
+    ] {
+        let mut older = saved.clone();
+        let exclusion = &mut older[f.sandbox.as_str()]["train"]["left_out"][0];
+        exclusion["head"] = excluded_head;
+        exclusion["armed_at"] = excluded_arm;
+        std::fs::write(&registry, serde_json::to_vec(&older)?)?;
+        let wait = f.wait(3, &worktrees[2]).await?;
+        assert!(
+            wait["merge_train"]
+                .as_str()
+                .is_some_and(|note| note.contains("#3 waits behind merge train #1, #2")
+                    && !note.contains("shared.txt")),
+            "{wait}"
+        );
+    }
+    std::fs::write(&registry, serde_json::to_vec(&saved)?)?;
 
     app.ci_sync_sandbox(&app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?)
         .await?;
@@ -4198,9 +4224,28 @@ fn saved_armed(app: &App, n: u32) -> BoxResult<Option<(String, i64)>> {
 /// catches up, and merges once it has.
 #[tokio::test]
 async fn a_yulius_base_merge_keeps_the_merge_armed() -> TestResult {
+    verified_head_during_github_wait(false).await
+}
+
+#[tokio::test]
+async fn a_transient_pr_title_failure_keeps_the_trains_verified_head() -> TestResult {
+    verified_head_during_github_wait(true).await
+}
+
+async fn verified_head_during_github_wait(retitle_fails: bool) -> TestResult {
     let f = fixture().await?;
     let app = f.h.app.clone();
     let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+    if retitle_fails {
+        // The PR opened with the fallback title. A later conventional commit requires a retitle.
+        std::fs::write(worktree.join("fix.txt"), "reviewed repair")?;
+        git(&worktree, &["add", "fix.txt"])?;
+        git(
+            &worktree,
+            &["commit", "-qm", "fix(queue): finish the repair"],
+        )?;
+        git(&worktree, &["push", "-q", "origin", "HEAD:feat/1-train"])?;
+    }
     f.arm(1, &worktree).await?;
     let reviewed = git(&worktree, &["rev-parse", "HEAD"])?;
     f.record_passed(&app, 1, &reviewed).await?;
@@ -4208,18 +4253,70 @@ async fn a_yulius_base_merge_keeps_the_merge_armed() -> TestResult {
     f.advance_dev("other.txt")?;
     app.merge_armed(&f.sandbox).await;
     assert_eq!(f.train_runs(&app).await?.len(), 1);
-    // GitHub does not show the head Yulius pushes yet.
-    *f.h.github.stale_reads.lock().map_err(|_| "lock")? = u32::MAX;
+    if retitle_fails {
+        // GitHub sees the pushed head and refuses title updates until the fixture releases it.
+        f.h.github
+            .retitle_errors
+            .lock()
+            .map_err(|_| "retitle errors")?
+            .extend((0..8).map(|_| {
+                yulius_app::error::AppError::Upstream("GitHub upstream error (HTTP 502)".into())
+            }));
+    } else {
+        *f.h.github.stale_reads.lock().map_err(|_| "stale reads")? = u32::MAX;
+    }
     f.settle(&app).await?;
     f.decide_until(&app, || async {
         Ok(git(&f.origin, &["rev-parse", "feat/1-train"])? != reviewed)
     })
     .await?;
     let moved = git(&worktree, &["rev-parse", "HEAD"])?;
+    if retitle_fails {
+        let outstanding =
+            f.h.github
+                .retitle_errors
+                .lock()
+                .map_err(|_| "retitle errors")?
+                .len();
+        assert!(
+            (1..8).contains(&outstanding),
+            "the title update must have reached GitHub"
+        );
+    }
     let state = f.wait(1, &worktree).await?;
     assert_eq!(state["merge_armed"], true, "kept: {state}");
     assert_eq!(state["merge_outcome"], Value::Null, "{state}");
     assert_eq!(saved_armed(&app, 1)?, Some((moved.clone(), armed_at)));
+    let train: Value = serde_json::from_str(&f.trains_file(&app))?;
+    let held = &train[f.sandbox.as_str()]["train"]["members"][0];
+    assert_eq!(held["head"], reviewed, "admission head");
+    assert_eq!(
+        held["verified_head"], moved,
+        "the watcher can identify the moved arm"
+    );
+    // The saved arm can be ahead of the train checkpoint, including across an upgrade.
+    let registry = app.config.data_dir.join(MERGE_TRAINS_FILE);
+    let mut legacy = train.clone();
+    legacy[f.sandbox.as_str()]["train"]["members"][0]
+        .as_object_mut()
+        .ok_or("saved member")?
+        .remove("verified_head");
+    std::fs::write(&registry, serde_json::to_vec(&legacy)?)?;
+    let interrupted = f.wait(1, &worktree).await?;
+    assert!(
+        interrupted["merge_train"]
+            .as_str()
+            .is_some_and(|note| note.contains("verifies its current head")),
+        "{interrupted}"
+    );
+    std::fs::write(&registry, serde_json::to_vec(&train)?)?;
+    let restored = f.wait(1, &worktree).await?;
+    assert!(
+        restored["merge_train"].as_str().is_some_and(
+            |note| note.contains("number 1 of 1") && note.contains("combined result passed")
+        ),
+        "{restored}"
+    );
     // An unrelated PR verdict arrives while GitHub catches up. Keep the already
     // published owner verdict at this head and finish the candidate that passed.
     let mut peer = app
@@ -4232,6 +4329,11 @@ async fn a_yulius_base_merge_keeps_the_merge_armed() -> TestResult {
     peer.reference = CiRef::PullRequest(82);
     peer.state = RunState::Failed;
     app.deps.store.insert_ci_run(&peer, &[]).await?;
+    f.h.github
+        .retitle_errors
+        .lock()
+        .map_err(|_| "retitle errors")?
+        .clear();
     *f.h.github.stale_reads.lock().map_err(|_| "lock")? = 0;
     f.decide_until(&app, || async { f.merged(&app, 1).await })
         .await?;

@@ -182,6 +182,11 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # When a person merges the armed head from the task page, yulius wait reports the accepted merge.
 # The first PR watch can occur while the queue decides its arm. Advice waits for the decision.
 # The owner still hears the merge once if a new arm finishes between watch observations.
+# While a saved merge request is being restored, the owner’s PR check-in waits.
+# When a passed train updates a member’s head, yulius wait keeps its position while GitHub catches up.
+# If a saved arm is ahead of the train checkpoint, yulius wait reports that the queue is verifying the head.
+# An excluded PR’s conflict files belong to the request and head that were tested.
+# A legacy exclusion or later request reports that the PR waits behind the train.
 # Hourly history cleanup retains the latest merge wait of each existing task, even when
 # its activation began more than 180 days ago. Removing the task releases this history.
 # The PR watcher delivers actionable failures once and waits for a pending human decision.
