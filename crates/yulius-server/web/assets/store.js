@@ -226,7 +226,8 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
           // A newer list can supersede the resume event retained while a
           // terminal was reading an earlier parked state.
           const resumed = detailResumes.has(prior);
-          if (task.status !== 'parked' && prior?.status !== 'parked' && !resumed) continue;
+          // An Undo can also reintroduce a closed row whose terminal is still mounted.
+          if (prior && task.status !== 'parked' && prior.status !== 'parked' && !resumed) continue;
           if (resumed && task.status !== 'parked') detailResumes.add(task);
           if (!prior || JSON.stringify(task) !== JSON.stringify(prior) || pullForStatus(task) !== pullForStatus(prior)) {
             emit('task', task);
@@ -386,7 +387,10 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
 
   function beginParkedDetail(startingRow) {
     const order = ++nextListRead;
-    const read = { row: state.tasks.get(startingRow?.sandbox_id)?.get(startingRow?.id) };
+    // A mounted archived task is outside the active list. Its next detail
+    // can establish that Undo restored it while the terminal was open.
+    const read = { row: state.tasks.get(startingRow?.sandbox_id)?.get(startingRow?.id) ??
+      (startingRow?.archived ? startingRow : undefined) };
     if (read.row) activeDetails.add(read);
     const release = () => activeDetails.delete(read);
     const publish = (detail, view = {}) => {
@@ -401,9 +405,11 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       const laterEvent = rowOrder.get(retained) > Math.max(listVersion, rowOrder.get(listed) ?? 0);
       const crossedPark = startingRow && startingRow.status !== detail.status &&
         (startingRow.status === 'parked' || detail.status === 'parked');
-      const row = laterEvent ? retained : listed ?? (crossedPark && listVersion < order ? retained : null);
-      if (!row || (detail.status !== 'parked' && row.status !== 'parked' && startingRow?.status !== 'parked')) return view;
-      const transition = detail.archived || row.archived || crossedPark || row.status !== detail.status;
+      const undo = startingRow?.archived && !detail.archived;
+      const row = laterEvent ? retained : listed ?? ((crossedPark || undo) && listVersion < order ? retained : null);
+      if (!row) return undo ? { ...view, ...lifecycleSummary(startingRow, startingRow) } : view;
+      if (!startingRow?.archived && detail.status !== 'parked' && row.status !== 'parked' && startingRow?.status !== 'parked') return view;
+      const transition = detail.archived || row.archived || undo || crossedPark || row.status !== detail.status;
       recordVerification(detail, order);
       if (rowOrder.get(row) > order) {
         // Preserve the newer event's work and decisions. An older detail may
