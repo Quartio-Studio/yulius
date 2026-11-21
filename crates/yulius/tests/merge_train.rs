@@ -1275,6 +1275,113 @@ async fn shared_protected_merge(owner_publishes_last: bool) -> TestResult {
     Ok(())
 }
 
+#[tokio::test]
+async fn a_shared_head_infrastructure_error_retries_the_owner_once() -> TestResult {
+    let f = fixture().await?;
+    let app = &f.h.app;
+    let (_, _, head) = shared_pull_heads(&f).await?;
+    f.record_run(app, 1, &head, RunState::Error).await?;
+    f.record_passed(app, 2, &head).await?;
+    f.record_run(app, 3, &head, RunState::Error).await?;
+    app.reconcile_deliveries().await;
+    let runs = app.deps.store.ci_runs_for_sha(&f.sandbox, &head).await?;
+    let retry = runs
+        .iter()
+        .find(|r| r.reference == CiRef::PullRequest(1) && r.state == RunState::Queued)
+        .ok_or_else(|| format!("owner retry missing: {runs:?}"))?;
+    app.deps
+        .store
+        .transition_ci_run(
+            &retry.id,
+            &[RunState::Queued],
+            RunState::Error,
+            &yulius_app::ci::CiRunUpdate::default(),
+        )
+        .await?;
+    app.reconcile_deliveries().await;
+    assert_eq!(
+        app.deps
+            .store
+            .ci_runs_for_sha(&f.sandbox, &head)
+            .await?
+            .len(),
+        runs.len()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_new_shared_run_replaces_a_refusal_for_the_old_integration_configuration() -> TestResult {
+    let f = fixture().await?;
+    let app = &f.h.app;
+    let (one, _, head) = shared_pull_heads(&f).await?;
+    f.record_run(app, 1, &head, RunState::Running).await?;
+    let owner = app
+        .deps
+        .store
+        .ci_runs_for_sha(&f.sandbox, &head)
+        .await?
+        .remove(0);
+    let refused = yulius_app::ci::CiRunUpdate {
+        reason: Some("yulius.toml is invalid on dev and this change does not repair it".into()),
+        ended_at: Some(app.now()),
+        ..Default::default()
+    };
+    app.deps
+        .store
+        .transition_ci_run(&owner.id, &[RunState::Running], RunState::Failed, &refused)
+        .await?;
+    assert_eq!(f.wait(1, &one).await?["checks"], "failed");
+    f.record_passed(app, 2, &head).await?;
+    assert_eq!(f.wait(1, &one).await?["checks"], "passed");
+    // If a later ordinary run observes another invalid configuration, its new
+    // refusal supersedes the intervening pass.
+    f.record_run(app, 3, &head, RunState::Running).await?;
+    let newer = app
+        .deps
+        .store
+        .ci_runs_for_sha(&f.sandbox, &head)
+        .await?
+        .remove(0);
+    app.deps
+        .store
+        .transition_ci_run(&newer.id, &[RunState::Running], RunState::Failed, &refused)
+        .await?;
+    assert_eq!(f.wait(1, &one).await?["checks"], "failed");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_short_shared_head_finds_its_owner_beyond_recent_runs() -> TestResult {
+    let f = fixture().await?;
+    let app = &f.h.app;
+    let (_, _, head) = shared_pull_heads(&f).await?;
+    f.record_run(app, 1, &head, RunState::Failed).await?;
+    for n in 10..65 {
+        f.record_passed(app, n, &format!("{n:040x}")).await?;
+    }
+    f.record_passed(app, 2, &head).await?;
+    let short = &head[..9];
+    assert_eq!(
+        app.agent_wait_state("tok-t1", Some(short)).await?.checks,
+        "failed"
+    );
+    let other = format!(
+        "{short}{}",
+        if head.ends_with('0') {
+            "1".repeat(31)
+        } else {
+            "0".repeat(31)
+        }
+    );
+    f.record_passed(app, 3, &other).await?;
+    assert_eq!(
+        app.agent_wait_state("tok-t1", Some(short)).await?.checks,
+        "none"
+    );
+    Ok(())
+}
+
 async fn shared_owner_rerun(owner_state: RunState, peer_state: RunState) -> TestResult {
     let f = fixture().await?;
     let app = &f.h.app;
@@ -2616,10 +2723,29 @@ async fn a_yulius_base_merge_keeps_the_merge_armed() -> TestResult {
     let state = f.wait(1, &worktree).await?;
     assert_eq!(state["merge_armed"], true, "kept: {state}");
     assert_eq!(state["merge_outcome"], Value::Null, "{state}");
-    assert_eq!(saved_armed(&app, 1)?, Some((moved, armed_at)));
+    assert_eq!(saved_armed(&app, 1)?, Some((moved.clone(), armed_at)));
+    // An unrelated PR verdict arrives while GitHub catches up. Keep the already
+    // published owner verdict at this head and finish the candidate that passed.
+    let mut peer = app
+        .deps
+        .store
+        .ci_runs_for_sha(&f.sandbox, &moved)
+        .await?
+        .remove(0);
+    peer.id = "unpublished-red-peer".into();
+    peer.reference = CiRef::PullRequest(82);
+    peer.state = RunState::Failed;
+    app.deps.store.insert_ci_run(&peer, &[]).await?;
     *f.h.github.stale_reads.lock().map_err(|_| "lock")? = 0;
     f.decide_until(&app, || async { f.merged(&app, 1).await })
         .await?;
+    let ended = f.wait(1, &worktree).await?;
+    assert!(
+        ended["merge_outcome"]
+            .as_str()
+            .is_some_and(|s| s.contains("in a merge train")),
+        "{ended}"
+    );
     Ok(())
 }
 
@@ -2883,7 +3009,7 @@ async fn a_pinned_hand_merge_on_a_green_head_counts() -> TestResult {
     let f = fixture().await?;
     let app = f.h.app.clone();
     let person = yulius_app::model::Secret("person-token".into());
-    let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+    let (worktree, _peer, _) = shared_pull_heads(&f).await?;
     f.arm(1, &worktree).await?;
     let head = git(&worktree, &["rev-parse", "HEAD"])?;
     f.record_passed(&app, 1, &head).await?;
@@ -2892,6 +3018,8 @@ async fn a_pinned_hand_merge_on_a_green_head_counts() -> TestResult {
         .github
         .merge_pull(&person, "acme", "app", 1, "squash", &head)
         .await?;
+    // Another PR finishes red at this same SHA after the person has merged the green owner.
+    f.record_run(&app, 2, &head, RunState::Failed).await?;
     app.merge_armed(&f.sandbox).await;
     let state = f.wait(1, &worktree).await?;
     assert_eq!(state["merge_armed"], false, "{state}");
@@ -2962,23 +3090,23 @@ async fn a_pinned_hand_merge_on_a_green_head_counts() -> TestResult {
 
     // Without the ruleset, a head that never passed is merged by hand: it does not count.
     f.h.github.strict.store(false, Ordering::SeqCst);
-    let second = f.task(2, &[("b.txt", "x\n")]).await?;
-    f.arm(2, &second).await?;
-    let red = git(&second, &["rev-parse", "HEAD"])?;
+    let untested = f.task(3, &[("b.txt", "x\n")]).await?;
+    f.arm(3, &untested).await?;
+    let red = git(&untested, &["rev-parse", "HEAD"])?;
     app.deps
         .github
-        .merge_pull(&person, "acme", "app", 2, "squash", &red)
+        .merge_pull(&person, "acme", "app", 3, "squash", &red)
         .await?;
     f.h.github
         .pulls
         .lock()
         .map_err(|_| "pulls")?
         .iter_mut()
-        .find(|pull| pull.number == 2)
+        .find(|pull| pull.number == 3)
         .ok_or("merged PR")?
         .merge_commit_sha = None;
     app.merge_armed(&f.sandbox).await;
-    let outcome = f.wait(2, &second).await?["merge_outcome"]
+    let outcome = f.wait(3, &untested).await?["merge_outcome"]
         .as_str()
         .unwrap_or_default()
         .to_owned();

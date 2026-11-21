@@ -1277,7 +1277,7 @@ impl App {
             .ci_runs_for_sha(&sandbox.id, head)
             .await
             .map_err(|_| Step::Wait)?;
-        if let Some(latest) = runs.first() {
+        if let Some(latest) = crate::ci::run_for_pull_head(&runs, member.pr) {
             return match latest.state {
                 RunState::Passed => Ok(None),
                 RunState::Queued | RunState::Running => Err(Step::Wait),

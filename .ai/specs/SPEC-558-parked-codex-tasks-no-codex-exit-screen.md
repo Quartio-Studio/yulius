@@ -81,6 +81,8 @@ Yulius CI schedules one run per commit even when two PRs publish the same head. 
 
 ## Evidence
 
+- Five regressions failed at `bb554d9ff`. They cover an external merge followed by a red peer, a peer verdict during a train’s pushed-head confirmation, recovery after the integration CI configuration is repaired, the infrastructure retry budget for the owner, and a short SHA with more than 50 intervening runs. The prefix read checks for a unique commit in the sandbox’s indexed history.
+
 - On dev `437188043`, two shared-head regressions inverted the owner’s CI result in `yulius wait`. On the initial queue-only fix, the final merge refused the green owner because the peer had failed, and a private train could lend a failure. The fixtures exercise the hosted merge, the production commit scheduler, the local CI store and the agent wait endpoint.
 
 - The strict lookup prototype at `1b6c68298` reported `none` for the second open PR while the production scheduler’s single run for their shared head was queued. Its singleton decision work is awaiting the shared lookup and remains open.
@@ -314,7 +316,7 @@ Yulius CI schedules one run per commit even when two PRs publish the same head. 
 
 ## Delivery slices
 
-PRs #1492 and #1493 delivered native Codex resume and the pre-stop screen for new parks. PR #1505 kept sessions with local unfinished work live. PR #1510 verified current ordinary PR checks and unpublished work before parking. PR #1524 delivered the parked predecessor gate. PR #1527 preserved known PR observations across overlapping Git overviews. PR #1533 verified the blocking ordinary PR on individual HTTP detail reads. PR #1539 shared that verification across parked HTTP task-list rows and Home. This slice filters and explains parked MCP rows. Remaining deliveries cover page refresh, persisted integration failures, bounded Codex goals and pre-upgrade screens.
+PRs #1492 and #1493 delivered native Codex resume and the pre-stop screen for new parks. PR #1505 kept sessions with local unfinished work live. PR #1510 verified current ordinary PR checks and unpublished work before parking. PR #1524 delivered the parked predecessor gate. PR #1527 preserved known PR observations across overlapping Git overviews. PR #1533 verified the blocking ordinary PR on individual HTTP detail reads. PR #1539 shared that verification across parked HTTP task-list rows and Home. PR #1542 delivered verified MCP rows. Subsequent deliveries through PR #1560 updated the page, sidebar, terminal and Task Info. Remaining work covers shared-head CI, failed integration candidates, bounded Codex goals and pre-upgrade screens.
 
 The native-resume regression checks the rollout in the native launch and reads the first and second user prompts from its on-disk history. It also exercises absent IDs and an older lineage entry. No paid provider is involved.
 

@@ -1296,7 +1296,7 @@ impl App {
             &pull.base,
             &pull.head_sha,
             pull.merge_commit_sha.as_deref(),
-            self.ci_gate_result(sandbox, &pull.head_sha).await,
+            self.ci_gate_for_pull(sandbox, number, &pull.head_sha).await,
             next,
             &ahead,
         )
@@ -1320,16 +1320,19 @@ impl App {
         let (checks, checks_detail) = if head.is_empty() {
             ("none".to_owned(), None)
         } else {
-            let runs = if pr.is_some() && matches!(head.len(), 40 | 64) {
-                store.ci_runs_for_sha(&task.sandbox_id, &head).await?
-            } else {
-                store.ci_runs(&task.sandbox_id, 50).await?
-            };
-            // A hosted PR keeps its verdict after merge. A playground run can instead
-            // have tested its head merged with the base (PCI-006).
+            let runs;
             let run = if let Some(pr) = pr {
-                crate::ci::run_for_pull_head(&runs, pr, &head)
+                runs = if matches!(head.len(), 40 | 64) {
+                    store.ci_runs_for_sha(&task.sandbox_id, &head).await?
+                } else {
+                    store
+                        .ci_runs_for_unique_prefix(&task.sandbox_id, &head)
+                        .await?
+                };
+                crate::ci::run_for_pull_head(&runs, pr)
             } else {
+                // A playground run can have tested the task head merged with the base (PCI-006).
+                runs = store.ci_runs(&task.sandbox_id, 50).await?;
                 match runs.iter().find(|run| run.sha.starts_with(&head)) {
                     Some(run) => Some(run),
                     None => self.task_run_of_head(task, &runs, &head).await,

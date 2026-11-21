@@ -231,22 +231,32 @@ fn ordinary_scheduler_ref(reference: &CiRef) -> bool {
     !matches!(reference, CiRef::Train(_) | CiRef::Task(_))
 }
 
-/// PR-specific reruns decide their owner. Otherwise the scheduler covers every
-/// reference at the commit with one run. Input records are ordered newest first.
-pub(crate) fn run_for_pull_head<'a>(
-    runs: &'a [CiRunRecord],
-    pr: u64,
-    head: &str,
-) -> Option<&'a CiRunRecord> {
-    let mut at = runs.iter().filter(|r| r.sha.starts_with(head));
-    at.clone()
-        .find(|r| r.reference == CiRef::PullRequest(pr))
-        .or_else(|| {
-            at.find(|r| {
-                ordinary_scheduler_ref(&r.reference)
-                    && yulius_domain::ci::covers_shared_commit(r.state)
-            })
-        })
+fn integration_config_refusal(run: &CiRunRecord) -> bool {
+    run.reason
+        .as_deref()
+        .is_some_and(|why| why.starts_with(DEV_INVALID_PREFIX))
+}
+
+/// Select the ordinary verdict from one commit’s runs, newest first. The owner’s
+/// run wins, except for a refusal that a later run replaced after CI was repaired.
+pub(crate) fn run_for_pull_head(runs: &[CiRunRecord], pr: u64) -> Option<&CiRunRecord> {
+    let shared = |r: &&CiRunRecord| {
+        ordinary_scheduler_ref(&r.reference) && yulius_domain::ci::covers_shared_commit(r.state)
+    };
+    if let Some(index) = runs
+        .iter()
+        .position(|r| r.reference == CiRef::PullRequest(pr))
+    {
+        let owner = &runs[index];
+        if integration_config_refusal(owner)
+            && let Some(replacement) = runs[..index].iter().find(shared)
+        {
+            return Some(replacement);
+        }
+        Some(owner)
+    } else {
+        runs.iter().find(shared)
+    }
 }
 
 /// Test names retained by a cancelled sibling of a failed job (SPEC-566).
@@ -1114,7 +1124,7 @@ impl App {
         sha: &str,
     ) -> GateResult {
         self.ci_gate_select(sandbox, sha, |runs| {
-            run_for_pull_head(runs, pr, sha).map(|r| r.state)
+            run_for_pull_head(runs, pr).map(|r| r.state)
         })
         .await
     }
@@ -1528,13 +1538,7 @@ impl App {
             // A candidate run (SPEC-575) stays in the facts: it tests its commit once for the
             // branch too, and `plan` never supersedes it.
             .filter(|run| ordinary_scheduler_ref(&run.reference))
-            .filter(|run| {
-                !(dev_valid
-                    && run
-                        .reason
-                        .as_deref()
-                        .is_some_and(|r| r.starts_with(DEV_INVALID_PREFIX)))
-            })
+            .filter(|run| !(dev_valid && integration_config_refusal(run)))
             .map(|run| RunFacts {
                 id: run.id.clone(),
                 reference: run.reference.clone(),

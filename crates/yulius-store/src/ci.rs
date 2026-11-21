@@ -277,6 +277,29 @@ impl CiStore for SqliteStore {
         .await
     }
 
+    async fn ci_runs_for_unique_prefix(
+        &self,
+        sandbox: &SandboxId,
+        prefix: &str,
+    ) -> AppResult<Vec<CiRunRecord>> {
+        let (sandbox, prefix) = (sandbox.as_str().to_owned(), prefix.to_owned());
+        // A hexadecimal range uses the (sandbox_id, sha) index. Two distinct
+        // commits suffice to rule out ambiguity, regardless of the sandbox’s age.
+        self.call(move |c| {
+            select_runs(
+                c,
+                "sandbox_id = ?1 AND sha = (
+                    SELECT MIN(sha) FROM (
+                        SELECT DISTINCT sha FROM ci_runs
+                        WHERE sandbox_id = ?1 AND sha >= ?2 AND sha < ?3 LIMIT 2
+                    ) HAVING COUNT(*) = 1
+                ) ORDER BY queued_at DESC, rowid DESC",
+                &[&sandbox, &prefix, &format!("{prefix}g")],
+            )
+        })
+        .await
+    }
+
     async fn ci_run_to_front(&self, id: &str) -> AppResult<bool> {
         let id = id.to_owned();
         self.call(move |c| {
