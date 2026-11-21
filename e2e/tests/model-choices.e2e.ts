@@ -15,22 +15,19 @@ type Mocked = {
 test('an untouched new task inherits the Codex model and effort', async ({ app, browser, screen }) => {
   await app.open(mock('/settings'));
   await expect(screen.getByRole('button', /^Model for new tasks:/)).toContainText('Codex default');
-  await app.open(mock('/s/studio'));
+  await app.open(mock('/s/studio', '&codex=1'));
   await expect(screen.getByRole('button', /^Model:/)).toContainText('Codex default');
-  await browser.evaluate(() => {
-    (window as unknown as Mocked).__yuliusMock.accounts.push({ id: 'acc_test', provider: 'openai', label: 'Test', status: 'ok' });
-  });
   await screen.getByRole('textbox', 'Task prompt').fill('Add a health check');
   await screen.getByRole('button', 'Start task').click();
   await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
-  const { lastTaskCreate, tasks } = await browser.evaluate(() => {
+  const { lastTaskCreate, task } = await browser.evaluate(() => {
     const { lastTaskCreate, tasks } = (window as unknown as Mocked).__yuliusMock;
-    return { lastTaskCreate, tasks };
+    return { lastTaskCreate, task: tasks.at(-1) };
   });
   expect(lastTaskCreate.harness).toBe('codex');
   expect(Object.hasOwn(lastTaskCreate, 'model')).toBe(false);
   expect(Object.hasOwn(lastTaskCreate, 'effort')).toBe(false);
-  expect(tasks.at(-1)).toMatchObject({ harness: 'codex', harness_choice: 'chosen', model: 'gpt-6.2-astra', model_default: true, effort: 'xhigh' });
+  expect(task).toMatchObject({ harness: 'codex', harness_choice: 'chosen', model: 'gpt-6.2-astra', model_default: true, effort: 'xhigh' });
 });
 
 test('unrecognized and unreadable saved models recover to Codex', async ({ app, browser, screen }) => {

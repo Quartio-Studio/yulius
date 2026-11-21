@@ -32,20 +32,24 @@ export function antigravityConnected(me) {
 
 const isAdmin = (me) => Boolean(me && me.user && (me.user.is_superadmin || me.user.is_instance_admin));
 
-/**
- * The required step while no Claude account is usable: a Connect Claude button for an instance
- * administrator, else who connects one. `what` says what waits for it.
- */
-export function connectClaudeStep(me, what = 'Tasks and onboarding start once one is usable.') {
+const CONNECTIONS = {
+  claude: { name: 'Claude', subscription: 'a Claude subscription', path: CONNECT_PATH },
+  codex: { name: 'Codex', subscription: 'a Codex subscription', path: CONNECT_CODEX_PATH },
+  antigravity: { name: 'Antigravity', subscription: 'an Antigravity subscription', path: CONNECT_ANTIGRAVITY_PATH },
+};
+
+/** The subscription to connect while no agent account is usable. Home and onboarding need Claude. */
+export function connectAccountStep(me, what = 'Tasks and onboarding start once one is usable.', harness = 'claude') {
+  const { name, subscription, path } = CONNECTIONS[harness];
   return h('div', { class: 'banner banner-warn claude-connect', role: 'status' },
     icon('warn'),
     h('span', { class: 'banner-text' },
-      h('strong', null, 'Connect Claude first. '),
+      h('strong', null, `Connect ${name} first. `),
       // None connected, or every one must sign in again: either is done in Subscriptions.
       isAdmin(me)
-        ? `Agents run on a Claude subscription, and none is usable yet: connect one, or sign one in again. ${what}`
-        : `Agents run on a Claude subscription, and none is usable yet. An instance administrator connects one in Subscriptions. ${what}`),
-    isAdmin(me) ? h('a', { class: 'btn btn-sm btn-primary', href: href(CONNECT_PATH), dataset: { route: CONNECT_PATH } }, 'Connect Claude') : null);
+        ? `Agents run on ${subscription}, and none is usable yet: connect one, or sign one in again. ${what}`
+        : `Agents run on ${subscription}, and none is usable yet. An instance administrator connects one in Subscriptions. ${what}`),
+    isAdmin(me) ? h('a', { class: 'btn btn-sm btn-primary', href: href(path), dataset: { route: path } }, `Connect ${name}`) : null);
 }
 
 /**

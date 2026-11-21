@@ -22,8 +22,8 @@ The two pages share `modelPreferences()`. On an empty store it returns a null mo
 ## Plan
 
 - [x] Trace the default in the composer and Settings
-- [ ] Capture the missing-preference regression in the browser
-- [ ] Make Codex the personal task default and preserve explicit choices
+- [x] Capture the missing-preference regression in the browser
+- [x] Make Codex the personal task default and preserve explicit choices
 - [ ] Verify and independently review the delivery head
 
 ## Acceptance criteria
@@ -38,4 +38,10 @@ Exercise Settings, the composer, the submitted request, task details and missing
 
 ## Decisions
 
-Use the existing Codex default model option. The server owns the inherited launch settings. Explicit Random is stored as JSON null, while an untouched browser has no model key. Automation defaults and calls to the task API have their own selection contracts.
+Use the existing Codex default model option. [ADR-0426](../../docs/decisions/0426-the-new-task-composer-defaults-to-codex.md) The server owns the inherited launch settings. Explicit Random is stored as JSON null, while an untouched browser has no model key. Automation defaults and calls to the task API have their own selection contracts.
+
+## Evidence
+
+- On the original preference reader, Chromium failed all three new regressions in `tests/model-choices.e2e.ts`. The observed values were Random agent in fresh Settings and after an invalid preference, and Connect Claude in the empty-account composer.
+- With the fix, all seven model-choice tests passed in Chromium. They checked the actual submitted fields and the resulting chosen Codex task with inherited Astra and xhigh. All eleven Antigravity tests, sixteen Codex tests and seven Claude connection tests also passed. Explicit Random survived navigation and still drew across providers.
+- A direct JavaScript check exercised missing, malformed, unrecognized and inaccessible browser storage, JSON null, and a saved model for each provider.

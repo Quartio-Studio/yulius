@@ -7504,6 +7504,7 @@ export function createMockTransport(params) {
     db.accounts.push(account);
     emit(db, { type: 'account.updated', account });
   };
+  if (params.get('codex') === '1') db.connectCodex();
   // An Antigravity account signed in elsewhere (`connectAntigravity()`, SPEC-505).
   db.connectAntigravity = () => {
     db.nextId += 1;
