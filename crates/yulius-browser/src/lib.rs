@@ -43,6 +43,7 @@ mod manager;
 mod network;
 pub mod policy;
 mod process;
+mod profile;
 mod snapshot;
 mod url_policy;
 mod video;

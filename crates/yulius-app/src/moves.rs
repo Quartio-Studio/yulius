@@ -18,7 +18,7 @@ use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::{PauseKind, TaskRecord};
 use crate::needs_you::NeedsYouRecord;
-use crate::supervisor::RunStart;
+use crate::supervisor::{CONTINUE_TASK_PROMPT, RunStart};
 
 /// What a task of `provider` with nothing usable left is asked for (MOV-006). The request ends by
 /// itself when the task gets a subscription again.
@@ -30,7 +30,7 @@ pub(crate) fn no_subscription_action(provider: Provider) -> String {
 }
 
 /// Whether `action` is the "no subscription left" request of any provider.
-fn is_no_subscription_action(action: &str) -> bool {
+pub(crate) fn is_no_subscription_action(action: &str) -> bool {
     Harness::ALL
         .iter()
         .any(|harness| action == no_subscription_action(harness.provider()))
@@ -177,6 +177,28 @@ impl App {
     ) -> AppResult<()> {
         let store = &self.deps.store;
         let pause = store.open_pause(task_id).await?;
+        let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
+        // A saved Codex start has already chosen a fresh request or a native continuation.
+        // It takes precedence over observations left by the run that stopped.
+        if task.harness == Harness::Codex
+            && let Some(pause) = pause.as_ref().filter(|pause| !pause.kind.holds_process())
+        {
+            let prompt = pause.continuation.clone();
+            let start = match pause.kind {
+                PauseKind::FreshStart => RunStart::Fresh { prompt },
+                _ => RunStart::Resume { prompt },
+            };
+            return self
+                .switch_from(
+                    task_id,
+                    Some(TaskStatus::WaitingCapacity),
+                    account,
+                    reason,
+                    start,
+                    Some(pause),
+                )
+                .await;
+        }
         let at_limit = pause.as_ref().is_some_and(|p| p.kind == PauseKind::Limit)
             || self.runtime(task_id).at_limit.load(Ordering::SeqCst);
         if at_limit {
@@ -186,12 +208,11 @@ impl App {
             let start = RunStart::Fresh { prompt: None };
             return self.switch_with(task_id, account, reason, start).await;
         }
-        let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
         let prompt = match pause {
             Some(pause) if pause.kind == PauseKind::Prompt => pause.continuation,
             Some(pause) if pause.kind == PauseKind::Turn => self.stop_continuation(&task).await,
             _ if task.status == TaskStatus::Running && task.activity == Some(Activity::Working) => {
-                Some("Continue the task exactly where you left off.".into())
+                Some(CONTINUE_TASK_PROMPT.into())
             }
             _ => None,
         };
