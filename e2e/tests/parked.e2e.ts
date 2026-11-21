@@ -1433,32 +1433,36 @@ test('a parked rename preserves a verified Needs you without a PR until a health
   expect(seen).toEqual([['Renamed', 'needs', 'done'], ['Renamed', 'needs', 'done']]);
 });
 
-test('a parked terminal page shows a completed plan after the watch observes the last step finish', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio', '&ambient=0&pullgap=0&pullclock=manual'));
-  type Fixture = { releaseDetail: () => void; __yuliusMock: { holdDetail?: Promise<void>; tasks: { id: string; stepsList: { status: string }[] }[];
-    holdGitReads: boolean; changePull(s: string, n: number, fields: object): void;
-    touchTask(s: string, n: number, fields: object): void } };
-  await browser.evaluate(() => {
-    const db = (window as unknown as Fixture).__yuliusMock;
-    const task = db.tasks.find(t => t.id === 'tsk_studio_13')!;
-    db.touchTask('sb_studio', 13, { status: 'parked', activity: 'done', parked_needs_you: true,
-      parked_pr: { number: 520, open: true }, stepsList: task.stepsList.map((step, i) => ({ ...step, status: i === 1 ? 'in_progress' : 'done' })) });
-    location.hash = `/s/studio/t/13`;
+for (const finishActive of [true, false]) {
+  test(finishActive ? 'the parked terminal shows a completed plan after the watch observes the last step finish'
+    : 'the parked terminal keeps the active ordinal when a later step finishes', async ({ app, browser, screen }) => {
+    await app.open(mock('/s/studio', '&ambient=0&pullgap=0&pullclock=manual'));
+    type Fixture = { releaseDetail: () => void; __yuliusMock: { holdDetail?: Promise<void>; tasks: { id: string; stepsList: { status: string }[] }[];
+      holdGitReads: boolean; changePull(s: string, n: number, fields: object): void;
+      touchTask(s: string, n: number, fields: object): void } };
+    await browser.evaluate(finishActive => {
+      const db = (window as unknown as Fixture).__yuliusMock;
+      const task = db.tasks.find(t => t.id === 'tsk_studio_13')!;
+      db.touchTask('sb_studio', 13, { status: 'parked', activity: 'done', parked_needs_you: true,
+        parked_pr: { number: 520, open: true }, stepsList: task.stepsList.map((step, i) => ({ ...step, status: i === 1 ? 'in_progress' : !finishActive && i === 6 ? 'pending' : 'done' })) });
+      location.hash = `/s/studio/t/13`;
+    }, finishActive);
+    await expect(browser.locator('.step-count')).toHaveText('Step 2/7');
+    await browser.evaluate(finishActive => {
+      const db = (window as unknown as Fixture).__yuliusMock;
+      db.holdGitReads = true;
+      db.holdDetail = new Promise<void>(resolve => { (window as unknown as Fixture).releaseDetail = resolve; });
+      const task = db.tasks.find(t => t.id === 'tsk_studio_13')!;
+      task.stepsList[finishActive ? 1 : 6].status = 'done';
+      Object.assign(task, { parked_needs_you: !finishActive });
+      db.changePull('sb_studio', 520, { checks: 'success' });
+    }, finishActive);
+    await expect(browser.locator('.stepstrip [role=progressbar]')).toHaveAttribute('aria-label', finishActive ? /^7 of 7 steps done/ : /^6 of 7 steps done/);
+    await expect(screen.getByRole('region', finishActive ? 'Done' : 'Needs you').getByRole('link', /Improve the code/)).toBeVisible();
+    await expect(browser.locator('.step-count')).toHaveText(finishActive ? 'Step 7/7' : 'Step 2/7');
+    await browser.evaluate(() => (window as unknown as Fixture).releaseDetail());
   });
-  await expect(browser.locator('.step-count')).toHaveText('Step 2/7');
-  await browser.evaluate(() => {
-    const db = (window as unknown as Fixture).__yuliusMock;
-    db.holdGitReads = true;
-    db.holdDetail = new Promise<void>(resolve => { (window as unknown as Fixture).releaseDetail = resolve; });
-    const task = db.tasks.find(t => t.id === 'tsk_studio_13')!;
-    task.stepsList[1].status = 'done';
-    Object.assign(task, { parked_needs_you: false });
-    db.changePull('sb_studio', 520, { checks: 'success' });
-  });
-  await expect(screen.getByRole('region', 'Done').getByRole('link', /Improve the code/)).toBeVisible();
-  await expect(browser.locator('.step-count')).toHaveText('Step 7/7');
-  await browser.evaluate(() => (window as unknown as Fixture).releaseDetail());
-});
+}
 
 test('the terminal drops a resolved owner action when a parked PR later needs attention', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio', '&ambient=0&pullgap=0&pullclock=manual'));

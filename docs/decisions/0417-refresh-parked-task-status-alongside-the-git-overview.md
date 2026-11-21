@@ -14,7 +14,7 @@ Use the existing sandbox PR watch to refresh the bounded task-list endpoint when
 
 An older blocking Git chip stays visible when a later list verifies recovery on that PR. The sidebar and task lists use the newer result for grouping. A later Git request, a different PR or a summary without verified identity retains its own signal. Preserve a person’s outstanding decision, local work and a failing PR with a different identity. If the summary is unavailable, preserve a known open PR or the verifier’s prior Needs you decision until verification succeeds. A timeout can occur before the verifier identifies a PR. The same rule applies when the overview first discovers an open replacement after the summary has failed.
 
-The mounted parked terminal takes the owner notice from the current task summary. It uses a cached plan’s active ordinal only while the detail and the summary agree on progress. A list that observes completion can therefore update the terminal while its next detail read is pending.
+The mounted parked terminal takes the owner notice from the current task summary. It uses a cached plan’s active ordinal while it still names the active step in the current summary and fits the plan. A list that observes completion can therefore update the terminal while its next detail read is pending.
 
 ## Alternatives
 
