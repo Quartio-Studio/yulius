@@ -520,7 +520,9 @@ impl ViewerPrompt {
         let mut enter = ViewerEnter::None;
         let observe = |edit| match edit {
             BoxEdit::Text(byte) => {
-                self.fingerprint.update([byte]);
+                // xterm pastes line breaks as CR. The composer submits them as LF.
+                self.fingerprint
+                    .update([if byte == b'\r' { b'\n' } else { byte }]);
                 if byte & 0xc0 != 0x80 {
                     self.length = self.length.saturating_add(1);
                     if !byte.is_ascii_whitespace() {
@@ -536,11 +538,10 @@ impl ViewerPrompt {
                 }
                 // Even when a character remains, the incremental digest no longer
                 // describes the editor's text. A provider callback confirms it.
-                if self.first_text.is_some() {
-                    self.edited = true;
-                }
                 if self.length == 0 {
                     self.fingerprint = Default::default();
+                } else {
+                    self.edited = true;
                 }
             }
             BoxEdit::Send | BoxEdit::Clear => {

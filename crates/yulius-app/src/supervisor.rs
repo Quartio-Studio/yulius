@@ -1700,14 +1700,15 @@ impl App {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(index) = issued.iter().position(|entry| *entry == digest) {
-            issued.remove(index);
+            // Keep the receipt through retries while the owner has an unacknowledged Enter.
+            if eligible.next().is_none() {
+                issued.remove(index);
+            }
             return None;
         }
-        // A navigation or completion key lets the provider's editor decide the text.
-        // An accepted prompt confirms that Enter, once an automatic delivery is excluded.
-        eligible
-            .find(|key| key.enter == ViewerEnter::Edited)
-            .map(|key| (key.time, key.sequence))
+        // The provider may edit or normalize what the viewer entered. Once an
+        // automatic send is excluded, its accepted callback confirms the pending Enter.
+        eligible.next().map(|key| (key.time, key.sequence))
     }
 
     pub(crate) fn consume_viewer_submits(&self, task: &TaskId, through: u64) {
