@@ -554,3 +554,60 @@ for (const action of ['Discard saved draft', 'Discard before typing', 'Erase pro
     }
   });
 }
+
+for (const fail of [false, true]) {
+  test(`a reopened starting draft is read-only until creation ${fail ? 'fails' : 'succeeds'}`, async ({ app, browser, screen }) => {
+    const path = '/api/sandboxes/sb_studio/tasks';
+    await app.open(mock('/s/studio', `&codex=1&holdpost=${path}${fail ? '&failpost=' + path : ''}`));
+    const prompt = screen.getByRole('textbox', 'Task prompt');
+    await prompt.fill('Already submitted');
+    await prompt.press('ControlOrMeta+Enter');
+    await expect(browser.locator('.composer-send')).toBeDisabled();
+    await screen.getByRole('button', 'New draft').click();
+    await prompt.fill('Keep this sibling');
+    await chooseDraft(screen, 'Already submitted');
+    await expect(prompt).toHaveAttribute('aria-readonly', 'true');
+    await prompt.press('End');
+    await browser.keyboard.type('no edit');
+    await expect.poll(() => promptText(browser)).toBe('Already submitted');
+    await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
+    if (fail) {
+      await expect(screen.getByText(/^Couldn’t start the task/)).toBeVisible();
+      await expect(prompt).toHaveAttribute('aria-readonly', 'false');
+      await prompt.fill('Ready to retry');
+      await chooseDraft(screen, 'Keep this sibling');
+      await chooseDraft(screen, 'Ready to retry');
+    } else {
+      await expect(screen.getByRole('heading', { level: 1 })).toHaveText(/^#\d+ Already submitted$/);
+      await browser.locator('.btn-newtask').click();
+      await expect.poll(() => promptText(browser)).toBe('Keep this sibling');
+    }
+  });
+}
+
+test('leaving an untouched editor adopts another tab’s newer draft and preserves subsequent local edits', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  const prompt = screen.getByRole('textbox', 'Task prompt');
+  await prompt.fill('Shared original');
+  await expect.poll(() => storedDraft(browser)).toMatchObject({ text: 'Shared original' });
+  const tab = await surface.page().context().newPage();
+  try {
+    await tab.goto(surface.page().url());
+    const other = tab.getByRole('textbox', { name: 'Task prompt' });
+    await other.fill('Edited elsewhere');
+    await expect.poll(() => storedDraft(browser)).toMatchObject({ text: 'Edited elsewhere' });
+    await screen.getByRole('button', 'New draft').click();
+    await prompt.fill('Sibling');
+    await chooseDraft(screen, 'Edited elsewhere');
+    await expect.poll(() => promptText(browser)).toBe('Edited elsewhere');
+    await other.fill('Another remote edit');
+    await expect.poll(() => storedDraft(browser)).toMatchObject({ text: 'Another remote edit' });
+    await prompt.fill('Later local edit');
+    await chooseDraft(screen, 'Sibling');
+    await chooseDraft(screen, 'Later local edit');
+    await browser.reload();
+    await expect.poll(() => promptText(browser)).toBe('Later local edit');
+  } finally {
+    await tab.close();
+  }
+});
