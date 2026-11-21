@@ -359,6 +359,23 @@ impl SqliteStore {
     }
 }
 
+/// Applies this release's migrations to the existing database file `path`, never creating one,
+/// and closes it: the schema it had and the one it has now (SPEC-591: staging measures a
+/// release's migration on a copy of the store an older release wrote before it stops anything).
+///
+/// # Errors
+/// Fails when the file does not exist, is damaged or was written by a newer Yulius.
+pub fn migrate_file(path: &Path) -> Result<(i64, u32), OpenError> {
+    let mut conn = Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    let from: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    prepare(&mut conn)?;
+    conn.close().map_err(|(_, err)| OpenError::Sqlite(err))?;
+    Ok((from, schema_version()))
+}
+
 /// Creates the database file `path` at schema `version`, as a Yulius of that version left it,
 /// for upgrade tests (the next [`SqliteStore::open`] applies the later migrations).
 ///
