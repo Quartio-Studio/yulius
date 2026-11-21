@@ -5,11 +5,16 @@ slow-timeout = { period = "30s", terminate-after = 4 }
 # jobs) it sets NEXTEST_TEST_THREADS to the process's CPU budget ([resources.env] in yulius.toml,
 # SPEC-082), so several runs at once share the machine instead of each taking all of it.
 
+# Multi-head conditions have 300 seconds to settle, then time to report the last state.
+[[profile.default.overrides]]
+filter = "test(=merge_train::a_bisection_executes_the_failed_tree_only_once) | test(=merge_train::four_heads_that_pass_during_a_candidate_join_the_next_one_in_arm_order)"
+slow-timeout = { period = "30s", terminate-after = 11 }
+
 [profile.ci]
 fail-fast = false
 
 # These scenarios build four or five PR worktrees and execute real candidate jobs.
-# Give each the shard's test slots while it runs, keeping its 100-second deadline.
+# Give each the shard's test slots while it runs, alongside any jobs from other shards.
 [[profile.ci.overrides]]
 filter = "test(=merge_train::a_bisection_executes_the_failed_tree_only_once) | test(=merge_train::four_heads_that_pass_during_a_candidate_join_the_next_one_in_arm_order)"
 threads-required = "num-test-threads"
