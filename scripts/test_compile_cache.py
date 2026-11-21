@@ -126,6 +126,19 @@ class CompileCache(unittest.TestCase):
             result = self.launch(self.task, self.sandbox / "home", "print('unexpected cache')")
             self.assertEqual(result.stdout, "")
 
+    def test_unfinished_eviction_uses_cargo_until_upkeep_finishes(self):
+        home = self.sandbox / "home"
+        cache = self.sandbox / "rust-compile-cache"
+        dispatch = "print('cached', flush=True); os.execv(os.environ['CARGO'], [os.environ['CARGO'], *sys.argv[1:]])"
+        self.assertEqual(self.launch(self.task, home, dispatch).stdout.strip(), "cached")
+        pending = cache / ".yulius-mbx-pruning"
+        ready = cache / ".yulius-mbx-v1"
+        ready.rename(pending)
+        self.assertEqual(self.launch(self.task, home, dispatch).stdout, "")
+        self.assertEqual(self.record.read_text().splitlines(), ["build", "build"])
+        pending.rename(ready)
+        self.assertEqual(self.launch(self.task, home, dispatch).stdout.strip(), "cached")
+
     def test_interrupted_publication_leaves_the_next_launcher_able_to_initialize(self):
         from unittest.mock import patch
         import compile_cache

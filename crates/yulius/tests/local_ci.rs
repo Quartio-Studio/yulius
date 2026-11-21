@@ -2943,6 +2943,7 @@ async fn a_merge_with_a_tested_tree_reuses_its_result() -> TestResult {
 /// goes to 126 GB and they are refused.
 struct Disk {
     used: AtomicU64,
+    measurements: AtomicU32,
     refusals: AtomicU32,
 }
 
@@ -2952,6 +2953,7 @@ impl Disk {
     fn new(used_gb: u64, refusals: u32) -> Arc<Self> {
         Arc::new(Self {
             used: AtomicU64::new(used_gb * GB),
+            measurements: AtomicU32::new(0),
             refusals: AtomicU32::new(refusals),
         })
     }
@@ -2981,6 +2983,7 @@ impl SandboxIsolation for Disk {
         })
     }
     async fn measure_disk(&self, r: &SandboxRef) -> Option<DiskUsage> {
+        self.measurements.fetch_add(1, Ordering::SeqCst);
         self.disk(r).await
     }
     async fn largest(&self, _: &SandboxRef) -> Vec<(String, u64)> {
@@ -3110,6 +3113,35 @@ async fn a_run_over_the_disk_quota_waits_and_starts_when_space_frees() -> TestRe
     );
     let (state, description, _) = f.last_status(&pr_sha).ok_or("no status published")?;
     assert_eq!(state, "success", "{description}");
+    Ok(())
+}
+
+/// A queued CI run reads each over-quota sandbox once, whether upkeep cleared a cache or found
+/// nothing to prune. All names for this payload are in its cache, so the credited bytes are zero.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn ci_uses_one_fresh_quota_reading_after_compiler_cache_upkeep() -> TestResult {
+    for populated in [false, true] {
+        let f = fixture().await?;
+        let cache = f.data.join("sandboxes/s1/rust-compile-cache");
+        let artifact = cache.join("artifact");
+        if populated {
+            std::fs::create_dir(&cache)?;
+            std::fs::write(cache.join(".yulius-mbx-v1"), b"mbx-v1\n")?;
+            std::fs::write(&artifact, vec![1u8; 256 * 1024])?;
+            std::fs::hard_link(&artifact, cache.join("another-name"))?;
+        }
+        let disk = Disk::new(126, 0);
+        assert!(f.h.app.set_isolation(disk.clone()));
+        f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+        f.all_waiting("waiting for disk space").await?;
+        assert!(!artifact.exists());
+        assert_eq!(
+            disk.measurements.load(Ordering::SeqCst),
+            1,
+            "populated: {populated}"
+        );
+    }
     Ok(())
 }
 
