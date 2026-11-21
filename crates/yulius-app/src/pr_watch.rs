@@ -1271,7 +1271,13 @@ impl App {
         facts
             .events
             .retain(|event| event.kind != "outcome" || event.key != key);
-        if decision.superseded_at.is_some() || facts.pr != decision.singleton.pr {
+        if facts.pr != decision.singleton.pr {
+            return Some(());
+        }
+        facts
+            .events
+            .retain(|event| event.kind != "candidate" || event.key != decision.singleton.run);
+        if decision.superseded_at.is_some() {
             return Some(());
         }
         let observation = self
@@ -1314,13 +1320,11 @@ impl App {
             return None;
         }
         match observation {
-            SingletonObservation::Changed => return Some(()),
+            SingletonObservation::Changed(hosted_head) => {
+                return (hosted_head.as_deref() == Some(facts.head.as_str())).then_some(());
+            }
             SingletonObservation::Current(Some(
-                RunState::Running
-                | RunState::Queued
-                | RunState::Failed
-                | RunState::Error
-                | RunState::Cancelled,
+                RunState::Running | RunState::Queued | RunState::Failed,
             )) => {
                 // If the ordinary observation just changed, start with fresh facts on the
                 // next pass. A pending or red rerun cannot produce a green-unarmed notice.

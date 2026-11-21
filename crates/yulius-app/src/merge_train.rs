@@ -312,7 +312,8 @@ impl SingletonDecision {
 
 /// Result of observing a singleton's hosted inputs and ordinary CI at its exact head.
 pub(crate) enum SingletonObservation {
-    Changed,
+    /// Hosted inputs changed. An open delivery on the integration branch supplies its current head.
+    Changed(Option<String>),
     Current(Option<RunState>),
 }
 
@@ -549,6 +550,17 @@ impl App {
             tracing::warn!(sandbox = %sandbox.slug, error = %err, "a merge pass could not fetch");
         }
         let mut state = self.read_trains(sandbox_id);
+        // During recovery a saved arm can be known before its history is readable.
+        // A fast CI completion must preserve that train and its original wait deadline.
+        if state.train.as_ref().is_some_and(|train| {
+            train.members.iter().any(|member| {
+                TaskId::parse(&member.task).is_ok_and(|task| {
+                    self.armed_now(&task) == ArmedNow::None && self.merge_is_armed(&task)
+                })
+            })
+        }) {
+            return;
+        }
         let before = state.clone();
         state.train = match state.train.take() {
             Some(train) => self.advance_train(&sandbox, &mut state, train).await,
@@ -820,7 +832,7 @@ impl App {
             )
             .await
         {
-            Some(SingletonObservation::Changed) => {
+            Some(SingletonObservation::Changed(_)) => {
                 self.dissolve(sandbox, &train, "its tested head or base changed")
                     .await;
                 return None;
@@ -997,7 +1009,9 @@ impl App {
                 return None;
             }
             if !current || pull.head_sha != head || pull.base_sha != base {
-                return Some(SingletonObservation::Changed);
+                return Some(SingletonObservation::Changed(
+                    current.then_some(pull.head_sha),
+                ));
             }
             // A failed read cannot establish that the owner's earlier running check ended.
             let runs = self

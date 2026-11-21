@@ -3021,30 +3021,62 @@ fn a_cold_parked_summary_reads_historical_spec_and_goal_evidence() -> TestResult
 /// #331: a failing integration candidate ends immediately before daemon restart.
 #[test]
 fn a_cold_owner_receives_its_recorded_integration_failure_after_its_rerun() -> TestResult {
-    cold_candidate_case(20, 0, false)
+    cold_candidate_case(ColdCandidate::OwnerRerun)
 }
 
 #[test]
 fn a_backdated_queue_position_does_not_hide_the_newer_failed_candidate() -> TestResult {
-    cold_candidate_case(9, 0, false)
+    cold_candidate_case(ColdCandidate::Backdated)
 }
 
 #[test]
 fn unrelated_ci_runs_do_not_hide_a_current_candidate() -> TestResult {
-    cold_candidate_case(20, 101, false)
+    cold_candidate_case(ColdCandidate::UnrelatedRuns)
 }
 
 #[test]
 fn a_failed_candidate_reaches_its_owner_after_an_ordinary_green_notice() -> TestResult {
-    cold_candidate_case(20, 0, true)
+    cold_candidate_case(ColdCandidate::PriorNotice)
 }
 
-fn cold_candidate_case(queue_place: i64, later_runs: i64, prior_notice: bool) -> TestResult {
+#[test]
+fn a_cancelled_ordinary_run_preserves_the_accepted_singleton_diagnosis() -> TestResult {
+    cold_candidate_case(ColdCandidate::OrdinaryCancelled)
+}
+
+#[test]
+fn an_ordinary_infrastructure_error_preserves_the_accepted_singleton_diagnosis() -> TestResult {
+    cold_candidate_case(ColdCandidate::OrdinaryError)
+}
+
+#[test]
+fn an_accepted_singleton_resolves_its_source_trains_hands_off_notice() -> TestResult {
+    cold_candidate_case(ColdCandidate::SourceIncludesOwner)
+}
+
+#[test]
+fn a_moved_hosted_head_cannot_rearm_an_obsolete_ordinary_green() -> TestResult {
+    cold_candidate_case(ColdCandidate::MovedHead)
+}
+
+enum ColdCandidate {
+    MovedHead,
+    OwnerRerun,
+    Backdated,
+    UnrelatedRuns,
+    PriorNotice,
+    OrdinaryCancelled,
+    OrdinaryError,
+    SourceIncludesOwner,
+}
+
+fn cold_candidate_case(case: ColdCandidate) -> TestResult {
     use yulius_app::delivery::DeliveryRecord;
     use yulius_app::ports::github::ChecksState;
     use yulius_app::pr_watch::WatchBounds;
     use yulius_domain::ci::{CiRef, RunState};
     use yulius_domain::delivery::DeliveryStage;
+    let prior_notice = matches!(case, ColdCandidate::PriorNotice);
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     let (id, head, original) = rt.block_on(async {
@@ -3100,7 +3132,11 @@ fn cold_candidate_case(queue_place: i64, later_runs: i64, prior_notice: bool) ->
             &caller.sandbox,
             "ordinary-green",
             &head,
-            RunState::Passed,
+            match case {
+                ColdCandidate::OrdinaryCancelled => RunState::Cancelled,
+                ColdCandidate::OrdinaryError => RunState::Error,
+                _ => RunState::Passed,
+            },
             None,
             10,
         );
@@ -3137,10 +3173,10 @@ fn cold_candidate_case(queue_place: i64, later_runs: i64, prior_notice: bool) ->
             assert_eq!(notice.len(), 1);
             assert!(notice[0].1.contains("no merge is armed"), "{notice:?}");
         }
-        candidate.queued_at = yulius_domain::time::Timestamp(queue_place);
+        candidate.queued_at = yulius_domain::time::Timestamp(if matches!(case, ColdCandidate::Backdated) { 9 } else { 20 });
         candidate.started_at = Some(yulius_domain::time::Timestamp(21));
         candidate.ended_at = Some(yulius_domain::time::Timestamp(22));
-        candidate.reference = CiRef::Train(vec![88, 99]);
+        candidate.reference = CiRef::Train(if matches!(case, ColdCandidate::SourceIncludesOwner) { vec![1481, 99] } else { vec![88, 99] });
         job.name = "shard 2".into();
         app.deps.store.insert_ci_run(&candidate, &[job]).await?;
         app.deps
@@ -3182,6 +3218,7 @@ fn cold_candidate_case(queue_place: i64, later_runs: i64, prior_notice: bool) ->
                 ),
             })
             .await?;
+        let later_runs = if matches!(case, ColdCandidate::UnrelatedRuns) { 101 } else { 0 };
         for n in 0..later_runs {
             let (run, job) = crate::pr_watch::run(
                 &caller.sandbox,
@@ -3229,7 +3266,16 @@ fn cold_candidate_case(queue_place: i64, later_runs: i64, prior_notice: bool) ->
             .store
             .set_task_needs_you(&id, None, cold.now())
             .await?;
-        if !prior_notice && later_runs == 0 && queue_place == 20 {
+        if matches!(case, ColdCandidate::MovedHead) {
+            set_pull_head(&remote, 1481, "replacement")?;
+            let obsolete = cold.watch_prs(&bounds).await;
+            assert!(
+                obsolete.is_empty(),
+                "green notice for the replaced head: {obsolete:?}"
+            );
+            set_pull_head(&remote, 1481, &head)?;
+        }
+        if matches!(case, ColdCandidate::OwnerRerun) {
             let gate = Arc::new(tokio::sync::Notify::new());
             *remote.pull_read_hold.lock().map_err(|_| "PR gate")? = Some(gate.clone());
             let watcher = cold.clone();
@@ -3269,6 +3315,21 @@ fn cold_candidate_case(queue_place: i64, later_runs: i64, prior_notice: bool) ->
                     )
                     .await?
             );
+        }
+        if matches!(case, ColdCandidate::SourceIncludesOwner) {
+            let saved_remote = remote.remote.lock().map_err(|_| "remote")?.take();
+            {
+                let mut pulls = remote.pulls.lock().map_err(|_| "fixture pull")?;
+                pulls.first_mut().ok_or("pull")?.base_sha = "later-base".into();
+            }
+            let stale = cold.watch_prs(&bounds).await;
+            assert!(
+                stale
+                    .iter()
+                    .all(|(_, text)| !text.contains("Do not re-arm")),
+                "obsolete source after a base change: {stale:?}"
+            );
+            *remote.remote.lock().map_err(|_| "remote")? = saved_remote;
         }
         if prior_notice {
             // The remote base advanced while the daemon's origin/dev still names the tested base.
@@ -3342,6 +3403,10 @@ fn cold_candidate_case(queue_place: i64, later_runs: i64, prior_notice: bool) ->
         }
         assert_eq!(notices.len(), 1, "{notices:?}");
         assert_eq!(notices[0].0, id);
+        assert!(
+            !notices[0].1.contains("Do not re-arm"),
+            "resolved source: {notices:?}"
+        );
         for evidence in ["candidate-red", "shard 2", "292.1 ms"] {
             assert!(notices[0].1.contains(evidence), "{notices:?}");
         }

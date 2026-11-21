@@ -122,6 +122,8 @@ pub(crate) struct ArmedSlot {
     /// Raised by every arm and clear: a decision taken in an older generation is superseded.
     generation: u64,
     last_armed_at: i64,
+    /// The replacement is on disk, but the earlier singleton is still being retired.
+    retirement_pending: bool,
     /// Where the armed merge stands, in one sentence, as its last decision left it (SPEC-441
     /// MQ-007).
     note: Option<QueueNote>,
@@ -160,12 +162,16 @@ impl ArmedSlot {
     /// superseded.
     fn clear(&mut self) {
         self.generation += 1;
+        self.retirement_pending = false;
         self.merge = None;
         self.note = None;
     }
 
     /// Takes the armed merge out to decide it; it still reads as armed until [`Self::finish`].
     fn take(&mut self) -> Option<Deciding> {
+        if self.retirement_pending {
+            return None;
+        }
         let merge = self.merge.take()?;
         self.deciding += 1;
         Some(Deciding {
@@ -339,6 +345,7 @@ impl App {
     ) -> AppResult<bool> {
         let runtime = self.runtime(&task.id);
         let _writer = runtime.arm_writer.lock().await;
+        self.finish_retirement(&task.id, &runtime).await?;
         if lock_slot(&runtime)
             .merge
             .as_ref()
@@ -346,30 +353,52 @@ impl App {
         {
             return Ok(false);
         }
-        let now = self.now();
-        let previous = self.deps.store.retire_singleton(&task.id, now).await?;
-        let mut slot = lock_slot(&runtime);
-        if let Some(stamp) = previous {
-            slot.last_armed_at = slot.last_armed_at.max(stamp.0);
-        }
-        let reviewed = reviewed.to_ascii_lowercase();
-        let armed_at = slot
-            .merge
+        let last = self.deps.store.latest_merge_wait(&task.id).await?;
+        let prior = last
             .as_ref()
-            .filter(|armed| reviewed.len() >= 7 && armed.head.starts_with(&reviewed))
-            .map_or_else(
-                || self.now().0.max(slot.last_armed_at.saturating_add(1)),
-                |armed| armed.armed_at,
-            );
-        let merge = ArmedMerge {
-            head: head.to_owned(),
-            summary: summary.to_owned(),
-            armed_at,
-            by,
-        };
-        self.save_armed(&task.id, Some(&merge));
-        slot.arm(merge);
+            .and_then(crate::merge_train::SingletonDecision::from_span);
+        {
+            let mut slot = lock_slot(&runtime);
+            if let Some(span) = &last {
+                slot.last_armed_at = slot.last_armed_at.max(span.started_at.0);
+            }
+            let reviewed = reviewed.to_ascii_lowercase();
+            let armed_at = slot
+                .merge
+                .as_ref()
+                .filter(|armed| reviewed.len() >= 7 && armed.head.starts_with(&reviewed))
+                .map_or_else(
+                    || self.now().0.max(slot.last_armed_at.saturating_add(1)),
+                    |armed| armed.armed_at,
+                );
+            let merge = ArmedMerge {
+                head: head.to_owned(),
+                summary: summary.to_owned(),
+                armed_at,
+                by,
+            };
+            self.write_armed(&task.id, Some(&merge))
+                .map_err(crate::error::AppError::internal)?;
+            slot.arm(merge);
+            slot.retirement_pending =
+                prior.is_some_and(|decision| decision.superseded_at.is_none());
+        }
+        self.finish_retirement(&task.id, &runtime).await?;
         Ok(true)
+    }
+
+    /// Call with the task's arm writer held. An interrupted retirement is retried
+    /// before a queue pass can take the replacement.
+    async fn finish_retirement(
+        &self,
+        task: &TaskId,
+        runtime: &crate::supervisor::TaskRuntime,
+    ) -> AppResult<()> {
+        if lock_slot(runtime).retirement_pending {
+            self.deps.store.retire_singleton(task, self.now()).await?;
+            lock_slot(runtime).retirement_pending = false;
+        }
+        Ok(())
     }
 
     /// Nothing is armed for `task` any more: `delivery_merge` merged it at once.
@@ -387,11 +416,17 @@ impl App {
     /// it, a task whose state keeps no armed merge. Failures are logged: the merge stays armed
     /// in memory.
     fn save_armed(&self, task: &TaskId, armed: Option<&ArmedMerge>) {
+        if let Err(err) = self.write_armed(task, armed) {
+            tracing::warn!(error = %err, "armed merges could not be saved");
+        }
+    }
+
+    fn write_armed(&self, task: &TaskId, armed: Option<&ArmedMerge>) -> std::io::Result<()> {
         let _guard = ARMED_FILE_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let path = self.config.data_dir.join(ARMED_MERGES_FILE);
-        let mut saved = read_armed(&path);
+        let mut saved = load_armed(&path)?;
         saved.retain(|entry| entry.task != task.as_str());
         if let Some(armed) = armed {
             saved.push(SavedArmed {
@@ -402,16 +437,13 @@ impl App {
                 by: armed.by.clone(),
             });
         }
-        let written = serde_json::to_vec(&saved)
+        serde_json::to_vec(&saved)
             .map_err(std::io::Error::other)
             .and_then(|bytes| {
                 let tmp = path.with_extension("json.tmp");
                 std::fs::write(&tmp, bytes)?;
                 std::fs::rename(&tmp, &path)
-            });
-        if let Err(err) = written {
-            tracing::warn!(error = %err, "armed merges could not be saved");
-        }
+            })
     }
 
     /// Puts back the armed merges after a restart (DLV-205) for the tasks whose run keeps one
@@ -443,13 +475,24 @@ impl App {
                 continue;
             };
             if let Some(span) = last
-                && span.started_at.0 == entry.armed_at
                 && let Some(receipt) = crate::merge_train::SingletonDecision::from_span(&span)
-                && receipt.head == entry.head
             {
-                self.save_armed(&task_id, None);
-                lock_slot(&runtime).last_armed_at = entry.armed_at;
-                continue;
+                if span.started_at.0 == entry.armed_at && receipt.head == entry.head {
+                    self.save_armed(&task_id, None);
+                    lock_slot(&runtime).last_armed_at = entry.armed_at;
+                    continue;
+                }
+                if receipt.superseded_at.is_none()
+                    && self
+                        .deps
+                        .store
+                        .retire_singleton(&task_id, self.now())
+                        .await
+                        .is_err()
+                {
+                    complete = false;
+                    continue;
+                }
             }
             let Ok(record) = self.deps.store.task(&task_id).await else {
                 complete = false;
@@ -668,6 +711,9 @@ impl App {
     pub(crate) fn armed_now(&self, task: &TaskId) -> ArmedNow {
         let runtime = self.runtime(task);
         let slot = lock_slot(&runtime);
+        if slot.retirement_pending {
+            return ArmedNow::None;
+        }
         match (&slot.merge, slot.deciding) {
             (_, 1..) => ArmedNow::Deciding,
             (Some(merge), 0) => ArmedNow::Armed(merge.clone()),
@@ -821,6 +867,12 @@ impl App {
             // Taken while it is decided, so a CI end and the delivery loop never merge twice; it
             // reads as armed for `yulius wait` until the decision ends, in one step (WAI-003).
             let runtime = self.runtime(&task.id);
+            if lock_slot(&runtime).retirement_pending {
+                let _writer = runtime.arm_writer.lock().await;
+                if self.finish_retirement(&task.id, &runtime).await.is_err() {
+                    continue;
+                }
+            }
             let Some(deciding) = lock_slot(&runtime).take() else {
                 continue;
             };
@@ -1685,10 +1737,15 @@ fn lock_slot(runtime: &crate::supervisor::TaskRuntime) -> std::sync::MutexGuard<
 
 /// The saved armed merges; none when the file is missing or unreadable.
 fn read_armed(path: &std::path::Path) -> Vec<SavedArmed> {
-    std::fs::read(path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+    load_armed(path).unwrap_or_default()
+}
+
+fn load_armed(path: &std::path::Path) -> std::io::Result<Vec<SavedArmed>> {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(std::io::Error::other),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(err) => Err(err),
+    }
 }
 
 fn short(sha: &str) -> &str {
