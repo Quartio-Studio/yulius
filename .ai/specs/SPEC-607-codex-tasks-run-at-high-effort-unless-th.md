@@ -30,7 +30,8 @@ Yulius stores the task effort as an option and resolves it when planning a proce
   or inherits `high` for every model, including implicitly selected Astra. Existing
   tasks keep their stored effort option and resolve it at the next process start.
 - **CEF-002** The composer and Settings describe inherited High and offer explicit
-  Extra high and Max for Astra and Sol. The task creation and model-edit tools describe
+  Extra high and Max for Astra and Sol. Random also describes High because each
+  eligible default model inherits it. The task creation and model-edit tools describe
   the default and accept the explicit choices. Default clears a model edit's override.
 - **CEF-003** Task details and the browser mock distinguish inherited High from
   explicitly chosen High and report explicit Extra high and Max without a default marker.
@@ -96,3 +97,8 @@ replaces the Astra effort default of SPEC-561. [ADR-0444](../../docs/decisions/0
   The reviewer briefing test still names GPT-6.2 Astra at High.
 - `python3 scripts/decision_slots.py`, `python3 scripts/check_repository.py`
   and `scripts/dev quick` passed.
+- The first review of `dd1b3e684` requested an accurate Random effort label.
+  `npx e2e run model-choices --grep 'Settings preserves'` failed before the fix.
+  The menu displayed “Default Depends on the drawn model” where High was expected.
+  With the shared label fixed, all nine tests in `npx e2e run model-choices`
+  passed. Random still offers Low through Extra high as explicit choices.

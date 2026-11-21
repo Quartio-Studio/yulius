@@ -101,7 +101,7 @@ test('Settings preserves compatible effort and clears incompatible choices in th
   await screen.getByRole('menuitemradio', /^Random/).click();
   await expect(screen.getByRole('button', 'Effort: Default effort')).toBeVisible();
   await screen.getByRole('button', /^Effort:/).click();
-  await expect(screen.getByRole('menuitemradio', /^Default/)).toContainText('Depends on the drawn model');
+  await expect(screen.getByRole('menuitemradio', /^Default/)).toContainText('High');
   const randomEfforts = await browser.evaluate(() => Array.from(document.querySelectorAll('.menu .menu-label'), (el) => el.textContent));
   expect(randomEfforts).toEqual(['Default', 'Low', 'Medium', 'High', 'Extra high']);
   await screen.getByRole('menuitemradio', /^Default/).press('Escape');

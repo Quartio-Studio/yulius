@@ -184,7 +184,7 @@ export function modelMenuItems(selected, onPick) {
 /** Menu items to pick an effort level; `onPick(id|null)`. */
 export function effortMenuItems(model, selected, onPick) {
   return [
-    { label: 'Default', description: model ? findEffort(DEFAULT_EFFORT).name : 'Depends on the drawn model', checked: selected === null, onSelect: () => onPick(null) },
+    { label: 'Default', description: findEffort(DEFAULT_EFFORT).name, checked: selected === null, onSelect: () => onPick(null) },
     ...effortLevels(model).map(findEffort).map((effort) => ({ label: effort.name, description: effort.description, checked: effort.id === selected, onSelect: () => onPick(effort.id) })),
   ];
 }
