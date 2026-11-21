@@ -10,7 +10,7 @@ In task #575 a reviewer wanted to replace scratch copies before rerunning tests.
 
 ## Decision
 
-Register a local Bash PermissionRequest hook for contained Claude tasks. When the event is in bypassPermissions mode, has an empty suggestion list and contains a forced recursive removal of one variable-parent/variable-child path, return a non-interrupting denial to the calling agent. Give it the quoted, guarded operand for the existing cleanup command so it can issue a fresh tool call. Parse shell commands and arguments to distinguish the removal from a string or here-document containing its spelling. The hook sends no request to the server.
+Register a local Bash PermissionRequest hook for contained Claude tasks. When the event is in bypassPermissions mode, has an empty suggestion list and contains an ordinary removal with a named shell variable or a root-level scratch path, return a non-interrupting denial to the calling agent. Give it a quoted, guarded replacement for that removal. It resubmits the original script with the replacement in place, preserving conditions, variable bindings and loops. A non-recursive call uses `--file-only`, which unlinks files and links and fails on directories. A call without force uses `--require-existing` to preserve the failure when a target is missing. Parse shell commands and arguments to distinguish the removal from a string or here-document containing its spelling. The hook sends no request to the server.
 
 The cleanup tool resolves the path where the shell expanded it and enforces the ownership rules in [ADR-0155](0155-a-task-removes-its-own-files-with-yulius-remove.md).
 

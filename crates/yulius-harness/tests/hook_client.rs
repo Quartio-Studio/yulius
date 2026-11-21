@@ -1177,7 +1177,7 @@ fn claude_scratch_removal_permission_returns_a_checked_retry() -> TestResult {
             "permission_suggestions": [], "tool_name": "Bash", "tool_input": {"command": command}
         })
     };
-    for (command, parent, child) in [
+    for (command, retry) in [
         (
             r#"W=/work
 S=/tmp/scratchpad
@@ -1191,10 +1191,70 @@ cd $S/r3m && n=$(grep -n '^  phase=installed$' scripts/cd/remote.sh | sed -n 2p 
 sed -i "${n}s/.* /   : # mutated/" scripts/cd/remote.sh && sed -n "$((n-2)),$((n+1))p" scripts/cd/remote.sh
 python3 -m unittest scripts/test_cd.py 2>&1 | grep -E "^(FAIL|Ran|OK)"
 cd $S/probe && python3 r2.py $S/r3p/scripts 2>&1 | tail -n 8"#,
-            "S",
-            "d",
+            r#"yulius remove -- "${S:?}/${d:?}""#,
         ),
-        (r#"rm -fr -- "${scratch}/${copy}""#, "scratch", "copy"),
+        (
+            r#"rm -fr -- "${scratch}/${copy}""#,
+            r#"yulius remove -- "${scratch:?}/${copy:?}""#,
+        ),
+        (r#"rm -rf "$scratch""#, r#"yulius remove -- "${scratch:?}""#),
+        (
+            r#"rm -rf "$TMPDIR/scratch""#,
+            r#"yulius remove -- "${TMPDIR:?}/scratch""#,
+        ),
+        ("rm -rf $S/leaf", r#"yulius remove -- "${S:?}/leaf""#),
+        (
+            "rm -rf $S/$d another-path",
+            r#"yulius remove -- "${S:?}/${d:?}" "another-path""#,
+        ),
+        (
+            "if test -d scratch; then rm -rf $S/$d; fi",
+            r#"yulius remove -- "${S:?}/${d:?}""#,
+        ),
+        (
+            r#"test -f marker && rm -f "$S/$d""#,
+            r#"yulius remove --file-only -- "${S:?}/${d:?}""#,
+        ),
+        (
+            "rm -f /task.log /probe.log",
+            r#"yulius remove --file-only -- "/task.log" "/probe.log""#,
+        ),
+        (
+            "rm /task.log",
+            r#"yulius remove --file-only --require-existing -- "/task.log""#,
+        ),
+        (
+            "rm -r /scratch",
+            r#"yulius remove --require-existing -- "/scratch""#,
+        ),
+        (
+            "while test -e ready; do rm --recursive --force /artifact; done",
+            r#"yulius remove -- "/artifact""#,
+        ),
+        (
+            "until test -e ready; do rm -R -f /artifact; done",
+            r#"yulius remove -- "/artifact""#,
+        ),
+        (
+            "case x in x) (rm -f /artifact);; esac",
+            r#"yulius remove --file-only -- "/artifact""#,
+        ),
+        (
+            "true || { rm -f /artifact; }",
+            r#"yulius remove --file-only -- "/artifact""#,
+        ),
+        (
+            "if false; then true; else rm -f /artifact | cat; fi",
+            r#"yulius remove --file-only -- "/artifact""#,
+        ),
+        (
+            "rm -rf -- -name /artifact",
+            r#"yulius remove -- "-name" "/artifact""#,
+        ),
+        (
+            r#"rm -rf "${S}/some space""#,
+            r#"yulius remove -- "${S:?}/some space""#,
+        ),
     ] {
         let mut event = request(command);
         for worker in [false, true] {
@@ -1207,23 +1267,30 @@ cd $S/probe && python3 r2.py $S/r3p/scripts 2>&1 | tail -n 8"#,
             let decision = &output["decision"];
             assert_eq!(decision["behavior"], "deny");
             assert_eq!(decision["interrupt"], false);
-            let retry = format!(r#"yulius remove "${{{parent}:?}}/${{{child}:?}}""#);
+            let message = decision["message"]
+                .as_str()
+                .ok_or("missing retry message")?;
+            assert!(message.contains(retry), "{message}");
             assert!(
-                decision["message"]
-                    .as_str()
-                    .is_some_and(|s| s.contains(&retry)),
-                "{decision}"
+                message.contains("in place")
+                    && message.contains("conditions")
+                    && message.contains("variable bindings"),
+                "{message}"
             );
         }
     }
     for command in [
         r#"rm -rf "${S:?}/${d:?}""#,
         "rm -rf /tmp/scratch",
+        r#"rm -rf "$S/"'$(echo unintended)'"#,
+        r#"rm -rf "$S/"'`echo unintended`'"#,
+        "rm -rf $S $(echo x)",
+        "rm -rf $S -i",
+        "rm --interactive=once $S/$d",
+        "rm - $S/$d",
+        "rm -rf",
+        "rm -rf '/a/b/c'",
         "rm -i $S/$d",
-        "rm -f $S/$d",
-        "rm -rf $S/$d another-path",
-        "rm -rf $S$other$d",
-        "rm -rf $S/leaf",
         "curl https://example.invalid",
         "echo do rm -rf $S/$d",
         "printf '%s' 'rm -rf $S/$d'",

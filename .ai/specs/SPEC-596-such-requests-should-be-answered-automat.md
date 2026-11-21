@@ -15,22 +15,23 @@ Task #586 shows a background reviewer resetting two scratch directories in a loo
 
 ## Requirements
 
-- **CLR-001** Answer a contained Claude Bash permission request for a variable-parent/variable-child removal locally and immediately, including a removal within a reviewer loop. Give the agent a retry with quoted, nonempty components and the run's ownership-checked cleanup tool. The agent continues its turn.
+- **CLR-001** Answer a contained Claude Bash permission request for ordinary variable-path or root-level scratch removal locally and immediately, including removals inside a reviewer loop or conditional. Give the agent an in-place retry that preserves control flow, quotes each operand and requires nonempty variables. The agent continues its turn.
 - **CLR-002** Apply this policy only when Claude requests permission. Ordinary commands, other tools and uncontained runs keep their existing permission handling. Treat malformed or oversized events as unrecognized.
-- **CLR-003** The agent executes the retry in its run. The existing cleanup tool can remove a whole scratch directory and refuses shared paths. An unrelated action embedded in the original Bash command receives no automatic approval.
+- **CLR-003** The agent executes the retry in its run. The existing cleanup tool can remove a whole scratch directory and refuses shared paths. Preserve non-recursive removal by using a file-only operation for those requests. An unrelated action embedded in the original Bash command receives no automatic approval.
 
 ## Plan
 
 - [x] Specify automatic handling of Claude removal requests
 - [x] Route task and reviewer cleanup through the run’s removal policy
 - [x] Verify scratch cleanup and other permission decisions
-- [ ] Deliver the independently reviewed change on green CI
+- [x] Preserve conditions and file-only semantics for equivalent removals
+- [ ] Independent review approves the verified change for delivery
 
 ## Acceptance criteria
 
 - **AC-1** The attached loop produces a non-interrupting denial of the original command with a separate checked retry that needs no person. The same decision reaches the main agent and a worker.
 - **AC-2** Guarded components, unrelated requests, command text printed as data, and invalid or oversized inputs fall through to Claude’s existing permission handler. An uncontained launch has no automatic cleanup hook.
-- **AC-3** Executing the checked retry removes populated scratch directories and handles an already removed directory. Empty components stop the shell before deletion. The helper refuses shared targets.
+- **AC-3** Executing the checked retry removes populated scratch directories and handles an already removed directory. Empty components stop the shell before deletion. The helper refuses shared targets and a file-only operation preserves a populated directory. An in-place retry preserves variable bindings and the original conditional, including when the guard is false.
 
 ## Test plan
 
@@ -48,3 +49,7 @@ Use Claude's structured PermissionRequest event. Its decision belongs to the pen
 - Real Claude Code 2.1.330, using a loopback model stub, ran the test as the main agent and as an asynchronous reviewer. Both received the checked retry, removed two populated scratch directories, rebuilt the test folders and preserved the sibling marker. The stub issued the retry only after it received the hook's message. This exercises Claude's real hook and Bash execution without a paid model or an operator response.
 - In this contained run, an empty child stopped Bash before removal, a checked retry deleted a populated directory, repeating it reported already gone, and the helper refused a tracked worktree file.
 - `python3 scripts/check_repository.py` passed.
+
+- The first independent review requested coverage for single-variable, variable-plus-literal and root-level scratch operands, and an explicit in-place retry for conditional commands. Both findings were in the change. Before the fixes, equivalent cleanup requests had no hook decision, the message omitted the in-place instruction and the CLI rejected both new options. The regression now exercises these shapes and the helper's recursive and missing-target behavior.
+- After the review fixes, the 51 hook and launch tests and the 12 `remove_cli` tests passed. In a real Claude Code 2.1.330 asynchronous reviewer with a loopback model stub, a conditional inside the original loop selected one scratch copy. The checked retry rebuilt that copy, preserved the other copy and left the sibling marker intact.
+- `scripts/dev quick` passed. `cargo deny check bans licenses` passed. `scripts/dev security` reported Vidoc disabled for this project and scanned no code.

@@ -672,7 +672,7 @@ watching, steering and unblocking.
   its Yulius tools and `yulius wait` hold on until Yulius is back, and a task that went idle
   meanwhile is told "Yulius is back; continue" (SPEC-358). An agent removes the files its task created
   with `yulius remove` (SPEC-192). A contained Claude reviewer whose scratch cleanup uses
-  a variable parent and child receives a checked retry directly. [SPEC-596](../.ai/specs/SPEC-596-such-requests-should-be-answered-automat.md)
+  a variable or names a root-level scratch file receives a checked retry directly. [SPEC-596](../.ai/specs/SPEC-596-such-requests-should-be-answered-automat.md)
 - **Agent primitives as code**: Yulius's own skills are APM packages with a lockfile, deployed to
   every harness and checked for drift; onboarding codifies a project's conventions as primitives.
 - **Secrets vault**: secrets are a title, a value and notes. Team secrets are for people; agent

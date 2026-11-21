@@ -161,20 +161,43 @@ const REFUSED_NOTE: &str = "Yulius removes only what this task created: untracke
     which nobody else sees and which go when the session ends. Leave the rest and name it in your \
     summary; never ask a person to remove it.";
 
-/// Runs `yulius remove <paths>` in the agent's run; returns the exit code.
+/// How to preserve the original command's directory and missing-path behavior during a retry.
+#[derive(Debug, Clone, Copy, Default, clap::Args)]
+pub struct RemovalOptions {
+    /// Remove files and symbolic links. A directory reports an error and keeps its contents.
+    #[arg(long)]
+    pub file_only: bool,
+    /// Report a missing path as an error.
+    #[arg(long)]
+    pub require_existing: bool,
+}
+
+/// Runs `yulius remove <paths>` with its original defaults.
 pub fn run(out: &mut dyn Write, paths: &[PathBuf], env: &dyn Fn(&str) -> Option<String>) -> i32 {
-    let cwd = match std::env::current_dir() {
-        Ok(cwd) => cwd,
-        Err(err) => {
-            let _ = writeln!(out, "yulius remove: no working directory: {err}");
-            return 1;
-        }
-    };
-    let worktree = task_worktree(env(yulius_harness::launch::TASK_WORKTREE_ENV));
-    let mounts = std::fs::read_to_string("/proc/self/mountinfo")
-        .map(|text| parse_mountinfo(&text))
-        .unwrap_or_default();
-    remove(out, paths, &cwd, worktree.as_deref(), &mounts, &git_tracked)
+    RemovalOptions::default().run(out, paths, env)
+}
+
+impl RemovalOptions {
+    /// Runs the ownership-checked removal in the task's own filesystem.
+    pub fn run(
+        self,
+        out: &mut dyn Write,
+        paths: &[PathBuf],
+        env: &dyn Fn(&str) -> Option<String>,
+    ) -> i32 {
+        let cwd = match std::env::current_dir() {
+            Ok(cwd) => cwd,
+            Err(err) => {
+                let _ = writeln!(out, "yulius remove: no working directory: {err}");
+                return 1;
+            }
+        };
+        let worktree = task_worktree(env(yulius_harness::launch::TASK_WORKTREE_ENV));
+        let mounts = std::fs::read_to_string("/proc/self/mountinfo")
+            .map(|text| parse_mountinfo(&text))
+            .unwrap_or_default();
+        self.remove(out, paths, &cwd, worktree.as_deref(), &mounts, &git_tracked)
+    }
 }
 
 /// The task's worktree named by the environment, resolved: a directory of a sandbox's
@@ -195,15 +218,38 @@ pub fn remove(
     mounts: &[Mount],
     tracked: &dyn Fn(&Path, &Path) -> Result<bool, String>,
 ) -> i32 {
-    if paths.is_empty() {
-        let _ = writeln!(out, "usage: yulius remove <path>…");
-        return 2;
+    RemovalOptions::default().remove(out, paths, cwd, worktree, mounts, tracked)
+}
+
+impl RemovalOptions {
+    fn remove(
+        self,
+        out: &mut dyn Write,
+        paths: &[PathBuf],
+        cwd: &Path,
+        worktree: Option<&Path>,
+        mounts: &[Mount],
+        tracked: &dyn Fn(&Path, &Path) -> Result<bool, String>,
+    ) -> i32 {
+        if paths.is_empty() {
+            let _ = writeln!(out, "usage: yulius remove <path>…");
+            return 2;
+        }
+        let outcomes: Vec<(&PathBuf, Outcome)> = paths
+            .iter()
+            .map(|path| {
+                let outcome = match remove_one(path, cwd, worktree, mounts, tracked, self.file_only)
+                {
+                    Outcome::Gone if self.require_existing => {
+                        Outcome::Failed("path does not exist".to_owned())
+                    }
+                    other => other,
+                };
+                (path, outcome)
+            })
+            .collect();
+        report(out, &outcomes, worktree.is_some())
     }
-    let outcomes: Vec<(&PathBuf, Outcome)> = paths
-        .iter()
-        .map(|path| (path, remove_one(path, cwd, worktree, mounts, tracked)))
-        .collect();
-    report(out, &outcomes, worktree.is_some())
 }
 
 /// What became of a path.
@@ -257,6 +303,7 @@ fn remove_one(
     worktree: Option<&Path>,
     mounts: &[Mount],
     tracked: &dyn Fn(&Path, &Path) -> Result<bool, String>,
+    file_only: bool,
 ) -> Outcome {
     use std::os::unix::ffi::OsStrExt as _;
     let mut trimmed = path.as_os_str().as_bytes();
@@ -289,7 +336,7 @@ fn remove_one(
     if let Err(reason) = decide(&target, worktree, mounts, tracked) {
         return Outcome::Refused(reason);
     }
-    let removed = if metadata.is_dir() {
+    let removed = if metadata.is_dir() && !file_only {
         std::fs::remove_dir_all(&target)
     } else {
         std::fs::remove_file(&target)
@@ -631,6 +678,44 @@ mod tests {
             &git_tracked,
         );
         Ok((code, String::from_utf8(out)?))
+    }
+
+    #[test]
+    fn file_only_cleanup_preserves_directories_and_checks_missing_files() -> TestResult {
+        let dir = worktree()?;
+        let root = std::fs::canonicalize(dir.path())?;
+        std::os::unix::fs::symlink("target", root.join("dir-link"))?;
+        let apply = |name: &str, options: RemovalOptions| {
+            let mut out = Vec::new();
+            let code = options.remove(
+                &mut out,
+                &[PathBuf::from(name)],
+                &root,
+                Some(&root),
+                &parse_mountinfo(HOST),
+                &git_tracked,
+            );
+            (code, String::from_utf8_lossy(&out).into_owned())
+        };
+        let forced = RemovalOptions {
+            file_only: true,
+            require_existing: false,
+        };
+        assert_eq!(apply("target", forced).0, 1);
+        assert!(root.join("target/debug/out").is_file());
+        assert_eq!(apply("dir-link", forced).0, 0);
+        assert!(std::fs::symlink_metadata(root.join("dir-link")).is_err());
+        assert!(root.join("target/debug/out").is_file());
+        assert_eq!(apply("scratch.txt", forced).0, 0);
+        assert_eq!(apply("scratch.txt", forced).0, 0);
+        let strict = RemovalOptions {
+            require_existing: true,
+            ..forced
+        };
+        assert_eq!(apply("scratch.txt", strict).0, 1);
+        assert_eq!(apply("missing/child", strict).0, 1);
+        assert_eq!(apply("scratch2", strict).0, 0);
+        Ok(())
     }
 
     /// AC-2, AC-5: the task's paths go, links as links; the rest stays, each with its line.
