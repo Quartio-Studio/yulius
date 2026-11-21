@@ -759,7 +759,7 @@ async fn a_playground_delivery_requires_both_branch_and_worktree() -> TestResult
     ] {
         h.store
             .insert_task(&TaskRecord {
-                parked_attempt_id: None,
+                resume_attempt_id: None,
                 id: TaskId::parse(id)?,
                 branch,
                 worktree_path,

@@ -58,15 +58,31 @@ fn transition(
     Ok(n == 1)
 }
 
+fn keep_queued_start(c: &rusqlite::Connection, id: &str, start: &QueuedStart) -> AppResult<()> {
+    c.execute(
+        "UPDATE tasks SET queued_start = json_object('kind', ?2, 'prompt', ?3, \
+                 'account', ?4, 'at', queued_at) WHERE id = ?1",
+        params![
+            id,
+            start.kind.as_str(),
+            start.prompt,
+            start.account_id.as_ref().map(AccountId::as_str)
+        ],
+    )
+    .map_err(db)?;
+    Ok(())
+}
+
 const TASK_COLS: &str = "id, sandbox_id, number, title, prompt, harness, model, effort, workflow_id, \
     status, activity, branch, worktree_path, spec_path, origin, automation_run, created_by, created_at, \
     updated_at, closed_at, archived_at, queued_at, gate_blocks, wake_enabled, mode, supertask, owner_id";
 
-// The task and its parked run form one SQLite snapshot. Running and queued
+// The task and the attempt an owner can continue form one SQLite snapshot. Running and queued
 // task reads skip the attempt lookup. The existing (task_id, seq) index serves it.
-const PARKED_ATTEMPT: &str = "CASE WHEN tasks.status = 'parked' THEN
+const RESUME_ATTEMPT: &str = "CASE WHEN tasks.status IN ('parked', 'closed')
+    OR tasks.status GLOB 'stopped_*' OR tasks.status GLOB 'failed_*' THEN
     (SELECT id FROM attempts WHERE task_id = tasks.id ORDER BY seq DESC LIMIT 1)
-    END AS parked_attempt_id";
+    END AS resume_attempt_id";
 
 const ATTEMPT_COLS: &str = "id, task_id, seq, harness, account_id, provider_session_id, launch_kind, \
     state, run_dir, token_hash, host_token, ptyhost_pid, child_pid, started_at, ended_at, exit_code, exit_reason, model";
@@ -94,10 +110,10 @@ fn task_from_row(row: &Row<'_>) -> rusqlite::Result<TaskRecord> {
     let harness_text: String = row.get("harness")?;
     Ok(TaskRecord {
         id: parse_id("task id", &id, TaskId::parse)?,
-        parked_attempt_id: row
-            .get::<_, Option<String>>("parked_attempt_id")?
+        resume_attempt_id: row
+            .get::<_, Option<String>>("resume_attempt_id")?
             .as_deref()
-            .map(|id| parse_id("parked attempt id", id, AttemptId::parse))
+            .map(|id| parse_id("resume attempt id", id, AttemptId::parse))
             .transpose()?,
         sandbox_id: parse_id("sandbox id", &sandbox, SandboxId::parse)?,
         number: to_u32(row.get("number")?),
@@ -302,7 +318,7 @@ impl TaskStore for SqliteStore {
             )
             .map_err(db)?;
             let stored = tx
-                .query_row(&format!("SELECT {TASK_COLS}, {PARKED_ATTEMPT} FROM tasks WHERE id = ?1"), [t.id.as_str()], task_from_row)
+                .query_row(&format!("SELECT {TASK_COLS}, {RESUME_ATTEMPT} FROM tasks WHERE id = ?1"), [t.id.as_str()], task_from_row)
                 .map_err(db)?;
             tx.commit().map_err(db)?;
             Ok(stored)
@@ -314,7 +330,7 @@ impl TaskStore for SqliteStore {
         let id = id.as_str().to_owned();
         self.call(move |c| {
             c.query_row(
-                &format!("SELECT {TASK_COLS}, {PARKED_ATTEMPT} FROM tasks WHERE id = ?1"),
+                &format!("SELECT {TASK_COLS}, {RESUME_ATTEMPT} FROM tasks WHERE id = ?1"),
                 [id],
                 task_from_row,
             )
@@ -332,7 +348,7 @@ impl TaskStore for SqliteStore {
         let s = sandbox.as_str().to_owned();
         self.call(move |c| {
             c.query_row(
-                &format!("SELECT {TASK_COLS}, {PARKED_ATTEMPT} FROM tasks WHERE sandbox_id = ?1 AND number = ?2"),
+                &format!("SELECT {TASK_COLS}, {RESUME_ATTEMPT} FROM tasks WHERE sandbox_id = ?1 AND number = ?2"),
                 params![s, i64::from(number)],
                 task_from_row,
             )
@@ -349,7 +365,7 @@ impl TaskStore for SqliteStore {
             "archived_at IS NULL"
         };
         self.tasks_query(
-            format!("SELECT {TASK_COLS}, {PARKED_ATTEMPT} FROM tasks WHERE sandbox_id = ?1 AND {clause} ORDER BY number DESC"),
+            format!("SELECT {TASK_COLS}, {RESUME_ATTEMPT} FROM tasks WHERE sandbox_id = ?1 AND {clause} ORDER BY number DESC"),
             vec![sandbox.as_str().to_owned()],
         )
         .await
@@ -366,7 +382,7 @@ impl TaskStore for SqliteStore {
         self.tasks_query(
             // Tasks that share a place (queued in the same millisecond) keep the order
             // they were created in: the queue's order is one order, whoever reads it.
-            format!("SELECT {TASK_COLS}, {PARKED_ATTEMPT} FROM tasks WHERE status IN ({marks}) ORDER BY COALESCE(queued_at, created_at), rowid"),
+            format!("SELECT {TASK_COLS}, {RESUME_ATTEMPT} FROM tasks WHERE status IN ({marks}) ORDER BY COALESCE(queued_at, created_at), rowid"),
             statuses.iter().map(|s| s.as_str().to_owned()).collect(),
         )
         .await
@@ -385,6 +401,43 @@ impl TaskStore for SqliteStore {
             .await
     }
 
+    async fn claim_continuation(
+        &self,
+        selected: &TaskRecord,
+        queue: Option<&QueuedStart>,
+        at: Timestamp,
+    ) -> AppResult<bool> {
+        let id = selected.id.as_str().to_owned();
+        let status = selected.status;
+        let archive = selected.archived_at.map(|time| time.0);
+        let attempt = selected.resume_attempt_id.clone();
+        let queue = queue.cloned();
+        self.call(move |c| {
+            let tx = c.transaction().map_err(db)?;
+            let claimed = tx.execute(
+                "UPDATE tasks SET archived_at = NULL, needs_you = NULL, updated_at = ?5 WHERE id = ?1 AND status = ?2
+                 AND archived_at IS ?3 AND (SELECT id FROM attempts WHERE task_id = ?1
+                 ORDER BY seq DESC LIMIT 1) IS ?4",
+                params![id, status.as_str(), archive, attempt.as_ref().map(AttemptId::as_str), at.0],
+            ).map_err(db)?;
+            if claimed == 0 {
+                return Ok(false);
+            }
+            let next = if queue.is_some() {
+                TaskStatus::Queued
+            } else {
+                TaskStatus::Starting
+            };
+            transition(&tx, &id, Some(status), next, None, at)?;
+            if let Some(start) = queue {
+                keep_queued_start(&tx, &id, &start)?;
+            }
+            tx.commit().map_err(db)?;
+            Ok(true)
+        })
+        .await
+    }
+
     async fn queue_task(
         &self,
         id: &TaskId,
@@ -400,17 +453,7 @@ impl TaskStore for SqliteStore {
             if !transition(&tx, &id, Some(expected), TaskStatus::Queued, None, at)? {
                 return Ok(false);
             }
-            tx.execute(
-                "UPDATE tasks SET queued_start = json_object('kind', ?2, 'prompt', ?3, \
-                 'account', ?4, 'at', queued_at) WHERE id = ?1",
-                params![
-                    id,
-                    start.kind.as_str(),
-                    start.prompt,
-                    start.account_id.as_ref().map(AccountId::as_str)
-                ],
-            )
-            .map_err(db)?;
+            keep_queued_start(&tx, &id, &start)?;
             tx.commit().map_err(db)?;
             Ok(true)
         })
