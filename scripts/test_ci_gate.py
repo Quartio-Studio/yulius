@@ -1,4 +1,6 @@
 """The project's merge-first quality jobs cover the entire former quality gate."""
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 import tomllib
 import unittest
@@ -28,6 +30,10 @@ class Gate(unittest.TestCase):
 
 
 class SharedTestBuild(unittest.TestCase):
+    def setUp(self):
+        # Fixture stage markers must not open spans in the enclosing quality job.
+        self.enterContext(redirect_stdout(StringIO()))
+
     def test_two_shards_share_one_build_and_run_concurrently(self):
         from ci_test_shard import run_shard
         from concurrent.futures import ThreadPoolExecutor

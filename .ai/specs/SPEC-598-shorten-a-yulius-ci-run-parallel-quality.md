@@ -1,6 +1,6 @@
 ---
 yulius-task: 0d5934fd-6afe-400b-8edd-0697cd160325
-status: in-progress
+status: done
 ---
 
 # SPEC-598 Shorten the Yulius CI critical path
@@ -31,7 +31,7 @@ Task 558 found siblings were already dispatched concurrently. After network and 
 - [x] Run both test partitions from one build
 - [x] Admit eligible siblings together within the host limits
 - [x] Verify and review the complete CI gate
-- [ ] Measure the physical runs and deliver to dev
+- [x] Measure the physical runs and deliver to dev
 
 ## Acceptance criteria
 
@@ -70,3 +70,19 @@ Use independent quality jobs for their existing checkout, budget and failure rep
 - Round two independently approved `165700e39eec65f2c8b13e2a5af03bcc9802c163`, reran the nine xtask CLI and five Python gate tests and traced gate coverage, cancellation, resource limits and merge-first selection. Scoped xtask Clippy and `scripts/dev quick` passed.
 - Manual undo and restore of the lint job, build reuse, changed-definition isolation, failed-peer skip, retry coverage, archived workspace remapping, docs invocation and batching made their respective assertions fail. Restoring the implementation passed all 5 gate, 9 xtask CLI and 8 admission tests.
 - A paired task-local Yulius CI experiment delayed only the older of two eligible tickets by 2s after enqueue. The real runner executed both shell shards and recorded their wait spans. Before, at `cf492c608` in run `4b531bc5-037a-4b33-ac14-38a6e01d60da`, the older and younger tickets waited 2,001ms and 2,002ms. After, at `165700e39` in run `d6df90f7-55ac-4851-a91a-604243f4fb2c`, they waited 2,002ms and 1ms. Both runs passed with two free slots and the same injected delay. This isolates sibling ordering from host load, Docker networks and exclusive jobs.
+
+### Hosted measurements on PR 1632
+
+These rollout runs exercised both the protected sequential quality definition and the proposed jobs. Times below are minutes and seconds. Job columns measure execution after admission. The total includes queue waits and the protected checks.
+
+| Run ID | Total | Protected quality | Check | Lint | macOS | Docs | Deps | Archived shards 1 / 2 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| c570a842-d104-440e-a751-10a748f6e4ee | 8:37 | 7:59 | 2:17 | 2:22 | 2:15 | 0:50 | 0:02 | 6:44 / 6:03 |
+| 13f3c5a0-c2f6-4083-a992-e877204e4504 | 10:13 | 8:36 | 2:29 | 2:36 | 2:25 | 0:52 | 0:03 | 8:14 / 6:37 |
+| b740521f-1360-41c0-b8c9-4db7642b4726 | 9:04 | 8:27 | 2:00 | 2:08 | 1:57 | 0:40 | 0:02 | 6:03 / 5:04 |
+| 4dd578d7-07ce-46ab-adb3-bc68242b2a0f | 6:43 | 6:42 | 1:50 | 1:54 | 1:48 | 0:34 | 0:02 | 6:31 / 4:43 |
+| ba96672f-2bfe-43e6-ae5a-ed5f6e546311 (20:47 UTC train) | 10:29 | 6:21 | 2:29 | 2:17 | 2:20 | 0:47 | 0:02 | 5:59 / 3:48 |
+
+The longest new quality pass took 1m54s–2m36s across these runs. The full-suite dev baselines above spent 5m30s–8m47s on sequential quality. In PR run c570a842, shard 2 built 45 binaries in 3m09s and packed 96 files in 0.82s. Shard 1 reused that archive. Each extracted it for quarantine listing and execution in 1.84–1.90s per extraction. The old dev run at cf492c608 paid 5m00s and 4m54s for separate builds. Both proposed partitions passed in every row.
+
+On the train, the changed test jobs waited 3m05s and 4m36s. Those hosted spans include contention and used the deployed scheduler. The paired runner experiment above measures the scheduler change itself. Quality checker fixtures now capture their own stdout after the first hosted run exposed synthetic test-build markers in the quality log. The focused checker suite emitted markers before the fix and none after, with all five tests passing.
