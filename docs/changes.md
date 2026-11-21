@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- Codex starts and resumes prefer the subscription with the most remaining quota. Idle tasks keep Waiting or Done after a subscription move and can be closed without another turn. [SPEC-611](../.ai/specs/SPEC-611-a-moved-task-is-not-shown-as-working-and.md)
 - Antigravity conversations reopened without a prompt show Waiting and can release their session slots while the Gemini announcement is visible. [SPEC-604](../.ai/specs/SPEC-604-an-idle-antigravity-session-under-the-ge.md)
 - Codex tasks inherit High effort on new and resumed processes for every model. GPT-6.2 Astra and Sol offer explicit Extra high and Max. [SPEC-607](../.ai/specs/SPEC-607-codex-tasks-run-at-high-effort-unless-th.md)
 - `scripts/cargo --scratch-target` gives an ad-hoc build a private disk target and removes it when its workers stop. [SPEC-600](../.ai/specs/SPEC-600-mutation-testing-sized-to-the-change-wit.md)

@@ -20,7 +20,7 @@ use yulius_app::lifecycle::NewTask;
 use yulius_app::model::{AccountRecord, AccountStatus, LaunchKind, TaskMode, TaskOrigin};
 use yulius_domain::harness::{Harness, Provider};
 use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
-use yulius_domain::task::TaskStatus;
+use yulius_domain::task::{Activity, TaskStatus};
 use yulius_domain::time::Timestamp;
 use yulius_ptyhost::test_support::locate_fake_agent;
 
@@ -232,6 +232,65 @@ fn a_codex_restart_checks_the_harness_and_history_of_legacy_records() -> TestRes
         let run = store.live_attempt(&legacy).await?.ok_or("legacy restart")?;
         assert_eq!(run.launch_kind, LaunchKind::Resume);
         support::stop_tasks(&app, &[&legacy]).await
+    })
+}
+
+#[test]
+fn moving_a_finished_codex_goal_task_preserves_its_idle_activity() -> TestResult {
+    let (_dir, data) = temp()?;
+    runtime()?.block_on(async {
+        let (app, sandbox, user, id, session) = restart_fixture_in(&data, TaskMode::Goal).await?;
+        let ctx = admin_ctx(&app, &user).await?;
+        app.close_task_and_wait(&id).await?;
+        let opened = app
+            .continue_task(&ctx, id.as_str(), &Default::default())
+            .await?;
+        assert_eq!(opened.activity.as_deref(), Some("waiting"));
+        let original = AccountId::parse("a-codex")?;
+        let alternate =
+            add_codex_account(&app, "alternate", &codex_auth("2026-11-01T10:00:00Z")).await?;
+        // The same idle conversation is available for a follow-up, or marked finished.
+        let mut moved_activities = Vec::new();
+        for (account, idle) in [(&alternate, Activity::Waiting), (&original, Activity::Done)] {
+            if idle == Activity::Done {
+                app.deps
+                    .store
+                    .set_activity(&id, Some(idle), app.now())
+                    .await?;
+            }
+            app.switch_task_for_person(&ctx, id.as_str(), Some(account.as_str()))
+                .await?;
+            let run = app.deps.store.live_attempt(&id).await?.ok_or("moved run")?;
+            assert_eq!(run.account_id.as_ref(), Some(account));
+            assert_eq!(run.provider_session_id.as_deref(), Some(session.as_str()));
+            let launch = std::fs::read_to_string(Path::new(&run.run_dir).join("fake-launch.txt"))?;
+            assert!(launch.contains("prompt: None"), "{launch}");
+            let listed = app
+                .list_tasks(&ctx, sandbox.as_str(), false)
+                .await?
+                .into_iter()
+                .find(|task| task.id == id.as_str())
+                .ok_or("moved task in the list")?;
+            assert_eq!(listed.status, "running");
+            moved_activities.push(listed.activity);
+            assert_eq!(listed.working_since, None);
+        }
+        app.close_task_for_person(&ctx, id.as_str()).await?;
+        wait_for(
+            "the moved task to close",
+            Duration::from_secs(30),
+            || async {
+                task(&app, &id)
+                    .await
+                    .is_ok_and(|task| task.status == TaskStatus::Closed)
+            },
+        )
+        .await?;
+        assert_eq!(
+            moved_activities,
+            [Some("waiting".into()), Some("done".into())]
+        );
+        Ok(())
     })
 }
 
@@ -3103,6 +3162,76 @@ async fn limit_until(
         )
         .await?;
     Ok(())
+}
+
+#[test]
+fn new_and_resumed_codex_sessions_choose_the_subscription_with_more_quota() -> TestResult {
+    use yulius_domain::usage::{AccountUsage, UsageWindow};
+
+    let (_dir, data) = temp()?;
+    runtime()?.block_on(async {
+        let (app, sandbox, user, id, session) = restart_fixture(&data).await?;
+        support::stop_tasks(&app, &[&id]).await?;
+        let original = AccountId::parse("a-codex")?;
+        let roomy = add_codex_account(&app, "roomy", &codex_auth("2026-11-01T10:00:00Z")).await?;
+        let now = app.now();
+        // The nearly spent subscription used to win because it resets much sooner.
+        for (account, used_percent, hours) in [(&original, 93.0, 1), (&roomy, 2.0, 168)] {
+            let usage = AccountUsage {
+                secondary: Some(UsageWindow {
+                    used_percent: Some(used_percent),
+                    window_minutes: Some(10_080),
+                    resets_at: Some(now.plus_millis(hours * 3_600_000)),
+                }),
+                observed_at: Some(now),
+                ..AccountUsage::default()
+            };
+            app.deps
+                .store
+                .set_account_state(
+                    account,
+                    AccountStatus::Ok,
+                    Some(&yulius_app::usage_json::to_json(&usage)),
+                    None,
+                    now,
+                )
+                .await?;
+        }
+        let fresh = new_codex_task(&app, &sandbox, &user, "New task").await?;
+        wait_for("the new Codex run", Duration::from_secs(30), || async {
+            task(&app, &fresh)
+                .await
+                .is_ok_and(|task| task.status == TaskStatus::Running)
+        })
+        .await?;
+        let fresh_run = app
+            .deps
+            .store
+            .live_attempt(&fresh)
+            .await?
+            .ok_or("new run")?;
+        support::stop_tasks(&app, &[&fresh]).await?;
+
+        let ctx = admin_ctx(&app, &user).await?;
+        app.continue_task(&ctx, id.as_str(), &Default::default())
+            .await?;
+        let resumed = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("resumed run")?;
+        support::stop_tasks(&app, &[&id]).await?;
+        assert_eq!(
+            resumed.provider_session_id.as_deref(),
+            Some(session.as_str())
+        );
+        assert_eq!(
+            [fresh_run.account_id.as_ref(), resumed.account_id.as_ref()],
+            [Some(&roomy), Some(&roomy)],
+        );
+        Ok(())
+    })
 }
 
 /// SPEC-503 CDX-010: the capacity view (the Dashboard's Subscriptions card) names each

@@ -4,20 +4,17 @@
 //! persist the input together with the returned [`Decision`] and [`DecisionReason`] for audit
 //! (ROT-011).
 //!
-//! Every connected Claude subscription is one member of a pool; there are no manual priorities
-//! (F 2026-10-10). Rotation stays within the task's provider: Yulius runs only Claude Code
-//! (F 2026-10-08). A **candidate** is a healthy account of that provider that is below
+//! Each provider has its own pool. A **candidate** is a healthy account of the task's provider below
 //! [`THRESHOLD`] in every window binding the task (5-hour, weekly and the weekly cap of the
 //! task's model family) and has no usage limit in effect. Candidates are ranked by:
 //!
-//! 1. [`Tier`]: known headroom of at least [`MIN_ROOM`] points, then unknown usage (never
-//!    treated as zero, but not evidence of exhaustion either — and a subscription nobody uses is
-//!    never read, F 2026-10-11), then known headroom below [`MIN_ROOM`] (a task placed there would
-//!    move again within minutes and pay for a cold prompt cache);
-//! 2. [`score`] — use it or lose it: the weekly headroom divided by the hours until that weekly
+//! 1. [`Tier`]: known room, then unknown usage, then tight accounts. Codex needs 10% of
+//!    total quota left to count as roomy. Other providers use [`MIN_ROOM`] below the threshold.
+//! 2. For Codex, most remaining quota in the tightest known binding window (SPEC-611).
+//! 3. [`score`] — use it or lose it: the weekly headroom divided by the hours until that weekly
 //!    window resets (the rate needed to spend the capacity before it expires), divided by the
 //!    live tasks already on the account plus one, so concurrent tasks spread;
-//! 3. ties: the capacity that expires soonest (weekly reset, then 5-hour reset), fewer tasks,
+//! 4. ties: the capacity that expires soonest (weekly reset, then 5-hour reset), fewer tasks,
 //!    account id.
 //!
 //! When there is no candidate the task waits ([`Decision::Wait`]) until the earliest known time
@@ -26,15 +23,20 @@
 use crate::harness::Provider;
 use crate::ids::AccountId;
 use crate::time::Timestamp;
-use crate::usage::{AccountUsage, LimitScope, ModelFamily, ReportedLimit, UsageWindow};
+use crate::usage::{
+    AccountUsage, FULL_PERCENT, LimitScope, ModelFamily, ReportedLimit, UsageWindow,
+};
 
 /// Proactive switch and pause threshold in percent of any binding window (SPEC-001 ROT-003,
 /// F 2026-10-10).
 pub const THRESHOLD: f64 = 98.0;
 
-/// Headroom (percentage points below [`THRESHOLD`]) an account needs in every binding window to
-/// be preferred for placement; below it a task would move again within minutes.
+/// Headroom (percentage points below [`THRESHOLD`]) a Claude or Antigravity account needs
+/// in every binding window to be preferred for placement.
 pub const MIN_ROOM: f64 = 5.0;
+
+/// Remaining quota Codex needs in every binding window to avoid its approaching-limit warning.
+const CODEX_MIN_REMAINING: f64 = 10.0;
 
 /// Length of the weekly window in hours: the time to reset assumed when it is unknown.
 const WEEK_HOURS: f64 = 168.0;
@@ -119,13 +121,13 @@ pub enum Decision {
 /// Which candidate class a selected account came from (better first).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Tier {
-    /// Known headroom of at least [`MIN_ROOM`] points in every binding window.
+    /// Known headroom at or above the provider's preferred minimum.
     Roomy,
     /// No binding window has a known percentage. Before [`Tier::Tight`]: unknown is not
     /// exhausted, and a subscription that never gets a task never gets a reading either — the
     /// pool collapsed onto one subscription at 97 % while six others sat idle (F 2026-10-11).
     UnknownUsage,
-    /// Known headroom below [`MIN_ROOM`] points in some binding window.
+    /// Known headroom below the provider's preferred minimum in some binding window.
     Tight,
 }
 
@@ -242,8 +244,12 @@ pub fn assess(
         // Only the 5-hour window is known: no weekly urgency.
         None => (0.0, None),
     };
+    let minimum_room = match account.provider {
+        Provider::OpenAi => threshold - (FULL_PERCENT - CODEX_MIN_REMAINING),
+        _ => MIN_ROOM,
+    };
     Some(Assessment {
-        tier: if room >= MIN_ROOM {
+        tier: if room >= minimum_room {
             Tier::Roomy
         } else {
             Tier::Tight
@@ -305,6 +311,15 @@ fn ranked_for<'a>(
         let never = Timestamp(i64::MAX);
         x.tier
             .cmp(&y.tier)
+            .then_with(|| {
+                if input.task_provider == Provider::OpenAi
+                    && let (Some(x), Some(y)) = (x.room, y.room)
+                {
+                    y.total_cmp(&x)
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
             .then_with(|| quantized(y.score).cmp(&quantized(x.score)))
             .then_with(|| {
                 x.weekly_reset
@@ -603,6 +618,63 @@ mod tests {
     fn start(accounts: Vec<AccountView>) -> Result<Option<String>, IdError> {
         let rotation = input(None, accounts)?;
         Ok(switched_to(&decide(&rotation, Trigger::Start).0).map(str::to_owned))
+    }
+
+    #[test]
+    fn codex_placement_compares_the_tightest_binding_window() -> Result<(), IdError> {
+        let mut pool = input(
+            Some("early-reset"),
+            vec![
+                account("early-reset", usage(5.0, 88.0, Some(1)))?,
+                account("more-quota", usage(25.0, 2.0, Some(168)))?,
+            ],
+        )?;
+        pool.task_provider = Provider::OpenAi;
+        for account in &mut pool.accounts {
+            account.provider = Provider::OpenAi;
+        }
+        let chosen =
+            |pool: &RotationInput| switched_to(&decide(pool, Trigger::Start).0).map(str::to_owned);
+        assert_eq!(chosen(&pool).as_deref(), Some("more-quota"));
+        assert_eq!(decide(&pool, Trigger::Proactive).0, Decision::Stay);
+
+        // Both accounts have under 10% left. The second has more left in its tightest
+        // window even though the first account's weekly window resets much sooner.
+        pool.accounts[0].usage = usage(5.0, 96.0, Some(1));
+        pool.accounts[1].usage = usage(92.0, 2.0, Some(168));
+        assert_eq!(chosen(&pool).as_deref(), Some("more-quota"));
+        pool.accounts[1].usage = usage(97.0, 2.0, Some(168));
+        assert_eq!(chosen(&pool).as_deref(), Some("early-reset"));
+
+        // Unknown usage comes ahead of a tight account. A known 10% comes first.
+        pool.accounts[1].usage = AccountUsage::default();
+        pool.accounts[0].usage = usage(5.0, 93.0, Some(1));
+        assert_eq!(chosen(&pool).as_deref(), Some("more-quota"));
+        pool.accounts[0].usage = usage(5.0, 90.0, Some(1));
+        assert_eq!(chosen(&pool).as_deref(), Some("early-reset"));
+
+        // A full window excludes the account until the clock reaches its reset.
+        pool.accounts[0].usage = usage(5.0, 100.0, Some(1));
+        assert_eq!(chosen(&pool).as_deref(), Some("more-quota"));
+        pool.now = NOW.plus_millis(HOUR);
+        assert_eq!(chosen(&pool).as_deref(), Some("early-reset"));
+
+        // An explicit move may use an eligible account even with less than 10% left.
+        pool.accounts[1].usage = usage(95.0, 2.0, Some(168));
+        let requested = id("more-quota")?;
+        assert_eq!(
+            decide(
+                &pool,
+                Trigger::Manual {
+                    account: requested.clone()
+                }
+            ),
+            (
+                Decision::Switch { account: requested },
+                DecisionReason::ManualChoice
+            )
+        );
+        Ok(())
     }
 
     /// SPEC-493 REV-007: a session whose subscription cannot run a Fable reviewer moves to the

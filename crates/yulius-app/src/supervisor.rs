@@ -3252,6 +3252,14 @@ impl App {
         runtime.run_starts(self.now().0).await;
         self.attach_run(&task.id, &attempt, &host_token).await?;
         runtime.hub.state_changed();
+        // The move starts a working timer. Probe the idle replacement before publishing it
+        // so that timer ends when the new session has no background work (SPEC-611 CQS-001).
+        if harness == Harness::Codex
+            && current.status == TaskStatus::Switching
+            && activity.is_idle()
+        {
+            self.probe_idle_shells(&task.id).await;
+        }
         self.publish_task(&task.id).await;
         // Control passed during the launch, after this run took its owner's personal MCP servers
         // and before a hand-over could see it live: it resumes for the new owner (SPEC-332). The
@@ -6195,15 +6203,14 @@ impl App {
             crate::race::Point::SwitchLaunching,
             Path::new(task_id.as_str()),
         );
-        // A prompt-mode session that was idle and gets nothing typed is idle again once it
-        // runs (SPEC-447 MOV-002; a restart on a newer Claude Code, SPEC-461 CCM-013): no turn
-        // would end to say so, and it reads as it did, from its launch on (SPEC-468 CCF-008).
+        // An idle session that opens without a turn retains its activity (SPEC-447 MOV-002).
+        // Codex reopens at its prompt in both task modes (SPEC-611 CQS-001).
         let rest = task
             .activity
             .filter(|activity| {
                 activity.is_idle()
                     && task.status == TaskStatus::Running
-                    && task.mode == TaskMode::Prompt
+                    && (task.mode == TaskMode::Prompt || task.harness == Harness::Codex)
                     && matches!(start, RunStart::Resume { prompt: None })
                     // A session told to resume its workflow opens with that turn (SPEC-486).
                     && runtime.with_workflows(|workflows| workflows.runs().is_empty())
