@@ -55,7 +55,9 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Preserve the latest queue decision for each existing task during history cleanup
 - [x] Recover the recorded singleton decision and its replacement arm
 - [x] Preserve the ordinary armed merge outcome after a person merges through HTTP
-- [ ] Keep failed integration candidates with their original owner
+- [x] Keep the live owner’s merge notice across a queue decision
+- [ ] Verify restored arms and deliver current ordinary CI and train notices to the owner
+- [ ] Report the active singleton and replay its recorded failure for the original owner
 - [ ] Verify candidate status before parking, showing Done or resuming a parked owner
 - [ ] Deliver bounded Codex goal continuation to dev
 - [ ] Recover screens from tasks parked before the upgrade
@@ -93,7 +95,25 @@ The hourly telemetry cleanup retains the latest merge wait for each existing tas
 
 The queue writes the accepted singleton to the owner’s completed merge wait before releasing the original arm. The receipt carries the redacted reason and exact tested inputs. A reviewed head move preserves its activation time. A new request saves a strictly later activation before retiring the earlier receipt. The queue verifies retirement against the observed row and detail before taking the replacement. A direct merge or already-merged retry also reconciles pending retirement. Unreadable evidence leaves the saved request available to the next pass. The subsequent watcher slice must confirm the current holder and its members independently of a cached source run before sending instructions.
 
+When the watcher sees an open PR during an active queue decision or its slot changes during the read, it supplies the PR number to the normal notice bookkeeping and defers events, check-ins and stalls for that pass. A subsequent recorded merge remains eligible for delivery once to the same task.
+
 ## Evidence
+
+- Independent review approved `2af197087f44febdf4010703e55cdc5cf1afe6ce` and passed all six live queue fixtures. All 271 scoped parking, PR watch, delivery, merge queue, merge train and agent wait tests passed. Repository contracts, formatting and spec validation passed. Vidoc was disabled. The stall-clock and overtaken-watch mutation runs caught all four and all nine mutations respectively. The earlier first-watch campaign caught six of seven; the strengthened timestamp fixture caught the previously missed deletion in a separate run. The integrated generation and successful-take campaigns were running at review.
+
+- On integrated commit `8505cfa60`, 270 scoped tests passed. A subsequent real queue retry kept the same arm and recorded a hosted PR read outage while the watcher was preparing advice. The old watcher reported a stall from before the retry. The regression checks for silence on the interrupted pass and delivery of the new reason exactly once. A separate count of successful takes distinguishes retries within the same request generation. The queue continues to use its request generation to reject superseded writers.
+
+- On `0cf75ad35` the queue reconciled a hosted merge and released the new arm before the watch returned. Both reads found an empty slot, and the task was told to rearm a PR whose merge had already been recorded. The regression requires the first pass to stay quiet and the next pass to deliver that merge once.
+
+- The live queue decision and startup registry recovery are separate deliveries. The startup-only regression from prototype `0cf75ad35` remains with the restored-arm step. The live watcher uses the queue’s existing generation to distinguish an unchanged free slot from a new request that finished before the watcher returned.
+
+- On `e90df3599`, a first watch that started with no merge armed told the owner to call delivery_merge after the queue had taken the newly restored arm. The fixture interrupts both the watch and the real queue at their decision points. A second fixture uses distinct controlled clock readings to verify the exact timestamp for a replacement PR.
+
+- On the dev baseline `e8759b018`, both first-watch cases sent an immediate check-in. Review of `e19864e43` found that deferring an already observed PR discarded its progress fingerprint. The retry regression reproduced a disappearing stall and a reset deadline with the same arm and CI run. The replacement-PR control verifies that its new clock and progress belong to the new PR.
+
+- On the reviewed queue prototype `1b2442c29`, both new regressions reproduced a lost merge. The first watch ran while arm restoration was incomplete or while the queue held the arm for a decision. It typed nothing and forgot the open PR. The regressions require one notice at the original task when the delivery record advances to merged between passes. The broader ordinary-CI and train-status changes remain in the next plan item.
+- PR #1566 landed on dev at `1d97b363c`. Its exact head `d5e330a97` passed Yulius CI `69ec975a-f1ec-4f47-adb4-a24d56a29607` including quality, both Rust shards and browser e2e. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/1d97b363cf2012a58af48c780093f85caf498688)
+- The two final #1566 mutation runs each listed eight mutations. The ordinary HTTP repair caught three with five unviable (341 s). The guarded receipt repair caught four with four unviable (370 s). Neither missed or timed out. Separate application of the remaining earlier mutations made the person’s retry and the replacement’s completed wait regressions fail.
 
 - PR #1566 failed on `4dfbaea48` in Yulius CI run `02d62060-3936-4b67-a9a1-ad055858a1da`. Rust shard 2 reproduced a missing merge outcome after a person merged through HTTP and then closed the task. Before the repair, the two strengthened route regressions both failed. The matching arm now completes with the guarded GitHub merge receipt and the remaining plan. Its wait span records its own activation. An in-flight decision or an arm for another head stays with the queue.
 - The five focused queue and HTTP cases passed after the repair. A receipt-only response subsequently failed the exact-head CI wording assertion despite the owner’s green run. Reusing the queue’s verified merge message passed that assertion. The final scoped nextest run passed 406 tests across delivery, merge queue, CI, waits, parking, PR watch and store recovery. Clippy for the app, store and integration targets passed with warnings denied.

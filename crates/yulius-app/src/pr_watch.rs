@@ -986,9 +986,9 @@ impl App {
     ) -> Option<PrFacts> {
         // The slot before the delivery: a merge decided in between then reads as merged, never
         // as "no merge armed" on an open pull request (review minor 8).
+        let activation = self.arm_observation(&task.id);
         let (armed, outcome) = self.armed_view(&task.id);
-        // Also before a restarted server put the armed merges back: never "no merge is armed"
-        // for one that is (SPEC-487, review round 2).
+        // A saved arm may still await restoration (SPEC-487, review round 2).
         let armed = armed || self.merge_is_armed(&task.id);
         let record = self.deps.store.delivery(&task.id).await.ok()??;
         let pr = record.pr_number?;
@@ -1028,6 +1028,22 @@ impl App {
         }
         if record.stage != DeliveryStage::PrOpen {
             return None;
+        }
+        // A deferred pass remembers the open PR and leaves its existing stall clock alone.
+        let observed_only = || {
+            Some(PrFacts {
+                pr,
+                now_ms,
+                progress: if told.pr == pr {
+                    told.progress.clone()
+                } else {
+                    String::new()
+                },
+                ..PrFacts::default()
+            })
+        };
+        if activation.deciding {
+            return observed_only();
         }
         let integration = delivery_profile(&sandbox).integration_branch;
         if !runs.contains_key(sandbox.id.as_str()) {
@@ -1225,6 +1241,13 @@ impl App {
             .load(Ordering::SeqCst)
             .max(runtime.spawned_ms.load(Ordering::SeqCst));
         let check_ins = !runtime.goal_achieved.load(Ordering::SeqCst) && !needs_you;
+        crate::race::reached(
+            crate::race::Point::LivePrFactsRead,
+            std::path::Path::new(task.id.as_str()),
+        );
+        if self.arm_observation(&task.id) != activation {
+            return observed_only();
+        }
         Some(PrFacts {
             now_ms,
             pr,
