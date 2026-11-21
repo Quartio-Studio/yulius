@@ -1,20 +1,103 @@
 #!/usr/bin/env python3
 """Run a project Cargo command with a sandbox-local compiler cache when bootstrapped."""
+import json
 import os
 from pathlib import Path
 import shutil
 import sys
 import tempfile
 
-from compile_cache import foreground_terminal, installed, open_store, run_session, sandbox_for
+from compile_cache import UnreapedBuild, foreground_terminal, installed, open_store, run_disposable, run_session, sandbox_for
 
 root = Path(__file__).resolve().parent.parent
 args = sys.argv[1:]
 os.environ["PATH"] = str(root / ".tools/bin") + os.pathsep + os.environ.get("PATH", "")
 
+def validate_scratch_args(args):
+    # Cargo expands configured aliases after parsing its options. Use a named
+    # build command whose output arguments can be inspected before dispatch.
+    builtins = {"bench", "build", "check", "clean", "doc", "fix", "run", "rustc", "rustdoc", "test"}
+    if not args or args[0] not in builtins:
+        sys.exit("--scratch-target needs a built-in Cargo build subcommand; expand any alias")
+    for arg in args:
+        if arg == "--":
+            break
+        key = arg.split("=", 1)[0]
+        if key in {"--target-dir", "--build-dir"}:
+            sys.exit(f"--scratch-target owns Cargo's output directories; remove {key} or use -- before program options")
+
+
+scratch_target = args[:1] == ["--scratch-target"]
+if scratch_target:
+    args = args[1:]
+
+
+def scratch_config_end(args):
+    """Find the end of Cargo's last CLI configuration, before program arguments."""
+    end = None
+    possible_program_arg = False
+    options = iter(enumerate(args[1:], start=1))
+    for index, arg in options:
+        if arg == "--":
+            break
+        if arg == "--config" or arg.startswith("--config="):
+            if args[0] == "run" and possible_program_arg:
+                sys.exit("place Cargo --config before positional arguments; use -- before program options")
+            if arg == "--config":
+                value = next(options, None)
+                if value is None:
+                    sys.exit("Cargo --config requires a value")
+                index = value[0]
+            end = index + 1
+        elif arg == "-" or not arg.startswith("-"):
+            # A bare word may be either a Cargo option value or the first
+            # argument to the executable. Require unambiguous config placement.
+            possible_program_arg = True
+    return end
+
+
+def run_build(command, env):
+    parent = Path(env.get("YULIUS_BUILD_SCRATCH", root / "target")).resolve()
+    parent.mkdir(exist_ok=True, parents=True)
+    build = tempfile.mkdtemp(prefix="cargo-", dir=parent)
+    try:
+        config_end = scratch_config_end(command[1:])
+        if config_end is not None:
+            # Keep both paths after the user's final setting, while leaving
+            # Cargo run's implicit program arguments in their original order.
+            insert = 1 + config_end
+            path = json.dumps(build, ensure_ascii=False)
+            command = [*command[:insert], "--config", f"build.target-dir={path}",
+                       "--config", f"build.build-dir={path}", *command[insert:]]
+        result = run_disposable(command, dict(env, CARGO_TARGET_DIR=build, CARGO_BUILD_BUILD_DIR=build, CARGO_BUILD_TARGET_DIR=build))
+    except UnreapedBuild as error:
+        # The containing session can reclaim this target once its processes end.
+        raise UnreapedBuild(f"{error}; retained build target {build}") from error
+    except BaseException:
+        remove_target(build, parent)
+        raise
+    remove_target(build, parent)
+    return result
+
+
+def remove_target(build, parent):
+    try:
+        shutil.rmtree(build)
+    except FileNotFoundError:
+        if os.path.lexists(build):
+            raise
+        # cargo clean can remove the allocated root itself.
+    except PermissionError:
+        # TemporaryDirectory's cleanup also handles owner-read-only dependencies.
+        with tempfile.TemporaryDirectory(prefix="cargo-clean-", dir=parent) as disposal:
+            os.rename(build, Path(disposal) / "target")
+
 
 def plain(cargo):
     os.environ["CARGO"] = cargo
+    if scratch_target:
+        status = run_build([cargo, *args], os.environ)
+        sys.exit(status if status >= 0 else 128 - status)
     os.execvp(cargo, [cargo, *args])
 
 
@@ -42,6 +125,10 @@ if Path(cargo).resolve() == launcher:
             break
     else:
         sys.exit("The project Cargo launcher needs a Cargo executable on PATH")
+if scratch_target:
+    validate_scratch_args(args)
+    plain(cargo)
+
 # Yulius CI keeps the runner's session for cancellation and redirects all three streams.
 unattended_ci = (os.environ.get("YULIUS_CI") == "1" and os.environ.get("YULIUS_CI_RUN")
                  and not any(os.isatty(fd) for fd in (0, 1, 2)))
