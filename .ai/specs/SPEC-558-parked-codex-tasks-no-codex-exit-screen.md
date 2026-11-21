@@ -122,6 +122,8 @@ The SQLite query returning a parked task includes the latest attempt ID in the s
 
 ## Evidence
 
+- Review of `fb23d8916` found that launch-error cleanup could still answer a subscription sign-in request after the database rolled back the refusal. Run `550f59be-28dc-494e-ad81-aefea904e0c9` returned no question for that case. The test checks its exact contents and open wait span. A separate post-acceptance edit checks both the model saved for the future and the actual model and subscription of the admitted run.
+
 - Before named admission changed, run `89dd2ac7-960d-4871-a1fb-6ab1c6df5b17` passed the available model change but failed both refusal races and the queued refusal. The original positive fixture also archived its fake Git worktree and lost its launch directory. The corrected positive fixture isolates the model edit, and the queue fixture seeds the persisted archive directly.
 
 - PR #1635 landed on dev `14de9b011`. Its PR CI run `59ebc354-1a2b-4308-af19-e7c0abe25609` and train run `3c7e1a6f-13ea-4f10-b128-2f92347b5d80` passed. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/14de9b01164c094d7a187e80d3ffd64c14962489)

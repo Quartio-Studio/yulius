@@ -2391,8 +2391,23 @@ impl App {
                 _ => (start, account),
             };
             let launching = Launching::start(&self.supervisor.launching, &task.id);
+            let admission = if owner_continue {
+                self.prepare_start_claim(&task.id).await?;
+                let Some(admitted) = self
+                    .claim_owner_continuation(&task, None, account.as_ref())
+                    .await?
+                else {
+                    return Ok(false);
+                };
+                self.publish_task(&task.id).await;
+                Some(admitted)
+            } else {
+                None
+            };
+            // Launch failure cleanup answers subscription questions. A refused Continue
+            // returns above, while the owner's original controls still belong to it.
             let result = self
-                .launch_attempt(&task, start, account, rest, pause_outcome, owner_continue)
+                .launch_attempt(&task, start, account, rest, pause_outcome, admission)
                 .await;
             if let Err(err) = &result {
                 // Settle the failed launch before another Continue can install a new pause.
@@ -2470,11 +2485,31 @@ impl App {
             .claim_continuation(task, queue, requested, self.now())
             .await?;
         if accepted.is_some() {
+            crate::race::reached(
+                crate::race::Point::OwnerContinueAccepted,
+                Path::new(task.id.as_str()),
+            );
             // A resting owner's Continue clears only this task's browser actions (SPEC-494).
             self.clear_task_browser_actions(&task.sandbox_id, &task.id, None)
                 .await;
         }
         Ok(accepted)
+    }
+
+    async fn prepare_start_claim(&self, task_id: &TaskId) -> AppResult<()> {
+        // A waiting or resting task with no run left: an intent of a stop or close that ended
+        // no run is not for the run this launch starts (SPEC-140 STP-002). One whose run still
+        // ends keeps it for that run's end.
+        if self.deps.store.live_attempt(task_id).await?.is_none()
+            && let Ok(mut intent) = self.runtime(task_id).intent.lock()
+        {
+            *intent = None;
+        }
+        crate::race::reached(
+            crate::race::Point::StartClaimReady,
+            Path::new(task_id.as_str()),
+        );
+        Ok(())
     }
 
     async fn launch_attempt(
@@ -2484,7 +2519,7 @@ impl App {
         requested: Option<AccountId>,
         rest: Option<IdleRest>,
         pause_outcome: &'static str,
-        owner_continue: bool,
+        admission: Option<crate::capacity::ContinuationAdmission>,
     ) -> AppResult<bool> {
         let store = &self.deps.store;
         let relaunch = start.clone();
@@ -2492,9 +2527,10 @@ impl App {
             .sandbox(&task.sandbox_id)
             .await?
             .ok_or(AppError::NotFound)?;
-        let mut admission = None;
         // Status → Starting (unless a switch drives this launch).
-        if task.status != TaskStatus::Switching && task.status != TaskStatus::Starting {
+        if admission.is_none()
+            && !matches!(task.status, TaskStatus::Starting | TaskStatus::Switching)
+        {
             let next = match task.status {
                 TaskStatus::Queued => TaskStatus::Starting,
                 TaskStatus::WaitingCapacity => TaskStatus::WaitingCapacity
@@ -2506,28 +2542,10 @@ impl App {
                     .unwrap_or(TaskStatus::Starting),
                 other => return Err(AppError::Conflict(format!("task is {}", other.as_str()))),
             };
-            // A waiting or resting task with no run left: an intent of a stop or close that ended
-            // no run is not for the run this launch starts (SPEC-140 STP-002). One whose run still
-            // ends keeps it for that run's end.
-            if store.live_attempt(&task.id).await?.is_none()
-                && let Ok(mut intent) = self.runtime(&task.id).intent.lock()
-            {
-                *intent = None;
-            }
-            crate::race::reached(
-                crate::race::Point::StartClaimReady,
-                Path::new(task.id.as_str()),
-            );
-            let claimed = if owner_continue {
-                admission = self
-                    .claim_owner_continuation(task, None, requested.as_ref())
-                    .await?;
-                admission.is_some()
-            } else {
-                store
-                    .transition_task(&task.id, Some(task.status), next, None, self.now())
-                    .await?
-            };
+            self.prepare_start_claim(&task.id).await?;
+            let claimed = store
+                .transition_task(&task.id, Some(task.status), next, None, self.now())
+                .await?;
             if !claimed {
                 // Stop won the claim. This start owns neither the task nor a replacement pause.
                 return Ok(false);
@@ -3094,15 +3112,8 @@ impl App {
             store
                 .transition_attempt(&attempt_id, AttemptState::Exited, &update)
                 .await?;
-            return Box::pin(self.launch_attempt(
-                &task,
-                relaunch,
-                None,
-                rest,
-                pause_outcome,
-                false,
-            ))
-            .await;
+            return Box::pin(self.launch_attempt(&task, relaunch, None, rest, pause_outcome, None))
+                .await;
         }
         // Before the spawn, so the first prompt's hook always finds it (SPEC-068).
         if typed_opening.is_some()

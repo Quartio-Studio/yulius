@@ -308,9 +308,15 @@ fn a_named_continue_preserves_owner_controls_when_the_account_needs_login() -> T
     named_continue_during_change(NamedChange::Relogin)
 }
 
+#[test]
+fn a_named_continue_keeps_the_model_it_accepted_when_the_owner_edits_again() -> TestResult {
+    named_continue_during_change(NamedChange::EditAfterAcceptance)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum NamedChange {
     AvailableModel,
+    EditAfterAcceptance,
     ExhaustedModel,
     Relogin,
 }
@@ -330,7 +336,8 @@ fn named_continue_during_change(change: NamedChange) -> TestResult {
                 ..Default::default()
             },
         )?;
-        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
+        store_usage(&app, "b-second", true).await?;
         store_usage(&app, "a-first", true).await?;
         let id = task_of_model(&app, &sandbox, &user, "Continue on Sonnet", Some(FABLE)).await?;
         ready(&app, &id).await?;
@@ -345,10 +352,27 @@ fn named_continue_during_change(change: NamedChange) -> TestResult {
             session_hash: None,
             token: None,
         };
-        if change != NamedChange::AvailableModel {
+        if matches!(change, NamedChange::ExhaustedModel | NamedChange::Relogin) {
             app.archive_task(&ctx, id.as_str(), true).await?;
         }
         crate::parking::ask(&app, &id).await?;
+        let mut question = app
+            .deps
+            .store
+            .task_needs_you(&id)
+            .await?
+            .ok_or("owner question")?;
+        if change == NamedChange::Relogin {
+            question.action =
+                "Sign a Claude subscription in again or add one in Subscriptions".into();
+            app.deps
+                .store
+                .set_task_needs_you(&id, Some(&question), app.now())
+                .await?;
+        }
+        if change == NamedChange::EditAfterAcceptance {
+            store_usage(&app, "a-first", false).await?;
+        }
         let selected = app.deps.store.task(&id).await?.ok_or("stopped task")?;
         if change == NamedChange::ExhaustedModel {
             let full = json!({"weekly_sonnet": {"used_percent":100.0, "window_minutes":10080,
@@ -370,7 +394,11 @@ fn named_continue_during_change(change: NamedChange) -> TestResult {
         let target = id.clone();
         let handle = tokio::runtime::Handle::current();
         yulius_app::race::on(
-            yulius_app::race::Point::StartClaimReady,
+            if change == NamedChange::EditAfterAcceptance {
+                yulius_app::race::Point::OwnerContinueAccepted
+            } else {
+                yulius_app::race::Point::StartClaimReady
+            },
             std::path::Path::new(id.as_str()),
             move || {
                 let edited = tokio::task::block_in_place(|| {
@@ -408,7 +436,7 @@ fn named_continue_during_change(change: NamedChange) -> TestResult {
                 },
             )
             .await;
-        if change != NamedChange::AvailableModel {
+        if matches!(change, NamedChange::ExhaustedModel | NamedChange::Relogin) {
             assert!(
                 matches!(admission, Err(yulius_app::error::AppError::Capacity(_))),
                 "{admission:?}"
@@ -416,15 +444,42 @@ fn named_continue_during_change(change: NamedChange) -> TestResult {
             let kept = app.deps.store.task(&id).await?.ok_or("resting owner")?;
             assert_eq!(kept.status, selected.status);
             assert_eq!(kept.archived_at, selected.archived_at);
-            assert!(app.deps.store.task_needs_you(&id).await?.is_some());
+            assert_eq!(app.deps.store.task_needs_you(&id).await?, Some(question));
+            let spans = app
+                .deps
+                .store
+                .subject_spans(
+                    &sandbox,
+                    yulius_domain::stages::SubjectKind::Task,
+                    id.as_str(),
+                    100,
+                )
+                .await?;
+            assert!(spans.iter().any(|span| span.kind == "wait"
+                && span.name == "needs_you"
+                && span.ended_at.is_none()));
             assert_eq!(app.deps.store.attempts(&id).await?.len(), 1);
             return Ok(());
         }
         admission?;
         ready(&app, &id).await?;
+        let accepted = if change == NamedChange::EditAfterAcceptance {
+            FABLE
+        } else {
+            sonnet
+        };
         assert_eq!(
             launched(&app, &id).await?.last(),
-            Some(&(asked_for(sonnet), Some(sonnet.to_owned())))
+            Some(&(asked_for(accepted), Some(accepted.to_owned())))
+        );
+        let task = app.deps.store.task(&id).await?.ok_or("continued task")?;
+        assert_eq!(task.model.as_deref(), Some(sonnet));
+        let runs = app.deps.store.attempts(&id).await?;
+        assert_eq!(
+            runs.last()
+                .and_then(|run| run.account_id.as_ref())
+                .map(AccountId::as_str),
+            Some("a-first")
         );
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
