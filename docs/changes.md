@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- Task reads reuse terminal pull requests and share open refreshes. Status reports the installation quota and request purposes, including when display yields capacity to delivery. [SPEC-609](../.ai/specs/SPEC-609-reading-tasks-must-not-spend-the-github.md)
+
 - Agent and CI attempts receive private disk scratch for build trees. The process host caps each session’s memory-backed `/tmp` at 1 GiB. Named mutation campaigns reclaim their disk copies when workers exit. [SPEC-600](../.ai/specs/SPEC-600-mutation-testing-sized-to-the-change-wit.md)
 - Repeating a decided staging request gives the recorded verdict and the action its revision needs.
   [SPEC-597](../.ai/specs/SPEC-597-tests-that-hold-under-a-loaded-host-and.md)

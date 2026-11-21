@@ -216,7 +216,14 @@ impl App {
                 "this task has no branch to deliver yet".into(),
             ));
         };
-        let observed = self.dlv_observe(&sandbox, task, &profile, None).await?;
+        let observed = self
+            .dlv_observe(
+                &sandbox,
+                task,
+                &profile,
+                super::ObserveAccess::Provided(None),
+            )
+            .await?;
         let refusal = if past_merge(&observed.record.stage) {
             Some(format!("this task is already merged into `{integration}`"))
         } else {

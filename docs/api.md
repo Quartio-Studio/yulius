@@ -653,6 +653,8 @@ and `take_control` moves nothing (a login terminal's size is fixed; a shell foll
 
 ## Git and delivery
 
+The Status panel and the `instance` tool read `StatusView.github_budget` locally. It contains HTTP attempts by purpose (`display`, `ci_statuses`, `merges`, `staging`, `imports`, `other`), the number answered 304, and the installation's observed core limit, used and remaining requests and Unix reset time. Counts cover the provider window when known. `unattributed_minimum` is the amount GitHub charged above all potentially charged attempts observed by this process; a restart or another client can leave a gap. Unknown quota fields are null. `display_paused` signals that the final 10% is reserved for operational requests. Task lists expose the pause in their rows and in the `tasks_list` tool. [SPEC-609](../.ai/specs/SPEC-609-reading-tasks-must-not-spend-the-github.md)
+
 The web UI only reads delivery (GIT-002): the Git page, a task's delivery details and its strip
 use the `GET` routes below. The `POST` routes (open PR, merge, promote, environment runs) stay for
 the agents' delivery workflow and other clients; no page of the web UI calls them.

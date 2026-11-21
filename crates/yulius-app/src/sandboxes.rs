@@ -242,7 +242,11 @@ impl ObservedPulls {
         self.begin_read(sandbox, None)
     }
 
-    fn begin_branch(&self, sandbox: &SandboxId, task: &TaskId) -> AppResult<OverviewRead> {
+    pub(crate) fn begin_branch(
+        &self,
+        sandbox: &SandboxId,
+        task: &TaskId,
+    ) -> AppResult<OverviewRead> {
         self.begin_read(sandbox, Some(task))
     }
 
@@ -427,9 +431,16 @@ impl App {
         for_start_rule: bool,
     ) -> AppResult<Vec<TaskGroup>> {
         let requests = OnceCell::new();
-        let parked = self
-            .parked_list_statuses(tasks.iter().map(|task| (task, &requests)).collect())
-            .await;
+        let purpose = if for_start_rule {
+            crate::ports::github::GitHubPurpose::Other
+        } else {
+            crate::ports::github::GitHubPurpose::Display
+        };
+        let parked = crate::ports::github::for_purpose(
+            purpose,
+            self.parked_list_statuses(tasks.iter().map(|task| (task, &requests)).collect()),
+        )
+        .await;
         self.groups_with_parked(tasks, &requests, &parked, for_start_rule)
             .await
     }
@@ -468,6 +479,19 @@ impl App {
         requests: &OnceCell<HashSet<String>>,
         deadline: Instant,
     ) -> ParkedStatus {
+        crate::ports::github::for_purpose(
+            crate::ports::github::GitHubPurpose::Display,
+            self.parked_status_inner(task, requests, deadline),
+        )
+        .await
+    }
+
+    async fn parked_status_inner(
+        &self,
+        task: &TaskRecord,
+        requests: &OnceCell<HashSet<String>>,
+        deadline: Instant,
+    ) -> ParkedStatus {
         use crate::delivery::PrVerification;
         // Seed from memory before waiting on any store or browser lock. Once
         // the record is read, a timed-out lookup can still name its delivery.
@@ -485,6 +509,20 @@ impl App {
             if status.facts.parked_has_local_work_or_request() {
                 return Ok(());
             }
+            if crate::ports::github::current_purpose()
+                == crate::ports::github::GitHubPurpose::Display
+                && let Some(pull) = self.display_terminal(task, record.as_ref()).await?
+                && observed
+                    .pr
+                    .is_none_or(|known| !known.open || known.number == pull.number)
+            {
+                status.facts.pull = pull.merged.then_some(PullSignal::Merged);
+                observed.pr = Some(yulius_contracts::api::tasks::ParkedPr {
+                    number: pull.number,
+                    open: false,
+                });
+                return Ok(());
+            }
             if let Some(merged) = record
                 .as_ref()
                 .filter(|r| crate::delivery::past_merge(&r.stage))
@@ -499,6 +537,18 @@ impl App {
                     read, merged, deadline,
                 ));
             }
+            // An open delivery can close and reveal a different PR in this very read.
+            // Publish that replacement in request order so the terminal shortcut sees it.
+            let tracking = record
+                .as_ref()
+                .filter(|r| r.stage == yulius_domain::delivery::DeliveryStage::PrOpen)
+                .and_then(|r| r.pr_number)
+                .and_then(|number| {
+                    self.observed_pulls
+                        .begin_branch(&task.sandbox_id, &task.id)
+                        .ok()
+                        .map(|read| (number, read))
+                });
             let prs = self
                 .verify_task_prs(
                     task,
@@ -508,6 +558,11 @@ impl App {
                     discovery.as_mut(),
                 )
                 .await?;
+            if let Some((number, read)) = tracking
+                && let Some(replacement) = observed.pr.filter(|pr| pr.open && pr.number != number)
+            {
+                read.record_branch(&task.id, number, Some(replacement.number));
+            }
             let current = if let Some(prs) = prs {
                 status.followup_unverified = prs.followup_unverified;
                 let current = self

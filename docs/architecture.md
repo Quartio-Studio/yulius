@@ -58,6 +58,8 @@ flowchart LR
   APP <-->|"DevTools pipe (fds 3/4)"| CH["Chrome on Xvfb"]
 ```
 
+Task delivery stores observed terminal PR metadata in SQLite. The GitHub adapter coalesces credential-scoped display GETs, revalidates with ETags and records installation attempts at the HTTP transport. The delivery reconciliation tick discovers new PRs on parked terminal branches. GitHub response headers supply the remaining quota and reset time. [ADR-0447](decisions/0447-task-display-shares-github-reads-and-yields-to-delivery.md)
+
 ## Codex
 
 A Codex task runs `codex --no-daemon` in its worktree with `CODEX_HOME=<sandbox>/codex/<account>`,

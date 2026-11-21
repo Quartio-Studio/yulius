@@ -86,6 +86,57 @@ impl DeliveryStore for SqliteStore {
         .await
     }
 
+    async fn terminal_branches_for_discovery(
+        &self,
+        sandbox: &SandboxId,
+    ) -> AppResult<Vec<(TaskId, String, u64)>> {
+        let sandbox = sandbox.to_string();
+        self.call(move |c| {
+            let mut statement = c.prepare("SELECT t.id, t.branch, max(p.pr_number) FROM tasks t JOIN terminal_pulls p ON p.task_id=t.id
+                JOIN delivery d ON d.task_id=t.id WHERE t.sandbox_id=?1 AND (t.status='parked' OR d.stage='none') AND t.archived_at IS NULL
+                AND t.branch IS NOT NULL AND d.stage != 'pr_open' GROUP BY t.id").map_err(db)?;
+            statement.query_map([sandbox], |r| {
+                let id: String = r.get(0)?;
+                Ok((TaskId::parse(&id).map_err(|_| bad_column("task id", &id))?, r.get(1)?, to_u64(r.get(2)?)))
+            }).map_err(db)?.collect::<Result<Vec<_>, _>>().map_err(db)
+        }).await
+    }
+
+    async fn terminal_pull(
+        &self,
+        task: &TaskId,
+        number: Option<u64>,
+    ) -> AppResult<Option<yulius_app::ports::github::GhPull>> {
+        let task = task.to_string();
+        self.call(move |c| {
+            let snapshot: Option<String> = c.query_row(
+                "SELECT snapshot FROM terminal_pulls WHERE task_id = ?1 AND (?2 IS NULL OR pr_number = ?2)
+                 ORDER BY pr_number DESC LIMIT 1", params![task, number.map(to_i64)], |row| row.get(0)
+            ).optional().map_err(db)?;
+            snapshot.map(|json| serde_json::from_str(&json).map_err(yulius_app::error::AppError::internal)).transpose()
+        }).await
+    }
+
+    async fn remember_terminal_pull(
+        &self,
+        task: &TaskId,
+        pull: &yulius_app::ports::github::GhPull,
+    ) -> AppResult<()> {
+        let snapshot =
+            serde_json::to_string(pull).map_err(yulius_app::error::AppError::internal)?;
+        let (task, number) = (task.to_string(), to_i64(pull.number));
+        self.call(move |c| {
+            c.execute(
+                "INSERT INTO terminal_pulls(task_id, pr_number, snapshot) VALUES (?1, ?2, ?3)
+                       ON CONFLICT DO NOTHING",
+                params![task, number, snapshot],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
     async fn armed_notice_recipient(
         &self,
         task: &TaskId,

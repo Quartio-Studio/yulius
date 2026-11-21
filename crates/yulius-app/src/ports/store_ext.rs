@@ -137,6 +137,23 @@ pub trait DeliveryStore: Send + Sync {
         &self,
         task: &yulius_domain::ids::TaskId,
     ) -> crate::error::AppResult<Option<crate::delivery::DeliveryRecord>>;
+    /// Parked merged branches and branches whose last PR closed that may acquire a new PR.
+    async fn terminal_branches_for_discovery(
+        &self,
+        sandbox: &yulius_domain::ids::SandboxId,
+    ) -> crate::error::AppResult<Vec<(TaskId, String, u64)>>;
+    /// Last directly observed terminal PR of the task, optionally by number.
+    async fn terminal_pull(
+        &self,
+        task: &yulius_domain::ids::TaskId,
+        number: Option<u64>,
+    ) -> crate::error::AppResult<Option<super::github::GhPull>>;
+    /// Retain immutable metadata from a directly observed closed or merged pull request.
+    async fn remember_terminal_pull(
+        &self,
+        task: &yulius_domain::ids::TaskId,
+        pull: &super::github::GhPull,
+    ) -> crate::error::AppResult<()>;
     /// One coherent read of the open owner PR, task, decisions and pauses before typing.
     /// An unavailable recipient or an unreadable current attention reason defers the notice.
     async fn armed_notice_recipient(

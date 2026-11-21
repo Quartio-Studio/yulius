@@ -10776,3 +10776,89 @@ async fn post_merge_evidence_checks_the_pr_number_on_the_git_page() -> TestResul
     assert_eq!(f.delivery("t1").await?["evidence"]["pr_number"], 1);
     Ok(())
 }
+
+#[tokio::test]
+async fn reading_a_merged_parked_task_spends_no_pull_requests() -> TestResult {
+    use std::sync::atomic::Ordering;
+    let (f, wt, _) = merged_task_with(Box::new(|config| config.parked_pr_read_ms = 10_000)).await?;
+    std::fs::write(wt.join(SPEC_PATH), finished_spec("t1"))?;
+    let id = TaskId::parse("t1")?;
+    f.h.store
+        .transition_task(
+            &id,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Done),
+            f.h.app.now(),
+        )
+        .await?;
+    let owner =
+        f.h.app
+            .authenticate_bearer(f.bob.bearer.as_deref().ok_or("token")?)
+            .await?
+            .ok_or("owner")?;
+    let counts = || {
+        (
+            f.h.github.pull_list_count.swap(0, Ordering::SeqCst),
+            f.h.github.pull_get_count.swap(0, Ordering::SeqCst),
+        )
+    };
+    counts();
+    let mut measured = Vec::new();
+    for _ in 0..2 {
+        let rows = f.h.app.list_tasks(&owner, "s1", false).await?;
+        assert!(rows.iter().any(|r| r.id == "t1"));
+        let list = counts();
+        assert_eq!(f.delivery("t1").await?["stage"], "merged_integration");
+        measured.push((list, counts()));
+    }
+    assert_eq!(measured, vec![((0, 0), (0, 0)); 2]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn reading_a_closed_unmerged_parked_task_spends_no_pull_requests() -> TestResult {
+    use std::sync::atomic::Ordering;
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let (wt, _) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
+    let id = TaskId::parse("t1")?;
+    edit_pull(&f, 1, |p| p.state = "closed".into());
+    f.h.app.reconcile_deliveries().await;
+    f.h.store
+        .transition_task(
+            &id,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Done),
+            f.h.app.now(),
+        )
+        .await?;
+    assert!(wt.is_dir());
+    let owner =
+        f.h.app
+            .authenticate_bearer(f.bob.bearer.as_deref().ok_or("token")?)
+            .await?
+            .ok_or("owner")?;
+    f.h.github.pull_list_count.store(0, Ordering::SeqCst);
+    f.h.github.pull_get_count.store(0, Ordering::SeqCst);
+    for _ in 0..2 {
+        f.h.app.list_tasks(&owner, "s1", false).await?;
+        assert_eq!(f.delivery("t1").await?["stage"], "none");
+    }
+    assert_eq!(f.h.github.pull_list_count.load(Ordering::SeqCst), 0);
+    assert_eq!(f.h.github.pull_get_count.load(Ordering::SeqCst), 0);
+    // A new external PR on the same branch is discovered by the repository tick.
+    // Repeated display reads of the old closed number needed no discovery.
+    {
+        let mut pulls = f.h.github.pulls.lock().map_err(|_| "pull fixture")?;
+        let replacement = yulius_app::ports::github::GhPull {
+            number: 2,
+            state: "open".into(),
+            ..pulls[0].clone()
+        };
+        pulls.push(replacement);
+    }
+    f.h.app.reconcile_deliveries().await;
+    assert_eq!(f.delivery("t1").await?["pr"]["number"], 2);
+    Ok(())
+}
