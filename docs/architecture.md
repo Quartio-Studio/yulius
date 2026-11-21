@@ -91,7 +91,9 @@ its runs' rollouts. In the web UI, Subscriptions' Add dialog chooses the agent f
 or Codex) and then its way in, a Codex card imports a new `auth.json`, the composer's model menu
 groups explicit model IDs by provider. Each Codex or Gemini choice sends its harness and model,
 and the Codex default choice sends its harness alone. Settings and the composer share the model's
-supported effort levels and browser preferences. An automation chooses the agent of the tasks it
+supported effort levels and browser preferences. A missing or unusable model preference selects
+Codex default, while a saved JSON null selects Random. [Decision 0426](decisions/0426-the-new-task-composer-defaults-to-codex.md)
+An automation chooses the agent of the tasks it
 creates. See [ADR-0372](decisions/0372-model-pickers-use-provider-reasoning-levels.md).
 
 Rotation picks only accounts of the task's provider, so a Codex task moves only between Codex
@@ -554,6 +556,7 @@ itself that the host's managed policy, which switches those windows off, is in f
 (`BrowserInstance::viewer_input_allowed`: a hidden tab is sent to the address the policy
 blocks; `yulius_browser::policy`, written by `yulius host setup`;
 [ADR-0318](decisions/0318-viewers-input-reaches-a-sandbox-browser-only-under-the-hosts-managed-policy.md)).
+The private X display watches for a fresh CLIPBOARD owner after a viewer’s primary click. The viewer receives a one-use offer. Accepting it reads the selection and returns plain text on that socket. [ADR-0423](decisions/0423-a-webpage-copy-returns-through-the-clicking-viewers-connection.md)
 A writer can restart this sandbox's browser through the same grant. The manager reaps its process and display, reuses the profile, and installs the address guard before reopening the tabs. [ADR-0404](decisions/0404-restart-one-sandbox-browser-through-its-viewer-grant.md)
 
 Sandbox browsers skip default app installation. On a virtual display they also leave profile
@@ -1377,6 +1380,8 @@ sequenceDiagram
 
 ## The review's rounds and models
 
+The task briefing directs the author to fix findings and obtain independent re-review under the existing delivery authorization, including after the third round. [ADR-0427](decisions/0427-task-authorization-covers-independent-re-review.md)
+
 The independent code review runs as one of two agents Yulius defines at every task launch
 (`--agents`, `harness::launch::reviewer_agents`), out of the agent's reach:
 `yulius-reviewer` on `claude-fable-5-2` and `yulius-reviewer-opus` on `claude-opus-5-5`, both at
@@ -1627,7 +1632,7 @@ person must act first (a prompt on screen, `needs_you`) or may have a draft in t
   the kept failures, partial observations from siblings stopped by a failed job, and the exact
   `ci_status` run), or one that errored;
 - a red merge candidate of two or more holding it, with "do not re-arm, merge or push";
-- a failed single-PR candidate, with the source CI run, failing job and a bounded, redacted excerpt. The queue verifies the live PR head and integration base even when another candidate tested the same tree. Unavailable diagnostic or redaction data leaves the arm in place within the verification budget. A running ordinary check retains its original wait deadline. The queue saves the decision in the task’s latest completed merge wait before clearing its arm. The record identifies the original PR, head, tested base and tree, source run and redacted failure. Hourly cleanup retains it. Startup uses the activation time to discard a consumed arm or retire its decision for a newer saved arm. The live PR watcher uses this record to deliver the accepted failure once to the original task. It checks the published head, integration base, latest wait and ordinary CI again before typing. The PR watcher defers advice for a saved request until its arm is restored. A passed train retains the admission head and records the verified integration head while waiting for GitHub. An exclusion identifies the request and head whose files conflicted. A legacy exclusion or replacement request gets the queue position alone.
+- a failed single-PR candidate, with the source CI run, failing job and a bounded, redacted excerpt. The queue verifies the live PR head and integration base even when another candidate tested the same tree. Unavailable diagnostic or redaction data leaves the arm in place within the verification budget. A running ordinary check retains its original wait deadline. The queue saves the decision in the task’s latest completed merge wait before clearing its arm. The record identifies the original PR, head, tested base and tree, source run and redacted failure. Hourly cleanup retains it. Startup uses the activation time to discard a consumed arm or retire its decision for a newer saved arm. The parking supervisor compares this decision with the verified PR head and base before recording the park intent. A change to the decision during hosted verification defers parking. The live PR watcher uses this record to deliver the accepted failure once to the original task. It checks the published head, integration base, latest wait and ordinary CI again before typing. The PR watcher defers advice for a saved request until its arm is restored. A passed train retains the admission head and records the verified integration head while waiting for GitHub. An exclusion identifies the request and head whose files conflicted. A legacy exclusion or replacement request gets the queue position alone.
 - a conflict with the integration branch (checked in the task's worktree), once per head;
 - how its armed merge ended (the slot's outcome), and its merge (`merged_text`), after which the
   watch is over for it;

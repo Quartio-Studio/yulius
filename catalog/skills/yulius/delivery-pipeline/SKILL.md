@@ -89,7 +89,8 @@ is a blocker.
 
 - Every finding is checked on its merits (is it true here?), then fixed test-first: a test that
   shows the problem, then the fix. Answer each finding in the pull request.
-- Re-review after fixes, up to 3 rounds. Before asking for another round, answer each finding of the
+- Re-review until approval under the task's existing authorization.
+  Before asking for another round, answer each finding of the
   last report with the test that fails without its fix (or why no test can), check every finding of
   that report against the new head, and run the project's mutation command on the lines of the fix
   where it can take them.
@@ -101,12 +102,11 @@ is a blocker.
 
 1. A finding in code or tests this change added or modified is fixed in this pull request,
    test-first, and never becomes a follow-up issue. That covers every finding: a test that cannot
-   fail, a weak or missing assertion, a race, a missing regression test. The round limit does not
-   excuse it: when 3 rounds are not enough, keep fixing, split the change, or stop and ask a
-   person (in Yulius: `needs_you`). Never merge with a known defect in your own code.
+   fail, a weak or missing assertion, a race, a missing regression test. If findings persist,
+   keep fixing or split the work into independently reviewable changes within scope.
 2. Only these may become a new issue: a bug in code the change did not introduce (pre-existing,
    found on the way), a flaky test the change did not cause, and cosmetic nits (naming, wording)
-   left at the round limit. Each says why it is outside the change, with the evidence (for
+   left after 3 rounds. Each says why it is outside the change, with the evidence (for
    example "present on the integration branch before this change").
 3. The reviewer classifies each finding as own code or pre-existing, and the pull request answers
    every finding. Deferring an own-code finding makes the verdict request changes.

@@ -262,10 +262,8 @@ test('a Codex subscription signs in with ChatGPT in the login terminal', async (
 
 type Connecting = { __yuliusMock: Mocked['__yuliusMock'] & { connectCodex: () => void } };
 
-// SPEC-503 CDX-014 (slice D review): with no Claude account usable, the composer asks to connect
-// Claude only until a Codex account is usable; a Codex start refused for want of a Codex account
-// offers to connect Codex, which opens the Codex dialog.
-test('the composer asks for Claude only while no Codex account is usable either', async ({ app, browser, screen }) => {
+// The composer offers the Codex dialog when a Codex task needs an account.
+test('the composer offers Codex sign-in until a Codex account is usable', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio', '&claude=0'));
   await expect(browser.locator('.claude-connect')).toContainText('Tasks start once one is usable.');
   await screen.getByRole('button', /^Model:/).click();

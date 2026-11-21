@@ -47,6 +47,8 @@ test('with sandboxes, Home and the composer say so first and a refused start lin
   await expect(screen.getByRole('button', 'Import repository')).toBeDisabled();
 
   await app.open(mock('/s/studio', '&claude=0'));
+  await screen.getByRole('button', /^Model:/).click();
+  await screen.getByRole('menuitemradio', /^Opus 5.5/).click();
   await expect(browser.locator('.claude-connect')).toContainText('Tasks start once one is usable.');
   await screen.getByRole('textbox', 'Task prompt').fill('Write the checkout UI tests');
   await screen.getByRole('button', 'Start task').click();
@@ -103,6 +105,8 @@ const MIXED = [
 
 test('a mixed request without a Claude account is refused, not "created as one task"', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio', '&claude=0'));
+  await screen.getByRole('button', /^Model:/).click();
+  await screen.getByRole('menuitemradio', /^Opus 5.5/).click();
   await browser.evaluate(() => {
     const mocked = window as unknown as { __yuliusMock: { holdProposal?: Promise<void>; releaseProposal?: () => void } };
     mocked.__yuliusMock.holdProposal = new Promise<void>((resolve) => { mocked.__yuliusMock.releaseProposal = resolve; });
