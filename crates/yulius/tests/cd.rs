@@ -92,6 +92,14 @@ impl FakeRemote for Origin {
         ])?;
         Ok(commit)
     }
+    fn create_branch(&self, branch: &str, sha: &str) -> Result<(), String> {
+        git(
+            &self.0,
+            &["update-ref", &format!("refs/heads/{branch}"), sha, ""],
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    }
     fn fast_forward(&self, branch: &str, sha: &str) -> Result<(), String> {
         git(
             &self.0,
@@ -736,6 +744,92 @@ async fn a_deploy_whose_request_is_dropped_after_its_record_still_runs() -> Test
     let output = run["output"].as_str().unwrap_or_default();
     assert!(output.contains("verified"), "{output}");
     assert_eq!(f.h.app.deploys_starting(), 0, "no permit is left behind");
+    Ok(())
+}
+
+/// Dev's independent deploy stays running while production ships its last verified release.
+#[tokio::test]
+async fn running_dev_deploy_keeps_its_previously_verified_release_available() -> TestResult {
+    let f = fixture(&full_cd()).await?;
+    f.allow_secret().await?;
+    let a = f.push("dev", &[("a.txt", Some("verified"))])?;
+    let first = f.deploy(&f.alice, "dev", None).await?;
+    let id = first.body["run_id"].as_str().ok_or("dev run")?;
+    assert_eq!(f.ended(id).await?["state"], "passed");
+    f.prove("dev").await?;
+    let b = f.push("dev", &[("b.txt", Some("checking"))])?;
+    let mut checking = f.h.store.cd_run(id, false).await?.ok_or("dev run")?;
+    checking.id = "checking-dev".into();
+    checking.sha = b;
+    checking.state = RunState::Running;
+    checking.ended_at = None;
+    f.h.store.insert_cd_run(&checking).await?;
+    let released = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/cd/prod/deploy",
+        Some(json!({"confirm":"app", "expect":a})),
+        &f.bob,
+    )
+    .await?;
+    assert_eq!(released.status, StatusCode::OK, "{}", released.body);
+    assert_eq!(
+        f.ended(released.body["run_id"].as_str().ok_or("prod run")?)
+            .await?["state"],
+        "passed"
+    );
+    assert_eq!(
+        git(&f.origin, &["rev-parse", "main^{tree}"])?,
+        git(&f.origin, &["rev-parse", &format!("{a}^{{tree}}")])?
+    );
+    assert_eq!(
+        f.h.store
+            .cd_run(&checking.id, false)
+            .await?
+            .ok_or("checking")?
+            .state,
+        RunState::Running
+    );
+    Ok(())
+}
+
+/// A newer dev drill in progress leaves the previous successfully drilled revision releasable.
+#[tokio::test]
+async fn newer_dev_drill_leaves_the_proven_revision_deployable() -> TestResult {
+    let f = fixture(&full_cd()).await?;
+    let a = f.push("dev", &[("a.txt", Some("proven"))])?;
+    f.prove("dev").await?;
+    let b = f.push("dev", &[("b.txt", Some("drilling"))])?;
+    let mut active =
+        f.h.store
+            .cd_run(&format!("drill-{}", &a[..12]), false)
+            .await?
+            .ok_or("drill")?;
+    active.id = "new-drill".into();
+    active.sha = b.clone();
+    active.state = RunState::Running;
+    active.ended_at = None;
+    f.h.store.insert_cd_run(&active).await?;
+    let deploy = |sha: String| {
+        call(
+            &f.h.router,
+            Method::POST,
+            "/api/sandboxes/s1/cd/prod/deploy",
+            Some(json!({"confirm":"app", "expect":sha})),
+            &f.bob,
+        )
+    };
+    assert_eq!(deploy(b.clone()).await?.status, StatusCode::CONFLICT);
+    let deployed = deploy(a.clone()).await?;
+    assert_eq!(deployed.status, StatusCode::OK, "{}", deployed.body);
+    let run = f
+        .ended(deployed.body["run_id"].as_str().ok_or("run")?)
+        .await?;
+    assert_eq!(run["state"], "passed", "{run}");
+    assert_eq!(
+        git(&f.origin, &["rev-parse", "main^{tree}"])?,
+        git(&f.origin, &["rev-parse", &format!("{a}^{{tree}}")])?
+    );
     Ok(())
 }
 

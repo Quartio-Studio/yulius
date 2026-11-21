@@ -585,7 +585,7 @@ watching, steering and unblocking.
     - A task asks for staging with `cd_deploy` once its delivery merged. Yulius deploys and
       verifies that tested revision in revision order, once per task.
     - A failing candidate leaves staging on its last verified release and tells the task.
-    - Production is promoted only from the revision staging verified.
+    - A person can deploy the revision staging verified while the next dev revision is being checked. [ADR-0425](decisions/0425-pin-a-production-deploy-to-verified-dev.md)
   - Each task tests locally first with the project's `[local]` deployment inside its own sandbox.
   - New projects with such a target are bootstrapped this way, and onboarded ones get one task
     that adopts it.

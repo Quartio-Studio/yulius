@@ -765,6 +765,17 @@ pub(crate) fn tested_checks_word(profile: &DeliveryProfile, word: &'static str) 
     }
 }
 
+/// A protected branch head or an earlier revision selected through the trusted CD mirror.
+#[derive(Clone, Copy)]
+pub(crate) enum PromotionSource<'a> {
+    Head(Option<&'a str>),
+    Verified {
+        sha: &'a str,
+        head: &'a str,
+        mirror: &'a Path,
+    },
+}
+
 fn pull_facts(pull: &GhPull) -> PullFacts<'_> {
     PullFacts {
         title: &pull.title,
@@ -5434,8 +5445,12 @@ impl App {
         actor: &UserRecord,
         token: &Secret,
         fetched: bool,
-        expected: Option<&str>,
+        source: PromotionSource<'_>,
     ) -> AppResult<PromoteResult> {
+        let expected = match source {
+            PromotionSource::Head(sha) => sha,
+            PromotionSource::Verified { sha, .. } => Some(sha),
+        };
         crate::playground::refuse_in_playground(sandbox, "Promotion")?;
         let moved = |at: &str| {
             AppError::Conflict(format!(
@@ -5445,12 +5460,44 @@ impl App {
                 at.get(..7).unwrap_or(at)
             ))
         };
-        let candidates: Vec<(TaskRecord, DeliveryRecord)> = self
-            .dlv_sandbox_deliveries(sandbox)
-            .await?
-            .into_iter()
-            .filter(|(_, record)| region(&record.stage, profile) == Some(Stage::Integration))
-            .collect();
+        let mut candidates = Vec::new();
+        for (task, record) in self.dlv_sandbox_deliveries(sandbox).await? {
+            if region(&record.stage, profile) != Some(Stage::Integration) {
+                continue;
+            }
+            if let PromotionSource::Verified { sha, mirror, .. } = source {
+                let mut landing = self
+                    .deps
+                    .store
+                    .landed_sha(&task.id, record.pr_number, None)
+                    .await?;
+                if landing.is_none()
+                    && let Some(number) = record.pr_number
+                {
+                    let pull = self
+                        .deps
+                        .github
+                        .get_pull(token, &sandbox.repo_owner, &sandbox.repo_name, number)
+                        .await?;
+                    let known = evidence::Landing::closed_pull(&pull);
+                    landing = self
+                        .deps
+                        .store
+                        .landed_sha(&task.id, Some(number), known.as_ref())
+                        .await?;
+                }
+                let landing = landing.ok_or_else(|| {
+                    AppError::Conflict(format!(
+                        "the merged revision of task #{} is unknown",
+                        task.number
+                    ))
+                })?;
+                if !self.deps.git.is_ancestor(mirror, &landing, sha).await? {
+                    continue;
+                }
+            }
+            candidates.push((task, record));
+        }
         for (task, record) in &candidates {
             if let Some(env) = pending_integration_environment(&record.stage, profile) {
                 return Err(AppError::Conflict(format!(
@@ -5475,13 +5522,26 @@ impl App {
                     profile.integration_branch
                 ))
             })?;
-        if expected.is_some_and(|sha| !sha.eq_ignore_ascii_case(&integration_sha)) {
+        let observed = match source {
+            PromotionSource::Head(sha) => sha,
+            PromotionSource::Verified { head, .. } => Some(head),
+        };
+        if observed.is_some_and(|sha| !sha.eq_ignore_ascii_case(&integration_sha)) {
             return Err(moved(&integration_sha));
         }
+        let integration_sha = expected.unwrap_or(&integration_sha).to_owned();
         let production_sha = github
             .branch_sha(token, owner, name, &profile.production_branch)
             .await?;
-        let relation = self.dlv_branch_relation(sandbox, profile, fetched).await;
+        let relation = match (source, production_sha.as_deref()) {
+            (PromotionSource::Verified { mirror, .. }, Some(prod)) => Some(
+                self.deps
+                    .git
+                    .ahead_behind(mirror, prod, &integration_sha)
+                    .await?,
+            ),
+            _ => self.dlv_branch_relation(sandbox, profile, fetched).await,
+        };
         let contained = production_sha.as_deref() == Some(integration_sha.as_str())
             || relation.is_some_and(|(ahead, _)| ahead == 0);
         if contained {
@@ -5571,6 +5631,39 @@ impl App {
                 ("promoted", integration_sha.clone())
             }
             PromoteMethod::MergeCommit => {
+                let from = if let PromotionSource::Verified { sha, .. } = source {
+                    let branch = format!("yulius/release/{sha}");
+                    if github
+                        .branch_sha(token, owner, name, &branch)
+                        .await?
+                        .is_none()
+                    {
+                        // Another request can create the same ref between the read and the POST.
+                        if let Err(err) =
+                            github.create_branch(token, owner, name, &branch, sha).await
+                            && github
+                                .branch_sha(token, owner, name, &branch)
+                                .await?
+                                .as_deref()
+                                != Some(sha)
+                        {
+                            return Err(err);
+                        }
+                    }
+                    if github
+                        .branch_sha(token, owner, name, &branch)
+                        .await?
+                        .as_deref()
+                        != Some(sha)
+                    {
+                        return Err(AppError::Conflict(format!(
+                            "promotion ref {branch} has changed"
+                        )));
+                    }
+                    branch
+                } else {
+                    profile.integration_branch.clone()
+                };
                 let existing = github
                     .list_pulls(token, owner, name, None)
                     .await?
@@ -5579,7 +5672,7 @@ impl App {
                         // A fork's `dev` is never this repository's promotion (SPEC-069).
                         is_open(p)
                             && !p.from_fork
-                            && p.head == profile.integration_branch
+                            && p.head == from
                             && p.base == profile.production_branch
                     });
                 match existing {
@@ -5601,7 +5694,7 @@ impl App {
                                 owner,
                                 name,
                                 &NewPull {
-                                    head: profile.integration_branch.clone(),
+                                    head: from.clone(),
                                     base: profile.production_branch.clone(),
                                     // The branch policy's release title (SPEC-069 BPL-005).
                                     title: format!(
@@ -5639,7 +5732,13 @@ impl App {
                         if expected.is_some_and(|sha| !sha.eq_ignore_ascii_case(&pull.head_sha)) {
                             return Err(moved(&pull.head_sha));
                         }
-                        self.dlv_check_policy(sandbox, profile, pull.number, &pull_facts(&pull))
+                        let mut facts = pull_facts(&pull);
+                        // The exact PR SHA and same-repository ref were checked above. This
+                        // ref represents a verified commit of the integration branch for policy.
+                        if matches!(source, PromotionSource::Verified { .. }) {
+                            facts.head = &profile.integration_branch;
+                        }
+                        self.dlv_check_policy(sandbox, profile, pull.number, &facts)
                             .await?;
                         if profile.require_checks {
                             self.dlv_checks_allow(sandbox, token, &pull.head_sha, false)
@@ -5755,7 +5854,7 @@ impl App {
                 actor,
                 token,
                 fetched,
-                head.as_deref(),
+                PromotionSource::Head(head.as_deref()),
             )
             .await;
         match promoted {
@@ -5833,7 +5932,7 @@ impl App {
             &ctx.user,
             &token,
             false,
-            head.as_deref(),
+            PromotionSource::Head(head.as_deref()),
         )
         .await
     }

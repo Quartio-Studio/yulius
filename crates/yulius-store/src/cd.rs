@@ -310,15 +310,16 @@ impl CdStore for SqliteStore {
         environment: &str,
         stage: CdStage,
         kind: CdRunKind,
+        finished_only: bool,
     ) -> AppResult<Option<CdRunRecord>> {
         let (sandbox, environment) = (sandbox.as_str().to_owned(), environment.to_owned());
         let (stage, kind) = (stage.as_str(), kind.as_str());
         self.call(move |c| {
             Ok(select(
                 c,
-                "sandbox_id = ?1 AND environment = ?2 AND stage = ?3 AND kind = ?4 \
+                "sandbox_id = ?1 AND environment = ?2 AND stage = ?3 AND kind = ?4 AND (?5 = 0 OR state != 'running') \
                  ORDER BY started_at DESC, rowid DESC LIMIT 1",
-                &[&sandbox, &environment, &stage, &kind],
+                &[&sandbox, &environment, &stage, &kind, &finished_only],
             )?
             .into_iter()
             .next())
@@ -498,18 +499,18 @@ mod tests {
         );
         let sandbox = SandboxId::parse("s1")?;
         let newest = store
-            .last_cd_run_of_kind(&sandbox, "dev", CdStage::Dev, CdRunKind::Drill)
+            .last_cd_run_of_kind(&sandbox, "dev", CdStage::Dev, CdRunKind::Drill, false)
             .await?;
         assert_eq!(newest.map(|r| r.id), Some("x1".to_owned()));
         assert!(
             store
-                .last_cd_run_of_kind(&sandbox, "dev", CdStage::Prod, CdRunKind::Drill)
+                .last_cd_run_of_kind(&sandbox, "dev", CdStage::Prod, CdRunKind::Drill, false)
                 .await?
                 .is_none()
         );
         assert!(
             store
-                .last_cd_run_of_kind(&sandbox, "dev", CdStage::Dev, CdRunKind::Rollback)
+                .last_cd_run_of_kind(&sandbox, "dev", CdStage::Dev, CdRunKind::Rollback, false)
                 .await?
                 .is_none()
         );

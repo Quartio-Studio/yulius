@@ -210,7 +210,7 @@ no force pushes/deletion and a successful `yulius/ci` status (published by the Y
 App). Feature branches must be up to date with `dev`. macOS has no Yulius runner: run
 `scripts/dev ci` on a Mac before promotion.
 [main rules](../../.github/rulesets/main.json) require merge-commit PRs and the same
-check; main admits only this repository's `dev`, which Yulius's merge gate checks. Both have zero
+check. A promotion comes from this repository's `dev` or a release ref pinned to its verified history by production CD ([ADR-0425](../decisions/0425-pin-a-production-deploy-to-verified-dev.md)). Both have zero
 approval requirements and no bypass actors.
 
 `main` does not require `dev` to include main's promotion-only merge commits:

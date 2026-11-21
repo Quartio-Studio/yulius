@@ -661,6 +661,21 @@ impl GitHubPort for FakeGitHub {
         self.record(token, format!("merge_pull #{number} {method}"));
         Ok(sha)
     }
+    async fn create_branch(
+        &self,
+        _: &Secret,
+        _: &str,
+        _: &str,
+        branch: &str,
+        sha: &str,
+    ) -> AppResult<()> {
+        let remote = self
+            .remote()
+            .ok_or_else(|| AppError::Upstream("no remote".into()))?;
+        remote
+            .create_branch(branch, sha)
+            .map_err(AppError::Conflict)
+    }
     async fn fast_forward(
         &self,
         token: &Secret,
@@ -1282,6 +1297,10 @@ pub trait FakeRemote: Send + Sync {
         method: &str,
         message: &str,
     ) -> Result<String, String>;
+    /// Creates a branch only if it does not exist.
+    fn create_branch(&self, _branch: &str, _sha: &str) -> Result<(), String> {
+        Err("creating a branch is unavailable".into())
+    }
     /// Moves `branch` to `sha` only as a fast-forward.
     fn fast_forward(&self, branch: &str, sha: &str) -> Result<(), String>;
     /// Deletes `branch`; `false` when it did not exist.

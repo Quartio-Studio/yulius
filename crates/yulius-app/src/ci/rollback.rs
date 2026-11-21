@@ -424,11 +424,40 @@ impl App {
         let seen = match self
             .deps
             .store
-            .last_cd_run_of_kind(&sandbox.id, drill_env, CdStage::Dev, CdRunKind::Drill)
+            .last_cd_run_of_kind(
+                &sandbox.id,
+                drill_env,
+                CdStage::Dev,
+                CdRunKind::Drill,
+                false,
+            )
             .await?
         {
             None => None,
             Some(run) if run.state == RunState::Running => {
+                let git = &self.deps.git;
+                let deploying = git.tree_of(repo, sha).await?;
+                if let Some(tree) = deploying
+                    && git
+                        .tree_of(repo, &run.sha)
+                        .await?
+                        .is_some_and(|active| active != tree)
+                    && let Some(proof) = self
+                        .deps
+                        .store
+                        .last_cd_run_of_kind(
+                            &sandbox.id,
+                            drill_env,
+                            CdStage::Dev,
+                            CdRunKind::Drill,
+                            true,
+                        )
+                        .await?
+                    && proof.state == RunState::Passed
+                    && git.tree_of(repo, &proof.sha).await?.as_ref() == Some(&tree)
+                {
+                    return Ok(None);
+                }
                 return Ok(Some(GateRefusal {
                     why: format!(
                         "the rollback drill of {drill_env} is running: deploy production once it \
@@ -816,6 +845,7 @@ impl App {
                 &drill_environment,
                 CdStage::Dev,
                 CdRunKind::Drill,
+                false,
             )
             .await?
         {

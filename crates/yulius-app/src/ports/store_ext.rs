@@ -500,6 +500,13 @@ pub trait CiStore: Send + Sync {
         sandbox: &SandboxId,
         limit: u32,
     ) -> AppResult<Vec<crate::ci::CiRunRecord>>;
+    /// Last passing integration branch revision other than the head that is currently checking.
+    async fn previous_green_branch_sha(
+        &self,
+        sandbox: &SandboxId,
+        branch: &str,
+        head: &str,
+    ) -> AppResult<Option<String>>;
     /// Bounded scheduler history, most recently admitted first. A new run may
     /// inherit an older queue position from the head it superseded.
     async fn ci_planning_runs(
@@ -728,6 +735,7 @@ pub trait CdStore: Send + Sync {
         environment: &str,
         stage: yulius_domain::cd::CdStage,
         kind: yulius_domain::rollback::CdRunKind,
+        finished_only: bool,
     ) -> AppResult<Option<crate::ci::cd::CdRunRecord>>;
     /// Records releases of an environment of `stage` (in order, the last the newest) and keeps
     /// the newest [`yulius_domain::rollback::KEEP_RELEASE_RECORDS`] of each part.
@@ -908,6 +916,13 @@ pub trait StagingStore: Send + Sync {
     /// The sandboxes and environments with a pending request, or a deploy that failed since
     /// `failed_since` (staging is restored to its last verified release after it).
     async fn staging_queues(&self, failed_since: Timestamp) -> AppResult<Vec<(SandboxId, String)>>;
+    /// Whether staging recorded a successful request for this exact revision.
+    async fn staging_verified(
+        &self,
+        sandbox: &SandboxId,
+        environment: &str,
+        revision: &str,
+    ) -> AppResult<bool>;
     /// The newest requests of `environment`, newest first.
     async fn recent_staging_requests(
         &self,

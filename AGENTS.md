@@ -31,6 +31,8 @@ the merged revision passes the full gate,
 [ADR-0410](docs/decisions/0410-the-full-suite-runs-on-the-merged-revision-beside-a-merge-first-staging-target.md),
 [ADR-0411](docs/decisions/0411-staging-changes-through-a-queue-of-tested-merged-revisions.md),
 [ADR-0415](docs/decisions/0415-merge-first-is-the-bootstrap-default-and-reaches-onboarded-projects-through-a-task.md))
+and a person can release the last verified dev revision while a newer verification runs
+([ADR-0425](docs/decisions/0425-pin-a-production-deploy-to-verified-dev.md)),
 and only a person deploys production
 ([ADR-0110](docs/decisions/0110-only-a-person-deploys-production.md)). Every `[cd.*]` that deploys
 also has `rollback` and `migrations`; production deploys wait for a passed rollback drill on dev

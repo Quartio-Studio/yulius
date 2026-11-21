@@ -1030,9 +1030,13 @@ The merge-first environment changes only through its staging queue (ADR-0411):
 - The deploy scripts of a merge-first target must be idempotent: a run lost to a restart is
   retried, up to three attempts.
 - A failed deploy that announced a rollback barrier is not restored; its request says so.
-- With a merge-first target, every promotion (a production deploy's, `POST …/delivery/promote`,
-  the profile's automatic one) is refused (409) until staging serves the integration head,
-  verified; the automatic promotion then runs once the staging queue verified it.
+- For a promoting production deployment, `GET …/cd` reports the release SHA in
+  `promotes_from`. Pass it as `expect` to `POST …/cd/{env}/deploy`. A changed candidate
+  returns 409. Merge-first staging supplies its verified revision. During a newer ordinary
+  dev deployment, rollback drill or integration branch CI run, CD can release the preceding
+  verified revision. [ADR-0425](decisions/0425-pin-a-production-deploy-to-verified-dev.md)
+- With a merge-first target, `POST …/delivery/promote` and the profile's automatic promotion
+  wait until staging has verified the integration head.
 - For every project, `POST …/delivery/promote` and the automatic promotion read the integration
   head and its `[cd.*]` tables through the verified CD mirror first, and answer 409 when they
   cannot be read: a fetch failure, or an invalid `yulius.toml` at the head.

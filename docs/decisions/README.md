@@ -455,6 +455,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0422 -->
 <!-- ADR 0423 -->
 <!-- ADR 0424 -->
+- [0425](0425-pin-a-production-deploy-to-verified-dev.md): Pin a production deploy to verified dev.
 <!-- ADR 0425 -->
 <!-- ADR 0426 -->
 <!-- ADR 0427 -->
