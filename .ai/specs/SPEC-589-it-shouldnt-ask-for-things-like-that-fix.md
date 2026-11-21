@@ -1,6 +1,6 @@
 ---
 yulius-task: b2d041b9-f438-4630-8b8c-a686f9c0ef0d
-status: done
+status: in-progress
 ---
 
 # SPEC-589 Continue authorized work at the end of a goal turn
@@ -40,6 +40,7 @@ Earlier user requests establish the ownership rule. Task #534 concerned automate
 - [x] Keep delivery and merge-train verification within the worker stack
 - [x] Preserve queued goal launch choices and the current Codex capacity pause
 - [x] Recover admitted goals across harnesses, stale moves and oversized diagnostics
+- [ ] Preserve the native evaluator on a goal’s first Stop
 
 ## Acceptance criteria
 

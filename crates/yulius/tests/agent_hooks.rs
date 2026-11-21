@@ -2130,6 +2130,39 @@ async fn goal_stop_continues_verification_after_merge_without_a_person() -> Test
 }
 
 #[tokio::test]
+async fn goal_stop_leaves_the_first_native_verdict_to_claude() -> TestResult {
+    for marker in ["launch-goal-pending", "typed-goal-pending"] {
+        let f = task_with_open_step(Agent::ClaudeCode, TaskMode::Goal, "Verify dev").await?;
+        let store = &f.h.app.deps.store;
+        let attempt = store.live_attempt(&f.task).await?.ok_or("live attempt")?;
+        let run_dir = std::path::Path::new(&attempt.run_dir);
+        std::fs::create_dir_all(run_dir)?;
+        std::fs::write(run_dir.join(marker), "")?;
+        let update = yulius_app::ports::store::TaskFieldUpdate {
+            gate_blocks: Some(2),
+            ..Default::default()
+        };
+        store.update_task(&f.task, &update, f.h.app.now()).await?;
+
+        let stop = stop_of(&f, Agent::ClaudeCode).await?;
+        assert!(stop["decision"].is_null(), "{marker}: {stop}");
+        assert_eq!(task_brief(&f).await?["shows"], "working");
+        assert_eq!(store.task(&f.task).await?.ok_or("task")?.gate_blocks, 2);
+
+        std::fs::remove_file(run_dir.join(marker))?;
+        let stop = stop_of(&f, Agent::ClaudeCode).await?;
+        assert_eq!(stop["decision"], "block");
+        assert!(
+            stop["reason"]
+                .as_str()
+                .is_some_and(|s| s.contains("Verify dev"))
+        );
+        assert_eq!(store.task(&f.task).await?.ok_or("task")?.gate_blocks, 3);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn goal_stop_bounds_spec_diagnostics_and_prompt_mode_keeps_the_full_report() -> TestResult {
     for mode in [TaskMode::Goal, TaskMode::Prompt] {
         let f = task_with_open_step(Agent::Codex, mode, "Fix the spec").await?;
