@@ -799,6 +799,9 @@ pub struct StatusRecord {
     pub ptyhost_pid: u32,
     /// Process id of the child (session leader of its own session).
     pub child_pid: u32,
+    /// Kernel process birth identity of the child, when available. Older hosts omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_birth: Option<String>,
     /// Wall-clock time the record was written, in Unix milliseconds. Both processes started at
     /// or before this instant, which lets reconciliation reject reused process ids.
     pub started_at_ms: i64,
@@ -1892,6 +1895,7 @@ mod tests {
             attempt_id: "att-1".into(),
             ptyhost_pid: 10,
             child_pid: 11,
+            child_birth: None,
             started_at_ms: 12,
             boot_id: "boot".into(),
             token_sha256: "b".repeat(64),

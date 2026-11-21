@@ -253,8 +253,13 @@ pub async fn spawn_host(
     let mut child = command.spawn().map_err(io_error("spawn ptyhost"))?;
     let host_pid = child.id().unwrap_or(0);
     let (sender, mut exit) = watch::channel(None);
+    let (supply_owner, mut owner_at_ready) =
+        tokio::sync::oneshot::channel::<Option<crate::reconcile::BuildOwner>>();
+    let cleanup_dir = run_dir.to_owned();
+    let cleanup_token = launch.token_sha256.clone();
     let waiter = tokio::spawn(async move {
         let status = child.wait().await;
+        let status_reaped = status.is_ok();
         let exit = status.map_or(
             HostProcessExit {
                 code: None,
@@ -265,26 +270,83 @@ pub async fn spawn_host(
                 signal: s.signal(),
             },
         );
-        let _ = sender.send(Some(exit));
-    });
-    match wait_ready(run_dir, &exit, timeout).await {
-        Ok(status) => Ok(SpawnedHost {
-            status,
-            run_dir: run_dir.to_path_buf(),
-            host_pid,
-            exit,
-            _waiter: waiter,
-        }),
-        Err(error) => {
-            if exit.borrow().is_none() {
-                if let Some(pid) = process::pid(host_pid) {
-                    let _ = signal_group(pid, Signal::SIGKILL);
+        let supplied = owner_at_ready.try_recv().ok();
+        // An abandoned or failed start can lose its control directory as soon
+        // as the caller observes exit. Capture first, while that record exists.
+        let at_exit = if status_reaped && supplied.as_ref().is_none_or(Option::is_none) {
+            let observation = blocking(move || {
+                crate::reconcile::BuildOwner::capture(&cleanup_dir, host_pid, &cleanup_token, None)
+            })
+            .await;
+            match observation {
+                Ok(Ok(owner)) => owner,
+                Ok(Err(error)) => {
+                    eprintln!("cannot capture exiting build ownership: {error}");
+                    None
                 }
-                let _ = tokio::time::timeout(KILL_WAIT, wait_exit(&mut exit)).await;
+                Err(error) => {
+                    eprintln!("cannot read exiting build ownership: {error}");
+                    None
+                }
             }
-            Err(error)
+        } else {
+            None
+        };
+        let _ = sender.send(Some(exit));
+        if status_reaped {
+            let owner = match supplied {
+                Some(owner) => owner.or(at_exit),
+                None => owner_at_ready.await.ok().flatten().or(at_exit),
+            };
+            if let Some(owner) = owner {
+                let _ = tokio::task::spawn_blocking(move || {
+                    if let Err(error) = owner.reclaim() {
+                        eprintln!("cannot reclaim stopped host's build scratch: {error}");
+                    }
+                })
+                .await;
+            }
         }
+    });
+    let ready = wait_ready(run_dir, &exit, timeout, host_pid, &launch.token_sha256).await;
+    if ready.is_err() && exit.borrow().is_none() {
+        if let Some(pid) = process::pid(host_pid) {
+            let _ = signal_group(pid, Signal::SIGKILL);
+        }
+        let _ = tokio::time::timeout(KILL_WAIT, wait_exit(&mut exit)).await;
     }
+    // Success and failure both transfer ownership before exposing the outcome
+    // to CI. A verified pre-ready exit can finish reclamation here.
+    let stopped_before_ready = ready.is_err()
+        && exit
+            .borrow()
+            .is_some_and(|s| s.code.is_some() || s.signal.is_some());
+    let owner_dir = run_dir.to_owned();
+    let owner_status = ready.as_ref().ok().cloned();
+    let token = launch.token_sha256.clone();
+    let owner = blocking(move || {
+        if stopped_before_ready {
+            crate::reconcile::reclaim_after_host_exit(&owner_dir, host_pid, &token)?;
+            Ok(None)
+        } else {
+            crate::reconcile::BuildOwner::capture(&owner_dir, host_pid, &token, owner_status)
+        }
+    })
+    .await;
+    match owner {
+        Ok(Ok(owner)) => {
+            let _ = supply_owner.send(owner);
+        }
+        Ok(Err(error)) => eprintln!("cannot retain build scratch ownership: {error}"),
+        Err(error) => eprintln!("cannot read build scratch ownership at startup: {error}"),
+    }
+    ready.map(|status| SpawnedHost {
+        status,
+        run_dir: run_dir.to_path_buf(),
+        host_pid,
+        exit,
+        _waiter: waiter,
+    })
 }
 
 async fn wait_exit(exit: &mut watch::Receiver<Option<HostProcessExit>>) -> HostProcessExit {
@@ -305,6 +367,8 @@ async fn wait_ready(
     run_dir: &Path,
     exit_rx: &watch::Receiver<Option<HostProcessExit>>,
     timeout: Duration,
+    host_pid: u32,
+    token: &str,
 ) -> Result<StatusRecord, SpawnError> {
     let deadline = Instant::now() + timeout;
     loop {
@@ -315,6 +379,7 @@ async fn wait_ready(
             (status, exit)
         })
         .await?;
+        let status = status.filter(|s| s.ptyhost_pid == host_pid && s.token_sha256 == token);
         if let Some(status) = &status
             && (UnixStream::connect(run_dir.join(SOCKET_FILE)).await.is_ok() || exit.is_some())
         {
@@ -358,6 +423,60 @@ mod tests {
             token_sha256: "0".repeat(64),
             linger_ms: 0,
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_host_killed_before_ready_reclaims_builds_before_ci_can_drop_its_record()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = tempfile::tempdir()?;
+        let run = fixture.path().join("control");
+        let build = fixture.path().join("build");
+        let host = fixture.path().join("host");
+        // Stand in for a host killed after publishing ownership but before status.json.
+        fs::write(
+            &host,
+            r#"#!/usr/bin/env python3
+import json, os, signal, sys
+from pathlib import Path
+control = Path(sys.argv[-1])
+launch = json.loads((control / "launch.json").read_text())
+build = Path(launch["env"]["FIXTURE_BUILD"])
+build.mkdir()
+token = launch["token_sha256"]
+(build / ".yulius-build-owner").write_text(token)
+(build / "payload").mkdir()
+(build / "payload" / "target").write_text("cold build")
+stat = build.stat()
+(control / "build-scratch.json").write_text(json.dumps(dict(version=launch["version"], path=str(build), host_pid=os.getpid(),
+    token_sha256=token, device=stat.st_dev, inode=stat.st_ino, boot_id=launch["env"]["FIXTURE_BOOT"])))
+os.kill(os.getpid(), signal.SIGKILL)
+"#,
+        )?;
+        fs::set_permissions(&host, fs::Permissions::from_mode(0o700))?;
+        let mut spec = launch();
+        spec.secret_env_names.clear();
+        spec.env
+            .insert("FIXTURE_BUILD".into(), build.display().to_string());
+        spec.env.insert(
+            "FIXTURE_BOOT".into(),
+            crate::current_boot_id().ok_or("boot id")?,
+        );
+        assert!(
+            spawn_host(&host, &run, &spec, &[], Duration::from_secs(5))
+                .await
+                .is_err()
+        );
+        assert!(
+            run.join("build-scratch.json").is_file(),
+            "the host published ownership"
+        );
+        fs::remove_dir_all(&run)?;
+        fs::create_dir(&run)?;
+        assert!(
+            !build.exists(),
+            "pre-ready host left a build after its error was returned"
+        );
+        Ok(())
     }
 
     #[test]

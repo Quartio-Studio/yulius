@@ -25,12 +25,9 @@ const HELP: &str = "Yulius engineering commands (scripts/dev <command>)
   security  Scan the branch's changes with Vidoc (vidoc-1), failing on open critical or high findings
             and on open medium ones in the changed lines;
             --all scans the whole repository (needs a Vidoc key; not in ci)
-  mutants   Mutation-test the Rust lines the branch changed, beside the first review (SPEC-506):
-            --base REF (origin/<integration branch>; the reviewed head for a fix's lines),
-            --minutes N (30), --mutant-seconds N (300), --jobs N (one per 8 mutants, 2 to 7,
-            at most a third of $YULIUS_CPUS; 2 without it), --tests FILTER (the product's tests
-            to run in place of those the branch changed); the last line is the summary for the
-            spec's Evidence";
+  mutants   On request, mutation-test changed Rust lines against --base REF (default origin/dev).
+            --minutes N, --mutant-seconds N, --jobs N and --tests FILTER configure the campaign.
+            The final line reports its baseline, test filter, budget and outcomes";
 
 /// The line that names a stage of a Yulius CI job (SPEC-137): Yulius times the stage from when
 /// it reads this line until the next one or the job's end.
