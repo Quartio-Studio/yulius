@@ -1,6 +1,6 @@
 ---
 yulius-task: bc5e9db9-59da-4313-bc95-0a804b81deab
-status: in-progress
+status: done
 ---
 
 # SPEC-604 An idle Antigravity conversation shows Waiting after a restart
@@ -31,7 +31,7 @@ The incident report describes two completed and merged tasks that occupied sessi
 - [x] Approve the fix for merge and staging
 - [x] Reproduce the merged composer contract failure
 - [x] Verify the shared composer correction alongside idle resume
-- [ ] Approve the corrected staging revision
+- [x] Approve the corrected staging revision
 
 ## Acceptance criteria
 
@@ -65,3 +65,5 @@ PR #1646 merged into dev at `13a632c40` after train run `21c0a1a2-1cb3-4932-b043
 All 11 Antigravity browser tests passed. A manual mutation marked the inherited effort as explicit. The new assertion failed on the inherited flag while the effective effort still read High. Restoring the mock made the same browser test pass.
 
 All twelve Rust UI contracts and the PTY idle-resume regression passed together on this branch with the shared correction. PR #1651 landed that same Rust change at `1f9314339`.
+
+Independent review approved the fix-forward at `2eb1ab6d9` with no findings. The reviewer independently ran all 11 Antigravity Chromium tests, the 12 Rust UI contracts and the idle-resume regression. The task delivery record identifies the follow-up merge and renewed staging request.
