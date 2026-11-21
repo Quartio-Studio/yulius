@@ -539,3 +539,52 @@ test('a conflicting pull request and a spec that does not say done keep a task o
     specDone: ['Done · PR #7 merged', 'done', null, null],
   });
 });
+
+test('a stopped turn shows its staging wait until the outcome arrives', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const rows = await browser.evaluate(async () => {
+    const statusUrl = '/assets/status.js';
+    const { taskInfo, activityLine } = await import(statusUrl);
+    const task = { activity: 'waiting', steps: { total: 2, done: 1 }, staging_wait: 'Waiting for the merged revision’s full suite' };
+    const pr = { state: 'merged', number: 8 };
+    return ['running', 'parked'].map(status => {
+      const row = { ...task, status };
+      const info = taskInfo(row, null, pr);
+      const held = taskInfo({ ...row, held_prompt: { text: 'choose' } }, null, pr);
+      return [info.group, activityLine(row, info), held.group,
+        taskInfo({ ...row, staging_wait: null }, null, pr).group];
+    });
+  });
+  const row = ['working', 'Waiting for the merged revision’s full suite', 'needs', 'needs'];
+  expect(rows).toEqual([row, row]);
+});
+
+test('a mounted task clears the staging wait when the outcome is delivered', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await firstShown(screen.getByRole('heading', { level: 1 }), '#12 Checkout API');
+  const strip = browser.locator('.strip-status');
+  await touchStudioTask(browser, 12, { activity: 'waiting', staging_wait: 'Waiting for staging to deploy and verify' });
+  await expect(strip).toHaveText(/Waiting for staging to deploy and verify/);
+  await touchStudioTask(browser, 12, { staging_wait: null });
+  await expect(strip).toHaveText(/Your turn/);
+  await expect(screen.getByRole('region', 'Needs you').getByRole('link', /Checkout API/)).toBeVisible();
+});
+
+test('a parked detail supplies and clears the staging wait in the shared list', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const observed = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const task = { id: 't1', sandbox_id: 's1', status: 'parked', activity: 'waiting', parked_needs_you: false };
+    const store = createStore({ get: async () => [task] });
+    await store.loadTasks('s1');
+    const wait = 'Waiting for staging to deploy and verify';
+    store.beginParkedDetail(task)({ ...task, staging_wait: wait });
+    const pending = store.findTask('t1').staging_wait ?? null;
+    store.beginParkedDetail(task)({ ...task, parked_needs_you: true });
+    const answered = store.findTask('t1').staging_wait ?? null;
+    store.stopEvents();
+    return [pending, answered];
+  });
+  expect(observed).toEqual(['Waiting for staging to deploy and verify', null]);
+});
