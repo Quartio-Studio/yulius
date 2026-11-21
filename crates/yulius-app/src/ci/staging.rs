@@ -848,6 +848,52 @@ impl App {
         )))
     }
 
+    /// What `delivery_status` tells `task` about its staging (SPEC-575 MFS-013), once its work
+    /// merged into a project with a merge-first target: that its request is due, or where its
+    /// newest request stands. `None` without a landing or a merge-first target, and when the
+    /// verified tables cannot be read now (`delivery_status` still answers).
+    pub(crate) async fn staging_note(
+        &self,
+        task: &crate::model::TaskRecord,
+        sandbox: &SandboxRecord,
+    ) -> Option<String> {
+        if sandbox.is_playground() || !self.deps.git.has_cd_mirror() {
+            return None;
+        }
+        let branch = delivery_profile(sandbox).integration_branch;
+        let store = &self.deps.store;
+        let landing = store.task_landings(&task.id, &branch).await.ok()?.pop()?;
+        let target = self.staging_target(sandbox).await.ok()?.1?;
+        let requests = store
+            .staging_requests_of(&sandbox.id, &target.name, Some(&task.id), &landing)
+            .await
+            .ok()?;
+        let lead = format!("Staging ([cd.{}], merge-first)", target.name);
+        let Some(request) = requests.last() else {
+            return Some(format!(
+                "{lead}: your merged revision {} has no staging request. Once your whole delivery merged (no steps open), ask once with cd_deploy {}: Yulius runs the full gate on that revision, then deploys it and tells you the outcome.",
+                short(&landing),
+                serde_json::json!({"environment": target.name}),
+            ));
+        };
+        let run = |label: &str, id: &Option<String>| {
+            id.as_deref()
+                .map_or_else(String::new, |id| format!(", {label} {id}"))
+        };
+        Some(format!(
+            "{lead}: request {} for revision {} is {}{}{}{}.",
+            request.id,
+            short(&request.revision),
+            request.state.as_str(),
+            run("CI run", &request.ci_run_id),
+            run("CD run", &request.cd_run_id),
+            request
+                .note
+                .as_deref()
+                .map_or_else(String::new, |n| format!(" ({n})")),
+        ))
+    }
+
     /// The revision production may be promoted from (SPEC-575 MFS-009): what staging serves,
     /// when a verified request deployed it.
     pub(crate) async fn staging_verified_revision(

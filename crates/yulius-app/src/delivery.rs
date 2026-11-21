@@ -6513,6 +6513,8 @@ impl App {
         let sandbox = self.dlv_sandbox_of(&task).await?;
         let profile = delivery_profile(&sandbox);
         let view = self.delivery_view(&task, None).await?;
+        // A merged task of a merge-first project asks for staging (SPEC-575 MFS-013).
+        let staging = self.staging_note(&task, &sandbox).await;
         let before = args["before"].as_str();
         let run_id = args["run_id"].as_str();
         let selected_sha = args["merged_sha"].as_str();
@@ -6547,6 +6549,7 @@ impl App {
             "next_actions_for_people": view.next_actions,
             "blocked": view.blocked,
             "notes": view.notes,
+            "staging": staging,
             "checks_access": view.checks_access.as_ref().map(|a| &a.message),
             "review_rounds": view.review_rounds,
             "evidence": evidence.map(|mut evidence| {
