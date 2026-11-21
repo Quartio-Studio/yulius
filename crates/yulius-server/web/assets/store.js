@@ -267,11 +267,15 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     // A detail or lifecycle event that started later supplies the parked state.
     // The list can still carry a new title or discover an open PR.
     if (listed.parked_pr) prOrder.set(listed.parked_pr, snapshotOrder);
+    if (typeof listed.parked_needs_you === 'boolean') verifiedOrder.set(listed, snapshotOrder);
     const priorOrder = rowOrder.get(prior) ?? 0;
     const keepPrior = priorOrder > snapshotOrder && prior?.status === 'parked' && listed.status === 'parked';
     const order = keepPrior ? priorOrder : snapshotOrder;
     let row = listed;
-    if (keepPrior) row = { ...listed, ...parkedFacts(prior) };
+    if (keepPrior) {
+      row = { ...listed, ...parkedFacts(prior) };
+      verifiedOrder.set(row, verifiedOrder.get(prior) ?? 0);
+    }
     const fallbackOrder = Math.max(failureOrder, unverified.get(prior) ?? 0);
     if (row.status === 'parked' && fallbackOrder >= order) {
       row = awaitingVerification(row, keepPrior ? listed : prior, fallbackOrder);
@@ -311,6 +315,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       const row = map?.get(detail.id);
       if (detail.status !== 'parked') return view;
       if (detail.parked_pr) prOrder.set(detail.parked_pr, order);
+      if (typeof detail.parked_needs_you === 'boolean') verifiedOrder.set(detail, order);
       if (rowOrder.get(row) > order) {
         // Preserve the newer event's work and decisions. An older detail may
         // still identify the open PR that an unverified update could not name.
@@ -321,6 +326,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       }
       let updated = { ...row, ...parkedFacts(detail), id: detail.id, sandbox_id: detail.sandbox_id };
       const hintOrder = pullWatch.get(detail.sandbox_id)?.changeBeforeParkedRows ?? 0;
+      verifiedOrder.set(updated, verifiedOrder.get(detail) ?? verifiedOrder.get(row) ?? 0);
       const fallbackOrder = Math.max(hintOrder, unverified.get(row) ?? 0, failedWatchOrder.get(map) ?? 0);
       if (fallbackOrder > order || typeof detail.parked_needs_you !== 'boolean') {
         updated = awaitingVerification(updated, row, Math.max(order, fallbackOrder));
@@ -557,7 +563,8 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     if (alreadyWaiting) prOrder.set(task.parked_pr, prOrder.get(pr) ?? 0);
     let updated = task;
     if (pr && !alreadyWaiting) updated = { ...task, parked_needs_you: true, parked_pr: pr };
-    else if (snapshot?.parked_needs_you === true && task.parked_needs_you !== true) {
+    else if (snapshot?.parked_needs_you === true && task.parked_needs_you !== true &&
+        (verifiedOrder.get(task) ?? 0) <= Math.max(verifiedOrder.get(snapshot) ?? 0, unverified.get(snapshot) ?? 0)) {
       // Verification can time out before discovering which PR blocks Done.
       updated = { ...task, parked_needs_you: true };
     }
@@ -566,8 +573,8 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     }
     if (updated !== task) {
       if (rowOrder.has(task)) rowOrder.set(updated, rowOrder.get(task));
-      if (verifiedOrder.has(task)) verifiedOrder.set(updated, verifiedOrder.get(task));
     }
+    verifiedOrder.set(updated, Math.max(verifiedOrder.get(task) ?? 0, verifiedOrder.get(snapshot) ?? 0));
     unverified.set(updated, order);
     return updated;
   }

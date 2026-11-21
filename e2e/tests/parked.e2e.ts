@@ -1947,3 +1947,41 @@ test('a successful parked detail still updates the terminal when resync reads fa
   await expect(browser.locator('.strip-status')).toHaveText(/Your turn.*parked/);
   await expect(screen.getByRole('region', 'Needs you').getByRole('link', /Improve the code/)).toBeVisible();
 });
+
+test('parked verification keeps a confirmed closure through old list fallback and concurrent rename replay', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const storeModule = '/assets/store.js', statusModule = '/assets/status.js';
+    const { createStore } = await import(storeModule);
+    const { taskInfo } = await import(statusModule);
+    const results = [];
+    for (const olderList of [true, false]) {
+      const initial = { id: 'p', sandbox_id: 's', status: 'parked', activity: 'done', parked_needs_you: false };
+      const open = { ...initial, parked_needs_you: true, parked_pr: { number: 42, open: true } };
+      const closed = { ...initial, parked_pr: { number: 42, open: false } };
+      const gate = Promise.withResolvers<void>();
+      let reads = 0;
+      const store = createStore({ get: async () => {
+        if (++reads === 1) return [initial];
+        if (reads === 2) { await gate.promise; return [olderList ? open : closed]; }
+        throw new Error('watch unavailable');
+      } });
+      await store.loadTasks('s');
+      const detail = olderList ? undefined : store.beginParkedDetail();
+      const list = store.loadTasks('s', true);
+      if (olderList) store.beginParkedDetail()(closed);
+      else {
+        store.upsertTask({ ...initial, title: 'Renamed', parked_needs_you: undefined });
+        gate.resolve();
+        await list;
+      }
+      await store.loadTasks('s', true);
+      if (olderList) { gate.resolve(); await list; }
+      else detail(open);
+      const row = store.findTask('p');
+      results.push([taskInfo(row, null, store.pullForStatus(row)).group, row.parked_pr?.number, row.parked_pr?.open]);
+    }
+    return results;
+  });
+  expect(seen).toEqual([['done', 42, false], ['done', 42, false]]);
+});
