@@ -149,6 +149,167 @@ fn temp() -> Result<(tempfile::TempDir, PathBuf), Box<dyn std::error::Error>> {
     Ok((dir, data))
 }
 
+async fn restart_fixture(
+    data: &Path,
+) -> Result<(Arc<App>, SandboxId, UserId, TaskId, String), Box<dyn std::error::Error>> {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let agent = FakeAgentOptions {
+        transcript: true,
+        answers_first_message: true,
+        resume_prompts: true,
+        interrupts: true,
+        ..Default::default()
+    };
+    let app = build_full(data, Some(&fake), agent, 1)?;
+    let (sandbox, user) = seed_records(&app).await?;
+    seed_repo(data, &sandbox)?;
+    connect_codex(&app).await?;
+    let id = new_codex_task(&app, &sandbox, &user, "Original request").await?;
+    wait_for(
+        "the original Codex conversation",
+        Duration::from_secs(30),
+        || async {
+            app.deps
+                .store
+                .provider_sessions(&id)
+                .await
+                .is_ok_and(|rows| !rows.is_empty())
+                && screen_contains(&app, &id, "ECHO: Original request").await
+        },
+    )
+    .await?;
+    let session = app
+        .deps
+        .store
+        .provider_sessions(&id)
+        .await?
+        .pop()
+        .ok_or("session")?
+        .session_id;
+    Ok((app, sandbox, user, id, session))
+}
+
+#[test]
+fn continuing_a_stopped_codex_task_submits_one_turn_when_its_slot_opens() -> TestResult {
+    let (_dir, data) = temp()?;
+    runtime()?.block_on(async {
+        let (app, sandbox, user, id, session) = restart_fixture(&data).await?;
+        let ctx = admin_ctx(&app, &user).await?;
+        app.send_input(&id, b"/work 60000 Unfinished turn\r")
+            .await?;
+        wait_for("the turn being stopped", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "WORKING")
+        })
+        .await?;
+        support::stop_tasks(&app, &[&id]).await?;
+        let blocker = new_codex_task(&app, &sandbox, &user, "Occupy the slot").await?;
+        wait_for("the occupied slot", Duration::from_secs(30), || {
+            screen_contains(&app, &blocker, "ECHO: Occupy the slot")
+        })
+        .await?;
+        let queued = app
+            .continue_task(&ctx, id.as_str(), &Default::default())
+            .await?;
+        assert_eq!(queued.status, "queued");
+        let kept = app
+            .deps
+            .store
+            .queued_start(&id)
+            .await?
+            .ok_or("queued restart")?;
+        let prompt = kept.prompt.ok_or("Continue queued an empty Codex resume")?;
+        support::stop_tasks(&app, &[&blocker]).await?;
+        wait_for("the resumed Codex answer", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "ECHO: Continue")
+        })
+        .await?;
+        let run = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("resumed run")?;
+        assert_eq!(run.provider_session_id.as_deref(), Some(session.as_str()));
+        let sessions = data
+            .join("sandboxes")
+            .join(sandbox.as_str())
+            .join("codex/sessions");
+        let path = app
+            .deps
+            .harness
+            .find_codex_rollout(&sessions, &session)?
+            .ok_or("rollout")?;
+        let history = std::fs::read_to_string(path)?;
+        assert_eq!(
+            history
+                .lines()
+                .filter(|line| line.contains(r#""role":"user""#) && line.contains(&prompt))
+                .count(),
+            1
+        );
+        support::stop_tasks(&app, &[&id]).await
+    })
+}
+
+#[test]
+fn reopening_a_closed_codex_conversation_reports_waiting_until_input() -> TestResult {
+    let (_dir, data) = temp()?;
+    runtime()?.block_on(async {
+        let (app, _, user, id, session) = restart_fixture(&data).await?;
+        let ctx = admin_ctx(&app, &user).await?;
+        app.close_task_and_wait(&id).await?;
+        let reopened = app
+            .continue_task(&ctx, id.as_str(), &Default::default())
+            .await?;
+        assert_eq!(reopened.status, "running");
+        assert_eq!(reopened.activity.as_deref(), Some("waiting"));
+        let run = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("reopened run")?;
+        assert_eq!(run.provider_session_id.as_deref(), Some(session.as_str()));
+        app.send_input(&id, b"/work 60000 Next turn\r").await?;
+        wait_for("the new turn", Duration::from_secs(30), || async {
+            screen_contains(&app, &id, "WORKING").await
+                && task(&app, &id)
+                    .await
+                    .is_ok_and(|t| t.activity == Some(yulius_domain::task::Activity::Working))
+        })
+        .await?;
+        app.send_input(&id, &[3]).await?;
+        wait_for("the interrupted turn", Duration::from_secs(30), || async {
+            screen_contains(&app, &id, "INTERRUPTED").await
+                && task(&app, &id)
+                    .await
+                    .is_ok_and(|t| t.activity == Some(yulius_domain::task::Activity::Waiting))
+        })
+        .await?;
+        support::stop_tasks(&app, &[&id]).await
+    })
+}
+
+#[test]
+fn continuing_a_codex_task_stopped_before_launch_delivers_its_original_request() -> TestResult {
+    let (_dir, data) = temp()?;
+    runtime()?.block_on(async {
+        let (app, sandbox, user, blocker, _) = restart_fixture(&data).await?;
+        let id = new_codex_task(&app, &sandbox, &user, "Never launched").await?;
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::Queued);
+        support::stop_tasks(&app, &[&id]).await?;
+        support::stop_tasks(&app, &[&blocker]).await?;
+        let ctx = admin_ctx(&app, &user).await?;
+        app.continue_task(&ctx, id.as_str(), &Default::default())
+            .await?;
+        wait_for("the full original request", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "ECHO: Never launched: answer with an echo")
+        })
+        .await?;
+        support::stop_tasks(&app, &[&id]).await
+    })
+}
+
 /// SPEC-503 CDX-002, CDX-003, CDX-004, CDX-006, AC-503-1/3/5: a Codex task runs Codex on a Codex
 /// account (never the Claude one) in `<sandbox>/codex/<account>`, whose `auth.json`, `config.toml`
 /// and `hooks.json` are private and whose `sessions` is the sandbox's; its session is learnt from
