@@ -2057,3 +2057,33 @@ test('a failed watch keeps a verified closure ahead of its older failing Git chi
   });
   expect(seen).toEqual([false, 'done', 'failure']);
 });
+
+test('an identical parked list verifies the mounted terminal before a held failing Git overview returns', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const storeModule = '/assets/store.js', statusModule = '/assets/status.js';
+    const { createStore } = await import(storeModule);
+    const { taskInfo } = await import(statusModule);
+    const healthy = { id: 'p', sandbox_id: 's', status: 'parked', activity: 'done',
+      parked_needs_you: false, parked_pr: { number: 42, open: true } };
+    const gitStarted = Promise.withResolvers<void>(), gitRelease = Promise.withResolvers<void>(), gitFinished = Promise.withResolvers<void>();
+    const store = createStore({ get: async (path: string) => {
+      if (!path.endsWith('/git')) return [structuredClone(healthy)];
+      gitStarted.resolve();
+      await gitRelease.promise;
+      return { tasks: [{ task_id: 'p', pr: { number: 42, state: 'open', checks: 'failure' } }] };
+    } });
+    await store.loadTasks('s');
+    const current = store.beginParkedDetail()(structuredClone(healthy), healthy);
+    store.on('pulls', () => gitFinished.resolve());
+    const stop = store.watchPulls('s');
+    await gitStarted.promise;
+    await store.loadTasks('s', true);
+    gitRelease.resolve();
+    await gitFinished.promise;
+    const group = (row: typeof healthy) => taskInfo(row, null, store.pullForStatus(row)).group;
+    stop();
+    return [group(current), group(store.findTask('p')), store.pullsOf('s').get('p').checks];
+  });
+  expect(seen).toEqual(['done', 'done', 'failure']);
+});

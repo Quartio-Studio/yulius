@@ -135,6 +135,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   const listOrder = new WeakMap();
   const failedWatchOrder = new WeakMap();
   const rowOrder = new WeakMap();
+  const detailRows = new WeakMap(); // private terminal summary → observed row
   const verifiedGroup = new WeakMap(); // last verifier answer, before a failed read inferred Needs you
   const overviewOrder = new WeakMap();
   const prOrder = new WeakMap();
@@ -316,8 +317,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     const summary = { ...view, ...parkedFacts(row) };
     // The terminal may discover the park before a list row does. Its private
     // view needs the order of that verification when comparing with a Git chip.
-    rowOrder.set(summary, rowOrder.get(row) ?? 0);
-    if (unverified.has(row)) unverified.set(summary, unverified.get(row));
+    detailRows.set(summary, row);
     return summary;
   }
 
@@ -539,8 +539,16 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   function pullForStatus(task) {
     const pulls = pullsOf(task.sandbox_id);
     const pr = pulls.get(task.id);
-    // Mounted views add detail-only fields to a copy of the list row.
-    const row = rowOrder.has(task) ? task : state.tasks.get(task.sandbox_id)?.get(task.id);
+    // An identical watched list can verify the mounted task again without
+    // emitting an update. Use that observation when its parked facts match.
+    const listed = state.tasks.get(task.sandbox_id)?.get(task.id);
+    const observed = detailRows.get(task);
+    let row = rowOrder.has(task) ? task : listed;
+    if (observed) {
+      const matches = listed?.status === 'parked' && listed.parked_needs_you === task.parked_needs_you &&
+        listed.parked_pr?.number === task.parked_pr?.number && listed.parked_pr?.open === task.parked_pr?.open;
+      row = matches && rowOrder.get(listed) >= rowOrder.get(observed) ? listed : observed;
+    }
     if (pr?.state === 'open' && task.parked_needs_you === false && task.parked_pr?.number === pr.number &&
         row?.parked_needs_you === false && row.parked_pr?.number === pr.number &&
         ((!unverified.has(row) && rowOrder.get(row) > (overviewOrder.get(pulls) ?? 0)) ||

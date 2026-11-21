@@ -73,6 +73,8 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- At `55dcf25ba`, a healthy watched list returned the same fields while an earlier failing Git overview was pending. The terminal showed Needs you and the sidebar showed Done after the Git reply. The regression reproduces both groups and the chip in one store. The terminal now considers that newer matching verification even when the list had no changed fields to publish.
+
 - On the dev base the mounted terminal showed PR #520 failing after the detail verified recovery, and showed Done for merged #520 after a successful detail found open #521 during a failed resync. The initial publication change passed 81 parked, progress and attention cases and 25 Done cases. Review of `7ca1b7e56` reproduced an inherited open PR surviving a confirmed closure in both the detail and watched-list reply orders. A failed watch also restored the older failing chip as the group reason. The Chromium regressions check the actual group and PR identity, retaining a concurrent human decision and the visible Git chip. The store now keeps the verifier’s answer separately from its temporary open-PR fallback.
 
 - PR #1552 landed on dev at `71ee007e9`. Yulius CI run `6b56f233-daf0-4290-84f9-a5250a12eb8b` passed quality, both Rust shards and browser e2e on PR head `3f7f153a4`. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe704d71f9/delivery/evidence/71ee007e98464f0b9156846fc76fad4bcc3daf8c)
