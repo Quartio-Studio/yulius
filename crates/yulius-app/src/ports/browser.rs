@@ -281,7 +281,13 @@ pub trait BrowserSession: Send + Sync {
     /// User-action and connection notifications.
     fn notices(&self) -> Box<dyn BrowserNotices>;
     /// Applies one viewer message (open, navigate, activate, close, input, viewport).
-    async fn apply_viewer(&self, message: ViewerClientMsg) -> Result<(), BrowserFailure>;
+    /// A primary press may return a one-shot receiver for an offer ID when the display clipboard changes.
+    async fn apply_viewer(
+        &self,
+        message: ViewerClientMsg,
+    ) -> Result<Option<tokio::sync::oneshot::Receiver<u32>>, BrowserFailure>;
+    /// Reads the display's offered text following this viewer's explicit acceptance.
+    async fn accept_page_copy(&self, offer: u32) -> Option<String>;
     /// Subscribes to a tab's JPEG screencast (the fallback view).
     async fn frames(&self, tab: &TabId) -> Result<Box<dyn BrowserFrames>, BrowserFailure>;
     /// Subscribes to the display's H.264 video; an error says why there is none (no display,

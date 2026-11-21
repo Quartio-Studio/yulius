@@ -13,7 +13,7 @@ const mockTask = (n: number) => (window as unknown as { __yuliusMock: { tasks: M
 const openedNumber = () => Number(location.hash.match(/\/t\/(\d+)$/)?.[1]);
 
 test('When I decide prepares a task, and Start now in its view starts it (AC-PRP-6)', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio'));
+  await app.open(mock('/s/studio', '&codex=1'));
   await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
   await screen.getByRole('button', /Run after: Start now/).click();
   await expect(screen.getByRole('menuitemradio', /^At a time…/)).toBeVisible();

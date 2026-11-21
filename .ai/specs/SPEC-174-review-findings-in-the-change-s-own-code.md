@@ -19,10 +19,10 @@ lets an agent defer a finding in its own change's code to an issue:
 
 1. A finding in code or tests the change added or modified is fixed in the same pull request,
    test-first, and never becomes a follow-up issue (a test that cannot fail, a weak or missing
-   assertion, a race, a missing regression test included). The 3-round limit does not excuse it:
-   keep fixing, split the change, or stop and ask a person.
-2. Only a pre-existing bug, a flaky test the change did not cause, or a cosmetic nit left at the
-   round limit becomes a new issue, which says why it is outside the change, with the evidence.
+   assertion, a race, a missing regression test included). The agent keeps fixing or splits the work
+   within scope and obtains independent re-review through approval. [SPEC-588](SPEC-588-it-shouldn-t-ask-me-for-this-agents-must.md)
+2. Only a pre-existing bug, a flaky test the change did not cause, or a cosmetic nit left after
+   three rounds becomes a new issue, which says why it is outside the change, with the evidence.
 3. The reviewer classifies each finding as own code or pre-existing; the pull request answers every
    finding; deferring an own-code finding makes the verdict request changes.
 

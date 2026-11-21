@@ -31,7 +31,7 @@ function lastPrompt(browser: Browser): Promise<string> {
 }
 
 test('an image pasted mid-text stays there, deletes and comes back, moves, and reaches the task in place', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio'));
+  await app.open(mock('/s/studio', '&codex=1'));
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.click();
   await browser.keyboard.type('This part ');
@@ -519,7 +519,7 @@ test('an uploaded image shows in the tray, opens large from there, and sits in t
 });
 
 test('× takes a file out of the tray and the text in one undo step; a deleted placeholder keeps the file, sent after the text', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio'));
+  await app.open(mock('/s/studio', '&codex=1'));
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.click();
   await browser.keyboard.type('Look at ');
@@ -622,7 +622,7 @@ test('the tray wraps at phone width and an older draft fills it', async ({ app, 
 
 // SPEC-150 review round 1: the tray is part of the prompt's undo history.
 test('the tray is part of undo: × on a file not in the text comes back, undo keeps the tray order, and a redone × is not sent', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio'));
+  await app.open(mock('/s/studio', '&codex=1'));
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.click();
   await browser.keyboard.type('See ');
@@ -663,7 +663,7 @@ test('the tray is part of undo: × on a file not in the text comes back, undo ke
 
 // SPEC-150 review round 2: an upload that ends after its paste was undone is not attached.
 test('an upload ending after its paste was undone stays out of the tray until the paste is redone', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio'));
+  await app.open(mock('/s/studio', '&codex=1'));
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.click();
   await browser.keyboard.type('One ');
@@ -689,7 +689,7 @@ test('an upload ending after its paste was undone stays out of the tray until th
 
 // SPEC-150 review round 3: typing after the undo drops the paste's redo step; the upload stays out.
 test('an upload ending after its paste was undone and typed over stays out of the tray and is not sent', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio'));
+  await app.open(mock('/s/studio', '&codex=1'));
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.click();
   await browser.keyboard.type('One ');
@@ -733,7 +733,7 @@ test('undoing a paste takes its upload out of the tray, and an upload whose plac
 // #513 (SPEC-225): an IME composition that changed nothing (cancelled with Esc) is not typing, so
 // the next keystroke does not take the paste's undo step over and the upload stays with it.
 test('a composition that changed nothing after a paste does not attach its upload to the steps before it', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio'));
+  await app.open(mock('/s/studio', '&codex=1'));
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.click();
   await browser.keyboard.type('One ');
