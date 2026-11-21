@@ -872,6 +872,9 @@ impl TaskRuntime {
 /// Longest gap between live metrics saves of a run in progress (#31).
 const LIVE_METRICS_MS: i64 = 30_000;
 
+/// Opens the next turn in a saved session whose work was stopped.
+pub(crate) const CONTINUE_TASK_PROMPT: &str = "Continue the task exactly where you left off.";
+
 /// How the next run starts.
 #[derive(Debug, Clone)]
 pub enum RunStart {
@@ -2318,6 +2321,20 @@ impl App {
                 )
             }
         };
+        let activity = match (harness, &mode) {
+            (
+                Harness::Codex,
+                SessionMode::Resume {
+                    prompt,
+                    continue_interrupted: false,
+                    ..
+                },
+            ) if prompt.as_deref().unwrap_or_default().is_empty() => {
+                rest.map_or(Activity::Waiting, |rest| rest.activity)
+            }
+            (Harness::Codex, _) => Activity::Working,
+            _ => rest.map_or(Activity::Working, |rest| rest.activity),
+        };
         let goal_in_prompt = sets_goal(&mode);
         // A continued turn opens the run like a first message: the goal is set after its Stop.
         let opens_with_turn = goal_mode
@@ -2711,9 +2728,6 @@ impl App {
         } else {
             TaskEvent::Spawned
         };
-        // A run works from its launch on, except a session that was idle and got nothing typed:
-        // it is idle again (SPEC-468 CCF-008).
-        let activity = rest.map_or(Activity::Working, |rest| rest.activity);
         if let Ok(next) = current.status.apply(event) {
             store
                 .transition_task(

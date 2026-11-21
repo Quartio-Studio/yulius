@@ -18,7 +18,7 @@ use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::{StepRecord, TaskMode, TaskOrigin, TaskRecord, UserRecord};
 use crate::ports::store::TaskFieldUpdate;
-use crate::supervisor::{RunStart, branch_for};
+use crate::supervisor::{CONTINUE_TASK_PROMPT, RunStart, branch_for};
 use crate::tasks::title_from_prompt;
 
 /// Maximum prompt size.
@@ -734,6 +734,18 @@ impl App {
                 Some(_) => {}
             }
         }
+        // A bare Codex resume only reopens history. Carry the next turn through the queue
+        // with this request. Without a saved session, the launch uses the original request.
+        let prompt = match (task.harness, task.status) {
+            (Harness::Codex, TaskStatus::Stopped(_) | TaskStatus::Failed(_)) => self
+                .deps
+                .store
+                .provider_sessions(&task.id)
+                .await?
+                .last()
+                .map(|_| CONTINUE_TASK_PROMPT.to_owned()),
+            _ => None,
+        };
         // A person continues it: whatever its agent asked a person before is past (SPEC-134).
         self.end_needs_you(&task.id).await;
         if task.archived_at.is_some() {
@@ -750,7 +762,7 @@ impl App {
                 )
                 .await?;
         }
-        self.start_run(&task.id, RunStart::Resume { prompt: None }, account)
+        self.start_run(&task.id, RunStart::Resume { prompt }, account)
             .await?;
         // Its waiting successors wait for it again (TSK-012).
         self.unblock_successors(&task.id).await;

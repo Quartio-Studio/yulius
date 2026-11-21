@@ -9,6 +9,8 @@ status: in-progress
 
 When a person restarts a stopped Codex task, its work resumes without a second message through the Superagent. A Codex conversation reopened for input shows its actual activity.
 
+Fixes #1601.
+
 ## Context
 
 In the screenshot, task #34 has an unfinished plan and an interrupted conversation. The Superagent reports that restarting left the prompt empty. The capture also shows a subsequent message already in a new turn. The other sandbox's earlier live state is unavailable here.
@@ -25,7 +27,7 @@ The page's Continue action and the Superagent's `task_restart` share `continue_t
 
 - [x] Trace and reproduce the stopped Codex task
 - [x] Prove the interruption and resume behavior with regression tests
-- [ ] Keep task activity and resumed work in sync with Codex
+- [x] Keep task activity and resumed work in sync with Codex
 - [ ] Verify and independently review the fix
 - [ ] Record verification evidence for the merge queue
 
@@ -46,3 +48,5 @@ Use the ended task's state to distinguish the requested restart of stopped work 
 ## Evidence
 
 On dev at `86eb47202`, the stopped-task regression found an empty queued resume. Reopening a closed conversation returned `working`. The task stopped before its first launch received its full request. [Issue #1601](https://github.com/Quartio-Studio/yulius/issues/1601)
+
+The corrected supervisor passed all 132 Codex and parking integration tests in nextest run `dd248435-1a69-42a0-8672-7dab0545ab96`. The new cases verified one continuation in the original rollout after a queued restart, the original request after a pre-launch stop, recovery from a failed launch, and Waiting → Working → Waiting across input and interruption. The PTYs and application are real. The Codex process and account are fixtures.

@@ -18,7 +18,7 @@ use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::{PauseKind, TaskRecord};
 use crate::needs_you::NeedsYouRecord;
-use crate::supervisor::RunStart;
+use crate::supervisor::{CONTINUE_TASK_PROMPT, RunStart};
 
 /// What a task of `provider` with nothing usable left is asked for (MOV-006). The request ends by
 /// itself when the task gets a subscription again.
@@ -191,7 +191,7 @@ impl App {
             Some(pause) if pause.kind == PauseKind::Prompt => pause.continuation,
             Some(pause) if pause.kind == PauseKind::Turn => self.stop_continuation(&task).await,
             _ if task.status == TaskStatus::Running && task.activity == Some(Activity::Working) => {
-                Some("Continue the task exactly where you left off.".into())
+                Some(CONTINUE_TASK_PROMPT.into())
             }
             _ => None,
         };

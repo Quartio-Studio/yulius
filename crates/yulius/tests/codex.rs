@@ -310,6 +310,29 @@ fn continuing_a_codex_task_stopped_before_launch_delivers_its_original_request()
     })
 }
 
+#[test]
+fn retrying_a_failed_codex_restart_resumes_the_same_conversation() -> TestResult {
+    let (_dir, data) = temp()?;
+    runtime()?.block_on(async {
+        let (app, _, user, id, session) = restart_fixture(&data).await?;
+        let ctx = admin_ctx(&app, &user).await?;
+        support::stop_tasks(&app, &[&id]).await?;
+        let db = rusqlite::Connection::open(data.join("yulius.db"))?;
+        db.execute_batch("CREATE TRIGGER reject_launch BEFORE INSERT ON attempts BEGIN SELECT RAISE(FAIL, 'injected launch failure'); END")?;
+        let failed = app.continue_task(&ctx, id.as_str(), &Default::default()).await;
+        assert!(failed.is_err());
+        assert!(matches!(task(&app, &id).await?.status, TaskStatus::Failed(_)));
+        db.execute_batch("DROP TRIGGER reject_launch")?;
+        app.continue_task(&ctx, id.as_str(), &Default::default()).await?;
+        wait_for("the retried continuation", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "ECHO: Continue")
+        }).await?;
+        let run = app.deps.store.live_attempt(&id).await?.ok_or("retried run")?;
+        assert_eq!(run.provider_session_id.as_deref(), Some(session.as_str()));
+        support::stop_tasks(&app, &[&id]).await
+    })
+}
+
 /// SPEC-503 CDX-002, CDX-003, CDX-004, CDX-006, AC-503-1/3/5: a Codex task runs Codex on a Codex
 /// account (never the Claude one) in `<sandbox>/codex/<account>`, whose `auth.json`, `config.toml`
 /// and `hooks.json` are private and whose `sessions` is the sandbox's; its session is learnt from

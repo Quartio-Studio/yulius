@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- Continue now gives a stopped Codex task its next turn in the saved conversation. A Codex conversation reopened at an empty prompt shows Waiting. [SPEC-590](../.ai/specs/SPEC-590-look-bro-the-taks-says-it-working-but-th.md)
+
 - Agents now fix findings and obtain independent re-review through approval without asking the task owner to authorize another round. [SPEC-588](../.ai/specs/SPEC-588-it-shouldn-t-ask-me-for-this-agents-must.md)
 - The sandbox Browser panel now offers **Copy to my clipboard** after a webpage’s Copy button writes text on the virtual display. Accepting transfers the text to your device. [SPEC-584](../.ai/specs/SPEC-584-in-browser-i-clicked-copy-button-but-not.md)
 - New tasks in the browser default to Codex. Settings and the composer remember explicit model choices, including Random. [SPEC-587](../.ai/specs/SPEC-587-codex-should-be-default-for-example-bart.md)

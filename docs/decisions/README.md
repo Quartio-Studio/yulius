@@ -463,6 +463,7 @@ If a reservation skips past all available slots, land an empty extension first w
 - [0427](0427-task-authorization-covers-independent-re-review.md): A task's delivery authorization covers independent re-review of its in-scope corrections through approval.
 <!-- ADR 0427 -->
 <!-- ADR 0428 -->
+- [0429](0429-continue-stopped-codex-work-in-its-saved-session.md) resumes stopped Codex work in its saved conversation and shows a bare resume as idle.
 <!-- ADR 0429 -->
 <!-- ADR 0430 -->
 <!-- ADR 0431 -->
