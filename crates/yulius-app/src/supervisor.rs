@@ -516,6 +516,19 @@ impl Drop for Finalizing<'_> {
 pub const SWITCH_COOLDOWN_MS: i64 = 10 * 60 * 1000;
 
 impl TaskRuntime {
+    /// PR advice must be reconsidered if another operation owns the writer at paste time.
+    pub(crate) async fn try_paste_pr_notice(&self, now: Timestamp, paste: &[u8]) -> AppResult<()> {
+        let mut run = self
+            .run
+            .try_lock()
+            .map_err(|_| AppError::Conflict("the session writer is busy".into()))?;
+        let run = run
+            .as_mut()
+            .ok_or_else(|| AppError::Conflict("the task is not running".into()))?;
+        self.last_input_ms.store(now.0, Ordering::SeqCst);
+        run.writer.input(paste).await
+    }
+
     /// Consumes the reader's request only for the attempt whose end was recorded.
     fn take_reader_request(&self, attempt_id: &AttemptId) -> Option<TakenRequest> {
         self.taken_request
@@ -5900,6 +5913,10 @@ impl App {
         let runtime = self.runtime(task_id);
         runtime.hub.resize(cols, rows);
         let mut run = runtime.run.lock().await;
+        crate::race::reached(
+            crate::race::Point::TerminalResizeOwnsWriter,
+            Path::new(task_id.as_str()),
+        );
         match run.as_mut() {
             Some(run) => run.writer.resize(cols, rows).await,
             None => Ok(()),

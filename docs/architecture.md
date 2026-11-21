@@ -1628,6 +1628,8 @@ person must act first (a prompt on screen, `needs_you`) or may have a draft in t
 
 The watch remembers an open PR when it first observes its number. While the live queue decides the merge, or if its activation changes during a read, the watch defers advice and keeps that observation for the eventual merge notice.
 
+The first paste of a live PR notice needs immediate access to the session writer. If another input or resize holds it, the watcher keeps the event pending for its next pass.
+
 Each event has a key, typed once and kept in `<data>/pr-notices.json`. A session idle for 45
 minutes with nothing typed gets a check-in with the pull request's state; a pull request with no
 progress for 60 minutes (no run of its head or candidate queued, started or ended, no delivery or

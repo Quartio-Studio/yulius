@@ -636,7 +636,7 @@ impl App {
                             .unwrap_or_else(std::sync::PoisonError::into_inner) = before;
                     };
                     match self
-                        .type_into_session(&task, paste.as_bytes(), Typed::Prompt, Sender::Yulius)
+                        .type_into_session(&task, paste.as_bytes(), Typed::PrNotice, Sender::Yulius)
                         .await
                     {
                         Ok(()) => {

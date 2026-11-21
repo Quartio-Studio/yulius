@@ -150,6 +150,8 @@ pub(crate) enum Typed {
     /// submit it sits in the session's prompt box, and a restart would lose it (SPEC-468
     /// CCF-011).
     Prompt,
+    /// The PR watcher reevaluates unheard news on its next pass if the writer is busy.
+    PrNotice,
     /// A command Claude Code runs itself (`/mcp reconnect yulius`): no prompt is submitted,
     /// so nothing of it waits anywhere.
     Command,
@@ -868,12 +870,16 @@ impl App {
         // (Claude Code runs the prompt hook some 30 ms after the Enter below, also while a
         // turn runs). A command submits nothing, and a text that could not be typed is nowhere.
         let before = runtime.message_typed_ms.load(Ordering::SeqCst);
-        if what == Typed::Prompt {
+        if matches!(what, Typed::Prompt | Typed::PrNotice) {
             runtime
                 .message_typed_ms
                 .store(self.now().0, Ordering::SeqCst);
         }
-        if let Err(err) = self.send_input(&task.id, paste).await {
+        let pasted = match what {
+            Typed::PrNotice => runtime.try_paste_pr_notice(self.now(), paste).await,
+            Typed::Prompt | Typed::Command => self.send_input(&task.id, paste).await,
+        };
+        if let Err(err) = pasted {
             runtime.message_typed_ms.store(before, Ordering::SeqCst);
             return Err(err);
         }

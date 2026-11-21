@@ -29,6 +29,7 @@ A failed candidate narrowed to one PR belongs to that PR’s merge decision. The
   with the next step: a red run at its head or of a merge candidate holding it (jobs, failing
   tests, where to read the log), a conflict with the integration branch, how its armed merge ended,
   its merge, and why a green head is not merging (with "Hands off" while a candidate holds it).
+- The first paste of a live PR notice takes the writer only if it is free. A waiting paste could answer a decision that appeared during a backpressured resize. The existing watch retries the unheard event and checks the owner again.
 - Each event is typed once, by key, kept in `<data>/pr-notices.json`.
 - A session quiet for 45 minutes with an open pull request gets a check-in; a pull request with no
   progress for 60 minutes while its CI is idle is stalled: told once and shown on the task list
