@@ -507,6 +507,10 @@ impl App {
         selected: Option<&TaskRecord>,
     ) -> AppResult<TaskSummary> {
         self.require_task(ctx, observed, TaskAction::Answer).await?;
+        crate::race::reached(
+            crate::race::Point::AnswerAuthorized,
+            std::path::Path::new(observed.id.as_str()),
+        );
         // The access check may have waited on GitHub: what the task does now is read after it
         // (review round 1), so a question opened in its terminal meanwhile is not answered.
         let task = self

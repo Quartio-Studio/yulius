@@ -2197,7 +2197,15 @@ async fn a_telegram_reply_keeps_the_selected_park() -> TestResult {
     intake_on(&w, &w.alice, "s1").await?;
     support::exhausted_subscription(&w.h).await?;
     let alice = user_id(&w, "alice").await?;
-    let target = seed_task(&w.h, "t-park", "s1", &alice, TaskStatus::Parked, None).await?;
+    let target = seed_task(
+        &w.h,
+        "t-telegram-dispatch-target",
+        "s1",
+        &alice,
+        TaskStatus::Parked,
+        None,
+    )
+    .await?;
     w.h.store
         .record_sent(
             "100",
@@ -2209,7 +2217,13 @@ async fn a_telegram_reply_keeps_the_selected_park() -> TestResult {
             w.h.app.now(),
         )
         .await?;
-    support::replace_park_on_dispatch(&w.h, &target.id, &target).await?;
+    support::replace_park_at(
+        &w.h,
+        yulius_app::race::Point::SelectedTaskDispatched,
+        &target.id,
+        &target,
+    )
+    .await?;
     let before = w.fake.sent_to(100).len();
     w.fake.raw(
         100,
@@ -2236,20 +2250,7 @@ async fn a_telegram_reply_keeps_the_selected_park() -> TestResult {
         answer.starts_with("Not sent to #") && answer.contains("changed"),
         "{answer}"
     );
-    assert_eq!(
-        w.h.store.task(&target.id).await?.ok_or("target")?.status,
-        TaskStatus::Parked
-    );
-    assert_eq!(w.h.store.attempts(&target.id).await?.len(), 2);
-    assert_eq!(
-        w.h.store
-            .task_needs_you(&target.id)
-            .await?
-            .ok_or("replacement question")?
-            .action,
-        "Decide the replacement turn"
-    );
-    Ok(())
+    support::assert_replacement_parked(&w.h, &target.id).await
 }
 
 /// SPEC-512 TGI-002 (review round 1): a reply is delivered: to a task that has not started it

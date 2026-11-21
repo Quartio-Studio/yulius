@@ -2128,8 +2128,9 @@ pub async fn seed_live_attempt_at(
 }
 
 /// Arrange a newer parked attempt and a fresh question after a caller has selected its targets.
-pub async fn replace_park_on_dispatch(
+pub async fn replace_park_at(
     h: &Harness,
+    point: yulius_app::race::Point,
     dispatched: &yulius_domain::ids::TaskId,
     task: &yulius_app::model::TaskRecord,
 ) -> TestResult {
@@ -2173,10 +2174,27 @@ pub async fn replace_park_on_dispatch(
     run.exit_reason = Some("parked".into());
     run.ended_at = Some(now);
     run.token_hash = "later-parked-token".into();
+    let mut question = yulius_app::needs_you::NeedsYouRecord {
+        action: "Decide the original turn".into(),
+        happened: None,
+        problem: None,
+        decision: true,
+        link: None,
+        at: now.0,
+        cause: None,
+        named: yulius_app::needs_you::Named {
+            who: vec!["bob".into()],
+            withdrawn: Vec::new(),
+        },
+    };
+    h.store
+        .set_task_needs_you(target, Some(&question), now)
+        .await?;
+    question.action = "Decide the replacement turn".into();
     let store = h.store.clone();
     let handle = tokio::runtime::Handle::current();
     yulius_app::race::on(
-        yulius_app::race::Point::SelectedTaskDispatched,
+        point,
         std::path::Path::new(dispatched.as_str()),
         move || {
             tokio::task::block_in_place(|| {
@@ -2185,16 +2203,6 @@ pub async fn replace_park_on_dispatch(
                         .insert_attempt(&run)
                         .await
                         .expect("replacement parked run");
-                    let question = yulius_app::needs_you::NeedsYouRecord {
-                        action: "Decide the replacement turn".into(),
-                        happened: None,
-                        problem: None,
-                        decision: true,
-                        link: None,
-                        at: now.0,
-                        cause: None,
-                        named: Default::default(),
-                    };
                     store
                         .set_task_needs_you(&run.task_id, Some(&question), now)
                         .await
@@ -2203,6 +2211,27 @@ pub async fn replace_park_on_dispatch(
             });
         },
     );
+    Ok(())
+}
+
+pub async fn assert_replacement_parked(
+    h: &Harness,
+    target: &yulius_domain::ids::TaskId,
+) -> TestResult {
+    use yulius_app::ports::store::TaskStore;
+    use yulius_app::ports::store_ext::NeedsYouStore;
+    assert_eq!(
+        h.store.task(target).await?.ok_or("target")?.status,
+        yulius_domain::task::TaskStatus::Parked
+    );
+    assert_eq!(h.store.attempts(target).await?.len(), 2);
+    let question = h
+        .store
+        .task_needs_you(target)
+        .await?
+        .ok_or("replacement question")?;
+    assert_eq!(question.action, "Decide the replacement turn");
+    assert_eq!(question.named.who, ["bob"]);
     Ok(())
 }
 

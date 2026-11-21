@@ -117,6 +117,10 @@ The SQLite query returning a parked task includes the latest attempt ID in the s
 
 ## Evidence
 
+- With the two parked-attempt checks removed only for the reproduction, run `6c0b82ed-75ae-4457-9067-9a1467084e04` failed both named-teammate regressions. The browser returned HTTP 200 and cleared the replacement question. Bulk reported the replacement question as answered. Both requests omitted the optional question timestamp and the same teammate was named on both turns.
+
+- Run `1ef5966e-9f82-47d9-b4b7-e2033fa8344a` on `89c62550c` passed all 276 selected parking, provider, remote MCP, Telegram, message, exit and delivery tests. The three dispatch regressions also passed together under threaded libtest. Independent review traced the three public paths through authorization and admission, and requested cases for a named teammate and distinct per-test hook keys.
+
 - On `fb5da81b0`, three dispatch regressions failed in run `7bcd2287-0ac3-4d53-8ef4-1e594e4eb4ef`. Bulk reported the replacement target as resumed, Telegram acknowledged the stale reply with “Sent to #1”, and remote restart moved the replacement to Waiting for capacity. The tests use two recorded attempts, an outstanding decision on the second and an exhausted test subscription.
 - The earlier identity suite passed all 201 scoped tests. Its first mutation campaign stopped during the unmutated baseline when the real-PTY admission regression timed out. No mutants were tested in that run. The regression now drives one accepted park at a time, observes its terminal exit and reports an early message refusal directly.
 
