@@ -84,11 +84,11 @@ def main():
                                "--zstd-level", "1", "--archive-file", archive]).returncode
 
     def run(archive, cover_both):
-        env = dict(os.environ, YULIUS_CI_TEST_ARCHIVE=str(archive))
+        env = dict(os.environ)
         if cover_both:
             print("Recovered test build: running the full suite including the skipped peer.", flush=True)
             env.pop("YULIUS_CI_MATRIX", None)
-        return subprocess.run(["scripts/dev", "test"], env=env).returncode
+        return subprocess.run(["scripts/dev", "test", "--archive-file", archive], env=env).returncode
 
     return run_shard(Path.home(), Path(os.environ["YULIUS_CI_CACHE"]),
                      os.environ["YULIUS_CI_RUN"], os.environ["YULIUS_CI_SHA"],

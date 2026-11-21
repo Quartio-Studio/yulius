@@ -52,7 +52,7 @@ command = 'python3 scripts/bootstrap.py --install-rustup && echo "::yulius-stage
 
 [[ci.jobs]]
 name = "docs"
-command = 'python3 scripts/bootstrap.py --install-rustup && echo "::yulius-stage docs" && if test -x scripts/cargo; then scripts/cargo doc --locked --workspace --all-features --no-deps; else cargo doc --locked --workspace --all-features --no-deps; fi'
+command = "python3 scripts/bootstrap.py --install-rustup && echo '::yulius-stage docs' && if test -f scripts/ci_test_shard.py; then scripts/dev docs; elif scripts/dev help | grep -q '^  checks '; then scripts/dev checks; else scripts/dev ci; fi"
 
 [[ci.jobs]]
 name = "deps"
@@ -70,7 +70,7 @@ name = "test"
 cpus = 21
 matrix = "1/2 2/2"
 after_merge = true
-command = "python3 scripts/bootstrap.py --install-rustup && if test -f scripts/ci_test_shard.py; then python3 scripts/ci_test_shard.py; else scripts/dev test; fi"
+command = "python3 scripts/bootstrap.py --install-rustup && if test -f scripts/ci_test_shard.py; then scripts/dev test-shard; else scripts/dev test; fi"
 
 # The browser's system libraries are installed once in the sandbox (onboarding); installing them
 # on every run (`--with-deps`, apt) raced the other CI lane and agents for the dpkg lock and

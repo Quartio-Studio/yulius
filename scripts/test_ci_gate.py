@@ -14,7 +14,7 @@ class Gate(unittest.TestCase):
             "quality": ["scripts/dev doctor", "scripts/dev check"],
             "lint": ["scripts/dev lint"],
             "macos": ["scripts/dev macos"],
-            "docs": ["doc --locked --workspace --all-features --no-deps"],
+            "docs": ["scripts/dev docs"],
             "deps": ["scripts/dev deps"],
         }.items():
             with self.subTest(name=name):
@@ -23,6 +23,7 @@ class Gate(unittest.TestCase):
                     self.assertIn(command, jobs[name]["command"])
         self.assertTrue(jobs["e2e"]["after_merge"])
         self.assertTrue(jobs["test"]["after_merge"])
+        self.assertIn("scripts/dev test-shard", jobs["test"]["command"])
         self.assertFalse(jobs["security"].get("after_merge"))
 
 
