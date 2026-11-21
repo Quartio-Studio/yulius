@@ -1,6 +1,6 @@
 ---
 yulius-task: ff25261d-6a45-4346-8f6a-949e2427e082
-status: in-progress
+status: done
 ---
 
 # SPEC-601 Measuring disk-backed mutation scratch and verifying by-hand delivery checks
@@ -26,7 +26,7 @@ The owner measured 105 minutes of mutation waits across 22 sessions and 231 GiB 
 - [x] Replay the same change with disk scratch and the new mutation budget
 - [x] Measure the one-file rollback and restoration proof
 - [x] Verify disk cleanup and the owner’s by-hand policy against the installed skills
-- [ ] Obtain independent approval of the measurement and policy evidence
+- [x] Obtain independent approval of the measurement and policy evidence
 
 ## Acceptance criteria
 
@@ -98,3 +98,5 @@ At `f82f0a1e6527fa56415a617e51c17dee36daa5b1`, all seven designated passages mat
 In an isolated copy of the committed policy files, restoring only om-code-review’s former campaign paragraph made the comparison fail with six of seven passages present. Restoring the committed paragraph made it pass with seven of seven. The original implementation head `fd1f761f8` failed all seven comparisons.
 
 `spec_check` validated this spec. `scripts/dev quick` passed the repository contracts and Rust formatting checks. Before the owner’s new instruction, the evidence branch’s mutation command found zero changed Rust lines. Vidoc was disabled for this project.
+
+The independent reviewer approved measurement head `3b942ac5150122bc782bee399984166c46755b15` after verifying the historical trial provenance, the seven installed passages and the SIGTERM cleanup at both named revisions. Yulius records the actual CI run, dev merge and staging request for the evidence branch on task #584 and the implementation on task #583.
