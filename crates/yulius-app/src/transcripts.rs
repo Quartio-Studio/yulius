@@ -1192,6 +1192,7 @@ pub fn unreadable(err: &io::Error) -> bool {
 /// Validates a pinned Codex CLI review child's first rollout record (SPEC-605).
 pub(crate) struct CodexReviewStart {
     pub(crate) head: Option<String>,
+    pub(crate) started_at: yulius_domain::time::Timestamp,
 }
 
 pub(crate) fn codex_review_start(
@@ -1223,7 +1224,10 @@ pub(crate) fn codex_review_start(
     let head = str_field(&meta["git"], "commit_hash")
         .filter(|sha| matches!(sha.len(), 40 | 64) && sha.bytes().all(|b| b.is_ascii_hexdigit()))
         .map(str::to_owned);
-    Some(CodexReviewStart { head })
+    let started_at = str_field(meta, "timestamp")
+        .or_else(|| str_field(&row, "timestamp"))
+        .and_then(yulius_domain::time::parse_rfc3339)?;
+    Some(CodexReviewStart { head, started_at })
 }
 
 /// Where a read of a transcript can go on without reading what came before (SPEC-483 slice 36):

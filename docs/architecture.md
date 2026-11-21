@@ -1441,9 +1441,10 @@ pull request's rounds in the same transaction that records its merge
 The Codex briefing assigns fresh review children a `yulius_review_<n>` task name.
 `SubagentStart` supplies the child ID and active model. Yulius checks that the sandbox's
 child rollout header names that reviewer and the authenticated parent, and takes the
-reviewed head from the rollout's launch commit. A `SubagentStop` with a verdict settles
-the same stored round and records the answering model. Retries use the child's ID and
-the original start survives a continuation without a report. [ADR-0442](decisions/0442-identify-codex-reviewers-by-their-child-rollout.md)
+reviewed head and start time from its launch metadata. A `SubagentStop` with a verdict can
+settle or establish the same round under the child's ID. The merge transaction keeps its time
+in the delivery record even when it has zero rounds, so delayed hooks from the previous PR
+cannot open a round on the next one. [ADR-0442](decisions/0442-identify-codex-reviewers-by-their-child-rollout.md)
 
 The delivery transaction also binds the task, PR, accepted head, integration branch and landed commit in `task_merges`. Delivery reads the existing CI jobs, CD runs and delivery-profile command runs by sandbox and exact commit. A historical link keeps its identity when a branch moves or the task opens another PR. Retention archives the compact results before deleting a linked run. A clean CD wrapper exit confirms each configured command. Other exits leave their individual outcomes unconfirmed. Legacy deliveries recover their binding from the recorded PR on the branch named by the task's historical PR-opening audit entry. A direct merge awaiting confirmation recovers only when the closed PR matches the original expected branch, head and merge result. An unavailable historical result supplies no proof. [Decision 0399](decisions/0399-task-evidence-belongs-to-the-landed-commit.md)
 

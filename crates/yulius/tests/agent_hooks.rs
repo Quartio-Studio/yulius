@@ -2052,6 +2052,7 @@ fn codex_child(f: &Fixture, id: &str, parent: &str, path: &str, depth: u32) -> T
         "type":"session_meta",
         "payload":{
             "id":id, "cwd":f.worktree,
+            "timestamp":yulius_domain::time::format_rfc3339(f.h.app.now()),
             "source":{"subagent":{"thread_spawn":{
                 "parent_thread_id":parent, "depth":depth, "agent_path":path, "agent_role":null
             }}},
@@ -2163,6 +2164,79 @@ async fn codex_review_reports_settle_only_their_own_round_once() -> TestResult {
 }
 
 #[tokio::test]
+async fn codex_review_a_verdict_can_arrive_before_its_start_hook() -> TestResult {
+    use yulius_app::ports::store::CoordinationStore;
+    let f = codex_review_fixture().await?;
+    codex_child(&f, "review", CODEX_PARENT, "/root/yulius_review_1", 1)?;
+    let start = f.h.app.now();
+    f.h.clock.0.fetch_add(35_000, Ordering::SeqCst);
+    let end = f.h.app.now();
+    codex_child_hook(&f, "SubagentStop", "review", Some("Verdict: approve")).await?;
+    f.h.clock.0.fetch_add(10_000, Ordering::SeqCst);
+    codex_child_hook(&f, "SubagentStart", "review", None).await?;
+    let rows = f.h.store.review_rounds(&f.task, true).await?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].head.as_deref(), Some(REVIEW_HEAD));
+    assert_eq!(rows[0].started_at, start);
+    assert_eq!(rows[0].ended_at, Some(end));
+    assert_eq!(rows[0].verdict.as_deref(), Some("approve"));
+    assert_eq!(rows[0].model_answered.as_deref(), Some("gpt-6.2-sol"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn codex_review_a_merge_without_rounds_still_excludes_delayed_old_hooks() -> TestResult {
+    use yulius_app::ports::store::CoordinationStore;
+    use yulius_domain::delivery::DeliveryStage;
+    let f = codex_review_fixture().await?;
+    codex_child(&f, "old", CODEX_PARENT, "/root/yulius_review_1", 1)?;
+    f.h.clock.0.fetch_add(60_000, Ordering::SeqCst);
+    codex_review_delivery_step(&f, DeliveryStage::None, DeliveryStage::MergedIntegration, 7)
+        .await?;
+    f.h.clock.0.fetch_add(60_000, Ordering::SeqCst);
+    codex_review_delivery_step(
+        &f,
+        DeliveryStage::MergedIntegration,
+        DeliveryStage::PrOpen,
+        8,
+    )
+    .await?;
+    codex_child_hook(&f, "SubagentStart", "old", None).await?;
+    codex_child_hook(&f, "SubagentStop", "old", Some("Verdict: approve")).await?;
+    codex_child(&f, "new", CODEX_PARENT, "/root/yulius_review_2", 1)?;
+    codex_child_hook(&f, "SubagentStart", "new", None).await?;
+    let rows = f.h.store.review_rounds(&f.task, false).await?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].subagent_id.as_deref(), Some("new"));
+    assert_eq!(rows[0].round, 1);
+    Ok(())
+}
+
+async fn codex_review_delivery_step(
+    f: &Fixture,
+    from: yulius_domain::delivery::DeliveryStage,
+    to: yulius_domain::delivery::DeliveryStage,
+    pr: u64,
+) -> TestResult {
+    use yulius_app::delivery::DeliveryRecord;
+    use yulius_app::ports::store_ext::DeliveryStore;
+    assert!(
+        f.h.store
+            .transition_delivery(
+                &from,
+                &DeliveryRecord {
+                    task_id: f.task.clone(),
+                    stage: to,
+                    pr_number: Some(pr),
+                    updated_at: f.h.app.now(),
+                },
+            )
+            .await?
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn codex_review_rounds_feed_delivery_and_merged_analytics() -> TestResult {
     use yulius_app::delivery::DeliveryRecord;
     use yulius_app::ports::{store::CoordinationStore, store_ext::DeliveryStore};
@@ -2242,6 +2316,41 @@ async fn codex_review_rounds_feed_delivery_and_merged_analytics() -> TestResult 
     assert_eq!(open.len(), 1);
     assert_eq!(open[0].round, 1);
     assert_eq!(open[0].subagent_id.as_deref(), Some("next"));
+
+    // A malformed earlier PR's row must never be decoded while displaying the current one.
+    f.h.store
+        .execute_for_tests("UPDATE review_rounds SET started_at = 'invalid' WHERE pr_number = 7")
+        .await?;
+    let pending = call(&f.h.router, Method::GET, &delivery, None, &admin).await?;
+    assert_eq!(pending.status, 200, "{}", pending.body);
+    assert_eq!(pending.body["review_rounds"][0]["round"], 1);
+    assert_eq!(pending.body["review_rounds"][0]["reported"], false);
+    codex_child_hook(&f, "SubagentStop", "next", Some("Verdict: approve")).await?;
+    f.h.clock.0.fetch_add(60_000, Ordering::SeqCst);
+    codex_review_delivery_step(
+        &f,
+        DeliveryStage::MergedIntegration,
+        DeliveryStage::PrOpen,
+        8,
+    )
+    .await?;
+    codex_review_delivery_step(
+        &f,
+        DeliveryStage::PrOpen,
+        DeliveryStage::MergedIntegration,
+        8,
+    )
+    .await?;
+    let next = call(&f.h.router, Method::GET, &delivery, None, &admin).await?;
+    assert_eq!(next.status, 200, "{}", next.body);
+    assert_eq!(
+        next.body["review_rounds"]
+            .as_array()
+            .ok_or("review rounds")?
+            .len(),
+        1
+    );
+    assert_eq!(next.body["review_rounds"][0]["pr_number"], 8);
     Ok(())
 }
 

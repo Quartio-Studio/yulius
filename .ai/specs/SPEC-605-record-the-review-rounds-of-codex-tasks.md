@@ -7,8 +7,8 @@ status: in-progress
 
 ## Goal
 
-A person can see a Codex task's independent review rounds in delivery and compare their
-outcomes, elapsed times and reviewer models in the Dashboard's review data.
+A person can see a Codex task's independent review rounds and their elapsed times in task
+delivery. The Dashboard includes their outcomes and answering models in its review counts.
 
 ## Context
 
@@ -27,18 +27,20 @@ no observable role to distinguish a reviewer from other Codex subagents.
   independent reviewer and specifies the two report verdicts. Yulius accepts a start only
   for a direct child with this name whose rollout ID and parent match the authenticated
   hook and task session.
-- **CDR-002** Record the review number, start time, start model and Git head from the
-  reviewer's launch when available. Duplicate starts for a child have no effect. A
+- **CDR-002** Record the review number, launch time, Git head when available and the
+  first model observed for the round. Duplicate starts for a child have no effect. A
   reviewer cut off before giving a verdict can finish the same round on resumption.
   Starting another reviewer before a report reuses the unfinished round number.
 - **CDR-003** The child's completion hook records the end time, the hook's model and a
-  verdict from the report footer. Unknown children, stale or duplicate completion and
-  reports without a recognized verdict leave the record as it was. Missing or invalid
-  rollout evidence cannot block the reviewer.
+  verdict from the report footer. A verdict that arrives first can establish the same
+  round from its child rollout. Unknown children, stale or duplicate completion and reports
+  without a recognized verdict leave the record as it was. Missing or invalid rollout
+  evidence cannot block the reviewer.
 - **CDR-004** Reuse the delivery view, merge transaction and analytics for both harnesses.
   Delivery exposes each round's timestamps and PR number when known. It shows rounds
   for the current review or, after merging, the PR just delivered. The merge links the
-  rows to the PR and resets numbering for the next PR.
+  rows to the PR and resets numbering for the next PR. It also records a durable boundary
+  so a delayed start from the prior PR cannot appear on the next one.
 
 ## Plan
 
@@ -46,6 +48,7 @@ no observable role to distinguish a reviewer from other Codex subagents.
 - [x] Record Codex reviewer starts with the reviewed head
 - [x] Complete Codex review rounds with the reviewer verdict
 - [x] Verify review history through delivery and dashboard data
+- [x] Preserve review evidence across delayed hooks and successive pull requests
 - [ ] Approve the change for delivery
 
 ## Acceptance criteria
@@ -55,10 +58,11 @@ no observable role to distinguish a reviewer from other Codex subagents.
   or a rollout for another parent writes none.
 - **AC-2 (CDR-002, CDR-003)** A partial response leaves the round open. A later report
   ends it with the actual model, timestamp and verdict once. A new reviewer records
-  the next round after the prior verdict.
-- **AC-3 (CDR-004)** Delivery shows the rows and timestamps. After the merge, the rows
+  the next round after the prior verdict. A verdict can arrive before its start hook.
+- **AC-3 (CDR-004)** Delivery shows the selected PR's rows and timestamps. After the merge, the rows
   show the landed PR number and dashboard analytics count its rounds and reviewer
-  models. The next PR starts at round one, and existing Claude review tests stay green.
+  models. The next PR starts at round one, even if a pre-merge hook is delayed and the
+  merge had zero review rows. Existing Claude review tests stay green.
 
 ## Test plan
 
@@ -69,9 +73,9 @@ Run the existing Claude review tests and the Codex launch and briefing tests.
 
 ## Decisions
 
-Use the native lifecycle hooks for live timestamps, model and final report. Read only
+Use the native lifecycle hooks for model, final report and report time. Read only
 the bounded first line of the sandbox's child rollout to tell a named independent
-reviewer from other subagents and capture its launch head. The hook's default type is
+reviewer from other subagents and capture its launch time and head. The hook's default type is
 shared with other agents. The parent spawn's requested model and tool messages are
 insufficient to identify the child and observe the actual answer. The record is
 prospective because old spawns did not follow the reserved naming convention.
@@ -97,3 +101,11 @@ subagent hooks. Its instrumentation is outside this slice.
 - The broader integration run passed 165 tests and failed two parked-task MCP assertions.
   Both failures reproduced on the unchanged `dev` build at `47e0d70e2`.
   [Issue #1644](https://github.com/Quartio-Studio/yulius/issues/1644)
+- Against the first reviewed implementation, the new tests detected the wrong start time
+  when the verdict arrived first, a stale round after a merge with zero
+  rows, and a current delivery view hidden by an unreadable row from a previous PR.
+- SQLite's query plan uses the landing index to locate the current or selected merged
+  rounds by task, PR and merge time.
+- After the follow-up, `scripts/cargo test` passed 41 focused hook and review integration
+  tests, 23 app tests, 14 domain tests, the Codex launch test and four store tests
+  including the migration-order check. `scripts/dev quick` passed.

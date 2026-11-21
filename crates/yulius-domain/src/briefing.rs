@@ -721,9 +721,11 @@ fn changes_rule(input: &BriefingInput<'_>) -> String {
 fn review_instructions(harness: Harness) -> &'static str {
     match harness {
         Harness::ClaudeCode => "Agent `yulius-reviewer`, Yulius picks its model",
-        Harness::Codex => {
-            "`spawn_agent`, fork_turns=none, model=gpt-6.2-astra, reasoning_effort=high, +            task_name=yulius_review_<n> with a fresh positive integer for each reviewer. +            Ask the reviewer to end its report with `Verdict: approve` or `Verdict: request changes`"
-        }
+        Harness::Codex => concat!(
+            "`spawn_agent`, fork_turns=none, model=gpt-6.2-astra, reasoning_effort=high, ",
+            "task_name=yulius_review_<n> with a fresh positive integer for each reviewer. ",
+            "Ask the reviewer to end its report with `Verdict: approve` or `Verdict: request changes`",
+        ),
         Harness::Antigravity => "`swarm` add a fresh reviewer, model=gemini-4-neon-high",
     }
 }
@@ -1807,6 +1809,11 @@ mod tests {
                     harness == Harness::Codex
                 );
                 if harness == Harness::Codex {
+                    assert!(
+                        review.contains("reasoning_effort=high, task_name=yulius_review_<n>")
+                            && !review.contains('+'),
+                        "{review}"
+                    );
                     assert!(
                         review.contains("Verdict: approve")
                             && review.contains("Verdict: request changes")

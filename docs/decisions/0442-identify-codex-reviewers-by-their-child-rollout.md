@@ -16,8 +16,11 @@ task path, parent thread and launch commit. [Codex 0.170.0 hook runtime](https:/
 The briefing asks for a fresh Codex child named `yulius_review_<n>` with a distinct
 positive integer for each launch. On `SubagentStart`, Yulius verifies the child's
 name and parent in the header of the rollout inside the task's sandbox. It uses the
-launch commit as the reviewed head and assigns the next number in the shared review
-store. A corresponding `SubagentStop` with a verdict settles the same record.
+launch commit as the reviewed head and numbers the round from the reports already
+finished at launch. `SubagentStop` settles the same record or establishes it from the
+rollout if it arrives first. The merge transaction retains its time in delivery even
+when it has zero review rows. A delayed event from before that time cannot open a
+round on the next PR.
 
 ## Alternatives
 
