@@ -613,6 +613,111 @@ fn stop_during_capacity_restart(continue_again: bool) -> TestResult {
 }
 
 #[test]
+fn a_failed_fresh_codex_spawn_can_retry_its_original_request() -> TestResult {
+    let (_dir, data) = temp()?;
+    runtime()?.block_on(async {
+        let (app, sandbox, user, id, session) = restart_fixture(&data).await?;
+        let ctx = admin_ctx(&app, &user).await?;
+        support::stop_tasks(&app, &[&id]).await?;
+        let sessions = data
+            .join("sandboxes")
+            .join(sandbox.as_str())
+            .join("codex/sessions");
+        let path = app
+            .deps
+            .harness
+            .find_codex_rollout(&sessions, &session)?
+            .ok_or("rollout")?;
+        std::fs::remove_file(path)?;
+        let failing = App::new(
+            app.config.clone(),
+            yulius_app::context::Deps {
+                session_host: Arc::new(yulius::wiring::pending::UnavailableSessionHost),
+                ..app.deps.clone()
+            },
+        );
+        assert!(
+            failing
+                .continue_task(&ctx, id.as_str(), &Default::default())
+                .await
+                .is_err()
+        );
+        let failed = app
+            .deps
+            .store
+            .attempts(&id)
+            .await?
+            .pop()
+            .ok_or("failed attempt")?;
+        assert_eq!(failed.launch_kind, LaunchKind::New);
+        assert_eq!(failed.provider_session_id, None);
+        assert_eq!(failed.exit_reason.as_deref(), Some("spawn_failed"));
+        app.continue_task(&ctx, id.as_str(), &Default::default())
+            .await?;
+        wait_for(
+            "the retried original request",
+            Duration::from_secs(30),
+            || screen_contains(&app, &id, "ECHO: Original request: answer with an echo"),
+        )
+        .await?;
+        support::stop_tasks(&app, &[&id]).await
+    })
+}
+
+#[test]
+fn a_stale_capacity_cleanup_leaves_the_new_codex_pause_and_request() -> TestResult {
+    let (_dir, data) = temp()?;
+    runtime()?.block_on(async {
+        let (app, _, user, id, _) = restart_fixture(&data).await?;
+        let ctx = admin_ctx(&app, &user).await?;
+        support::stop_tasks(&app, &[&id]).await?;
+        let account = AccountId::parse("a-codex")?;
+        let limited = yulius_app::usage_json::to_json(&yulius_domain::usage::AccountUsage {
+            limit_reached: true,
+            limit_resets_at: Some(Timestamp(4_000_000_000_000)),
+            ..Default::default()
+        });
+        let store = &app.deps.store;
+        store
+            .set_account_state(
+                &account,
+                AccountStatus::Limited,
+                Some(&limited),
+                None,
+                app.now(),
+            )
+            .await?;
+        app.continue_task(&ctx, id.as_str(), &Default::default())
+            .await?;
+        let (observed, read_task) =
+            support::hold_point(yulius_app::race::Point::CapacityPauseObserved, id.as_str());
+        let (cleaning, finish) =
+            support::hold_point(yulius_app::race::Point::CapacityStaleCleanup, id.as_str());
+        let worker = Arc::clone(&app);
+        let round = tokio::spawn(async move { worker.resume_round().await });
+        support::point_reached(observed).await?;
+        support::stop_tasks(&app, &[&id]).await?;
+        read_task.send(())?;
+        support::point_reached(cleaning).await?;
+        app.continue_task(&ctx, id.as_str(), &Default::default())
+            .await?;
+        let replacement = store.open_pause(&id).await?.ok_or("replacement pause")?;
+        let request = serde_json::from_value(serde_json::json!({
+            "action": "Sign a Codex subscription in again or add one in Subscriptions",
+            "at": app.now().0,
+        }))?;
+        store
+            .set_task_needs_you(&id, Some(&request), app.now())
+            .await?;
+        finish.send(())?;
+        tokio::time::timeout(Duration::from_secs(60), round).await??;
+        assert_eq!(store.open_pause(&id).await?, Some(replacement));
+        assert_eq!(store.task_needs_you(&id).await?, Some(request));
+        support::stop_tasks(&app, &[&id]).await
+    })
+}
+
+#[test]
 fn a_stopped_codex_task_with_only_stale_lineage_cannot_resume_the_wrong_session() -> TestResult {
     let (_dir, data) = temp()?;
     runtime()?.block_on(async {

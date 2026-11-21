@@ -829,10 +829,18 @@ impl App {
         if !self.pause_open(pause).await {
             return Resume::Gone;
         }
+        crate::race::reached(
+            crate::race::Point::CapacityPauseObserved,
+            std::path::Path::new(pause.task_id.as_str()),
+        );
         let store = &self.deps.store;
         let task = match store.task(&pause.task_id).await {
             Ok(Some(task)) if task.status == TaskStatus::WaitingCapacity => task,
             Ok(_) => {
+                crate::race::reached(
+                    crate::race::Point::CapacityStaleCleanup,
+                    std::path::Path::new(pause.task_id.as_str()),
+                );
                 self.end_pause(&pause.task_id, "ended").await;
                 return Resume::Gone;
             }
