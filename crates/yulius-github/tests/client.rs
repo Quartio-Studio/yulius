@@ -1296,6 +1296,37 @@ async fn the_wait_for_mergeability_stops_at_the_retry_budget() -> TestResult {
 }
 
 #[tokio::test]
+async fn release_ref_creation_posts_the_selected_sha_and_propagates_a_refusal() -> TestResult {
+    let (fake, client) = setup().await?;
+    let sha = fake.add_repo("acme", "app", true);
+    fake.add_user("dev", None);
+    let token = fake.issue_user_token("dev");
+    let path = "/repos/acme/app/git/refs";
+    let pin = format!("yulius/release/{sha}");
+    fake.inject_fault(FakeFault::new("POST", path, 201, 1));
+    client
+        .create_branch_ref(&token, "acme", "app", &pin, &sha)
+        .await?;
+    let sent = fake
+        .requests()
+        .into_iter()
+        .find(|r| r.method == "POST" && r.path == path)
+        .ok_or("ref creation")?;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&sent.body)?,
+        serde_json::json!({"ref": format!("refs/heads/{pin}"), "sha": sha})
+    );
+    fake.inject_fault(FakeFault::new("POST", path, 422, 1));
+    assert!(
+        client
+            .create_branch_ref(&token, "acme", "app", &pin, &sha)
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn fast_forward_is_refused_unless_descendant_and_compare_counts() -> TestResult {
     let (fake, client) = setup().await?;
     let root = fake.add_repo("acme", "app", true);
