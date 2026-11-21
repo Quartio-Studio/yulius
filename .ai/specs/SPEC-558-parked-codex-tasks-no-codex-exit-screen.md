@@ -65,7 +65,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Bind a parked message to the attempt its caller observed
 - [x] Resume only the parked run whose screen finished saving
 - [x] Preserve a continuation while its previous parked run settles
-- [ ] Verify the current model and subscription before accepting a named Continue
+- [x] Verify the current model and subscription before accepting a named Continue
 - [ ] Order parking and replacement merge requests through run settlement
 - [ ] Deliver the recorded integration failure once to an already parked owner
 - [ ] Hold the original owner’s session and successor while its open delivery cannot be verified
@@ -121,6 +121,9 @@ The final parking check compares the owner’s saved singleton decision with the
 The SQLite query returning a parked task includes the latest attempt ID in the same snapshot. Admission checks that ID under the launch lock after caller preflight. A message can wait while another turn resumes and parks, so task status alone cannot identify the session the sender observed. Only a matching parked attempt can restore Codex lineage or accept the prompt. Bulk messages, Telegram replies and remote restarts carry the attempt from their first task lookup through dispatch. They check the caller’s current access before acting.
 
 ## Evidence
+
+- The named-Continue hand check used the earlier model, allowed a refused placement through the claim, and discarded the admitted launch model. All five focused regressions failed in `7b1d5a68-7dcb-4b24-8e10-95706bae88df`. The affected source files were restored to the reviewed commit.
+- Independent review approved `156cb1b43c23a60f2617fdc2cf11ac3aa2554d54` against dev `3b72387f1` and ran 22 integration and store checks. Run `1d21f3e2-e866-4def-8c0e-9264054d775c` passed all 241 scoped tests, including the actual model and subscription delivered through the real PTY to a fake agent. Repository quick checks and spec validation passed. Vidoc was disabled.
 
 - Review of `fb23d8916` found that launch-error cleanup could still answer a subscription sign-in request after the database rolled back the refusal. Run `550f59be-28dc-494e-ad81-aefea904e0c9` returned no question for that case. The test checks its exact contents and open wait span. A separate post-acceptance edit checks both the model saved for the future and the actual model and subscription of the admitted run.
 
