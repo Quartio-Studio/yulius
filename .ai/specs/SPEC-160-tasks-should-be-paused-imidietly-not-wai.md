@@ -44,11 +44,12 @@ gets cancelled after 30 minutes because one task was still working.
   process of a group with no signal: nothing in the group can observe it (unlike `SIGSTOP`, which
   parents see through `SIGCHLD`/`waitpid` and programs through their `SIGCONT` handlers). A
   frozen process's sockets stay open; data sent to it waits in the kernel.
-- The server's listeners shut down gracefully (`serve.rs`, `with_graceful_shutdown`): a request
-  already received is answered before the server exits, its answer waiting in the frozen client's
-  socket.
-- Agent HTTPS goes through the server's egress proxy (ADR-20, in the server process): a provider
-  stream open at the restart is cut whatever pauses the agent.
+- The server stops accepting new requests on shutdown. Bytes it has already written wait
+  in the frozen client's socket. The orderly Linux handoff in SPEC-577 allows five seconds
+  for outstanding HTTP responses to finish.
+- Agent HTTPS goes through the server's egress proxy. When SPEC-160 was implemented, the
+  server owned both connected sockets and restarting it cut the provider stream. SPEC-577
+  added an orderly handoff for established opaque HTTP/1.1 CONNECT tunnels.
 
 ## Requirements
 
@@ -124,10 +125,10 @@ gets cancelled after 30 minutes because one task was still working.
   reused by the next freeze; an empty one is removed by the next sweep.
 - **The hold stays.** It still pauses runs that cannot be frozen, and it is harmless for frozen
   ones (they make no hook calls).
-- **The provider stream is cut by the restart.** The egress proxy lives in the server process, so
-  a response streaming at the restart ends; after the thaw Claude Code sees a dropped connection
-  and retries the request itself (the model sees nothing; the terminal may show a retry line).
-  Keeping tunnels open across a restart needs the proxy outside the server: follow-up #529.
+- **Established opaque HTTP/1.1 CONNECT streams resume after an orderly update.** The socket handoff in
+  SPEC-577 lets a frozen client drain its existing receive queue after thaw. Intercepted
+  streams reconnect through the new server. The applicable limits and failure cases are
+  recorded in [ADR-0413](../../docs/decisions/0413-a-bounded-helper-holds-connected-tunnel-sockets-between-servers.md).
 - **Nothing freezes while a run that cannot be frozen still works (review round 1).** Freezing
   the others at once and waiting for it would keep them frozen for up to the 30-minute bound, and a
   tool timeout (2 minutes for Claude Code's Bash tool) would then fire after the thaw: the agent

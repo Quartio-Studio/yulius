@@ -3829,14 +3829,17 @@ receiving and returning the batch. Each timed pair also retains its original mon
 deadline. The helper releases expired pairs while a successor receives the remaining live
 records. A timed pair can carry its original kernel socket identities. The sender supplies
 them before transferring its descriptors. The receiver can drain a final TCP receive queue
-after both FINs, and a reset or timed-out stream releases its own pair. In Linux legacy mode
-the server pauses established opaque HTTP/1.1 CONNECT tunnels on orderly shutdown. HTTP/2
-traffic inside the tunnel stays opaque. A multiplexed HTTP/2 session to the proxy reconnects.
+after both FINs, and a reset or timed-out stream releases its own pair. On orderly Linux
+shutdown the server pauses established opaque HTTP/1.1 CONNECT tunnels. In namespace mode it
+also pauses each matching outbound copy, identified by the original internal TCP endpoints
+and sandbox. HTTP/2 traffic inside the tunnel stays opaque. A multiplexed HTTP/2 session to
+the proxy reconnects.
 Capture and deposit have fifteen seconds, concurrent with five seconds to drain in-flight HTTP
 responses. The successor restores the original sockets, copy cursors, admission owners, last
 activity and expiry before serving new HTTP requests. Intercepted connections close at restart.
-Fresh connections use the successor's host-bound injection and redaction policy. Continuity
-through a namespace holder also requires its matching outbound relay.
+Fresh connections use the successor's host-bound injection and redaction policy. The holder
+keeps its forward. The replacement verifies that holder's identity and reserves the saved
+outbound copies in their old admission order before the relay accepts again.
 [ADR-0413](decisions/0413-a-bounded-helper-holds-connected-tunnel-sockets-between-servers.md)
 The proxy also counts each connection's run (agent run, CI job, Superagent shell). When nothing was
 idle for 5 minutes, a full sandbox share takes the oldest connection of its busiest other run, and
@@ -3861,7 +3864,9 @@ flowchart LR
   O --> I["internal listener: API, MCP, egress proxy (128 per sandbox, 256 in all)"]
   D["direct agent connection (legacy mode)"] --> I
   I -.->|"orderly stop of an established opaque tunnel"| C["Linux socket custodian"]
+  O -.->|"matching opaque tunnel and surviving holder"| C
   C -.->|"restore original sockets and places before HTTP"| I
+  C -.->|"reserve original outbound places before accepting"| O
   F -.->|"full: the longest-idle place (idle 5 min or more) gives way"| F
   I -.->|"share full, all active: the busiest run's oldest tunnel gives way"| I
   I -.->|"still refused: a trouble"| H["ConnectionHealth"]

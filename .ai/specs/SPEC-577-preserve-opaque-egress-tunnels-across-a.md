@@ -56,8 +56,8 @@ new request after the old sockets reach EOF. The issue requires the original con
 - [x] Preserve original terminal receive queues and isolate connection loss during custody
 - [x] Obtain independent approval for terminal socket custody
 - [x] Obtain independent approval for the proxy restart slice
-- [ ] Hand established opaque connections and matching relay sockets to the restarted server
-- [ ] Verify same-socket continuity, admission limits and intercepted traffic through restart
+- [x] Hand established opaque connections and matching relay sockets to the restarted server
+- [x] Verify same-socket continuity, admission limits and intercepted traffic through restart
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
@@ -463,3 +463,42 @@ without adoption support or a remote peer that times out can end a tunnel.
   selected baseline tests. Of 129 mutations, 77 were caught and 52 were unviable.
   None were missed, timed out or unreached. The follow-up on the protocol documentation
   changed no Rust lines.
+- PR #1570 landed at dev squash `49009e859` with the reviewed `f490cb8bd` tree.
+  PR run `899f3cd7-213f-4bbf-9c1c-af4528e50278` and dev run
+  `02535bf9-dbcc-449b-961b-3ef0e68a2452` passed quality, both test shards and e2e.
+  The security scan was disabled.
+  [Dev verification](https://yulius.quartio.ai/api/tasks/35adb14d-65fe-4a9f-b9fa-370d776d4139/delivery/evidence/49009e85931be97c15fdd40873f9ec95b26ce54b?run_id=02535bf9-dbcc-449b-961b-3ef0e68a2452)
+- On the direct-only implementation, the real holder's retained client read EOF after
+  the successor became ready. The frozen-client regression failed again with BrokenPipe
+  in 0.38 seconds before integrating the holder change. The destination listener accepts
+  once and closes. A separate regression lost the healthy original tunnel when another
+  destination reset during the gap.
+- The namespace-mode server captures the opaque proxy copy together with its original
+  outbound relay. At adoption it checks the matching internal TCP endpoints, common
+  deadline and live holder record. It restores proxy and relay accounting before new
+  admissions. Two terminal-queue regressions first failed with NotConnected after both
+  FINs. The old internal link recorded while connected identifies the verified terminal
+  socket, which can still hold final application bytes.
+- In an isolated rehearsal the nine Linux `opaque_restart::` tests passed, including all
+  four opt-in namespace cases. Two independent server processes used the production
+  holder forward and manager's out.sock. One test kept the client stopped in the kernel
+  through successor readiness, then delivered the complete ordered 1 MiB reply on its
+  original socket after a partial write in the restart gap. Another lost a destination
+  while its healthy sibling delivered queued and fresh bytes on both original peers.
+  The holder fixtures supply a live process and its actual namespace identities, a
+  synthetic record and subordinate ID maps. Nested holder creation and the systemd
+  cgroup freezer require a host with those facilities. The test uses SIGSTOP/SIGCONT.
+- A separate synthetic TLS origin negotiated HTTP/2 inside an opaque HTTP/1.1 CONNECT
+  through the holder, accepted one TLS session and kept its original request and response
+  stream through the two-server restart. Over the intercepted route, an echoed synthetic
+  credential was redacted in both response headers and body. Only the bound origin received
+  its injected value before and after restart. The unbound origin received the placeholder.
+  The old intercepted stream closed, an invalid token received 407, and a fresh live
+  synthetic attempt reconnected through both host policies.
+- On the task branch based on dev `49009e859`, the nine real Linux restart tests passed
+  in 9.51 seconds, including all four holder cases. The separate eight-case holder
+  matrix and the inner TLS/HTTP/2 transfer passed. The domain, sandbox and egress
+  nextest suites passed 934 tests with two host-dependent cases skipped. The two
+  server-wiring tests passed, including a mixed batch that arrived out of order.
+  Each retained copy had both original internal endpoints and a common deadline.
+  Dropping unmatched records closed their original external peers.

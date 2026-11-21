@@ -17,11 +17,35 @@ use tokio::process::{Child, Command};
 type Error = Box<dyn std::error::Error>;
 const TOKEN: &str = "synthetic-restart-token";
 
-async fn start(data: &Path, internal: SocketAddr) -> Result<Child, Error> {
+#[derive(Clone, Copy)]
+enum Route {
+    Direct,
+    Holder,
+}
+
+impl Route {
+    fn service_args(self) -> &'static [&'static str] {
+        match self {
+            Self::Direct => &["--isolation", "legacy"],
+            Self::Holder => &[
+                "--contained",
+                "--isolation",
+                "namespaces",
+                "--sandbox-egress",
+                "none",
+                "--sandbox-docker",
+                "off",
+            ],
+        }
+    }
+}
+
+async fn start(data: &Path, internal: SocketAddr, route: Route) -> Result<Child, Error> {
     let mut child = Command::new(env!("CARGO_BIN_EXE_yulius"))
         .args(["serve", "--bind", "127.0.0.1:0", "--internal-bind"])
         .arg(internal.to_string())
-        .args(["--isolation", "legacy", "--ci", "off", "--data"])
+        .args(route.service_args())
+        .args(["--ci", "off", "--data"])
         .arg(data)
         .env_clear()
         .env("HOME", data)
@@ -70,6 +94,61 @@ fn seed(data: &Path) -> Result<(), Error> {
     Ok(())
 }
 
+struct Holder {
+    forward: tokio::task::JoinHandle<()>,
+    address: SocketAddr,
+}
+
+impl Drop for Holder {
+    fn drop(&mut self) {
+        self.forward.abort();
+    }
+}
+
+async fn live_holder(data: &Path, port: u16) -> Result<Holder, Error> {
+    use yulius_contracts::sandbox::{HOLDER_RECORD_VERSION, HolderRecord};
+    use yulius_sandbox::holder::{StatePaths, boot_id, ns_inode};
+
+    let state = StatePaths::new(data.join("runtime/sandboxes/s1"));
+    std::fs::create_dir_all(&state.dir)?;
+    let pid = std::process::id();
+    let record = HolderRecord {
+        version: HOLDER_RECORD_VERSION,
+        sandbox: "s1".into(),
+        base_id: "synthetic-base-1".into(),
+        inner_pid: pid,
+        bwrap_pid: 0,
+        slirp_pid: None,
+        boot_id: boot_id(),
+        user_ns: ns_inode(pid, "user").ok_or("fixture user namespace")?,
+        net_ns: ns_inode(pid, "net").ok_or("fixture network namespace")?,
+        mnt_ns: ns_inode(pid, "mnt").ok_or("fixture mount namespace")?,
+        started_at_ms: 1,
+        system_root: data.display().to_string(),
+        engine: false,
+    };
+    std::fs::write(state.record(), serde_json::to_vec(&record)?)?;
+    // The alternate loopback keeps the holder and the server on the same port.
+    let ip = Ipv4Addr::new(127, 0, 0, 2);
+    let forward =
+        yulius_sandbox::relay::serve_forward_at(ip, port, state.outbound(), false).await?;
+    Ok(Holder {
+        forward,
+        address: (ip, port).into(),
+    })
+}
+
+async fn holder_for(
+    route: Route,
+    data: &Path,
+    internal: SocketAddr,
+) -> Result<Option<Holder>, Error> {
+    match route {
+        Route::Direct => Ok(None),
+        Route::Holder => Ok(Some(live_holder(data, internal.port()).await?)),
+    }
+}
+
 fn fixture_ip() -> Result<Ipv4Addr, Error> {
     getifaddrs()?
         .filter_map(|iface| iface.address?.as_sockaddr_in().map(|s| s.ip()))
@@ -93,6 +172,102 @@ async fn read_head(stream: &mut BufReader<TcpStream>, first_line: &str) -> Resul
 #[tokio::test]
 async fn established_direct_connect_carries_queued_and_fresh_bytes_across_server_exit()
 -> Result<(), Error> {
+    check_restart(Route::Direct).await
+}
+
+#[tokio::test]
+#[ignore = "needs the Linux namespace server's subordinate IDs and installed helpers"]
+async fn an_opaque_connect_through_the_same_holder_survives_server_exit() -> Result<(), Error> {
+    check_restart(Route::Holder).await
+}
+
+#[tokio::test]
+#[ignore = "needs the Linux namespace server's subordinate IDs and installed helpers"]
+async fn a_stopped_client_keeps_its_original_tunnel_through_the_holder() -> Result<(), Error> {
+    use nix::sys::wait::{Id, WaitPidFlag, WaitStatus, waitid};
+    use std::os::fd::{AsFd as _, OwnedFd};
+
+    const CHILD: &str = "YULIUS_FIXTURE_STOPPED_TUNNEL";
+    // An ordered 1 MiB reply exceeds the origin's small send buffer during downtime.
+    let payload: Vec<u8> = (0..262_144u32).flat_map(u32::to_be_bytes).collect();
+    if std::env::var_os(CHILD).is_some() {
+        // This process owns the client's original TCP connection while both servers turn over.
+        let fd = std::io::stdin().as_fd().try_clone_to_owned()?;
+        let mut stream = TcpStream::from_std(fd.into())?;
+        stream.write_all(b"held").await?;
+        kill(Pid::this(), Signal::SIGSTOP)?;
+        assert_eq!(stream.read_u32().await?.to_be_bytes(), *b"down");
+        let mut received = vec![0u8; payload.len()];
+        stream.read_exact(&mut received).await?;
+        assert!(
+            received == payload,
+            "the restored stream changed the 1 MiB reply"
+        );
+        stream.write_all(b"thaw").await?;
+        stream.shutdown().await?;
+        assert_eq!(stream.read_u32().await?.to_be_bytes(), *b"back");
+        assert_eq!(stream.read(&mut [0]).await?, 0);
+        return Ok(());
+    }
+
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let data = tempfile::tempdir()?;
+        let internal = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await?
+            .local_addr()?;
+        let holder = live_holder(data.path(), internal.port()).await?;
+        let listener = TcpListener::bind((fixture_ip()?, 0)).await?;
+        let mut first = start(data.path(), internal, Route::Holder).await?;
+        let first_pid = first.id();
+        seed(data.path())?;
+        let (client, mut peer) =
+            open_tunnel(holder.address, listener.local_addr()?, &listener).await?;
+        drop(listener);
+        assert!(client.buffer().is_empty());
+        let mut child = Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "opaque_restart::a_stopped_client_keeps_its_original_tunnel_through_the_holder",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env_clear()
+            .env(CHILD, "1")
+            .stdin(Stdio::from(OwnedFd::from(client.into_inner().into_std()?)))
+            .kill_on_drop(true)
+            .spawn()?;
+        let pid = Pid::from_raw(child.id().ok_or("synthetic client exited")?.try_into()?);
+        let flags = WaitPidFlag::WSTOPPED | WaitPidFlag::WEXITED | WaitPidFlag::WNOWAIT;
+        assert_eq!(peer.read_u32().await?.to_be_bytes(), *b"held");
+        let status = tokio::task::spawn_blocking(move || waitid(Id::Pid(pid), flags)).await??;
+        assert_eq!(status, WaitStatus::Stopped(pid, Signal::SIGSTOP));
+        stop(&mut first).await?;
+        peer.write_all(b"down").await?;
+        nix::sys::socket::setsockopt(&peer, nix::sys::socket::sockopt::SndBuf, &4096)?;
+        let queued = peer.write(&payload).await?;
+        assert!(
+            queued > 0 && queued < payload.len(),
+            "partial write during restart: {queued}"
+        );
+        let mut next = start(data.path(), internal, Route::Holder).await?;
+        assert_ne!(next.id(), first_pid);
+        assert_eq!(
+            waitid(Id::Pid(pid), flags | WaitPidFlag::WNOHANG)?,
+            WaitStatus::Stopped(pid, Signal::SIGSTOP)
+        );
+        kill(pid, Signal::SIGCONT)?;
+        peer.write_all(&payload[queued..]).await?;
+        assert_eq!(peer.read_u32().await?.to_be_bytes(), *b"thaw");
+        assert_eq!(peer.read(&mut [0]).await?, 0);
+        peer.write_all(b"back").await?;
+        peer.shutdown().await?;
+        assert!(child.wait().await?.success());
+        stop(&mut next).await
+    })
+    .await?
+}
+
+async fn check_restart(route: Route) -> Result<(), Error> {
     tokio::time::timeout(Duration::from_secs(30), async {
         // Dial only this fixture's listening address. The production proxy denies loopback.
         let local = fixture_ip()?;
@@ -100,14 +275,16 @@ async fn established_direct_connect_carries_queued_and_fresh_bytes_across_server
         let target = listener.local_addr()?;
         let internal = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?.local_addr()?;
         let dir = tempfile::tempdir()?;
-        let mut first = start(dir.path(), internal).await?;
+        let holder = holder_for(route, dir.path(), internal).await?;
+        let endpoint = holder.as_ref().map_or(internal, |h| h.address);
+        let mut first = start(dir.path(), internal, route).await?;
         let first_pid = first.id();
         assert!(!std::fs::read_to_string(dir.path().join("fixture-serve.log"))?
             .contains("cannot adopt opaque tunnels"), "an ordinary cold start is quiet");
         // A previous successful handoff leaves its private service directory in place.
         std::fs::DirBuilder::new().mode(0o700).create(dir.path().join("tunnel-handoff"))?;
         seed(dir.path())?;
-        let mut client = BufReader::new(TcpStream::connect(internal).await?);
+        let mut client = BufReader::new(TcpStream::connect(endpoint).await?);
         let auth = base64::engine::general_purpose::STANDARD.encode(format!("fixture:{TOKEN}"));
         let header_padding = "x".repeat(20 * 1024);
         let early: Vec<u8> = (b'a'..=b'w').cycle().take(96 * 1024).collect();
@@ -123,7 +300,7 @@ async fn established_direct_connect_carries_queued_and_fresh_bytes_across_server
         assert_eq!(client.read_u32().await?.to_be_bytes(), *b"LIVE");
         stop(&mut first).await?;
         peer.write_all(b"DOWN").await?;
-        let mut next = start(dir.path(), internal).await?;
+        let mut next = start(dir.path(), internal, route).await?;
         assert_ne!(next.id(), first_pid);
         let queued = client.read_u32().await.map_err(|e| format!("original client reading downtime marker: {e}"))?;
         assert_eq!(queued.to_be_bytes(), *b"DOWN");
@@ -150,7 +327,7 @@ async fn an_invalid_handoff_directory_reports_the_kind_and_still_serves() -> Res
         let addr = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .await?
             .local_addr()?;
-        let mut server = start(dir.path(), addr).await?;
+        let mut server = start(dir.path(), addr, Route::Direct).await?;
         stop(&mut server).await?;
         let warnings = std::fs::read_to_string(dir.path().join("fixture-serve.log"))?;
         assert!(
@@ -185,6 +362,17 @@ async fn open_tunnel(
 #[tokio::test]
 async fn a_destination_reset_during_restart_keeps_the_other_established_tunnel() -> Result<(), Error>
 {
+    check_reset_during_restart(Route::Direct).await
+}
+
+#[tokio::test]
+#[ignore = "needs the Linux namespace server's subordinate IDs and installed helpers"]
+async fn losing_one_destination_during_restart_releases_its_relay_and_keeps_the_other()
+-> Result<(), Error> {
+    check_reset_during_restart(Route::Holder).await
+}
+
+async fn check_reset_during_restart(route: Route) -> Result<(), Error> {
     tokio::time::timeout(Duration::from_secs(30), async {
         let local = fixture_ip()?;
         let listener = TcpListener::bind((local, 0)).await?;
@@ -193,10 +381,12 @@ async fn a_destination_reset_during_restart_keeps_the_other_established_tunnel()
             .await?
             .local_addr()?;
         let dir = tempfile::tempdir()?;
-        let mut first = start(dir.path(), internal).await?;
+        let holder = holder_for(route, dir.path(), internal).await?;
+        let endpoint = holder.as_ref().map_or(internal, |h| h.address);
+        let mut first = start(dir.path(), internal, route).await?;
         seed(dir.path())?;
-        let (mut ended, resetting) = open_tunnel(internal, target, &listener).await?;
-        let (mut client, mut peer) = open_tunnel(internal, target, &listener).await?;
+        let (mut ended, resetting) = open_tunnel(endpoint, target, &listener).await?;
+        let (mut client, mut peer) = open_tunnel(endpoint, target, &listener).await?;
         drop(listener);
         stop(&mut first).await?;
         nix::sys::socket::setsockopt(
@@ -209,7 +399,7 @@ async fn a_destination_reset_during_restart_keeps_the_other_established_tunnel()
         )?;
         drop(resetting);
         peer.write_all(b"DOWN").await?;
-        let mut next = start(dir.path(), internal).await?;
+        let mut next = start(dir.path(), internal, route).await?;
         assert_eq!(client.read_u32().await?.to_be_bytes(), *b"DOWN");
         client.get_mut().write_all(b"NEXT").await?;
         assert_eq!(peer.read_u32().await?.to_be_bytes(), *b"NEXT");
@@ -229,7 +419,7 @@ async fn an_unfinished_http_download_cannot_delay_opaque_handoff_or_shutdown() -
             .await?
             .local_addr()?;
         let dir = tempfile::tempdir()?;
-        let mut first = start(dir.path(), internal).await?;
+        let mut first = start(dir.path(), internal, Route::Direct).await?;
         seed(dir.path())?;
         let (mut client, mut peer) = open_tunnel(internal, dest.local_addr()?, &dest).await?;
         let origin = dest.local_addr()?;
@@ -260,7 +450,7 @@ async fn an_unfinished_http_download_cannot_delay_opaque_handoff_or_shutdown() -
             .await
             .map_err(|_| "unfinished HTTP download kept the old service running")??;
         peer.write_all(b"DOWN").await?;
-        let mut next = start(dir.path(), internal).await?;
+        let mut next = start(dir.path(), internal, Route::Direct).await?;
         assert_eq!(client.read_u32().await?.to_be_bytes(), *b"DOWN");
         client.get_mut().write_all(b"NEXT").await?;
         assert_eq!(peer.read_u32().await?.to_be_bytes(), *b"NEXT");
@@ -271,6 +461,16 @@ async fn an_unfinished_http_download_cannot_delay_opaque_handoff_or_shutdown() -
 
 #[tokio::test]
 async fn final_bytes_and_fin_during_restart_reach_the_half_closed_peer() -> Result<(), Error> {
+    check_final_fin(Route::Direct).await
+}
+
+#[tokio::test]
+#[ignore = "needs the Linux namespace server's subordinate IDs and installed helpers"]
+async fn final_bytes_and_fin_reach_the_half_closed_peer_through_its_holder() -> Result<(), Error> {
+    check_final_fin(Route::Holder).await
+}
+
+async fn check_final_fin(route: Route) -> Result<(), Error> {
     tokio::time::timeout(Duration::from_secs(30), async {
         let listener = TcpListener::bind((fixture_ip()?, 0)).await?;
         let target = listener.local_addr()?;
@@ -278,10 +478,12 @@ async fn final_bytes_and_fin_during_restart_reach_the_half_closed_peer() -> Resu
             .await?
             .local_addr()?;
         let dir = tempfile::tempdir()?;
-        let mut first = start(dir.path(), internal).await?;
+        let holder = holder_for(route, dir.path(), internal).await?;
+        let endpoint = holder.as_ref().map_or(internal, |h| h.address);
+        let mut first = start(dir.path(), internal, route).await?;
         seed(dir.path())?;
-        let (mut client, mut origin) = open_tunnel(internal, target, &listener).await?;
-        let (mut sender, mut recipient) = open_tunnel(internal, target, &listener).await?;
+        let (mut client, mut origin) = open_tunnel(endpoint, target, &listener).await?;
+        let (mut sender, mut recipient) = open_tunnel(endpoint, target, &listener).await?;
         drop(listener);
         client.get_mut().shutdown().await?;
         assert_eq!(origin.read(&mut [0]).await?, 0);
@@ -292,7 +494,7 @@ async fn final_bytes_and_fin_during_restart_reach_the_half_closed_peer() -> Resu
         origin.shutdown().await?;
         sender.get_mut().write_all(b"last request").await?;
         sender.get_mut().shutdown().await?;
-        let mut next = start(dir.path(), internal).await?;
+        let mut next = start(dir.path(), internal, route).await?;
         let mut delivered = Vec::new();
         client.read_to_end(&mut delivered).await?;
         assert_eq!(

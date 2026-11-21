@@ -60,10 +60,12 @@ TLS session.
 
 ## Consequences
 
-An established direct HTTP/1.1 CONNECT in Linux legacy mode gives the opaque agent tunnel its
-own socket pair. It retains pending bytes, write-half state, admission owner, byte activity and
-absolute expiry. HTTP/2 inside this tunnel is ordinary payload. An outer HTTP/2 CONNECT
-shares its transport and HTTP session state with other streams, so it reconnects on restart.
-Namespace mode also requires the matching host-side relay and its live holder. An incompatible
-successor, an elapsed deadline or a crash before deposit can end a tunnel. Intercepted traffic
-reconnects through the successor's host-bound credential checks.
+On Linux, each established opaque HTTP/1.1 CONNECT tunnel retains its original sockets, pending bytes,
+write-half state, admission owner, byte activity and absolute expiry. In namespace mode the
+server also transfers the matching host-side relay. It verifies the original internal TCP
+endpoints and the surviving holder record. The successor reserves the relay places in their
+original order before accepting fresh connections. Continuity starts with a departing server
+that can deposit a compatible record for this path. HTTP/2 inside the opaque tunnel is ordinary
+payload. An outer HTTP/2 CONNECT shares its transport and HTTP session state with other
+streams, so it reconnects on restart. An incompatible successor, a lost holder,
+an elapsed deadline or a crash before deposit can end a tunnel. Intercepted traffic reconnects through the successor's host-bound credential checks.

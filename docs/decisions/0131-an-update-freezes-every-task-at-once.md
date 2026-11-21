@@ -62,10 +62,13 @@ a delegated cgroup v2 subtree in which every agent run lives (`<unit>/sandboxes/
 - Updates no longer wait for turns; tasks pause for about the install and its health check
   (unless a run that cannot be frozen is still in a turn: then the others keep working until it
   is held, or until "Continue without waiting").
-- The provider stream of a frozen agent goes through the egress proxy in the server process, so a
-  response streaming at the restart is cut; after the thaw Claude Code retries the request (the
-  model sees nothing, the terminal may show a retry line). Keeping it open needs the proxy outside
-  the server (follow-up #529).
+- During an orderly Linux update, an established opaque HTTP/1.1 agent CONNECT tunnel retains its
+  original sockets and queued bytes, including the outbound relay of a surviving sandbox
+  holder. A frozen client reads those bytes after thaw. Multiplexed HTTP/2 connections to the proxy
+  reconnect. Intercepted streams close and
+  reconnect through the new server's host-bound credential and redaction policy. A crash
+  before handoff, an expired deadline, or an incompatible successor can end the stream.
+  [ADR-0413](0413-a-bounded-helper-holds-connected-tunnel-sockets-between-servers.md)
 - Wall-clock timers keep running while frozen: a tool command within about a minute of its timeout
   may time out after the thaw.
 - Run groups stay after a thaw (their processes stay in them, under the same sandbox limits) and are
