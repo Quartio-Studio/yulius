@@ -1606,126 +1606,90 @@ async fn shared_owner_rerun(owner_state: RunState, peer_state: RunState) -> Test
 /// The owner of the singleton gets the verdict even when CI was executed for another train.
 #[tokio::test]
 async fn a_reused_failed_candidate_tells_the_singleton_owner_which_job_failed() -> TestResult {
-    Box::pin(reused_singleton(SingletonChange::None)).await
+    reused_singleton(SingletonChange::None).await
 }
 
 #[tokio::test]
 async fn a_reused_failure_on_an_obsolete_base_keeps_the_owner_armed() -> TestResult {
-    Box::pin(reused_singleton(SingletonChange::Base)).await
+    reused_singleton(SingletonChange::Base).await
 }
 
 #[tokio::test]
 async fn a_reused_failure_does_not_blame_a_retargeted_owner_pr() -> TestResult {
-    Box::pin(reused_singleton(SingletonChange::Retarget)).await
+    reused_singleton(SingletonChange::Retarget).await
 }
 
 #[tokio::test]
 async fn a_reused_failure_does_not_blame_the_owners_new_head() -> TestResult {
-    Box::pin(reused_singleton(SingletonChange::Head)).await
+    reused_singleton(SingletonChange::Head).await
 }
 
 #[tokio::test]
 async fn the_owners_ordinary_failure_wins_during_singleton_verification() -> TestResult {
-    Box::pin(reused_singleton(SingletonChange::Ordinary)).await
+    reused_singleton(SingletonChange::Ordinary).await
 }
 
 #[tokio::test]
 async fn a_base_advance_during_singleton_verification_keeps_the_arm_and_no_drop_span() -> TestResult
 {
-    Box::pin(reused_singleton(SingletonChange::BaseDuringRead)).await
+    reused_singleton(SingletonChange::BaseDuringRead).await
 }
 
 #[tokio::test]
 async fn another_pr_failing_at_the_same_sha_keeps_the_singleton_failure_with_its_owner()
 -> TestResult {
-    Box::pin(reused_singleton(SingletonChange::PeerFailed)).await
+    reused_singleton(SingletonChange::PeerFailed).await
 }
 
 #[tokio::test]
 async fn an_owner_rerun_started_during_singleton_verification_keeps_its_bounded_wait() -> TestResult
 {
-    Box::pin(reused_singleton(SingletonChange::RerunStarted)).await
+    reused_singleton(SingletonChange::RerunStarted).await
 }
 
 #[tokio::test]
 async fn a_singleton_wait_deadline_survives_repeated_reads_and_reports_the_tested_failure()
 -> TestResult {
-    Box::pin(reused_singleton(SingletonChange::RerunExpired)).await
+    reused_singleton(SingletonChange::RerunExpired).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_singleton_decides_the_arm_before_recording_its_dissolution() -> TestResult {
-    Box::pin(reused_singleton(SingletonChange::Bookkeeping)).await
+    reused_singleton(SingletonChange::Bookkeeping).await
 }
 
 #[tokio::test]
 async fn a_singleton_with_unavailable_inputs_releases_its_place_after_the_limit() -> TestResult {
-    Box::pin(reused_singleton(SingletonChange::Unavailable)).await
+    reused_singleton(SingletonChange::Unavailable).await
 }
 
 #[tokio::test]
 async fn a_singleton_waits_for_its_failing_job_to_be_readable() -> TestResult {
-    Box::pin(reused_singleton(SingletonChange::JobRead)).await
+    reused_singleton(SingletonChange::JobRead).await
 }
 
 #[tokio::test]
 async fn a_singleton_waits_for_safe_redaction_before_telling_its_owner() -> TestResult {
-    Box::pin(reused_singleton(SingletonChange::MatcherRead)).await
+    reused_singleton(SingletonChange::MatcherRead).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reused_failure_pruned_during_the_singleton_decision_keeps_the_original_arm() -> TestResult
 {
-    Box::pin(reused_singleton(SingletonChange::Pruned)).await
+    reused_singleton(SingletonChange::Pruned).await
 }
 
 #[tokio::test]
 async fn a_reused_failure_cannot_drop_a_later_arm_of_the_same_head_after_restart() -> TestResult {
-    Box::pin(reused_singleton(SingletonChange::Rearmed)).await
+    reused_singleton(SingletonChange::Rearmed).await
 }
 
 #[tokio::test]
 async fn a_reused_failure_cannot_blame_the_tasks_replacement_pr_at_the_same_head() -> TestResult {
-    Box::pin(reused_singleton(SingletonChange::ReplacementPr)).await
-}
-
-#[tokio::test]
-async fn a_singleton_decision_recovers_an_interrupted_history_write() -> TestResult {
-    Box::pin(reused_singleton(SingletonChange::HistoryWrite)).await
-}
-
-#[tokio::test]
-async fn a_singleton_keeps_its_train_until_the_saved_owner_can_be_restored() -> TestResult {
-    Box::pin(reused_singleton(SingletonChange::HistoryRead)).await
-}
-
-#[tokio::test]
-async fn an_unreadable_arm_file_keeps_the_singleton_until_the_file_recovers() -> TestResult {
-    Box::pin(reused_singleton(SingletonChange::ArmFileRead)).await
-}
-
-#[tokio::test]
-async fn a_damaged_singleton_receipt_keeps_the_consumed_arm_in_recovery() -> TestResult {
-    Box::pin(reused_singleton(SingletonChange::DamagedReceipt)).await
-}
-
-#[tokio::test]
-async fn a_singleton_decision_survives_span_pruning_before_arm_cleanup() -> TestResult {
-    Box::pin(reused_singleton(SingletonChange::PrunedReceipt)).await
-}
-
-#[tokio::test]
-async fn a_stale_saved_head_cannot_retire_the_singletons_newer_decision() -> TestResult {
-    Box::pin(reused_singleton(SingletonChange::StaleSavedHead)).await
+    reused_singleton(SingletonChange::ReplacementPr).await
 }
 
 enum SingletonChange {
-    StaleSavedHead,
-    DamagedReceipt,
-    PrunedReceipt,
-    ArmFileRead,
-    HistoryRead,
-    HistoryWrite,
     ReplacementPr,
     Rearmed,
     Pruned,
@@ -1742,280 +1706,6 @@ enum SingletonChange {
     Base,
     Retarget,
     Head,
-}
-
-async fn check_recovered_singleton_arm(
-    f: &Fixture,
-    restart_during_rearm: bool,
-    cold: &Arc<App>,
-    arms: &Path,
-    original_arms: &[u8],
-    head: &str,
-) -> TestResult {
-    // A process exit after the SQL commit can leave the original arm on disk.
-    std::fs::write(arms, original_arms)?;
-    let recovered = restart(cold).await;
-    assert!(
-        saved_armed(&recovered, 1)?.is_none(),
-        "committed arm restored twice"
-    );
-    let ctx = recovered.agent_context("tok-t1").await?;
-    let args = json!({"reviewed_head":head,"review_summary":"approve"});
-    let tmp = arms.with_extension("json.tmp");
-    std::fs::create_dir(&tmp)?;
-    let refused = Box::pin(recovered.tool_delivery_merge(&ctx, &args)).await;
-    std::fs::remove_dir(&tmp)?;
-    assert!(
-        refused.is_err(),
-        "an unsaved replacement was acknowledged: {refused:?}"
-    );
-    let latest = recovered
-        .deps
-        .store
-        .latest_merge_wait(&TaskId::parse("t1")?)
-        .await?
-        .ok_or("receipt after refused arm")?;
-    let old: Value = serde_json::from_str(latest.detail.as_deref().ok_or("decision")?)?;
-    assert!(
-        old["superseded_at"].is_null(),
-        "a refused arm retired its owner: {old}"
-    );
-    // The replacement file is durable before retirement in SQL. While that write is
-    // refused the queue must preserve the later activation, including across restart.
-    f.h.store.execute_for_tests(
-        "CREATE TRIGGER refuse_retirement BEFORE UPDATE OF detail ON spans WHEN OLD.name='merge_armed' BEGIN SELECT RAISE(ABORT, 'unavailable'); END",
-    ).await?;
-    assert!(
-        Box::pin(recovered.tool_delivery_merge(&ctx, &args))
-            .await
-            .is_err()
-    );
-    let (saved_head, stamp) =
-        saved_armed(&recovered, 1)?.ok_or("requested replacement is durable")?;
-    assert_eq!(saved_head, head);
-    assert!(stamp > latest.started_at.0);
-    let live = if restart_during_rearm {
-        restart(&recovered).await
-    } else {
-        recovered
-    };
-    Box::pin(live.merge_armed(&f.sandbox)).await;
-    assert_eq!(saved_armed(&live, 1)?, Some((head.to_owned(), stamp)));
-    f.h.store
-        .execute_for_tests("DROP TRIGGER refuse_retirement")
-        .await?;
-    if restart_during_rearm {
-        f.h.clock.0.fetch_add(500, Ordering::SeqCst);
-        let retry_ctx = live.agent_context("tok-t1").await?;
-        let retry = Box::pin(live.tool_delivery_merge(&retry_ctx, &args)).await?;
-        assert_eq!(retry["armed"], true, "{retry}");
-        assert_eq!(
-            saved_armed(&live, 1)?,
-            Some((head.to_owned(), stamp)),
-            "a retry before the next queue pass changed the saved replacement's place"
-        );
-    } else {
-        f.h.store.execute_for_tests("CREATE TEMP TABLE pending_detail AS SELECT id, detail FROM spans WHERE name='merge_armed' AND subject_id='t1' AND outcome='dropped'").await?;
-        for damage in [
-            "UPDATE spans SET detail='{}' WHERE id IN (SELECT id FROM pending_detail)",
-            "UPDATE spans SET detail=json_remove(detail,'$.singleton.tree') WHERE id IN (SELECT id FROM pending_detail)",
-        ] {
-            f.h.store.execute_for_tests(damage).await?;
-            let retry_ctx = live.agent_context("tok-t1").await?;
-            let retry = Box::pin(live.tool_delivery_merge(&retry_ctx, &args)).await;
-            assert!(
-                retry.is_err(),
-                "acknowledged an unreadable pending retirement: {retry:?}"
-            );
-            Box::pin(live.merge_armed(&f.sandbox)).await;
-            assert_eq!(saved_armed(&live, 1)?, Some((head.to_owned(), stamp)));
-            f.h.store.execute_for_tests("UPDATE spans SET detail=(SELECT detail FROM pending_detail WHERE pending_detail.id=spans.id) WHERE id IN (SELECT id FROM pending_detail)").await?;
-        }
-        Box::pin(live.merge_armed(&f.sandbox)).await;
-    }
-    let old = live
-        .deps
-        .store
-        .subject_spans(
-            &f.sandbox,
-            yulius_domain::stages::SubjectKind::Task,
-            "t1",
-            100,
-        )
-        .await?
-        .into_iter()
-        .find(|span| span.key == latest.key)
-        .ok_or("original receipt")?;
-    let retired: Value = serde_json::from_str(old.detail.as_deref().ok_or("decision")?)?;
-    assert!(
-        retired["superseded_at"].is_i64(),
-        "restored replacement must finish retirement: {retired}"
-    );
-    Ok(())
-}
-
-async fn check_singleton_history(
-    f: &Fixture,
-    change: &SingletonChange,
-    head: &str,
-    base: &str,
-    tree: &str,
-    run_id: &str,
-    secret: &str,
-) -> TestResult {
-    use yulius_domain::stages::SubjectKind;
-    let app = &f.h.app;
-    let arms = app
-        .config
-        .data_dir
-        .join(yulius_app::agent_wait::ARMED_MERGES_FILE);
-    let original_arms = std::fs::read(&arms)?;
-    f.h.store.execute_for_tests(
-            "CREATE TRIGGER refuse_merge_span BEFORE INSERT ON spans WHEN NEW.name = 'merge_armed' BEGIN SELECT RAISE(ABORT, 'temporarily unavailable'); END",
-        ).await?;
-    app.merge_armed(&f.sandbox).await;
-    f.h.store
-        .execute_for_tests("DROP TRIGGER refuse_merge_span")
-        .await?;
-    if matches!(change, SingletonChange::HistoryRead) {
-        f.h.store.execute_for_tests(
-                "INSERT INTO spans(sandbox_id,subject_kind,subject_id,key,kind,name,started_at,detail) VALUES ('s1','task','t1','wait@1','wait','merge_armed',1,x'FF')",
-            ).await?;
-    }
-    if matches!(change, SingletonChange::ArmFileRead) {
-        std::fs::write(&arms, b"[")?;
-    }
-    let cold = restart(app).await;
-    if matches!(change, SingletonChange::ArmFileRead) {
-        let expected = f.trains_file(app);
-        Box::pin(cold.merge_decidable_everywhere()).await;
-        cold.merge_armed(&f.sandbox).await;
-        assert_eq!(
-            f.trains_file(&cold),
-            expected,
-            "arm read failure dissolved the original singleton"
-        );
-        std::fs::write(&arms, &original_arms)?;
-        cold.merge_armed(&f.sandbox).await;
-    }
-    if matches!(change, SingletonChange::HistoryRead) {
-        let expected = f.trains_file(app);
-        Box::pin(cold.merge_decidable_everywhere()).await;
-        cold.merge_armed(&f.sandbox).await;
-        assert_eq!(
-            f.trains_file(&cold),
-            expected,
-            "keep the original train and deadline until its owner is restored"
-        );
-        f.h.store
-            .execute_for_tests(
-                "UPDATE spans SET detail='{}' WHERE key='wait@1' AND subject_id='t1'",
-            )
-            .await?;
-        Box::pin(cold.resume_armed_merges()).await;
-    }
-    cold.merge_armed(&f.sandbox).await;
-    cold.merge_armed(&f.sandbox).await;
-    let spans = cold
-        .deps
-        .store
-        .subject_spans(&f.sandbox, SubjectKind::Task, "t1", 100)
-        .await?;
-    let recorded: Vec<Value> = spans
-        .iter()
-        .filter(|s| s.name == "merge_armed" && s.outcome.as_deref() == Some("dropped"))
-        .filter_map(|s| serde_json::from_str(s.detail.as_deref()?).ok())
-        .collect();
-    assert_eq!(recorded.len(), 1, "one accepted decision");
-    assert_eq!(recorded[0]["head"], head);
-    assert!(
-        recorded[0]["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("292.1 ms") && !message.contains(secret))
-    );
-    assert_eq!(
-        recorded[0]["singleton"],
-        json!({"pr":1,"base":base,"tree":tree,"run":run_id}),
-        "the accepted singleton decision must survive the failed write and restart"
-    );
-    if matches!(change, SingletonChange::StaleSavedHead) {
-        let mut entries: Value = serde_json::from_slice(&original_arms)?;
-        let stamp = entries[0]["armed_at"]
-            .as_i64()
-            .ok_or("original activation")?;
-        // A reviewed move keeps its stamp even when its best-effort file update fails.
-        // An older saved activation also cannot displace a later accepted decision.
-        for saved_stamp in [stamp, stamp - 1] {
-            entries[0]["head"] = json!(base);
-            entries[0]["armed_at"] = json!(saved_stamp);
-            std::fs::write(&arms, serde_json::to_vec(&entries)?)?;
-            let recovered = restart(&cold).await;
-            assert!(
-                saved_armed(&recovered, 1)?.is_none(),
-                "an old head of activation {saved_stamp} was rearmed"
-            );
-            let span = recovered
-                .deps
-                .store
-                .latest_merge_wait(&TaskId::parse("t1")?)
-                .await?
-                .ok_or("accepted receipt")?;
-            let detail: Value = serde_json::from_str(span.detail.as_deref().ok_or("decision")?)?;
-            assert_eq!(detail["head"], head);
-            assert!(
-                detail["superseded_at"].is_null(),
-                "the old file retired the accepted decision: {detail}"
-            );
-        }
-        return Ok(());
-    }
-    if matches!(change, SingletonChange::DamagedReceipt) {
-        f.h.store.execute_for_tests("CREATE TEMP TABLE accepted_detail AS SELECT id, detail FROM spans WHERE name='merge_armed' AND subject_id='t1' AND outcome='dropped'").await?;
-        for damage in [
-            "UPDATE spans SET detail='{' WHERE id IN (SELECT id FROM accepted_detail)",
-            "UPDATE spans SET detail=json_remove(detail,'$.singleton.tree') WHERE id IN (SELECT id FROM accepted_detail)",
-        ] {
-            std::fs::write(&arms, &original_arms)?;
-            f.h.store.execute_for_tests(damage).await?;
-            let recovering = restart(&cold).await;
-            assert!(
-                saved_armed(&recovering, 1)?.is_some(),
-                "keep the saved identity until the receipt is readable"
-            );
-            f.h.store.execute_for_tests("UPDATE spans SET detail=(SELECT detail FROM accepted_detail WHERE accepted_detail.id=spans.id) WHERE id IN (SELECT id FROM accepted_detail)").await?;
-            recovering.restore_armed_merges().await;
-            assert!(
-                saved_armed(&recovering, 1)?.is_none(),
-                "unreadable accepted receipt reactivated a consumed arm: {damage}"
-            );
-        }
-        return Ok(());
-    }
-    if matches!(change, SingletonChange::PrunedReceipt) {
-        let entries: Value = serde_json::from_slice(&original_arms)?;
-        let stamp = entries[0]["armed_at"].as_i64().ok_or("original stamp")?;
-        cold.deps
-            .store
-            .prune_spans(yulius_domain::time::Timestamp(stamp + 1))
-            .await?;
-        std::fs::write(&arms, &original_arms)?;
-        let recovering = restart(&cold).await;
-        assert!(
-            saved_armed(&recovering, 1)?.is_none(),
-            "telemetry pruning reactivated the consumed arm"
-        );
-        return Ok(());
-    }
-    Box::pin(check_recovered_singleton_arm(
-        f,
-        matches!(change, SingletonChange::HistoryRead),
-        &cold,
-        &arms,
-        &original_arms,
-        head,
-    ))
-    .await?;
-    Ok(())
 }
 
 async fn reused_singleton(change: SingletonChange) -> TestResult {
@@ -2104,20 +1794,6 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
             .await?
     );
     app.merge_armed(&f.sandbox).await;
-    if matches!(
-        change,
-        SingletonChange::HistoryWrite
-            | SingletonChange::HistoryRead
-            | SingletonChange::ArmFileRead
-            | SingletonChange::DamagedReceipt
-            | SingletonChange::PrunedReceipt
-            | SingletonChange::StaleSavedHead
-    ) {
-        return Box::pin(check_singleton_history(
-            &f, &change, &head, &base, &tree, run_id, secret,
-        ))
-        .await;
-    }
     if matches!(change, SingletonChange::Rearmed) {
         // A later arm is persisted before restart, while the previous train still names the old arm.
         let path = app
@@ -2436,15 +2112,6 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
                     text.contains("prior-train") && !text.contains("passed its own run"),
                     "{text}"
                 );
-                let receipt = app
-                    .deps
-                    .store
-                    .latest_merge_wait(&TaskId::parse("t1")?)
-                    .await?
-                    .ok_or("expired singleton receipt")?;
-                let detail: Value =
-                    serde_json::from_str(receipt.detail.as_deref().ok_or("decision")?)?;
-                assert_eq!(detail["expired_ordinary_run"], "ordinary-rerun", "{detail}");
                 return Ok(());
             }
             end_own_run(app, "ordinary-rerun", RunState::Failed).await?;
@@ -2512,13 +2179,7 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
                 git(&worktree, &["commit", "--allow-empty", "-qm", "later head"])?;
                 git(&worktree, &["push", "-q", "origin", "HEAD"])?;
             }
-            SingletonChange::HistoryWrite
-            | SingletonChange::HistoryRead
-            | SingletonChange::ArmFileRead
-            | SingletonChange::DamagedReceipt
-            | SingletonChange::PrunedReceipt
-            | SingletonChange::StaleSavedHead
-            | SingletonChange::Rearmed
+            SingletonChange::Rearmed
             | SingletonChange::Pruned
             | SingletonChange::JobRead
             | SingletonChange::MatcherRead

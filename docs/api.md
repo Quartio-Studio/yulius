@@ -1162,7 +1162,7 @@ armed-merge waits and updates onto the integration branch; a CI run's queue (wit
 preparation, job-slot waits, jobs, checkouts and the stages its output names; a CD run's
 confirmation, checks, promotion, deploy, verify and the stages their output names. Spans recorded
 before migration 28 from older tables are `backfilled`; a CI result reused from an identical tree
-is `detail.reused` and not counted. Spans are kept 180 days. Nothing writes them through the API.
+is `detail.reused` and not counted. Spans are kept 180 days. Each existing task also keeps its latest completed merge wait for delivery recovery. Nothing writes them through the API.
 
 A CI job or CD script names its stages and figures with lines Yulius reads as it runs; Yulius
 times them by its own clock:

@@ -173,7 +173,7 @@ impl App {
         let _pass = pass.lock().await;
         match self.playground_merge(user, task, None, checks).await? {
             PlaygroundMerge::Merged(view) => {
-                self.clear_armed(task).await;
+                self.clear_armed(task);
                 Ok(*view)
             }
             PlaygroundMerge::Testing(_, note) => Err(AppError::Conflict(format!(
