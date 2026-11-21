@@ -706,7 +706,10 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     let handoff_directory = args.data_dir.join("tunnel-handoff");
     #[cfg(target_os = "linux")]
-    let outbound_relays = isolation.as_ref().map(|m| m.outbound_relays.as_ref());
+    let outbound_relays = isolation.as_ref().map(|m| {
+        egress.bind_holder_relays(Arc::clone(&m.outbound_relays));
+        m.outbound_relays.as_ref()
+    });
     #[cfg(target_os = "linux")]
     crate::wiring::tunnel_handoff::restore(&egress, &handoff_directory, outbound_relays).await;
     browser_network.bind(&app, &egress);

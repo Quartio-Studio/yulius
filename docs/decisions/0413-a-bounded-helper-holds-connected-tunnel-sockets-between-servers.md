@@ -62,12 +62,18 @@ TLS session.
 
 An established opaque HTTP/1.1 CONNECT retains its connected sockets, pending bytes,
 write-half state, admission owner, byte activity and absolute expiry. In namespace mode
-the server also transfers the matching host-side relay. It checks the internal TCP
-endpoints and the surviving holder's identity. Duplicate proxy or relay records for those
-endpoints are discarded. The replacement reserves each accepted relay's original place
+the server also transfers the enrolled host-side relay. At CONNECT the proxy verifies both
+live internal endpoints and records the kernel cookie of the relay socket. Each unclaimed
+relay can hold one duplicate descriptor for this check, bounded by its ordinary admission
+limit. Enrollment releases the duplicate. The successor verifies the recorded cookie against
+the actual descriptor and checks the surviving holder's identity. Duplicate records for one
+enrolled socket are discarded. The replacement reserves each accepted relay's original place
 in admission order before it accepts new connections. Eviction or administrative
 cancellation releases both restored copies, even when the external peers keep their write
-halves open. A FIN leaves the opposite direction available for a final reply.
+halves open. A FIN leaves the opposite direction available for a final reply. When one
+enrolled copy has finished both write halves, it retains its descriptors and admission
+place until the matching copy drains or the connection is cancelled or expires. Thus a
+restart can still transfer application bytes queued on the last active copy.
 
 Continuity requires compatible handoff support in both server versions. HTTP/2 inside
 the opaque tunnel is ordinary payload. An outer HTTP/2 CONNECT shares its transport

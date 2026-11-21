@@ -175,7 +175,10 @@ fn fixture_ip() -> Result<Ipv4Addr, Error> {
         .ok_or_else(|| "the real server fixture needs a local non-loopback IPv4 address".into())
 }
 
-async fn read_head(stream: &mut BufReader<TcpStream>, first_line: &str) -> Result<(), Error> {
+async fn read_head<R: tokio::io::AsyncRead + Unpin>(
+    stream: &mut BufReader<R>,
+    first_line: &str,
+) -> Result<(), Error> {
     let mut line = String::new();
     stream.read_line(&mut line).await?;
     assert!(line.starts_with(first_line), "{line}");
@@ -384,6 +387,93 @@ async fn a_stopped_client_keeps_its_original_tunnel_through_the_holder() -> Resu
     .await?
 }
 
+#[tokio::test]
+#[ignore = "needs the Linux namespace server's subordinate IDs and installed helpers"]
+async fn a_final_reply_already_sent_before_shutdown_drains_through_the_original_outbound_socket()
+-> Result<(), Error> {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let data = tempfile::tempdir()?;
+        let internal = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await?
+            .local_addr()?;
+        let _holder = live_holder(data.path(), internal.port()).await?;
+        let listener = TcpListener::bind((fixture_ip()?, 0)).await?;
+        let mut first = start(data.path(), internal, Route::Holder).await?;
+        seed(data.path())?;
+        let mut unix =
+            tokio::net::UnixStream::connect(data.path().join("runtime/sandboxes/s1/out.sock"))
+                .await?;
+        unix.write_u16(internal.port()).await?;
+        assert_eq!(unix.read_u8().await?, yulius_contracts::sandbox::RELAY_OK);
+        let (mut client, mut peer) =
+            establish_tunnel(unix, listener.local_addr()?, &listener).await?;
+        drop(listener);
+        let local = format!("0100007F:{:04X}", internal.port());
+        let internal_connections = || -> std::io::Result<Vec<(String, String)>> {
+            Ok(std::fs::read_to_string("/proc/self/net/tcp")?
+                .lines()
+                .filter_map(|line| {
+                    let mut fields = line.split_whitespace().skip(1);
+                    (fields.next()? == local)
+                        .then_some((fields.next()?.to_owned(), fields.next()?.to_owned()))
+                })
+                .collect())
+        };
+        let original = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let mut live = internal_connections()?
+                    .into_iter()
+                    .filter(|(_, state)| state == "01");
+                if let Some((peer, _)) = live.next()
+                    && live.next().is_none()
+                {
+                    return Ok::<_, Error>(peer);
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .map_err(|_| "missing unique internal TCP connection")??;
+        client.get_mut().shutdown().await?;
+        assert_eq!(peer.read(&mut [0]).await?, 0);
+        // Leave the client unread while the proxy finishes writing into the internal TCP link.
+        let reply: Vec<_> = (0..262_144u32).flat_map(u32::to_be_bytes).collect();
+        peer.write_all(&reply).await?;
+        peer.shutdown().await?;
+        // The relay has sent its FIN. Wait until the proxy has forwarded the full reply and
+        // finished its own write half. The unread original Unix socket still blocks the relay.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while internal_connections()?
+                .iter()
+                .any(|(peer, state)| *peer == original && matches!(state.as_str(), "01" | "08"))
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Ok::<_, Error>(())
+        })
+        .await
+        .map_err(|_| "proxy did not finish its internal write half")??;
+        stop(&mut first).await?;
+        let mut next = start(data.path(), internal, Route::Holder).await?;
+        let mut received = Vec::new();
+        client
+            .take(u64::try_from(reply.len())? + 1)
+            .read_to_end(&mut received)
+            .await?;
+        assert_eq!(
+            received.len(),
+            reply.len(),
+            "the relay lost some of the final reply"
+        );
+        assert!(
+            received == reply,
+            "the original client's queued reply changed"
+        );
+        stop(&mut next).await
+    })
+    .await?
+}
+
 async fn check_restart(route: Route) -> Result<(), Error> {
     tokio::time::timeout(Duration::from_secs(30), async {
         // Dial only this fixture's listening address. The production proxy denies loopback.
@@ -471,11 +561,19 @@ async fn open_tunnel(
     target: SocketAddr,
     listener: &TcpListener,
 ) -> Result<(BufReader<TcpStream>, TcpStream), Error> {
+    establish_tunnel(TcpStream::connect(internal).await?, target, listener).await
+}
+
+async fn establish_tunnel<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    stream: S,
+    target: SocketAddr,
+    listener: &TcpListener,
+) -> Result<(BufReader<S>, TcpStream), Error> {
     let auth = base64::engine::general_purpose::STANDARD.encode(format!("fixture:{TOKEN}"));
     let connect = format!(
         "CONNECT {target} HTTP/1.1\r\nHost: {target}\r\nProxy-Authorization: Basic {auth}\r\n\r\n"
     );
-    let mut client = BufReader::new(TcpStream::connect(internal).await?);
+    let mut client = BufReader::new(stream);
     client.get_mut().write_all(connect.as_bytes()).await?;
     read_head(&mut client, "HTTP/1.1 200").await?;
     let (mut peer, _) = listener.accept().await?;

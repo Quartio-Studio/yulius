@@ -60,7 +60,8 @@ new request after the old sockets reach EOF. The issue requires the original con
 - [x] Verify same-socket continuity, admission limits and intercepted traffic through restart
 - [x] Quiesce outbound relay admissions without recording a capacity refusal
 - [x] Obtain independent approval for the holder relay lifecycle slice
-- [ ] Restore matched proxy and relay pairs on the delivered holder lifecycle
+- [x] Restore matched proxy and relay pairs on the delivered holder lifecycle
+- [x] Bind the original relay at CONNECT and retain final bytes until both copies drain
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
@@ -619,3 +620,29 @@ matched relay and proxy restoration has its own review and CI.
   one in a mixed batch containing duplicate records. The new selection rejects duplicate
   internal endpoints before requesting a relay or starting either restored copy. The
   updated fixture kept only the healthy tunnel. Both rejected external peers observed EOF.
+
+- On the exact dev server at `4e6095745` the stopped client lost its original tunnel
+  with BrokenPipe in 0.43 seconds. The first joined candidate `71879bf4d` passed the
+  ten real-server fixtures, five service wiring cases and 938 library and integration
+  tests. Two host-dependent cases were skipped.
+- Independent review of that candidate found that an internal TCP address pair can
+  outlive its original connection and that the proxy can finish before an outbound
+  relay drains. The synthetic identity regression retained two records where only
+  the healthy original qualified. A separate Linux fixture waited for the old proxy
+  to finish its internal write half before SIGTERM. The original Unix client received
+  196,608 of 1,048,576 ordered bytes after the successor became ready.
+- The departing proxy now enrolls the actual outbound socket during an authorized
+  opaque CONNECT, while both internal TCP endpoints still name one another. The
+  namespace record carries its kernel socket cookie. Capture and adoption check this
+  identity, and each copy remains available while its enrolled peer finishes a write.
+  The same process fixture received the full ordered 1,048,576 bytes and EOF on the
+  original Unix socket. The identity regression retained only the healthy tunnel. A
+  live relay test also confirmed that cookie-based capture refuses an unenrolled
+  connection. The synthetic intercepted host policies and four consecutive updates
+  on one original connection passed with this change.
+- The checked-in final-reply regression reproduced the 196,608-byte short read on
+  `71879bf4d` in 0.50 seconds. All 11 `opaque_restart` cases passed on the corrected
+  binary in 10.05 seconds in an isolated Linux network. Two distinct compatible builds
+  exchanged fresh request and response bytes on the original TLS session and HTTP/2 stream.
+  Six service wiring cases, ten relay handoff cases and 940 domain, sandbox and egress
+  tests passed. Two environment-dependent sandbox tests were skipped. Scoped Clippy passed.

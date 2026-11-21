@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use yulius_sandbox::relay::custodian::{Established, Pair, collect, monotonic_ms};
-use yulius_sandbox::relay::handoff::{CopyCancellation, TcpLink};
+use yulius_sandbox::relay::handoff::{CopyCancellation, CopyDrain, OutboundRelays, TcpLink};
 
 use super::{
     Arc, Bytes, CONNECTION_MAX, CopyState, EgressProxy, PoisonError, Slot, SocketAddr, TcpStream,
@@ -17,6 +17,8 @@ pub(super) type Capture = oneshot::Sender<oneshot::Sender<Pair>>;
 struct Ownership {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     link: Option<TcpLink>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    relay_cookie: Option<u64>,
     sandbox: String,
     run: String,
     last: u64,
@@ -66,6 +68,7 @@ fn register(slot: &Slot) -> Option<oneshot::Receiver<oneshot::Sender<Pair>>> {
 
 struct Tunnel {
     link: Option<TcpLink>,
+    relay_cookie: Option<u64>,
     client: TcpStream,
     upstream: TcpStream,
     copy: CopyState,
@@ -79,16 +82,22 @@ impl Tunnel {
         mut self,
         slot: Slot,
         request: oneshot::Receiver<oneshot::Sender<Pair>>,
+        drain: CopyDrain,
     ) -> io::Result<()> {
         let mut upstream = Tracked::new(self.upstream, &slot);
         let timeout = remaining(slot.activity.last(), self.expires, monotonic_ms())?;
         let reply = tokio::select! {
-            result = self.copy.transfer(&mut self.client, &mut upstream) => return result,
-            () = tokio::time::sleep(timeout) => return Ok(()),
+            result = async {
+                self.copy.transfer(&mut self.client, &mut upstream).await?;
+                drain.finish().await;
+                Ok(())
+            } => return result,
+            () = tokio::time::sleep(timeout) => return Err(io::ErrorKind::TimedOut.into()),
             reply = request => match reply { Ok(reply) => reply, Err(_) => return Ok(()) },
         };
         let owner = Ownership {
             link: self.link,
+            relay_cookie: self.relay_cookie,
             sandbox: slot.sandbox.clone(),
             run: self.run,
             last: slot.activity.last(),
@@ -126,6 +135,7 @@ pub(super) async fn agent_tunnel(
     upgraded: Upgraded,
     slot: Slot,
     run: &str,
+    relays: Option<&OutboundRelays>,
 ) {
     let (client, prefix) = match tcp_upgrade(upgraded) {
         Ok(parts) => parts,
@@ -144,8 +154,14 @@ pub(super) async fn agent_tunnel(
         return;
     };
     let established = Established::connected(&client, &upstream).ok();
+    let (relay_cookie, cancellation) = match relays.and_then(|r| r.enroll(&slot.sandbox, &client)) {
+        Some((cookie, cancellation)) => (Some(cookie), cancellation),
+        None => (None, CopyCancellation::default()),
+    };
+    let drain = cancellation.drain();
     let tunnel = Tunnel {
         link: TcpLink::at_proxy(&client).ok(),
+        relay_cookie,
         established,
         client,
         upstream,
@@ -153,10 +169,28 @@ pub(super) async fn agent_tunnel(
         run: run.to_owned(),
         expires,
     };
-    let _ = tunnel.transfer(slot, request).await;
+    let _ = cancellation
+        .run_copy(tunnel.transfer(slot, request, drain))
+        .await;
 }
 
 impl EgressProxy {
+    /// Bind the live namespace manager before accepting CONNECT requests.
+    pub fn bind_holder_relays(&self, relays: Arc<OutboundRelays>) {
+        let _ = self.holder_relays.set(relays);
+    }
+
+    /// Identify the original relay enrolled by an opaque connection.
+    ///
+    /// # Errors
+    /// This record has no live enrollment or no longer identifies its original socket.
+    pub fn enrolled_relay(pair: &Pair) -> io::Result<(String, TcpLink, u64)> {
+        let (owner, _) = tunnel_state(pair)?;
+        let cookie = owner.relay_cookie.ok_or_else(invalid)?;
+        let link = owner.link.ok_or_else(invalid)?.verify_proxy(pair)?;
+        Ok((owner.sandbox, link, cookie))
+    }
+
     /// Pause the established opaque TCP copies in admission order, after stopping new requests.
     /// Eligible tasks yield their sockets and pending bytes. Closing or evicted copies yield none.
     ///
@@ -267,6 +301,7 @@ impl EgressProxy {
         };
         let tunnel = Tunnel {
             link: owner.link.or_else(|| TcpLink::at_proxy(&client).ok()),
+            relay_cookie: owner.relay_cookie,
             established,
             client,
             upstream,
@@ -275,8 +310,9 @@ impl EgressProxy {
             expires,
         };
         tokio::spawn(async move {
+            let drain = cancellation.drain();
             cancellation
-                .run(ended, tunnel.transfer(slot, request))
+                .run(ended, tunnel.transfer(slot, request, drain))
                 .await;
         });
         Ok(())

@@ -10,20 +10,20 @@ use yulius_sandbox::cgroup;
 use yulius_sandbox::relay::custodian;
 use yulius_sandbox::relay::handoff::{CopyCancellation, OutboundRelays, TcpLink};
 
-// A reused TCP tuple cannot identify either original stream when both records survive.
-fn unique_proxies(pairs: Vec<custodian::Pair>) -> Vec<(String, TcpLink, custodian::Pair)> {
+// Multiple records for the same enrolled socket cannot select a unique original copy.
+fn unique_proxies(pairs: Vec<custodian::Pair>) -> Vec<(String, TcpLink, u64, custodian::Pair)> {
     let mut unique = BTreeMap::new();
     let mut proxies = Vec::new();
     for pair in pairs {
-        if let Ok((sandbox, link)) = EgressProxy::relay_link(&pair) {
+        if let Ok((sandbox, link, cookie)) = EgressProxy::enrolled_relay(&pair) {
             unique
-                .entry(link)
+                .entry((link, cookie))
                 .and_modify(|only| *only = false)
                 .or_insert(true);
-            proxies.push((sandbox, link, pair));
+            proxies.push((sandbox, link, cookie, pair));
         }
     }
-    proxies.retain(|(_, link, _)| unique.get(link) == Some(&true));
+    proxies.retain(|(_, link, cookie, _)| unique.get(&(*link, *cookie)) == Some(&true));
     proxies
 }
 
@@ -36,21 +36,24 @@ fn matches(
     let mut proxies = Vec::new();
     for mut pair in pairs {
         if pair.state.starts_with(b"RL1\n") {
-            if let Ok(link) = TcpLink::at_relay(&pair) {
+            if let (Ok(link), Ok(cookie)) = (
+                TcpLink::at_relay(&pair),
+                TcpLink::relay_cookie(&pair.sockets[1]),
+            ) {
                 relays
-                    .entry(link)
+                    .entry((link, cookie))
                     .and_modify(|only| *only = None)
                     .or_insert(Some(pair));
             }
-        } else if pair.state.starts_with(b"NS1\n") {
+        } else if pair.state.starts_with(b"NS2\n") {
             pair.state[..3].copy_from_slice(b"OP1");
             proxies.push(pair);
         }
     }
     unique_proxies(proxies)
         .into_iter()
-        .filter_map(|(sandbox, link, proxy)| {
-            let relay = relays.remove(&link)??;
+        .filter_map(|(sandbox, link, cookie, proxy)| {
+            let relay = relays.remove(&(link, cookie))??;
             (proxy.expires.is_some() && proxy.expires == relay.expires)
                 .then_some((sandbox, link, proxy, relay))
         })
@@ -102,14 +105,14 @@ pub(crate) async fn deposit(
     let mut pairs = proxy.take_opaque_tunnels().await?;
     if let Some(relays) = relays {
         let mut replies = Vec::new();
-        for (sandbox, link, mut pair) in unique_proxies(pairs) {
+        for (sandbox, link, cookie, mut pair) in unique_proxies(pairs) {
             let Some(expires) = pair.expires else {
                 continue;
             };
-            let Some(relay) = relays.capture(&sandbox, link, expires) else {
+            let Some(relay) = relays.capture_enrolled(&sandbox, link, cookie, expires) else {
                 continue;
             };
-            pair.state[..3].copy_from_slice(b"NS1");
+            pair.state[..3].copy_from_slice(b"NS2");
             let (send, receive) = tokio::sync::oneshot::channel();
             let _ = send.send(pair);
             replies.extend([receive, relay]);
@@ -118,7 +121,7 @@ pub(crate) async fn deposit(
         for (_, _, mut opaque, relay) in matches(
             tokio::time::timeout(Duration::from_secs(5), custodian::collect(replies)).await??,
         ) {
-            opaque.state[..3].copy_from_slice(b"NS1");
+            opaque.state[..3].copy_from_slice(b"NS2");
             pairs.extend([opaque, relay]);
         }
     }
@@ -236,8 +239,7 @@ mod tests {
         let holder = holder(sandbox)?;
         let relay_owner =
             serde_json::json!({"holder": holder, "link": link, "order": 1, "last": 0});
-        let proxy_owner =
-            serde_json::json!({"sandbox": sandbox, "run": "fixture", "link": link, "last": 0});
+        let proxy_owner = serde_json::json!({"sandbox": sandbox, "run": "fixture", "link": link, "relay_cookie": TcpLink::relay_cookie(&upstream)?, "last": 0});
         let relay = custodian::Pair {
             sockets: [relay_client.into(), upstream.into()],
             state: format!("RL1\n{relay_owner}\n\0\0\0\0\0\0").into_bytes(),
@@ -246,7 +248,7 @@ mod tests {
         };
         let proxy = custodian::Pair {
             sockets: [proxy_client.into(), origin.into()],
-            state: format!("NS1\n{proxy_owner}\n\0\0\0\0\0\0").into_bytes(),
+            state: format!("NS2\n{proxy_owner}\n\0\0\0\0\0\0").into_bytes(),
             expires: end,
             established: None,
         };
@@ -266,6 +268,8 @@ mod tests {
         no_time_relay.expires = None;
         let (mut direct, direct_relay, _direct_client, _direct_origin) = joined("direct")?;
         direct.state[..3].copy_from_slice(b"OP1");
+        let (mut unstamped, unstamped_relay, _old_client, _old_origin) = joined("old-format")?;
+        unstamped.state[..3].copy_from_slice(b"NS1");
         let (unpaired, missing, _unpaired_client, _unpaired_origin) = joined("unpaired")?;
         drop(missing);
         let matched = matches(vec![
@@ -279,6 +283,8 @@ mod tests {
             first_relay,
             direct,
             direct_relay,
+            unstamped,
+            unstamped_relay,
             unpaired,
         ]);
         assert_eq!(matched.len(), 2);
@@ -294,6 +300,33 @@ mod tests {
         origin.set_read_timeout(Some(Duration::from_secs(2)))?;
         assert_eq!(client.read(&mut [0])?, 0);
         assert_eq!(origin.read(&mut [0])?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn the_recorded_relay_incarnation_must_match_its_original_socket() -> io::Result<()> {
+        let (mut opaque, relay, _client, _origin) = joined("fixture")?;
+        // Supply a well-formed proxy record for a different synthetic relay incarnation.
+        let (header, copy) = opaque.state[4..].split_at(
+            opaque.state[4..]
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .ok_or(io::ErrorKind::InvalidData)?,
+        );
+        let mut owner: serde_json::Value = serde_json::from_slice(header)?;
+        owner["relay_cookie"] = 0.into();
+        let mut state = b"NS2\n".to_vec();
+        serde_json::to_writer(&mut state, &owner)?;
+        state.extend_from_slice(copy);
+        opaque.state = state;
+        let (healthy, healthy_relay, _healthy_client, _healthy_origin) = joined("healthy")?;
+        let retained = matches(vec![opaque, healthy, relay, healthy_relay]);
+        assert_eq!(
+            retained.len(),
+            1,
+            "unrelated relay incarnation was retained"
+        );
+        assert_eq!(retained[0].0, "healthy");
         Ok(())
     }
 

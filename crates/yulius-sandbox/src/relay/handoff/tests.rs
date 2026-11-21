@@ -229,6 +229,33 @@ async fn check_captured_relay(final_reply: bool) -> io::Result<()> {
         client.write_all(b"live").await?;
         assert_eq!(peer.read_u32().await?.to_be_bytes(), *b"live");
         let link = TcpLink::at_proxy(&peer.as_fd().try_clone_to_owned()?)?;
+        let observed_cookie = {
+            let holders = hub.0.lock().unwrap_or_else(PoisonError::into_inner);
+            let relay = holders.relays.get(&holder.sandbox).ok_or_else(invalid)?;
+            let mut slots = relay
+                .places
+                .table
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            slots
+                .connections
+                .controls_mut()
+                .find_map(|(_, c)| c.enrollment.as_ref().map(|e| e.cookie))
+                .ok_or_else(invalid)?
+        };
+        assert!(
+            hub.capture_enrolled(
+                &holder.sandbox,
+                link,
+                observed_cookie,
+                monotonic_ms() + 4000
+            )
+            .is_none(),
+            "an ordinary relay has not enrolled in an opaque CONNECT"
+        );
+        assert!(hub.enroll("another-holder", &peer).is_none());
+        let (cookie, _proxy_owner) = hub.enroll(&holder.sandbox, &peer).ok_or_else(invalid)?;
+        assert!(hub.enroll(&holder.sandbox, &peer).is_none());
         if final_reply {
             client.shutdown().await?;
             assert_eq!(peer.read(&mut [0]).await?, 0);
@@ -236,12 +263,17 @@ async fn check_captured_relay(final_reply: bool) -> io::Result<()> {
         hub.stop_admissions();
         let expires = monotonic_ms() + 4_000;
         assert!(hub.capture("another-holder", link, expires).is_none());
+        assert!(
+            hub.capture_enrolled(&holder.sandbox, link, cookie ^ 1, expires)
+                .is_none()
+        );
         let mut pair = hub
-            .capture(&holder.sandbox, link, expires)
+            .capture_enrolled(&holder.sandbox, link, cookie, expires)
             .ok_or_else(invalid)?
             .await
             .map_err(io::Error::other)?;
         assert!(hub.capture(&holder.sandbox, link, expires).is_none());
+        assert_eq!(TcpLink::relay_cookie(&pair.sockets[1])?, cookie);
         serving.abort();
         assert!(serving.await.is_err_and(|e| e.is_cancelled()));
         let next = Arc::new(OutboundRelays::default());
@@ -584,6 +616,107 @@ async fn capture_saves_the_reply_already_read_into_the_blocked_unix_writer() -> 
         assert_eq!(reply, queued);
         assert_eq!(peer.read(&mut [0]).await?, 0);
         resumed.await.map_err(io::Error::other)??;
+        Ok(())
+    })
+    .await?
+}
+
+#[tokio::test]
+async fn one_completed_copy_waits_for_its_original_peer_or_its_cancellation() -> io::Result<()> {
+    use std::future::poll_fn;
+    use std::task::Poll;
+
+    for cancel in [false, true] {
+        let (relay, proxy) = CopyCancellation::pair();
+        let drain = relay.drain();
+        let mut waiting = std::pin::pin!(drain.finish());
+        assert!(
+            poll_fn(|cx| Poll::Ready(waiting.as_mut().poll(cx)))
+                .await
+                .is_pending()
+        );
+        if cancel {
+            drop(proxy);
+        } else {
+            tokio::time::timeout(Duration::from_secs(2), proxy.drain().finish()).await?;
+        }
+        assert!(
+            poll_fn(|cx| Poll::Ready(waiting.as_mut().poll(cx)))
+                .await
+                .is_ready()
+        );
+    }
+    let owner = CopyCancellation::unclaimed();
+    let standalone = owner.drain();
+    tokio::time::timeout(Duration::from_secs(2), standalone.finish()).await?;
+    assert!(
+        standalone.enroll().is_none(),
+        "a completed relay cannot enroll later"
+    );
+    let unclaimed = CopyCancellation::unclaimed();
+    let available = unclaimed.drain();
+    drop(unclaimed);
+    assert!(available.enroll().is_none());
+    let unclaimed = CopyCancellation::unclaimed();
+    let available = unclaimed.drain();
+    let proxy = available.enroll().ok_or_else(invalid)?;
+    assert!(available.enroll().is_none());
+    // Taking a checkpoint releases this task's guard without cancelling its peer.
+    proxy.run_copy(async { Ok(()) }).await?;
+    let error = unclaimed
+        .run_copy(async { Err(io::ErrorKind::ConnectionReset.into()) })
+        .await
+        .expect_err("the remaining copy must report its socket error");
+    assert_eq!(error.kind(), io::ErrorKind::ConnectionReset);
+
+    let (relay, proxy) = CopyCancellation::pair();
+    let error = relay
+        .run_copy(async { Err(io::ErrorKind::TimedOut.into()) })
+        .await
+        .expect_err("the original absolute deadline must end the transfer");
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        proxy.run_copy(std::future::pending()),
+    )
+    .await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn enrollment_uses_the_live_socket_when_a_table_entry_has_stale_addresses() -> io::Result<()>
+{
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let first = TcpStream::connect(listener.local_addr()?).await?;
+        let (_first_peer, _) = listener.accept().await?;
+        let second = TcpStream::connect(listener.local_addr()?).await?;
+        let (second_peer, _) = listener.accept().await?;
+        let link = TcpLink::at_proxy(&second_peer)?;
+        let places = Places::new(2, IDLE_FLOOR);
+        let relays = registered_table(&places)?;
+        let install = |socket: &TcpStream| -> io::Result<_> {
+            let (place, evicted, _) = places.admit().ok_or_else(invalid)?;
+            let owner = CopyCancellation::unclaimed();
+            let (capture, request) = oneshot::channel();
+            let mut slots = places.table.lock().unwrap_or_else(PoisonError::into_inner);
+            let (_, control) = slots
+                .connections
+                .controls_mut()
+                .find(|(id, _)| *id == place.id)
+                .ok_or_else(invalid)?;
+            control.capture = Some((link, capture));
+            control.enrollment = Some(Enrollment {
+                cookie: TcpLink::relay_cookie(socket)?,
+                available: Some((socket.as_fd().try_clone_to_owned()?.into(), owner.drain())),
+            });
+            Ok((place, evicted, owner, request))
+        };
+        let _stale = install(&first)?;
+        assert!(relays.enroll("fixture", &second_peer).is_none());
+        let _live = install(&second)?;
+        let (id, _owner) = relays.enroll("fixture", &second_peer).ok_or_else(invalid)?;
+        assert_eq!(id, TcpLink::relay_cookie(&second)?);
         Ok(())
     })
     .await?

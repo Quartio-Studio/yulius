@@ -9,7 +9,7 @@ use std::time::Duration;
 use rustix::net::{AddressFamily, sockopt};
 use serde::{Deserialize, Serialize};
 use tokio::net::{TcpStream, UnixListener, UnixStream};
-use tokio::sync::{oneshot, watch};
+use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 use yulius_contracts::sandbox::HolderRecord;
 use yulius_domain::connection_health::ConnectionHealth;
@@ -18,6 +18,9 @@ use super::custodian::{Established, Pair, monotonic_ms};
 use super::{
     Control, CopyState, IDLE_FLOOR, MAX_CONNECTIONS, Place, Places, Report, Tracked, outbound_loop,
 };
+
+mod drain;
+pub use drain::{CopyCancellation, CopyDrain};
 
 /// The connected TCP leg between a holder's outbound relay and the internal proxy.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -37,6 +40,14 @@ impl TcpLink {
             relay: tcp.peer_addr()?,
             proxy: tcp.local_addr()?,
         })
+    }
+
+    /// Kernel identity of the outbound relay's original internal TCP socket.
+    ///
+    /// # Errors
+    /// The kernel could not identify the descriptor.
+    pub fn relay_cookie(fd: &impl std::os::fd::AsFd) -> io::Result<u64> {
+        Ok(sockopt::socket_cookie(fd)?)
     }
 
     /// Inspect the original upstream descriptor of a serialized outbound relay.
@@ -84,51 +95,11 @@ impl TcpLink {
     }
 }
 
-/// Administrative cancellation shared by the two restored copies of one tunnel.
-#[derive(Default)]
-pub struct CopyCancellation(Option<watch::Sender<bool>>);
-
-impl CopyCancellation {
-    /// Cancelling either copy ends its peer. A standalone copy uses the default.
-    #[must_use]
-    pub fn pair() -> (Self, Self) {
-        let (signal, _) = watch::channel(false);
-        (Self(Some(signal.clone())), Self(Some(signal)))
-    }
-
-    /// Run until transfer completes, the place is evicted, or the matching task is cancelled.
-    /// Orderly capture and a completed transfer let the peer drain its own final bytes.
-    pub async fn run(
-        mut self,
-        evicted: oneshot::Receiver<()>,
-        transfer: impl Future<Output = io::Result<()>>,
-    ) {
-        let peer_ended = async {
-            if let Some(signal) = &self.0 {
-                let mut receiver = signal.subscribe();
-                let _ = receiver.wait_for(|ended| *ended).await;
-            } else {
-                std::future::pending::<()>().await;
-            }
-        };
-        let completed = tokio::select! {
-            biased;
-            _ = evicted => false,
-            () = peer_ended => false,
-            result = transfer => result.is_ok(),
-        };
-        if completed {
-            self.0.take();
-        }
-    }
-}
-
-impl Drop for CopyCancellation {
-    fn drop(&mut self) {
-        if let Some(signal) = &self.0 {
-            signal.send_replace(true);
-        }
-    }
+// The probe is a duplicate of the actual internal socket. Drop it as soon as CONNECT enrolls
+// the relay, or with the admission place if this is an ordinary HTTP or intercepted connection.
+pub(super) struct Enrollment {
+    cookie: u64,
+    available: Option<(std::net::TcpStream, CopyDrain)>,
 }
 
 pub(super) type Capture = oneshot::Sender<(u64, oneshot::Sender<Pair>)>;
@@ -169,6 +140,7 @@ impl Flow {
         holder: &HolderRecord,
         expires: Option<u64>,
         request: Request,
+        drain: CopyDrain,
     ) -> io::Result<()> {
         let mut client = Tracked {
             inner: self.client,
@@ -183,9 +155,13 @@ impl Flow {
         };
         let (expires, reply) = tokio::select! {
             biased;
-            ()=lifetime => return Ok(()),
+            ()=lifetime => return Err(io::ErrorKind::TimedOut.into()),
             request=request => match request { Ok(request)=>request,Err(_)=>return Ok(()) },
-            result=self.copy.transfer(&mut client, &mut self.upstream)=>return result,
+            result=async {
+                self.copy.transfer(&mut client, &mut self.upstream).await?;
+                drain.finish().await;
+                Ok(())
+            } => return result,
         };
         let owner = Owner {
             link: self.link,
@@ -224,6 +200,18 @@ pub(super) async fn transfer(
         proxy: upstream.peer_addr()?,
     };
     let (capture, request) = oneshot::channel();
+    let cancellation = CopyCancellation::unclaimed();
+    let drain = cancellation.drain();
+    let enrollment = upstream
+        .as_fd()
+        .try_clone_to_owned()
+        .ok()
+        .and_then(|probe| {
+            Some(Enrollment {
+                cookie: TcpLink::relay_cookie(&upstream).ok()?,
+                available: Some((probe.into(), drain.clone())),
+            })
+        });
     {
         let mut slots = client
             .place
@@ -242,17 +230,19 @@ pub(super) async fn transfer(
             return Ok(());
         };
         control.capture = Some((link, capture));
+        control.enrollment = enrollment;
     }
     let established = Established::connected(&client.inner, &upstream).ok();
-    Flow {
+    let flow = Flow {
         link,
         established,
         client: client.inner,
         upstream,
         copy,
-    }
-    .run(client.place, holder, expires, request)
-    .await
+    };
+    cancellation
+        .run_copy(flow.run(client.place, holder, expires, request, drain))
+        .await
 }
 
 struct Saved {
@@ -347,7 +337,14 @@ impl Outbound {
             }
             let (end, evicted) = oneshot::channel();
             let (capture, request) = oneshot::channel();
+            let Ok(cookie) = TcpLink::relay_cookie(&saved.flow.upstream) else {
+                continue;
+            };
             let control = Control {
+                enrollment: Some(Enrollment {
+                    cookie,
+                    available: None,
+                }),
                 _end: end,
                 capture: Some((saved.link, capture)),
             };
@@ -442,11 +439,62 @@ impl OutboundRelays {
         }
     }
 
+    /// Bind an authorized CONNECT to its original outbound socket while both TCP ends
+    /// still report one another as live peers. A terminal socket cannot enroll a new copy.
+    pub fn enroll(&self, sandbox: &str, client: &TcpStream) -> Option<(u64, CopyCancellation)> {
+        let link = TcpLink::at_proxy(client).ok()?;
+        let holders = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let relay = holders.relays.get(sandbox)?;
+        let mut slots = relay
+            .places
+            .table
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut candidates = slots.connections.controls_mut().filter_map(|(_, control)| {
+            if control.capture.as_ref()?.0 != link {
+                return None;
+            }
+            let enrollment = control.enrollment.as_mut()?;
+            let (probe, _) = enrollment.available.as_ref()?;
+            (probe.local_addr().ok()? == link.relay && probe.peer_addr().ok()? == link.proxy)
+                .then_some(enrollment)
+        });
+        let original = candidates.next()?;
+        if candidates.next().is_some() || TcpLink::at_proxy(client).ok()? != link {
+            return None;
+        }
+        let (_, drain) = original.available.as_ref()?;
+        let cancellation = drain.enroll()?;
+        original.available.take();
+        Some((original.cookie, cancellation))
+    }
+
     /// Request the uniquely matching original relay still admitted for this sandbox.
     pub fn capture(
         &self,
         sandbox: &str,
         link: TcpLink,
+        expires: u64,
+    ) -> Option<oneshot::Receiver<Pair>> {
+        self.capture_matching(sandbox, link, None, expires)
+    }
+
+    /// Pause the exact kernel socket enrolled by this opaque CONNECT.
+    pub fn capture_enrolled(
+        &self,
+        sandbox: &str,
+        link: TcpLink,
+        cookie: u64,
+        expires: u64,
+    ) -> Option<oneshot::Receiver<Pair>> {
+        self.capture_matching(sandbox, link, Some(cookie), expires)
+    }
+
+    fn capture_matching(
+        &self,
+        sandbox: &str,
+        link: TcpLink,
+        cookie: Option<u64>,
         expires: u64,
     ) -> Option<oneshot::Receiver<Pair>> {
         let holders = self.0.lock().unwrap_or_else(PoisonError::into_inner);
@@ -456,10 +504,14 @@ impl OutboundRelays {
             .table
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let mut matches = slots
-            .connections
-            .controls_mut()
-            .filter(|(_, c)| c.capture.as_ref().is_some_and(|(k, _)| *k == link));
+        let mut matches = slots.connections.controls_mut().filter(|(_, c)| {
+            c.capture.as_ref().is_some_and(|(k, _)| *k == link)
+                && cookie.is_none_or(|id| {
+                    c.enrollment
+                        .as_ref()
+                        .is_some_and(|e| e.cookie == id && e.available.is_none())
+                })
+        });
         let (_, control) = matches.next()?;
         // A terminal TCP tuple can be reused while the old Unix client is still draining.
         if matches.next().is_some() {
@@ -558,6 +610,7 @@ impl OutboundRelays {
             for resume in restored {
                 let holder = Arc::clone(&holder);
                 copies.spawn(async move {
+                    let drain = resume.cancellation.drain();
                     resume
                         .cancellation
                         .run(
@@ -567,6 +620,7 @@ impl OutboundRelays {
                                 &holder,
                                 Some(resume.expires),
                                 resume.request,
+                                drain,
                             ),
                         )
                         .await;
