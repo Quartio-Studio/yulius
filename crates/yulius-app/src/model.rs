@@ -353,8 +353,8 @@ pub struct TaskTimes {
 /// A task.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskRecord {
-    /// Latest attempt when this read saw the task parked. Derived from the attempt history.
-    pub parked_attempt_id: Option<AttemptId>,
+    /// Latest attempt when this read saw the task parked or ended. Derived from the attempt history.
+    pub resume_attempt_id: Option<AttemptId>,
     /// Id.
     pub id: TaskId,
     /// Sandbox.
@@ -414,11 +414,18 @@ pub struct TaskRecord {
 }
 
 impl TaskRecord {
+    /// Whether an owner's Continue still addresses the same ended run and archive.
+    pub(crate) fn matches_continuation(&self, selected: &Self) -> bool {
+        self.status == selected.status
+            && self.archived_at == selected.archived_at
+            && self.resume_attempt_id == selected.resume_attempt_id
+    }
+
     /// Preserve the parked turn a caller selected across a later lookup of the task.
     pub(crate) fn check_selected_park(&self, selected: &Self) -> crate::error::AppResult<()> {
         if selected.status == TaskStatus::Parked
             && (self.status != TaskStatus::Parked
-                || self.parked_attempt_id != selected.parked_attempt_id)
+                || self.resume_attempt_id != selected.resume_attempt_id)
         {
             return Err(crate::error::AppError::Conflict(format!(
                 "task #{} changed since it was selected. Read the current task and try again.",

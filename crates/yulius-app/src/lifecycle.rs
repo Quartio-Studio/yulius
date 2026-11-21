@@ -316,7 +316,7 @@ impl App {
             TaskStatus::Closed
         };
         let record = TaskRecord {
-            parked_attempt_id: None,
+            resume_attempt_id: None,
             id: TaskId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?,
             sandbox_id: sandbox.id.clone(),
             number: 0,
@@ -746,31 +746,11 @@ impl App {
                 Some(_) => {}
             }
         }
-        // A bare Codex resume only reopens history. Carry the next turn through the queue
-        // with this request. Without a saved session, the launch uses the original request.
-        let start = match (task.harness, task.status) {
-            (Harness::Codex, TaskStatus::Stopped(_) | TaskStatus::Failed(_)) => {
-                self.codex_restart(&task).await?
-            }
-            _ => RunStart::Resume { prompt: None },
-        };
-        // A person continues it: whatever its agent asked a person before is past (SPEC-134).
-        self.end_needs_you(&task.id).await;
-        if task.archived_at.is_some() {
-            let now = self.now();
-            self.deps
-                .store
-                .update_task(
-                    &task.id,
-                    &TaskFieldUpdate {
-                        archived_at: Some(None),
-                        ..TaskFieldUpdate::default()
-                    },
-                    now,
-                )
-                .await?;
-        }
-        self.start_ended_run(&task, start, account).await?;
+        crate::race::reached(
+            crate::race::Point::OwnerContinueRequested,
+            std::path::Path::new(task.id.as_str()),
+        );
+        self.start_ended_run(&task, account).await?;
         // Its waiting successors wait for it again (TSK-012).
         self.unblock_successors(&task.id).await;
         let task = self

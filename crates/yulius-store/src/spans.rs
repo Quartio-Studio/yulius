@@ -752,6 +752,24 @@ mod tests {
             ("limit", Some(990), Some("switched"))
         );
         assert!(all.iter().all(|s| s.source == "recorded"));
+        let mut later_question = request;
+        later_question.at = 1100;
+        store
+            .set_task_needs_you(&task, Some(&later_question), Timestamp(1100))
+            .await?;
+        let selected = store.task(&task).await?.ok_or("ended task")?;
+        assert!(
+            store
+                .claim_continuation(&selected, None, Timestamp(5400))
+                .await?
+        );
+        let after = spans(&store, SubjectKind::Task, "t1").await?;
+        let answered = after
+            .iter()
+            .find(|s| s.name == "needs_you" && s.started_at == Timestamp(1100))
+            .ok_or("continued owner's question")?;
+        assert_eq!(answered.ended_at, Some(Timestamp(5400)));
+        assert_eq!(answered.outcome.as_deref(), Some("answered"));
         Ok(())
     }
 

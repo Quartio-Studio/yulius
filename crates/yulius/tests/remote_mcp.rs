@@ -861,6 +861,56 @@ async fn a_remote_restart_keeps_the_selected_park() -> TestResult {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_remote_restart_preserves_an_archive_after_its_first_read() -> TestResult {
+    let w = World::new("org").await?;
+    support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    let (_, _, alice) = person(&w, "alice").await?;
+    w.grant("alice", "acme/shop", "admin");
+    let task = support::seed_task(
+        &w.h,
+        "t-closed-restart",
+        "s1",
+        "u-alice",
+        yulius_domain::task::TaskStatus::Closed,
+        None,
+    )
+    .await?;
+    let store = w.h.store.clone();
+    let target = task.id.clone();
+    let at = w.h.app.now();
+    let handle = tokio::runtime::Handle::current();
+    yulius_app::race::on(
+        yulius_app::race::Point::SelectedTaskDispatched,
+        std::path::Path::new(task.id.as_str()),
+        move || {
+            let result = tokio::task::block_in_place(|| {
+                handle.block_on(store.update_task(
+                    &target,
+                    &yulius_app::ports::store::TaskFieldUpdate {
+                        archived_at: Some(Some(at)),
+                        ..Default::default()
+                    },
+                    at,
+                ))
+            });
+            assert!(result.is_ok(), "{result:?}");
+        },
+    );
+    let (error, said, _) = remote(
+        &w,
+        &alice,
+        "task_restart",
+        json!({"project":"acme/shop","number":task.number}),
+    )
+    .await?;
+    assert!(error && said.contains("changed"), "{said}");
+    let current = w.h.store.task(&task.id).await?.ok_or("archived task")?;
+    assert_eq!(current.archived_at, Some(at));
+    assert_eq!(current.status, task.status);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_named_bulk_reply_keeps_the_selected_park() -> TestResult {
     let w = World::new("org").await?;
     support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
