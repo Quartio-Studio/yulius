@@ -6,7 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
-- A terminal that discovers a missed park or resume updates the sidebar, even if an older task list omitted its row (SPEC-558).
+- A terminal that discovers a missed park updates the sidebar, even if an older task list omitted its row (SPEC-558).
 
 - Opening a parked terminal updates its sidebar row with the verified plan, PR and owner decision. A delayed read preserves a newer observation of the same PR closing (SPEC-558).
 

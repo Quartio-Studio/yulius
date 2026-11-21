@@ -44,8 +44,8 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Reconcile parked lifecycle changes and refresh the sidebar independently of Git
 - [x] Show current parked progress and owner notices in the terminal
 - [x] Publish verified parked task detail to the terminal
-- [ ] Reconcile missed parks and resumes discovered by terminal detail
-- [ ] Reconcile terminal-discovered archives and later Undo
+- [ ] Publish a missed park discovered by terminal detail
+- [ ] Reconcile terminal-discovered resumes, archives and later Undo
 - [ ] Publish verified parked task detail to Task Info
 - [ ] Keep failed integration candidates with their original owner
 - [ ] Deliver bounded Codex goal continuation to dev
@@ -73,6 +73,8 @@ Capture a separate screen at the park decision because exiting can clear the ent
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
 ## Evidence
+
+- Review of the combined park/resume implementation at `fb7429ded` reproduced a still-parked detail recreating an omitted row despite no lifecycle change, and a live rename dropping a resume notification. Both regressions passed on the corrected combined checkpoint `a4c532c82`. The current delivery publishes missed parks only and preserves a later resume event while processing an older parked detail. Publishing a resume or archive first observed by detail remains the following delivery.
 
 - On `63d02bb5b`, terminal detail observed Running before a newer watched list returned Waiting for capacity. The sidebar updated but the terminal kept Running. The added Chromium test verifies the terminal’s task subscription and the sidebar record in both reply orders. A list that supersedes a detail-discovered resume now notifies that subscriber about live status changes.
 
