@@ -22,6 +22,10 @@
 const PREFIX = 'yulius.draft.';
 /** Written at sign-out, so the other tabs of this browser forget their drafts too. */
 const FORGOTTEN_KEY = 'yulius.draftsForgotten';
+/** Explicit discard/start can retire even a draft whose first upload is still in flight. */
+const RETIRED_KEY = 'yulius.draftRetired';
+let retirements;
+try { retirements = new BroadcastChannel(RETIRED_KEY); } catch { /* use storage events */ }
 /** The server removes a composer's uploaded files after a week (`DRAFT_MAX_AGE`, uploads.rs). */
 const MAX_AGE_MS = 7 * 24 * 3600 * 1000;
 const MAX_THUMBS = 12;
@@ -149,16 +153,25 @@ export function attachToDraft(draft, items) {
 export function clearDraft(draft) {
   if (drafts.get(draft.key) !== draft) return;
   retire(draft);
-  try { window.localStorage.removeItem(draft.key); } catch { /* storage unavailable */ }
+  if (retirements) retirements.postMessage(draft.key);
+  else {
+    try {
+      window.localStorage.setItem(RETIRED_KEY, draft.key);
+      window.localStorage.removeItem(RETIRED_KEY);
+    } catch { /* storage unavailable */ }
+  }
 }
 
-function retire({ key, scope }) {
+function retire(draft) {
+  const { key, scope } = draft;
   drafts.delete(key);
+  try { window.localStorage.removeItem(key); } catch { /* storage unavailable */ }
   clearTimeout(timers.get(key));
   timers.delete(key);
   if (selected.get(scope) === key) {
-    selected.delete(scope);
-    try { window.sessionStorage.removeItem(scope); } catch { /* memory only */ }
+    const next = otherDrafts(draft)[0];
+    if (next) selectDraft(next);
+    else newDraft(draft);
   }
 }
 
@@ -182,17 +195,21 @@ function forgetInMemory() {
     for (const key of Object.keys(window.sessionStorage)) if (key.startsWith(PREFIX)) window.sessionStorage.removeItem(key);
   } catch { /* memory only */ }
 }
-// Another tab signed out: its drafts are gone from storage, and this tab must not write them back.
+function retiredElsewhere(key) {
+  const draft = drafts.get(key);
+  if (!draft) return;
+  retire(draft);
+  changed(key, true);
+}
+if (retirements) retirements.onmessage = (event) => retiredElsewhere(event.data);
+
 window.addEventListener('storage', (event) => {
   if (event.key === FORGOTTEN_KEY) { forgetInMemory(); return; }
+  if (event.key === RETIRED_KEY) { if (event.newValue) retiredElsewhere(event.newValue); return; }
   const draft = drafts.get(event.key);
-  if (!draft) return;
-  if (event.newValue === null) {
-    // A confirmed discard or successful start also retires open editors and their uploads.
-    retire(draft);
-    changed(event.key, true);
-  } else if (!listeners.has(event.key) && !draft.starting && !timers.has(event.key)) {
-    Object.assign(draft, restore(event.key));
+  // Clearing the prompt also removes its storage entry. Its editor and held uploads stay live.
+  if (draft && !listeners.has(event.key) && !draft.starting && !timers.has(event.key)) {
+    Object.assign(draft, emptyDraft(), restore(event.key));
   }
 });
 

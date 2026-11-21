@@ -10,7 +10,7 @@ A person can have several unfinished tasks in the same sandbox. Some hold upload
 
 ## Decision
 
-Keep the original browser storage key for the first draft. Give each additional draft a random suffix under the same user and sandbox. Store the selected key in the tab's session storage. The composer, its pending writes and each upload hold the identity of the draft they edit.
+Keep the original browser storage key for the first draft. Give each additional draft a random suffix under the same user and sandbox. Store the selected key in the tab's session storage. The composer, its pending writes and each upload hold the identity of the draft they edit. Successful start and confirmed discard broadcast that key to other tabs, including when an upload has begun on an empty draft. Clearing text is an ordinary edit. A retired editor moves to a surviving draft or a fresh identity.
 
 ## Alternatives
 
