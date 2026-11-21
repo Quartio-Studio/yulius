@@ -539,6 +539,24 @@ async fn check_after_restart(
                     "the queue kept the same arm with a new reason: {outdated:?}"
                 );
             }
+            if matches!(case, ColdCandidate::FreeNoteChanges) {
+                // The next queue retry returns the same arm and note. Only the count of
+                // decisions started reveals that it overtook this notice during dispatch.
+                let (entered, release) =
+                    super::pause_watch_or_queue(super::Point::ArmedNoticePublicationRead, id);
+                let watcher = Arc::clone(&cold);
+                let pass = tokio::spawn(async move { watcher.watch_prs(&bounds).await });
+                tokio::time::timeout(Duration::from_secs(10), entered.notified()).await?;
+                let pulls = std::mem::take(&mut *remote.pulls.lock().map_err(|_| "pulls")?);
+                cold.merge_armed(&sandbox).await;
+                *remote.pulls.lock().map_err(|_| "pulls")? = pulls;
+                release.notify_one();
+                let stale = pass.await?;
+                assert!(
+                    stale.is_empty(),
+                    "completed queue retry overtook dispatch: {stale:?}"
+                );
+            }
             if matches!(case, ColdCandidate::FreeHumanDecision) {
                 let (entered, release) =
                     super::pause_watch_or_queue(super::Point::LivePrFactsRead, id);
@@ -1118,6 +1136,13 @@ async fn check_after_restart(
                     && seen[0].1.contains("combined result passed")
                     && seen[0].1.contains("Hands off"),
                 "{seen:?}"
+            );
+            let receipt = data.join(yulius_app::pr_watch::PR_NOTICES_FILE);
+            let told: serde_json::Value = serde_json::from_slice(&std::fs::read(receipt)?)?;
+            assert_eq!(
+                told[id.as_str()]["keys"]["green"],
+                format!("{head}:held"),
+                "a train member keeps its persisted notice identity across restart"
             );
             let task = cold.deps.store.task(id).await?.ok_or("owner")?;
             let path = data.join(yulius_app::merge_train::MERGE_TRAINS_FILE);

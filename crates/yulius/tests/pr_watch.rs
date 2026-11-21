@@ -303,6 +303,8 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
             .transition_delivery(&DeliveryStage::PrOpen, &merged)
             .await?;
         // Not over a prompt that waits for a person either (review round 2).
+        let notices = data.join(yulius_app::pr_watch::PR_NOTICES_FILE);
+        let before: serde_json::Value = serde_json::from_slice(&std::fs::read(&notices)?)?;
         let activity = app.deps.store.task(&id).await?.ok_or("task")?.activity;
         app.deps
             .store
@@ -317,6 +319,9 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
             None,
             "a merged pull request is no stall"
         );
+        let held: serde_json::Value = serde_json::from_slice(&std::fs::read(&notices)?)?;
+        assert_eq!(held[id.as_str()]["progress"], before[id.as_str()]["progress"]);
+        assert_eq!(held[id.as_str()]["progress_ms"], before[id.as_str()]["progress_ms"]);
         app.deps
             .store
             .set_activity(&id, activity, app.now())
@@ -324,6 +329,10 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
         let typed = typed_within(&app, &bounds, &id)
             .await?
             .ok_or("the merge was not typed")?;
+        let heard: serde_json::Value = serde_json::from_slice(&std::fs::read(&notices)?)?;
+        let typed_at = heard[id.as_str()]["typed_ms"].as_i64().ok_or("merge notice time")?;
+        assert!((merged.updated_at.0..=app.now().0).contains(&typed_at));
+        assert_eq!(heard[id.as_str()]["progress_ms"], typed_at);
         assert!(
             typed.starts_with(
                 "Yulius, about your pull request #7: Pull request #7 is merged. Yulius could not read its merged head"

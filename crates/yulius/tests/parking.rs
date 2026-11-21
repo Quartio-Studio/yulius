@@ -3222,11 +3222,14 @@ fn first_watch_during_queue_decision(case: QueueWatch, previously_seen: Option<u
             *github.pulls.lock().map_err(|_| "pull registry")? = pulls;
             release.notify_one();
             let outdated = pass.await?;
-            let fresh = app.watch_prs(&WatchBounds::default()).await;
             assert!(
                 outdated.is_empty(),
                 "advice prepared before the retry: {outdated:?}"
             );
+            let deferred: serde_json::Value = serde_json::from_slice(&std::fs::read(&notices)?)?;
+            assert_eq!(deferred[id.as_str()]["pr"], 1481);
+            assert_eq!(deferred[id.as_str()]["progress"], "", "overtaken read recorded progress");
+            let fresh = app.watch_prs(&WatchBounds::default()).await;
             assert_eq!(fresh.len(), 1, "{fresh:?}");
             assert!(
                 fresh[0].1.contains("cannot read this task's pull request"),

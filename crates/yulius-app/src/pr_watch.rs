@@ -131,7 +131,6 @@ struct ArmedNoticeSource {
     candidate_id: Option<String>,
     candidate: Option<CiRunRecord>,
     train: Result<Option<WatchedTrain>, UnverifiedTrain>,
-    arm_note: Option<QueueNote>,
 }
 
 /// What the watch told one task, as saved.
@@ -672,12 +671,12 @@ impl App {
                             else {
                                 return false;
                             };
+                            // A changed free-slot note also changes this observation: only an
+                            // arm, clear or completed queue decision publishes that note.
                             if self.update_holds_starts()
                                 || self.arm_observation(&task.id) != activation
                                 || self.armed_now(&task.id) != slot
                                 || self.watched_train(&task, facts.pr) != source.train
-                                || (!matches!(source.train, Ok(Some(_)))
-                                    && self.arm_queue_note(&task.id) != source.arm_note)
                             {
                                 return false;
                             }
@@ -1412,7 +1411,6 @@ impl App {
             candidate_id,
             candidate: candidate.cloned(),
             train: train_read,
-            arm_note,
         });
         Some((facts, source))
     }

@@ -58,7 +58,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Keep the live owner’s merge notice across a queue decision
 - [x] Verify restored merge requests and their train positions
 - [x] Defer live PR notices while the session writer is busy
-- [ ] Verify restored arms and deliver current ordinary CI and train notices to the owner
+- [x] Verify restored arms and deliver current ordinary CI and train notices to the owner
 - [ ] Report the active singleton and replay its recorded failure for the original owner
 - [ ] Verify candidate status before parking, showing Done or resuming a parked owner
 - [ ] Deliver bounded Codex goal continuation to dev
@@ -104,6 +104,14 @@ A live PR notice that finds the terminal writer busy leaves its event unheard. T
 The live watcher resolves ordinary CI for the owner at the armed head and reads the active train’s recorded membership. Before delivering advice, it verifies the published head, the current queue request, its CI observations and the original recipient. A human decision or unverifiable observation leaves the event pending.
 
 ## Evidence
+
+- Independent review approved `1da356a01` after running 39 restored-arm and candidate regressions. All 401 scoped tests passed on the reviewed head and again after removing a duplicate queue-note comparison. The strengthened regressions hold publication while a late queue retry returns the same arm and note, or while an instance update starts. Both keep the notice pending. The ordinary merge fixture also verified that a human decision preserves progress and that the eventual notice records its delivery time. Scoped Clippy passed. Vidoc was disabled.
+
+- The mutation runs for the two review fixes tested 15 and three mutations respectively. They caught four and two, with the remaining 11 and one unviable. The first run selected PR-watch and candidate tests and omitted the merge-train restart fixture. That fixture caught both disabled train reads and disabled writes in the follow-up. The late queue and instance-update tests caught both mutations to the final dispatch guard.
+
+- The initial 30-minute mutation run listed 148 targets, caught 70, missed 14, found 21 unviable and did not reach 43. None of the completed tests timed out. Focused follow-ups exercised the missed locations. The PR-replacement and same-PR retry tests caught all three changes to deferred progress and its clock. The restored train fixture also caught a member being recorded under the notice key reserved for excluded PRs. Removing the duplicate free-slot note comparison eliminated one equivalent mutation.
+
+- The ordinary merge assertions caught changes that erased its progress or delivery time. This five-target run caught four and timed out on the deferred clock while Cargo waited for the build directory. The separate three-target deferred-progress run caught that clock mutation. The saved-arm and queue-retry regressions caught all three mutations to the first eligibility recheck. Across the focused runs, tests caught 13 of the original 14 misses. The remaining one was the duplicate comparison removed above.
 
 - All 400 scoped tests passed on `59eeaa732`, including the account switches before paste and Enter. With the browser’s final lookup held as during a Chromium restart, a second clone pushed a repair and the watcher still typed the old failure. The final browser check now defers immediately when it cannot read the handoff. The next pass verifies the hosted head again.
 

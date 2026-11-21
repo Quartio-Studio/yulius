@@ -374,7 +374,8 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
             remote.pulls.lock().map_err(|_| "fixture pull")?.push(pull);
         }
         if matches!(case, OwnerCase::UpdateHold) {
-            let (entered, release) = super::pause_watch_or_queue(super::Point::LivePrFactsRead, id);
+            let (entered, release) =
+                super::pause_watch_or_queue(super::Point::ArmedNoticePublicationRead, id);
             let watcher = Arc::clone(&cold);
             let pass = tokio::spawn(async move { watcher.watch_prs(&bounds).await });
             tokio::time::timeout(Duration::from_secs(10), entered.notified()).await?;
