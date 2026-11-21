@@ -379,6 +379,17 @@ fn a_rearm_during_the_done_check_holds_the_achieved_owners_successor() -> TestRe
             app.stop_task_now(&peer).await?;
         }
         assert_eq!(state, Some(TaskStatus::Chained));
+        // When the replacement finishes and the tested base has moved, the
+        // unchanged achieved owner really does release this same successor.
+        std::fs::write(data.join(yulius_app::agent_wait::ARMED_MERGES_FILE), b"[]")?;
+        remote.remote.lock().map_err(|_| "origin")?.take();
+        remote.pulls.lock().map_err(|_| "PR")?[0].base_sha = "new-base".into();
+        app.advance_chains(&task.id).await;
+        assert_ne!(
+            super::status_of(app, &peer).await.0,
+            Some(TaskStatus::Chained)
+        );
+        app.stop_task_now(&peer).await?;
         Ok(())
     })
 }
