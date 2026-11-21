@@ -93,6 +93,30 @@ class CompileCache(unittest.TestCase):
                 self.assertFalse(outside.exists(), "intermediate artifacts escaped disk scratch")
                 self.assertFalse(list(parent.iterdir()))
 
+    def test_disposable_run_config_preserves_implicit_program_arguments(self):
+        self.create_fixture(self.task, 'fn main() { for arg in std::env::args().skip(1) { println!("{arg}"); } }')
+        cargo = Path(subprocess.check_output(["rustup", "which", "cargo"], text=True).strip())
+        outside = self.sandbox / "external"
+        env = self.cargo_env(self.sandbox / "home", cargo)
+        env.update(YULIUS_BUILD_SCRATCH=str(self.sandbox / "scratch"), RUSTC=str(cargo.with_name("rustc")))
+        command = [self.task / "scripts/cargo", "--scratch-target", "run", "--offline"]
+        result = subprocess.run([*command, "--config", f'build.build-dir="{outside}"', "one", "two"],
+                                cwd=self.task, env=env, capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(outside.exists(), "Cargo wrote intermediates outside scratch")
+        self.assertEqual(result.stdout.splitlines(), ["one", "two"])
+        for flag in ("--config", "--target-dir"):
+            with self.subTest(program_flag=flag):
+                result = subprocess.run([*command, "one", flag, "program-value"], cwd=self.task,
+                                        env=env, capture_output=True, text=True, timeout=15)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("use -- before program options", result.stderr)
+                result = subprocess.run([*command, "--", "one", flag, "program-value"], cwd=self.task,
+                                        env=env, capture_output=True, text=True, timeout=15)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.splitlines(), ["one", flag, "program-value"])
+        self.assertFalse(list((self.sandbox / "scratch").iterdir()))
+
     def test_config_files_cannot_redirect_disposable_cargo_outputs(self):
         self.create_fixture(self.task, "fn main() {}")
         cargo = Path(subprocess.check_output(["rustup", "which", "cargo"], text=True).strip())

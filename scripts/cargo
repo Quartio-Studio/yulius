@@ -24,7 +24,7 @@ def validate_scratch_args(args):
             break
         key = arg.split("=", 1)[0]
         if key in {"--target-dir", "--build-dir"}:
-            sys.exit(f"--scratch-target owns Cargo's output directories; remove {key}")
+            sys.exit(f"--scratch-target owns Cargo's output directories; remove {key} or use -- before program options")
 
 
 scratch_target = args[:1] == ["--scratch-target"]
@@ -32,18 +32,43 @@ if scratch_target:
     args = args[1:]
 
 
+def scratch_config_end(args):
+    """Find the end of Cargo's last CLI configuration, before program arguments."""
+    end = None
+    possible_program_arg = False
+    options = iter(enumerate(args[1:], start=1))
+    for index, arg in options:
+        if arg == "--":
+            break
+        if arg == "--config" or arg.startswith("--config="):
+            if args[0] == "run" and possible_program_arg:
+                sys.exit("place Cargo --config before positional arguments; use -- before program options")
+            if arg == "--config":
+                value = next(options, None)
+                if value is None:
+                    sys.exit("Cargo --config requires a value")
+                index = value[0]
+            end = index + 1
+        elif not arg.startswith("-"):
+            # A bare word may be either a Cargo option value or the first
+            # argument to the executable. Require unambiguous config placement.
+            possible_program_arg = True
+    return end
+
+
 def run_build(command, env):
     parent = Path(env.get("YULIUS_BUILD_SCRATCH", root / "target")).resolve()
     parent.mkdir(exist_ok=True, parents=True)
     build = tempfile.mkdtemp(prefix="cargo-", dir=parent)
     try:
-        boundary = command.index("--") if "--" in command else len(command)
-        if any(arg.split("=", 1)[0] == "--config" for arg in command[:boundary]):
-            # Cargo merges CLI settings in order. Pin both paths after all user
-            # configurations and before any arguments for the built program.
+        config_end = scratch_config_end(command[1:])
+        if config_end is not None:
+            # Keep both paths after the user's final setting, while leaving
+            # Cargo run's implicit program arguments in their original order.
+            insert = 1 + config_end
             path = json.dumps(build, ensure_ascii=False)
-            command = [*command[:boundary], "--config", f"build.target-dir={path}",
-                       "--config", f"build.build-dir={path}", *command[boundary:]]
+            command = [*command[:insert], "--config", f"build.target-dir={path}",
+                       "--config", f"build.build-dir={path}", *command[insert:]]
         result = run_disposable(command, dict(env, CARGO_TARGET_DIR=build, CARGO_BUILD_BUILD_DIR=build, CARGO_BUILD_TARGET_DIR=build))
     except UnreapedBuild as error:
         # The containing session can reclaim this target once its processes end.
