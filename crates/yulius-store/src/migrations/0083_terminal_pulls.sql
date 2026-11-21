@@ -1,4 +1,4 @@
-CREATE TABLE terminal_pulls (
+CREATE TABLE task_pull_observations (
     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
     pr_number INTEGER NOT NULL,
     snapshot TEXT NOT NULL,
@@ -7,7 +7,7 @@ CREATE TABLE terminal_pulls (
 );
 -- A recorded merge establishes the number even when landing evidence was unavailable.
 -- Historical rows have no PR title or source branch. Only a bound landing supplies SHAs.
-INSERT INTO terminal_pulls
+INSERT INTO task_pull_observations
 SELECT d.task_id, d.pr_number, json_object(
     'number', d.pr_number, 'html_url', 'https://github.com/' || s.repo_owner || '/' || s.repo_name || '/pull/' || d.pr_number,
     'title', 'Pull request #' || d.pr_number, 'state', 'closed', 'merged', json('true'),

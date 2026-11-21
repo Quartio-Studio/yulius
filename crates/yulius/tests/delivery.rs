@@ -10960,3 +10960,60 @@ async fn reconciliation_enriches_a_terminal_pull_missing_its_merge_commit() -> T
     assert_eq!(f.h.github.pull_get_count.load(Ordering::SeqCst), 0);
     Ok(())
 }
+
+#[tokio::test]
+async fn a_reopened_followup_survives_restart_without_replacing_the_merged_delivery() -> TestResult
+{
+    let (f, wt, head) =
+        merged_task_with(Box::new(|config| config.parked_pr_read_ms = 10_000)).await?;
+    std::fs::write(wt.join(SPEC_PATH), finished_spec("t1"))?;
+    let id = TaskId::parse("t1")?;
+    f.h.store
+        .transition_task(
+            &id,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Done),
+            f.h.app.now(),
+        )
+        .await?;
+    let owner =
+        f.h.app
+            .authenticate_bearer(f.bob.bearer.as_deref().ok_or("token")?)
+            .await?
+            .ok_or("owner")?;
+    {
+        let mut pulls = f.h.github.pulls.lock().map_err(|_| "pull fixture")?;
+        let followup = yulius_app::ports::github::GhPull {
+            number: 2,
+            state: "open".into(),
+            merged: false,
+            merge_commit_sha: None,
+            ..pulls[0].clone()
+        };
+        pulls.push(followup);
+    }
+    f.h.app.reconcile_deliveries().await;
+    edit_pull(&f, 2, |p| p.state = "closed".into());
+    f.h.app.reconcile_deliveries().await;
+    assert!(f.h.store.terminal_pull(&id, Some(2)).await?.is_some());
+    edit_pull(&f, 2, |p| p.state = "open".into());
+    f.h.github.set_checks(&head, ChecksState::Failure);
+    f.h.app.reconcile_deliveries().await;
+    let cold = yulius_app::context::App::new(f.h.app.config.clone(), f.h.app.deps.clone());
+    let rows = cold.list_tasks(&owner, "s1", false).await?;
+    let task = rows
+        .iter()
+        .find(|row| row.id == "t1")
+        .ok_or("parked task")?;
+    let identity = task.parked_pr.as_ref().ok_or("follow-up")?;
+    assert_eq!((identity.number, identity.open), (2, true));
+    assert_eq!(task.parked_needs_you, Some(true));
+    let primary = f.h.store.delivery(&id).await?.ok_or("merged delivery")?;
+    assert_eq!(primary.stage.encode(), "merged_integration");
+    assert_eq!(primary.pr_number, Some(1));
+    edit_pull(&f, 2, |p| p.state = "closed".into());
+    cold.reconcile_deliveries().await;
+    assert!(f.h.store.terminal_pull(&id, Some(2)).await?.is_some());
+    Ok(())
+}

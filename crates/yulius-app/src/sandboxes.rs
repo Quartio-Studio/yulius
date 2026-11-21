@@ -296,7 +296,11 @@ impl OverviewRead {
                 number: pull.number,
                 open: false,
                 conflicts: false,
-                signal: pull.merged.then_some(PullSignal::Merged),
+                signal: Some(if pull.merged {
+                    PullSignal::Merged
+                } else {
+                    PullSignal::InReview
+                }),
             },
         );
     }
@@ -595,6 +599,7 @@ impl App {
         let check = async {
             let record = self.deps.store.delivery(&task.id).await?;
             observed = self.known_parked_pull(task, record.as_ref());
+            self.restore_parked_followup(task, &mut observed).await?;
             let requested = requests
                 .get_or_init(|| self.browser_requests(&task.sandbox_id))
                 .await;
@@ -610,11 +615,13 @@ impl App {
                     .pr
                     .is_none_or(|known| !known.open || known.number == pull.number)
             {
-                status.facts.pull = pull.merged.then_some(PullSignal::Merged);
                 observed.pr = Some(yulius_contracts::api::tasks::ParkedPr {
                     number: pull.number,
                     open: false,
                 });
+                observed.note_current(&pull);
+                status.facts.pull = observed.signal;
+                verified = true;
                 return Ok(());
             }
             if let Some(pr) = observed.pr.filter(|pr| pr.open)
@@ -675,6 +682,7 @@ impl App {
                 if status.followup_unverified {
                     // Another reader can discover an open replacement while we are rechecking local work.
                     observed = self.known_parked_pull(task, record.as_ref());
+                    self.restore_parked_followup(task, &mut observed).await?;
                 }
                 current && !(status.followup_unverified && observed.pr.is_some_and(|pr| pr.open))
             } else {

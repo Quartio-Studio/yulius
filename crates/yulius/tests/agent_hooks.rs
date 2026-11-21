@@ -4753,6 +4753,8 @@ async fn a_partial_overview_still_resolves_the_parked_tasks_recorded_pr() -> Tes
     f.h.github
         .set_checks("abc123", yulius_app::ports::github::ChecksState::Failure);
     f.h.github.pulls.lock().map_err(|_| "pulls")?[0].state = "open".into();
+    // Terminal display reads are local. Let the repository tick observe the reopening.
+    f.h.app.reconcile_deliveries().await;
     let held = f.h.github.hold_checks();
     let app = f.h.app.clone();
     let auth = owner.clone();

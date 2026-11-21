@@ -97,11 +97,12 @@ impl DeliveryStore for SqliteStore {
         self.call(move |c| {
             let mut statement = c.prepare(
                 "SELECT t.id, coalesce(t.branch, ''), p.snapshot FROM tasks t
-                 LEFT JOIN delivery d ON d.task_id=t.id JOIN terminal_pulls p ON p.task_id=t.id
+                 LEFT JOIN delivery d ON d.task_id=t.id JOIN task_pull_observations p ON p.task_id=t.id
                  WHERE t.sandbox_id=?1 AND t.archived_at IS NULL AND t.id>?2
-                 AND coalesce(d.stage,'none')!='pr_open' AND p.pr_number=(SELECT max(pr_number) FROM terminal_pulls WHERE task_id=t.id)
+                 AND coalesce(d.stage,'none')!='pr_open' AND p.pr_number=(SELECT pr_number FROM task_pull_observations WHERE task_id=t.id
+                     ORDER BY json_extract(snapshot,'$.state')='open' DESC, pr_number DESC LIMIT 1)
                  AND (t.status='parked' OR coalesce(d.stage,'none')='none' OR
-                     p.needs_confirmation)
+                     json_extract(p.snapshot,'$.state')='open' OR p.needs_confirmation)
                  ORDER BY t.id LIMIT ?3"
             ).map_err(db)?;
             let rows = statement.query_map(params![sandbox, after, limit], |r| {
@@ -122,15 +123,36 @@ impl DeliveryStore for SqliteStore {
     ) -> AppResult<Option<yulius_app::ports::github::GhPull>> {
         let task = task.to_string();
         self.call(move |c| {
-            let snapshot: Option<String> = c.query_row(
-                "SELECT snapshot FROM terminal_pulls WHERE task_id = ?1 AND (?2 IS NULL OR pr_number = ?2)
-                 ORDER BY pr_number DESC LIMIT 1", params![task, number.map(to_i64)], |row| row.get(0)
-            ).optional().map_err(db)?;
-            snapshot.map(|json| serde_json::from_str(&json).map_err(yulius_app::error::AppError::internal)).transpose()
+            let snapshot: Option<String> = c
+                .query_row(
+                    "SELECT snapshot FROM task_pull_observations WHERE task_id = ?1
+                 AND json_extract(snapshot,'$.state')!='open' AND (?2 IS NULL OR pr_number = ?2)
+                 ORDER BY pr_number DESC LIMIT 1",
+                    params![task, number.map(to_i64)],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(db)?;
+            snapshot
+                .map(|json| {
+                    serde_json::from_str(&json).map_err(yulius_app::error::AppError::internal)
+                })
+                .transpose()
+        })
+        .await
+    }
+
+    async fn open_followup(&self, task: &TaskId) -> AppResult<Option<u64>> {
+        let task = task.to_string();
+        self.call(move |c| {
+            c.query_row("SELECT pr_number FROM task_pull_observations WHERE task_id=?1
+                         AND json_extract(snapshot,'$.state')='open' ORDER BY pr_number DESC LIMIT 1",
+                        [task], |r| r.get::<_, i64>(0))
+                .optional().map(|n| n.map(to_u64)).map_err(db)
         }).await
     }
 
-    async fn remember_terminal_pull(
+    async fn remember_pull_observation(
         &self,
         task: &TaskId,
         pull: &yulius_app::ports::github::GhPull,
@@ -142,11 +164,11 @@ impl DeliveryStore for SqliteStore {
         let (task, number) = (task.to_string(), to_i64(pull.number));
         self.call(move |c| {
             c.execute(
-                "INSERT INTO terminal_pulls(task_id, pr_number, snapshot, needs_confirmation) VALUES (?1, ?2, ?3, ?4)
+                "INSERT INTO task_pull_observations(task_id, pr_number, snapshot, needs_confirmation) VALUES (?1, ?2, ?3, ?4)
                        ON CONFLICT(task_id,pr_number) DO UPDATE SET snapshot=excluded.snapshot, needs_confirmation=excluded.needs_confirmation
-                       WHERE json_extract(excluded.snapshot,'$.merged')
-                         AND (NOT json_extract(terminal_pulls.snapshot,'$.merged')
-                           OR (terminal_pulls.needs_confirmation AND NOT excluded.needs_confirmation))",
+                       WHERE NOT json_extract(task_pull_observations.snapshot,'$.merged')
+                          OR (json_extract(excluded.snapshot,'$.merged') AND
+                              task_pull_observations.needs_confirmation AND NOT excluded.needs_confirmation)",
                 params![task, number, snapshot, needs_confirmation],
             )
             .map_err(db)?;
@@ -247,7 +269,7 @@ impl DeliveryStore for SqliteStore {
             )
             .map_err(db)?;
             if next.stage == DeliveryStage::PrOpen && let Some(pr) = next.pr_number {
-                tx.execute("DELETE FROM terminal_pulls WHERE task_id=?1 AND pr_number=?2
+                tx.execute("DELETE FROM task_pull_observations WHERE task_id=?1 AND pr_number=?2
                             AND NOT json_extract(snapshot,'$.merged')",
                     params![next.task_id.as_str(), to_i64(pr)]).map_err(db)?;
             }
@@ -606,7 +628,7 @@ mod tests {
         for number in 1..=2 {
             let task = TaskId::parse(&format!("t{number}"))?;
             store
-                .remember_terminal_pull(
+                .remember_pull_observation(
                     &task,
                     &yulius_app::ports::github::GhPull {
                         number,

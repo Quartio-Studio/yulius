@@ -2300,6 +2300,7 @@ async fn confirming_a_reopen_revalidates_even_a_fresh_numbered_display_reply() -
         client.confirm_pull(&token, "acme", "app", number).await,
         Err(GitHubError::DisplayPaused)
     ));
+    Ok(())
 }
 
 #[tokio::test]

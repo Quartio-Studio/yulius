@@ -10,7 +10,7 @@ Repeated task reads can spend the installation's hourly quota while a merge, CI 
 
 ## Decision
 
-Keep terminal PR observations with task delivery data. Backfill recorded merges, even where the landing SHA was unavailable. A three-minute background reconciliation visits up to 24 terminal task branches per project per tick, rotating through the project. Positive evidence of reopening or replacement updates the branch observation. A numbered operational read can recover a missing merge SHA. Share successful open display responses for 30 seconds per credential and request URL. Revalidate expired responses with the server's ETag. Reserve the final 10% of an installation's reported core quota for operational work. Report hourly attempts by caller purpose alongside the remaining capacity and reset reported by GitHub.
+Keep terminal PR observations and independently observed open follow-up identities with task delivery data. Readers verify open checks even when they recover the PR number from disk. Backfill recorded merges, even where the landing SHA was unavailable. A three-minute background reconciliation visits up to 24 terminal task branches per project per tick, rotating through the project. Positive evidence of reopening or replacement updates the branch observation. A numbered operational read can recover a missing merge SHA. Share successful open display responses for 30 seconds per credential and request URL. Revalidate expired responses with the server's ETag. Reserve the final 10% of an installation's reported core quota for operational work. Report hourly attempts by caller purpose alongside the remaining capacity and reset reported by GitHub.
 
 ## Alternatives
 

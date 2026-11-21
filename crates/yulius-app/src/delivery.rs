@@ -135,7 +135,7 @@ impl ParkedPullRead {
         }
     }
 
-    fn note_current(&mut self, pull: &GhPull) {
+    pub(crate) fn note_current(&mut self, pull: &GhPull) {
         let Some(pr) = self.pr.as_mut().filter(|pr| pr.number == pull.number) else {
             return;
         };
@@ -2058,7 +2058,7 @@ impl App {
                 match github.get_pull(token, owner, repo, number).await {
                     Ok(pull) if pull.number == number => {
                         if !is_open(&pull) {
-                            store.remember_terminal_pull(&task.id, &pull).await?;
+                            store.remember_pull_observation(&task.id, &pull).await?;
                         }
                         pr = Some(pull);
                         pr_known = true;
@@ -2654,7 +2654,7 @@ impl App {
                 if !is_open(&pull) {
                     self.deps
                         .store
-                        .remember_terminal_pull(&task.id, &pull)
+                        .remember_pull_observation(&task.id, &pull)
                         .await?;
                 }
                 head = Some(Arc::from(pull.head_sha.as_str()));
@@ -4575,6 +4575,22 @@ impl App {
         observed
     }
 
+    pub(crate) async fn restore_parked_followup(
+        &self,
+        task: &TaskRecord,
+        observed: &mut ParkedPullRead,
+    ) -> AppResult<()> {
+        if observed.pr.is_none_or(|pr| !pr.open)
+            && let Some(number) = self.deps.store.open_followup(&task.id).await?
+        {
+            observed.pr = Some(yulius_contracts::api::tasks::ParkedPr { number, open: true });
+            observed.head = None;
+            observed.signal = None;
+            observed.fresh_head = false;
+        }
+        Ok(())
+    }
+
     pub(crate) fn last_pull_signal(
         &self,
         task: &TaskRecord,
@@ -4691,7 +4707,10 @@ impl App {
             Ok::<_, AppError>((token, branch))
         };
         let inconclusive = |observed: &mut ParkedPullRead| {
-            *observed = self.known_parked_pull(task, record);
+            let latest = self.known_parked_pull(task, record);
+            if latest.pr.is_some_and(|pr| pr.open) || observed.pr.is_none_or(|pr| !pr.open) {
+                *observed = latest;
+            }
             observed.unavailable = true;
             observed.pr.filter(|pr| !pr.open).map(|_| ParkingPrs {
                 followup_unverified: true,
@@ -4932,7 +4951,7 @@ impl App {
             if !is_open(&pull) && pull.number == number {
                 self.deps
                     .store
-                    .remember_terminal_pull(&task.id, &pull)
+                    .remember_pull_observation(&task.id, &pull)
                     .await?;
             }
             Ok::<_, AppError>(pull)
@@ -5406,16 +5425,22 @@ impl App {
                 pr_number: Some(pull.number),
                 updated_at: self.now(),
             };
-            self.dlv_transition_at(
-                &sandbox.id,
-                &DeliveryStage::None,
-                &next,
-                Some(&pull.base),
-                None,
-            )
-            .await?;
+            if self
+                .dlv_transition_at(
+                    &sandbox.id,
+                    &DeliveryStage::None,
+                    &next,
+                    Some(&pull.base),
+                    None,
+                )
+                .await?
+            {
+                return Ok(());
+            }
         }
-        Ok(())
+        // The primary delivery can stay merged while its task branch has an open follow-up.
+        // Replacing the observation retires any stale closure atomically, on any base branch.
+        self.deps.store.remember_pull_observation(task, pull).await
     }
 
     /// Discover external follow-ups once per repository on the delivery tick. A task read
@@ -5458,7 +5483,9 @@ impl App {
                     .observed_pulls
                     .known_pull(&sandbox.id, &task)
                     .flatten()
-                    .filter(|p| p.open);
+                    .filter(|p| p.open)
+                    .map(|p| p.number)
+                    .or_else(|| is_open(&terminal).then_some(terminal.number));
                 Some((task, branch, terminal, read, known))
             })
             .collect();
@@ -5479,7 +5506,7 @@ impl App {
                     && pull.number == terminal.number
                     && let Some(landing) = evidence::Landing::closed_pull(&pull)
                 {
-                    store.remember_terminal_pull(task, &pull).await?;
+                    store.remember_pull_observation(task, &pull).await?;
                     store
                         .landed_sha(task, Some(pull.number), Some(&landing))
                         .await?;
@@ -5492,30 +5519,23 @@ impl App {
                 .iter()
                 .filter(|p| !p.from_fork && p.head == branch && is_open(p))
                 .max_by_key(|p| p.number);
-            if let Some(new) = newest.filter(|p| p.number > terminal.number) {
-                self.bind_observed_open_pull(sandbox, &task, new).await?;
-                read.record_branch(&task, terminal.number, Some(new.number));
-                continue;
+            // A listing may lag a closure. Only a current numbered response can reopen
+            // an already closed identity. A missing listing alone cannot retire a follow-up.
+            let mut confirm = known;
+            if let Some(listed) = newest {
+                match store.terminal_pull(&task, Some(listed.number)).await? {
+                    Some(closed) if !closed.merged => confirm = Some(listed.number),
+                    None if listed.number >= terminal.number || known == Some(listed.number) => {
+                        if !is_open(&terminal) || terminal.number != listed.number {
+                            self.bind_observed_open_pull(sandbox, &task, listed).await?;
+                        }
+                        read.record_branch(&task, terminal.number, Some(listed.number));
+                        continue;
+                    }
+                    _ => {}
+                }
             }
-            // A listing can be truncated or lag a merge. Confirm identity changes by number.
-            let reopening = match newest {
-                Some(pull) if pull.number == terminal.number && !terminal.merged => {
-                    Some(pull.number)
-                }
-                Some(pull)
-                    if pull.number < terminal.number
-                        && store
-                            .terminal_pull(&task, Some(pull.number))
-                            .await?
-                            .is_some_and(|prior| !prior.merged) =>
-                {
-                    Some(pull.number)
-                }
-                _ => None,
-            };
-            let Some(number) = reopening.or_else(|| known.map(|p| p.number)) else {
-                continue;
-            };
+            let Some(number) = confirm else { continue };
             let Ok(pull) = github.confirm_pull(&token, owner, repo, number).await else {
                 continue;
             };
@@ -5531,7 +5551,7 @@ impl App {
                     read.record_branch(&task, terminal.number, Some(number));
                 }
             } else {
-                store.remember_terminal_pull(&task, &pull).await?;
+                store.remember_pull_observation(&task, &pull).await?;
                 if let Some(landing) = evidence::Landing::closed_pull(&pull) {
                     store
                         .landed_sha(&task, Some(number), Some(&landing))
@@ -5955,7 +5975,7 @@ impl App {
             && let Err(error) = self
                 .deps
                 .store
-                .remember_terminal_pull(&task.id, closed)
+                .remember_pull_observation(&task.id, closed)
                 .await
         {
             tracing::warn!(%error, task = %task.id, "could not retain the merged pull for display");

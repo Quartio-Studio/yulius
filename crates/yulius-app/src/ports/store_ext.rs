@@ -150,8 +150,10 @@ pub trait DeliveryStore: Send + Sync {
         task: &yulius_domain::ids::TaskId,
         number: Option<u64>,
     ) -> crate::error::AppResult<Option<super::github::GhPull>>;
-    /// Retain immutable metadata from a directly observed closed or merged pull request.
-    async fn remember_terminal_pull(
+    /// Last observed open follow-up identity, independently of the primary delivery stage.
+    async fn open_followup(&self, task: &TaskId) -> crate::error::AppResult<Option<u64>>;
+    /// Records a terminal pull or a positively observed open follow-up. A merged number stays merged.
+    async fn remember_pull_observation(
         &self,
         task: &yulius_domain::ids::TaskId,
         pull: &super::github::GhPull,

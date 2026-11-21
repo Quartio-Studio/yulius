@@ -595,7 +595,7 @@ mod tests {
         )?;
         prepare(&mut conn)?;
         let json: String = conn.query_row(
-            "SELECT snapshot FROM terminal_pulls WHERE task_id='t'",
+            "SELECT snapshot FROM task_pull_observations WHERE task_id='t'",
             [],
             |r| r.get(0),
         )?;
@@ -610,7 +610,7 @@ mod tests {
             Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         );
         let json: String = conn.query_row(
-            "SELECT snapshot FROM terminal_pulls WHERE task_id='older'",
+            "SELECT snapshot FROM task_pull_observations WHERE task_id='older'",
             [],
             |r| r.get(0),
         )?;
