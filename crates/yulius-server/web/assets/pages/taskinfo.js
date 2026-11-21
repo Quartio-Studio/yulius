@@ -229,13 +229,14 @@ export function mountTaskInfoView(ctx, sandbox, task) {
   async function load() {
     const read = ++detailRead;
     const prior = current;
+    const publishParked = ctx.store.beginParkedDetail();
     try {
       const fresh = await ctx.api.get(`/api/tasks/${enc(task.id)}`, { signal: reads.signal });
       if (!alive || read !== detailRead) return;
       detail = fresh;
       detailError = null;
       // A task event or verified parked summary received during this request wins.
-      current = current === prior ? { ...current, ...fresh } : { ...fresh, ...current };
+      current = current === prior ? { ...current, ...fresh, ...publishParked(fresh) } : { ...fresh, ...current };
       loadWaterfall(ctx, sandbox, `task:${task.id}`, stagesHost, { title: 'Stages of this task' });
     } catch (error) {
       if (!alive || read !== detailRead || error.code === 'aborted') return;

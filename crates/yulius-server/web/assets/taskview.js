@@ -1122,13 +1122,14 @@ export function mountTaskView(ctx, sandbox, task) {
   async function loadDetail() {
     const read = ++detailRead;
     const heardBefore = changesHeard;
+    const publishParked = ctx.store.beginParkedDetail();
     try {
       const fresh = await ctx.api.get(`/api/tasks/${enc(current.id)}`, { signal: reads.signal });
       if (!alive || read < appliedRead) return; // the view was left, or a newer answer was applied
       appliedRead = read;
       detail = fresh;
       if (detail && detail.id === current.id) {
-        if (read === detailRead && changesHeard === heardBefore) current = { ...current, ...pickSummary(detail) };
+        if (read === detailRead && changesHeard === heardBefore) current = { ...current, ...pickSummary(detail), ...publishParked(detail) };
         heldKey = '';
         renderStrip();
         // The end banner may name the limit the last run met (SPEC-268), known only from here.
@@ -1220,13 +1221,7 @@ export function mountTaskView(ctx, sandbox, task) {
 
 function pickSummary(detail) {
   const keys = ['status', 'activity', 'title', 'steps', 'account_label', 'account_email', 'harness', 'branch', 'updated_at', 'archived', 'mode', 'after', 'next', 'held_prompt', 'auto', 'owner', 'control_request', 'control_from'];
-  // The parked detail verifies its group and plan together. The caller applies
-  // these facts only if no newer summary arrived while it waited for the detail.
-  const out = detail.status === 'parked' ? {
-    parked_needs_you: detail.parked_needs_you, parked_pr: detail.parked_pr,
-    spec_unfinished: detail.spec_unfinished, goal_unfinished: detail.goal_unfinished,
-    needs_you: detail.needs_you, needs_you_notice: detail.needs_you_notice,
-  } : {};
+  const out = {};
   for (const key of keys) if (key in detail) out[key] = detail[key];
   return out;
 }

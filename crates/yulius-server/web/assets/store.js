@@ -221,6 +221,41 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     }
   }
 
+  // Detail and list responses verify the same parked group. Publish only the
+  // summary facts that explain it, so the next list compares against what the
+  // page actually showed. Detail-only fields stay with their requesting view.
+  function beginParkedDetail() {
+    const order = ++nextListRead;
+    return detail => {
+      if (detail.status !== 'parked') return {};
+      const map = state.tasks.get(detail.sandbox_id);
+      const row = map?.get(detail.id);
+      const source = row && listOrder.get(map) > order ? row : detail;
+      const facts = {
+        activity: source.activity, steps: source.steps, spec_unfinished: source.spec_unfinished,
+        goal_unfinished: source.goal_unfinished, held_prompt: source.held_prompt,
+        needs_you: source.needs_you, needs_you_notice: source.needs_you_notice,
+        parked_needs_you: source.parked_needs_you, parked_pr: source.parked_pr,
+      };
+      if (source === detail && row?.status === 'parked') {
+        const updated = { ...row, ...facts };
+        for (const read of activeLists) {
+          if (read.sandboxId === detail.sandbox_id && read.order < order) {
+            read.parked.add(row.id);
+            read.changes.set(row.id, updated);
+          }
+        }
+        if (JSON.stringify(updated) !== JSON.stringify(row)) {
+          map.set(row.id, updated);
+          emit('task', updated);
+          emit('tasks', detail.sandbox_id);
+          scheduleCountsRefresh();
+        }
+      }
+      return facts;
+    };
+  }
+
   function knownOpenPr(prior, sandboxId, id) {
     const pr = state.pulls.get(sandboxId)?.get(id);
     if (pr?.state === 'open') return { number: pr.number, open: true };
@@ -549,6 +584,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     upsertSandbox,
     removeSandbox,
     loadTasks,
+    beginParkedDetail,
     upsertTask,
     removeTask,
     tasksOf,

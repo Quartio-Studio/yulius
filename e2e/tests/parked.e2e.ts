@@ -1187,3 +1187,65 @@ test('the parked terminal uses its fresh detail when a step reopens in the same 
   await expect(browser.locator('.step-count')).toHaveText('Step 6/7');
   await expect(browser.locator('.strip-status')).toHaveText(/Your turn.*parked/);
 });
+
+for (const [route, selector] of [['t', '.strip-status'], ['tasks', '.gt-state']]) {
+  for (const initial of [false, true]) {
+    test(`a parked ${route} detail follows a rerun back to the original ${initial ? 'Needs you' : 'Done'} group`, async ({ app, browser, screen }) => {
+      await app.open(mock('/s/studio', '&ambient=0&pullgap=0&pullclock=manual'));
+      type Task = { id: string; title: string; stepsList: { status: string }[]; parked_needs_you?: boolean };
+      type Fixture = { __yuliusMock: { tasks: Task[]; holdGitReads: boolean; changePull(s: string, n: number, fields: object): void; touchTask(s: string, n: number, fields: object): void } };
+      await browser.evaluate((needs) => {
+        const db = (window as unknown as Fixture).__yuliusMock;
+        const task = db.tasks.find(t => t.id === 'tsk_studio_13')!;
+        db.touchTask('sb_studio', 13, {
+          status: 'parked', activity: 'done', stepsList: task.stepsList.map(step => ({ ...step, status: 'done' })),
+          parked_needs_you: needs, parked_pr: { number: 520, open: true },
+        });
+      }, initial);
+      const region = screen.getByRole('region', initial ? 'Needs you' : 'Done');
+      await expect(region.getByRole('link', /Improve the code/)).toBeVisible();
+      await browser.evaluate(({ needs, route }) => {
+        const db = (window as unknown as Fixture).__yuliusMock;
+        db.holdGitReads = true;
+        db.tasks.find(t => t.id === 'tsk_studio_13')!.parked_needs_you = !needs;
+        location.hash = `/s/studio/${route}/13`;
+      }, { needs: initial, route });
+      const strip = browser.locator(selector);
+      await expect(strip).toHaveText(initial ? /Done.*parked/ : /Your turn.*parked/);
+      await browser.evaluate((needs) => {
+        const db = (window as unknown as Fixture).__yuliusMock;
+        db.tasks.find(t => t.id === 'tsk_studio_13')!.parked_needs_you = needs;
+        db.tasks.find(t => t.id === 'tsk_studio_12')!.title = 'New list arrived';
+        db.changePull('sb_studio', 520, { checks: needs ? 'failure' : 'success' });
+      }, initial);
+      await expect(browser.locator('.task-row').getByText('New list arrived')).toBeVisible();
+      await expect(region.getByRole('link', /Improve the code/)).toBeVisible();
+      await expect(strip).toHaveText(initial ? /Your turn.*parked|checks failing.*parked/ : /Done.*parked/);
+    });
+  }
+}
+
+test('Task Info clears a stale PR identity when the new parked detail omits it', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&ambient=0&pullgap=0'));
+  type Task = { id: string; title: string; stepsList: { status: string }[]; parked_needs_you?: boolean; parked_pr?: object };
+  type Fixture = { __yuliusMock: { tasks: Task[]; changePull(s: string, n: number, fields: object): void; touchTask(s: string, n: number, fields: object): void } };
+  await browser.evaluate(() => {
+    const db = (window as unknown as Fixture).__yuliusMock;
+    const task = db.tasks.find(t => t.id === 'tsk_studio_13')!;
+    db.touchTask('sb_studio', 13, {
+      status: 'parked', activity: 'done', stepsList: task.stepsList.map(step => ({ ...step, status: 'done' })),
+      parked_needs_you: true, parked_pr: { number: 520, open: true },
+    });
+    db.changePull('sb_studio', 520, { checks: 'failure' });
+  });
+  await expect(screen.getByRole('region', 'Needs you').getByRole('link', /checks failing.*Improve the code/)).toBeVisible();
+  await browser.evaluate(() => {
+    const task = (window as unknown as Fixture).__yuliusMock.tasks.find(t => t.id === 'tsk_studio_13')!;
+    task.parked_needs_you = false;
+    delete task.parked_pr;
+    task.title = 'Detail read completed';
+    location.hash = '/s/studio/tasks/13';
+  });
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText(/Detail read completed/);
+  await expect(browser.locator('.gt-state')).toHaveText(/PR #520.*checks failing.*parked/);
+});

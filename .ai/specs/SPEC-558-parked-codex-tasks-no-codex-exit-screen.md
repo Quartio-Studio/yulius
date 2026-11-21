@@ -68,6 +68,8 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- Review of `7f0b045a8` found a detail and the sidebar could disagree after a rerun restored the group cached before navigation. Four Chromium cases failed on that head, covering both directions on the terminal and Task Info. A fifth failed after an accepted detail omitted the old PR identity. Publishing the accepted parked facts to the shared row and clearing the absent identity passed all eleven focused page cases.
+
 - Independent review of `0f146b8e3` reproduced three races. A newer failed watch and an older successful list now keep the known open PR under Needs you in either reply order. A sibling event received during a parked resume confirmation now survives. A fresh terminal detail reporting six of seven steps now also shows Your turn when the cached Done row has the same timestamp. Each regression failed before its correction. Five focused store cases and six focused page cases passed in Chromium.
 
 - Three Chromium lifecycle regressions passed after running red. They cover a running task newly parked on a green PR, same-second archive/Undo and a cold snapshot overlapping resume. A fourth regression exposed stale fallback state after successful verification of a replacement PR. Both reply orders now pass. The mutation command reported “No Rust code changed … nothing to mutate”. The browser regressions exercised the changed JavaScript directly. Vidoc was disabled.
