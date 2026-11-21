@@ -4,6 +4,10 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-21
+
+- A parked task’s terminal, Task Info and sidebar follow CI reruns even while the Git overview is loading. Overlapping list reads reconcile resumes, archives, Undo and deletions (SPEC-558).
+
 ## 2026-11-20
 
 - 2026-11-20 Browser task lists keep the newest successful snapshot when requests overlap. A task page can recover from its initial load error as soon as the sidebar receives the list.

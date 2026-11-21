@@ -225,15 +225,20 @@ export function mountTaskInfoView(ctx, sandbox, task) {
   }
 
   let alive = true;
+  let detailRead = 0;
   async function load() {
+    const read = ++detailRead;
+    const prior = current;
     try {
       const fresh = await ctx.api.get(`/api/tasks/${enc(task.id)}`, { signal: reads.signal });
-      if (!alive) return;
+      if (!alive || read !== detailRead) return;
       detail = fresh;
-      current = { ...current, ...fresh };
+      detailError = null;
+      // A task event or verified parked summary received during this request wins.
+      current = current === prior ? { ...current, ...fresh } : { ...fresh, ...current };
       loadWaterfall(ctx, sandbox, `task:${task.id}`, stagesHost, { title: 'Stages of this task' });
     } catch (error) {
-      if (!alive || error.code === 'aborted') return;
+      if (!alive || read !== detailRead || error.code === 'aborted') return;
       detailError = error;
     }
     render();
@@ -251,7 +256,8 @@ export function mountTaskInfoView(ctx, sandbox, task) {
       // A session that starts again may run another model on the same subscription (the
       // fallback, SPEC-482), and is a new entry of the sessions: the detail is read again.
       const restarted = t.status !== current.status;
-      current = { ...current, ...t };
+      // A lifecycle event can omit the list verifier’s optional PR facts.
+      current = { ...current, ...t, parked_needs_you: t.parked_needs_you, parked_pr: t.parked_pr };
       if (moved) delete current.account_email;
       if (moved || restarted) load();
       render();

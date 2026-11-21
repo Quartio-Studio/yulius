@@ -68,6 +68,9 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- PR #1548 landed in dev at `d54e2f190`. Its integration candidate and the delivery commit passed quality, both test shards and browser e2e. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/d54e2f1909c84093bc2fd0cf2bcba80cac425805)
+- On that base, Chromium saw a running task park with a green open PR and make zero verification reads. A held list reverted a resumed task to Parked and resurrected an archived task. The parked-watch regressions drive Git and summary replies independently and cover same-second archive/Undo, permanent deletion and bounded confirmation. [ADR-0417](../../docs/decisions/0417-refresh-parked-task-status-alongside-the-git-overview.md)
+
 - On `25015275f`, a successful retry list could show active task #13 in the sidebar while the cold task page still applied an empty or failed archive lookup. Both held-lookup regressions failed. Returning the retry list after the archive had already reported the task missing reproduced the opposite ordering too. The page now checks the current active list at archive completion and reopens a missing task when a subsequent list contains it. All six direct-route recovery cases passed. Each requested at most one archive lookup.
 
 - Independent review of CI-passing head `36522249b` held the first archive lookup across two successful active-list responses after one Retry click. The second lookup failed, and the task page incorrectly reported an existing archived task missing. The Chromium regression failed on that head and passed after the page left the error state before starting recovery. The automatic, manual and overlapping recovery tests all passed and the archive regression confirmed one lookup.
