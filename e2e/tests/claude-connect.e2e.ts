@@ -104,7 +104,8 @@ const MIXED = [
 ].join('\n');
 
 test('a mixed request without a Claude account is refused, not "created as one task"', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio', '&claude=0'));
+  // No ambient activity: its browser request for #10 (5 s in) is a second toast on a slow host.
+  await app.open(mock('/s/studio', '&claude=0&ambient=0'));
   await screen.getByRole('button', /^Model:/).click();
   await screen.getByRole('menuitemradio', /^Opus 5.5/).click();
   await browser.evaluate(() => {

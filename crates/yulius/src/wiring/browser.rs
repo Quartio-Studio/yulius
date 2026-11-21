@@ -50,6 +50,7 @@ fn failure(error: BrowserError) -> BrowserFailure {
         BrowserError::Spawn(_)
         | BrowserError::StartupTimeout { .. }
         | BrowserError::ExitedEarly { .. }
+        | BrowserError::ProfileInUse { .. }
         | BrowserError::Cdp(_)
         | BrowserError::NavigationFailed(_)
         | BrowserError::Display(_)

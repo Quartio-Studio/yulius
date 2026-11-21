@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- A sandbox browser whose profile came from another host now starts. Chrome's stale `Singleton*` lock files from the old host are removed before Chrome and its display start. A lock held by a running process here is kept, and a failed start names that process. Before this, after the 2026-11-21 move, the display restarted every 30 s. [SPEC-593](../.ai/specs/SPEC-593-sandbox-browser-never-starts-on-a-moved.md)
 - The new-task composer now keeps multiple unfinished drafts in one sandbox, each with its own text, attachments and task choices. [SPEC-594](../.ai/specs/SPEC-594-i-should-be-able-to-create-many-drafts-l.md)
 
 - An instance move now restarts the new host's Caddy with the carried Caddyfile and drop-ins on every pass and asks that host's port 443 for the public host before it reports the reverse proxy done, stopping with where to look when nothing answers there. Before, a Caddy the package had started with its default `:80` site kept serving it until a person ran `systemctl reload caddy`. [SPEC-592](../.ai/specs/SPEC-592-instance-move-caddy-keeps-serving-its-pr.md), [ADR-0431](decisions/0431-the-move-restarts-caddy-and-asks-its-own-port-443.md)

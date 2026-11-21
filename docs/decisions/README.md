@@ -469,6 +469,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0430 -->
 - [0431](0431-the-move-restarts-caddy-and-asks-its-own-port-443.md): An instance move always restarts the new host's Caddy with the carried configuration and asks that host's own port 443 before the proxy counts as done.
 <!-- ADR 0431 -->
+- [0432](0432-a-browser-start-clears-chrome-profile-locks-no-live-process-holds.md) clears a browser profile's Chrome locks that no live process holds before Chrome starts.
 <!-- ADR 0432 -->
 - [0433](0433-store-each-new-task-draft-under-its-own-key.md): each unfinished task draft has its own browser storage key, and each tab remembers its selection
 <!-- ADR 0433 -->

@@ -697,6 +697,19 @@ that only points at one: serve it on one of the sandbox's ports and open it as
 `localhost:<port>`. Do not set a proxy in a managed Chrome policy on the host (`ProxyMode`,
 `ProxySettings`): a policy wins over what Yulius starts Chrome with.
 
+Each sandbox's profile (`<data>/sandboxes/<id>/browser`) holds Chrome's lock: `SingletonLock`,
+a link to `<host>-<pid>`, with `SingletonCookie` and `SingletonSocket`. Chrome refuses a profile
+whose lock names another host. On a virtual display it shows a dialog and never answers, so
+the start timed out after 30 s with its display. Before every start Yulius removes these three
+entries when no running browser can hold them: the lock names another host, names this host
+with a pid that is not running, or is not a Chrome lock, or the links remain without a lock. A
+lock of this host whose pid runs is kept and Chrome decides. If that start fails, the panel
+says "the browser profile is in use by process N on this host": look at it with `ps -p N -o
+pid,user,args`. A Chrome left over from a crashed server holds the profile until you stop it
+(`kill N`); then open the panel again. If a stale entry cannot be
+removed, the start fails before a display starts and names the entry
+([ADR-0432](decisions/0432-a-browser-start-clears-chrome-profile-locks-no-live-process-holds.md)).
+
 ### Sandbox isolation
 
 Each sandbox has one **namespace holder** (SPEC-002 ADR-22). Agents' task sessions, users'
@@ -2215,6 +2228,11 @@ when it is not. So after a run that ended with `FAIL … must be frozen and disa
 same command says the same and ends with exit 1 until the old instance is held; and a move that
 was finished long ago fails the same way when its old unit was thawed, started or enabled
 since.
+
+The sandbox browsers' profiles come over with the old host's Chrome locks. The first start on
+the new host removes them (§ "Sandbox browser"), so nobody needs to delete `Singleton*` files by
+hand. Before this fix (2026-11-21 move), Chrome refused every profile. Its display restarted
+every 30 s until the files were removed.
 
 Not part of a move: packages installed inside sandboxes keep their files; on another release the
 checklist names those sandboxes. The sandbox base is built for the new host while preparing, so
