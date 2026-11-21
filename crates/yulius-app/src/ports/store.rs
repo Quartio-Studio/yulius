@@ -778,12 +778,28 @@ pub trait CoordinationStore: Send + Sync {
     async fn task_messages(&self, task: &TaskId, limit: u32) -> AppResult<Vec<MessageRecord>>;
     /// Inserts a review round (SPEC-493 REV-004).
     async fn insert_review_round(&self, round: &ReviewRoundRecord) -> AppResult<()>;
+    /// Records one round per Codex child. A report can be the first event to reach the store.
+    async fn record_codex_review_round(
+        &self,
+        task: &TaskId,
+        subagent: &str,
+        model: &str,
+        head: Option<&str>,
+        started_at: Timestamp,
+        report: Option<(Timestamp, yulius_domain::review::Verdict)>,
+    ) -> AppResult<()>;
     /// The review rounds of a task, oldest first: those of its open pull request only
     /// (`open_only`), else all.
     async fn review_rounds(
         &self,
         task: &TaskId,
         open_only: bool,
+    ) -> AppResult<Vec<ReviewRoundRecord>>;
+    /// Current rounds if any, otherwise the requested PR's latest landed rounds.
+    async fn delivery_review_rounds(
+        &self,
+        task: &TaskId,
+        pr: Option<u64>,
     ) -> AppResult<Vec<ReviewRoundRecord>>;
     /// Links a new reviewer, resumes an unfinished round, or reserves `continuation_id`
     /// for a reviewer that previously reported. Delayed events cannot change a later round.

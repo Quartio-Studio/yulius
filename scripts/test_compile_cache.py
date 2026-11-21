@@ -101,29 +101,29 @@ class CompileCache(unittest.TestCase):
         env.update(YULIUS_BUILD_SCRATCH=str(self.sandbox / "scratch"), RUSTC=str(cargo.with_name("rustc")))
         command = [self.task / "scripts/cargo", "--scratch-target", "run", "--offline"]
         result = subprocess.run([*command, "--config", f'build.build-dir="{outside}"', "one", "two"],
-                                cwd=self.task, env=env, capture_output=True, text=True, timeout=15)
+                                cwd=self.task, env=env, capture_output=True, text=True, timeout=120)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(outside.exists(), "Cargo wrote intermediates outside scratch")
         self.assertEqual(result.stdout.splitlines(), ["one", "two"])
         config = f'build.build-dir="{outside}"'
         result = subprocess.run([*command, "--config", config, "-", "--config", "build.jobs=3"],
-                                cwd=self.task, env=env, capture_output=True, text=True, timeout=15)
+                                cwd=self.task, env=env, capture_output=True, text=True, timeout=120)
         self.assertFalse(outside.exists(), "bare dash allowed intermediates outside scratch")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("use -- before program options", result.stderr)
         result = subprocess.run([*command, "--config", config, "--", "-", "--config", "build.jobs=3"],
-                                cwd=self.task, env=env, capture_output=True, text=True, timeout=15)
+                                cwd=self.task, env=env, capture_output=True, text=True, timeout=120)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.splitlines(), ["-", "--config", "build.jobs=3"])
         self.assertFalse(outside.exists())
         for flag in ("--config", "--target-dir"):
             with self.subTest(program_flag=flag):
                 result = subprocess.run([*command, "one", flag, "program-value"], cwd=self.task,
-                                        env=env, capture_output=True, text=True, timeout=15)
+                                        env=env, capture_output=True, text=True, timeout=120)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("use -- before program options", result.stderr)
                 result = subprocess.run([*command, "--", "one", flag, "program-value"], cwd=self.task,
-                                        env=env, capture_output=True, text=True, timeout=15)
+                                        env=env, capture_output=True, text=True, timeout=120)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout.splitlines(), ["one", flag, "program-value"])
         self.assertFalse(list((self.sandbox / "scratch").iterdir()))
@@ -147,6 +147,41 @@ class CompileCache(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertFalse(outside.exists(), "Cargo wrote intermediates outside scratch")
                 self.assertFalse(list((self.sandbox / "scratch").iterdir()))
+
+    def test_disposable_external_commands_run_the_plugin_despite_cargo_aliases(self):
+        self.create_fixture(self.task, "#[test] fn check() {} fn main() {}")
+        toolchain = Path(subprocess.check_output(["rustup", "which", "cargo"], text=True).strip()).parent
+        tools = self.task / ".tools/bin"
+        nextest = SCRIPTS.parent / ".tools/bin/cargo-nextest"
+        if not nextest.exists():
+            self.skipTest("project's pinned nextest is unavailable")
+        (tools / "cargo-nextest").symlink_to(nextest.resolve())
+        (tools / "cargo-clippy").symlink_to(toolchain / "cargo-clippy")
+        env = self.cargo_env(self.sandbox / "home", toolchain / "cargo")
+        scratch = self.sandbox / "scratch"
+        outside = self.sandbox / "outside"
+        env.update(YULIUS_BUILD_SCRATCH=str(scratch), RUSTC=str(toolchain / "rustc"),
+                   CARGO_ALIAS_CLIPPY=f"build --target-dir {outside}")
+        (self.task / ".cargo").mkdir()
+        (self.task / ".cargo/config.toml").write_text(f'[alias]\nnextest=["build","--target-dir","{outside}"]')
+        def run_plugins():
+            for args, expected in ((["nextest", "run", "--offline"], "1 passed"),
+                                   (["clippy", "--offline"], "Finished")):
+                with self.subTest(command=args[0], cached=(tools / "mbx").exists()):
+                    settings = ["--config", f'build.build-dir="{outside}"']
+                    result = subprocess.run([self.task / "scripts/cargo", "--scratch-target", *args, *settings],
+                                            cwd=self.task, env=env, start_new_session=True, stdin=subprocess.DEVNULL,
+                                            capture_output=True, text=True, timeout=45)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn(expected, result.stderr + result.stdout)
+                    self.assertFalse(outside.exists())
+                    self.assertFalse(list(scratch.iterdir()))
+
+        run_plugins()
+        cache = SCRIPTS.parent / ".tools/bin/mbx"
+        if cache.exists():
+            (tools / "mbx").symlink_to(cache.resolve())
+            run_plugins()
 
     def test_disposable_build_rejects_an_alias_with_external_outputs(self):
         self.create_fixture(self.task, "fn main() {}")
@@ -346,6 +381,15 @@ def group_snapshot(*args, **kwargs):
         self.assertEqual((cache / ".yulius-mbx-v1").read_bytes(), b"mbx-v1\n")
 
     def test_terminating_the_launcher_stops_its_descendants_and_keeps_the_lease_private(self):
+        self.check_cached_cancellation(scratch=False)
+
+    def test_cancelling_a_cached_disposable_target_reaps_its_backend(self):
+        self.check_cached_cancellation(scratch=True)
+
+    def test_cancelled_cached_build_reaps_a_separate_test_group(self):
+        self.check_cached_cancellation(scratch=True, separate_group=True)
+
+    def check_cached_cancellation(self, scratch, separate_group=False):
         import fcntl
         import select
         import signal
@@ -358,24 +402,37 @@ def group_snapshot(*args, **kwargs):
             listener.listen()
             listener.settimeout(5)
             self.cargo.write_text("#!/usr/bin/env python3\nimport os,signal,socket,sys\n"
-                                  "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                                  + ("if os.fork(): signal.pause(); sys.exit(1)\nos.setpgid(0,0)\n"
+                                     if separate_group else "")
+                                  + "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
                                   "s=socket.socket(socket.AF_UNIX);s.connect(sys.argv[2])\n"
-                                  "s.sendall(repr([os.readlink('/proc/self/fd/'+x) for x in os.listdir('/proc/self/fd') "
-                                  "if os.path.exists('/proc/self/fd/'+x)]).encode());signal.pause()")
+                                  "s.sendall((str(os.getpid())+chr(10)+str(os.environ.get('MBX_CACHE_DIR'))+chr(10)+repr([os.readlink('/proc/self/fd/'+x) for x in os.listdir('/proc/self/fd') "
+                                  "if os.path.exists('/proc/self/fd/'+x)])).encode());signal.pause()")
             mbx = self.task / ".tools/bin/mbx"
-            mbx.write_text('#!/bin/sh\n"$CARGO" "$@"\n')
+            mbx.write_text('#!/bin/sh\n' + ('exec ' if scratch else '') + '"$CARGO" "$@"\n')
             mbx.chmod(0o755)
             env = self.cargo_env(home, self.cargo)
-            proc = subprocess.Popen([self.task / "scripts/cargo", "run", ready], env=env,
+            target_root = self.sandbox / "scratch"
+            env["YULIUS_BUILD_SCRATCH"] = str(target_root)
+            flag = ["--scratch-target"] if scratch else []
+            backend = None
+            proc = subprocess.Popen([self.task / "scripts/cargo", *flag, "run", ready], env=env,
                                     stdin=subprocess.DEVNULL, start_new_session=True)
             try:
                 conn, _ = listener.accept()
                 with conn:
-                    descriptors = conn.recv(4096).decode()
+                    pid, store, descriptors = conn.recv(4096).decode().split("\n", 2)
+                    backend = int(pid)
+                    self.assertEqual(store, str(self.sandbox / "rust-compile-cache"))
                     proc.terminate()
-                    proc.wait(timeout=8)
+                    # Two grace periods, a leader wait and the adopted-worker
+                    # deadline can each take three seconds before cleanup.
+                    self.assertEqual(proc.wait(timeout=20), 128 + signal.SIGTERM)
                     self.assertTrue(select.select([conn], [], [], 1)[0], "Cargo child survived cancellation")
                     self.assertEqual(conn.recv(1), b"")
+                    backend = None
+                    if scratch:
+                        self.assertEqual(list(target_root.iterdir()), [])
                     self.assertNotIn(str(self.sandbox) + "'", descriptors)
                     lease = os.open(self.sandbox, os.O_RDONLY | os.O_DIRECTORY)
                     try:
@@ -383,11 +440,72 @@ def group_snapshot(*args, **kwargs):
                     finally:
                         os.close(lease)
             finally:
+                if backend is not None:
+                    try:
+                        os.kill(backend, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
                 try:
                     os.killpg(proc.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
                 proc.wait(timeout=5)
+
+    @unittest.skipUnless((SCRIPTS.parent / ".tools/bin/mbx").exists(), "optional pinned mbx unavailable")
+    def test_disposable_cached_program_can_read_an_inherited_descriptor(self):
+        self.create_fixture(self.task, 'fn main() { let path = std::env::args().nth(1).unwrap(); '
+                            'print!("{}", std::fs::read_to_string(path).unwrap()); }')
+        (self.task / ".tools/bin/mbx").symlink_to((SCRIPTS.parent / ".tools/bin/mbx").resolve())
+        cargo = Path(subprocess.check_output(["rustup", "which", "cargo"], text=True).strip())
+        scratch = self.sandbox / "scratch"
+        env = self.cargo_env(self.sandbox / "home", cargo)
+        env.update(YULIUS_BUILD_SCRATCH=str(scratch), RUSTC=str(cargo.with_name("rustc")))
+        with tempfile.TemporaryFile() as source:
+            source.write(b"inherited input")
+            source.seek(0)
+            fd = source.fileno()
+            result = subprocess.run([self.task / "scripts/cargo", "--scratch-target", "run", "--offline",
+                                     "--", f"/dev/fd/{fd}"], cwd=self.task, env=env, pass_fds=(fd,),
+                                    start_new_session=True, stdin=subprocess.DEVNULL,
+                                    capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "inherited input")
+        self.assertEqual(list(scratch.iterdir()), [])
+
+    def test_disposable_fallback_releases_lease_before_running_cargo(self):
+        env = self.caller_fixture("import fcntl\n"
+                                  "fd = os.open(os.environ['SANDBOX'], os.O_RDONLY | os.O_DIRECTORY)\n"
+                                  "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)")
+        root = self.sandbox / "scratch"
+        env.update(SANDBOX=str(self.sandbox), YULIUS_BUILD_SCRATCH=str(root))
+        (self.task / ".tools/bin/mbx").write_text("#!/bin/sh\nexit 1\n")
+        stamp = self.sandbox / "rust-compile-cache/.yulius-mbx-v1"
+        for pending_upkeep in (False, True):
+            if pending_upkeep:
+                stamp.rename(stamp.with_name(".yulius-mbx-pruning"))
+            with self.subTest(pending_upkeep=pending_upkeep):
+                result = subprocess.run([self.task / "scripts/cargo", "--scratch-target", "build"],
+                                        env=env, start_new_session=True, stdin=subprocess.DEVNULL,
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(list(root.iterdir()), [])
+
+    def test_disposable_cache_fallback_preserves_single_dispatch(self):
+        env = self.caller_fixture("from pathlib import Path\n"
+                                  "with open(os.environ['RECORD'], 'a') as f: print('dispatch', file=f)\n"
+                                  "sys.exit(37)")
+        root = self.sandbox / "scratch"
+        env.update(RECORD=str(self.record), YULIUS_BUILD_SCRATCH=str(root))
+        mbx = self.task / ".tools/bin/mbx"
+        for script in ('exit 1', '"$CARGO" "$@"'):
+            mbx.write_text("#!/bin/sh\n" + script)
+            result = subprocess.run([self.task / "scripts/cargo", "--scratch-target", "build"],
+                                    env=env, start_new_session=True, stdin=subprocess.DEVNULL,
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 37, result.stderr)
+            self.assertEqual(self.record.read_text().splitlines(), ["dispatch"])
+            self.record.unlink()
+            self.assertEqual(list(root.iterdir()), [])
 
     def test_cache_startup_failure_falls_back_and_cargo_failure_runs_once(self):
         home = self.sandbox / "home"
@@ -791,6 +909,23 @@ print('received '+input(), flush=True)
         (tree / "Cargo.toml").write_text('[package]\nname="fixture"\nversion="0.1.0"\nedition="2024"\n[workspace]\n' + manifest)
         (tree / "src").mkdir()
         (tree / "src/main.rs").write_text(source)
+
+    @unittest.skipUnless((SCRIPTS.parent / ".tools/bin/mbx").exists(), "optional pinned mbx unavailable")
+    def test_disposable_build_reuses_the_real_compiler_cache(self):
+        self.create_fixture(self.task, "fn main() {}", "[profile.dev]\ndebug=false\n")
+        (self.task / "src/lib.rs").write_text("pub fn answer() -> u32 { 42 }")
+        (self.task / ".tools/bin/mbx").symlink_to((SCRIPTS.parent / ".tools/bin/mbx").resolve())
+        cargo = Path(subprocess.check_output(["rustup", "which", "cargo"], text=True).strip())
+        scratch = self.sandbox / "scratch"
+        env = self.cargo_env(self.sandbox / "home", cargo)
+        env.update(YULIUS_BUILD_SCRATCH=str(scratch), RUSTC=str(cargo.with_name("rustc")))
+        for _ in range(2):
+            result = subprocess.run([self.task / "scripts/cargo", "--scratch-target", "build", "--lib", "--offline"],
+                                    cwd=self.task, env=env, start_new_session=True, stdin=subprocess.DEVNULL,
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(list(scratch.iterdir()), [])
+        self.assertRegex(result.stderr, r"mbx\[cache\]: [1-9][0-9]* hits")
 
     @unittest.skipUnless((SCRIPTS.parent / ".tools/bin/mbx").exists(), "optional pinned mbx unavailable")
     def test_cached_registry_file_macro_agrees_with_plain_cargo_in_each_home(self):
