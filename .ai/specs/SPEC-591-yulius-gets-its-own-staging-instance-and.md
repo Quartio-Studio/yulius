@@ -1,6 +1,6 @@
 ---
 yulius-task: 5a254bf5-8315-4e31-862b-e339e88e8434
-status: in-progress
+status: done
 ---
 
 # SPEC-591: Yulius gets its own staging instance and merge-first delivery
@@ -128,7 +128,7 @@ was verified there.
 - [x] Move the test shards and e2e to the merged revision with merge_first and an ADR
 - [x] Make the promotion rule explicit and test it against Yulius's own yulius.toml
 - [ ] Evidence, changes entry and independent review of the merge-first slice approved
-- [ ] Record the first merge-first staging request, its deploy and rollback drill in a follow-up pull request
+- [x] Record the first merge-first staging request, its deploy and rollback drill in a follow-up pull request
 
 ## Acceptance criteria
 
@@ -386,3 +386,41 @@ deletions: a trigger with `RAISE(ABORT, 'at its end'); DELETE FROM e`, and a top
 ('DELETE FROM g')`. With the quoted-string branch of `code_only` disabled, the test fails with
 `2:d,2:e,2:g,2:notes`; with it, the test passes. Its nit (double-quoted identifiers holding an
 apostrophe) is left: such an identifier is contrived, and no migration has one.
+
+Slice 2 merged into `dev` as 77f285e08 (PR #1618, from PR head 4e2927eaf). Its own run
+4f7fcfce-f75f-4ed4-9201-44d0c14c0d3c passed, and so did merge train run
+01163ca6-3baf-4227-947a-e952b0710956: quality, both test shards and e2e passed; security
+skipped, Vidoc off. Merge-first is in force from that revision on.
+
+**The first merge-first staging request, end to end:**
+
+- **The request:** `421603a1-b80a-4306-9a26-5b49587c4798`, made by this task with `cd_deploy`, for
+  revision `77f285e0891b0111c315360907115707fcda645c` (its landing). It started as "testing".
+- **Its full gate:** candidate run `9d3d2655-6ac7-4db6-9fef-b42027df9903` (`Candidate 77f285e08`)
+  passed in 13 min 58 s:
+  - `quality`, 4 min 18 s;
+  - `test (1/2)`, 4 min 45 s;
+  - `test (2/2)`, 3 min 56 s;
+  - `e2e`, 6 min 54 s;
+  - `security` skipped: "not a pull request head".
+  This is the full suite run on exactly the merged revision, as ADR-0410 and ADR-0436 say.
+- **Its deploy:** CD run `ba7de908-5219-4252-aa73-938e70729f74` of `[cd.dev]` at 77f285e passed
+  (2026-11-21T19:37:09Z). The request reads `verified`, and the queue shows "verified revision
+  77f285e0891b".
+- **Its drill:** Yulius's run `a2c1fe2b-91ea-47f8-92fb-5867679ecb42` went back to `7383920f0`
+  and then forward to `77f285e08`, and passed (2026-11-21T19:41:43Z).
+- **After it:** `cd_status` shows releases 77f285e (current), 7383920 and e19ea9f, and "drill:
+  passed at 77f285e (dev)". Staging serves the revision whose full suite passed, so it is the
+  revision a person may now promote to `main`. Promotion is not this task's.
+
+**What could not be tested here:**
+
+- **Two paths on real data:** no migration lies between the staging releases, so the rollback
+  across a schema change (restoring a release's own store) and a lossy migration's refusal ran
+  only on the fake root.
+- **On real systemd:** the undo of a release that does not start and the held state were also
+  exercised only on the fake root.
+- **The no-loss check on a used store:** the staging instance is still not set up by a person (no
+  GitHub App, no users), so the check ran on a nearly empty store.
+- **The oneshot `activating` state** of `yulius-update.service` is inferred from systemd and the
+  repository's own code. The update helper is disabled on staging, and it was not run.
