@@ -293,7 +293,7 @@ pub enum Point {
     /// path is the task id.
     ReviewMoveDecided,
     /// A CI sync of a sandbox read its runs and planned what to queue; nothing is queued yet.
-    /// The path is the sandbox id.
+    /// The path is the sandbox id for inventory, or the clone for a single opening.
     CiSyncPlanned,
     /// The pool found a prompt waiting in a turn held for capacity that it would move
     /// (SPEC-479): the turn's lines were read; the pause is not asked for again yet and nothing

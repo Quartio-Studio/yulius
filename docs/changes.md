@@ -7,6 +7,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-21
 
 - An idle task stays live while its merge request is being armed. If parking wins, Yulius asks the owner to resume before arming the merge. [SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
+- A signed GitHub PR opening queues CI for its exact head without a discovery API read. Existing Apps can enable the webhook in their registration. [SPEC-606](../.ai/specs/SPEC-606-a-pull-request-not-opened-by-a-task-wait.md)
 - Antigravity conversations reopened without a prompt show Waiting and can release their session slots while the Gemini announcement is visible. The composer regression checks the inherited model and effort of a task drawn to Antigravity. [SPEC-604](../.ai/specs/SPEC-604-an-idle-antigravity-session-under-the-ge.md)
 - `scripts/cargo --scratch-target` supports Clippy and nextest alongside built-in commands. Eligible builds reuse the sandbox compiler cache, and the command removes the private disk target after its workers stop. [SPEC-600](../.ai/specs/SPEC-600-mutation-testing-sized-to-the-change-wit.md)
 - Codex reviewers now contribute their reviewed head, timestamps, answering model and verdict

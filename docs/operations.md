@@ -1457,6 +1457,12 @@ Vidoc off, it also says `Vidoc scans are switched off for the instance`.
 6. Import or create projects (sandboxes). Product and Studio are detected and get the `product` and
    `studio` delivery presets.
 
+### Immediate CI for pull requests opened on GitHub
+
+New Yulius GitHub Apps subscribe to pull request openings during registration. For an existing App, set `YULIUS_GITHUB_WEBHOOK_SECRET_FILE` on the Yulius service to an owner-only file containing a random signing secret (for example, the output of `openssl rand -hex 32`). Restart the service. In the GitHub App registration, activate the webhook, enter the instance’s public URL followed by `/api/github/webhook`, and set the same secret. Select **Pull request** under **Permissions & events**. The configured file takes precedence over a secret issued at registration.
+
+Open a same-repository PR into the integration branch. In the App’s recent deliveries, check that the `pull_request.opened` delivery received HTTP 202. In the sandbox’s CI page, compare its queue timestamp and head with the PR opening. A worker starts when a lane is available. The periodic CI sync recovers missed deliveries and admits waiting PRs when one of the sandbox’s 30 PR places becomes available. [GitHub App webhook settings](https://docs.github.com/en/webhooks/using-webhooks/editing-webhooks)
+
 ### GitHub App permissions
 
 Yulius uses one GitHub App (SPEC-002 ADR-08). The App's tokens can do only what its permissions
