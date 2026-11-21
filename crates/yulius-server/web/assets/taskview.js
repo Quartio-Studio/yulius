@@ -1007,7 +1007,11 @@ export function mountTaskView(ctx, sandbox, task) {
     if (detail && Array.isArray(detail.steps_list)) {
       const ordered = [...detail.steps_list].sort((a, b) => a.ordinal - b.ordinal);
       const index = ordered.findIndex((s) => s.status === 'in_progress');
-      if (index >= 0) n = index + 1;
+      // On a parked task the list can observe completion while detail still has the old active step.
+      if (index >= 0) {
+        const matchesActive = steps.current && ordered[index].title.toLowerCase() === steps.current.toLowerCase();
+        if (current.status !== 'parked' || (index < total && matchesActive)) n = index + 1;
+      }
     }
     // A plan that grew since its first step was finished says what it had then (SPEC-484): the
     // server sends `first_total` only for such a plan.
@@ -1179,7 +1183,7 @@ export function mountTaskView(ctx, sandbox, task) {
       const previousStatus = current.status;
       const previousUpdate = current.updated_at;
       const previousOwner = owner();
-      current = { ...current, ...next };
+      current = { ...current, ...next, needs_you_notice: next.needs_you_notice };
       // Whether the task started is the detail's: a status with a run means it has, and any status
       // change reads the detail again (a start that found no capacity has not). A message someone
       // else queued changes the request: read it again too.

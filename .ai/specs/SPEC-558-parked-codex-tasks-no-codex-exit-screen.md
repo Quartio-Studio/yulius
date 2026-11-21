@@ -42,7 +42,10 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Keep the newest successful full task list and recover the cold task page
 - [x] Keep verified unfinished parked rows out of Done in the browser
 - [x] Reconcile parked lifecycle changes and refresh the sidebar independently of Git
-- [ ] Publish verified parked task detail to the terminal and Task Info
+- [x] Show current parked progress and owner notices in the terminal
+- [ ] Publish verified parked task detail to the terminal
+- [ ] Reconcile missed parks, resumes and archives discovered by terminal detail
+- [ ] Publish verified parked task detail to Task Info
 - [ ] Keep failed integration candidates with their original owner
 - [ ] Deliver bounded Codex goal continuation to dev
 - [ ] Recover screens from tasks parked before the upgrade
@@ -69,6 +72,14 @@ Capture a separate screen at the park decision because exiting can clear the ent
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
 ## Evidence
+
+- Independent review approved `cfaf7ee89` and ran all four mounted Chromium regressions. The parked terminal showed Step 7/7 on completion, retained Step 2/7 while another step finished (including a case-only edit), and cleared the resolved notice before a later failing check. Repository contracts and formatting passed. This browser change has no Rust mutation targets. Vidoc was disabled.
+
+- On dev the parked terminal kept Step 2/7 after the sidebar observed all seven steps complete. A subsequent CI failure also displayed an already resolved owner notice. Both Chromium cases passed after correction. Review at `f937f0efc` reproduced the reverse case: finishing step seven while step two was active incorrectly displayed Step 7/7. Its regression observed the new six-of-seven count before checking the ordinal. Review of the first correction reproduced that reversal after a case-only title edit. The terminal now compares the active title using the same lowercase comparison as the domain’s step identity rule.
+
+- PR #1550 delivered sidebar lifecycle reconciliation to dev at `d1be51c7d`. CI run `6cabd3e8-4802-4e57-905b-62ad535f80b1` passed quality, both Rust shards and browser e2e. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/d1be51c7d7c3642b991e3bbf4b596ca55125cdee)
+
+- The shared-detail prototype at `7878c2fc7` retains a later verified PR closure after a failed watch in both reply orders. Both cases showed Needs you before the correction and all eight focused Chromium regressions passed afterwards. Its publication and lifecycle work remain open. The terminal progress and owner notice can be corrected using the existing list independently. The unrelated Chromium startup fixture error observed during prototype verification is tracked in [#1551](https://github.com/Quartio-Studio/yulius/issues/1551).
 
 - PR #1550 CI run `08d1a211-76c5-4327-901b-b5ebedbf1b7e` failed when Chromium exhausted the startup recovery budget inside `browser.reload`. A regression interrupted the first entry script and held the recovery request open. Before the fix it reproduced CI's `operation timed out in browser.reload`. After the fix all 10 tests in `tests/initial-load.e2e.ts` passed, including persistent interruptions, ordinary failures and later navigations.
 
