@@ -165,11 +165,13 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       }
       const current = state.tasks.get(sandboxId);
       if (listOrder.get(current) > snapshotOrder) return current;
+      const missedChange = pullWatch.get(sandboxId)?.changeBeforeParkedRows > snapshotOrder;
+      const needsVerification = missedChange || read.failedWatchOrder > snapshotOrder;
       const map = new Map();
       for (const task of Array.isArray(list) ? list : []) {
         if (task.archived) continue;
         unverified.delete(task);
-        map.set(task.id, read.failedWatchOrder > snapshotOrder && task.status === 'parked' ? awaitingVerification(task) : task);
+        map.set(task.id, needsVerification && task.status === 'parked' ? awaitingVerification(task) : task);
       }
       for (const [id, task] of read.changes) {
         if (!watching && !confirming && !read.parked.has(id) && map.get(id)?.status !== 'parked') continue;
@@ -191,6 +193,9 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       }
       emit('tasks', sandboxId);
       if (watching && changed) scheduleCountsRefresh();
+      if (missedChange && !hasParkedRows(current) && hasParkedRows(map)) {
+        requestRead(sandboxId, refreshParkedGroups, true, true);
+      }
       return map;
     } catch (error) {
       const current = state.tasks.get(sandboxId);
@@ -407,9 +412,12 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   // A rerun on the same open PR changes its checks without changing the task's
   // delivery stage. Refresh the server's parked groups alongside the watched
   // overview. An SSE update or list replacement during this read takes precedence.
+  function hasParkedRows(tasks) {
+    return tasks && [...tasks.values()].some(task => task.status === 'parked');
+  }
+
   async function refreshParkedGroups(sandboxId) {
-    const tasks = state.tasks.get(sandboxId);
-    if (tasks && [...tasks.values()].some(task => task.status === 'parked')) await loadTasks(sandboxId, true);
+    if (hasParkedRows(state.tasks.get(sandboxId))) await loadTasks(sandboxId, true);
   }
 
   function awaitingVerification(task, snapshot) {
@@ -434,7 +442,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
         const prior = tasks?.get(id);
         if (pr.state !== 'open' || !unverified.has(prior) || prior.parked_needs_you) continue;
         const updated = { ...prior, parked_needs_you: true, parked_pr: { number: pr.number, open: true } };
-        unverified.delete(prior);
+        // An active list may still hold the original event for replay.
         unverified.add(updated);
         tasks.set(id, updated);
         emit('task', updated);
@@ -488,6 +496,8 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   }
 
   function pullsChanged(id) {
+    const watch = pullWatch.get(id);
+    if (watch && !hasParkedRows(state.tasks.get(id))) watch.changeBeforeParkedRows = ++nextListRead;
     for (const source of sources) requestRead(id, source, true, true);
   }
 

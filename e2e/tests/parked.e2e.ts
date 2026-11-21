@@ -1175,3 +1175,87 @@ test('a cold parked rename retains an open PR from the first list when confirmat
   });
   expect(seen).toEqual(['Renamed', true, 42]);
 });
+
+test('a cold list remembers a PR change until it learns whether parked rows need verification', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const result = await browser.evaluate(async () => {
+    const url = '/assets/store.js';
+    const { createStore } = await import(url);
+    const seen = [];
+    const turn = () => new Promise<void>(resolve => {
+      const channel = new MessageChannel();
+      channel.port1.onmessage = () => { channel.port1.close(); channel.port2.close(); resolve(); };
+      channel.port2.postMessage(null);
+    });
+    for (const status of ['parked', 'running']) {
+      let release!: () => void, verify!: () => void;
+      const first = new Promise<void>(resolve => { release = resolve; });
+      const second = new Promise<void>(resolve => { verify = resolve; });
+      let calls = 0, red = false;
+      const store = createStore({ get: async (path: string) => {
+        if (path.endsWith('/git')) return { tasks: [{ task_id: 'p', pr: { number: 42, state: 'open', checks: red ? 'failure' : 'success' } }] };
+        const row = { id: 'p', sandbox_id: 's', status, parked_needs_you: red, parked_pr: { number: 42, open: true } };
+        await (++calls === 1 ? first : second);
+        return [row];
+      } }, { pullGapMs: 0 });
+      const stop = store.watchPulls('s');
+      const list = store.loadTasks('s');
+      await turn();
+      red = true;
+      store.handleEvent({ type: 'pulls.updated', sandbox_id: 's' });
+      await turn();
+      release();
+      await list;
+      const waiting = store.findTask('p').parked_needs_you;
+      verify();
+      await turn();
+      seen.push([waiting, store.findTask('p').parked_needs_you, calls]);
+      stop();
+      store.stopEvents();
+    }
+    return seen;
+  });
+  expect(result).toEqual([[true, true, 2], [false, false, 1]]);
+});
+
+test('replaying a parked rename preserves a replacement PR discovered while the watch was held', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const result = await browser.evaluate(async () => {
+    const url = '/assets/store.js';
+    const { createStore } = await import(url);
+    const base = { id: 'p', sandbox_id: 's', status: 'parked', activity: 'done' };
+    let gitReady!: () => void, firstReady!: () => void, nextReady!: () => void;
+    const git = new Promise<void>(resolve => { gitReady = resolve; });
+    const first = new Promise<void>(resolve => { firstReady = resolve; });
+    const next = new Promise<void>(resolve => { nextReady = resolve; });
+    const turn = () => new Promise<void>(resolve => {
+      const channel = new MessageChannel();
+      channel.port1.onmessage = () => { channel.port1.close(); channel.port2.close(); resolve(); };
+      channel.port2.postMessage(null);
+    });
+    let calls = 0;
+    const store = createStore({ get: async (path: string) => {
+      if (path.endsWith('/git')) {
+        await git;
+        return { tasks: [{ task_id: 'p', pr: { number: 8, state: 'open', checks: 'success' } }] };
+      }
+      if (++calls === 2) await first; else if (calls === 3) await next;
+      return [{ ...base, parked_pr: { number: 7, open: false }, parked_needs_you: false }];
+    } }, { pullGapMs: 0 });
+    await store.loadTasks('s');
+    const stop = store.watchPulls('s');
+    store.upsertTask({ ...base, title: 'Renamed' });
+    gitReady();
+    await turn();
+    const row = () => { const t = store.findTask('p'); return [t.title, t.parked_needs_you ?? null, t.parked_pr?.number ?? null]; };
+    const before = row();
+    firstReady();
+    await turn();
+    const during = row();
+    nextReady();
+    await turn();
+    stop();
+    return [before, during, calls];
+  });
+  expect(result).toEqual([['Renamed', true, 8], ['Renamed', true, 8], 3]);
+});

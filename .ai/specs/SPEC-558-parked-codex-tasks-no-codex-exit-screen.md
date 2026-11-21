@@ -69,6 +69,8 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- On `dbd8a0d89`, a watch hint received before the first list arrived could be lost. A parked rename could also discard open replacement PR #8 when the old watch reply arrived. Each failed in Chromium. Seven focused cases now pass, including one follow-up when a cold list discovers parked rows and no additional request for a list of running rows.
+
 - Sidebar review of `30271602d` found two list-ordering cases. An archive confirmation that saw Undo lost its restored row to an older empty list in either completion order. A parked rename received during a cold read discarded the open PR when confirmation failed. Chromium reproduced both, then retained the restored task and kept the renamed task under Needs you for PR #42. The focused correction runs passed six ordering cases and five fallback cases. The pre-correction sidebar, onboarding and Git scope passed 65 tests. Vidoc was disabled. The mutation command found no changed Rust code.
 
 - The sidebar slice confirms a parked lifecycle change during a list read at most once. Same-second archive/Undo, a resumed row and a delayed update after permanent removal were tested with held responses. A later failed verification keeps a known open PR under Needs you in both completion orders with an older list. Scoped Chromium checks covered these races and independent Git and summary response timing. The terminal and Task Info detail reconciliation has its own remaining delivery step.
