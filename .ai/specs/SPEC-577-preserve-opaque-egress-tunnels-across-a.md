@@ -519,3 +519,26 @@ without adoption support or a remote peer that times out can end a tunnel.
   session through both server processes. The HTTP/2 origin accepted once, delivered
   the gap bytes, accepted more request bytes and sent the final reply. Both binaries
   supported the namespace handoff format.
+- Second independent review at `0d597e184` passed the nine restart cases, four relay
+  tests and six proxy tests. It identified two copies that could hold separate admission
+  places after explicit cancellation. Two new reduced-limit fixtures reproduced both
+  directions. Dropping the relay manager left an idle proxy place, and evicting a
+  one-place proxy left an idle relay place. Both failures occurred with the external
+  peers' write halves still open. The replacement now links the cancellation of these
+  two tasks. An ordinary FIN or orderly capture still lets the other copy drain.
+- The focused mutation run on the network-helper identity correction listed one mutation.
+  The change could not compile because the restored record has no default. The baseline
+  passed and the run reported zero missed, timed out or unreached.
+- With the two restored host-side copies sharing administrative cancellation, both
+  reduced-limit regressions passed. The nine real restart cases still passed, including
+  terminal replies and capture through another update. One original connection also
+  survived four consecutive restarts, exchanging queued and fresh bytes with each of five
+  distinct server processes. It delivered both final FINs. The synthetic intercepted-host
+  matrix and the distinct-binary TLS/HTTP/2 upgrade passed.
+- Additional fixtures cover duplicate restore records, stale namespaces, changed internal
+  endpoints and a late holder registration during shutdown. A strict namespace startup
+  check exercises the holder forward on an eligible host and requires the documented
+  missing-prerequisite diagnostic on an ineligible host. The disposable namespace suite
+  ran all ten cases, including that positive startup check, in 12.10 seconds. The task
+  host passed the prerequisite diagnostic. Six focused relay tests and four server-wiring
+  tests passed.

@@ -8,7 +8,7 @@ use std::time::Duration;
 use yulius_egress::EgressProxy;
 use yulius_sandbox::cgroup;
 use yulius_sandbox::relay::custodian;
-use yulius_sandbox::relay::handoff::{OutboundRelays, TcpLink};
+use yulius_sandbox::relay::handoff::{CopyCancellation, OutboundRelays, TcpLink};
 
 // Namespace-mode proxy records use a distinct tag. A change of isolation mode cannot
 // restore one side of a previously joined connection.
@@ -39,6 +39,17 @@ fn matches(
         .collect()
 }
 
+fn restore_joined(proxy: &EgressProxy, relays: &OutboundRelays, pairs: Vec<custodian::Pair>) {
+    for (sandbox, link, opaque, relay) in matches(pairs) {
+        let (relay_cancel, proxy_cancel) = CopyCancellation::pair();
+        if let Err(error) = relays.restore(&sandbox, link, relay, relay_cancel, || {
+            proxy.restore_with_cancellation(opaque, proxy_cancel)
+        }) {
+            tracing::warn!(kind=?error.kind(),"cannot restore an opaque tunnel through its holder");
+        }
+    }
+}
+
 pub(crate) async fn restore(
     proxy: &EgressProxy,
     directory: &Path,
@@ -47,13 +58,7 @@ pub(crate) async fn restore(
     match custodian::adopt(directory).await {
         Ok(pairs) => {
             if let Some(relays) = relays {
-                for (sandbox, link, opaque, relay) in matches(pairs) {
-                    if let Err(error) = relays.restore(&sandbox, link, relay, || {
-                        proxy.restore_opaque_tunnel(opaque)
-                    }) {
-                        tracing::warn!(kind=?error.kind(),"cannot restore an opaque tunnel through its holder");
-                    }
-                }
+                restore_joined(proxy, relays, pairs);
             } else {
                 for pair in pairs {
                     if let Err(error) = proxy.restore_opaque_tunnel(pair) {
@@ -173,6 +178,28 @@ pub(crate) fn place_helper(root: &Path, membership: &Path) -> io::Result<()> {
 mod tests {
     use super::*;
 
+    fn holder(sandbox: &str) -> io::Result<yulius_contracts::sandbox::HolderRecord> {
+        use yulius_contracts::sandbox::{HOLDER_RECORD_VERSION, HolderRecord};
+        use yulius_sandbox::holder::{boot_id, ns_inode};
+        let pid = std::process::id();
+        let inode = |ns| ns_inode(pid, ns).ok_or_else(|| io::Error::other("fixture namespace"));
+        Ok(HolderRecord {
+            version: HOLDER_RECORD_VERSION,
+            sandbox: sandbox.into(),
+            base_id: "fixture".into(),
+            inner_pid: pid,
+            bwrap_pid: 0,
+            slirp_pid: None,
+            boot_id: boot_id(),
+            user_ns: inode("user")?,
+            net_ns: inode("net")?,
+            mnt_ns: inode("mnt")?,
+            started_at_ms: 1,
+            system_root: "/fixture".into(),
+            engine: false,
+        })
+    }
+
     // Supply the two original endpoints of one internal TCP connection. The relay's Unix
     // client and the proxy's destination remain open so refusal is visible to both peers.
     fn joined(
@@ -193,26 +220,21 @@ mod tests {
         let (destination, _) = listener.accept()?;
         let (relay_client, client) = UnixStream::pair()?;
         let link = TcpLink::at_proxy(&proxy_client)?;
-        let end = Some(custodian::monotonic_ms() + 5_000);
-        let holder = serde_json::json!({
-            "version": 1, "sandbox": sandbox, "base_id": "fixture",
-            "inner_pid": std::process::id(), "bwrap_pid": 0, "user_ns": 1,
-            "net_ns": 2, "mnt_ns": 3, "boot_id": "fixture", "started_at_ms": 1,
-            "system_root": "/fixture"
-        });
+        let end = Some(custodian::monotonic_ms() + 60_000);
+        let holder = holder(sandbox)?;
         let relay_owner =
             serde_json::json!({"holder": holder, "link": link, "order": 1, "last": 0});
         let proxy_owner =
             serde_json::json!({"sandbox": sandbox, "run": "fixture", "link": link, "last": 0});
         let relay = custodian::Pair {
             sockets: [relay_client.into(), upstream.into()],
-            state: format!("RL1\n{relay_owner}\n").into_bytes(),
+            state: format!("RL1\n{relay_owner}\n\0\0\0\0\0\0").into_bytes(),
             expires: end,
             established: None,
         };
         let proxy = custodian::Pair {
             sockets: [proxy_client.into(), origin.into()],
-            state: format!("NS1\n{proxy_owner}\n").into_bytes(),
+            state: format!("NS1\n{proxy_owner}\n\0\0\0\0\0\0").into_bytes(),
             expires: end,
             established: None,
         };
@@ -261,6 +283,125 @@ mod tests {
         assert_eq!(client.read(&mut [0])?, 0);
         assert_eq!(origin.read(&mut [0])?, 0);
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancelling_the_restored_relay_releases_the_idle_proxy_place()
+    -> Result<(), Box<dyn std::error::Error>> {
+        joined_cleanup(false).await
+    }
+
+    #[tokio::test]
+    async fn evicting_the_restored_proxy_releases_the_idle_relay_place()
+    -> Result<(), Box<dyn std::error::Error>> {
+        joined_cleanup(true).await
+    }
+
+    async fn joined_cleanup(evict_proxy: bool) -> Result<(), Box<dyn std::error::Error>> {
+        use clap::Parser;
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        use yulius_contracts::sandbox::IdMap;
+        use yulius_sandbox::holder::{StatePaths, write_json};
+        use yulius_sandbox::manager::{IdleConfig, IsolationConfig, Manager};
+
+        #[derive(Parser)]
+        struct Fixture {
+            #[command(flatten)]
+            args: crate::serve::ServeArgs,
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let dir = tempfile::tempdir()?;
+            let args = Fixture::try_parse_from([
+                "fixture",
+                "--data",
+                dir.path().to_str().ok_or("fixture directory")?,
+            ])?
+            .args;
+            let (app, _) = crate::serve::build_app(&args)?;
+            let _ = rustls::crypto::ring::default_provider().install_default();
+            let proxy = crate::wiring::egress::egress_proxy(
+                &app,
+                yulius_egress::EgressConfig {
+                    max_connections: 1,
+                    max_per_sandbox: 1,
+                    idle_floor: Duration::ZERO,
+                    ..Default::default()
+                },
+            )
+            .await?;
+            let state = StatePaths::new(dir.path().join("runtime/sandboxes/s1"));
+            std::fs::create_dir_all(&state.dir)?;
+            write_json(&state.record(), &holder("s1")?)?;
+            let map = IdMap {
+                host: 1000,
+                sub_start: 100_000,
+                count: 65_535,
+            };
+            let manager = Manager::new(IsolationConfig {
+                data_dir: dir.path().into(),
+                exe: "/fixture".into(),
+                bwrap: "/fixture".into(),
+                newuidmap: "/fixture".into(),
+                newgidmap: "/fixture".into(),
+                slirp4netns: None,
+                uid: map,
+                gid: map,
+                delegation: None,
+                limits: Default::default(),
+                disk_max: None,
+                forwards: BTreeMap::new(),
+                sudo_shim: String::new(),
+                auto_build: false,
+                idle: IdleConfig {
+                    stop_after: Duration::from_secs(60),
+                },
+                docker: Err("fixture".into()),
+                health: app.connection_health(),
+            });
+            let relays = std::sync::Arc::clone(&manager.outbound_relays);
+            relays.defer();
+            assert!(manager.adopt_one("s1").await);
+            let (opaque, relay, client, origin) = joined("s1")?;
+            let link = TcpLink::at_proxy(&opaque.sockets[0])?;
+            let expiry = opaque.expires.ok_or("fixture deadline")?;
+            restore_joined(&proxy, &relays, vec![opaque, relay]);
+            relays.begin();
+            client.set_nonblocking(true)?;
+            origin.set_nonblocking(true)?;
+            let mut client = tokio::net::UnixStream::from_std(client)?;
+            let mut origin = tokio::net::TcpStream::from_std(origin)?;
+            client.write_all(b"held").await?;
+            assert_eq!(origin.read_u32().await?.to_be_bytes(), *b"held");
+
+            if evict_proxy {
+                let target = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+                let port = target.local_addr()?.port();
+                let browser = yulius_egress::BrowserEgress {
+                    sandbox: "s1".into(),
+                    ports: port..=port,
+                    pages: None,
+                    listeners: Vec::new(),
+                };
+                let request = axum::http::Request::connect(target.local_addr()?.to_string())
+                    .body(axum::body::Body::empty())?;
+                assert_eq!(proxy.handle_browser(&browser, request).await.status(), 200);
+            } else {
+                drop(manager); // The live holder's serving task owns and cancels its relay copies.
+            }
+            // Both original peers stay idle with their write halves open.
+            assert_eq!(origin.read(&mut [0]).await?, 0);
+            assert_eq!(client.read(&mut [0]).await?, 0);
+            assert!(
+                relays.capture("s1", link, expiry).is_none(),
+                "the idle relay still holds a place"
+            );
+            assert!(
+                proxy.take_opaque_tunnels().await?.is_empty(),
+                "the idle proxy still holds a place"
+            );
+            Ok(())
+        })
+        .await?
     }
 
     #[test]

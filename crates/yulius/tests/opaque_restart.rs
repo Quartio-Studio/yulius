@@ -41,6 +41,7 @@ impl Route {
 }
 
 async fn start(data: &Path, internal: SocketAddr, route: Route) -> Result<Child, Error> {
+    let log = std::fs::File::create(data.join("fixture-serve.log"))?;
     let mut child = Command::new(env!("CARGO_BIN_EXE_yulius"))
         .args(["serve", "--bind", "127.0.0.1:0", "--internal-bind"])
         .arg(internal.to_string())
@@ -52,7 +53,8 @@ async fn start(data: &Path, internal: SocketAddr, route: Route) -> Result<Child,
         .env("PATH", "/usr/bin:/bin")
         .stdin(Stdio::null())
         .env("RUST_LOG", "warn")
-        .stdout(std::fs::File::create(data.join("fixture-serve.log"))?)
+        .stdout(log.try_clone()?)
+        .stderr(log)
         .kill_on_drop(true)
         .spawn()?;
     let health = format!("http://{internal}/internal/healthz");
@@ -184,6 +186,45 @@ async fn read_head(stream: &mut BufReader<TcpStream>, first_line: &str) -> Resul
             return Ok(());
         }
     }
+}
+
+#[tokio::test]
+async fn strict_namespace_startup_adopts_the_holder_or_reports_missing_prerequisites()
+-> Result<(), Error> {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let dir = tempfile::tempdir()?;
+        let internal = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await?
+            .local_addr()?;
+        let holder = live_holder(dir.path(), internal.port()).await?;
+        match start(dir.path(), internal, Route::Holder).await {
+            Ok(mut server) => {
+                // A healthy legacy listener alone cannot serve this original holder.
+                let health = format!("http://{}/internal/healthz", holder.address);
+                let response = reqwest::Client::builder()
+                    .no_proxy()
+                    .build()?
+                    .get(health)
+                    .send()
+                    .await?;
+                assert_eq!(response.error_for_status()?.text().await?, "ok");
+                stop(&mut server).await
+            }
+            Err(error) => {
+                let log = std::fs::read_to_string(dir.path().join("fixture-serve.log"))?;
+                if log.contains("sandbox isolation unavailable:")
+                    && (log.contains("is not installed")
+                        || log.contains("/etc/subuid")
+                        || log.contains("/etc/subgid"))
+                {
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            }
+        }
+    })
+    .await?
 }
 
 #[tokio::test]

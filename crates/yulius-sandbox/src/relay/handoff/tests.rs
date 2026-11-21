@@ -82,15 +82,73 @@ async fn startup_reserves_the_old_places_in_order_and_retains_idle_activity() ->
         let old_activity = now.saturating_sub(1);
         let (older, old_link, _old_client, _old_peer) =
             record(&holder, 3, old_activity, expires).await?;
-        hub.restore(&holder.sandbox, new_link, newer, || Ok(()))?;
-        hub.restore(&holder.sandbox, old_link, older, || Ok(()))?;
+        // A replay of either the original internal socket or its admission order cannot
+        // reserve another place. Retain the original relay while the duplicate is dropped.
+        let mut replay = Pair {
+            sockets: [
+                newer.sockets[0].as_fd().try_clone_to_owned()?,
+                newer.sockets[1].as_fd().try_clone_to_owned()?,
+            ],
+            established: newer.established,
+            state: b"RL1\n".to_vec(),
+            expires: newer.expires,
+        };
+        let (mut owner, cursor) = Owner::decode(&newer.state)?;
+        owner.order += 1;
+        serde_json::to_writer(&mut replay.state, &owner)?;
+        replay.state.push(b'\n');
+        replay.state.extend_from_slice(cursor);
+        hub.restore(
+            &holder.sandbox,
+            new_link,
+            newer,
+            CopyCancellation::default(),
+            || Ok(()),
+        )?;
+        assert!(
+            hub.restore(
+                &holder.sandbox,
+                new_link,
+                replay,
+                CopyCancellation::default(),
+                || { panic!("a replay admitted a second proxy") }
+            )
+            .is_err()
+        );
+        let (duplicate, duplicate_link, mut duplicate_client, _duplicate_peer) =
+            record(&holder, 17, now, expires).await?;
+        assert!(
+            hub.restore(
+                &holder.sandbox,
+                duplicate_link,
+                duplicate,
+                CopyCancellation::default(),
+                || { panic!("a repeated admission order admitted a second proxy") }
+            )
+            .is_err()
+        );
+        assert_eq!(duplicate_client.read(&mut [0]).await?, 0);
+
+        hub.restore(
+            &holder.sandbox,
+            old_link,
+            older,
+            CopyCancellation::default(),
+            || Ok(()),
+        )?;
         let (excess, excess_link, mut client, mut peer) = record(&holder, 99, now, expires).await?;
         let mut asked = false;
         assert!(
-            hub.restore(&holder.sandbox, excess_link, excess, || {
-                asked = true;
-                Ok(())
-            })
+            hub.restore(
+                &holder.sandbox,
+                excess_link,
+                excess,
+                CopyCancellation::default(),
+                || {
+                    asked = true;
+                    Ok(())
+                }
+            )
             .is_err()
         );
         assert!(!asked);
@@ -178,7 +236,7 @@ async fn check_captured_relay(final_reply: bool) -> io::Result<()> {
         hub.stop_admissions();
         let expires = monotonic_ms() + 4_000;
         assert!(hub.capture("another-holder", link, expires).is_none());
-        let pair = hub
+        let mut pair = hub
             .capture(&holder.sandbox, link, expires)
             .ok_or_else(invalid)?
             .await
@@ -206,8 +264,21 @@ async fn check_captured_relay(final_reply: bool) -> io::Result<()> {
             while retained.peer_addr().is_ok() {
                 tokio::task::yield_now().await;
             }
+            // A record without the original socket identities cannot claim a terminal queue.
+            let established = pair.established.take();
+            assert!(TcpLink::at_relay(&pair).is_err());
+            pair.established = established;
+            let deadline = pair.expires.take();
+            assert!(TcpLink::at_relay(&pair).is_err());
+            pair.expires = deadline;
         }
-        next.restore(&holder.sandbox, link, pair, || Ok(()))?;
+        next.restore(
+            &holder.sandbox,
+            link,
+            pair,
+            CopyCancellation::default(),
+            || Ok(()),
+        )?;
         next.begin();
         next.begin();
         assert_eq!(client.read_u32().await?.to_be_bytes(), *b"down");
@@ -254,27 +325,50 @@ async fn a_changed_holder_or_clock_releases_its_original_sockets_without_admitti
             let mut asked = false;
             assert!(
                 relays
-                    .restore(&holder.sandbox, link, pair, || {
-                        asked = true;
-                        Ok(())
-                    })
+                    .restore(
+                        &holder.sandbox,
+                        link,
+                        pair,
+                        CopyCancellation::default(),
+                        || {
+                            asked = true;
+                            Ok(())
+                        }
+                    )
                     .is_err()
             );
             assert!(!asked);
             assert_eq!(client.read(&mut [0]).await?, 0);
             assert_eq!(peer.read(&mut [0]).await?, 0);
         }
+        // A saved record and the registry can agree even though the recorded namespace ended.
+        let mut stale = holder.clone();
+        stale.net_ns = stale.net_ns.saturating_add(1);
+        let (pair, link, mut client, mut peer) = record(&stale, 7, now, now + 5000).await?;
+        assert!(Saved::decode(pair, &stale, link).is_err());
+        assert_eq!(client.read(&mut [0]).await?, 0);
+        assert_eq!(peer.read(&mut [0]).await?, 0);
         let (refused, link, mut client, mut peer) = record(&holder, 9, now, now + 5000).await?;
-        let failure = relays.restore(&holder.sandbox, link, refused, || {
-            Err(io::ErrorKind::WouldBlock.into())
-        });
+        let failure = relays.restore(
+            &holder.sandbox,
+            link,
+            refused,
+            CopyCancellation::default(),
+            || Err(io::ErrorKind::WouldBlock.into()),
+        );
         assert!(failure.is_err_and(|e| e.kind() == io::ErrorKind::WouldBlock));
         assert_eq!(client.read(&mut [0]).await?, 0);
         assert_eq!(peer.read(&mut [0]).await?, 0);
         // The same admission order is now free. The restored connection retains its end time.
         let (timed, link, mut live, mut origin) =
             record(&holder, 9, now, monotonic_ms() + 1_000).await?;
-        relays.restore(&holder.sandbox, link, timed, || Ok(()))?;
+        relays.restore(
+            &holder.sandbox,
+            link,
+            timed,
+            CopyCancellation::default(),
+            || Ok(()),
+        )?;
         relays.begin();
         live.write_all(b"last").await?;
         assert_eq!(origin.read_u32().await?.to_be_bytes(), *b"last");
@@ -290,4 +384,67 @@ async fn a_changed_holder_or_clock_releases_its_original_sockets_without_admitti
         Ok(())
     })
     .await?
+}
+
+#[tokio::test]
+async fn shutdown_quiesces_a_replacement_relay_and_holders_registered_late() -> io::Result<()> {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let holder = holder()?;
+        let relays = Arc::new(OutboundRelays::default());
+        let dir = tempfile::tempdir()?;
+        let start = |name| -> io::Result<_> {
+            Ok(tokio::spawn(relays.serve(
+                UnixListener::bind(dir.path().join(name))?,
+                Arc::new(BTreeMap::new()),
+                holder.sandbox.clone(),
+                holder.clone(),
+                Arc::new(ConnectionHealth::default()),
+            )))
+        };
+        let old = start("old.sock")?;
+        let current = start("current.sock")?;
+        old.abort();
+        assert!(old.await.is_err_and(|e| e.is_cancelled()));
+        relays.stop_admissions();
+        let late = start("late.sock")?;
+        for name in ["current.sock", "late.sock"] {
+            // An admitted relay waits for the port header. A stopped relay closes immediately.
+            let mut peer = UnixStream::connect(dir.path().join(name)).await?;
+            assert_eq!(peer.read(&mut [0]).await?, 0);
+        }
+        for server in [current, late] {
+            server.abort();
+            assert!(server.await.is_err_and(|e| e.is_cancelled()));
+        }
+        assert!(
+            relays
+                .0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .relays
+                .is_empty()
+        );
+        Ok(())
+    })
+    .await?
+}
+
+#[tokio::test]
+async fn the_internal_tcp_leg_belongs_to_the_original_two_endpoints() -> io::Result<()> {
+    let holder = holder()?;
+    let now = monotonic_ms();
+    let (pair, link, _client, peer) = record(&holder, 1, now, now + 5000).await?;
+    let (other, _new_link, _new_client, _new_peer) = record(&holder, 2, now, now + 5000).await?;
+    assert!(Saved::decode(other, &holder, link).is_err());
+    // One side of a reconnected link might keep its listening address. Both must match.
+    let relay_fd = &pair.sockets[1];
+    let mut wrong_local = link.relay;
+    wrong_local.set_port(0);
+    let mut wrong_peer = link.proxy;
+    wrong_peer.set_port(0);
+    assert!(TcpLink::verify_endpoint(&pair, relay_fd, wrong_local, link.proxy).is_err());
+    assert!(TcpLink::verify_endpoint(&pair, relay_fd, link.relay, wrong_peer).is_err());
+    TcpLink::verify_endpoint(&pair, relay_fd, link.relay, link.proxy)?;
+    assert!(TcpLink::at_proxy(&peer)? == link);
+    Ok(())
 }

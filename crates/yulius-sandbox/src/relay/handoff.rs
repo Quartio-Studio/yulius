@@ -9,7 +9,7 @@ use std::time::Duration;
 use rustix::net::{AddressFamily, sockopt};
 use serde::{Deserialize, Serialize};
 use tokio::net::{TcpStream, UnixListener, UnixStream};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tokio::task::JoinSet;
 use yulius_contracts::sandbox::HolderRecord;
 use yulius_domain::connection_health::ConnectionHealth;
@@ -80,6 +80,53 @@ impl TcpLink {
                 Ok(())
             }
             Err(error) => Err(error),
+        }
+    }
+}
+
+/// Administrative cancellation shared by the two restored copies of one tunnel.
+#[derive(Default)]
+pub struct CopyCancellation(Option<watch::Sender<bool>>);
+
+impl CopyCancellation {
+    /// Cancelling either copy ends its peer. A standalone copy uses the default.
+    #[must_use]
+    pub fn pair() -> (Self, Self) {
+        let (signal, _) = watch::channel(false);
+        (Self(Some(signal.clone())), Self(Some(signal)))
+    }
+
+    /// Run until transfer completes, the place is evicted, or the matching task is cancelled.
+    /// Orderly capture and a completed transfer let the peer drain its own final bytes.
+    pub async fn run(
+        mut self,
+        evicted: oneshot::Receiver<()>,
+        transfer: impl Future<Output = io::Result<()>>,
+    ) {
+        let peer_ended = async {
+            if let Some(signal) = &self.0 {
+                let mut receiver = signal.subscribe();
+                let _ = receiver.wait_for(|ended| *ended).await;
+            } else {
+                std::future::pending::<()>().await;
+            }
+        };
+        let completed = tokio::select! {
+            biased;
+            _ = evicted => false,
+            () = peer_ended => false,
+            result = transfer => result.is_ok(),
+        };
+        if completed {
+            self.0.take();
+        }
+    }
+}
+
+impl Drop for CopyCancellation {
+    fn drop(&mut self) {
+        if let Some(signal) = &self.0 {
+            signal.send_replace(true);
         }
     }
 }
@@ -258,6 +305,7 @@ impl Saved {
 }
 
 struct Resume {
+    cancellation: CopyCancellation,
     flow: Flow,
     expires: u64,
     place: Place,
@@ -266,7 +314,7 @@ struct Resume {
 }
 
 struct Startup {
-    saved: Vec<Saved>,
+    saved: Vec<(Saved, CopyCancellation)>,
     ready: oneshot::Sender<Vec<Resume>>,
 }
 
@@ -286,14 +334,14 @@ impl Outbound {
         else {
             return;
         };
-        startup.saved.sort_by_key(|s| s.owner.order);
+        startup.saved.sort_by_key(|(saved, _)| saved.owner.order);
         let mut slots = self
             .places
             .table
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let mut copies = Vec::with_capacity(startup.saved.len());
-        for saved in startup.saved {
+        for (saved, cancellation) in startup.saved {
             if saved.expires <= monotonic_ms() {
                 continue;
             }
@@ -313,6 +361,7 @@ impl Outbound {
                     activity: admitted.activity,
                 };
                 copies.push(Resume {
+                    cancellation,
                     flow: saved.flow,
                     expires: saved.expires,
                     place,
@@ -427,6 +476,7 @@ impl OutboundRelays {
         sandbox: &str,
         link: TcpLink,
         pair: Pair,
+        cancellation: CopyCancellation,
         admit_proxy: impl FnOnce() -> io::Result<()>,
     ) -> io::Result<()> {
         let holders = self.0.lock().unwrap_or_else(PoisonError::into_inner);
@@ -441,12 +491,12 @@ impl OutboundRelays {
             || startup
                 .saved
                 .iter()
-                .any(|s| s.owner.order == saved.owner.order || s.link == link)
+                .any(|(s, _)| s.owner.order == saved.owner.order || s.link == link)
         {
             return Err(invalid());
         }
         admit_proxy()?;
-        startup.saved.push(saved);
+        startup.saved.push((saved, cancellation));
         Ok(())
     }
 
@@ -503,11 +553,18 @@ impl OutboundRelays {
             for resume in restored {
                 let holder = Arc::clone(&holder);
                 copies.spawn(async move {
-                    tokio::select! {
-                        biased;
-                        _=resume.evicted=>{}
-                        _=resume.flow.run(resume.place,&holder,Some(resume.expires),resume.request)=>{}
-                    }
+                    resume
+                        .cancellation
+                        .run(
+                            resume.evicted,
+                            resume.flow.run(
+                                resume.place,
+                                &holder,
+                                Some(resume.expires),
+                                resume.request,
+                            ),
+                        )
+                        .await;
                 });
             }
             outbound_loop(listener, targets, sandbox, places, copies, Some(holder)).await;

@@ -3839,7 +3839,9 @@ responses. The successor restores the original sockets, copy cursors, admission 
 activity and expiry before serving new HTTP requests. Intercepted connections close at restart.
 Fresh connections use the successor's host-bound injection and redaction policy. The holder
 keeps its forward. The replacement verifies that holder's identity and reserves the saved
-outbound copies in their old admission order before the relay accepts again.
+outbound copies in their old admission order before the relay accepts again. Eviction or
+explicit cancellation releases both host-side places. A peer's FIN closes its write
+direction and allows the other direction to drain.
 [ADR-0413](decisions/0413-a-bounded-helper-holds-connected-tunnel-sockets-between-servers.md)
 The proxy also counts each connection's run (agent run, CI job, Superagent shell). When nothing was
 idle for 5 minutes, a full sandbox share takes the oldest connection of its busiest other run, and

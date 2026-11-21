@@ -64,7 +64,9 @@ On Linux, each established opaque HTTP/1.1 CONNECT tunnel retains its original s
 write-half state, admission owner, byte activity and absolute expiry. In namespace mode the
 server also transfers the matching host-side relay. It verifies the original internal TCP
 endpoints and the surviving holder record. The successor reserves the relay places in their
-original order before accepting fresh connections. Continuity starts with a departing server
+original order before accepting fresh connections. Eviction or task cancellation releases
+both restored copies, including when the external peers keep their write halves open. A
+normal FIN leaves the opposite direction available for a final reply. Continuity starts with a departing server
 that can deposit a compatible record for this path. HTTP/2 inside the opaque tunnel is ordinary
 payload. An outer HTTP/2 CONNECT shares its transport and HTTP session state with other
 streams, so it reconnects on restart. An incompatible successor, a lost holder,

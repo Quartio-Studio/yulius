@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use yulius_sandbox::relay::custodian::{Established, Pair, collect, monotonic_ms};
-use yulius_sandbox::relay::handoff::TcpLink;
+use yulius_sandbox::relay::handoff::{CopyCancellation, TcpLink};
 
 use super::{
     Arc, Bytes, CONNECTION_MAX, CopyState, EgressProxy, PoisonError, Slot, SocketAddr, TcpStream,
@@ -203,6 +203,18 @@ impl EgressProxy {
     /// # Errors
     /// Invalid, expired or over-capacity records release their sockets and consume no place.
     pub fn restore_opaque_tunnel(&self, pair: Pair) -> io::Result<()> {
+        self.restore_with_cancellation(pair, CopyCancellation::default())
+    }
+
+    /// Restore an opaque copy with the administrative cancellation of its matching holder relay.
+    ///
+    /// # Errors
+    /// Invalid records, elapsed lifetimes and unavailable admission places reject the copy.
+    pub fn restore_with_cancellation(
+        &self,
+        pair: Pair,
+        cancellation: CopyCancellation,
+    ) -> io::Result<()> {
         let (owner, copy_state) = tunnel_state(&pair)?;
         let expires = pair.expires.ok_or_else(invalid)?;
         remaining(owner.last, expires, monotonic_ms())?;
@@ -263,7 +275,9 @@ impl EgressProxy {
             expires,
         };
         tokio::spawn(async move {
-            tokio::select! { _ = tunnel.transfer(slot, request) => {}, _ = ended => {} }
+            cancellation
+                .run(ended, tunnel.transfer(slot, request))
+                .await;
         });
         Ok(())
     }
