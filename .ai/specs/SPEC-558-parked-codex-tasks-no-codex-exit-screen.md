@@ -67,7 +67,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Preserve a continuation while its previous parked run settles
 - [x] Verify the current model and subscription before accepting a named Continue
 - [x] Order parking and replacement merge requests through run settlement
-- [ ] Deliver the recorded integration failure once to an already parked owner
+- [x] Deliver the recorded integration failure once to an already parked owner
 - [ ] Hold the original owner’s session and successor while its open delivery cannot be verified
 - [ ] Render verified live integration status in the terminal, sidebar and Task Info
 - [ ] Deliver bounded Codex goal continuation to dev
@@ -126,6 +126,8 @@ The SQLite query returning a parked task includes the latest attempt ID in the s
 
 ## Evidence
 
+- Independent review approved `71b6f42ba1cf5293f1cc5f8625775b2ce06e4659`. Run `3c27def5-99f4-4252-bc2d-8dd7faeb942d` passed all 211 parking, PR-watch and Codex tests. The agent echoed the recorded diagnosis in its original provider session and the next watcher pass started no second attempt. Clippy passed for all targets of `yulius-app`, `yulius-store` and `yulius` with all features and warnings denied. The complete hook and delivery modules passed 241 of 258 tests in `2781ac61-a2f5-4545-8c1d-977daab1faf5`; the 17 failures matched the dev control exactly. Vidoc was disabled. The terminal tests used a synthetic agent and a real PTY.
+- Hand check of the final claim. Removing the ordinary-run comparison and splitting the exit from park restoration reproduced both failures in `3377e959-72cb-4d13-9c4b-517f2b6053d1`. The reviewed source was restored.
 - Review of `5c44b892e` identified two persisted-state orderings. In run `af902797-cf0b-477d-b877-a2be5f9880d9`, the owner received the candidate diagnosis after an ordinary rerun entered the queue, and an independent SQLite reader saw Starting immediately after the unspawned attempt exited. The launch claim now compares the ordinary run in its transaction. Restoring the park and ending the unspawned attempt also commit together.
 - Broader comparison on `792913c65` ran 527 hook, delivery, parking, PR-watch and task completion cases. All 17 failures reproduced on unmodified dev in `5df444cd-9352-4c75-9f25-0d403c3718a2`. Task #589 is repairing the attached-run fixtures and delivered review rounds. Task #593 owns the overlapping status-read case. [Parking fixtures #1668](https://github.com/Quartio-Studio/yulius/issues/1668), [review rounds #1656](https://github.com/Quartio-Studio/yulius/issues/1656), [bounded reads #1666](https://github.com/Quartio-Studio/yulius/issues/1666)
 - Hand check for step 46. Removing the immediate launch-lock acquisition and session-capacity guard reproduced the busy-lock timeout and premature queued notice. Both guards were restored.
