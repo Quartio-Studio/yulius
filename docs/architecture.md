@@ -129,7 +129,10 @@ runs the `agy` TUI on a Google account, on its own model and effort or else `--m
 a Gemini API key), `config/hooks.json`, `config/mcp_config.json` and, for a Google sign-in, the
 CLI's token file. Its `antigravity-cli/brain` and `conversations` link to
 `<sandbox>/antigravity/shared`, so a conversation resumes on any Antigravity account by
-`--conversation <id>`. A contained run binds that `.gemini` over the sandbox home's (the agent's
+`--conversation <id>`. Without a prompt or continuation, a resumed Antigravity process starts
+with its saved idle activity or Waiting. The next turn follows native events. [ADR-0445](decisions/0445-antigravity-resume-activity-follows-its-launch-prompt.md)
+
+A contained run binds that `.gemini` over the sandbox home's (the agent's
 shell keeps the sandbox's `HOME`); an uncontained one sets `HOME` to the run's Antigravity home.
 `yulius hook antigravity <event>` translates its hooks (SessionStart, the first model call of a
 turn, Stop, `run_command`) to Yulius's; its transcript gives prompts, tokens and limits, and

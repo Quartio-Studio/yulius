@@ -35,7 +35,9 @@ moves only between Antigravity subscriptions, and Yulius provides the pinned Ant
 [ADR-0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md),
 [ADR-0373](decisions/0373-gemini-4-neon-is-antigravitys-default-model-on-agy-1-5-12.md)). An
 Antigravity task stays Working while its command runs in the background or its agent resumes by
-itself ([SPEC-528](../.ai/specs/SPEC-528-antigravity-tasks-show-needs-its-person.md)). A
+itself ([SPEC-528](../.ai/specs/SPEC-528-antigravity-tasks-show-needs-its-person.md)). Reopening its
+conversation without a prompt leaves it idle and eligible for normal parking or closure, even
+with a Gemini announcement visible. A
 task created with the composer’s `Random` setting or an explicit `auto` harness and
 without a model that implies one draws uniformly across all added harnesses (`claude`, `codex`,
 `antigravity`) that currently have at least one non-exhausted subscription — one equal chance per
