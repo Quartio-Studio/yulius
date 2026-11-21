@@ -3804,6 +3804,15 @@ async fn kill_run_host(app: &App, id: &TaskId) -> TestResult {
 /// shows that output, not the screen its last turn settled on.
 #[test]
 fn a_run_lost_while_the_server_runs_saves_its_live_screen() -> TestResult {
+    screen_at_terminal_transition(true)
+}
+
+#[test]
+fn an_exit_publishes_its_live_screen_before_its_terminal_outcome() -> TestResult {
+    screen_at_terminal_transition(false)
+}
+
+fn screen_at_terminal_transition(lost: bool) -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
@@ -3843,14 +3852,8 @@ fn a_run_lost_while_the_server_runs_saves_its_live_screen() -> TestResult {
         })
         .await;
         assert!(answered.is_ok(), "{}", run_states(&app, &id).await);
-        let run_dir = PathBuf::from(
-            &app.deps
-                .store
-                .live_attempt(&id)
-                .await?
-                .ok_or("no run")?
-                .run_dir,
-        );
+        let run = app.deps.store.live_attempt(&id).await?.ok_or("no run")?;
+        let run_dir = PathBuf::from(&run.run_dir);
         // The settled turn's save, so the output below comes after it.
         let settled = wait_for("the settled turn's screen", Duration::from_secs(20), || {
             let saved = std::fs::read(run_dir.join("final-screen"))
@@ -3865,16 +3868,40 @@ fn a_run_lost_while_the_server_runs_saves_its_live_screen() -> TestResult {
         let hub = &app.runtime(&id).hub;
         hub.output(hub.output_seq() + 1, b"\r\nwritten after the settled turn");
 
-        kill_run_host(&app, &id).await?;
-        let rests = wait_for("the loss", Duration::from_secs(30), || async {
+        let (at_transition, observed) = tokio::sync::oneshot::channel();
+        let saved = run_dir.join("final-screen");
+        yulius_app::race::on(
+            yulius_app::race::Point::TerminalOutcomeRecorded,
+            Path::new(run.id.as_str()),
+            move || {
+                let _ = at_transition.send(std::fs::read(saved));
+            },
+        );
+        let expected = if lost {
+            kill_run_host(&app, &id).await?;
+            TaskStatus::Stopped(StopReason::Lost)
+        } else {
+            app.close_task_now(&id).await?;
+            TaskStatus::Closed
+        };
+        let captured = tokio::time::timeout(Duration::from_secs(30), observed).await???;
+        assert!(
+            String::from_utf8_lossy(&captured).contains("written after the settled turn"),
+            "the terminal attempt still exposed its previous turn's screen"
+        );
+        let ended = app.deps.store.attempt(&run.id).await?.ok_or("ended run")?;
+        let outcome = if lost {
+            (AttemptState::Lost, Some("lost"))
+        } else {
+            (AttemptState::Killed, Some("closed"))
+        };
+        assert_eq!((ended.state, ended.exit_reason.as_deref()), outcome);
+        let rests = wait_for("the ended task", Duration::from_secs(30), || async {
             task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
         })
         .await;
         assert!(rests.is_ok(), "{}", run_states(&app, &id).await);
-        assert_eq!(
-            task(&app, &id).await?.status,
-            TaskStatus::Stopped(StopReason::Lost)
-        );
+        assert_eq!(task(&app, &id).await?.status, expected);
         let screen = std::fs::read(run_dir.join("final-screen"))?;
         assert!(
             String::from_utf8_lossy(&screen).contains("written after the settled turn"),

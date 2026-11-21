@@ -16,8 +16,20 @@ pub enum Point {
     SelectedTaskDispatched,
     /// An owner's message selected its parked task before caller preflight.
     ParkedMessageSelected,
-    /// A parked resume prepared to start before acquiring the launch lock.
+    /// The parked predecessor's local work is settled and its successor needs hosted PR facts.
+    ParkedPredecessorChecksPr,
+    /// SQLite committed this attempt's terminal outcome, before returning to its observer.
+    TerminalOutcomeRecorded,
+    /// A host exit was received, before the run reader enters finalization.
+    HostExitReceived,
+    /// A host exit reader finished finalizing its attempt.
+    HostExitFinalized,
+    /// A parked resume completed preflight, before it owns the launch lock.
     ParkedResumePrepared,
+    /// The parked status is durable, just before the reader restores the saved grid.
+    ParkStateRecorded,
+    /// Continue waits for the previous attempt's reader to finish writing its task state.
+    ParkedResumeWaitsForReader,
     /// A parked read classified the task, before the response renders its plan. Keyed by task ID.
     ParkedStatusRead,
     /// A queued row reads session capacity to explain its wait. Keyed by task ID.
@@ -313,7 +325,7 @@ pub fn on(point: Point, below: &Path, hook: impl FnOnce() + Send + 'static) {
 }
 
 /// The server reached `point` for `path`: runs the hook registered for it, if any.
-pub(crate) fn reached(point: Point, path: &Path) {
+pub fn reached(point: Point, path: &Path) {
     #[cfg(feature = "test-support")]
     {
         let hook = {

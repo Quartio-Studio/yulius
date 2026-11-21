@@ -2111,6 +2111,7 @@ possible draft or keystroke within the grace period, and is not an onboarding ta
 A task keeps its session while its plan has an open step, its spec is unfinished, or its goal still needs work. Both grace and digest parking recheck these facts before stopping the session, including when a person has been asked.
 The supervisor saves the redacted screen with the elapsed idle time before requesting shutdown.
 The web terminal and `task_screen` use that snapshot once the task parks and while a resumed host attaches.
+Parked admission waits outside the launch lock for in-flight terminal cleanup, up to the stop escalation bound. The observer that records the attempt’s terminal outcome saves the final screen. A late exit reader leaves the replacement run alone. Successor and onboarding checks may continue after terminal cleanup finishes.
 [Decision 0396](decisions/0396-capture-the-parked-terminal-before-shutdown.md).
 
 Codex parking requires a recorded rollout ID. A message to the parked task resumes that rollout.
