@@ -107,6 +107,11 @@ class CdFilesTest(unittest.TestCase):
                 "CREATE TRIGGER v BEFORE DELETE ON a BEGIN\n"
                 "  SELECT RAISE(ABORT, 'no; DELETE FROM e here');\n"
                 "END;\n"
+                # Without skipping strings, these name e (a quote ends the trigger early) and g.
+                "CREATE TRIGGER w AFTER DELETE ON a BEGIN\n"
+                "  SELECT RAISE(ABORT, 'at its end'); DELETE FROM e;\n"
+                "END;\n"
+                "INSERT INTO a VALUES ('DELETE FROM g');\n"
                 "DELETE FROM d WHERE x = 'it''s';\n"
             )
             (src / "migrations" / "0003_c.sql").write_text("")

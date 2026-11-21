@@ -379,3 +379,10 @@ own code, answered:
   - The lock test's cleanup runs once. The test's doc comment is current.
 - **The new checks before the fixes:** 3 failures, then 42 pass. `scripts/dev quick`,
   `skills::tests` (22), `the_repositorys_own_cd_is_defined` and the staging test pass.
+
+Slice 2, review round 2 (Fable 5.2): approved 4da6b5321. Its one minor, a fixture that passed
+without the string handling, is answered in tests only. Two new lines must not count as
+deletions: a trigger with `RAISE(ABORT, 'at its end'); DELETE FROM e`, and a top-level `INSERT …
+('DELETE FROM g')`. With the quoted-string branch of `code_only` disabled, the test fails with
+`2:d,2:e,2:g,2:notes`; with it, the test passes. Its nit (double-quoted identifiers holding an
+apostrophe) is left: such an identifier is contrived, and no migration has one.
