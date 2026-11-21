@@ -76,6 +76,9 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- PR #1559 delivered terminal-discovered archive removal. Yulius CI passed its quality, Rust and browser jobs on `650d6c005` and reused that tree on landed dev commit `17b2b65a2`. The security job was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/17b2b65a235e3ed7d9885fdd59ac7da9d8b2f491)
+- On that dev tree, five Task Info Chromium cases failed. They observed an older detail undo a rerun, stale groups after a rerun in either direction, Done after a missed park and rerun, and an older failing Git overview overriding verified completion. The omitted PR identity case already passed. A sixth regression reproduced the old subscription email under a replaced account ID with the same display name. All twelve mounted Task Info and terminal cases passed with the change, as did five subscription-name and privacy cases.
+
 - Independent review approved `dc0bda31c` for terminal-discovered archive removal. The author passed 19 focused Chromium tests. The reviewer passed 26 archive and Undo cases and verified that notifications included the public account ID and excluded the account email, runs, wait history and model. Repository contracts, formatting and spec validation passed. No Rust mutation targets changed. Vidoc was disabled.
 
 - Full local Chromium run `01a1fc04-648d-7454-8283-863a0de167bb` on the earlier head `e3ce34f7a` timed out waiting to click Take control in the ownership-refusal fixture. Its captured screen showed Request control. A controlled detail refresh on dev `4706dbda6` reproduced that change of button between the server-side policy update and the click. [Issue #1558](https://github.com/Quartio-Studio/yulius/issues/1558)
