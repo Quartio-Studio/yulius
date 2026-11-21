@@ -29,8 +29,13 @@ fn transition(
     next: TaskStatus,
     activity: Option<Activity>,
     at: Timestamp,
+    idle: Option<(Activity, Timestamp, &AttemptId)>,
 ) -> AppResult<bool> {
     let queued = matches!(next, TaskStatus::Queued).then_some(at.0);
+    let (idle_activity, idle_updated_at, idle_attempt) = idle
+        .map_or((None, None, None), |(activity, at, attempt)| {
+            (Some(activity.as_str()), Some(at.0), Some(attempt.as_str()))
+        });
     let n = c
         .execute(
             "UPDATE tasks SET status = ?1, activity = ?2, updated_at = ?3, \
@@ -44,14 +49,19 @@ fn transition(
              queued_start = CASE WHEN ?1 = 'queued' THEN queued_start ELSE NULL END, \
              gate_blocks = CASE WHEN ?1 = 'running' OR (mode = 'goal' AND \
                ?1 IN ('switching', 'waiting_capacity', 'starting', 'queued')) THEN gate_blocks ELSE 0 END \
-             WHERE id = ?5 AND (?6 IS NULL OR status = ?6)",
+             WHERE id = ?5 AND (?6 IS NULL OR status = ?6) \
+               AND (?7 IS NULL OR (activity IS ?7 AND activity IN ('waiting', 'done') AND updated_at = ?8 \
+                 AND EXISTS (SELECT 1 FROM attempts WHERE task_id = tasks.id AND id = ?9 AND state = 'live')))",
             params![
                 next.as_str(),
                 activity.map(Activity::as_str),
                 at.0,
                 queued,
                 id,
-                expected.map(TaskStatus::as_str)
+                expected.map(TaskStatus::as_str),
+                idle_activity,
+                idle_updated_at,
+                idle_attempt,
             ],
         )
         .map_err(db)?;
@@ -397,8 +407,31 @@ impl TaskStore for SqliteStore {
         at: Timestamp,
     ) -> AppResult<bool> {
         let id = id.as_str().to_owned();
-        self.call(move |c| transition(c, &id, expected, next, activity, at))
+        self.call(move |c| transition(c, &id, expected, next, activity, at, None))
             .await
+    }
+
+    async fn claim_idle_switch(
+        &self,
+        id: &TaskId,
+        from: (Activity, Timestamp),
+        attempt: &AttemptId,
+        at: Timestamp,
+    ) -> AppResult<bool> {
+        let id = id.as_str().to_owned();
+        let attempt = attempt.clone();
+        self.call(move |c| {
+            transition(
+                c,
+                &id,
+                Some(TaskStatus::Running),
+                TaskStatus::Switching,
+                None,
+                at,
+                Some((from.0, from.1, &attempt)),
+            )
+        })
+        .await
     }
 
     async fn claim_continuation(
@@ -439,7 +472,7 @@ impl TaskStore for SqliteStore {
             } else {
                 TaskStatus::Starting
             };
-            transition(&tx, &id, Some(status), next, None, at)?;
+            transition(&tx, &id, Some(status), next, None, at, None)?;
             if let Some(start) = queue {
                 keep_queued_start(&tx, &id, &start)?;
             }
@@ -461,7 +494,7 @@ impl TaskStore for SqliteStore {
         self.call(move |c| {
             // One transaction: a task is never queued without the start it was to make.
             let tx = c.transaction().map_err(db)?;
-            if !transition(&tx, &id, Some(expected), TaskStatus::Queued, None, at)? {
+            if !transition(&tx, &id, Some(expected), TaskStatus::Queued, None, at, None)? {
                 return Ok(false);
             }
             keep_queued_start(&tx, &id, &start)?;

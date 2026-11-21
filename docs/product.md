@@ -14,6 +14,10 @@ A task's explicit effort takes precedence, including Extra high and Max on GPT-6
 
 Continue resumes a stopped Codex task in its saved conversation. Reopening a closed Codex conversation shows Waiting until its next turn. [SPEC-590](../.ai/specs/SPEC-590-look-bro-the-taks-says-it-working-but-th.md)
 
+Automatic Codex placement uses the eligible subscription with the most quota left in its tightest
+window. An idle Codex task moved to another subscription keeps Waiting or Done.
+[SPEC-611](../.ai/specs/SPEC-611-a-moved-task-is-not-shown-as-working-and.md)
+
 Tasks created by the CLI or either Superagent default to Codex when harness and model are omitted.
 A task created with a `gpt-*` model and no explicit agent selects Codex.
 A task keeps its agent for life, and a Codex task moves only between Codex subscriptions. On ChatGPT Pro 500,

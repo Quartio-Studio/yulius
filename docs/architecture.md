@@ -1038,11 +1038,18 @@ flowchart LR
   R -->|"launch credential still current"| A["Mark subscription relogin"]
   M -->|"switch_from: end run, start_run_if"| C{"choose_account"}
   C -->|"a subscription"| RUN["Same session on it"]
+  RUN -->|"idle Codex resume without a turn"| I["Restore Waiting or Done"]
   C -->|"none"| W["waiting_capacity"]
   D --> T["tell_left: one line"]
   R --> T
   T -->|"nothing usable left"| N["Needs you, ended with the pause"]
 ```
+
+A live Codex task resumed without a turn keeps its saved Waiting or Done activity, including in
+Goal mode. The supervisor determines activity from the final launch mode, so a recovered reviewer
+or another opening instruction still starts a turn. Automatic Codex placement ranks eligible
+subscriptions by headroom in the tightest binding window before considering reset urgency.
+[Decision 0449](decisions/0449-use-codex-quota-headroom-and-preserve-idle-moves.md)
 
 ## Subscription names and emails
 
