@@ -43,6 +43,12 @@ pub const STALL_AFTER_MS: i64 = 60 * 60 * 1000;
 /// A stall waits this long (ms) after the agent's last turn closed: the push and the run that
 /// turn's end starts take a moment (review round 2).
 pub const STALL_QUIET_MS: i64 = 5 * 60 * 1000;
+/// An armed green PR with no merge candidate running and no progress gets a check-in after this
+/// long (ms) so it never waits silently (SPEC-580 AWM-004).
+pub const ARMED_CHECK_IN_AFTER_MS: i64 = 10 * 60 * 1000;
+/// If the armed-PR check-in does not move the PR within this long (ms), Yulius escalates to
+/// Needs You using the SPEC-578 mechanism (SPEC-580 AWM-004).
+pub const ARMED_NEEDS_YOU_AFTER_MS: i64 = 10 * 60 * 1000;
 /// The file in the data directory that keeps what each task was told across restarts.
 pub const PR_NOTICES_FILE: &str = "pr-notices.json";
 /// Runs of a sandbox read per pass, newest first.
@@ -62,6 +68,11 @@ pub struct WatchBounds {
     pub stall_after_ms: i64,
     /// Time (ms) after the agent's last turn closed before a stall.
     pub stall_quiet_ms: i64,
+    /// Time (ms) an armed green PR may wait without testing or merging before a check-in.
+    pub armed_check_in_after_ms: i64,
+    /// Time (ms) after that check-in (or after the check-in bound if delivery is blocked) before
+    /// escalating to Needs You.
+    pub armed_needs_you_after_ms: i64,
 }
 
 impl Default for WatchBounds {
@@ -70,6 +81,8 @@ impl Default for WatchBounds {
             check_in_after_ms: CHECK_IN_AFTER_MS,
             stall_after_ms: STALL_AFTER_MS,
             stall_quiet_ms: STALL_QUIET_MS,
+            armed_check_in_after_ms: ARMED_CHECK_IN_AFTER_MS,
+            armed_needs_you_after_ms: ARMED_NEEDS_YOU_AFTER_MS,
         }
     }
 }
@@ -125,6 +138,17 @@ pub struct PrFacts {
     pub singleton_wait: Option<SingletonWait>,
     /// The pull request's head, from its newest run (empty when none).
     pub head: String,
+    /// An armed green PR with no active candidate in the sandbox that has not yet been tested or
+    /// merged (SPEC-580 AWM-004).
+    pub armed_green_waiting: bool,
+    /// The armed head SHA while [`Self::armed_green_waiting`] is true.
+    pub armed_head: String,
+    /// The integration branch name for armed-PR stall messages.
+    pub integration: String,
+    /// Why the armed green PR has not yet entered a merge candidate or merged.
+    pub armed_wait_reason: String,
+    /// Pass deferred while an armed merge decision is in progress: leave stall clocks unchanged.
+    pub deferred: bool,
 }
 
 /// First watcher observation of an ordinary rerun holding a recorded queue decision.
@@ -172,6 +196,138 @@ pub struct Told {
     /// it is out of the runs read per pass (review minor 2).
     #[serde(default)]
     pub head: String,
+    /// `"{pr}:{armed_head}"` while an armed green PR is waiting without progress (SPEC-580).
+    #[serde(default)]
+    pub armed_green_key: String,
+    /// When that armed green PR started waiting without progress (ms, 0 = none).
+    #[serde(default)]
+    pub armed_green_since_ms: i64,
+    /// When Yulius delivered the armed-PR check-in to the agent (ms, 0 = not delivered yet).
+    #[serde(default)]
+    pub armed_check_in_ms: i64,
+    /// Timestamp (`at`) of the Yulius-opened `NeedsYouRecord` for this armed-PR stall (0 = none).
+    #[serde(default)]
+    pub armed_needs_you_at: i64,
+}
+
+impl Told {
+    /// Clears all armed-green PR stall tracking fields together so a deferred pass can never
+    /// preserve a half-cleared stall clock (SPEC-580 merge review F2).
+    fn clear_armed_stall(&mut self) {
+        self.armed_green_key.clear();
+        self.armed_green_since_ms = 0;
+        self.armed_check_in_ms = 0;
+        self.armed_needs_you_at = 0;
+    }
+}
+
+/// Bounded action for a stalled armed green PR (SPEC-580 AWM-004).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArmedStallAction {
+    /// No check-in or escalation is due on this pass.
+    None,
+    /// Send a check-in into the agent's session.
+    CheckIn(String),
+    /// Escalate to Needs You via SPEC-578 (`tasks.needs_you` + `NeedsYouNotice` + `wait_history`).
+    Escalate {
+        /// What happened (names PR, head, elapsed wait, and check-in outcome).
+        happened: String,
+        /// Current blocker or wait note.
+        problem: String,
+        /// Concrete next action for the person.
+        action: String,
+    },
+}
+
+/// Updates the armed-green PR wait clock on `next` and decides whether a check-in or Needs You
+/// escalation is due (SPEC-580 AWM-004). Runs independently of `facts.working` so a stuck working
+/// turn or background command cannot silence the bound.
+#[must_use]
+pub fn decide_armed_stall(
+    facts: &PrFacts,
+    next: &mut Told,
+    bounds: &WatchBounds,
+    task_number: u32,
+) -> ArmedStallAction {
+    if facts.deferred {
+        return ArmedStallAction::None;
+    }
+    if !facts.armed_green_waiting || facts.armed_head.is_empty() {
+        next.armed_green_key.clear();
+        next.armed_green_since_ms = 0;
+        next.armed_check_in_ms = 0;
+        next.armed_needs_you_at = 0;
+        return ArmedStallAction::None;
+    }
+    let key = format!("{}:{}", facts.pr, facts.armed_head);
+    if next.armed_green_key != key {
+        next.armed_green_key = key;
+        next.armed_green_since_ms = facts.now_ms;
+        next.armed_check_in_ms = 0;
+        next.armed_needs_you_at = 0;
+        return ArmedStallAction::None;
+    }
+    if next.armed_needs_you_at > 0 || facts.person_must_act {
+        return ArmedStallAction::None;
+    }
+    let waited_ms = facts.now_ms.saturating_sub(next.armed_green_since_ms);
+    let integration = if facts.integration.is_empty() {
+        "the integration branch"
+    } else {
+        facts.integration.as_str()
+    };
+    let reason = if facts.armed_wait_reason.is_empty() {
+        format!(
+            "Yulius is waiting to test it on top of `{integration}` or merge it, but no progress \
+             has been made."
+        )
+    } else {
+        facts.armed_wait_reason.clone()
+    };
+    let escalate_due = if next.armed_check_in_ms > 0 {
+        facts.now_ms.saturating_sub(next.armed_check_in_ms) >= bounds.armed_needs_you_after_ms
+    } else {
+        waited_ms
+            >= bounds
+                .armed_check_in_after_ms
+                .saturating_add(bounds.armed_needs_you_after_ms)
+    };
+    if escalate_due {
+        let total_min = (waited_ms / 60_000).max(1);
+        let check_in_note = if next.armed_check_in_ms > 0 {
+            "even after a check-in to the agent"
+        } else {
+            "and Yulius could not deliver a check-in to the session"
+        };
+        let happened = format!(
+            "Armed green PR #{} at {} has not been tested on `{integration}` or merged for \
+             {total_min} min ({check_in_note}).",
+            facts.pr,
+            short(&facts.armed_head),
+        );
+        let action = format!(
+            "Open task #{task_number} to inspect PR #{}, check why it has not entered the merge \
+             queue, or nudge the agent.",
+            facts.pr
+        );
+        return ArmedStallAction::Escalate {
+            happened,
+            problem: reason,
+            action,
+        };
+    }
+    if next.armed_check_in_ms == 0 && waited_ms >= bounds.armed_check_in_after_ms {
+        let minutes = (waited_ms / 60_000).max(1);
+        let text = format!(
+            "Your armed merge at {} has been green for {minutes} min without being tested on top \
+             of `{integration}` or merged. {reason} Check `delivery_status` and `git status`, \
+             commit or clean any uncommitted changes, and end your turn cleanly (without a \
+             non-wait background command running) so the merge queue can pick it up.",
+            short(&facts.armed_head),
+        );
+        return ArmedStallAction::CheckIn(message(facts.pr, &[&text]));
+    }
+    ArmedStallAction::None
 }
 
 /// Decides what to type to a task (one message, or nothing) and what it was told afterwards.
@@ -579,7 +735,14 @@ impl App {
 
     /// One pass over the live tasks with an open pull request: types into each session what it
     /// was not told yet; returns the tasks and what was typed.
+    ///
+    /// Heap-boxed so callers awaiting multiple passes in one async frame stay well within the
+    /// default 2 MiB thread stack (SPEC-580 merge review F1).
     pub async fn watch_prs(self: &Arc<Self>, bounds: &WatchBounds) -> Vec<(TaskId, String)> {
+        Box::pin(self.watch_prs_pass(bounds)).await
+    }
+
+    async fn watch_prs_pass(self: &Arc<Self>, bounds: &WatchBounds) -> Vec<(TaskId, String)> {
         let path = self.config.data_dir.join(PR_NOTICES_FILE);
         let saved = self.with_pr_notices(Clone::clone);
         let attempts = match self.deps.store.live_attempts().await {
@@ -597,7 +760,7 @@ impl App {
             let Ok(Some(task)) = self.deps.store.task(&attempt.task_id).await else {
                 continue;
             };
-            let told = saved.get(task.id.as_str()).cloned().unwrap_or_default();
+            let mut told = saved.get(task.id.as_str()).cloned().unwrap_or_default();
             let Some(runtime) = self.existing_runtime(&task.id) else {
                 continue;
             };
@@ -621,12 +784,18 @@ impl App {
             let activation = self.arm_observation(&task.id);
             let slot = self.armed_now(&task.id);
             let facts = if task.status == TaskStatus::Running && !held {
-                self.pr_facts(&task, &told, &mut runs, &activation, &slot)
-                    .await
+                Box::pin(self.pr_facts(&task, &mut told, &mut runs, &activation, &slot)).await
             } else {
                 None
             };
             let Some((facts, source)) = facts else {
+                // If an earlier armed-PR stall Needs You was opened and the task is no longer
+                // watching an open PR (e.g. merged or closed), auto-clear it (SPEC-580 AWM-004).
+                if task.status == TaskStatus::Running && !held && told.armed_needs_you_at > 0 {
+                    self.end_needs_you_asked_at(&task.id, told.armed_needs_you_at, None)
+                        .await;
+                    told.clear_armed_stall();
+                }
                 // Not watched now (no open pull request, paused, not running): no stall shows
                 // (review minor 3), and what it was told stays while its pull request may come
                 // back.
@@ -644,8 +813,32 @@ impl App {
                 }
                 continue;
             };
-            let (text, next) = decide(&facts, &told, bounds);
-            let next = match text {
+            let has_new_event = facts
+                .events
+                .iter()
+                .any(|event| told.keys.get(event.kind) != Some(&event.key));
+            let (text, mut next) = decide(&facts, &told, bounds);
+            let armed_action = decide_armed_stall(&facts, &mut next, bounds, task.number);
+            let (to_type, is_armed_check_in) = if has_new_event {
+                (text, false)
+            } else {
+                match &armed_action {
+                    ArmedStallAction::CheckIn(armed_text) => {
+                        // Prefer the actionable armed-PR check-in over a generic open-PR check-in
+                        // when both become due on the same pass.
+                        next.stalled.clone_from(&told.stalled);
+                        (Some(armed_text.clone()), true)
+                    }
+                    ArmedStallAction::Escalate { .. } => {
+                        // Escalating to Needs You: do not also type a generic check-in/stall.
+                        next.typed_ms = told.typed_ms;
+                        next.stalled.clone_from(&told.stalled);
+                        (None, false)
+                    }
+                    ArmedStallAction::None => (text, false),
+                }
+            };
+            let mut next = match to_type {
                 None => next,
                 Some(text) => {
                     // Job names, reasons and test names come from the project: no control
@@ -701,7 +894,20 @@ impl App {
                                 current.working = true;
                                 current.idle = false;
                             }
-                            if decide(&current, &told, bounds).0.as_deref()
+                            if is_armed_check_in {
+                                let mut check_told = told.clone();
+                                if !matches!(
+                                    decide_armed_stall(
+                                        &current,
+                                        &mut check_told,
+                                        bounds,
+                                        task.number,
+                                    ),
+                                    ArmedStallAction::CheckIn(ref msg) if msg == &prepared
+                                ) {
+                                    return false;
+                                }
+                            } else if decide(&current, &told, bounds).0.as_deref()
                                 != Some(prepared.as_str())
                             {
                                 return false;
@@ -738,6 +944,10 @@ impl App {
                     match result {
                         Ok(()) => {
                             tracing::info!(task = %task.id, pr = facts.pr, "told the task about its pull request");
+                            if is_armed_check_in {
+                                next.armed_check_in_ms = facts.now_ms;
+                                next.typed_ms = facts.now_ms;
+                            }
                             typed.push((task.id.clone(), text));
                             next
                         }
@@ -757,6 +967,27 @@ impl App {
                     }
                 }
             };
+            if !has_new_event
+                && let ArmedStallAction::Escalate {
+                    happened,
+                    problem,
+                    action,
+                } = armed_action
+                && !self.update_holds_starts()
+                && self.arm_observation(&task.id) == activation
+                && self.armed_now(&task.id) == slot
+                && source
+                    .as_ref()
+                    .is_none_or(|s| self.watched_train(&task, facts.pr) == s.train)
+                && !Box::pin(self.hosted_arm_stale_or_moved(&task, facts.pr, &facts.armed_head))
+                    .await
+                && let Some(at) = Box::pin(
+                    self.escalate_armed_stall(&task, facts.pr, &happened, &problem, &action),
+                )
+                .await
+            {
+                next.armed_needs_you_at = at;
+            }
             // A merged pull request is no stall, also before its notice could be typed.
             let merged = facts.events.iter().any(|event| event.kind == "merged");
             let stalled = next
@@ -794,7 +1025,7 @@ impl App {
                 let told = saved.get(task.id.as_str()).cloned().unwrap_or_default();
                 let paused = !matches!(self.deps.store.open_pause(&task.id).await, Ok(None));
                 let facts = if !paused {
-                    self.pr_facts_parked(&task, &told, &mut runs).await
+                    Box::pin(self.pr_facts_parked(&task, &told, &mut runs)).await
                 } else {
                     None
                 };
@@ -1078,7 +1309,7 @@ impl App {
     async fn pr_facts(
         &self,
         task: &TaskRecord,
-        told: &Told,
+        told: &mut Told,
         runs: &mut BTreeMap<String, Vec<CiRunRecord>>,
         activation: &ArmObservation,
         slot: &ArmedNow,
@@ -1095,21 +1326,25 @@ impl App {
             return None;
         }
         let now_ms = self.now().0;
-        // A person must act first (a prompt on screen, `needs_you`): nothing is typed, the merge
-        // notice included (review M1, round 2).
-        let needs_you = !matches!(self.deps.store.task_needs_you(&task.id).await, Ok(None));
-        let browser_req = self
-            .browser_tab_request_for(&task.sandbox_id, &task.id)
-            .await
-            .is_some();
-        let flagged = task.activity == Some(yulius_domain::task::Activity::NeedsAttention);
-        let person_must_act =
-            needs_you || browser_req || (flagged && !self.held_message_flag_outlived(task).await);
         if past_merge(&record.stage) {
+            if told.armed_needs_you_at > 0 {
+                self.end_needs_you_asked_at(&task.id, told.armed_needs_you_at, None)
+                    .await;
+                told.clear_armed_stall();
+            }
             // Merged: said once, to a task the watch saw with it open (PRN-005, PRN-007).
             if !merge_untold(told, pr) {
                 return None;
             }
+            let needs_you = !matches!(self.deps.store.task_needs_you(&task.id).await, Ok(None));
+            let browser_req = self
+                .browser_tab_request_for(&task.sandbox_id, &task.id)
+                .await
+                .is_some();
+            let flagged = task.activity == Some(yulius_domain::task::Activity::NeedsAttention);
+            let person_must_act = needs_you
+                || browser_req
+                || (flagged && !self.held_message_flag_outlived(task).await);
             let text = self.merged_text_once(task, &sandbox, pr).await?;
             return Some((
                 PrFacts {
@@ -1130,18 +1365,37 @@ impl App {
         if record.stage != DeliveryStage::PrOpen {
             return None;
         }
+        // A person must act first (a prompt on screen, `needs_you`): nothing is typed, the merge
+        // notice included (review M1, round 2).
+        let mut needs_you = !matches!(self.deps.store.task_needs_you(&task.id).await, Ok(None));
+        let browser_req = self
+            .browser_tab_request_for(&task.sandbox_id, &task.id)
+            .await
+            .is_some();
+        let flagged = task.activity == Some(yulius_domain::task::Activity::NeedsAttention);
+        let flagged_active = flagged && !self.held_message_flag_outlived(task).await;
+        let mut person_must_act = needs_you || browser_req || flagged_active;
         // A deferred pass remembers the open PR and leaves its existing stall clock alone.
+        let prior_progress = if told.pr == pr {
+            told.progress.clone()
+        } else {
+            String::new()
+        };
         let observed = || PrFacts {
             pr,
             now_ms,
-            progress: if told.pr == pr {
-                told.progress.clone()
-            } else {
-                String::new()
-            },
+            progress: prior_progress.clone(),
             ..PrFacts::default()
         };
-        let observed_only = || Some((observed(), None));
+        let observed_only = || {
+            Some((
+                PrFacts {
+                    deferred: true,
+                    ..observed()
+                },
+                None,
+            ))
+        };
         if activation.deciding {
             return observed_only();
         }
@@ -1155,6 +1409,17 @@ impl App {
         // a different train's result. Verify the hosted inputs before choosing ordinary CI.
         let mut receipt = None;
         if !armed {
+            // Disarmed PR leaves armed-green waiting immediately: reset all stall-clock fields
+            // (and clear any earlier armed-stall Needs You) before any deferred `observed_only()`
+            // return so re-arming the same head always starts a fresh bound (SPEC-580 merge F2).
+            let armed_needs_you_at = told.armed_needs_you_at;
+            told.clear_armed_stall();
+            if armed_needs_you_at > 0 {
+                self.end_needs_you_asked_at(&task.id, armed_needs_you_at, None)
+                    .await;
+                needs_you = !matches!(self.deps.store.task_needs_you(&task.id).await, Ok(None));
+                person_must_act = needs_you || browser_req || flagged_active;
+            }
             let Ok(latest) = self.deps.store.latest_merge_wait(&task.id).await else {
                 return observed_only();
             };
@@ -1440,6 +1705,42 @@ impl App {
         } else {
             no_ci_status(armed)
         };
+        let armed_head = match &slot {
+            ArmedNow::Armed(merge) => merge.head.clone(),
+            ArmedNow::None | ArmedNow::Deciding => String::new(),
+        };
+        let armed_green = if armed_head.is_empty() {
+            false
+        } else {
+            match self.ci_gate_for_pull(&sandbox, pr, &armed_head).await {
+                yulius_domain::ci::GateResult::Run(Some(RunState::Passed | RunState::Skipped)) => {
+                    true
+                }
+                yulius_domain::ci::GateResult::NotConfigured => {
+                    !delivery_profile(&sandbox).require_checks
+                }
+                _ => false,
+            }
+        };
+        let armed_green_waiting =
+            armed_green && !ci_busy && notice_hold == Hold::Free && !self.train_running(&sandbox);
+        // Auto-clear an earlier armed-PR stall Needs You once the PR moves (enters a train,
+        // head changes, disarms, or checks stop being green; SPEC-580 AWM-004).
+        let armed_key = format!("{pr}:{armed_head}");
+        if told.armed_needs_you_at > 0
+            && (!armed_green_waiting || told.armed_green_key != armed_key)
+        {
+            self.end_needs_you_asked_at(&task.id, told.armed_needs_you_at, None)
+                .await;
+            told.clear_armed_stall();
+            needs_you = !matches!(self.deps.store.task_needs_you(&task.id).await, Ok(None));
+            person_must_act = needs_you || browser_req || flagged_active;
+        }
+        let armed_wait_reason = if armed_green_waiting {
+            self.armed_wait_reason(task, queue_note, &integration).await
+        } else {
+            String::new()
+        };
         let runtime = self.existing_runtime(&task.id)?;
         let mut facts = PrFacts {
             now_ms,
@@ -1452,6 +1753,11 @@ impl App {
             person_must_act,
             has_ci,
             head: own.map(|run| run.sha.clone()).unwrap_or_default(),
+            armed_green_waiting,
+            armed_head,
+            integration,
+            armed_wait_reason,
+            deferred: false,
             ..PrFacts::default()
         };
         if let Some((span, decision, pull)) = &receipt {
@@ -1643,6 +1949,130 @@ impl App {
             request = self.browser_tab_request_for(&task.sandbox_id, &task.id) => request.is_none().then_some(recipient),
             () = std::future::ready(()) => None,
         }
+    }
+
+    /// Checks GitHub (bounded to 5 s) before escalating a stalled armed green PR to Needs You:
+    /// returns `true` ONLY when GitHub positively confirms the PR is no longer open/unmerged at
+    /// `head` on the integration branch (so an already-merged or externally moved PR never pages a
+    /// person). Errors and timeouts return `false` so a GitHub outage cannot hide a genuine stall
+    /// (SPEC-580 review F4).
+    async fn hosted_arm_stale_or_moved(&self, task: &TaskRecord, pr: u64, head: &str) -> bool {
+        let Ok(Some(sandbox)) = self.deps.store.sandbox(&task.sandbox_id).await else {
+            return false;
+        };
+        let read = async {
+            let token = self.dlv_installation_token(&sandbox).await?;
+            self.deps
+                .github
+                .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, pr)
+                .await
+        };
+        match tokio::time::timeout(Duration::from_secs(5), read).await {
+            Ok(Ok(pull)) => {
+                !(pull.number == pr
+                    && pull.state == "open"
+                    && !pull.merged
+                    && !pull.from_fork
+                    && pull.base == delivery_profile(&sandbox).integration_branch
+                    && task.branch.as_deref() == Some(pull.head.as_str())
+                    && pull.head_sha.eq_ignore_ascii_case(head))
+            }
+            _ => false,
+        }
+    }
+
+    /// Concrete reason why an armed green PR has not entered a merge candidate or merged yet
+    /// (SPEC-580 AWM-004).
+    async fn armed_wait_reason(
+        &self,
+        task: &TaskRecord,
+        queue_note: Option<&QueueNote>,
+        integration: &str,
+    ) -> String {
+        if let Some(note) = queue_note {
+            return note.text.clone();
+        }
+        if !task
+            .activity
+            .is_some_and(yulius_domain::task::Activity::is_idle)
+        {
+            return format!(
+                "Yulius still sees the agent's turn as working, so the merge queue waits for its \
+                 turn to end before testing on `{integration}`."
+            );
+        }
+        if self.background_shells_of(&task.id).unwrap_or(0) > 0 {
+            return format!(
+                "A background command is still running in the task, so the merge queue waits for \
+                 it to finish before updating `{integration}`."
+            );
+        }
+        if let Some(worktree) = task.worktree_path.as_deref()
+            && self
+                .deps
+                .git
+                .has_changes(std::path::Path::new(worktree))
+                .await
+                .unwrap_or(false)
+        {
+            return format!(
+                "Uncommitted changes remain in the task worktree, so the merge queue cannot test \
+                 it on top of `{integration}`."
+            );
+        }
+        format!(
+            "The armed green pull request has not entered a merge candidate or merged into \
+             `{integration}`."
+        )
+    }
+
+    /// Persists an actionable Needs You request via SPEC-578 (`tasks.needs_you` + `publish_task`
+    /// -> `task_wait_messages`) when an armed green PR remains stalled past its bound. Returns
+    /// `Some(at_ms)` when recorded so it can be auto-cleared once the PR makes progress.
+    async fn escalate_armed_stall(
+        &self,
+        task: &TaskRecord,
+        pr: u64,
+        happened: &str,
+        problem: &str,
+        action: &str,
+    ) -> Option<i64> {
+        let store = &self.deps.store;
+        if !matches!(store.task_needs_you(&task.id).await, Ok(None)) {
+            return None;
+        }
+        let now = self.now();
+        let (_, link) = self.task_page_link(task).await;
+        let clamp =
+            |text: &str, max: usize| crate::attention::shown_line(text, max).unwrap_or_default();
+        let record = crate::needs_you::NeedsYouRecord {
+            action: clamp(action, crate::needs_you::MAX_ACTION_CHARS),
+            happened: Some(clamp(happened, crate::needs_you::MAX_HAPPENED_CHARS)),
+            problem: Some(clamp(problem, crate::needs_you::MAX_PROBLEM_CHARS)),
+            decision: false,
+            link: Some(link),
+            at: now.0,
+            cause: None,
+            named: crate::needs_you::Named::default(),
+        };
+        if let Err(err) = store.set_task_needs_you(&task.id, Some(&record), now).await {
+            tracing::warn!(task = %task.id, pr, error = %err, "could not record armed-PR stall Needs You");
+            return None;
+        }
+        self.publish_task(&task.id).await;
+        if let Err(err) = store
+            .audit(
+                now,
+                "system",
+                "task.needs_you.armed_stalled",
+                Some(task.id.as_str()),
+                Some(happened),
+            )
+            .await
+        {
+            tracing::warn!(task = %task.id, pr, error = %err, "auditing armed-PR stall Needs You failed");
+        }
+        Some(now.0)
     }
 
     /// The merge notice of `task`'s pull request `pr` (`merged_text`), read from GitHub once and
@@ -2108,16 +2538,27 @@ impl App {
 }
 
 /// What a task was told after a pass whose message could not be typed: as before, but about the
-/// pull request that pass saw (so its merge is told even if nothing was typed yet).
+/// pull request that pass saw (so its merge is told even if nothing was typed yet), preserving
+/// the armed-green PR wait clock so blocked typing never resets the stall bound (SPEC-580).
 fn untold(told: Told, next: &Told) -> Told {
     if told.pr == next.pr {
-        told
+        Told {
+            armed_green_key: next.armed_green_key.clone(),
+            armed_green_since_ms: next.armed_green_since_ms,
+            armed_check_in_ms: next.armed_check_in_ms,
+            armed_needs_you_at: next.armed_needs_you_at,
+            ..told
+        }
     } else {
         Told {
             pr: next.pr,
             progress: next.progress.clone(),
             progress_ms: next.progress_ms,
             head: next.head.clone(),
+            armed_green_key: next.armed_green_key.clone(),
+            armed_green_since_ms: next.armed_green_since_ms,
+            armed_check_in_ms: 0,
+            armed_needs_you_at: next.armed_needs_you_at,
             ..Told::default()
         }
     }
@@ -3030,5 +3471,140 @@ mod tests {
                 .0
                 .is_some()
         );
+    }
+
+    /// SPEC-580 AWM-004: an armed green PR waiting without progress checks in after the bound
+    /// (even when `working == true`), then escalates to Needs You if unmoved (including when
+    /// check-in typing was blocked), ignores deferred passes, and resets when progress occurs.
+    #[test]
+    fn armed_green_stall_checks_in_then_escalates_and_resets_on_progress() {
+        let bounds = WatchBounds::default();
+        let at = |min: i64| PrFacts {
+            now_ms: min * 60_000,
+            pr: 1498,
+            working: true,
+            armed_green_waiting: true,
+            armed_head: "74dfc55c9abcdef".to_owned(),
+            integration: "dev".to_owned(),
+            armed_wait_reason: "Uncommitted changes remain.".to_owned(),
+            ..PrFacts::default()
+        };
+        let mut told = Told {
+            pr: 1498,
+            ..Told::default()
+        };
+        // T=1 starts the armed-green clock cleanly.
+        assert_eq!(
+            decide_armed_stall(&at(1), &mut told, &bounds, 338),
+            ArmedStallAction::None
+        );
+        assert_eq!(told.armed_green_since_ms, 60_000);
+        // Deferred pass leaves the clock alone.
+        let deferred = PrFacts {
+            deferred: true,
+            armed_green_waiting: false,
+            ..at(5)
+        };
+        assert_eq!(
+            decide_armed_stall(&deferred, &mut told, &bounds, 338),
+            ArmedStallAction::None
+        );
+        assert_eq!(told.armed_green_since_ms, 60_000);
+        // At T=10 (9 min elapsed): still before 10 min bound.
+        assert_eq!(
+            decide_armed_stall(&at(10), &mut told, &bounds, 338),
+            ArmedStallAction::None
+        );
+        // At T=11 (10 min elapsed): fires check-in even though `working == true`.
+        let action = decide_armed_stall(&at(11), &mut told, &bounds, 338);
+        assert!(
+            matches!(action, ArmedStallAction::CheckIn(ref msg) if msg.contains("#1498") && msg.contains("74dfc55c9")),
+            "{action:?}"
+        );
+        // Simulate delivered check-in at T=11.
+        told.armed_check_in_ms = 11 * 60_000;
+        // At T=20 (9 min after check-in): not escalated yet.
+        assert_eq!(
+            decide_armed_stall(&at(20), &mut told, &bounds, 338),
+            ArmedStallAction::None
+        );
+        // At T=21 (10 min after check-in): escalates to Needs You.
+        let escalated = decide_armed_stall(&at(21), &mut told, &bounds, 338);
+        assert!(
+            matches!(
+                escalated,
+                ArmedStallAction::Escalate { ref happened, ref problem, ref action }
+                if happened.contains("#1498")
+                    && happened.contains("even after a check-in")
+                    && problem.contains("Uncommitted changes")
+                    && action.contains("#338")
+            ),
+            "{escalated:?}"
+        );
+        // If check-in could never be delivered (armed_check_in_ms == 0), escalation still fires
+        // once check_in + needs_you has elapsed.
+        let mut blocked = Told {
+            pr: 1498,
+            armed_green_key: "1498:74dfc55c9abcdef".to_owned(),
+            armed_green_since_ms: 60_000,
+            armed_check_in_ms: 0,
+            ..Told::default()
+        };
+        let escalated_blocked = decide_armed_stall(&at(21), &mut blocked, &bounds, 338);
+        assert!(
+            matches!(
+                escalated_blocked,
+                ArmedStallAction::Escalate { ref happened, .. }
+                if happened.contains("could not deliver a check-in")
+            ),
+            "{escalated_blocked:?}"
+        );
+        // Leaving armed-green waiting resets all fields.
+        let progressed = PrFacts {
+            armed_green_waiting: false,
+            ..at(22)
+        };
+        assert_eq!(
+            decide_armed_stall(&progressed, &mut told, &bounds, 338),
+            ArmedStallAction::None
+        );
+        assert_eq!(told.armed_green_since_ms, 0);
+        assert_eq!(told.armed_check_in_ms, 0);
+        assert!(told.armed_green_key.is_empty());
+    }
+
+    #[test]
+    fn untold_resets_armed_check_in_on_new_head_and_preserves_on_same_head() {
+        let told_head_a = Told {
+            pr: 10,
+            armed_green_key: "10:aaaaaaa".to_owned(),
+            armed_green_since_ms: 60_000,
+            armed_check_in_ms: 660_000,
+            ..Told::default()
+        };
+        let next_same = Told {
+            pr: 10,
+            armed_green_key: "10:aaaaaaa".to_owned(),
+            armed_green_since_ms: 60_000,
+            armed_check_in_ms: 660_000,
+            ..Told::default()
+        };
+        let kept_same = untold(told_head_a.clone(), &next_same);
+        assert_eq!(kept_same.armed_green_key, "10:aaaaaaa");
+        assert_eq!(kept_same.armed_check_in_ms, 660_000);
+
+        // New head B: `decide_armed_stall` reset `next.armed_check_in_ms = 0`; a failed paste on
+        // the transition pass must NOT leak head A's check-in timestamp onto head B (SPEC-580 F5).
+        let next_head_b = Told {
+            pr: 10,
+            armed_green_key: "10:bbbbbbb".to_owned(),
+            armed_green_since_ms: 1_320_000,
+            armed_check_in_ms: 0,
+            ..Told::default()
+        };
+        let kept_b = untold(told_head_a, &next_head_b);
+        assert_eq!(kept_b.armed_green_key, "10:bbbbbbb");
+        assert_eq!(kept_b.armed_green_since_ms, 1_320_000);
+        assert_eq!(kept_b.armed_check_in_ms, 0);
     }
 }

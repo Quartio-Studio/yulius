@@ -210,6 +210,7 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
                     i64::MAX
                 },
                 stall_quiet_ms: 0,
+                ..WatchBounds::default()
             };
             let release = Arc::new(tokio::sync::Notify::new());
             *remote.pull_read_hold.lock().map_err(|_| "fixture host")? = Some(release.clone());
