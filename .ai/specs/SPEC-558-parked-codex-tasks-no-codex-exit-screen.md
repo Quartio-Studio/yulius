@@ -105,6 +105,8 @@ The live watcher resolves ordinary CI for the owner at the armed head and reads 
 
 ## Evidence
 
+- All 400 scoped tests passed on `59eeaa732`, including the account switches before paste and Enter. With the browser’s final lookup held as during a Chromium restart, a second clone pushed a repair and the watcher still typed the old failure. The final browser check now defers immediately when it cannot read the handoff. The next pass verifies the hosted head again.
+
 - Head `11d851430` passed 397 scoped tests. Three follow-up regressions failed there. A repair pushed from a second clone during the local Git check still received obsolete advice. A manual account switch before paste or before Enter let the old watch report delivery to its replacement. The correction checks the hosted head after local Git and binds both writes to the observed attempt under the session writer lock.
 
 - On #1576’s landed tree, 31 of 37 focused owner/queue tests failed. The fixtures retain the original attempt across restart. They reproduced a stale ordinary failure after a push from a second clone, a CI paste during a human decision, an obsolete train list, and a missing red train notice after an ordinary infrastructure error was already reported. The hosted service and agent are fixtures.

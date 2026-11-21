@@ -1485,12 +1485,7 @@ impl App {
             crate::race::Point::ArmedNoticePublicationRead,
             std::path::Path::new(task.id.as_str()),
         );
-        if !self.hosted_arm_is_current(task, sandbox, pr, head).await
-            || self
-                .browser_tab_request_for(&task.sandbox_id, &task.id)
-                .await
-                .is_some()
-        {
+        if !self.hosted_arm_is_current(task, sandbox, pr, head).await {
             return None;
         }
         let (ordinary, candidate) = tokio::try_join!(
@@ -1512,7 +1507,13 @@ impl App {
         {
             return None;
         }
-        Some(recipient)
+        // Chromium can hold its slot across a restart. A pending lookup leaves the notice
+        // unheard so that the next pass verifies the published head again.
+        tokio::select! {
+            biased;
+            request = self.browser_tab_request_for(&task.sandbox_id, &task.id) => request.is_none().then_some(recipient),
+            () = std::future::ready(()) => None,
+        }
     }
 
     /// The merge notice of `task`'s pull request `pr` (`merged_text`), read from GitHub once and

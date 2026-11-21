@@ -34,6 +34,11 @@ fn an_external_repair_during_the_local_publication_lookup_keeps_the_failure_unhe
 }
 
 #[test]
+fn an_external_repair_while_chromium_restarts_keeps_old_ci_unheard() -> TestResult {
+    armed_owner_case(OwnerCase::BrowserRestart)
+}
+
+#[test]
 fn an_account_switch_during_armed_verification_leaves_the_notice_for_the_new_attempt() -> TestResult
 {
     armed_owner_case(OwnerCase::ReplacedAttempt(
@@ -88,6 +93,7 @@ enum OwnerCase {
     WorkingDuringStall,
     PreviousCiHead,
     ExternalRepair(super::Point),
+    BrowserRestart,
     ReplacedAttempt(super::Point),
     HeldHumanDecision,
     HostedPullUnavailable,
@@ -161,6 +167,14 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
     rt.block_on(async {
         let id = &id;
         let (cold, remote) = app_with_pulls(&data, 8, 1).await?;
+        let browser = Arc::new(crate::delivery::HeldBrowserLookup::default());
+        let cold = if matches!(case, OwnerCase::BrowserRestart) {
+            let mut deps = cold.deps.clone();
+            deps.browser = browser.clone();
+            yulius_app::context::App::new(cold.config.clone(), deps)
+        } else {
+            cold
+        };
         let origin = data.join("origin.git");
         remote.set_remote(Arc::new(crate::delivery::BareRemote {
             origin: origin.clone(),
@@ -461,13 +475,15 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
         }
         if matches!(
             case,
-            OwnerCase::RepairPushedDuringRead | OwnerCase::ExternalRepair(_)
+            OwnerCase::RepairPushedDuringRead
+                | OwnerCase::ExternalRepair(_)
+                | OwnerCase::BrowserRestart
         ) {
-            let point = match case {
-                OwnerCase::ExternalRepair(point) => point,
-                _ => super::Point::LivePrFactsRead,
+            let (entered, release) = match case {
+                OwnerCase::ExternalRepair(point) => super::pause_watch_or_queue(point, id),
+                OwnerCase::BrowserRestart => browser.hold_second_lookup(),
+                _ => super::pause_watch_or_queue(super::Point::LivePrFactsRead, id),
             };
-            let (entered, release) = super::pause_watch_or_queue(point, id);
             let watcher = Arc::clone(&cold);
             let pass = tokio::spawn(async move { watcher.watch_prs(&bounds).await });
             tokio::time::timeout(Duration::from_secs(10), entered.notified()).await?;
@@ -475,7 +491,10 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
             let tree = Path::new(task.worktree_path.as_deref().ok_or("checkout")?);
             let branch = task.branch.as_deref().ok_or("branch")?;
             let other = data.join("repair-clone");
-            let tree = if matches!(case, OwnerCase::ExternalRepair(_)) {
+            let tree = if matches!(
+                case,
+                OwnerCase::ExternalRepair(_) | OwnerCase::BrowserRestart
+            ) {
                 crate::pr_watch::git(
                     tree,
                     &["clone", "-q", ".", other.to_str().ok_or("clone path")?],
@@ -507,7 +526,10 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
                 tree,
                 &["push", "-q", "origin", &format!("HEAD:refs/heads/{branch}")],
             )?;
-            if matches!(case, OwnerCase::ExternalRepair(_)) {
+            if matches!(
+                case,
+                OwnerCase::ExternalRepair(_) | OwnerCase::BrowserRestart
+            ) {
                 let checkout = Path::new(task.worktree_path.as_deref().ok_or("owner checkout")?);
                 assert_eq!(
                     crate::pr_watch::git(
