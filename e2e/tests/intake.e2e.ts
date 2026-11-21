@@ -149,7 +149,7 @@ test('"Run as a supertask" replaces a chosen "Run after" (SPEC-188)', async ({ a
 });
 
 test('changing the start choice closes the supertask proposal, so it never names a stale choice (SPEC-188)', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio'));
+  await app.open(mock('/s/studio', '&codex=1'));
   await firstShown(screen.getByRole('link', /Checkout API/).first());
   await screen.getByRole('button', /Run after: Start now/).click();
   await screen.getByRole('menuitemradio', /^#12 Checkout API/).click();

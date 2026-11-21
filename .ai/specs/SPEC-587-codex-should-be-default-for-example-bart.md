@@ -1,6 +1,6 @@
 ---
 yulius-task: 39af12db-48d1-46b9-880b-767572f2e552
-status: in-progress
+status: done
 ---
 
 # SPEC-587 — Codex is the initial model choice for a person's new tasks
@@ -24,7 +24,7 @@ The two pages share `modelPreferences()`. On an empty store it returns a null mo
 - [x] Trace the default in the composer and Settings
 - [x] Capture the missing-preference regression in the browser
 - [x] Make Codex the personal task default and preserve explicit choices
-- [ ] Verify and independently review the delivery head
+- [x] Verify and independently review the delivery head
 
 ## Acceptance criteria
 
@@ -45,3 +45,5 @@ Use the existing Codex default model option. [ADR-0426](../../docs/decisions/042
 - On the original preference reader, Chromium failed all three new regressions in `tests/model-choices.e2e.ts`. The observed values were Random agent in fresh Settings and after an invalid preference, and Connect Claude in the empty-account composer.
 - With the fix, all seven model-choice tests passed in Chromium. They checked the actual submitted fields and the resulting chosen Codex task with inherited Astra and xhigh. All eleven Antigravity tests, sixteen Codex tests and seven Claude connection tests also passed. Explicit Random survived navigation and still drew across providers.
 - A direct JavaScript check exercised missing, malformed, unrecognized and inaccessible browser storage, JSON null, and a saved model for each provider.
+- The full local browser run passed 1,299 tests, skipped one credential-dependent test and exposed two scheduling fixtures that started tasks with only Claude subscriptions present. Both reported the missing Codex subscription. With a synthetic Codex subscription in those fixtures, all three `start-change.e2e.ts` cases passed. The targeted run also exposed an intake fixture that starts a supertask. It reported the same missing subscription and passed with the synthetic Codex account available.
+- Repository quick checks passed. Independent review approved `31068467a` and separately exercised the request fields and stored preferences. The later scheduling changes are test fixtures. `scripts/dev mutants` reported no changed Rust code to mutate. `scripts/dev security` reported Vidoc disabled. Hosted full-suite and merge results are recorded in Yulius delivery evidence.
