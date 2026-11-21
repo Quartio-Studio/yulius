@@ -141,44 +141,45 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   async function loadTasks(sandboxId, watching = false) {
     const atStart = state.tasks.get(sandboxId);
     const order = ++nextListRead;
-    const read = { sandboxId, order, changes: new Map(), parked: new Set(), deleted: new Set(), unavailable: false };
+    const read = { sandboxId, order, changes: new Map(), parked: new Set(), deleted: new Set(), failedWatchOrder: 0 };
+    let snapshotOrder = order;
     let confirming = false;
     const path = `/api/sandboxes/${enc(sandboxId)}/tasks?archived=false`;
     activeLists.add(read);
     try {
       let list = await api.get(path);
-      if (listOrder.get(state.tasks.get(sandboxId)) > order) return state.tasks.get(sandboxId);
       for (const task of Array.isArray(list) ? list : []) {
         if (task.status === 'parked' && read.changes.has(task.id)) read.parked.add(task.id);
       }
       if ([...read.changes].some(([id, task]) => read.parked.has(id) && (!watching || task.archived || task.status !== 'parked'))) {
         const before = read.changes;
         read.changes = new Map();
-        const unavailable = read.unavailable;
-        read.unavailable = false;
         confirming = true;
-        try { list = await api.get(path); }
-        catch {
+        const confirmationOrder = ++nextListRead;
+        try {
+          list = await api.get(path);
+          snapshotOrder = confirmationOrder;
+        } catch {
           read.changes = new Map([...before, ...read.changes]);
-          read.unavailable ||= unavailable;
         }
       }
       const current = state.tasks.get(sandboxId);
-      if (listOrder.get(current) > order) return current;
+      if (listOrder.get(current) > snapshotOrder) return current;
       const map = new Map();
       for (const task of Array.isArray(list) ? list : []) {
         if (task.archived) continue;
         unverified.delete(task);
-        map.set(task.id, read.unavailable && task.status === 'parked' ? awaitingVerification(task) : task);
+        map.set(task.id, read.failedWatchOrder > snapshotOrder && task.status === 'parked' ? awaitingVerification(task) : task);
       }
       for (const [id, task] of read.changes) {
         if (!watching && !confirming && !read.parked.has(id) && map.get(id)?.status !== 'parked') continue;
         if (task.archived) map.delete(id);
+        else if (unverified.has(task)) map.set(id, awaitingVerification(task, map.get(id)));
         else map.set(id, task);
       }
       for (const id of read.deleted) map.delete(id);
       state.taskErrors.delete(sandboxId);
-      listOrder.set(map, order);
+      listOrder.set(map, snapshotOrder);
       state.tasks.set(sandboxId, map);
       let changed = false;
       if (current) {
@@ -196,7 +197,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       if (listOrder.get(current) > order) return current;
       if (watching) {
         for (const older of activeLists) {
-          if (older.sandboxId === sandboxId && older.order < order) older.unavailable = true;
+          if (older.sandboxId === sandboxId && older.order < order) older.failedWatchOrder = Math.max(older.failedWatchOrder, order);
         }
         let changed = false;
         for (const [id, task] of current || []) {
@@ -411,8 +412,9 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     if (tasks && [...tasks.values()].some(task => task.status === 'parked')) await loadTasks(sandboxId, true);
   }
 
-  function awaitingVerification(task) {
-    const pr = knownOpenPr(task, task.sandbox_id, task.id);
+  function awaitingVerification(task, snapshot) {
+    const prior = task.parked_pr?.open ? task : snapshot ?? task;
+    const pr = knownOpenPr(prior, task.sandbox_id, task.id);
     const alreadyWaiting = task.parked_needs_you && task.parked_pr?.number === pr?.number;
     const updated = pr && !alreadyWaiting ? { ...task, parked_needs_you: true, parked_pr: pr } : task;
     unverified.add(updated);

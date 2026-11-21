@@ -1109,3 +1109,69 @@ test('a task-list confirmation keeps a live sibling update received during its s
   });
   expect(result).toEqual(['running', 'After', 3]);
 });
+
+test('a successful archive confirmation outranks a concurrent list that began before Undo', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const results = await browser.evaluate(async () => {
+    const url = '/assets/store.js';
+    const { createStore } = await import(url);
+    const seen = [];
+    for (const order of ['list-first', 'confirm-first', 'confirm-fails']) {
+      const original = { sandbox_id: 's', id: 'p', status: 'parked', archived: false };
+      const restored = { ...original, status: 'closed' };
+      let row = original;
+      const release: (() => void)[] = [];
+      let started!: () => void;
+      const confirmation = new Promise<void>(resolve => { started = resolve; });
+      let calls = 0;
+      const store = createStore({ get: async () => {
+        const snapshot = row.archived ? [] : [row];
+        const n = ++calls;
+        if (n > 1) {
+          if (n === 4) started();
+          await new Promise<void>(resolve => { release[n] = resolve; });
+        }
+        if (n === 4 && order === 'confirm-fails') throw new Error('confirmation failed');
+        return snapshot;
+      } });
+      await store.loadTasks('s');
+      const first = store.loadTasks('s');
+      row = { ...restored, archived: true };
+      store.upsertTask(row);
+      const concurrent = store.loadTasks('s');
+      row = restored;
+      release[2]();
+      await confirmation;
+      if (order === 'confirm-first') { release[4](); await first; release[3](); }
+      else { release[3](); await concurrent; release[4](); }
+      await Promise.all([first, concurrent]);
+      seen.push(store.findTask('p')?.status ?? null, calls);
+    }
+    return seen;
+  });
+  expect(results).toEqual(['closed', 4, 'closed', 4, null, 4]);
+});
+
+test('a cold parked rename retains an open PR from the first list when confirmation fails', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const url = '/assets/store.js';
+    const { createStore } = await import(url);
+    const task = { sandbox_id: 's', id: 'p', status: 'parked', activity: 'done' };
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let calls = 0;
+    const store = createStore({ get: async () => {
+      if (++calls > 1) throw new Error('confirmation unavailable');
+      await held;
+      return [{ ...task, parked_needs_you: true, parked_pr: { number: 42, open: true } }];
+    } });
+    const read = store.loadTasks('s');
+    store.upsertTask({ ...task, title: 'Renamed' });
+    release();
+    await read;
+    const row = store.findTask('p');
+    return [row.title, row.parked_needs_you ?? null, row.parked_pr?.number ?? null];
+  });
+  expect(seen).toEqual(['Renamed', true, 42]);
+});

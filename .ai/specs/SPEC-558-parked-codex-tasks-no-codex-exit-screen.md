@@ -69,6 +69,8 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- Sidebar review of `30271602d` found two list-ordering cases. An archive confirmation that saw Undo lost its restored row to an older empty list in either completion order. A parked rename received during a cold read discarded the open PR when confirmation failed. Chromium reproduced both, then retained the restored task and kept the renamed task under Needs you for PR #42. The focused correction runs passed six ordering cases and five fallback cases. The pre-correction sidebar, onboarding and Git scope passed 65 tests. Vidoc was disabled. The mutation command found no changed Rust code.
+
 - The sidebar slice confirms a parked lifecycle change during a list read at most once. Same-second archive/Undo, a resumed row and a delayed update after permanent removal were tested with held responses. A later failed verification keeps a known open PR under Needs you in both completion orders with an older list. Scoped Chromium checks covered these races and independent Git and summary response timing. The terminal and Task Info detail reconciliation has its own remaining delivery step.
 
 - PR #1548 landed in dev at `d54e2f190`. Its integration candidate and the delivery commit passed quality, both test shards and browser e2e. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/d54e2f1909c84093bc2fd0cf2bcba80cac425805)
