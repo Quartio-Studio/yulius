@@ -1,6 +1,6 @@
 ---
 yulius-task: 2bfb2cd1-d319-4db4-bbb7-e1467fffa1a0
-status: in-progress
+status: done
 ---
 
 # SPEC-593. The sandbox browser starts on a moved host: stale Chrome profile locks are cleared
@@ -47,7 +47,8 @@ browser; the move helper is `crates/yulius/src/instance/migrate`.
   (hand-over, or its own removal when the pid is not Chrome).
 - **SPL-003** When Chrome gives up on a start (it exits, or never answers on DevTools) while
   such a kept lock still names the same running process, the failure says the profile is held
-  by that process on this host; other failures (the display, a lock Chrome took over) do not. When a stale lock cannot be removed,
+  by that process on this host; other failures (the display, a lock Chrome took over) do not.
+  When a stale lock cannot be removed,
   the start fails before the display or Chrome starts, saying which lock and why.
 - **SPL-004** The fake Chromium behaves like the real one: it holds its own `SingletonLock`
   (`<host>-<pid>`) while it runs, refuses a profile whose lock names another host (headless:
@@ -63,7 +64,7 @@ browser; the move helper is `crates/yulius/src/instance/migrate`.
 - [x] Real Chrome starts on a profile carried from another host (opt-in test)
 - [x] Operations notes, architecture and changes updated
 - [x] Independent review in a fresh session, findings fixed test-first
-- [ ] Delta review of the round-2 fixes in a fresh session
+- [x] Delta review of the round-2 fixes in a fresh session
 
 ## Acceptance criteria
 
@@ -141,7 +142,10 @@ run it). `scripts/dev quick`, the crate's tests, and Yulius CI for the whole gat
   before the toast check reproduced it locally; with `ambient=0` the file passed 7/7 with the
   probe and without it.
 - Independent review: round 1 (Fable 5.2) approved `fbd738d9e` with three minors and three nits;
-  round 2 approved `c31c4e3a2` with two minors and three nits; all fixed test-first above. The
+  round 2 approved `c31c4e3a2` with two minors and three nits; all fixed test-first above.
+  Round 3 (Opus 5.5, delta of the round-2 fixes) approved `e34016b0d` with nits only: two long
+  document lines, wrapped here, and a holder `sleep` a failed test setup could leave running
+  (the same pattern as the other SPEC-593 tests; it only matters on a setup failure). The
   pre-existing note that an Xvfb exit reads "Chromium exited during startup"
   (`display.rs`) is outside this change.
 - `scripts/dev security`: Vidoc is switched off for this project (CI `security` skipped), so

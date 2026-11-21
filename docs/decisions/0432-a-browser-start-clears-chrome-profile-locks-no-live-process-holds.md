@@ -19,7 +19,8 @@ themselves, never their targets) when no running browser can hold it: the lock n
 host, names this host with a pid that is not running, is not a `<host>-<pid>` link, or is absent
 while a cookie or socket link remains. A lock of this host with a running pid is kept and Chrome
 decides; a start whose DevTools wait failed (Chrome exited or never answered) while the lock
-still names that pid names the holding process, beside Chrome's own failure. Unlike Chrome, Yulius also removes another host's
+still names that pid names the holding process, beside Chrome's own failure. Unlike Chrome,
+Yulius also removes another host's
 lock whose pid happens to be a running Chrome here; the manager never starts two browsers on
 one profile. A stale lock that cannot be removed
 fails the start before the display starts.
