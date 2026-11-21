@@ -2063,13 +2063,16 @@ async fn a_busy_task_view_cannot_hold_the_staging_queue() -> TestResult {
     deps.browser = browser.clone();
     let app = yulius_app::context::App::new(f.h.app.config.clone(), deps);
     let mut events = app.events.subscribe();
-    let (start, started) = tokio::sync::oneshot::channel();
-    let advance = tokio::spawn(async move {
-        started.await.expect("start the queue");
-        app.staging_advance(&sandbox, "staging").await
+    let start = std::sync::Arc::new(tokio::sync::Notify::new());
+    let advance = tokio::spawn({
+        let start = start.clone();
+        async move {
+            start.notified().await;
+            app.staging_advance(&sandbox, "staging").await
+        }
     });
     let (entered, _release) = browser.hold_lookup_for(advance.id());
-    start.send(()).expect("queue is live");
+    start.notify_one();
     tokio::time::timeout(WAIT, entered.notified()).await?;
     tokio::time::timeout(Duration::from_secs(5), advance)
         .await??

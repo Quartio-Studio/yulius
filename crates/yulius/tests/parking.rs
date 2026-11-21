@@ -3730,16 +3730,17 @@ fn a_staging_outcome_reaches_its_task_once() -> TestResult {
         .await?;
         // A human decision can arrive while Chromium is looking for requests in its tabs.
         let check_with_busy_browser = || {
-            let (start, started) = tokio::sync::oneshot::channel();
+            let start = Arc::new(tokio::sync::Notify::new());
             let check = tokio::spawn({
                 let app = app.clone();
+                let start = start.clone();
                 async move {
-                    started.await.expect("start the outcome check");
+                    start.notified().await;
                     app.tell_staging_outcomes().await
                 }
             });
             let (entered, release) = browser.hold_lookup_for(check.id());
-            start.send(()).expect("the checker is live");
+            start.notify_one();
             (check, entered, release)
         };
         let (check, entered, release) = check_with_busy_browser();

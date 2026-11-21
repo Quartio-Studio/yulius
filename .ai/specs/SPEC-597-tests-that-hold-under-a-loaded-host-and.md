@@ -1,6 +1,6 @@
 ---
 yulius-task: 4014aca0-70ee-4ff0-aae0-9347694f1f02
-status: in-progress
+status: done
 ---
 
 # SPEC-597 Tests under load and the wait after a merge-first merge
@@ -31,8 +31,8 @@ SPEC-575 already has a durable staging queue, explicit admission through `cd_dep
 - [x] Direct a superseding final staging request to the newer landing
 - [x] Deliver staging receipts that identify a completed check or its fix-forward action
 - [x] Preserve a retried deployment’s outcome when delivery overlaps a previous failure
-- [ ] Prove the staging failure and recovery paths and approve their delivery after the CI test merge
-- [ ] Package the reviewed staging change with its verification evidence
+- [x] Prove the staging failure and recovery paths and approve their delivery after the CI test merge
+- [x] Package the reviewed staging change with its verification evidence
 
 ## Acceptance criteria
 
@@ -115,3 +115,5 @@ The full Chromium suite on the final staging slice passed 1,318 tests with zero 
 After restoration, both retry regressions passed. Scoped CI-profile nextest passed all 76 cases across staging, merge receipts, goal Stop, wake delivery and SQLite. Repository and format checks passed.
 
 The held-terminal-writer regression failed on the previous notifier. A real resize kept the writer while a decision opened, and the notifier sent one obsolete failure after release. Staging now uses the same immediate, attempt-bound paste as PR notices and rechecks the recipient, human holds and exact outcome before it writes.
+
+Independent review approved `25cf793df`. Scoped `scripts/cargo nextest run --profile ci` passed 93 tests covering staging, the store, merge receipts, goal Stop and live notices. Both held-browser and held-writer fixtures passed again after their test synchronization was simplified. The task list and detail cases passed in the full Chromium run above. Vidoc was disabled.
