@@ -73,6 +73,8 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- Review at `3197dc49b` reproduced an archived row reappearing when a list confirmation failed and replayed an earlier rename. The regression checks the removal as well as the opposite case with a later Undo. A second regression returned the same lifecycle detail and PR-bearing list in both orders after the watch failed. One order lost open PR #42 and showed Done, and the other kept the older title. Lifecycle replay now keeps the PR evidence when the list supplies it, and recognises a transition from the status at the start of the detail read.
+
 - On the merged #1553 base, all ten missed lifecycle Chromium cases failed. A held empty list also removed a task whose newer detail had observed its park or resume. The terminal now publishes public lifecycle fields to the existing row and carries a transition across older list reads. The active list shows the resumed subscription ID and shell activity, and excludes run history, the request and the account email. A further test reproduced a later live rename lost after a missed resume during an explicit list read. Tracking the crossed park retains the event if confirmation fails.
 
 - PR #1553 delivered existing parked-row publication at dev `37f6d05a4`. Run `1ed51bce-2b80-4d14-b5df-bc3c115eb2a2` passed quality, both Rust shards and browser e2e for `2c35308d6`. Vidoc was disabled. The full local Chromium suite on the reviewed product head passed 1,250 cases with one optional skip. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe704d71f9/delivery/evidence/37f6d05a4cd20a826efb37080af88d54b93fb26c)

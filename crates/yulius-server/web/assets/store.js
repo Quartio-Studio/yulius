@@ -146,7 +146,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   async function loadTasks(sandboxId, watching = false) {
     const atStart = state.tasks.get(sandboxId);
     const order = ++nextListRead;
-    const read = { sandboxId, order, changes: new Map(), transitions: new Map(), parked: new Set(), deleted: new Set(), failedWatchOrder: 0 };
+    const read = { sandboxId, order, changes: new Map(), beforeConfirmation: null, transitions: new Map(), parked: new Set(), deleted: new Set(), failedWatchOrder: 0 };
     let snapshotOrder = order;
     let confirming = false;
     const path = `/api/sandboxes/${enc(sandboxId)}/tasks?archived=false`;
@@ -157,7 +157,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
         if (task.status === 'parked' && read.changes.has(task.id)) read.parked.add(task.id);
       }
       if ([...read.changes].some(([id, task]) => read.parked.has(id) && (!watching || task.archived || task.status !== 'parked'))) {
-        const before = read.changes;
+        read.beforeConfirmation = read.changes;
         read.changes = new Map();
         confirming = true;
         const confirmationOrder = ++nextListRead;
@@ -165,7 +165,9 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
           list = await api.get(path);
           snapshotOrder = confirmationOrder;
         } catch {
-          read.changes = new Map([...before, ...read.changes]);
+          read.changes = new Map([...read.beforeConfirmation, ...read.changes]);
+        } finally {
+          read.beforeConfirmation = null;
         }
       }
       const current = state.tasks.get(sandboxId);
@@ -177,7 +179,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       if (watchFailure > snapshotOrder) failedWatchOrder.set(map, watchFailure);
       for (const task of Array.isArray(list) ? list : []) {
         if (task.archived) continue;
-        map.set(task.id, orderedListRow(task, current?.get(task.id), snapshotOrder, failureOrder));
+        map.set(task.id, orderedListRow(task, current?.get(task.id), snapshotOrder, failureOrder, read.transitions.has(task.id)));
       }
       for (const [id, task] of read.changes) {
         const listed = map.get(id);
@@ -199,7 +201,12 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       for (const [id, transition] of read.transitions) {
         if (rowOrder.get(transition) <= snapshotOrder || read.changes.has(id)) continue;
         if (transition.archived) map.delete(id);
-        else map.set(id, current?.get(id) ?? transition);
+        else {
+          const latest = current?.get(id) ?? transition;
+          // For two parked observations the list loop has already reconciled
+          // the PR and verification, keeping the newer lifecycle fields.
+          if (latest.status !== 'parked' || map.get(id)?.status !== 'parked') map.set(id, latest);
+        }
       }
       for (const id of read.deleted) map.delete(id);
       state.taskErrors.delete(sandboxId);
@@ -283,7 +290,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     return (second?.order ?? 0) > (first?.order ?? 0) ? second : first;
   }
 
-  function orderedListRow(listed, prior, snapshotOrder, failureOrder) {
+  function orderedListRow(listed, prior, snapshotOrder, failureOrder, keepLifecycleFields) {
     // A detail or lifecycle event that started later supplies the parked state.
     // The list can still carry a new title or discover an open PR.
     recordVerification(listed, snapshotOrder);
@@ -292,7 +299,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     const order = keepPrior ? priorOrder : snapshotOrder;
     let row = listed;
     if (keepPrior) {
-      row = { ...listed, ...parkedFacts(prior) };
+      row = keepLifecycleFields ? { ...prior } : { ...listed, ...parkedFacts(prior) };
       verifiedGroup.set(row, latestVerification(prior, listed));
       if (unverified.has(prior)) unverified.set(row, unverified.get(prior));
     }
@@ -341,7 +348,8 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       const map = state.tasks.get(detail.sandbox_id);
       const row = map?.get(detail.id);
       if (!row || (detail.status !== 'parked' && row.status !== 'parked' && startingRow?.status !== 'parked')) return view;
-      const transition = detail.archived || row.status !== 'parked' || detail.status !== 'parked';
+      const transition = detail.archived || row.status !== 'parked' || detail.status !== 'parked' ||
+        (startingRow && startingRow.status !== detail.status);
       recordVerification(detail, order);
       if (rowOrder.get(row) > order) {
         // Preserve the newer event's work and decisions. An older detail may
@@ -361,7 +369,9 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       if (transition) {
         for (const read of activeLists) {
           if (read.sandboxId !== detail.sandbox_id || read.order >= order) continue;
-          read.changes.delete(row.id); // already superseded by the accepted detail
+          // A failed confirmation may replay events from either buffer.
+          read.beforeConfirmation?.delete(row.id);
+          read.changes.delete(row.id);
           read.parked.add(row.id);
           read.transitions.set(row.id, updated);
         }

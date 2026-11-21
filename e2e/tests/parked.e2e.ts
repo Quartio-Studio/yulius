@@ -2444,3 +2444,70 @@ test('a live update after a missed resume survives an older explicit list and fa
   });
   expect(seen).toEqual(['Owner renamed the resumed task', 'working']);
 });
+
+test('a failed confirmation cannot replay an earlier rename over a newly discovered archive', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const results = [];
+    for (const undo of [false, true]) {
+      const initial = { id: 'p', sandbox_id: 's', status: 'parked', archived: false, title: 'Before', parked_needs_you: false };
+      const first = Promise.withResolvers<void>(), confirming = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+      let reads = 0;
+      const store = createStore({ get: async () => {
+        if (++reads === 1) return [initial];
+        if (reads === 2) { await first.promise; return [initial]; }
+        confirming.resolve();
+        await finish.promise;
+        throw new Error('confirmation unavailable');
+      } });
+      await store.loadTasks('s');
+      const refresh = store.loadTasks('s');
+      store.upsertTask({ ...initial, title: 'Earlier rename' });
+      first.resolve();
+      await confirming.promise;
+      store.beginParkedDetail(initial)({ ...initial, status: 'closed', archived: true });
+      const removed = !store.findTask('p');
+      if (undo) store.upsertTask({ ...initial, title: 'Restored' });
+      finish.resolve();
+      await refresh;
+      results.push([removed, store.findTask('p')?.title ?? null]);
+    }
+    return results;
+  });
+  expect(seen).toEqual([[true, null], [true, 'Restored']]);
+});
+
+test('a missed park keeps the PR discovered by an older list across a newer failed watch', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const results = [];
+    for (const detailFirst of [true, false]) {
+      const running = { id: 'p', sandbox_id: 's', status: 'running', activity: 'done', title: 'Earlier title' };
+      const parked = { ...running, status: 'parked', parked_needs_you: false };
+      const peer = { ...parked, id: 'peer' };
+      const held = Promise.withResolvers<void>();
+      let reads = 0;
+      const store = createStore({ get: async () => {
+        if (++reads === 1) return [running, peer];
+        if (reads === 2) { await held.promise; return [{ ...parked, parked_pr: { number: 42, open: true } }, peer]; }
+        throw new Error('verification unavailable');
+      } });
+      await store.loadTasks('s');
+      const list = store.loadTasks('s');
+      const publish = store.beginParkedDetail(running);
+      await store.loadTasks('s', true);
+      const detail = { ...parked, title: 'New title' };
+      if (detailFirst) publish(detail);
+      held.resolve(); await list;
+      if (!detailFirst) publish(detail);
+      const row = store.findTask('p');
+      results.push([row.title, row.status, row.parked_needs_you, row.parked_pr?.number]);
+    }
+    return results;
+  });
+  expect(seen).toEqual([['New title', 'parked', true, 42], ['New title', 'parked', true, 42]]);
+});
