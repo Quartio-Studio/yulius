@@ -447,6 +447,60 @@ signal.pause()
                 if terminal is not None:
                     os.close(terminal)
 
+    def test_shell_can_foreground_a_disposable_build_started_in_background(self):
+        import pty
+        import select
+        import signal
+        import time
+        env = self.caller_fixture("print('reader ready',flush=True); print('received '+input(),flush=True)")
+        shell = shutil.which("bash")
+        env.update(YULIUS_BUILD_SCRATCH=str(self.sandbox / "scratch"), PS1="shell> ", PROMPT_COMMAND="")
+        pid, terminal = pty.fork()
+        if pid == 0:
+            os.chdir(self.task)
+            os.execve(shell, [shell, "--noprofile", "--norc", "-i"], env)
+
+        def read_until(marker):
+            output = b""
+            deadline = time.monotonic() + 5
+            while marker not in output:
+                self.assertTrue(select.select([terminal], [], [], max(0, deadline - time.monotonic()))[0],
+                                f"shell did not report {marker!r}: {output!r}")
+                output += os.read(terminal, 4096)
+            return output
+
+        job = None
+        try:
+            read_until(b"shell> ")
+            os.write(terminal, b"scripts/cargo --scratch-target run &\n")
+            output = read_until(b"reader ready")
+            import re
+            job = int(re.search(rb"\[1\] (\d+)", output).group(1))
+            # Bash waits for its job leader to stop, as it does before offering fg.
+            os.write(terminal, b"wait %1; jobs\n")
+            read_until(b"Stopped")
+            os.write(terminal, b"fg\n")
+            read_until(b"scripts/cargo --scratch-target run")
+            os.write(terminal, b"X\n")
+            read_until(b"received X")
+            os.write(terminal, b"exit 0\n")
+            _, status = os.waitpid(pid, 0)
+            pid = None
+            job = None
+            self.assertEqual(os.waitstatus_to_exitcode(status), 0)
+            self.assertFalse(list((self.sandbox / "scratch").iterdir()))
+        finally:
+            if job:
+                try:
+                    os.kill(job, signal.SIGTERM)
+                    os.kill(job, signal.SIGCONT)
+                except ProcessLookupError:
+                    pass
+            if pid:
+                os.kill(pid, signal.SIGKILL)
+                os.waitpid(pid, 0)
+            os.close(terminal)
+
     def test_terminal_suspends_and_resumes_the_disposable_build(self):
         import pty
         import select

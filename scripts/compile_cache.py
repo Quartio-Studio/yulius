@@ -196,8 +196,12 @@ def run_session(command, env, lease=None, *, disposable=False):
         return status
 
     terminal = None
-    if disposable and foreground_terminal():
-        terminal = os.open("/dev/tty", os.O_RDONLY | os.O_NOCTTY)
+    if disposable:
+        try:
+            terminal = os.open("/dev/tty", os.O_RDONLY | os.O_NOCTTY)
+        except OSError as error:
+            if error.errno not in (errno.ENXIO, errno.ENODEV, errno.ENOTTY):
+                raise
 
     def foreground(group):
         # The supervisor is in the background when restoring its foreground group.
@@ -210,9 +214,11 @@ def run_session(command, env, lease=None, *, disposable=False):
     def suspend():
         # Let the shell see its job stop. On fg it returns the terminal to
         # our group before continuing us. A bg resume must leave it there.
-        if os.tcgetpgrp(terminal) == child.pid:
-            foreground(os.getpgrp())
-        os.kill(os.getpid(), signal.SIGSTOP)
+        owner = os.tcgetpgrp(terminal)
+        if owner != os.getpgrp():
+            if owner == child.pid:
+                foreground(os.getpgrp())
+            os.kill(os.getpid(), signal.SIGSTOP)
         if os.tcgetpgrp(terminal) == os.getpgrp():
             foreground(child.pid)
         try:
@@ -227,7 +233,7 @@ def run_session(command, env, lease=None, *, disposable=False):
         # including a Make jobserver. Only the private lease crosses into mbx.
         child = subprocess.Popen(command, env=env, close_fds=lease is not None,
                                  pass_fds=() if lease is None else (lease,), process_group=0)
-        if terminal is not None:
+        if terminal is not None and os.tcgetpgrp(terminal) == os.getpgrp():
             try:
                 foreground(child.pid)
                 # A fast reader may have received SIGTTIN before the handoff.
