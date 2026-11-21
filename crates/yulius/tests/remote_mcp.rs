@@ -2042,8 +2042,50 @@ async fn the_cli_drives_the_remote_mcp_with_a_stored_token() -> TestResult {
     assert_eq!(detail.body["harness_choice"], "chosen");
     assert_eq!(detail.body["model"], "gpt-6.2-astra");
     assert_eq!(detail.body["model_default"], true);
-    assert_eq!(detail.body["effort"], "xhigh");
+    assert_eq!(detail.body["effort"], "high");
     assert_eq!(detail.body["effort_default"], true);
+
+    let creds = bearer(&token);
+    let listed = rpc(&w, &creds, "tools/list", json!({})).await?;
+    let tools = listed.body["result"]["tools"].as_array().ok_or("tools")?;
+    let tool = tools
+        .iter()
+        .find(|tool| tool["name"] == "task_model")
+        .ok_or("task_model")?;
+    let described = text(&tool["inputSchema"]["properties"]["effort"]["description"]);
+    assert!(
+        described.contains("Codex")
+            && described.contains("xhigh")
+            && described.contains("max")
+            && described.contains("default (high for Codex)"),
+        "{described}"
+    );
+    for (effort, stored) in [
+        ("xhigh", json!("xhigh")),
+        ("max", json!("max")),
+        ("default", Value::Null),
+    ] {
+        let (is_error, said, changed) = remote(
+            &w,
+            &creds,
+            "task_model",
+            json!({"project": "acme/shop", "task_id": id, "effort": effort}),
+        )
+        .await?;
+        assert!(!is_error, "{said}");
+        assert_eq!(changed["effort"], stored, "{changed}");
+        let detail = call(
+            &w.h.router,
+            Method::GET,
+            &format!("/api/tasks/{id}"),
+            None,
+            &browser,
+        )
+        .await?;
+        assert_eq!(detail.status, StatusCode::OK);
+        assert_eq!(detail.body["effort"], stored.as_str().unwrap_or("high"));
+        assert_eq!(detail.body["effort_default"], stored.is_null());
+    }
 
     let (code, out, _) = yulius_cli(home, &["remote", "tools"], "").await?;
     assert_eq!(code, Some(0));

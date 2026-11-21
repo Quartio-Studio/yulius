@@ -2809,8 +2809,9 @@ impl App {
             }
         }
         let activity = match (harness, &mode) {
+            // Opening either conversation without a message starts no turn to settle.
             (
-                Harness::Codex,
+                Harness::Codex | Harness::Antigravity,
                 SessionMode::Resume {
                     prompt,
                     continue_interrupted: false,
@@ -2819,8 +2820,8 @@ impl App {
             ) if prompt.as_deref().unwrap_or_default().is_empty() => {
                 rest.map_or(Activity::Waiting, |rest| rest.activity)
             }
-            (Harness::Codex, _) => Activity::Working,
-            _ => rest.map_or(Activity::Working, |rest| rest.activity),
+            (Harness::Codex | Harness::Antigravity, _) => Activity::Working,
+            (Harness::ClaudeCode, _) => rest.map_or(Activity::Working, |rest| rest.activity),
         };
         let goal_in_prompt = sets_goal(&mode);
         // A continued turn opens the run like a first message: the goal is set after its Stop.

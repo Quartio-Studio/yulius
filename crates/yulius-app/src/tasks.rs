@@ -876,7 +876,7 @@ impl App {
             Harness::ClaudeCode => DEFAULT_CLAUDE_MODEL.to_owned(),
         });
         let effort = match task.harness {
-            Harness::Codex => Some(codex_effort(&model, task.effort.as_deref()).to_owned()),
+            Harness::Codex => Some(codex_effort(task.effort.as_deref()).to_owned()),
             Harness::Antigravity => task
                 .effort
                 .clone()

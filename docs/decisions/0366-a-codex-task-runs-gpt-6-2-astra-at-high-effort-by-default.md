@@ -8,7 +8,9 @@ astra 6.2 effort high"). Specified in
 part of [ADR-0355](0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md) (SPEC-503
 CDX-013: a Codex task without a model ran its account's default).
 
-The Astra 6.2 effort is superseded by [ADR-0398](0398-astra-6-2-inherits-extra-high-effort.md).
+[ADR-0398](0398-astra-6-2-inherits-extra-high-effort.md) changed the effort for the
+Astra comparison. [ADR-0444](0444-codex-tasks-inherit-high-effort-on-every-model.md)
+defines the current High default for all Codex models.
 
 ## Context
 
