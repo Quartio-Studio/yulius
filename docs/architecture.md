@@ -3263,6 +3263,28 @@ stateDiagram-v2
     onboarding, `claimed` while the task is being made, and `linked` once it is made.
   - Every start finishes a claim left unfinished: it adopts a task made since, else makes it.
 
+### Yulius's own staging
+
+Yulius's own `[cd.dev]` deploys to a staging VM, a Yulius instance no person relies on
+([decision 0430](decisions/0430-yuliuss-staging-builds-in-cds-builder-and-installs-a-kept-release-with-its-store.md),
+[SPEC-591](../.ai/specs/SPEC-591-yulius-gets-its-own-staging-instance-and.md); operations in
+[Yulius's own staging VM](operations.md#yuliuss-own-staging-vm)). The scripts are `scripts/cd/`,
+the build `deploy/build/Dockerfile`, and the tests `scripts/test_cd.py`, which run against a fake
+root. Production is still a promotion of `dev` to `main` that each instance installs through
+its update helper (decision 0264).
+
+```mermaid
+flowchart LR
+  RUN["dev CD run (sandbox)"] -->|"build.sh: docker build, Ubuntu 24.04"| BIN["release binary (YULIUS_CD_CACHE, last 10)"]
+  BIN -->|"ssh, pinned host key: upload by SHA-256"| KEPT["VM: /var/lib/yulius-releases/&lt;commit&gt;"]
+  RUN -->|"remote.sh activate"| CHK["the new binary migrates a copy of the live store: no rows lost"]
+  CHK --> SW["stop yulius.service, keep the replaced binary and its store, install, start"]
+  SW -->|"/internal/version = commit"| OK["recorded current"]
+  SW -->|"no answer in 2 min"| BACK["previous binary and store put back"]
+  OK --> VER["verify: commit, HTTPS /healthz, contained doctor, store check and schema, Docker smoke"]
+  VER --> DRILL["Yulius's drill: rollback.sh back (its own store across a schema change), verify, forward, verify"]
+```
+
 ### Rollback
 
 Rollback is part of every project's CD

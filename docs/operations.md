@@ -1762,6 +1762,91 @@ after each run; a production run's are in `<data>/cd/<id>/runs/cd-<run>/work` or
   unknown") at the next start, its process host stopped and its files removed, and is never started
   again by itself: check the environment and deploy again.
 
+### Yulius's own staging VM
+
+Yulius's own repository deploys `dev` to a staging VM: `[cd.dev]` in its `yulius.toml`, scripts in
+`scripts/cd/` ([ADR-0430](decisions/0430-yuliuss-staging-builds-in-cds-builder-and-installs-a-kept-release-with-its-store.md),
+SPEC-591). It is a Yulius instance like any other, but no person relies on it. Each deploy runs
+the exact build of a dev revision on the store an older release wrote, which is where a migration
+first meets real data. Production instances still install `main` through their update helper
+(§8). Today's VM is the former production host, `deciding-whale`; its production data was
+erased.
+
+**What a deploy does** (`scripts/cd/deploy.sh dev`, run by Yulius CD in the sandbox):
+
+1. It builds the commit in the sandbox's Docker (`scripts/cd/build.sh`, `deploy/build/Dockerfile`:
+   Ubuntu 24.04, the pinned toolchain, `YULIUS_BUILD_COMMIT`). Each build is kept in the CD cache,
+   and a rollback never builds.
+2. It connects as `root@$STAGING_VM_HOST` with `STAGING_VM_SSH_KEY` in an ssh-agent and the host
+   key pinned in `scripts/cd/known_hosts`.
+3. It uploads the binary to `/var/lib/yulius-releases/<commit>/yulius`, checked by SHA-256.
+4. Before anything stops, the new binary migrates a copy of the live store (`yulius store-migrate`).
+   No table may vanish or lose rows, but those a migration this deploy applies deletes from by
+   design (its own `DELETE FROM`, not a trigger's; `scripts/cd/migration_deletes.py`). Otherwise the deploy fails with nothing changed.
+5. It stops **only** `yulius.service`. Sessions live in `yulius-sandboxes.service`.
+6. It keeps the replaced binary and the store it left (`yulius.db` with its WAL) in
+   `/var/lib/yulius-releases/<old commit>/`.
+7. It installs the new binary, starts the service and waits until `/internal/version` reports the
+   commit; otherwise it puts the old binary and store back. The last 10 releases are kept.
+
+It does not pause tasks as the update helper's restart does: a staging instance's tasks see their
+server restart. A lost connection does not stop a switch half way, and any other failure after
+the stop starts the server again with a binary and store that belong together. One CD step runs
+at a time (`/var/lib/yulius-releases/.lock`).
+
+**What verify proves** (`scripts/cd/verify.sh dev`):
+
+- the recorded release is installed and reported at `/internal/version`;
+- the unit's `YULIUS_PUBLIC_URL` answers `/healthz` 200 over HTTPS (a Caddy that never loaded its
+  configuration fails here);
+- `yulius doctor` passes as the service user with the unit's environment (contained);
+- the live store passes SQLite's check; after a deploy its schema is the number of the tree's
+  migrations and the release's migration check is kept (`<commit>/migration.json`); after a
+  rollback its schema is the one the release left;
+- after a deploy, `yulius doctor --docker-smoke` passes where the doctor offers sandboxes Docker.
+
+**Rollback** (`scripts/cd/rollback.sh dev`; a person on the CD page, an agent with
+`cd_rollback`, and Yulius's drill after every deploy):
+
+- It puts back a kept release.
+- Across a schema change it restores the store that release left. What staging wrote since is
+  kept in `/var/lib/yulius-releases/<newer>/store`, not served. Without a schema change it keeps
+  the live store.
+- By hand, as root: `systemctl stop yulius`, copy the binary and the store back from
+  `/var/lib/yulius-releases/<commit>/`, `chown yulius:yulius` the store files, then
+  `systemctl start yulius`.
+
+**Who deploys.** A task's agent with `cd_deploy`, or a person on the CD page. The rollback drill
+follows each deploy by itself. A merge deploys nothing.
+
+**The update helper stays off there.** `yulius-update.path` is disabled: "Update now" would
+install `main` over a dev release. A deploy refuses while `yulius-update.service` runs. Root's
+Rust toolchain and `/var/lib/yulius-update/src`, left from production, are not used.
+
+**Preparing a staging VM (or swapping it for a smaller one).** Nothing depends on the VM's size
+or address beyond the variable and the pinned key.
+
+1. Install Yulius as in §2 on Ubuntu 24.04 or later, x86_64: the binary in
+   `/usr/local/bin/yulius` and `sudo yulius host setup --public-url https://<name>`.
+2. Put Caddy in front (§4) with a certificate, so `https://<name>/healthz` answers 200.
+3. Leave the one-time setup token unused, or set the instance up with a GitHub App of its own,
+   never production's.
+4. Add the public half of `STAGING_VM_SSH_KEY` to `/root/.ssh/authorized_keys`, or make a new key
+   with `secret_create_from_file` and allow it for `.env` files (dev CD runs get it then).
+5. Set the project variable `STAGING_VM_HOST` (`[user@]host[:port]`, root unless named; another
+   user needs passwordless sudo).
+6. Pin the new host key in a pull request: the line `yulius-staging ssh-ed25519 <key>` from
+   `/etc/ssh/ssh_host_ed25519_key.pub` in `scripts/cd/known_hosts`. Check its fingerprint on the
+   VM (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`) before committing it.
+7. Deploy from the CD page. The first deploy keeps the binary it finds (and its store) on the
+   VM, but Yulius's CD never recorded it as a release: the CD page and `cd_rollback` cannot
+   return to it, and the first deploy has no drill (it needs two). Return to it by hand (above).
+
+**Who can reach it.** `STAGING_VM_SSH_KEY` may be copied to `.env` files, so dev CD runs get it,
+and so can every task of this project: an agent can be root on the staging VM. Keep nothing of
+value there. Never give its instance production's GitHub App or credentials; a GitHub App of its
+own is a credential such an agent could read.
+
 ## 6. Onboarding a repository and your Claude sessions (`yulius onboard`)
 
 On a developer machine with the `yulius` binary:
