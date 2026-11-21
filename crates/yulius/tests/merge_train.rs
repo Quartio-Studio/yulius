@@ -1539,6 +1539,12 @@ async fn shared_owner_rerun(owner_state: RunState, peer_state: RunState) -> Test
     f.advance_dev("moved-base.txt")?;
     let wait = f.wait(1, &one).await?;
     assert_eq!(wait["checks"], owner_state.as_str(), "{wait}");
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("sandbox")?;
+    assert_eq!(
+        app.decidable_in(&sandbox).await,
+        owner_state == RunState::Passed
+    );
+
     app.merge_armed(&f.sandbox).await;
     if owner_state == RunState::Failed {
         let wait = f.wait(1, &one).await?;

@@ -50,7 +50,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Publish terminal-discovered archive removal after Closed
 - [x] Publish verified parked task detail to Task Info
 - [x] Restore ordinary CI coverage after a repeated integration configuration repair
-- [ ] Resolve shared ordinary CI for the original PR owner in the merge queue and wait
+- [x] Resolve shared ordinary CI for the original PR owner in the merge queue and wait
 - [ ] Record the singleton queue decision and its failing job for the original owner
 - [ ] Keep failed integration candidates with their original owner
 - [ ] Verify candidate status before parking, showing Done or resuming a parked owner
@@ -83,6 +83,10 @@ The scheduler discards older completed verdicts for a head after a later run was
 Yulius CI schedules one run per commit even when two PRs publish the same head. The queue and `yulius wait` prefer the owner’s own ordinary run when one exists. Otherwise they use the run that covers that commit under the scheduler’s rule. An ordinary integration configuration refusal invalidates earlier completed results for every PR at the commit. Active owner runs and explicit owner cancellations retain their meaning. A cancellation of a different reference cannot lend a verdict. Queue decisions and merged receipts use the full object name supplied by Git or the host. The wait endpoint also accepts a unique abbreviation. GitHub still enforces its required commit status when the queue submits the merge.
 
 ## Evidence
+
+- The shared-owner mutation campaign reported `84 listed, 48 caught, 8 missed, 0 timed out, 28 unviable, 0 not reached` in 1,097 seconds. The shared-owner tests now exercise the fast queue pass directly, and parked detail verifies the owner’s green rerun beside a pending peer. Targeted mutation reruns caught all four fast-pass survivors and all four parked-reference and candidate survivors. The candidate rerun included the existing tests for an owner failing inside a passed candidate and the bounded wait for an ongoing owner run. All 361 scoped tests passed again with the added assertions.
+
+- Independent review approved `1c905ffaf` after verifying the owner sees a peer’s configuration repair and retains its own active run or cancellation. All 361 scoped Rust tests passed. The reviewer ran 15 targeted tests and inspected the SQLite query plan for exact and abbreviated heads. Scoped Clippy, formatting, repository contracts and spec validation passed. Vidoc was disabled.
 
 - The first shared-owner review reproduced a passed owner preceding a peer’s integration configuration refusal. The scheduler discarded the pass and selected the repaired run, while the owner still reported `passed`. The integrated fixtures failed at `6af0a1136` with `passed` instead of `queued`. They check the repaired run’s failure reason and the resulting merge decision, and a selector fixture checks ongoing work and explicit cancellation.
 

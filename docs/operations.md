@@ -174,6 +174,8 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # The PR watcher delivers actionable failures once and waits for a pending human decision.
 # When PRs share a head, their tasks can wait on the same ordinary CI run. An explicit
 # rerun for the owner takes precedence in yulius wait and in its merge queue decision.
+# If a later run finds the integration CI configuration invalid, earlier completed runs
+# at that head become obsolete. After repair, even an owner that passed can show queued.
 # A partial Git overview keeps a known failing PR under Needs you. A complete lookup
 # can clear it. Refreshing this display sends no message to the parked task.
 # A successor waiting for Done (after_task or #N done) stays chained while its parked predecessor
