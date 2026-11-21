@@ -205,7 +205,7 @@ const DRAFT_HOLDS_NOTICE: &str = "Yulius holds a message for this session: text 
     Yulius types its message.";
 
 /// Only these exact stored reasons belong to the shared typing guard.
-fn draft_flag(reason: &AttentionRecord) -> bool {
+pub(crate) fn draft_flag(reason: &AttentionRecord) -> bool {
     [DRAFT_HOLDS_PROBLEM, VISIBLE_DRAFT_PROBLEM]
         .iter()
         .any(|problem| *reason == AttentionRecord::yulius(problem, DRAFT_HOLDS_ACTION))
@@ -964,11 +964,15 @@ impl App {
     /// PR news may retry the exact flag of a waiting message once the person has
     /// left an empty conversation box. Delivery itself judges the key and screen again.
     pub(crate) async fn held_message_flag_outlived(&self, task: &TaskRecord) -> bool {
+        self.held_draft_box_cleared(task)
+            && matches!(self.deps.store.task_attention(&task.id).await, Ok(Some((reason, _))) if draft_flag(&reason))
+    }
+
+    pub(crate) fn held_draft_box_cleared(&self, task: &TaskRecord) -> bool {
         self.typed_recently(&task.id).is_none()
             && self
                 .existing_runtime(&task.id)
                 .is_some_and(|runtime| shows_empty(task.harness, &runtime))
-            && matches!(self.deps.store.task_attention(&task.id).await, Ok(Some((reason, _))) if draft_flag(&reason))
     }
 
     /// Ends the flag that says a message of Yulius's own waits for a person's draft

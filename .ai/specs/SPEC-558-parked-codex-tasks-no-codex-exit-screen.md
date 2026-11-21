@@ -101,6 +101,8 @@ When the watcher sees an open PR during an active queue decision or its slot cha
 
 ## Evidence
 
+- The empty-draft regression passed on `bc6bc6ca2`. Both idle-reminder cases still fired after a prompt hook, and a real Claude permission notification during the local publication lookup received CI advice. The fix reads the recorded PR, branch, task activity, attention, human decision, capacity pause and pending scope decision in one SQLite statement after Git and browser verification. The turn hook’s recorded Working state also prevents idle advice before the transcript observes the turn.
+
 - Isolated head `ded44eb4b` passed 417 scoped tests and Clippy. Three review tests then failed at paste admission. A human decision made while the typist read an empty draft was bypassed. A turn starting during the hosted read received an idle check-in or stall. The corrected admission follows the draft lookup, rechecks the owner and slot, and samples the current turn before stamping the notice. A busy draft lock leaves the notice unheard.
 
 - The isolated published-head and recipient tests failed 9/9 against landed dev `ec580fc3a`. They observed stale typing after a push from the same or another clone, a missing hosted PR, an older ordinary CI SHA, a local conflict already repaired externally, a recorded merge, a held prompt, a decision for a person and an instance restart hold. The tests attach to the restored original attempt and verify delivery once when the relevant hold clears.

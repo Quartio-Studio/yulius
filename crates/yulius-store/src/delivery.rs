@@ -86,6 +86,37 @@ impl DeliveryStore for SqliteStore {
         .await
     }
 
+    async fn armed_notice_recipient(
+        &self,
+        task: &TaskId,
+        pr: u64,
+        branch: &str,
+    ) -> AppResult<Option<yulius_app::pr_watch::NoticeRecipient>> {
+        let task = task.to_string();
+        let branch = branch.to_owned();
+        let row: Option<(bool, Option<String>)> = self.call(move |conn| {
+            conn.query_row(
+                "SELECT t.activity IS 'working', CASE WHEN t.activity = 'needs_attention' THEN t.attention END
+                 FROM tasks t JOIN delivery d ON d.task_id = t.id
+                 WHERE t.id = ?1 AND d.stage = 'pr_open' AND d.pr_number = ?2 AND t.branch = ?3
+                   AND t.status = 'running' AND t.archived_at IS NULL AND t.needs_you IS NULL
+                   AND (t.activity IS NOT 'needs_attention' OR
+                        CASE WHEN json_valid(t.attention) THEN json_extract(t.attention, '$.at') END = t.state_at)
+                   AND NOT EXISTS (SELECT 1 FROM capacity_pauses WHERE task_id = t.id AND ended_at IS NULL)
+                   AND NOT EXISTS (SELECT 1 FROM prompt_holds WHERE task_id = t.id AND state = 'pending')",
+                params![task, to_i64(pr), branch],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            ).optional().map_err(db)
+        }).await?;
+        Ok(row.and_then(|(working, reason)| {
+            let attention = reason
+                .map(|json| serde_json::from_str(&json))
+                .transpose()
+                .ok()?;
+            Some(yulius_app::pr_watch::NoticeRecipient { working, attention })
+        }))
+    }
+
     async fn deliveries(&self, sandbox: &SandboxId) -> AppResult<Vec<DeliveryRecord>> {
         let sandbox = sandbox.as_str().to_owned();
         self.call(move |c| {

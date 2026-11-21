@@ -55,7 +55,14 @@ fn a_turn_beginning_during_the_hosted_read_suppresses_a_stall() -> TestResult {
     armed_owner_case(OwnerCase::WorkingDuringStall)
 }
 
+#[test]
+fn a_terminal_permission_prompt_during_publication_verification_keeps_the_notice_for_its_owner()
+-> TestResult {
+    armed_owner_case(OwnerCase::TerminalPermission)
+}
+
 enum OwnerCase {
+    TerminalPermission,
     WorkingDuringCheckIn,
     WorkingDuringStall,
     PreviousCiHead,
@@ -194,6 +201,11 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
                 None,
             )
             .await?;
+            assert_eq!(
+                cold.deps.store.task(id).await?.ok_or("owner")?.activity,
+                Some(yulius_domain::task::Activity::Working),
+                "the real prompt hook began the turn"
+            );
             *remote.pull_read_hold.lock().map_err(|_| "fixture host")? = None;
             release.notify_one();
             let news = pass.await?;
@@ -209,6 +221,55 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
             );
             run.reference = CiRef::PullRequest(1481);
             cold.deps.store.insert_ci_run(&run, &[job]).await?;
+        }
+        if matches!(case, OwnerCase::TerminalPermission) {
+            let token = "fixture-permission-hook";
+            rusqlite::Connection::open(data.join("yulius.db"))?.execute(
+                "UPDATE attempts SET token_hash = ?1 WHERE id = ?2",
+                rusqlite::params![
+                    cold.deps.crypto.sha256_hex(token.as_bytes()),
+                    original.as_str()
+                ],
+            )?;
+            let (entered, release) =
+                super::pause_watch_or_queue(super::Point::ArmedNoticePublicationRead, id);
+            let watcher = cold.clone();
+            let pass = tokio::spawn(async move { watcher.watch_prs(&bounds).await });
+            tokio::time::timeout(Duration::from_secs(10), entered.notified()).await?;
+            cold.hook_event(
+                token,
+                "claude",
+                "Notification",
+                &yulius_contracts::hooks::HookInput {
+                    notification_type: Some("permission_prompt".into()),
+                    message: Some("Allow this operation?".into()),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await?;
+            assert_eq!(
+                cold.deps.store.task(id).await?.ok_or("owner")?.activity,
+                Some(yulius_domain::task::Activity::NeedsAttention)
+            );
+            release.notify_one();
+            let news = pass.await?;
+            assert!(
+                news.is_empty(),
+                "CI entered an active permission prompt: {news:?}"
+            );
+            assert!(cold.watch_prs(&bounds).await.is_empty());
+            cold.hook_event(
+                token,
+                "claude",
+                "UserPromptSubmit",
+                &yulius_contracts::hooks::HookInput {
+                    prompt: Some("Continue".into()),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await?;
         }
         if matches!(case, OwnerCase::PreviousCiHead) {
             let previous = cold.watch_prs(&bounds).await;

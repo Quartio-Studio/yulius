@@ -85,6 +85,14 @@ pub struct Event {
     pub text: String,
 }
 
+/// Durable activity and current attention from the same read that admits an armed notice.
+pub struct NoticeRecipient {
+    /// The agent began a turn, including one its transcript has yet to report.
+    pub working: bool,
+    /// The current reason the task needs attention, if any.
+    pub attention: Option<crate::attention::AttentionRecord>,
+}
+
 /// What the watch knows of a task's pull request at one pass.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PrFacts {
@@ -650,10 +658,16 @@ impl App {
                             if !self
                                 .hosted_arm_is_current(&task, &sandbox, facts.pr, &arm.head)
                                 .await
-                                || !self
-                                    .armed_owner_accepts_notice(&task, facts.pr, &arm.head)
-                                    .await
-                                || self.update_holds_starts()
+                            {
+                                return false;
+                            }
+                            let Some(recipient) = self
+                                .armed_notice_recipient(&task, facts.pr, &arm.head)
+                                .await
+                            else {
+                                return false;
+                            };
+                            if self.update_holds_starts()
                                 || self.arm_observation(&task.id) != activation
                                 || self.armed_now(&task.id) != slot
                             {
@@ -661,6 +675,10 @@ impl App {
                             }
                             let mut current = facts.clone();
                             self.refresh_notice_activity(&task.id, &runtime, &mut current);
+                            if recipient.working {
+                                current.working = true;
+                                current.idle = false;
+                            }
                             if decide(&current, &told, bounds).0.as_deref()
                                 != Some(prepared.as_str())
                             {
@@ -1367,24 +1385,36 @@ impl App {
     }
 
     /// Recheck the recipient after the hosted read, before recording anything as heard.
-    async fn armed_owner_accepts_notice(&self, task: &TaskRecord, pr: u64, head: &str) -> bool {
-        let Ok(Some(fresh)) = self.deps.store.task(&task.id).await else {
-            return false;
-        };
-        fresh.status == TaskStatus::Running
-            && fresh.archived_at.is_none()
-            && !self.run_superseded_by_pushed_head(&fresh, head).await
-            && matches!(self.deps.store.task_needs_you(&task.id).await, Ok(None))
-            && matches!(self.deps.store.open_pause(&task.id).await, Ok(None))
-            && matches!(self.deps.store.pending_hold(&task.id).await, Ok(None))
-            && self
+    async fn armed_notice_recipient(
+        &self,
+        task: &TaskRecord,
+        pr: u64,
+        head: &str,
+    ) -> Option<NoticeRecipient> {
+        if self.run_superseded_by_pushed_head(task, head).await
+            || self
                 .browser_tab_request_for(&task.sandbox_id, &task.id)
                 .await
-                .is_none()
-            && (fresh.activity != Some(yulius_domain::task::Activity::NeedsAttention)
-                || self.held_message_flag_outlived(&fresh).await)
-            && matches!(self.deps.store.delivery(&task.id).await, Ok(Some(record))
-                if record.stage == DeliveryStage::PrOpen && record.pr_number == Some(pr))
+                .is_some()
+        {
+            return None;
+        }
+        crate::race::reached(
+            crate::race::Point::ArmedNoticePublicationRead,
+            std::path::Path::new(task.id.as_str()),
+        );
+        let recipient = self
+            .deps
+            .store
+            .armed_notice_recipient(&task.id, pr, task.branch.as_deref()?)
+            .await
+            .ok()??;
+        if let Some(reason) = &recipient.attention
+            && !(self.held_draft_box_cleared(task) && crate::task_message::draft_flag(reason))
+        {
+            return None;
+        }
+        Some(recipient)
     }
 
     /// The merge notice of `task`'s pull request `pr` (`merged_text`), read from GitHub once and
