@@ -266,7 +266,7 @@ impl CiStore for SqliteStore {
         .await
     }
 
-    async fn previous_green_branch_sha(
+    async fn first_verified_branch_sha(
         &self,
         sandbox: &SandboxId,
         branch: &str,
@@ -278,10 +278,15 @@ impl CiStore for SqliteStore {
         self.call(move |c| {
             c.query_row(
                 "SELECT value FROM json_each(?3) AS history WHERE (
-                    SELECT state FROM ci_runs WHERE sandbox_id = ?1 AND reference = ?2
-                    AND sha = history.value ORDER BY rowid DESC LIMIT 1
-                 ) = 'passed' ORDER BY history.key LIMIT 1",
-                params![sandbox, reference, commits],
+                    SELECT r.state = 'passed' AND NOT EXISTS (
+                        SELECT 1 FROM ci_jobs j WHERE j.run_id = r.id
+                        AND j.state = 'skipped' AND instr(j.reason, ?4) = 1
+                    ) FROM ci_runs r WHERE r.sandbox_id = ?1 AND r.sha = history.value AND (
+                        r.reference = ?2 OR ((r.reference GLOB 'branch/*' OR r.reference GLOB 'pr/*'
+                        OR r.reference GLOB 'candidate/*') AND r.state IN ('queued','running','passed','failed','error'))
+                    ) ORDER BY (r.reference = ?2) DESC, r.rowid DESC LIMIT 1
+                 ) ORDER BY history.key LIMIT 1",
+                params![sandbox, reference, commits, yulius_domain::ci::AFTER_MERGE_SKIP_REASON],
                 |row| row.get(0),
             )
             .optional()

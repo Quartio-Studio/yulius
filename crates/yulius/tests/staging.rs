@@ -838,6 +838,75 @@ async fn running_dev_ci_releases_only_the_preceding_green_revision() -> TestResu
     Ok(())
 }
 
+async fn deploy_with_shared_ci(newer_pending: bool) -> TestResult {
+    let f =
+        fixture("[[ci.jobs]]\nname = \"checks\"\ncommand = \"true\"\n[cd.prod]\npromote = true\n")
+            .await?;
+    fast_forward_profile(&f, false).await?;
+    let a = f.push("dev", &[("verified.txt", Some("A"))])?;
+    let id = gate(&f, &a, RunState::Passed).await?;
+    if newer_pending {
+        let b = f.push("dev", &[("pending.txt", Some("B"))])?;
+        gate(&f, &b, RunState::Running).await?;
+    }
+    let original = f.head("main")?;
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE ci_runs SET reference = 'train/1' WHERE id = '{id}'"
+        ))
+        .await?;
+    let private = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(
+        private.status,
+        axum::http::StatusCode::CONFLICT,
+        "{}",
+        private.body
+    );
+    let skipped = yulius_domain::ci::AFTER_MERGE_SKIP_REASON;
+    f.h.store.execute_for_tests(&format!("UPDATE ci_runs SET reference = 'pr/17' WHERE id = '{id}';
+        UPDATE ci_jobs SET state = 'skipped', reason = '{skipped}' WHERE run_id = '{id}' AND name = 'full'")).await?;
+    let partial = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(
+        partial.status,
+        axum::http::StatusCode::CONFLICT,
+        "{}",
+        partial.body
+    );
+    assert_eq!(f.head("main")?, original);
+    f.h.store.execute_for_tests(&format!("UPDATE ci_jobs SET state = 'passed', reason = NULL WHERE run_id = '{id}' AND name = 'full'")).await?;
+    let released = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert!(released.status.is_success(), "{}", released.body);
+    assert_eq!(f.head("main")?, a);
+    f.ended(released.body["run_id"].as_str().ok_or("run")?)
+        .await?;
+    let mut explicit = f.h.store.ci_run(&id).await?.ok_or("shared run")?;
+    explicit.id = "explicit-branch-rerun".into();
+    explicit.reference = CiRef::Branch("dev".into());
+    explicit.state = RunState::Running;
+    explicit.ended_at = None;
+    f.h.store.insert_ci_run(&explicit, &[]).await?;
+    let checking = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(
+        checking.status,
+        axum::http::StatusCode::CONFLICT,
+        "{}",
+        checking.body
+    );
+    Ok(())
+}
+
+/// Dev can deploy a fast-forwarded SHA that the ordinary scheduler already tested in full.
+#[tokio::test]
+async fn dev_head_accepts_its_full_shared_ci_verdict() -> TestResult {
+    deploy_with_shared_ci(false).await
+}
+
+/// The same shared verification stays eligible after the next commit starts checking.
+#[tokio::test]
+async fn prior_dev_revision_accepts_its_full_shared_ci_verdict() -> TestResult {
+    deploy_with_shared_ci(true).await
+}
+
 /// Removing staging in a newer commit cannot release a candidate whose own staging never passed.
 #[tokio::test]
 async fn the_release_keeps_its_own_staging_requirement() -> TestResult {

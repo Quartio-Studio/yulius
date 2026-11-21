@@ -12,7 +12,7 @@ Dev can receive another merge before a person releases the revision that passed 
 
 A production deploy can select an earlier verified revision from the protected integration branch's first-parent history. Its SHA identifies the confirmation, promotion source and rollback evidence. A merge-commit profile opens its release pull request from a revision-specific ref when the branch has advanced. Fast-forward uses the selected SHA directly. The resulting production tree must match the selected tree for a pinned release.
 
-Branch CI supplies the nearest first-parent predecessor whose latest branch run passed. Rerunning an older commit changes that commit’s verdict. If that candidate required merge-first staging, its staging evidence can lead back to an earlier verified revision. CD validates that revision’s own configuration and place in the protected branch history.
+Branch CI supplies the nearest verified commit on the first-parent history. An explicit dev run takes precedence. When the CI scheduler reuses another ordinary run for the exact SHA, its full passing verdict supplies the proof. Rerunning an older commit changes that commit’s verdict. If that candidate required merge-first staging, its staging evidence can lead back to an earlier verified revision. CD validates that revision’s own configuration and place in the protected branch history.
 
 ## Alternatives
 

@@ -612,6 +612,12 @@ impl App {
             yulius_domain::ci::GateResult::Run(None | Some(RunState::Queued | RunState::Running))
         ) {
             let mut cursor = head.to_owned();
+            if let Some(sha) = store
+                .first_verified_branch_sha(&sandbox.id, branch, std::slice::from_ref(&cursor))
+                .await?
+            {
+                return Ok(sha);
+            }
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
             // Each bounded batch advances towards the root of this fixed Git history.
             // A rerun changes the verdict of its commit, never its release order.
@@ -632,7 +638,7 @@ impl App {
                     )));
                 };
                 if let Some(sha) = store
-                    .previous_green_branch_sha(&sandbox.id, branch, &commits)
+                    .first_verified_branch_sha(&sandbox.id, branch, &commits)
                     .await?
                 {
                     return Ok(sha);

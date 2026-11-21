@@ -963,8 +963,8 @@ Cleanup request = {"items": [{"kind", "name"}] (empty: every safe item), "force"
 A project's CD (SPEC-134, SPEC-257, ADR-0109/0110/0195) is its environments in `yulius.toml`, read
 only from protected branches: `[cd.dev]` and `[cd.prod]` by default and up to 16 in all. Each has a
 stage, which carries its rules: a dev-stage environment is read at the integration branch head, a
-production-stage one at the commit it deploys (the integration head when that head's table
-promotes, else the production head). A name other than `dev` and `prod` (1-32 lowercase letters,
+production-stage one at the commit it deploys (the selected integration revision when the
+integration head’s table promotes, else the production head). A name other than `dev` and `prod` (1-32 lowercase letters,
 digits and `-`, starting with a letter) states its `stage`; its stage is the integration head's,
 else a production-stage table at the production head.
 
@@ -1076,7 +1076,7 @@ CdOverview = {"slug", "environments": [CdEnvironment (dev stage, then prod stage
 CdEnvironment = {"name": "dev|prod|<name>", "label": "dev|production|<name>", "stage": "dev|prod",
                  "state": "not_defined|empty|ready",
                  "branch", "head", "problem": "yulius.toml line 3: …"|null, "about", "deploy", "verify",
-                 "promote", "promotes_from": "<integration head>"|null,
+                 "promote", "promotes_from": "<selected integration revision>"|null,
                  "secrets": [{"name", "state": "ready|not_allowed|missing|production|agents_use"}],
                  "states": [{"name", "version": <newest>|null (missing), "held_by": "<env> run <id>"|null}],
                  "deployed": "<sha of the last passed run>"|null, "last_run": CdRun|null,
