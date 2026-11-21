@@ -152,7 +152,7 @@ impl ParkedPullRead {
 pub(crate) struct ParkingPrs {
     checkout: Option<String>,
     watched: Option<u64>,
-    pulls: Vec<(u64, String)>,
+    pulls: Vec<GhPull>,
 }
 
 /// The persisted delivery stage of one task.
@@ -3963,9 +3963,42 @@ impl App {
         &self,
         task: &TaskRecord,
         facts: &ParkingPrs,
+        before: Option<&crate::stages::SpanRecord>,
     ) -> AppResult<bool> {
-        Ok(self.parking_checkout_matches(task, facts).await?
-            && self.parking_ci_blocker(task, facts).await?.is_none())
+        if !self.parking_checkout_matches(task, facts).await?
+            || self.parking_ci_blocker(task, facts).await?.is_some()
+        {
+            return Ok(false);
+        }
+        let wait = self.deps.store.latest_merge_wait(&task.id).await?;
+        if wait.as_ref() != before {
+            return Ok(false);
+        }
+        if facts.pulls.is_empty() {
+            return Ok(true);
+        }
+        let (_, mut outcome) = self.armed_view(&task.id);
+        let Some((_, decision)) = crate::pr_watch::candidate_from_wait(wait, &mut outcome)? else {
+            return Ok(true);
+        };
+        let Some(pull) = facts
+            .pulls
+            .iter()
+            .find(|pull| pull.number == decision.singleton.pr)
+        else {
+            return Ok(true);
+        };
+        if pull.merged || pull.from_fork {
+            return Ok(true);
+        }
+        if pull.head.is_empty() || pull.head_sha.is_empty() || pull.base.is_empty() {
+            return Ok(false);
+        }
+        let sandbox = self.dlv_sandbox_of(task).await?;
+        let same_owner = task.branch.as_deref() == Some(&pull.head)
+            && pull.base == delivery_profile(&sandbox).integration_branch
+            && pull.head_sha == decision.head;
+        Ok(!same_owner || (!pull.base_sha.is_empty() && pull.base_sha != decision.singleton.base))
     }
 
     async fn parking_checkout_matches(
@@ -3985,12 +4018,12 @@ impl App {
         task: &TaskRecord,
         facts: &ParkingPrs,
     ) -> AppResult<Option<(u64, PullSignal)>> {
-        for (number, head) in &facts.pulls {
+        for pull in &facts.pulls {
             if let Some(signal) = self
-                .parking_ci_signal(task, *number, head, facts.watched)
+                .parking_ci_signal(task, pull.number, &pull.head_sha, facts.watched)
                 .await?
             {
-                return Ok(Some((*number, signal)));
+                return Ok(Some((pull.number, signal)));
             }
         }
         Ok(None)
@@ -4320,7 +4353,7 @@ impl App {
             {
                 closed.insert(number);
             }
-            let Some(pull) = pull else {
+            let Some(pull) = pull.filter(|pull| pull.number == number) else {
                 verified = false;
                 break;
             };
@@ -4342,7 +4375,7 @@ impl App {
                 verified = false;
                 break;
             }
-            pulls.push((number, pull.head_sha));
+            pulls.push(pull);
         }
         if !verified && purpose != PrVerification::Display {
             return Ok(None);
@@ -4382,7 +4415,7 @@ impl App {
                 // failure on a still-current, directly verified head takes priority.
                 facts
                     .pulls
-                    .retain(|(number, sha)| survives(*number, Some(sha)));
+                    .retain(|pull| survives(pull.number, Some(&pull.head_sha)));
                 if let Some((number, signal)) = self.parking_ci_blocker(task, &facts).await? {
                     observed.signal = Some(signal);
                     observed.pr =
@@ -4412,9 +4445,9 @@ impl App {
         }
         // A branch list can lag a direct get_pull confirmation of a merge.
         // Among successful reads only a PR confirmed open can replace it.
-        if verified && let Some((number, _)) = facts.pulls.last() {
+        if verified && let Some(pull) = facts.pulls.last() {
             observed.pr = Some(yulius_contracts::api::tasks::ParkedPr {
-                number: *number,
+                number: pull.number,
                 open: true,
             });
         }
@@ -4576,7 +4609,8 @@ impl App {
         // Checks and local conflict detection can take long enough for another push.
         let current = read().await?;
         observed.note_closed(&current);
-        let same_open_head = same_open_pull(&pull, &current);
+        let same_open_head = same_open_pull(&pull, &current)
+            && (purpose == PrVerification::Display || pull.base_sha == current.base_sha);
         if same_open_head && mergeable != Some(true) {
             let own = self
                 .parking_ci_signal(task, number, &current.head_sha, None)
