@@ -611,42 +611,88 @@ impl App {
             verdict,
             yulius_domain::ci::GateResult::Run(None | Some(RunState::Queued | RunState::Running))
         ) {
-            let mut cursor = head.to_owned();
-            if let Some(sha) = store
-                .first_verified_branch_sha(&sandbox.id, branch, std::slice::from_ref(&cursor))
-                .await?
-            {
-                return Ok(sha);
-            }
-            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
-            // Each bounded batch advances towards the root of this fixed Git history.
-            // A rerun changes the verdict of its commit, never its release order.
-            loop {
-                let commits = tokio::time::timeout_at(
-                    deadline,
-                    self.deps.git.preceding_commits(repo, &cursor),
-                )
+            // Each batch advances towards the root of this fixed history. The bound covers
+            // both Git and inspection of saved job verdicts, including the current commit.
+            let search = async {
+                let mut commits = vec![head.to_owned()];
+                while let Some(oldest) = commits.last() {
+                    if let Some(sha) = self
+                        .cd_verified_ci_revision(sandbox, &reference, repo, &commits)
+                        .await?
+                    {
+                        return Ok(sha);
+                    }
+                    commits = self.deps.git.preceding_commits(repo, oldest).await?;
+                }
+                Err(AppError::Conflict(format!(
+                    "nothing ran: {branch} is checking and has no preceding verified revision"
+                )))
+            };
+            return tokio::time::timeout(std::time::Duration::from_secs(30), search)
                 .await
                 .map_err(|_| {
                     AppError::Conflict(format!(
                         "nothing ran: verification history lookup for {branch} timed out"
                     ))
-                })??;
-                let Some(oldest) = commits.last() else {
-                    return Err(AppError::Conflict(format!(
-                        "nothing ran: {branch} is checking and has no preceding verified revision"
-                    )));
-                };
-                if let Some(sha) = store
-                    .first_verified_branch_sha(&sandbox.id, branch, &commits)
-                    .await?
-                {
-                    return Ok(sha);
-                }
-                cursor.clone_from(oldest);
-            }
+                })?;
         }
         Ok(head.to_owned())
+    }
+
+    /// Use a branch's own verdict first. A shared verdict must cover the jobs the commit's
+    /// branch gate would run, with the same eligibility checks as CI's own tree reuse.
+    async fn cd_verified_ci_revision(
+        &self,
+        sandbox: &SandboxRecord,
+        reference: &yulius_domain::ci::CiRef,
+        repo: &Path,
+        commits: &[String],
+    ) -> AppResult<Option<String>> {
+        let store = &self.deps.store;
+        for sha in store.ci_shas_with_pass(&sandbox.id, commits).await? {
+            let mut runs = store
+                .ci_runs_for_pull_head(&sandbox.id, super::PullHead::Exact(&sha))
+                .await?;
+            if let Some(own) = runs.iter().find(|run| &run.reference == reference) {
+                if own.state == RunState::Passed
+                    && !store.ci_jobs(&own.id, false).await?.iter().any(|job| {
+                        yulius_domain::ci::skipped_after_merge(job.state, job.reason.as_deref())
+                    })
+                {
+                    return Ok(Some(sha));
+                }
+                continue;
+            }
+            runs.retain(|run| {
+                super::ordinary_scheduler_ref(&run.reference)
+                    && yulius_domain::ci::covers_shared_commit(run.state)
+                    && run.requested_by != crate::merge_train::TRAIN_VERDICT_BY
+            });
+            if runs.is_empty() {
+                continue;
+            }
+            let jobs = self
+                .ci_jobs_at(repo, &sha)
+                .await
+                .map_err(AppError::Conflict)?;
+            let gate = yulius_domain::ci::effective_gate(
+                crate::delivery::profile_gate(sandbox).as_deref(),
+                &jobs,
+            );
+            let Some(gate) = self.ci_with_security(sandbox, gate).await else {
+                continue;
+            };
+            for run in runs {
+                if run.state != RunState::Passed {
+                    break;
+                }
+                let jobs = store.ci_jobs(&run.id, false).await?;
+                if super::jobs_cover_target(reference, &gate, &jobs) {
+                    return Ok(Some(sha));
+                }
+            }
+        }
+        Ok(None)
     }
 
     /// Resolve the promotion table at the revision the person can confirm. The overview uses

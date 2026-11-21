@@ -34,9 +34,10 @@ merges it. Its steps:
    only when it asks (`cd_deploy`).
 7. **Promotion is a person's** ([ADR-0110](../decisions/0110-only-a-person-deploys-production.md)):
    an administrator promotes on the CD page, typing the project's slug. Yulius then opens the
-   promotion pull request from `dev` into `main` and merges it with a **merge commit** when the
-   exact `dev` head has a successful `yulius/ci` status (the `yulius-main` ruleset requires it);
-   otherwise the deploy is refused with why, and the person deploys again later.
+   promotion pull request into `main` from the confirmed, verified dev revision. When a newer
+   revision is still being checked, CD can use a release ref pinned to the earlier verified SHA.
+   The `yulius-main` ruleset requires successful `yulius/ci` on the selected revision for the
+   **merge commit**. A refused deploy explains which evidence is missing.
    An agent never promotes; a task that needs production asks a person with `needs_you`.
 
 If several tested features accumulate on `dev`, a promotion includes all of them. Never

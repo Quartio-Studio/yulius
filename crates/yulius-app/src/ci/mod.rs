@@ -627,6 +627,37 @@ fn ran_as(ran: &CiJobRecord, job: &Job) -> bool {
         && ran.exclusive == job.exclusive
 }
 
+/// Whether the recorded jobs cover this reference's gate, including jobs a PR may skip.
+fn jobs_cover_target(reference: &CiRef, gate: &Gate, jobs: &[CiJobRecord]) -> bool {
+    let branch = matches!(
+        reference,
+        CiRef::Branch(_) | CiRef::Train(_) | CiRef::Candidate(_)
+    );
+    let skipped_a_paths_job = gate.jobs.iter().any(|job| {
+        !job.paths.is_empty()
+            && jobs
+                .iter()
+                .any(|t| t.key == job.key && t.matrix == job.matrix && t.state == RunState::Skipped)
+    });
+    // Likewise a source that skipped a job as part of the full suite (SPEC-575 MFS-002)
+    // never ran it, whatever the gate says of the job now (a change may have just turned
+    // the move off, review round 1): no source for a run of the merged revision.
+    let merged = matches!(reference, CiRef::Branch(_) | CiRef::Candidate(_));
+    let skipped_the_full_suite = jobs
+        .iter()
+        .any(|t| dom::skipped_after_merge(t.state, t.reason.as_deref()));
+    if branch && skipped_a_paths_job || merged && skipped_the_full_suite {
+        return false;
+    }
+    // Every job of the gate ran there as it is defined now: a pull request judged by the
+    // jobs its merge then changed never ran the new ones (SPEC-504, review round 1).
+    let all_ran = gate
+        .jobs
+        .iter()
+        .all(|job| jobs.iter().any(|t| ran_as(t, job)));
+    !branch || all_ran
+}
+
 /// Whether `run` may lend its verdict to `target`, whose tree it tested (the trees are compared
 /// apart): a passed run, not a train's step verdict, and another commit, unless `target` is a
 /// merge candidate formed again on that very commit (slice D review: within one second the
@@ -1718,39 +1749,13 @@ impl App {
         // A branch's own run runs every job (SPEC-493 CJP-003): a source that skipped a job for
         // its `paths` never ran it, so it is no source there, and an earlier one may be. A merge
         // candidate's neither: the same tree on another base may change what `paths` decides.
-        let branch = matches!(
-            target.reference,
-            CiRef::Branch(_) | CiRef::Train(_) | CiRef::Candidate(_)
-        );
         let mut found = None;
         for run in runs.iter().filter(|r| reuse_source(r, target)) {
             if self.deps.git.tree_of(&repo, &run.sha).await?.as_deref() != Some(tree.as_str()) {
                 continue;
             }
             let jobs = self.deps.store.ci_jobs(&run.id, false).await?;
-            let skipped_a_paths_job = gate.jobs.iter().any(|job| {
-                !job.paths.is_empty()
-                    && jobs.iter().any(|t| {
-                        t.key == job.key && t.matrix == job.matrix && t.state == RunState::Skipped
-                    })
-            });
-            // Likewise a source that skipped a job as part of the full suite (SPEC-575 MFS-002)
-            // never ran it, whatever the gate says of the job now (a change may have just turned
-            // the move off, review round 1): no source for a run of the merged revision.
-            let merged = matches!(target.reference, CiRef::Branch(_) | CiRef::Candidate(_));
-            let skipped_the_full_suite = jobs
-                .iter()
-                .any(|t| dom::skipped_after_merge(t.state, t.reason.as_deref()));
-            if branch && skipped_a_paths_job || merged && skipped_the_full_suite {
-                continue;
-            }
-            // Every job of the gate ran there as it is defined now: a pull request judged by the
-            // jobs its merge then changed never ran the new ones (SPEC-504, review round 1).
-            let all_ran = gate
-                .jobs
-                .iter()
-                .all(|job| jobs.iter().any(|t| ran_as(t, job)));
-            if branch && !all_ran {
+            if !jobs_cover_target(&target.reference, gate, &jobs) {
                 continue;
             }
             found = Some((run, jobs));

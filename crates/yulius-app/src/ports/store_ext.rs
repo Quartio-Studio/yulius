@@ -500,14 +500,12 @@ pub trait CiStore: Send + Sync {
         sandbox: &SandboxId,
         limit: u32,
     ) -> AppResult<Vec<crate::ci::CiRunRecord>>;
-    /// The first verified commit in the caller's history order. An explicit branch run takes
-    /// precedence over a full ordinary run shared by the scheduler.
-    async fn first_verified_branch_sha(
+    /// The commits in this bounded Git history batch with a retained passing CI run, in input order.
+    async fn ci_shas_with_pass(
         &self,
         sandbox: &SandboxId,
-        branch: &str,
         commits: &[String],
-    ) -> AppResult<Option<String>>;
+    ) -> AppResult<Vec<String>>;
     /// Bounded scheduler history, most recently admitted first. A new run may
     /// inherit an older queue position from the head it superseded.
     async fn ci_planning_runs(

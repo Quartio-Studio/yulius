@@ -266,31 +266,21 @@ impl CiStore for SqliteStore {
         .await
     }
 
-    async fn first_verified_branch_sha(
+    async fn ci_shas_with_pass(
         &self,
         sandbox: &SandboxId,
-        branch: &str,
         commits: &[String],
-    ) -> AppResult<Option<String>> {
+    ) -> AppResult<Vec<String>> {
         let sandbox = sandbox.to_string();
-        let reference = CiRef::Branch(branch.into()).key();
         let commits = serde_json::to_string(commits).map_err(AppError::internal)?;
         self.call(move |c| {
-            c.query_row(
-                "SELECT value FROM json_each(?3) AS history WHERE (
-                    SELECT r.state = 'passed' AND NOT EXISTS (
-                        SELECT 1 FROM ci_jobs j WHERE j.run_id = r.id
-                        AND j.state = 'skipped' AND instr(j.reason, ?4) = 1
-                    ) FROM ci_runs r WHERE r.sandbox_id = ?1 AND r.sha = history.value AND (
-                        r.reference = ?2 OR ((r.reference GLOB 'branch/*' OR r.reference GLOB 'pr/*'
-                        OR r.reference GLOB 'candidate/*') AND r.state IN ('queued','running','passed','failed','error'))
-                    ) ORDER BY (r.reference = ?2) DESC, r.rowid DESC LIMIT 1
-                 ) ORDER BY history.key LIMIT 1",
-                params![sandbox, reference, commits, yulius_domain::ci::AFTER_MERGE_SKIP_REASON],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(db)
+            let mut statement = c.prepare(
+                "SELECT value FROM json_each(?2) AS history WHERE EXISTS (
+                    SELECT 1 FROM ci_runs r WHERE r.sandbox_id = ?1 AND r.sha = history.value AND r.state = 'passed'
+                 ) ORDER BY history.key",
+            ).map_err(db)?;
+            statement.query_map(params![sandbox, commits], |row| row.get(0))
+                .map_err(db)?.collect::<Result<Vec<_>, _>>().map_err(db)
         })
         .await
     }

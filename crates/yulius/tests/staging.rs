@@ -839,12 +839,18 @@ async fn running_dev_ci_releases_only_the_preceding_green_revision() -> TestResu
 }
 
 async fn deploy_with_shared_ci(newer_pending: bool) -> TestResult {
-    let f =
-        fixture("[[ci.jobs]]\nname = \"checks\"\ncommand = \"true\"\n[cd.prod]\npromote = true\n")
-            .await?;
+    let f = fixture(concat!(
+        "[[ci.jobs]]\nname = \"security\"\ncommand = \"yulius security-scan --ci\"\n",
+        "[[ci.jobs]]\nname = \"full\"\ncommand = \"true\"\npaths = [\"src/**\"]\n",
+        "[cd.prod]\npromote = true\n",
+    ))
+    .await?;
     fast_forward_profile(&f, false).await?;
     let a = f.push("dev", &[("verified.txt", Some("A"))])?;
     let id = gate(&f, &a, RunState::Passed).await?;
+    // A disabled security scan is a legitimate skip of the configured job.
+    f.h.store.execute_for_tests(&format!("UPDATE ci_jobs SET name='security', job_key='security', command='yulius security-scan --ci',
+        state='skipped', reason='security scan disabled' WHERE run_id='{id}' AND name='quick'")).await?;
     if newer_pending {
         let b = f.push("dev", &[("pending.txt", Some("B"))])?;
         gate(&f, &b, RunState::Running).await?;
@@ -874,6 +880,56 @@ async fn deploy_with_shared_ci(newer_pending: bool) -> TestResult {
     );
     assert_eq!(f.head("main")?, original);
     f.h.store.execute_for_tests(&format!("UPDATE ci_jobs SET state = 'passed', reason = NULL WHERE run_id = '{id}' AND name = 'full'")).await?;
+    // A copied path skip can carry a generic note. A non-final train verdict looks like
+    // a PR run, although only the later combined tree ran its jobs. Neither verifies A.
+    let (label, change) = if newer_pending {
+        (
+            "path skip",
+            format!(
+                "UPDATE ci_jobs SET state='skipped', reason='copied verdict' WHERE run_id='{id}' AND name='full'"
+            ),
+        )
+    } else {
+        (
+            "non-final train step",
+            format!(
+                "UPDATE ci_runs SET requested_by='{}' WHERE id='{id}'",
+                yulius_app::merge_train::TRAIN_VERDICT_BY
+            ),
+        )
+    };
+    f.h.store.execute_for_tests(&change).await?;
+    let incomplete = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(
+        incomplete.status,
+        axum::http::StatusCode::CONFLICT,
+        "{label}: {}",
+        incomplete.body
+    );
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE ci_jobs SET state='passed', reason=NULL WHERE run_id='{id}' AND name='full';
+         UPDATE ci_runs SET requested_by='yulius' WHERE id='{id}'"
+        ))
+        .await?;
+    // A green job for an earlier command cannot satisfy this commit's gate.
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE ci_jobs SET command='old command' WHERE run_id='{id}' AND name='full'"
+        ))
+        .await?;
+    let changed = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(
+        changed.status,
+        axum::http::StatusCode::CONFLICT,
+        "{}",
+        changed.body
+    );
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE ci_jobs SET command='true' WHERE run_id='{id}' AND name='full'"
+        ))
+        .await?;
     let released = f.deploy(&f.bob, "prod", Some("app")).await?;
     assert!(released.status.is_success(), "{}", released.body);
     assert_eq!(f.head("main")?, a);
@@ -1002,6 +1058,58 @@ async fn a_concurrent_production_change_never_records_the_wrong_tree_as_released
             .ok_or("stage")?
             .stage,
         yulius_domain::delivery::DeliveryStage::MergedIntegration
+    );
+    Ok(())
+}
+
+/// A same-tree commit with an unexpected acknowledgement is rechecked before recording
+/// deliveries. A retry honors the delivery profile's optional checks.
+#[tokio::test]
+async fn a_release_retry_verifies_the_merge_receipt_and_honors_optional_checks() -> TestResult {
+    let f = fixture(&promoting_toml()).await?;
+    agent(&f, "t1").await?;
+    let a = land(&f, "t1", "verified.txt").await?;
+    gate(&f, &a, RunState::Passed).await?;
+    ask(&f, "t1").await?;
+    settle(&f).await?;
+    f.push("dev", &[("pending.txt", Some("B"))])?;
+    f.h.store.execute_for_tests("INSERT INTO delivery (task_id, stage, pr_number, updated_at) VALUES ('t1', 'merged_integration', NULL, 1)").await?;
+    f.h.github
+        .report_source_as_merge
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let refused = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(
+        refused.status,
+        axum::http::StatusCode::CONFLICT,
+        "{}",
+        refused.body
+    );
+    let landed = f.head("main")?;
+    assert_ne!(landed, a);
+    assert_eq!(
+        crate::cd::git(&f.origin, &["rev-parse", "main^{tree}"])?,
+        crate::cd::git(&f.origin, &["rev-parse", &format!("{a}^{{tree}}")])?
+    );
+    let id = TaskId::parse("t1")?;
+    assert_eq!(
+        f.h.store.delivery(&id).await?.ok_or("t1")?.stage,
+        yulius_domain::delivery::DeliveryStage::MergedIntegration
+    );
+    fast_forward_profile(&f, false).await?;
+    let mut recheck =
+        f.h.store
+            .ci_run(&format!("ci-{}", &a[..12]))
+            .await?
+            .ok_or("gate")?;
+    recheck.id = "optional-recheck".into();
+    recheck.state = RunState::Failed;
+    f.h.store.insert_ci_run(&recheck, &[]).await?;
+    let retry = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert!(retry.status.is_success(), "{}", retry.body);
+    assert_eq!(f.head("main")?, landed);
+    assert_eq!(
+        f.h.store.delivery(&id).await?.ok_or("t1")?.stage,
+        yulius_domain::delivery::DeliveryStage::ProductionDone
     );
     Ok(())
 }

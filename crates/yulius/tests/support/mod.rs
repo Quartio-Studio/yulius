@@ -78,6 +78,8 @@ pub struct FakeGitHub {
     pub advance_base_on_merge: Mutex<Option<String>>,
     /// Another release request creates the same ref before the provider answers the POST.
     pub concurrent_release_ref: std::sync::atomic::AtomicBool,
+    /// Return the selected source SHA in place of the actual merge commit once.
+    pub report_source_as_merge: std::sync::atomic::AtomicBool,
     /// Refuse one production head read following a pinned release merge.
     pub fail_pinned_merge_read: std::sync::atomic::AtomicBool,
     /// GitHub accepted the merge, but reading the closed PR fails until it recovers.
@@ -675,6 +677,9 @@ impl GitHubPort for FakeGitHub {
             p.merge_commit_sha = Some(sha.clone());
         }
         self.record(token, format!("merge_pull #{number} {method}"));
+        if self.report_source_as_merge.swap(false, Ordering::SeqCst) {
+            return Ok(pull.head_sha);
+        }
         Ok(sha)
     }
     async fn create_branch(
