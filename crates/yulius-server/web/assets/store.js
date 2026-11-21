@@ -277,7 +277,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       const map = state.tasks.get(detail.sandbox_id);
       const row = map?.get(detail.id);
       if (!row || (detail.status !== 'parked' && row.status !== 'parked')) return {};
-      if (Math.max(rowOrder.get(row) ?? 0, unverified.get(row) ?? 0) > order) return parkedFacts(row);
+      if (rowOrder.get(row) > order) return parkedFacts(row);
       let updated = { ...row, ...parkedFacts(detail) };
       if (row.status !== detail.status) {
         // A missed park or resume changes execution fields too. Copy only keys
@@ -291,8 +291,11 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       const hintOrder = pullWatch.get(detail.sandbox_id)?.changeBeforeParkedRows ?? 0;
       const missedChange = updated.status === 'parked' && hintOrder > order;
       const verifyDiscovered = missedChange && !hasParkedRows(map);
-      if (missedChange || (detail.status === 'parked' && typeof detail.parked_needs_you !== 'boolean')) {
-        updated = awaitingVerification(updated, row, Math.max(order, hintOrder));
+      const fallbackOrder = Math.max(hintOrder, unverified.get(row) ?? 0);
+      // A failed watch has no lifecycle or PR facts. Use the detail, preserving
+      // the later failure's conservative group for a task that is still parked.
+      if (detail.status === 'parked' && (fallbackOrder > order || typeof detail.parked_needs_you !== 'boolean')) {
+        updated = awaitingVerification(updated, row, Math.max(order, fallbackOrder));
       }
       rowOrder.set(updated, order);
       map.set(row.id, updated);

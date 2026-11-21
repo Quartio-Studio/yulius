@@ -236,8 +236,9 @@ export function mountTaskInfoView(ctx, sandbox, task) {
       detail = fresh;
       detailError = null;
       current = current === prior ? { ...current, ...fresh } : { ...fresh, ...current };
-      const facts = publishParked(fresh);
-      current = { ...current, ...facts };
+      const accepted = current;
+      const facts = publishParked(fresh); // Can synchronously notify this view with the sidebar title.
+      current = { ...accepted, ...facts };
       loadWaterfall(ctx, sandbox, `task:${task.id}`, stagesHost, { title: 'Stages of this task' });
     } catch (error) {
       if (!alive || read !== detailRead || error.code === 'aborted') return;

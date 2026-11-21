@@ -1878,3 +1878,29 @@ test('a detail discovering an archive removes the parked row through older lists
   });
   expect(seen).toEqual([[true, 0, null], [true, 1, false]]);
 });
+
+test('a failed parked watch preserves PR discovery, resume and archive from an earlier detail', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const results = [];
+    for (const transition of ['discovery', 'resume', 'archive']) {
+      const row = { id: 'p', sandbox_id: 's', status: 'parked', archived: false, parked_needs_you: false };
+      let calls = 0;
+      const store = createStore({ get: async () => {
+        if (++calls > 1) throw new Error('watch unavailable');
+        return [row];
+      } });
+      await store.loadTasks('s');
+      const publish = store.beginParkedDetail();
+      await store.loadTasks('s', true);
+      const facts = publish(transition === 'discovery' ? { ...row, parked_pr: { number: 42, open: true } }
+        : { ...row, status: transition === 'resume' ? 'running' : 'closed', archived: transition === 'archive' });
+      const current = store.findTask('p');
+      results.push([facts.status, current?.status ?? null, current?.parked_pr?.number ?? null, current?.parked_needs_you ?? null]);
+    }
+    return results;
+  });
+  expect(seen).toEqual([['parked', 'parked', 42, true], ['running', 'running', null, false], ['closed', null, null, null]]);
+});
