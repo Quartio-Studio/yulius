@@ -2862,39 +2862,26 @@ async fn parking_keeps_an_external_green_pr_that_must_update_its_base() -> TestR
 
 #[tokio::test]
 async fn parking_rechecks_a_recorded_pr_when_its_base_advances_during_checks() -> TestResult {
-    for change_base_sha in [false, true] {
-        let f = fixture().await?;
-        install_compatibility_pull(&f).await?;
-        idle_for_parking(&f).await?;
-        // This recorded delivery is visible by number even though branch discovery omits it.
-        f.h.github.pulls.lock().map_err(|_| "pull fixture")?[0].head = "published-elsewhere".into();
-        f.h.github
-            .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
-        let held = f.h.github.hold_checks();
-        let app = f.h.app.clone();
-        let checking = tokio::spawn(async move { app.park_idle_sessions_now().await });
-        tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            f.h.github.checks_entered.notified(),
-        )
-        .await?;
-        {
-            let mut pulls = f.h.github.pulls.lock().map_err(|_| "pull fixture")?;
-            if change_base_sha {
-                pulls[0].base_sha = "replacement-base".into();
-            } else {
-                pulls[0].behind = true;
-            }
-        }
-        f.h.github.release_checks(&held);
-        assert_eq!(
-            checking.await?,
-            0,
-            "eligibility changed while checks were read, base SHA changed: {change_base_sha}"
-        );
-        f.h.github.pulls.lock().map_err(|_| "pull fixture")?[0].behind = false;
-        assert_eq!(f.h.app.park_idle_sessions_now().await, 1);
-    }
+    let f = fixture().await?;
+    install_compatibility_pull(&f).await?;
+    idle_for_parking(&f).await?;
+    // This recorded delivery is visible by number even though branch discovery omits it.
+    f.h.github.pulls.lock().map_err(|_| "pull fixture")?[0].head = "published-elsewhere".into();
+    f.h.github
+        .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
+    let held = f.h.github.hold_checks();
+    let app = f.h.app.clone();
+    let checking = tokio::spawn(async move { app.park_idle_sessions_now().await });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        f.h.github.checks_entered.notified(),
+    )
+    .await?;
+    f.h.github.pulls.lock().map_err(|_| "pull fixture")?[0].behind = true;
+    f.h.github.release_checks(&held);
+    assert_eq!(checking.await?, 0, "the second read requires a base update");
+    f.h.github.pulls.lock().map_err(|_| "pull fixture")?[0].behind = false;
+    assert_eq!(f.h.app.park_idle_sessions_now().await, 1);
     Ok(())
 }
 

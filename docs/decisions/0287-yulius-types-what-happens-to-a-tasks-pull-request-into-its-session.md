@@ -42,8 +42,6 @@ Use the queue’s owner-preferred ordinary CI result at the armed head. A shared
 
 The parking supervisor uses the latest singleton decision for the original owner. A changed decision during verification leaves the owner live for the next pass. See SPEC-558.
 
-Serialize replacement merge admission with the final parking decision on the existing task writer. Keep the parking attempt identifiable while the run reader settles it. The stored task state then governs admission, including ordinary subscription switches and capacity waits.
-
 ## Alternatives
 
 - **Fix `yulius wait` only**: the agent must still start it, and Claude Code's paused check-ins and

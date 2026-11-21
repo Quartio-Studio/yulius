@@ -2097,7 +2097,7 @@ If the server restarted between writing the attempt’s ID and writing its sessi
 resume path recovers the ID from the parked attempt. If capacity holds a resume, an unreadable
 rollout history leaves its pause and prompt in place for the next capacity round.
 
-Parking takes the task’s merge writer for its final eligibility read. A replacement merge that holds the writer keeps its owner live. A committed park keeps its attempt ID and idle activity until the run end updates the stored task state. Merge admission checks this record and the current task state under the same writer.
+When Stop rests an owner during park shutdown, the run may already be reaped while its reader is still recording the final task state. Continue waits for that reader outside the launch lock before admitting the next session or placing it in a queue. The stop escalation interval bounds this wait.
 
 `park_task_now` asks again under the launch lock, sets the run's end intent `Park` and ends the
 session as a close does (graceful shutdown, then the escalation). The run's end, by its exit or

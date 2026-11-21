@@ -62,6 +62,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Report the active singleton and replay its recorded failure for the original owner
 - [x] Reproduce candidate status across restart on the live and parked PR owner
 - [x] Verify the failed integration candidate before parking its original owner
+- [ ] Preserve a continuation while its previous parked run settles
 - [ ] Order parking and replacement merge requests through run settlement
 - [ ] Deliver the recorded integration failure once to an already parked owner
 - [ ] Hold the original owner’s session and successor while its open delivery cannot be verified
@@ -110,21 +111,15 @@ The live watcher resolves ordinary CI for the owner at the armed head and reads 
 
 The final parking check compares the owner’s saved singleton decision with the verified PR head and integration base. A change to the saved merge decision during hosted verification defers the pass. A changed base or published repair retires the old failure for this decision.
 
-The final parking decision and replacement merge admission share the task’s merge writer. A replacement admitted first keeps the owner live. Once parking commits, the owner must resume before arming a merge. This holds while the run reader records the end, including an overlapping subscription switch or capacity pause.
+A Stop can settle a task while its reaped run is still finalizing. Continue waits outside the launch lock for that finalization before deciding whether its new session runs, queues or waits for subscription capacity. If the wait expires, the caller receives a retryable conflict and the owner retains the archive and any outstanding decision. This prevents the old reader from closing the new continuation.
 
 ## Evidence
 
-- Initial admission mutation campaign on `140ea234f` reported 27 listed, 6 caught, 2 missed, 19 unviable, no timeouts or unreached mutations. Inverting the attempt comparison failed the reattachment regression. Removing the final armed-state check failed the completed replacement regression.
-
-- Review at `41e393f07` found that a capacity pause followed by Stop could persist a resting task before the old reader settled it. In two tests, Stop arrived on opposite sides of the attempt-end write. After the terminal reported exit, Continue waited for a subscription and the old park refused the owner’s merge. Both tests passed after the readers honored the already-settled state. All 13 focused admission, switch, Stop and capacity cases passed.
-- The first mutation run’s inverted attempt comparison let a reattachment discard its own pending park. The new reattachment test failed with that mutation. It verifies both retaining the same attempt and retiring an interrupted park on a new attempt.
-
-- On `140ea234f`, the seven merge-admission cases and all 278 scoped tests passed. Independent review then found a stale park marker after Close superseded parking and Continue waited for a subscription. The new regression reached WaitingCapacity with no live attempt, then received the stale parking refusal. A second regression removed the final armed-state check and let a replacement finish between eligibility and the park writer. It reproduced the original owner being parked. A successful run settlement now clears the matching attempt’s record for park, Close, Stop and loss.
-
-- On the tree of dev `f5d772b6c`, five real parking/merge races failed. An arm writer lost its live owner, and a pending merge was admitted during a committed park, during an overtaken switch or capacity pause, and after the task had settled parked. The ordinary switch and capacity pause controls passed.
-- The preceding parking verification campaign reported 79 mutations, with 19 caught, 12 missed and 48 unviable. Targeted replays caught all 12 survivors. The retained regressions cover a changed base SHA during checks and a live queue decision whose head or reason differs from the saved failure.
+- A further regression caught the first timeout implementation unarchiving the stopped task. The test now checks the archive and the outstanding decision both after the conflict and after a successful retry.
+- Three real-PTY regressions held the old reader after its attempt was recorded as ended. Before the fix, Continue returned early in all three cases, with the stopped task already queued or waiting for subscription capacity. The separate capacity race also reproduced the old reader closing a new continuation that had reached the same state.
 
 - PR #1597 landed on dev at `03661c9dc`. PR run `bfbedf0a-3e2a-4aec-bf84-15a2f70b8ab6` passed on `84a430398`. Train run `2efca3b9-8474-44d2-aa83-7a1e74ae94fe` passed quality, both test shards and browser E2E. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/03661c9dcf52a7ad1d4562f0873a8b9cd8cc994e)
+- Independent review of `5656ac726` found that Continue could queue after Stop recorded the task as resting, before the run reader finished its task transition. The continuation ordering and merge admission are now separate deliveries. Merge admission remains open.
 
 - Independent review approved the parking decision at `9bdbd5bc1e8c6be3b41713e904f4ed21563166d7`. All seven parking controls passed independently on the prior binary with the same candidate behavior. The full product tree for this delivery matches `e740eb5db`. The bounded mutation run and its focused replays continue separately. Vidoc was disabled. The historical Quartio instance needs a release containing the change for a live check.
 

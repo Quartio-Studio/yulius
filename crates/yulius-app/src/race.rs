@@ -10,8 +10,8 @@ use std::path::Path;
 /// Where the server pauses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Point {
-    /// A new merge request owns the task's arm writer, before it changes the slot.
-    ArmWriteStarted,
+    /// Continue waits for the previous attempt's reader to finish writing its task state.
+    ContinueWaitsForReader,
     /// A parked read classified the task, before the response renders its plan. Keyed by task ID.
     ParkedStatusRead,
     /// A queued row reads session capacity to explain its wait. Keyed by task ID.

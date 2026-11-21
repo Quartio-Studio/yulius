@@ -6,7 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
-- A replacement merge request keeps its idle owner live. If the owner is already parking, the merge request explains that the task must resume before it can arm. [SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
+- Continue now waits for a preceding park and Stop to settle before it queues the next session or waits for subscription capacity. [SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
 - Finished parked tasks with a recorded merge stay under Done when GitHub cannot check for a follow-up PR. Existing false waits resolve on refresh, and known open replacements still show their checks. [SPEC-585](../.ai/specs/SPEC-585-i-got-this-everywhere-fix.md)
 - Parking keeps the original PR owner live when its recorded integration candidate failed on the current head and base, or the queue decision changes during verification (SPEC-558).
 - Agents now fix findings and obtain independent re-review through approval without asking the task owner to authorize another round. [SPEC-588](../.ai/specs/SPEC-588-it-shouldn-t-ask-me-for-this-agents-must.md)

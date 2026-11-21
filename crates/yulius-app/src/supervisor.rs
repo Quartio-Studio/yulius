@@ -496,9 +496,9 @@ pub struct TaskRuntime {
     /// The run whose host could not be terminated after its stop or close escalation, and why
     /// (SPEC-065 END-001): it stays live until its processes are gone.
     end_failed: Mutex<Option<(AttemptId, String)>>,
-    /// The attempt committed to park and its idle activity. Kept until the stored
-    /// task state settles, including when a switch cleared its activity meanwhile.
-    parked_activity: Mutex<Option<(AttemptId, Activity)>>,
+    /// The activity a park was decided on (SPEC-512 PRK-003): what the parked task keeps when a
+    /// switch it overtook cleared the stored one.
+    parked_activity: Mutex<Option<Activity>>,
     /// The request a reader took before it recorded this attempt's end (SPEC-563).
     taken_request: Mutex<Option<(AttemptId, TakenRequest)>>,
 }
@@ -558,20 +558,6 @@ impl TaskRuntime {
             .ok()?
             .take_if(|(run, _)| run == attempt_id)
             .map(|(_, request)| request)
-    }
-
-    /// Reattaching the same host preserves its park. A new attempt retires it.
-    fn retain_park_for_attached_run(&self, attempt_id: &AttemptId) {
-        if let Ok(mut kept) = self.parked_activity.lock() {
-            kept.take_if(|(parked, _)| parked != attempt_id);
-        }
-    }
-
-    /// A reader can take the end intent before it writes the parked task state.
-    pub(crate) fn park_committed(&self) -> bool {
-        self.parked_activity
-            .lock()
-            .map_or(true, |kept| kept.is_some())
     }
 
     /// Whether the screen `hub` shows is not what the program drew: its output is withheld
@@ -1910,7 +1896,8 @@ impl App {
         rest: Option<IdleRest>,
     ) -> BoxFuture<'a, AppResult<bool>> {
         Box::pin(async move {
-            self.settle_resting_run(task_id).await?;
+            self.settle_resting_run(task_id, matches!(start, RunStart::Resume { .. }))
+                .await?;
             // The Codex CLI is installed before the launch lock, so a first install does not hold
             // other tasks' starts (SPEC-503 CLI-002); the launch asks again and reports a failure.
             if let Ok(Some(task)) = self.deps.store.task(task_id).await {
@@ -3861,7 +3848,6 @@ impl App {
             attempt_id: attempt.id.clone(),
             writer: attached.writer,
         });
-        runtime.retain_park_for_attached_run(&attempt.id);
         crate::race::reached(crate::race::Point::RunAttached, Path::new(task_id.as_str()));
         // What the sandbox's limits counted so far: a rise by the run's end says it was at one.
         let counters = self.limit_counters(&sandbox).await;
@@ -4009,7 +3995,7 @@ impl App {
     ///
     /// # Errors
     /// `Conflict` while the run lives on or cannot be ended.
-    async fn settle_resting_run(self: &Arc<Self>, task_id: &TaskId) -> AppResult<()> {
+    async fn settle_resting_run(self: &Arc<Self>, task_id: &TaskId, resume: bool) -> AppResult<()> {
         let store = &self.deps.store;
         let Some(task) = store.task(task_id).await? else {
             return Ok(());
@@ -4018,6 +4004,9 @@ impl App {
             return Ok(());
         }
         let Some(run) = store.live_attempt(task_id).await? else {
+            if resume {
+                self.wait_for_previous_reader(task_id).await?;
+            }
             return Ok(());
         };
         if self.holds_run(task_id).await {
@@ -4026,6 +4015,33 @@ impl App {
             ));
         }
         self.settle_unheld_run(task_id, &run.id).await
+    }
+
+    /// A reaped attempt's reader can still be writing the task's last state.
+    /// Wait before reusing that state or changing the owner's archive or request.
+    pub(crate) async fn wait_for_previous_reader(&self, task_id: &TaskId) -> AppResult<()> {
+        let Some(runtime) = self.existing_runtime(task_id) else {
+            return Ok(());
+        };
+        let mut ending = runtime.finalizing.subscribe();
+        if *ending.borrow_and_update() == 0 {
+            return Ok(());
+        }
+        crate::race::reached(
+            crate::race::Point::ContinueWaitsForReader,
+            Path::new(task_id.as_str()),
+        );
+        let bound = Duration::from_millis(self.config.stop_escalation_ms);
+        tokio::time::timeout(bound, ending.wait_for(|count| *count == 0))
+            .await
+            .map_err(|_| {
+                AppError::Conflict(
+                    "The previous session is still settling. Retry Continue after terminal exit."
+                        .into(),
+                )
+            })?
+            .map(|_| ())
+            .map_err(AppError::internal)
     }
 
     /// Settles a live run on record that this server holds no connection to (ADR-0050).
@@ -4205,17 +4221,11 @@ impl App {
             replace_intent(&mut intent, None, SwitchEnd::Lost);
         }
         match request {
-            Some(TakenRequest::Close) => {
-                self.settle_ended(task_id, attempt_id, now, after_close)
-                    .await
-            }
-            Some(TakenRequest::Cancel) => {
-                self.settle_ended(task_id, attempt_id, now, after_cancel)
-                    .await
-            }
+            Some(TakenRequest::Close) => self.settle_ended(task_id, now, after_close).await,
+            Some(TakenRequest::Cancel) => self.settle_ended(task_id, now, after_cancel).await,
             Some(TakenRequest::Park) => self.settle_parked(task_id, attempt_id, now).await,
             None => {
-                self.settle_ended(task_id, attempt_id, now, |task| {
+                self.settle_ended(task_id, now, |task| {
                     task.status.after_loss(task.activity, reason).ok()
                 })
                 .await;
@@ -4240,15 +4250,6 @@ impl App {
         self.drain_queue().await;
     }
 
-    /// A close, stop or loss can settle the run that originally committed to park.
-    fn clear_settled_park(&self, task_id: &TaskId, attempt_id: &AttemptId) {
-        if let Some(runtime) = self.existing_runtime(task_id)
-            && let Ok(mut kept) = runtime.parked_activity.lock()
-        {
-            kept.take_if(|(run, _)| run == attempt_id);
-        }
-    }
-
     /// Moves the task whose run ended to `next` of the status read (`None`: no change). A change
     /// that loses to a concurrent one (a stop landing meanwhile) is made again from the status read
     /// anew, so an ended run never leaves its task live (SPEC-250 STW-005); the rounds are bounded
@@ -4256,7 +4257,6 @@ impl App {
     async fn settle_ended(
         &self,
         task_id: &TaskId,
-        attempt_id: &AttemptId,
         now: Timestamp,
         next: impl Fn(&TaskRecord) -> Option<TaskStatus>,
     ) {
@@ -4265,9 +4265,6 @@ impl App {
                 return;
             };
             let Some(to) = next(&task) else {
-                if task.status.is_resting() {
-                    self.clear_settled_park(task_id, attempt_id);
-                }
                 return;
             };
             crate::race::reached(crate::race::Point::EndDecided, Path::new(task_id.as_str()));
@@ -4278,10 +4275,7 @@ impl App {
                 .await
             {
                 Ok(false) => {}
-                Ok(true) => {
-                    self.clear_settled_park(task_id, attempt_id);
-                    return;
-                }
+                Ok(true) => return,
                 Err(err) => {
                     tracing::warn!(task = %task_id, error = %err, "the ended run's task was not moved");
                     return;
@@ -4300,10 +4294,8 @@ impl App {
             runtime
                 .parked_activity
                 .lock()
-                .ok()?
-                .as_ref()
-                .filter(|(run, _)| run == attempt_id)
-                .map(|(_, activity)| *activity)
+                .ok()
+                .and_then(|mut kept| kept.take())
         });
         for _ in 0..STOP_ROUNDS {
             let Ok(Some(task)) = self.deps.store.task(task_id).await else {
@@ -4323,12 +4315,7 @@ impl App {
                 Ok(parked) => (parked, task.activity.or(decided)),
                 Err(_) => match task.status.apply(TaskEvent::Exited { normal: true }) {
                     Ok(rests) => (rests, None),
-                    Err(_) => {
-                        if task.status.is_resting() {
-                            self.clear_settled_park(task_id, attempt_id);
-                        }
-                        return;
-                    }
+                    Err(_) => return,
                 },
             };
             // The goal's state is in the run's directory before anyone reads the task parked.
@@ -4343,7 +4330,6 @@ impl App {
             {
                 Ok(false) => {}
                 Ok(true) => {
-                    self.clear_settled_park(task_id, attempt_id);
                     if to == TaskStatus::Parked {
                         if let Some(run) = &attempt
                             && let Some((cols, rows, screen)) =
@@ -4519,28 +4505,22 @@ impl App {
                 // The run ended while the switch that gave it up was ending it: the task rests
                 // as it does when that switch records the loss itself, from `Switching` or, after
                 // a refused kill, from `Running` (SPEC-483 SWT-002).
-                self.settle_ended(task_id, attempt_id, now, |task| {
+                self.settle_ended(task_id, now, |task| {
                     task.status
                         .apply(TaskEvent::Lost(StopReason::SwitchTimeout))
                         .ok()
                 })
                 .await;
             }
-            Some(EndIntent::Close) => {
-                self.settle_ended(task_id, attempt_id, now, after_close)
-                    .await
-            }
+            Some(EndIntent::Close) => self.settle_ended(task_id, now, after_close).await,
             Some(EndIntent::Park) => self.settle_parked(task_id, attempt_id, now).await,
-            Some(EndIntent::Cancel) => {
-                self.settle_ended(task_id, attempt_id, now, after_cancel)
-                    .await
-            }
+            Some(EndIntent::Cancel) => self.settle_ended(task_id, now, after_cancel).await,
             None => {
                 // A run that ends by itself while a switch that has not claimed its end yet
                 // holds the task `Switching` ends the task as from `Running`: the switch finds
                 // it resting and gives way (SPEC-483 SWT-002).
                 let event = exit_event(&exit, session_end.as_deref());
-                self.settle_ended(task_id, attempt_id, now, |task| {
+                self.settle_ended(task_id, now, |task| {
                     task.status
                         .apply(event)
                         .or_else(|_| {
@@ -4841,10 +4821,6 @@ impl App {
         let Ok(work) = runtime.steps_lock.try_lock() else {
             return Ok(false);
         };
-        // A queue decision or replacement request must finish on one side of the park.
-        let Ok(arm_writer) = runtime.arm_writer.try_lock() else {
-            return Ok(false);
-        };
         if crate::sandboxes::plan_open(&self.deps.store.steps(task_id).await?)
             || self.read_spec_unfinished(task_id).await?
             || !self
@@ -4856,8 +4832,8 @@ impl App {
         }
         {
             let mut intent = runtime.intent.lock().map_err(AppError::internal)?;
-            // A newly armed delivery or another end keeps this park from taking the run.
-            if intent.is_some() || self.merge_is_armed(task_id) {
+            // Any other end under way owns the run's end.
+            if intent.is_some() {
                 return Ok(false);
             }
             crate::parking::save_parked_screen(&runtime.hub, Path::new(&run.run_dir), quiet_ms)
@@ -4865,10 +4841,9 @@ impl App {
             *intent = Some(EndIntent::Park);
             // Under the intent's lock: the run's end that takes the intent finds it.
             if let Ok(mut kept) = runtime.parked_activity.lock() {
-                *kept = task.activity.map(|activity| (run.id.clone(), activity));
+                *kept = task.activity;
             }
         }
-        drop(arm_writer);
         drop(work);
         crate::race::reached(crate::race::Point::ParkDecided, Path::new(task_id.as_str()));
         self.arm_escalation(task_id, Some(run.id));
@@ -8384,21 +8359,6 @@ mod tests {
     }
 
     use super::branch_for;
-
-    #[test]
-    fn reattachment_preserves_only_the_attached_attempts_unsettled_park()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let runtime = super::TaskRuntime::new();
-        let parked = super::AttemptId::parse("previous-owner")?;
-        let replacement = super::AttemptId::parse("continued-owner")?;
-        *runtime.parked_activity.lock().map_err(|_| "park lock")? =
-            Some((parked.clone(), super::Activity::Waiting));
-        runtime.retain_park_for_attached_run(&parked);
-        assert!(runtime.park_committed());
-        runtime.retain_park_for_attached_run(&replacement);
-        assert!(!runtime.park_committed());
-        Ok(())
-    }
 
     #[test]
     fn a_taken_request_belongs_to_one_attempt_and_is_consumed_once()

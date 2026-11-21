@@ -734,6 +734,9 @@ impl App {
                 Some(_) => {}
             }
         }
+        // A busy reader can time out. Leave the owner's archive and decision intact until
+        // that reader finishes, before changing anything on behalf of this Continue.
+        self.wait_for_previous_reader(&task.id).await?;
         // A person continues it: whatever its agent asked a person before is past (SPEC-134).
         self.end_needs_you(&task.id).await;
         if task.archived_at.is_some() {
