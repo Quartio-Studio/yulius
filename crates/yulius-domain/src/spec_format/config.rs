@@ -1907,13 +1907,28 @@ mod tests {
         assert_eq!(dev.secrets, ["STAGING_VM_SSH_KEY"]);
         let dev_about = dev.about.as_deref().unwrap_or_default();
         assert!(dev_about.contains("staging VM"), "{dev_about}");
-        // Not merge-first yet: every CI job stays on pull requests until the next slice.
-        assert!(!dev.merge_first);
-        assert_eq!(cd.merge_first(), None);
+        // SPEC-591 STG-007: the staging VM is the merge-first target, and the full suite (both
+        // test shards and e2e) runs on the merged revision; a pull request merges on `quality`
+        // and `security`.
+        assert!(dev.merge_first);
+        assert_eq!(cd.merge_first().map(|t| t.name.as_str()), Some("dev"));
         let config = parse_yulius_toml(raw)?;
         let jobs = crate::ci::project_jobs(config.commands.gate.as_deref(), &config.ci)?;
-        assert!(!jobs.is_empty());
-        assert!(jobs.iter().all(|j| !j.after_merge), "{jobs:?}");
+        let after: Vec<(&str, bool)> = jobs
+            .iter()
+            .map(|j| (j.name.as_str(), j.after_merge))
+            .collect();
+        assert_eq!(
+            after,
+            [
+                ("quality", false),
+                ("test (1/2)", true),
+                ("test (2/2)", true),
+                ("e2e", true),
+                ("security", false)
+            ],
+            "{jobs:?}"
+        );
         assert_eq!(parse_yulius_toml_local(raw)?, None);
         let prod = cd.target("prod").ok_or("prod")?;
         assert!(prod.promote && prod.deploy.is_none());

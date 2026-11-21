@@ -99,7 +99,9 @@ was verified there.
 - **STG-007 Merge-first.**
   - `[cd.dev] merge_first = true`.
   - `after_merge = true` on the two `test` shards and on `e2e`.
-  - `quality` and `security` stay on pull requests, justified by the CI numbers in an ADR.
+  - `quality` and `security` stay on pull requests, justified by the CI numbers in
+    [ADR-0436](../../docs/decisions/0436-yuliuss-full-suite-runs-after-the-merge-and-promotion-comes-from-verified-staging.md),
+    which also says what a pull request still proves before it merges.
 - **STG-008 Promotion rule explicit and enforced.**
   - Only a revision that passed the full suite on dev and that staging verified may be promoted
     to `main`.
@@ -121,10 +123,12 @@ was verified there.
 - [x] Fill [cd.dev], ADR-0430 and the staging VM's operations, architecture and AGENTS docs
 - [x] Answer review round 1 of the CD slice test-first and rerun on the VM
 - [ ] Independent review of the CD slice approved
-- [ ] First staging deploy through CD and the rollback drill of the next deploy recorded
-- [ ] Move the test shards and e2e to the merged revision with merge_first and an ADR
-- [ ] Make the promotion rule explicit and test it against Yulius's own yulius.toml
+- [x] First staging deploy through CD recorded
+- [x] Answer review round 3's minor and nits test-first
+- [x] Move the test shards and e2e to the merged revision with merge_first and an ADR
+- [x] Make the promotion rule explicit and test it against Yulius's own yulius.toml
 - [ ] Evidence, changes entry and independent review of the merge-first slice approved
+- [ ] Record the first merge-first staging request, its deploy and rollback drill in a follow-up pull request
 
 ## Acceptance criteria
 
@@ -161,6 +165,11 @@ was verified there.
   `/internal/version` on the VM reports that commit. A later deploy's rollback drill passes (back
   to the previous release and its store, forward again). The spec's Evidence names both runs,
   their revisions and request ids.
+- **AC-6 (review round 3):** On a fake root:
+  - A put back whose store cannot be restored leaves the server stopped, the snapshot intact,
+    with the words "restore by hand". This holds both in recover and in a deploy's undo.
+  - The deletion parser ignores block comments and `CASE … END` inside a trigger.
+  - Every pair of the deletion list is validated on the VM.
 - **AC-5 (STG-007, STG-008):** `the_repositorys_own_cd_is_defined` asserts:
   - `[cd.dev]` is the merge-first target with deploy, verify, rollback and migrations;
   - `test` and `e2e` are `after_merge`, and `quality` and `security` are not.
@@ -287,3 +296,38 @@ Evidence of the round:
   - **Drill:** back to 3fc0e5976 (live store kept, same schema), verify, forward, verify.
   - **Redeploy:** "installed already", nothing stopped.
   - **Rollback to 3fc0e5976, verify:** every step exit 0. Staging runs 3fc0e5976 again.
+
+Slice 1 merged into `dev` as e19ea9f18 (PR #1609, from PR head 416a9a113). Its own run
+3ae8fb64-0c06-4426-93c3-c7611b8fc2a2 passed, and so did merge train run
+8a5d7592-6a05-42fe-8182-a6ef8a3ca7a8: quality, both test shards and e2e passed; security
+skipped, Vidoc off. Review round 3 (Fable 5.2) approved 16e28a937.
+
+**The first staging deploy through Yulius CD:** run `cd50fb89-1e49-406d-b6a2-eae3ded3f791` of
+`[cd.dev]` at `e19ea9f18b0523474024fd9cfe11d42ef2f7e5ec`. It was asked by this task with
+`cd_deploy`, before merge-first, so there is no staging request. It passed at
+2026-11-21T18:08:55Z:
+
+- **Build:** release build in CD's builder, 6 min 10 s.
+- **Upload:** SHA-256 5bfd1bfb…5426.
+- **Migration check:** "release migrates a copy of the live store from schema 82 to 82, 83 tables,
+  no rows lost". It kept 3fc0e5976 with its store (schema 82).
+- **Verify:** `/internal/version` named e19ea9f18, `/healthz` answered 200 over HTTPS, and the
+  contained doctor passed every line. The schema was 82 with the kept migration check.
+- **Docker smoke:** passed all its 17 lines ("sandboxes get Docker on this host").
+- **Drill:** none followed. It was the environment's first release, and a drill needs two. The
+  next deploy drills.
+
+Slice 2 (merge-first and the promotion rule), test-first:
+
+- `the_repositorys_own_cd_is_defined` failed at the `merge_first` assertion
+  (config.rs:1913) before `yulius.toml` changed. With the change, it asserts the job split
+  `quality`/`security` on pull requests and `test (1/2)`, `test (2/2)`, `e2e` after the merge,
+  and passes.
+- `staging::yuliuss_own_config_promotes_only_what_staging_verified` runs with
+  `include_str!("../../../yulius.toml")`. Before the change, it was refused for another reason
+  ("no verified revision in dev covers its required CI jobs"). After it, both the production
+  deploy and the Delivery page's Promote answer 409, "[cd.dev] staging verified nothing yet".
+  It passes.
+- Review round 3's minor and nits, test-first: 9 new failures against 16e28a937's scripts, then
+  42 pass. The tests caught one real bug: `restore` called inside a condition ran on past a
+  failed copy, because sh suspends `-e` there. It now returns each failure.

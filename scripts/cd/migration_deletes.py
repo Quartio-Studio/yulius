@@ -34,10 +34,36 @@ def entries(lib: str) -> list[str]:
     return files
 
 
+def without_triggers(sql: str) -> str:
+    """`sql` with each `CREATE TRIGGER … BEGIN … END` left out: its `END` is the one that closes
+    no `CASE` of the body."""
+    out, pos = [], 0
+    for start in re.finditer(r"\bCREATE\s+(?:TEMP\s+|TEMPORARY\s+)?TRIGGER\b", sql, re.I):
+        if start.start() < pos:
+            continue
+        out.append(sql[pos : start.start()])
+        begin = re.compile(r"\bBEGIN\b", re.I).search(sql, start.end())
+        if begin is None:
+            return "".join(out)
+        depth, end = 0, len(sql)
+        for word in re.finditer(r"\b(CASE|END)\b", sql[begin.end() :], re.I):
+            if word.group(1).upper() == "CASE":
+                depth += 1
+            elif depth:
+                depth -= 1
+            else:
+                end = begin.end() + word.end()
+                break
+        pos = end
+    out.append(sql[pos:])
+    return "".join(out)
+
+
 def deletes(sql: str) -> list[str]:
     """The tables the statements of one migration delete from (comments and triggers aside)."""
+    sql = re.sub(r"/\*.*?\*/", "", sql, flags=re.S)
     sql = re.sub(r"--[^\n]*", "", sql)
-    sql = re.sub(r"\bCREATE\s+TRIGGER\b.*?\bEND\s*;", "", sql, flags=re.S | re.I)
+    sql = without_triggers(sql)
     return sorted(set(re.findall(r"\bDELETE\s+FROM\s+([A-Za-z_][A-Za-z0-9_]*)", sql, re.I)))
 
 

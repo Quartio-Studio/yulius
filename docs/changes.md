@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- Yulius's own delivery is merge-first. A pull request merges on `quality` and `security`, and both test shards and e2e run once on the merged revision. Staging changes only to a revision whose full suite passed. A promotion to `main` comes only from what staging verified, and a red `dev` is fixed forward. Staging's deploy keeps the server stopped when it cannot put back the previous store, instead of starting it on another one. [ADR-0436](decisions/0436-yuliuss-full-suite-runs-after-the-merge-and-promotion-comes-from-verified-staging.md), [SPEC-591](../.ai/specs/SPEC-591-yulius-gets-its-own-staging-instance-and.md)
 - Yulius's own `[cd.dev]` now deploys the exact build of a dev revision to its staging VM, the former production host. Each deploy keeps the store the replaced release left. A deploy first migrates a copy of the live store and is refused when it would lose rows. Verify checks the commit, HTTPS, the contained doctor, the store's schema and the Docker smoke test. Rollback restores a release with its own store. [ADR-0430](decisions/0430-yuliuss-staging-builds-in-cds-builder-and-installs-a-kept-release-with-its-store.md), [SPEC-591](../.ai/specs/SPEC-591-yulius-gets-its-own-staging-instance-and.md)
 - The new-task composer now keeps multiple unfinished drafts in one sandbox, each with its own text, attachments and task choices. [SPEC-594](../.ai/specs/SPEC-594-i-should-be-able-to-create-many-drafts-l.md)
 

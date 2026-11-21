@@ -1791,8 +1791,9 @@ erased.
 
 It does not pause tasks as the update helper's restart does: a staging instance's tasks see their
 server restart. A lost connection does not stop a switch half way, and any other failure after
-the stop starts the server again with a binary and store that belong together. One CD step runs
-at a time (`/var/lib/yulius-releases/.lock`).
+the stop starts the server again with a binary and store that belong together; when the
+previous store cannot be put back, the server stays stopped and the run says to restore it by hand
+(never a start on another store or an empty one). One CD step runs at a time (`/var/lib/yulius-releases/.lock`).
 
 **What verify proves** (`scripts/cd/verify.sh dev`):
 
@@ -1816,8 +1817,19 @@ at a time (`/var/lib/yulius-releases/.lock`).
   `/var/lib/yulius-releases/<commit>/`, `chown yulius:yulius` the store files, then
   `systemctl start yulius`.
 
-**Who deploys.** A task's agent with `cd_deploy`, or a person on the CD page. The rollback drill
-follows each deploy by itself. A merge deploys nothing.
+**Who deploys.** Staging is Yulius's merge-first target
+([ADR-0436](decisions/0436-yuliuss-full-suite-runs-after-the-merge-and-promotion-comes-from-verified-staging.md)).
+A pull request merges on `quality` and `security`. Both `test` shards and `e2e` run once on each
+merged revision of `dev`.
+
+- **Staging changes only through its queue** (ADR-0411). The agent of a task whose work merged
+  asks with `cd_deploy`. Yulius deploys that revision, or a newer verified one that contains it,
+  once its full suite passed. The rollback drill follows by itself.
+- **A person cannot deploy the head from the CD page.** A person can still roll staging back
+  there.
+- **A red `dev` never reaches staging.** The request ends `gate_failed`, its task fixes forward,
+  and no promotion happens meanwhile.
+- **Production is promoted only from what staging verified**, by a person (ADR-0425).
 
 **The update helper stays off there.** `yulius-update.path` is disabled: "Update now" would
 install `main` over a dev release. A deploy refuses while `yulius-update.service` runs. Root's
