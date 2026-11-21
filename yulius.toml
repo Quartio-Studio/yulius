@@ -76,12 +76,14 @@ cpus = 1
 secrets = "VIDOC_API_KEY"
 command = "python3 scripts/vidoc_scan.py --ci"
 
-# CD (deployment), SPEC-134: Yulius runs these from the protected branches, dev inside the
-# sandbox and production in its production holder (ADR-0208; CD page, `cd_deploy`). Both are
-# explicit, even when one deploys nothing yet. A merge deploys nothing; only a person deploys
-# production (ADR-0110).
+# CD (deployment), SPEC-134, SPEC-575: Yulius runs these from the protected branches, dev inside
+# the sandbox and production in its production holder (ADR-0208; CD page, `cd_deploy`). Both are
+# explicit, even when one deploys nothing yet. A merge deploys nothing by itself: with a shared
+# staging target (`merge_first = true`), a task requests staging with `cd_deploy` after the
+# merged revision passes the full gate (ADR-0410, ADR-0411); without one, the full suite gates
+# each pull request (ADR-0415). Only a person deploys production (ADR-0110).
 [cd.dev]
-about = "No dev machine yet: once a person adds its credentials to the vault, an agent writes scripts/cd/ and fills this in"
+about = "no shared target: the full suite gates each pull request (no dev machine yet: once a person adds its credentials to the vault, an agent writes scripts/cd/ and fills this in)"
 
 [cd.prod]
 about = "A push to main is the release: each instance installs it when a superadmin chooses Update now (Settings, Instance). Rollback (ADR-0264): an update whose new build fails to start (its health check) restores the previous binary and database by itself; otherwise revert on dev and promote again"
