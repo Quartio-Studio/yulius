@@ -412,10 +412,9 @@ pub struct TaskRecord {
 }
 
 impl TaskRecord {
-    /// Whether Yulius follows a goal for this task: a goal-mode task of Claude Code. A Codex or
-    /// Antigravity task in goal mode gets its request as its first message and its turns end it,
-    /// as a prompt-mode task's do (SPEC-503, SPEC-505): its launch sets no `/goal` and its Stop is
-    /// not held as a goal's.
+    /// Whether Yulius launches and follows the native Claude goal evaluator. Codex and
+    /// Antigravity receive the request as their first message. All goal-mode tasks use the
+    /// shared Stop gate for unfinished declared work (SPEC-589).
     #[must_use]
     pub fn follows_goal(&self) -> bool {
         self.mode == TaskMode::Goal && self.harness == yulius_domain::harness::Harness::ClaudeCode

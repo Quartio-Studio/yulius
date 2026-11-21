@@ -35,6 +35,13 @@ const MAX_DOC_BYTES: u64 = 256 * 1024;
 /// Largest number of decision records read.
 const MAX_DECISION_FILES: usize = 200;
 
+/// The action owned by a turn boundary. A handoff suppresses the optional step nudge too.
+enum StopGate {
+    Pass,
+    Handoff,
+    Continue(String),
+}
+
 /// Joins a repository-relative path, refusing absolute paths and `..` components.
 fn repo_path(root: &Path, relative: &str) -> Option<PathBuf> {
     let rel = Path::new(relative);
@@ -993,23 +1000,67 @@ impl App {
         Ok(HookReply::Output(HookOutput::default()))
     }
 
-    /// The discipline gate's reasons at a turn end (the spec gate).
-    async fn stop_reasons(&self, task: &TaskRecord) -> AppResult<Vec<String>> {
-        Ok(self.spec_gate(task).await?.into_iter().collect())
+    /// A clean goal turn continues declared work unless another actor already owns the next action.
+    async fn stop_gate(&self, task: &TaskRecord, reported_background: bool) -> AppResult<StopGate> {
+        if let Some(reason) = self.spec_gate(task).await? {
+            return Ok(StopGate::Continue(reason));
+        }
+        if task.mode != TaskMode::Goal {
+            return Ok(StopGate::Pass);
+        }
+        if reported_background || self.goal_is_open(&task.id) {
+            return Ok(StopGate::Handoff);
+        }
+        let store = &self.deps.store;
+        let steps = crate::discipline::step_states(&store.steps(&task.id).await?, &[]);
+        let reason = if let Some((_, next)) = yulius_domain::steps::ahead(&steps) {
+            format!(
+                "Continue the authorized goal. The next unfinished step is \"{next}\". Record the evidence and update the step when its work is complete."
+            )
+        } else if self.read_spec_unfinished(&task.id).await? {
+            "Continue the authorized goal. The spec still declares unfinished work. Check its acceptance criteria, complete any remaining work and record the evidence.".to_owned()
+        } else {
+            return Ok(StopGate::Pass);
+        };
+
+        if task.activity == Some(Activity::NeedsAttention)
+            || store.task_needs_you(&task.id).await?.is_some()
+            || store.pending_hold(&task.id).await?.is_some()
+            || self
+                .browser_tab_requests(&task.sandbox_id)
+                .await
+                .contains(task.id.as_str())
+            || self.is_paused(task).await
+            || self.active_waits_of(&task.id) > 0
+        {
+            return Ok(StopGate::Handoff);
+        }
+        // These observations share a small part of the five-second hook deadline. Only
+        // confirmed work owns a wake. An unavailable probe can safely continue this same
+        // turn; the separate rotation decision still requires proof before moving a run.
+        let budget = std::time::Duration::from_millis(750);
+        let (background, delivery) = tokio::join!(
+            tokio::time::timeout(budget, self.background_or_wait_now(&task.id)),
+            tokio::time::timeout(budget, self.pr_news_due(task))
+        );
+        Ok(
+            if matches!(background, Ok(Some(true))) || delivery.unwrap_or(false) {
+                StopGate::Handoff
+            } else {
+                StopGate::Continue(reason)
+            },
+        )
     }
 
-    /// The prompt for a session resumed on another subscription after a held turn: the gate's
-    /// reasons when the gate would have kept the agent working, else none (a goal-mode session
-    /// gets its goal again when it launches).
+    /// What a session resumed on another subscription should do after a held turn.
     pub(crate) async fn stop_continuation(&self, task: &TaskRecord) -> Option<String> {
         if task.gate_blocks >= MAX_GATE_BLOCKS {
             return None;
         }
-        let reasons = self.stop_reasons(task).await.ok()?;
-        if reasons.is_empty() {
-            return None;
+        match self.stop_gate(task, false).await.ok()? {
+            StopGate::Continue(reason) => Some(reason),
+            StopGate::Pass | StopGate::Handoff => None,
         }
-        Some(reasons.join("\n\n"))
     }
 
     async fn hook_stop(
@@ -1075,12 +1126,20 @@ impl App {
         if let Err(err) = self.sync_steps_from_spec(task).await {
             tracing::warn!(error = %err, task = %task.id, "step sync from the spec failed");
         }
-        let reasons = if failed {
-            Vec::new()
+        let gate = if failed {
+            StopGate::Handoff
         } else {
-            self.stop_reasons(task).await?
+            self.stop_gate(task, reported_background).await?
         };
-        let gate_continues = !reasons.is_empty() && task.gate_blocks < MAX_GATE_BLOCKS;
+        let can_nudge = matches!(gate, StopGate::Pass);
+        let reason = match gate {
+            StopGate::Continue(reason) => Some(reason),
+            StopGate::Pass | StopGate::Handoff => None,
+        };
+        let continuation = reason
+            .as_ref()
+            .filter(|_| task.gate_blocks < MAX_GATE_BLOCKS);
+        let gate_continues = continuation.is_some();
         // Would the agent work on after this boundary (a gate block, or its goal)?
         let continues = gate_continues || (task.follows_goal() && !failed);
 
@@ -1140,7 +1199,7 @@ impl App {
                     {
                         later();
                     } else {
-                        let continuation = gate_continues.then(|| reasons.join("\n\n"));
+                        let continuation = continuation.cloned();
                         let app = Arc::clone(self);
                         let task_id = task.id.clone();
                         tokio::spawn(async move {
@@ -1223,7 +1282,7 @@ impl App {
             && let Some(version) = self.claude_code_move_due(&task.id, &ctx.attempt.id).await
             && !self.keeps_own_goal(task)
         {
-            let continuation = gate_continues.then(|| reasons.join("\n\n"));
+            let continuation = continuation.cloned();
             let app = Arc::clone(self);
             let task_id = task.id.clone();
             let run = (ctx.attempt.id.clone(), current.clone());
@@ -1249,7 +1308,7 @@ impl App {
             (Decision::Switch { account }, reason) => {
                 // The agent waits here while it moves; the resumed session gets the gate's
                 // reasons as its prompt when the gate would have kept it working.
-                let continuation = gate_continues.then(|| reasons.join("\n\n"));
+                let continuation = continuation.cloned();
                 let app = Arc::clone(self);
                 let task_id = task.id.clone();
                 let reason = format!("{reason:?}");
@@ -1274,14 +1333,14 @@ impl App {
 
         // A clean turn end on the same subscription may carry one gentle step nudge (STP-008).
         // It is not a gate block: it is given once and never escalates to "needs attention".
-        if reasons.is_empty() && stays && !failed && !reported_background {
+        if can_nudge && stays && !reported_background {
             match self.take_turn_end_nudge(task).await {
                 Ok(Some(text)) => return Ok(HookReply::Output(HookOutput::block(text))),
                 Ok(None) => {}
                 Err(err) => tracing::warn!(error = %err, task = %task.id, "step nudge unavailable"),
             }
         }
-        if reasons.is_empty() {
+        let Some(reason) = reason else {
             if task.gate_blocks != 0 {
                 let update = TaskFieldUpdate {
                     gate_blocks: Some(0),
@@ -1337,12 +1396,12 @@ impl App {
             // came while a goal is open (SPEC-079 BGW-005).
             self.clean_stop(task).await?;
             return Ok(HookReply::Output(HookOutput::default()));
-        }
+        };
 
         if task.gate_blocks >= MAX_GATE_BLOCKS {
             let stopped = format!(
                 "stopped {MAX_GATE_BLOCKS} times without fixing: {}",
-                reasons.join(" ").chars().take(300).collect::<String>()
+                reason.chars().take(300).collect::<String>()
             );
             // Said by the task itself, for whoever opens it later (SPEC-472), and in its
             // terminal for the viewers there now.
@@ -1365,7 +1424,7 @@ impl App {
         };
         store.update_task(&task.id, &update, self.now()).await?;
         self.publish_task(&task.id).await;
-        Ok(HookReply::Output(HookOutput::block(reasons.join("\n\n"))))
+        Ok(HookReply::Output(HookOutput::block(reason)))
     }
 
     /// A turn of a run without hooks ended (seen in its transcript): run a pending proactive

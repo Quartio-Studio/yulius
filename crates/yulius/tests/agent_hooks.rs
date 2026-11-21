@@ -2071,25 +2071,30 @@ async fn stop_of(
     Ok(reply.body)
 }
 
+async fn record_verification_merge(f: &Fixture) -> TestResult {
+    use yulius_domain::delivery::DeliveryStage;
+    f.h.app
+        .deps
+        .store
+        .transition_delivery(
+            &DeliveryStage::None,
+            &yulius_app::delivery::DeliveryRecord {
+                task_id: f.task.clone(),
+                stage: DeliveryStage::MergedIntegration,
+                pr_number: Some(17),
+                updated_at: f.h.app.now(),
+            },
+        )
+        .await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn goal_stop_continues_verification_after_merge_without_a_person() -> TestResult {
-    use yulius_domain::delivery::DeliveryStage;
     let title = "Verify the merged revision on dev";
     for agent_kind in Agent::ALL {
         let f = task_with_open_step(agent_kind, TaskMode::Goal, title).await?;
-        f.h.app
-            .deps
-            .store
-            .transition_delivery(
-                &DeliveryStage::None,
-                &yulius_app::delivery::DeliveryRecord {
-                    task_id: f.task.clone(),
-                    stage: DeliveryStage::MergedIntegration,
-                    pr_number: Some(17),
-                    updated_at: f.h.app.now(),
-                },
-            )
-            .await?;
+        record_verification_merge(&f).await?;
         let stop = stop_of(&f, agent_kind).await?;
         let brief = task_brief(&f).await?;
         assert_eq!(stop["decision"], "block", "{agent_kind:?} settled: {brief}");
@@ -2179,6 +2184,35 @@ async fn goal_stop_yields_to_a_live_yulius_wait_then_continues_the_step() -> Tes
 }
 
 #[tokio::test]
+async fn goal_stop_yields_to_a_pending_merge_notice() -> TestResult {
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify checkout").await?;
+    std::fs::write(
+        f.h.app
+            .config
+            .data_dir
+            .join(yulius_app::pr_watch::PR_NOTICES_FILE),
+        serde_json::to_vec(&json!({f.task.as_str(): {"pr":17, "keys": {}}}))?,
+    )?;
+    record_verification_merge(&f).await?;
+    assert!(stop_of(&f, Agent::Codex).await?["decision"].is_null());
+    assert_eq!(task_brief(&f).await?["shows"], "working");
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_after_an_antigravity_model_error_ends_the_turn() -> TestResult {
+    let f = task_with_open_step(Agent::Antigravity, TaskMode::Goal, "Verify checkout").await?;
+    agy_event(
+        &f,
+        "Stop",
+        json!({"fully_idle": true, "error": "Model unavailable"}),
+    )
+    .await?;
+    assert_eq!(activity(&f).await?, Some(Activity::Waiting));
+    Ok(())
+}
+
+#[tokio::test]
 async fn goal_stop_preserves_a_request_for_an_external_permission() -> TestResult {
     let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Check the build").await?;
     let action = "Grant the build account access to staging";
@@ -2187,6 +2221,29 @@ async fn goal_stop_preserves_a_request_for_an_external_permission() -> TestResul
     let brief = task_brief(&f).await?;
     assert_eq!(brief["shows"], "needs_you");
     assert_eq!(brief["needs_you"]["action"], action);
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_without_background_probe_evidence_continues_in_place() -> TestResult {
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify checkout").await?;
+    // The fixture host cannot read processes. A live PID sends the Stop through that probe.
+    assert!(
+        f.h.app
+            .deps
+            .store
+            .transition_attempt(
+                &AttemptId::parse("at1")?,
+                AttemptState::Live,
+                &yulius_app::ports::store::AttemptUpdate {
+                    child_pid: Some(41),
+                    ..Default::default()
+                },
+            )
+            .await?
+    );
+    assert_eq!(stop_of(&f, Agent::Codex).await?["decision"], "block");
+    assert_eq!(task_brief(&f).await?["shows"], "working");
     Ok(())
 }
 

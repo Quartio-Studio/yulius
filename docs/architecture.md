@@ -3927,7 +3927,8 @@ hands on alone leaves one end later
 ```mermaid
 flowchart LR
     prompt["prompt / wake-up\n(hook, user line)"] --> working
-    stop["clean Stop hook"] --> idle["waiting / done"]
+    stop["clean Stop hook"] -->|"turn may settle"| idle["waiting / done"]
+    stop -->|"goal has actionable plan or spec work, within retry bound"| working
     turn["turn_duration:\npending background agents"] --> bg["+ background work\n(shown Working)"]
     launch["transcript: monitor started,\nagent launched (until it ends)"] --> bg
     idle --> bg
@@ -3938,6 +3939,8 @@ flowchart LR
     own["Yulius's own flag: the gate gave up,\nno goal, a full context, a secret\nor browser request, …"] -->|"reason: yulius,\nproblem, to do, page"| attention
     attention -.->|"a notice's flag:\nagent works on"| working
 ```
+
+A goal task with unfinished declared work receives a bounded continuation at Stop. The native goal evaluator, a person with a pending decision, background work or pending delivery news can own the next turn. [ADR-0428](decisions/0428-a-goal-turn-continues-its-declared-work.md)
 
 A `needs_attention` flag keeps its reason with the task
 ([SPEC-472](../.ai/specs/SPEC-472-hey-i-have-a-bug-in-produt-sanbox-this-h.md),
