@@ -457,7 +457,11 @@ function createApp(root, transport) {
         updateTitle();
         // Another overlapping list read can recover the cold task route after its own failed.
         if (currentRoute?.name === 'task' && currentSandbox?.id === sid &&
-            centerView?.key === `tasks-error:${sid}:${currentRoute.number}` && store.state.tasks.has(sid)) refreshRoute();
+            centerView?.key === `tasks-error:${sid}:${currentRoute.number}` && store.state.tasks.has(sid)) {
+          // Leave Retry before starting the lookup. Another list can arrive while an archived task loads.
+          setCenter(`tasks-loading:${sid}:${currentRoute.number}`, () => ({ el: placeholder('Loading the task…', 'loading') }));
+          refreshRoute();
+        }
       }),
       // `resync` follows lost events and every sandbox change (import, onboarding, removal).
       store.on('resync', async () => {

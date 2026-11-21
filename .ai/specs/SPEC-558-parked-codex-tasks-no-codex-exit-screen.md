@@ -68,6 +68,8 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- Independent review of CI-passing head `36522249b` held the first archive lookup across two successful active-list responses after one Retry click. The second lookup failed, and the task page incorrectly reported an existing archived task missing. The Chromium regression failed on that head and passed after the page left the error state before starting recovery. The automatic, manual and overlapping recovery tests all passed and the archive regression confirmed one lookup.
+
 - Yulius CI run `567b17d4-ffa7-4377-8fc7-df2b24d67674` on `85f3cd6e7` reported the same two onboarding failures as the controlled local comparison. Both missed the sidebar title “Read again”. Both pass with full-list ordering isolated from task events. A further review found manual Retry starting two lookups for an archived task and allowing the second lookup’s failure to hide it. The regression failed on `04c04dcdf` and passed when the successful list notification became the sole route refresh. Both onboarding regressions, cold-page recovery and the archived Retry passed together.
 
 - The narrowed full-list and cold-route implementation passed 79 Chromium tests across parked tasks, onboarding, PRs, task Done and archive. Independent review exercised all 48 success, failure and completion orderings of three overlapping list reads. Its remaining fixture finding reproduced a held mock list returning HTTP 200 after cancellation. That regression, the cold task route and the browser reconnect test passed after the fixture used the normal abort handler. Repository quick checks passed, the Rust mutation command found no changed Rust code and Vidoc was disabled.
