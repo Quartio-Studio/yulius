@@ -4766,6 +4766,7 @@ impl App {
                 .await
                 .contains(task.id.as_str()),
         } || store.task_needs_you(&task.id).await?.is_some();
+        facts.staging_wait = store.task_staging_wait(&task.id).await?;
         facts.held_prompt = store.pending_hold(&task.id).await?.is_some();
         let steps = store.steps(&task.id).await?;
         facts.plan_open = crate::sandboxes::plan_open(&steps);
@@ -4847,6 +4848,13 @@ impl App {
         }))
     }
 
+    /// An armed merge or an untold staging request still needs the task's session.
+    /// A failed store read defers completion until the outstanding work can be checked.
+    async fn delivery_will_wake_task(&self, task: &TaskId) -> bool {
+        self.merge_is_armed(task)
+            || !matches!(self.deps.store.task_staging_wait(task).await, Ok(None))
+    }
+
     /// The part of [`App::task_is_done`] that needs no GitHub call: the turn ended, no background
     /// shell runs, and the goal is achieved or no declared work is left with the change merged. The
     /// session limit counts tasks by it (SES-101), many times a minute.
@@ -4859,7 +4867,7 @@ impl App {
             return false;
         }
         // Yulius merges it and tells its agent, an achieved goal's too (SPEC-487 CHN-001).
-        if self.merge_is_armed(&task.id) {
+        if self.delivery_will_wake_task(&task.id).await {
             return false;
         }
         if task.activity == Some(Activity::Done) {
@@ -4906,7 +4914,7 @@ impl App {
             return false;
         }
         // Yulius merges it and tells its agent, an achieved goal's too (SPEC-487 CHN-001).
-        if running && self.merge_is_armed(&task.id) {
+        if running && self.delivery_will_wake_task(&task.id).await {
             return false;
         }
         if parked {
@@ -5174,13 +5182,21 @@ impl App {
             let gate = self
                 .ci_gate_for_pull(&sandbox, merged.number, &merged.head)
                 .await;
-            let note = crate::agent_wait::merge_receipt_with_checks(
+            let ahead = steps_ahead_note(&steps);
+            let staging = self
+                .green_merge_staging_note(&task, &sandbox, merged.number, gate)
+                .await;
+            let receipt = crate::agent_wait::merge_receipt_with_checks(
                 &merged.receipt,
                 &delivery_profile(&sandbox).integration_branch,
                 gate,
-                true,
-                &steps_ahead_note(&steps),
+                staging.is_none(),
+                &ahead,
             );
+            let note = match staging {
+                Some(note) => format!("{receipt} {note}{ahead}"),
+                None => receipt,
+            };
             self.settle_armed(&task, Some((&merged.head, note))).await;
         }
         Ok(merged.view)
@@ -6886,7 +6902,7 @@ impl App {
         let staging = if selected_sha.is_some() || before.is_some() || run_id.is_some() {
             None
         } else {
-            self.staging_note(&task, &sandbox).await
+            self.staging_note(&task, &sandbox, None).await
         };
         let evidence = if selected_sha.is_some() || before.is_some() || run_id.is_some() {
             let sha = selected_sha

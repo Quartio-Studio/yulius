@@ -62,8 +62,8 @@ flowchart LR
 
 A Codex task runs `codex --no-daemon` in its worktree with `CODEX_HOME=<sandbox>/codex/<account>`,
 using its chosen model or `-m gpt-6.2-astra`. Each new or resumed process receives the task's
-chosen effort or the model default. Astra 6.2 gets `-c model_reasoning_effort="xhigh"` and other
-Codex models get `high`. [Decision 0398](decisions/0398-astra-6-2-inherits-extra-high-effort.md)
+chosen effort or `-c model_reasoning_effort="high"` for every model.
+[Decision 0444](decisions/0444-codex-tasks-inherit-high-effort-on-every-model.md)
 For a ChatGPT Pro 500 sign-in, the launch planner writes `service_tier = "ultrafast"` as the
 home default ([decision 0375](decisions/0375-codex-selects-ultrafast-for-pro-500.md)).
 The supervisor writes the home's `auth.json` (the account's sealed credential), `config.toml` and
@@ -129,7 +129,10 @@ runs the `agy` TUI on a Google account, on its own model and effort or else `--m
 a Gemini API key), `config/hooks.json`, `config/mcp_config.json` and, for a Google sign-in, the
 CLI's token file. Its `antigravity-cli/brain` and `conversations` link to
 `<sandbox>/antigravity/shared`, so a conversation resumes on any Antigravity account by
-`--conversation <id>`. A contained run binds that `.gemini` over the sandbox home's (the agent's
+`--conversation <id>`. Without a prompt or continuation, a resumed Antigravity process starts
+with its saved idle activity or Waiting. The next turn follows native events. [ADR-0445](decisions/0445-antigravity-resume-activity-follows-its-launch-prompt.md)
+
+A contained run binds that `.gemini` over the sandbox home's (the agent's
 shell keeps the sandbox's `HOME`); an uncontained one sets `HOME` to the run's Antigravity home.
 `yulius hook antigravity <event>` translates its hooks (SessionStart, the first model call of a
 turn, Stop, `run_command`) to Yulius's; its transcript gives prompts, tokens and limits, and
@@ -3242,6 +3245,10 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
 - **Failure.** A failed deploy is restored: each part's current kept release is redeployed and
   verified once (`CdRequest::Restore`, a rollback run).
 - **Told and shown.**
+  - An idle task with an untold staging request shows which part of delivery it awaits. The
+    staging queue wakes a running or parked agent when that request is decided. Each stage change
+    updates the task view. If the summary exceeds its budget, sandbox viewers receive a resync.
+    [ADR-0437](decisions/0437-the-staging-request-keeps-its-task-waiting-until-the-outcome-is-delivered.md)
   - `tell_staging_outcomes` types each task's outcome into its session once.
   - `delivery_status` tells a merged task its request is due, then where it stands
     (`staging_note`).

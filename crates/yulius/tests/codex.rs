@@ -1896,6 +1896,15 @@ fn a_codex_start_without_a_codex_cli_says_why() -> TestResult {
 /// marked; Codex does not go on by itself, so the resume asks it to.
 #[test]
 fn a_codex_task_at_its_limit_moves_to_another_codex_account() -> TestResult {
+    codex_rotation_uses_task_effort(None)
+}
+
+#[test]
+fn a_codex_rotation_uses_the_max_effort_chosen_after_launch() -> TestResult {
+    codex_rotation_uses_task_effort(Some("max"))
+}
+
+fn codex_rotation_uses_task_effort(effort_override: Option<&str>) -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
     let rt = runtime()?;
@@ -1916,10 +1925,11 @@ fn a_codex_task_at_its_limit_moves_to_another_codex_account() -> TestResult {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
-        // A running turn keeps its launch. The next process takes the owner's High override.
-        let ctx = admin_ctx(&app, &user).await?;
-        app.set_task_model(&ctx, id.as_str(), None, Some("high"))
-            .await?;
+        if let Some(effort) = effort_override {
+            let ctx = admin_ctx(&app, &user).await?;
+            app.set_task_model(&ctx, id.as_str(), None, Some(effort))
+                .await?;
+        }
         app.send_input(&id, b"hello\r").await?;
         wait_for(
             "the switch to another account",
@@ -1948,15 +1958,12 @@ fn a_codex_task_at_its_limit_moves_to_another_codex_account() -> TestResult {
         assert!(
             initial
                 .lines()
-                .any(|line| line == r#"-c model_reasoning_effort="xhigh""#),
+                .any(|line| line == r#"-c model_reasoning_effort="high""#),
             "{initial}"
         );
-        assert!(
-            launch
-                .lines()
-                .any(|line| line == r#"-c model_reasoning_effort="high""#),
-            "{launch}"
-        );
+        let resumed_effort = effort_override.unwrap_or("high");
+        let effort_arg = format!(r#"-c model_reasoning_effort="{resumed_effort}""#);
+        assert!(launch.lines().any(|line| line == effort_arg), "{launch}");
         assert!(
             launch.contains("Resume {") && launch.contains("continue_interrupted: true"),
             "{launch}"
@@ -2590,21 +2597,22 @@ fn a_codex_goal_task_gets_its_request_as_its_first_message() -> TestResult {
         assert!(
             launch
                 .lines()
-                .any(|line| line == r#"-c model_reasoning_effort="xhigh""#),
+                .any(|line| line == r#"-c model_reasoning_effort="high""#),
             "{launch}"
         );
         assert!(!launch.contains("/goal"), "{launch}");
         for marker in ["launch-goal-pending", "typed-goal-pending"] {
             assert!(!run_dir.join(marker).exists(), "{marker}");
         }
-        // Without a model or effort of its own it runs GPT-6.2 Astra at extra high effort, recorded for
+        // Without a model or effort of its own it runs GPT-6.2 Astra at high effort, recorded for
         // the run and named for the task, never a Claude model (SPEC-511 CXD-002, CDX-013).
         assert_eq!(attempt.model.as_deref(), Some("gpt-6.2-astra"));
         let ctx = admin_ctx(&app, &user).await?;
         let detail = app.task_detail(&ctx, id.as_str()).await?;
         assert_eq!(detail.model, "gpt-6.2-astra");
         assert!(detail.model_default);
-        assert_eq!(detail.effort.as_deref(), Some("xhigh"));
+        assert_eq!(detail.effort.as_deref(), Some("high"));
+        assert!(detail.effort_default);
         // The pool weighs the task by the model its run was launched with, so a subscription
         // it is at the limit of is left out (SPEC-511 review): one family for both.
         let record = task(&app, &id).await?;
