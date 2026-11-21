@@ -1,6 +1,6 @@
 ---
 yulius-task: a7e07e4a-e6e5-4986-bcd4-becfa2aa104b
-status: done
+status: in-progress
 ---
 
 # SPEC-608. Preserve task state during a GitHub outage
@@ -25,6 +25,9 @@ Task #592 reports two GitHub App quota resets on 21 November. During the second 
 - [x] Expose the GitHub App reset time in instance status
 - [x] Show the shared wait in Status and task lists
 - [x] Review and deliver the verified fix to dev
+- [x] Verify task attention during a blocked browser lookup and overlapping Git timeouts
+- [ ] Verify the other failures from the merged revision against their owning fixes
+- [ ] Deliver the reviewed fix forward and request staging for the new revision
 
 ## Acceptance criteria
 
@@ -51,3 +54,4 @@ Use the existing delivery and pull observation paths for display and keep the qu
 - The third review found two partial-read cases. Both regressions failed against the previous implementation. A new head with one successful check source and one unavailable source displayed `success` instead of `unknown`. After GitHub confirmed a conflict, the next unavailable overview lost it. The task display now keeps positive conflict evidence independently of checks, consults matching local CI on a new head and leaves the sandbox’s raw GitHub response intact.
 - Independent review approved commit `09f98caa9` after all findings were addressed. The scoped nextest run passed 73 of 73 on that commit. A separate run of the GitHub client, CI status publication and production-branch tests passed 49 of 49. The delivery record for task #592 supplies the exact Yulius CI result and merged revision. Live production quota exhaustion was simulated with a refusing GitHub fixture.
 - When integrating PR #1657, the Rust test build caught the new required `webhook_secret` field in the rate-limit fixture. The fixture uses `None` because it exercises outbound requests. Both projects’ product notes survived the documentation conflict.
+- Staging gate `6f7921e2-c888-4098-a3e0-90b5008634e7` reported two deadline tests that still expected verification timeouts to create attention. Both failed locally with that expectation. The browser deadline now checks the recorded open PR and the absence of a new notice. The worker test seeds a real PR failure and checks its notice across two batches of twelve overlapping reads and while the workers drain. After verification resumes, the notice clears on green. All 12 scoped parked-detail and outage tests passed.
