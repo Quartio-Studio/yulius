@@ -56,7 +56,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Recover the recorded singleton decision and its replacement arm
 - [x] Preserve the ordinary armed merge outcome after a person merges through HTTP
 - [x] Keep the live owner’s merge notice across a queue decision
-- [ ] Verify restored merge requests and their train positions
+- [x] Verify restored merge requests and their train positions
 - [ ] Verify restored arms and deliver current ordinary CI and train notices to the owner
 - [ ] Report the active singleton and replay its recorded failure for the original owner
 - [ ] Verify candidate status before parking, showing Done or resuming a parked owner
@@ -99,6 +99,8 @@ The queue writes the accepted singleton to the owner’s completed merge wait be
 When the watcher sees an open PR during an active queue decision or its slot changes during the read, it supplies the PR number to the normal notice bookkeeping and defers events, check-ins and stalls for that pass. A subsequent recorded merge remains eligible for delivery once to the same task.
 
 ## Evidence
+
+- Independent review approved `64116f9f69c26b216db2625e92175062082a8c7a` for restored merge requests and train positions. All 284 scoped parking, delivery, PR-watch and queue tests passed. The reviewer independently ran the real retitle-502 regression. Scoped Clippy, repository contracts, formatting and spec validation passed. Vidoc was disabled. The 24-target mutation campaign passed its unmutated baseline and was running at approval. The last review fix changed tests and documentation and had no Rust product mutations.
 
 - The train’s second wait occurs after GitHub shows the pushed head but returns HTTP 502 for a necessary PR title update. With only that return reverted to a plain wait, the real queue fixture received the 502 and found a null verified head. The fixture retains the arm, reads its verified train position and releases the upstream failure before completing the merge.
 
