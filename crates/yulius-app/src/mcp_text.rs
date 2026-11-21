@@ -754,6 +754,10 @@ fn delivery_status(value: &Value) -> Option<String> {
             );
         }
     }
+    // A merged task's staging request (SPEC-575 MFS-013).
+    if let Some(staging) = text(value, "staging") {
+        push_line(&mut out, staging);
+    }
     let problems: Vec<&str> = value
         .get("spec_problems")
         .and_then(Value::as_array)

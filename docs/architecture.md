@@ -1633,6 +1633,8 @@ person must act first (a prompt on screen, `needs_you`) or may have a draft in t
 
 The watch remembers an open PR when it first observes its number. While the live queue decides the merge, or if its activation changes during a read, the watch defers advice and keeps that observation for the eventual merge notice.
 
+For a live merge request, the watcher reads ordinary CI at its armed head using the same owner preference as the queue. An actionable ordinary failure takes precedence over train advice. The watcher ties a train notice to the request’s activation, PR, head and current member list. When armed advice is due, it confirms the open PR’s hosted head within five seconds, then rechecks the delivery, CI results and any decision reserved for a person, including a held scope change. A local publication lookup precedes hosted verification. Both the paste and Enter target the observed attempt, so a subscription switch leaves obsolete advice unheard. An already-reported failed train waits for the queue’s next decision. If the facts change, the next pass can deliver the current notice.
+
 The first paste of a live PR notice needs immediate access to the session writer. If another input or resize holds it, the watcher keeps the event pending for its next pass.
 
 Each event has a key, typed once and kept in `<data>/pr-notices.json`. A session idle for 45

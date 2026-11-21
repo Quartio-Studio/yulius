@@ -29,6 +29,8 @@ A failed candidate narrowed to one PR belongs to that PR’s merge decision. The
   with the next step: a red run at its head or of a merge candidate holding it (jobs, failing
   tests, where to read the log), a conflict with the integration branch, how its armed merge ended,
   its merge, and why a green head is not merging (with "Hands off" while a candidate holds it).
+Use the queue’s owner-preferred ordinary CI result at the armed head. A shared ordinary failure can reach its owner even when the train registry or candidate run cannot be read. Verify a candidate against the active request and its current members because the queue can reuse a CI run for the same tree. Use a bounded hosted PR read for an armed notice that is due. The author’s remote-tracking ref can lag a push from another clone. Recheck a held scope decision before dispatch and leave deferred notices unheard.
+
 - The first paste of a live PR notice takes the writer only if it is free. A waiting paste could answer a decision that appeared during a backpressured resize. The existing watch retries the unheard event and checks the owner again.
 - Each event is typed once, by key, kept in `<data>/pr-notices.json`.
 - A session quiet for 45 minutes with an open pull request gets a check-in; a pull request with no

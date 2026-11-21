@@ -27,6 +27,9 @@ use crate::support::TestResult;
 use crate::support::agents::FakeAgentOptions;
 use crate::task_message::superagent;
 
+mod armed_notice;
+mod candidate;
+
 type Error = Box<dyn std::error::Error>;
 
 /// A hooked app whose idle sessions park at once (`park_after_ms` 1) under a limit of `slots`.
@@ -39,11 +42,21 @@ async fn app_with_pulls(
     slots: u32,
     park_after_ms: u64,
 ) -> Result<(Arc<App>, Arc<crate::support::FakeGitHub>), Error> {
+    configured_app_with_pulls(data, slots, park_after_ms, |_| {}).await
+}
+
+async fn configured_app_with_pulls(
+    data: &Path,
+    slots: u32,
+    park_after_ms: u64,
+    configure: impl FnOnce(&mut yulius_app::context::AppConfig),
+) -> Result<(Arc<App>, Arc<crate::support::FakeGitHub>), Error> {
     app_with_pulls_and_clock(
         data,
         slots,
         park_after_ms,
         Arc::new(yulius::wiring::clock::SystemClock),
+        configure,
     )
     .await
 }
@@ -53,6 +66,7 @@ async fn app_with_pulls_and_clock(
     slots: u32,
     park_after_ms: u64,
     clock: Arc<dyn yulius_app::ports::Clock>,
+    configure: impl FnOnce(&mut yulius_app::context::AppConfig),
 ) -> Result<(Arc<App>, Arc<crate::support::FakeGitHub>), Error> {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let agent = FakeAgentOptions {
@@ -70,6 +84,7 @@ async fn app_with_pulls_and_clock(
         |config| {
             config.max_live_sessions = slots;
             config.park_after_ms = park_after_ms;
+            configure(config);
         },
     )
     .await?;
@@ -192,7 +207,7 @@ async fn past_the_grace(app: &App, id: &TaskId) -> TestResult {
 }
 
 /// The task's agent asks its person to choose (`needs_you`).
-async fn ask(app: &App, id: &TaskId) -> TestResult {
+pub(crate) async fn ask(app: &App, id: &TaskId) -> TestResult {
     let asked = NeedsYouRecord {
         action: "Choose the colour".into(),
         happened: None,
@@ -3079,7 +3094,13 @@ fn a_saved_arm_arriving_during_a_free_watch_defers_the_check_in() -> TestResult 
     first_watch_during_queue_decision(QueueWatch::SavedDuringRead, None)
 }
 
+#[test]
+fn an_armed_watch_rechecks_a_merge_recorded_before_dispatch() -> TestResult {
+    first_watch_during_queue_decision(QueueWatch::RecordedMergeDuringRead, None)
+}
+
 enum QueueWatch {
+    RecordedMergeDuringRead,
     Restoring,
     SavedOwner,
     SavedPeer,
@@ -3100,12 +3121,12 @@ fn first_watch_during_queue_decision(case: QueueWatch, previously_seen: Option<u
         const PRIOR_OBSERVATION: i64 = 1_800_000_000_000;
         const NEXT_OBSERVATION: i64 = PRIOR_OBSERVATION + 17_000;
         let clock = Arc::new(crate::support::TestClock(PRIOR_OBSERVATION.into()));
-        let (app, github) = app_with_pulls_and_clock(&data, 8, 1, clock.clone()).await?;
+        let (app, github) = app_with_pulls_and_clock(&data, 8, 1, clock.clone(), |_| {}).await?;
         let (id, caller) = answered(&app, &data).await?;
         let task = app.deps.store.task(&id).await?.ok_or("owner")?;
         let worktree = Path::new(task.worktree_path.as_deref().ok_or("checkout")?);
         let head = crate::pr_watch::git(worktree, &["rev-parse", "HEAD"])?;
-        open_pull_at(&app, &github, &id, 1481, &head).await?;
+        open_pull_at(&app, &github, &id, previously_seen.unwrap_or(1481), &head).await?;
         let open = DeliveryRecord {
             task_id: id.clone(),
             stage: DeliveryStage::PrOpen,
@@ -3127,7 +3148,30 @@ fn first_watch_during_queue_decision(case: QueueWatch, previously_seen: Option<u
         let saved_arm = serde_json::to_vec(
             &json!([{"task":id.as_str(),"head":head,"summary":"reviewed","armed_at":30}]),
         )?;
-        if matches!(case, QueueWatch::Restoring | QueueWatch::SavedOwner | QueueWatch::SavedPeer | QueueWatch::SavedDuringRead) {
+        if matches!(case, QueueWatch::RecordedMergeDuringRead) {
+            std::fs::write(&arms, &saved_arm)?;
+            app.restore_armed_merges().await;
+            let (read, release) = pause_watch_or_queue(Point::LivePrFactsRead, &id);
+            let watcher = Arc::clone(&app);
+            let pass = tokio::spawn(async move { watcher.watch_prs(&due).await });
+            tokio::time::timeout(Duration::from_secs(10), read.notified()).await?;
+            let merged = DeliveryRecord {
+                stage: DeliveryStage::MergedIntegration,
+                ..open.clone()
+            };
+            assert!(
+                app.deps
+                    .store
+                    .transition_delivery(&DeliveryStage::PrOpen, &merged)
+                    .await?
+            );
+            release.notify_one();
+            let news = pass.await?;
+            assert!(
+                news.is_empty(),
+                "advice overtaken by recorded merge: {news:?}"
+            );
+        } else if matches!(case, QueueWatch::Restoring | QueueWatch::SavedOwner | QueueWatch::SavedPeer | QueueWatch::SavedDuringRead) {
             std::fs::write(&arms, b"[")?;
             app.restore_armed_merges().await;
             let first = match case {
@@ -3179,11 +3223,14 @@ fn first_watch_during_queue_decision(case: QueueWatch, previously_seen: Option<u
             *github.pulls.lock().map_err(|_| "pull registry")? = pulls;
             release.notify_one();
             let outdated = pass.await?;
-            let fresh = app.watch_prs(&WatchBounds::default()).await;
             assert!(
                 outdated.is_empty(),
                 "advice prepared before the retry: {outdated:?}"
             );
+            let deferred: serde_json::Value = serde_json::from_slice(&std::fs::read(&notices)?)?;
+            assert_eq!(deferred[id.as_str()]["pr"], 1481);
+            assert_eq!(deferred[id.as_str()]["progress"], "", "overtaken read recorded progress");
+            let fresh = app.watch_prs(&WatchBounds::default()).await;
             assert_eq!(fresh.len(), 1, "{fresh:?}");
             assert!(
                 fresh[0].1.contains("cannot read this task's pull request"),
@@ -3273,6 +3320,10 @@ fn first_watch_during_queue_decision(case: QueueWatch, previously_seen: Option<u
                         .transition_delivery(&DeliveryStage::PrOpen, &open)
                         .await?
                 );
+                if number != 1481 {
+                    github.pulls.lock().map_err(|_| "fixture pull")?.clear();
+                    open_pull_at(&app, &github, &id, 1481, &head).await?;
+                }
                 Some(saved[id.as_str()].clone())
             } else {
                 None
@@ -3327,7 +3378,7 @@ fn first_watch_during_queue_decision(case: QueueWatch, previously_seen: Option<u
             stage: DeliveryStage::MergedIntegration,
             ..open
         };
-        if !matches!(case, QueueWatch::MergedDuringRead) {
+        if !matches!(case, QueueWatch::MergedDuringRead | QueueWatch::RecordedMergeDuringRead) {
             assert!(
                 app.deps
                     .store

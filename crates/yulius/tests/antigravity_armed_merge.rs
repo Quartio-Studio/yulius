@@ -1162,14 +1162,20 @@ async fn union_driver_collision_with_stale_clone_reports_conflicts_false() -> Te
 #[test]
 fn stalled_armed_green_pr_delivers_live_pty_check_in_then_escalates() -> TestResult {
     use crate::pool_supervision::{
-        build_tuned, new_task, runtime, screen, seed, stop, temp, wait_for,
+        ScriptedUsage, build_served_tuned, new_task, runtime, screen, seed, stop, temp, wait_for,
     };
     use yulius_app::delivery::DeliveryRecord;
+    use yulius_app::model::Secret;
+    use yulius_app::ports::github::{GitHubPort, NewPull};
     use yulius_domain::delivery::DeliveryStage;
     use yulius_ptyhost::test_support::locate_fake_agent;
 
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
+    let github = Arc::new(crate::support::FakeGitHub::default());
+    github.set_remote(Arc::new(Origin(data.join("origin.git"))));
+    github.add_user("code-admin", 1, "admin");
+    github.set_perm("admin", "acme/pool", perms("write"));
     let agent = crate::support::agents::FakeAgentOptions {
         transcript: true,
         answers_first_message: true,
@@ -1177,8 +1183,27 @@ fn stalled_armed_green_pr_delivers_live_pty_check_in_then_escalates() -> TestRes
     };
     let rt = runtime()?;
     rt.block_on(async {
-        let app = build_tuned(&data, &fake, agent, |config| config.goal_ready_ms = 500)?;
+        let app = build_served_tuned(
+            &data,
+            &fake,
+            Arc::new(ScriptedUsage::default()),
+            agent,
+            github.clone(),
+            "http://127.0.0.1:9",
+            |config| config.goal_ready_ms = 500,
+        )?;
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
+        app.deps
+            .store
+            .init_instance("https://yulius.test", "hash")
+            .await?;
+        let cfg = json!({"app_id": 1, "slug": "yulius-test", "client_id": "c",
+            "client_secret": "s", "private_key_pem": "k", "webhook_secret": null});
+        let sealed = app.deps.crypto.seal(cfg.to_string().as_bytes())?;
+        app.deps
+            .store
+            .set_github_app(&sealed, "acme", "org")
+            .await?;
         let seed_dir = data.join("seed");
         std::fs::write(seed_dir.join("yulius.toml"), YULIUS_TOML)?;
         git(&seed_dir, &["add", "yulius.toml"])?;
@@ -1195,17 +1220,33 @@ fn stalled_armed_green_pr_delivers_live_pty_check_in_then_escalates() -> TestRes
         .await?;
 
         let task = app.deps.store.task(&id).await?.ok_or("task")?;
+        let branch = task.branch.clone().ok_or("branch")?;
         let worktree = PathBuf::from(task.worktree_path.as_deref().ok_or("worktree")?);
         std::fs::write(worktree.join("README.md"), "# armed stall line\n")?;
         git(&worktree, &["commit", "-q", "-am", "task"])?;
+        git(&worktree, &["push", "-q", "origin", &branch])?;
         let head = git(&worktree, &["rev-parse", "HEAD"])?;
+        let pull = github
+            .create_pull(
+                &Secret("token-admin".into()),
+                "acme",
+                "pool",
+                &NewPull {
+                    title: "feat: armed stall".into(),
+                    body: "test".into(),
+                    head: branch,
+                    base: "dev".into(),
+                },
+            )
+            .await?;
+        let pr = pull.number;
         // Dirty worktree so the armed green PR cannot merge.
         std::fs::write(worktree.join("wip.txt"), "uncommitted\n")?;
 
         let open = DeliveryRecord {
             task_id: id.clone(),
             stage: DeliveryStage::PrOpen,
-            pr_number: Some(9),
+            pr_number: Some(pr),
             updated_at: app.now(),
         };
         app.deps
@@ -1218,7 +1259,7 @@ fn stalled_armed_green_pr_delivers_live_pty_check_in_then_escalates() -> TestRes
         let run = CiRunRecord {
             id: "r-green".into(),
             sandbox_id: sandbox.clone(),
-            reference: CiRef::PullRequest(9),
+            reference: CiRef::PullRequest(pr),
             sha: head.clone(),
             source: GateSource::ProjectConfig,
             state: RunState::Passed,
@@ -1290,9 +1331,17 @@ fn stalled_armed_green_pr_delivers_live_pty_check_in_then_escalates() -> TestRes
                 break text;
             }
             if tokio::time::Instant::now() > check_in_deadline {
-                return Err(
-                    "expected armed-PR check-in to be typed into live session within 15s".into(),
-                );
+                let notices = std::fs::read_to_string(app.config.data_dir.join("pr-notices.json"))
+                    .unwrap_or_default();
+                let t = app.deps.store.task(&id).await?;
+                let s = match &t {
+                    Some(t) => Some(app.task_summary(t).await?),
+                    None => None,
+                };
+                return Err(format!(
+                    "expected armed-PR check-in to be typed into live session within 15s (notices={notices}, summary={s:?})"
+                )
+                .into());
             }
         };
         assert!(
@@ -1325,7 +1374,7 @@ fn stalled_armed_green_pr_delivers_live_pty_check_in_then_escalates() -> TestRes
             .as_ref()
             .ok_or("expected Needs You escalation after unanswered check-in")?;
         assert!(
-            notice.happened.contains("#9")
+            notice.happened.contains(&format!("#{pr}"))
                 && notice
                     .happened
                     .contains("even after a check-in to the agent"),

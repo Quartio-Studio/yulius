@@ -1,6 +1,6 @@
 ---
 yulius-task: ecd4476a-f231-43c0-b9d6-de0cf18baa0f
-status: done
+status: in-progress
 ---
 
 # SPEC-575 Merge-first staging: task-local testing and one staging deploy per task
@@ -139,6 +139,14 @@ What exists today (map of 2026-11-20, `dev` at f80f42cad):
   - The upgrade task must keep the project's commands, targets and vault grants. It reconciles
     conflicting repository guidance and reports whether the project switched or has no target.
   - The task is created once per sandbox and revision, including across restarts.
+- **MFS-013 A merged task hears that staging waits for it.**
+  - Once a task's work merged into a project with a merge-first target, `delivery_status` tells
+    its agent that its staging request is due: the merged revision and the `cd_deploy` call.
+  - Once it asked, the same line says where its newest request stands, with its run ids.
+  - Every merge receipt sends the agent to `delivery_status`, so a task whose session began
+    before its project switched learns it there. The rollout of 2026-11-21 showed the need:
+    three upgrade tasks switched their project and ended without a staging request (their
+    briefing still said merges deploy nothing), and only a task can ask.
 
 ## Plan
 
@@ -162,6 +170,9 @@ What exists today (map of 2026-11-20, `dev` at f80f42cad):
 - [x] Scenario test: fresh bootstrap, existing sandbox, failed candidate then fix, concurrent tasks with a retried deploy
 - [x] Independent review in a fresh session, findings fixed test-first
 - [x] Every gate green, docs and the changes log updated
+- [ ] delivery_status asks a merged task of a merge-first project for its staging request
+- [ ] Independent review of the staging request note, findings fixed test-first
+- [ ] Gate green, docs and the changes log updated for the staging request note
 
 ## Acceptance criteria
 

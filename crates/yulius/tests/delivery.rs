@@ -608,8 +608,8 @@ impl GitPort for RealGit {
 
 /// The fake GitHub's repository: merges and fast-forwards happen directly in the bare origin
 /// (`merge-tree` + `commit-tree` + `update-ref`, no working tree).
-struct BareRemote {
-    origin: PathBuf,
+pub(crate) struct BareRemote {
+    pub(crate) origin: PathBuf,
 }
 
 impl FakeRemote for BareRemote {
@@ -4697,10 +4697,19 @@ async fn answer_with_a_successor(f: &Fixture) -> BoxResult<(TaskId, TaskId)> {
 
 /// Chromium startup can hold the final lookup for outstanding browser decisions.
 #[derive(Default)]
-struct HeldBrowserLookup {
+pub(super) struct HeldBrowserLookup {
     calls: std::sync::atomic::AtomicUsize,
-    entered: tokio::sync::Notify,
-    release: tokio::sync::Notify,
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+impl HeldBrowserLookup {
+    pub(super) fn hold_second_lookup(
+        &self,
+    ) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
+        self.calls.store(0, std::sync::atomic::Ordering::SeqCst);
+        (self.entered.clone(), self.release.clone())
+    }
 }
 
 use yulius_app::ports::browser::{BrowserFailure, BrowserPort, BrowserSession};

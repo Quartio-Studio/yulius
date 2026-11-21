@@ -137,6 +137,14 @@ pub trait DeliveryStore: Send + Sync {
         &self,
         task: &yulius_domain::ids::TaskId,
     ) -> crate::error::AppResult<Option<crate::delivery::DeliveryRecord>>;
+    /// One coherent read of the open owner PR, task, decisions and pauses before typing.
+    /// An unavailable recipient or an unreadable current attention reason defers the notice.
+    async fn armed_notice_recipient(
+        &self,
+        task: &yulius_domain::ids::TaskId,
+        pr: u64,
+        branch: &str,
+    ) -> crate::error::AppResult<Option<crate::pr_watch::NoticeRecipient>>;
     /// Delivery rows of every task of a sandbox (archived tasks included).
     async fn deliveries(
         &self,

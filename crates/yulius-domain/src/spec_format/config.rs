@@ -1889,9 +1889,25 @@ mod tests {
     /// SPEC-134 CDK-004: Yulius defines its own CD: dev explicitly empty, production a promotion.
     #[test]
     fn the_repositorys_own_cd_is_defined() -> TestResult {
-        let cd = parse_yulius_toml_cd(include_str!("../../../../yulius.toml"))?;
+        let raw = include_str!("../../../../yulius.toml");
+        let cd = parse_yulius_toml_cd(raw)?;
         assert!(cd.is_defined());
         assert_eq!(cd.state("dev", CdStage::Dev), CdState::Empty);
+        // SPEC-579 (Infra bootstrap revision 1): no shared staging target, so `[cd.dev]` is not
+        // merge-first, its `about` says so, and every CI job stays on pull requests.
+        let dev = cd.target("dev").ok_or("dev")?;
+        assert!(!dev.merge_first);
+        let dev_about = dev.about.as_deref().unwrap_or_default();
+        assert!(
+            dev_about.contains("no shared target: the full suite gates each pull request"),
+            "{dev_about}"
+        );
+        assert_eq!(cd.merge_first(), None);
+        let config = parse_yulius_toml(raw)?;
+        let jobs = crate::ci::project_jobs(config.commands.gate.as_deref(), &config.ci)?;
+        assert!(!jobs.is_empty());
+        assert!(jobs.iter().all(|j| !j.after_merge), "{jobs:?}");
+        assert_eq!(parse_yulius_toml_local(raw)?, None);
         let prod = cd.target("prod").ok_or("prod")?;
         assert!(prod.promote && prod.deploy.is_none());
         // SPEC-418 AC4: no rollback command (nothing to redeploy); the line says how Yulius
