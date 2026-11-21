@@ -492,6 +492,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0440 -->
 - [0441](0441-github-pr-openings-trigger-exact-head-ci.md): signed GitHub PR openings queue the exact head using the existing CI gate (SPEC-606)
 <!-- ADR 0441 -->
+- [0442](0442-identify-codex-reviewers-by-their-child-rollout.md): identify Codex reviewers by their child rollout.
 <!-- ADR 0442 -->
 <!-- ADR 0443 -->
 - [0444](0444-codex-tasks-inherit-high-effort-on-every-model.md) Codex tasks inherit High effort on every model. A task can explicitly choose Extra high or Max on GPT-6.2 Astra and Sol.

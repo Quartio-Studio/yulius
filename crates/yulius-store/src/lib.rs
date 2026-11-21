@@ -218,6 +218,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0080_task_wait_messages.sql"),
     include_str!("migrations/0081_ci_run_admission.sql"),
     include_str!("migrations/0082_task_merge_wait.sql"),
+    // SPEC-605. The position is the schema version, 0084 is the reserved file number.
+    include_str!("migrations/0084_review_round_delivery.sql"),
     include_str!("migrations/0085_ci_pull_window.sql"),
 ];
 
@@ -547,7 +549,11 @@ mod tests {
             (80, include_str!("migrations/0080_task_wait_messages.sql")),
             (81, include_str!("migrations/0081_ci_run_admission.sql")),
             (82, include_str!("migrations/0082_task_merge_wait.sql")),
-            (83, include_str!("migrations/0085_ci_pull_window.sql")),
+            (
+                83,
+                include_str!("migrations/0084_review_round_delivery.sql"),
+            ),
+            (84, include_str!("migrations/0085_ci_pull_window.sql")),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -556,7 +562,7 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 83, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 84, "a new migration is pinned here too");
     }
 
     #[test]

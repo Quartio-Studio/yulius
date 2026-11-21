@@ -1442,6 +1442,14 @@ subagent off sends no `SubagentStop`, so such a round stays without a report. Th
 pull request's rounds in the same transaction that records its merge
 (`transition_delivery`), so the task's next pull request starts at round 1.
 
+The Codex briefing assigns fresh review children a `yulius_review_<n>` task name.
+`SubagentStart` supplies the child ID and active model. Yulius checks that the sandbox's
+child rollout header names that reviewer and the authenticated parent, and takes the
+reviewed head and start time from its launch metadata. A `SubagentStop` with a verdict can
+settle or establish the same round under the child's ID. The merge transaction keeps its time
+in the delivery record even when it has zero rounds, so delayed hooks from the previous PR
+cannot open a round on the next one. [ADR-0442](decisions/0442-identify-codex-reviewers-by-their-child-rollout.md)
+
 The delivery transaction also binds the task, PR, accepted head, integration branch and landed commit in `task_merges`. Delivery reads the existing CI jobs, CD runs and delivery-profile command runs by sandbox and exact commit. A historical link keeps its identity when a branch moves or the task opens another PR. Retention archives the compact results before deleting a linked run. A clean CD wrapper exit confirms each configured command. Other exits leave their individual outcomes unconfirmed. Legacy deliveries recover their binding from the recorded PR on the branch named by the task's historical PR-opening audit entry. A direct merge awaiting confirmation recovers only when the closed PR matches the original expected branch, head and merge result. An unavailable historical result supplies no proof. [Decision 0399](decisions/0399-task-evidence-belongs-to-the-landed-commit.md)
 
 The transcript watch also reads each subagent of the session's own thread
@@ -1450,7 +1458,8 @@ The transcript watch also reads each subagent of the session's own thread
 (`Observation::SubagentCutOff`). The supervisor uses the transcript time to identify the round
 that ran when the observation was written, including during restart replay
 (`model_answered`, `cut_off`). The delivery view (`Delivery.review_rounds`, also in
-`delivery_status`) lists the open pull request's rounds. When a merge is recorded,
+`delivery_status`) lists the current review or the rounds of the pull request just delivered.
+Each round includes its start, optional end and pull request number when known. When a merge is recorded,
 `dlv_transition_at` writes the merge record `delivery.review.models` (actor `yulius`): the
 models of the runs that worked on the pull request (those still going when the previous one
 merged, known from its rounds or its own merge record, and every later one), and each round
@@ -1484,6 +1493,19 @@ sequenceDiagram
         A->>H: SubagentStop (new report)
         H->>Y: record that round's verdict
     end
+```
+
+```mermaid
+sequenceDiagram
+    participant C as Codex review subagent
+    participant R as Child rollout
+    participant Y as Yulius
+    C->>R: write session metadata for named review child
+    C->>Y: SubagentStart (child ID and model)
+    Y->>R: verify parent and reviewer name, read launch head
+    Y->>Y: number and record the round
+    C->>Y: SubagentStop (report and model)
+    Y->>Y: record the verdict for the child
 ```
 
 ## Harness comparison
