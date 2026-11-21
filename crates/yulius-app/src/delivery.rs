@@ -6761,6 +6761,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn branch_publication_discards_verified_ids_absent_from_the_final_open_list() -> AppResult<()> {
+        let cache = crate::sandboxes::ObservedPulls::default();
+        let sandbox = SandboxId::parse("sandbox").map_err(AppError::internal)?;
+        let task = TaskId::parse("task").map_err(AppError::internal)?;
+        let mut discovery =
+            FollowupDiscovery::new(Some(cache.begin(&sandbox)?), 1, tokio::time::Instant::now());
+        discovery.open = Some(vec![2, 3]);
+        discovery.publish(
+            &task,
+            Some(yulius_contracts::api::tasks::ParkedPr {
+                number: 4,
+                open: true,
+            }),
+        );
+        assert_eq!(
+            cache
+                .known_pull(&sandbox, &task)
+                .flatten()
+                .map(|pr| pr.number),
+            Some(3)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn only_live_ci_can_wake_a_parked_task_after_pending_checks() {
         for enabled in [true, false] {
             assert_eq!(

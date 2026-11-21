@@ -3861,7 +3861,7 @@ async fn a_parked_merge_survives_unavailable_followup_discovery_on_every_display
     let created = app
         .tool_task_create(
             &caller,
-            &json!({"prompt":"Wait for the current tasks", "after_all_tasks":true}),
+            &json!({"prompt":"Wait for the current tasks","harness":"claude", "after_all_tasks":true}),
         )
         .await?;
     assert_eq!(created["task"]["start_rule"], "#1 done and #2 done");
@@ -4081,16 +4081,17 @@ async fn a_parked_merge_survives_saturated_followup_discovery_and_remains_a_prer
         let created = app
             .tool_task_create(
                 &caller,
-                &json!({"prompt":"Wait for the current tasks","after_all_tasks":true}),
+                &json!({"prompt":"Wait for the current tasks","harness":"claude","after_all_tasks":true}),
             )
             .await?;
         assert_eq!(created["task"]["start_rule"], "#1 done and #2 done");
         gate.notify_one();
         Ok::<_, Box<dyn std::error::Error>>(())
     };
-    let (overview, statuses) = tokio::join!(app.git_overview(&owner, f.sandbox.as_str()), reads);
-    statuses?;
-    overview?;
+    let overview = async {
+        Ok::<_, Box<dyn std::error::Error>>(app.git_overview(&owner, f.sandbox.as_str()).await?)
+    };
+    tokio::try_join!(overview, reads)?;
     Ok(())
 }
 

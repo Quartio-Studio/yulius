@@ -7,7 +7,7 @@ status: in-progress
 
 ## Goal
 
-A person sees their finished, merged task under Done. A refresh that cannot check for a follow-up must not ask them to resume the task or rerun CI on its merged PR.
+A person sees their finished, merged task under Done. A refresh that cannot check for a follow-up must not ask them to resume the task or rerun CI on its merged PR. Fixes #1589.
 
 ## Context
 
@@ -43,7 +43,7 @@ Use the persisted delivery stage as evidence for the merged PR's display status.
 
 ## Evidence
 
-Both regression tests failed on the original implementation. Task detail returned the exact notice in the screenshot. MCP returned `shows: needs_you` with `parked_pr: {number: 1491, open: false}` after the stalled lookup. The existing cold-cache merged-PR test passed on that same implementation. Fixes #1589.
+Both regression tests failed on the original implementation. Task detail returned the exact notice in the screenshot. MCP returned `shows: needs_you` with `parked_pr: {number: 1491, open: false}` after the stalled lookup. The existing cold-cache merged-PR test passed on that same implementation.
 
 The two screenshot regressions passed with the display fix. A scoped cache test then exposed an unrelated task being treated as already read. Branch membership now applies only to the task whose branch was listed. The two Chromium suites for parked tasks and Needs you messages passed all 118 cases. The project has disabled Vidoc.
 
@@ -52,3 +52,9 @@ Review on `496faa34` found that a stale list could resurrect a directly confirme
 The busy-sandbox test reproduced a capacity error after 30 parked branch reads behind a slow overview. The overview and individual branches now have independent overlap limits. All five overview-cache tests passed. The scoped parking and dependency suite passed all 175 tests with the follow-up identity fix.
 
 Review on `41198e18` found two remaining false waits. Holding the final branch list after a directly confirmed merge and reading a settled task for the 31st time behind a held overview each reproduced the original notice. The display now uses the same local recheck for both cases. Directly confirmed merges are published before consulting concurrent observations. The API reference documents the prerequisite exception.
+
+Both final regressions passed. The independent reviewer approved `b157074693274fcaca4f43ae3786c7298e235872` and reported five passing regressions. The broader parking and dependency suite passed 177 tests before integrating the new Codex default. The integration rerun exposed a missing account in two synthetic dependency tests. Those fixtures explicitly select their configured Claude harness, and a failed status read now cancels its held test overview. `scripts/dev quick` and scoped Clippy passed. Vidoc reported disabled.
+
+With the configured test harness selected, all 177 scoped tests passed on the integrated code with one nextest worker. Five pre-existing timing tests exceeded their fixtures’ deadlines when the parallel run shared CPUs with mutation builds ([issue #1591](https://github.com/Quartio-Studio/yulius/issues/1591)).
+
+Changed-line mutation testing exposed missing coverage of an old verified PR identity absent from the final open list. Applying the generated membership mutation made the added test return PR 4 instead of PR 3. Restoring the reviewed condition made it pass alongside all five overview tests.
