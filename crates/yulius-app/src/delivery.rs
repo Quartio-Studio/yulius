@@ -156,6 +156,54 @@ pub(crate) struct ParkingPrs {
     pulls: Vec<(u64, String)>,
 }
 
+/// A display read publishes one ordered observation of a merged task's branch. Its
+/// direct PR checks refine the list, including when a later check hits the deadline.
+pub(crate) struct FollowupDiscovery {
+    read: crate::sandboxes::OverviewRead,
+    merged: u64,
+    deadline: tokio::time::Instant,
+    open: Option<Vec<u64>>,
+}
+
+impl FollowupDiscovery {
+    pub(crate) fn new(
+        read: crate::sandboxes::OverviewRead,
+        merged: u64,
+        deadline: tokio::time::Instant,
+    ) -> Self {
+        Self {
+            read,
+            merged,
+            deadline,
+            open: None,
+        }
+    }
+
+    fn listed(&mut self, pulls: &[GhPull], closed: &std::collections::BTreeSet<u64>) {
+        self.open = Some(
+            pulls
+                .iter()
+                .map(|pr| pr.number)
+                .filter(|n| !closed.contains(n))
+                .collect(),
+        );
+    }
+
+    pub(crate) fn publish(
+        self,
+        task: &TaskId,
+        verified: Option<yulius_contracts::api::tasks::ParkedPr>,
+    ) {
+        if let Some(open) = self.open {
+            let replacement = verified
+                .filter(|pr| pr.open && open.contains(&pr.number))
+                .map(|pr| pr.number)
+                .or_else(|| open.last().copied());
+            self.read.record_branch(task, self.merged, replacement);
+        }
+    }
+}
+
 /// The persisted delivery stage of one task.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeliveryRecord {
@@ -4246,7 +4294,7 @@ impl App {
         record: Option<&DeliveryRecord>,
         purpose: PrVerification,
         observed: &mut ParkedPullRead,
-        display_deadline: Option<tokio::time::Instant>,
+        mut discovery: Option<&mut FollowupDiscovery>,
     ) -> AppResult<Option<ParkingPrs>> {
         let tracked = record
             .filter(|r| r.stage == DeliveryStage::PrOpen)
@@ -4269,11 +4317,6 @@ impl App {
             let Some(branch) = task.branch.as_deref() else {
                 return Ok(Vec::new());
             };
-            let observation = if display_deadline.is_some() && merged.is_some() {
-                Some(self.observed_pulls.begin(&sandbox.id)?)
-            } else {
-                None
-            };
             let mut pulls = self
                 .deps
                 .github
@@ -4286,9 +4329,6 @@ impl App {
                     && Some(pull.number) != merged
             });
             pulls.sort_unstable_by_key(|pull| pull.number);
-            if let (Some(observation), Some(merged)) = (observation, merged) {
-                observation.record_branch(&task.id, merged, pulls.last().map(|pr| pr.number));
-            }
             Ok::<_, AppError>(pulls)
         };
         // Branch-scoped discovery also finds PRs omitted by a partial sandbox overview
@@ -4299,7 +4339,7 @@ impl App {
             let branch = branch_pulls(&token).await?;
             Ok::<_, AppError>((token, branch))
         };
-        let (token, branch) = if let Some(until) = display_deadline.filter(|_| merged.is_some()) {
+        let (token, branch) = if let Some(until) = discovery.as_ref().map(|read| read.deadline) {
             // Leave time inside the existing display budget to reconfirm the task and delivery.
             let remaining = until.saturating_duration_since(tokio::time::Instant::now());
             match tokio::time::timeout_at(until - remaining / 4, discover).await {
@@ -4315,6 +4355,10 @@ impl App {
         } else {
             discover.await?
         };
+        let mut closed = std::collections::BTreeSet::new();
+        if let Some(read) = discovery.as_mut() {
+            read.listed(&branch, &closed);
+        }
         *observed = ParkedPullRead::recorded(record);
         observed.note_open_branch(&branch);
         if branch.len() > MAX_PULLS {
@@ -4328,7 +4372,6 @@ impl App {
         let checkout = self.verification_checkout(task, purpose).await?;
         let mut pulls = Vec::new();
         let mut verified = true;
-        let mut closed = std::collections::BTreeSet::new();
         for number in numbers {
             let checks = if purpose == PrVerification::WatchPending && watched != Some(number) {
                 PrVerification::Settled
@@ -4343,6 +4386,9 @@ impl App {
                 .is_some_and(|pr| !pr.open && pr.number == number)
             {
                 closed.insert(number);
+                if let Some(read) = discovery.as_mut() {
+                    read.listed(&branch, &closed);
+                }
             }
             let Some(pull) = pull else {
                 verified = false;
@@ -4378,6 +4424,9 @@ impl App {
             watched,
         };
         let current = branch_pulls(&token).await?;
+        if let Some(read) = discovery {
+            read.listed(&current, &closed);
+        }
         if purpose != PrVerification::Display {
             return Ok((current == branch).then_some(facts));
         }

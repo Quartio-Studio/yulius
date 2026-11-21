@@ -10,7 +10,7 @@ A parked task with a finished plan and a recorded merge acquired an actionable w
 
 ## Decision
 
-Keep the recorded merge visible on a locally settled task when follow-up discovery is unavailable. Check the delivery and local work again before displaying Done. A known or newly discovered open follow-up requires its own verification. Dependency selection and release continue to require verification.
+Keep the recorded merge visible on a locally settled task when follow-up discovery is unavailable. Check the delivery and local work again before displaying Done. A known or newly discovered open follow-up requires its own verification. Cache the verified blocker and exclude directly confirmed closures even if the branch list lags. Keep the existing limit on overlapping overview reads and apply the same limit separately to each task branch. Dependency selection and release continue to require verification.
 
 ## Alternatives
 

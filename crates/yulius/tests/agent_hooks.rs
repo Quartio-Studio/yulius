@@ -3929,6 +3929,69 @@ async fn a_parked_merge_survives_a_stalled_branch_lookup_and_finds_a_replacement
     Ok(())
 }
 
+async fn verify_followup_outage(closed: bool, second: bool, expected: Option<u64>) -> TestResult {
+    let (f, owner) = parked_with_recorded_merge().await?;
+    let app = &f.h.app;
+    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let args = json!({"task_id":f.task.as_str()});
+    {
+        let mut pulls = f.h.github.pulls.lock().map_err(|_| "pulls")?;
+        pulls.push(yulius_app::ports::github::GhPull {
+            number: 1492,
+            base: "release".into(),
+            ..compatibility_pull()
+        });
+        if second {
+            pulls.push(yulius_app::ports::github::GhPull {
+                number: 1493,
+                base: "release-2".into(),
+                head_sha: "other-head".into(),
+                ..compatibility_pull()
+            });
+        }
+    }
+    *f.h.github
+        .merged_on_direct_read
+        .lock()
+        .map_err(|_| "direct merge")? = closed.then_some(1492);
+    f.h.github
+        .set_checks("abc123", yulius_app::ports::github::ChecksState::Failure);
+    f.h.github.set_checks(
+        "other-head",
+        yulius_app::ports::github::ChecksState::Success,
+    );
+    let verified = app.tool_task_get(&caller, &args).await?;
+    assert_eq!(verified["parked_pr"]["number"], expected.unwrap_or(1492));
+    assert_eq!(verified["parked_pr"]["open"], expected.is_some());
+    app.deps.store.set_installation(None).await?;
+    f.h.github.no_installation.store(true, Ordering::SeqCst);
+    let outage = app.tool_task_get(&caller, &args).await?;
+    assert_eq!(
+        outage["shows"],
+        if expected.is_some() {
+            "needs_you"
+        } else {
+            "done"
+        }
+    );
+    assert_eq!(
+        outage["parked_pr"],
+        json!({"number":expected.unwrap_or(1491), "open":expected.is_some()})
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn followup_discovery_keeps_direct_closures_during_an_outage() -> TestResult {
+    verify_followup_outage(true, false, None).await?;
+    verify_followup_outage(true, true, Some(1493)).await
+}
+
+#[tokio::test]
+async fn followup_discovery_keeps_blocker_identity_during_an_outage() -> TestResult {
+    verify_followup_outage(false, true, Some(1492)).await
+}
+
 #[tokio::test]
 async fn a_parked_merge_rechecks_local_work_after_stalled_followup_discovery() -> TestResult {
     let (f, owner) = parked_with_recorded_merge().await?;

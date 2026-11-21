@@ -526,7 +526,7 @@ A parked task in the sandbox task list or the task detail includes `parked_needs
 local work, owner decisions and current ordinary PR checks. When a PR is known, `parked_pr`
 gives its `number` and whether it is `open`. A branch lookup can identify a replacement
 for an older recorded delivery. With outstanding local work, the detail keeps an owner-observed open PR
-or the recorded delivery identity. Unfinished work and unreadable checks keep the task under Needs you.
+or the recorded delivery identity. Unfinished work and unreadable checks on a known open PR keep the task under Needs you. A locally settled task with a recorded merge stays under Done if discovery of a possible follow-up is unavailable and no open replacement is known.
 
 The MCP tools `task_get` and `tasks_list` use the verified parked group and include `parked_pr` when the verifier can identify the PR. A parked row’s `wait_reason` explains a current check failure, pending checks, an unreadable PR, a conflict, a required base update or unfinished local work. A stored owner decision or held prompt supplies its own fields. The `needs_you` scope keeps activity order and applies its limit after filtering. The `archived` scope reads archived tasks.
 
@@ -659,7 +659,7 @@ the agents' delivery workflow and other clients; no page of the web UI calls the
 
 | Method | Path | Level | Body → Response |
 | --- | --- | --- | --- |
-| GET | `/api/sandboxes/{sid}/git` | read | → `GitOverview`. HTTP 429 when 30 overlapping reads already hold publication slots in this sandbox. Home and MCP task lists continue to read available PR observations. |
+| GET | `/api/sandboxes/{sid}/git` | read | → `GitOverview`. HTTP 429 when 30 overlapping overview reads already hold publication slots in this sandbox. Parked task branch reads have a separate limit per task. Home and MCP task lists continue to read available PR observations. |
 | GET | `/api/tasks/{tid}/delivery` | read | → `Delivery`. In a playground the available action is the local squash (`merge`). Its local prerequisites appear in `blocked`, and a merged task has no further actions. |
 | GET | `/api/tasks/{tid}/delivery/evidence/{merged_sha}` | read | → `MergeEvidence`. Task, PR, branch, accepted head, landed SHA and up to 50 newest CI, CD and profile-command attempts with individual check states. When truncated, pass `?before=<next_before>` for the next page, including archived attempts. Add `?run_id=<id>` to pin one attempt. A missing task landing or requested attempt returns 404. Task agents use `delivery_status` with optional `merged_sha`, `before` or `run_id` to read the same evidence with their task credential. |
 | GET | `/api/tasks/{tid}/changes` | read | → `TaskChanges`: the task worktree (committed, uncommitted and untracked work; symlinks listed, never followed) against the merge base with `origin/<integration>`; 409 when the task has not started (no worktree yet) or its worktree is gone (the Git overview's `worktree`) |

@@ -23,7 +23,7 @@ The screenshot shows parked Quartio-v2 task #335, PR #1491, 11 completed steps a
 
 - [x] Trace the parked pull request warning
 - [x] Reproduce the incorrect task status in a regression test
-- [ ] Restore the correct status across parked task reads
+- [x] Restore the correct status across parked task reads
 - [ ] Verify and independently review the fix
 - [ ] Merge the reviewed fix into dev
 
@@ -44,3 +44,9 @@ Use the persisted delivery stage as evidence for the merged PR's display status.
 ## Evidence
 
 Both regression tests failed on the original implementation. Task detail returned the exact notice in the screenshot. MCP returned `shows: needs_you` with `parked_pr: {number: 1491, open: false}` after the stalled lookup. The existing cold-cache merged-PR test passed on that same implementation. Fixes #1589.
+
+The two screenshot regressions passed with the display fix. A scoped cache test then exposed an unrelated task being treated as already read. Branch membership now applies only to the task whose branch was listed. The two Chromium suites for parked tasks and Needs you messages passed all 118 cases. The project has disabled Vidoc.
+
+Review on `496faa34` found that a stale list could resurrect a directly confirmed closure, or replace a verified failing PR with a higher-numbered green PR. Both consecutive-read tests failed on that head. The display now publishes the result after direct verification, excludes confirmed closures, and keeps the PR responsible for the attention notice.
+
+The busy-sandbox test reproduced a capacity error after 30 parked branch reads behind a slow overview. The overview and individual branches now have independent overlap limits. All five overview-cache tests passed. The scoped parking and dependency suite passed all 175 tests with the follow-up identity fix.

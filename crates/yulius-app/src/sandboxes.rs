@@ -85,7 +85,7 @@ impl ObservedPull {
     }
 }
 
-/// Maximum number of overlapping responses held for start-order publication per sandbox.
+/// Maximum overlapping responses from a sandbox overview or one task branch.
 const OVERVIEW_WINDOW: usize = 30;
 
 type PullRows = HashMap<TaskId, Option<ObservedPull>>;
@@ -118,6 +118,7 @@ enum PullObservation {
 #[derive(Debug)]
 struct Slot {
     id: u64,
+    branch_task: Option<TaskId>,
     published: Option<PullObservation>,
 }
 
@@ -238,6 +239,18 @@ impl Drop for OverviewRead {
 
 impl ObservedPulls {
     pub(crate) fn begin(&self, sandbox: &SandboxId) -> AppResult<OverviewRead> {
+        self.begin_read(sandbox, None)
+    }
+
+    fn begin_branch(&self, sandbox: &SandboxId, task: &TaskId) -> AppResult<OverviewRead> {
+        self.begin_read(sandbox, Some(task))
+    }
+
+    fn begin_read(
+        &self,
+        sandbox: &SandboxId,
+        branch_task: Option<&TaskId>,
+    ) -> AppResult<OverviewRead> {
         let cache = self
             .0
             .lock()
@@ -247,15 +260,22 @@ impl ObservedPulls {
             .clone();
         let id = {
             let mut order = cache.lock().map_err(crate::error::AppError::internal)?;
-            if order.slots.len() >= OVERVIEW_WINDOW {
+            if order
+                .slots
+                .iter()
+                .filter(|slot| slot.branch_task.as_ref() == branch_task)
+                .count()
+                >= OVERVIEW_WINDOW
+            {
                 return Err(crate::error::AppError::Capacity(
-                    "too many overlapping Git overview reads in this sandbox".into(),
+                    "too many overlapping reads of the same PR source".into(),
                 ));
             }
             let id = order.next;
             order.next = order.next.wrapping_add(1);
             order.slots.push_back(Slot {
                 id,
+                branch_task: branch_task.cloned(),
                 published: None,
             });
             id
@@ -453,6 +473,7 @@ impl App {
         // the record is read, a timed-out lookup can still name its delivery.
         let mut observed = self.known_parked_pull(task, None);
         let mut status = ParkedStatus::new(task);
+        let mut discovery = None;
         let check = async {
             let record = self.deps.store.delivery(&task.id).await?;
             observed = self.known_parked_pull(task, record.as_ref());
@@ -464,13 +485,25 @@ impl App {
             if status.facts.parked_has_local_work_or_request() {
                 return Ok(());
             }
+            if let Some(merged) = record
+                .as_ref()
+                .filter(|r| crate::delivery::past_merge(&r.stage))
+                .and_then(|r| r.pr_number)
+            {
+                discovery = Some(crate::delivery::FollowupDiscovery::new(
+                    self.observed_pulls
+                        .begin_branch(&task.sandbox_id, &task.id)?,
+                    merged,
+                    deadline,
+                ));
+            }
             let prs = self
                 .verify_task_prs(
                     task,
                     record.as_ref(),
                     PrVerification::Display,
                     &mut observed,
-                    Some(deadline),
+                    discovery.as_mut(),
                 )
                 .await?;
             let current = if let Some(prs) = prs {
@@ -517,6 +550,9 @@ impl App {
             crate::race::Point::ParkedStatusRead,
             std::path::Path::new(task.id.as_str()),
         );
+        if let Some(discovery) = discovery {
+            discovery.publish(&task.id, observed.pr);
+        }
         status.pr = observed.pr;
         status
     }
@@ -794,7 +830,9 @@ mod overview_tests {
         let task = TaskId::parse("task").map_err(crate::error::AppError::internal)?;
         let other = TaskId::parse("other").map_err(crate::error::AppError::internal)?;
         let older = cache.begin(&sandbox)?;
-        cache.begin(&sandbox)?.record_branch(&task, 1, Some(2));
+        cache
+            .begin_branch(&sandbox, &task)?
+            .record_branch(&task, 1, Some(2));
         assert!(cache.known_pull(&sandbox, &other).is_none());
         drop(older);
         assert!(cache.known_pull(&sandbox, &other).is_none());
@@ -804,13 +842,47 @@ mod overview_tests {
         });
         let rows = HashMap::from([(task.clone(), red), (other.clone(), red)]);
         cache.begin(&sandbox)?.record(true, rows);
-        cache.begin(&sandbox)?.record_branch(&task, 1, Some(2));
+        cache
+            .begin_branch(&sandbox, &task)?
+            .record_branch(&task, 1, Some(2));
         assert_eq!(cache.get(&sandbox, &task), Some(Some(PullSignal::Failing)));
-        cache.begin(&sandbox)?.record_branch(&task, 1, Some(3));
+        cache
+            .begin_branch(&sandbox, &task)?
+            .record_branch(&task, 1, Some(3));
         assert_eq!(cache.get(&sandbox, &task), Some(Some(PullSignal::InReview)));
-        cache.begin(&sandbox)?.record_branch(&task, 1, None);
+        cache
+            .begin_branch(&sandbox, &task)?
+            .record_branch(&task, 1, None);
         assert_eq!(cache.get(&sandbox, &task), Some(Some(PullSignal::Merged)));
         assert_eq!(cache.get(&sandbox, &other), Some(Some(PullSignal::Failing)));
+        Ok(())
+    }
+
+    #[test]
+    fn parked_branch_results_leave_room_for_an_overview_of_a_busy_sandbox() -> AppResult<()> {
+        let cache = ObservedPulls::default();
+        let sandbox = SandboxId::parse("sandbox").map_err(crate::error::AppError::internal)?;
+        let slow_overview = cache.begin(&sandbox)?;
+        for number in 1..=OVERVIEW_WINDOW {
+            let task = TaskId::parse(&format!("parked-{number}"))
+                .map_err(crate::error::AppError::internal)?;
+            cache
+                .begin_branch(&sandbox, &task)?
+                .record_branch(&task, 1, None);
+        }
+        drop(cache.begin(&sandbox)?);
+        let repeat = TaskId::parse("repeat").map_err(crate::error::AppError::internal)?;
+        for _ in 0..OVERVIEW_WINDOW {
+            cache
+                .begin_branch(&sandbox, &repeat)?
+                .record_branch(&repeat, 1, None);
+        }
+        assert!(matches!(
+            cache.begin_branch(&sandbox, &repeat),
+            Err(crate::error::AppError::Capacity(_))
+        ));
+        drop(slow_overview);
+        drop(cache.begin_branch(&sandbox, &repeat)?);
         Ok(())
     }
 
