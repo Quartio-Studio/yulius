@@ -1,6 +1,6 @@
 ---
 yulius-task: 8acbc127-7f7e-4736-84eb-46f1b6476024
-status: in-progress
+status: done
 ---
 
 # SPEC-607 — Codex tasks inherit high effort
@@ -44,7 +44,7 @@ Yulius stores the task effort as an option and resolves it when planning a proce
 - [x] Use high for inherited Codex effort on launch and resume
 - [x] Offer explicit Codex max in the composer and task model tool
 - [x] Document the default and verify the affected flows
-- [ ] Get independent approval for the delivery
+- [x] Get independent approval for the delivery
 
 ## Acceptance criteria
 
@@ -102,3 +102,6 @@ replaces the Astra effort default of SPEC-561. [ADR-0444](../../docs/decisions/0
   The menu displayed “Default Depends on the drawn model” where High was expected.
   With the shared label fixed, all nine tests in `npx e2e run model-choices`
   passed. Random still offers Low through Extra high as explicit choices.
+- The second independent review approved `ce2b543d720a0a370602331f70078a1a71570f3a`
+  after exercising the shared menus and tracing the fresh and resumed launch paths.
+- `scripts/dev security` reported that Vidoc was disabled for the project.
