@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- A sandbox browser whose profile came from another host now starts. Chrome's stale `Singleton*` lock files from the old host are removed before Chrome and its display start. A lock held by a running process here is kept, and a failed start names that process. Before this, after the 2026-11-21 move, the display restarted every 30 s. [SPEC-593](../.ai/specs/SPEC-593-sandbox-browser-never-starts-on-a-moved.md)
 - Finished parked tasks with a recorded merge stay under Done when GitHub cannot check for a follow-up PR. Existing false waits resolve on refresh, and known open replacements still show their checks. [SPEC-585](../.ai/specs/SPEC-585-i-got-this-everywhere-fix.md)
 - Parking keeps the original PR owner live when its recorded integration candidate failed on the current head and base, or the queue decision changes during verification (SPEC-558).
 - Agents now fix findings and obtain independent re-review through approval without asking the task owner to authorize another round. [SPEC-588](../.ai/specs/SPEC-588-it-shouldn-t-ask-me-for-this-agents-must.md)

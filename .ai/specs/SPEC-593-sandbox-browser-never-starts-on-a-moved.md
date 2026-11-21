@@ -32,7 +32,7 @@ pid or a pid that is not Chrome: it removes the lock), and a live Chrome of this
 new window handed over ("Opening in existing browser session.", exit 0).
 
 `prepare_profile` only creates the directory (mode 0700). Nothing clears a lock. Related:
-[SPEC-570](SPEC-570-restart-the-locked-browser-of-one-sandbox.md) restarts one sandbox's
+[SPEC-570](SPEC-570-restart-the-locked-browser-of-one-sandbo.md) restarts one sandbox's
 browser; the move helper is `crates/yulius/src/instance/migrate`.
 
 ## Requirements
