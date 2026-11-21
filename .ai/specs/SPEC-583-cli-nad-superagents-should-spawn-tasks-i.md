@@ -26,6 +26,7 @@ The CLI forwards the prompt to remote MCP. It shares the `task_create` handler w
 - [x] Describe the inherited defaults in task creation tools and project documentation
 - [x] Independent review in a fresh session, findings fixed test-first
 - [x] Every gate green, docs and the changes log updated
+- [x] Verify deferred Codex startup and messaging after cross-sandbox approval
 
 ## Acceptance criteria
 
@@ -50,3 +51,4 @@ Apply [ADR-0422](../../docs/decisions/0422-cli-and-superagent-task-creation-defa
 - Scoped `cargo nextest run` across `yulius`, `yulius-app` and `yulius-harness` passed all 101 selected tests. The real CLI reported the missing Codex subscription, then created a Codex task whose details showed inherited Astra and xhigh. Both Superagents and approved cross-sandbox creation recorded chosen Codex. The launch tests verified effort for new and resumed processes and Ultrafast eligibility against synthetic subscription credentials.
 - Independent review approved `634be7942` with no findings after rerunning nine scoped cases. Repository quick checks passed. `scripts/dev security` reported Vidoc disabled for the project.
 - Scoped Clippy passed with warnings denied. `scripts/dev mutants` reported 9 listed, 3 caught, 0 missed, 0 timed out, 6 unviable, 0 not reached. Hosted CI and merge evidence are recorded by Yulius for the delivered revision. No live provider session was started for verification.
+- Hosted test shard 2 on `638e8505d` and a local reproduction both failed when the live cross-sandbox test started a prepared Codex task with only a Claude account connected. The fixture now checks that approval selected Codex before connecting its synthetic Codex account. All 41 selected creation and cross-sandbox tests passed, including start, message delivery and audit through the fake agent process.
