@@ -1,6 +1,6 @@
 ---
 yulius-task: bc5e9db9-59da-4313-bc95-0a804b81deab
-status: in-progress
+status: done
 ---
 
 # SPEC-604 An idle Antigravity conversation shows Waiting after a restart
@@ -34,7 +34,7 @@ The incident report describes two completed and merged tasks that occupied sessi
 - [x] Approve the corrected staging revision
 - [x] Reproduce the merged review-round failure
 - [x] Verify delivery behavior for Claude Code and Codex
-- [ ] Approve the delivery correction for staging
+- [x] Approve the delivery correction for staging
 
 ## Acceptance criteria
 
@@ -80,3 +80,5 @@ The exact nextest case failed locally on the landed tree with one completed Clau
 Scoped nextest ran 154 tests across `delivery`, `review_rounds`, Codex review hooks, the Antigravity idle PTY fixture and the composer contract. All passed, including the exact gated-tools case from the failed staging run and the Codex merged-analytics case.
 
 After integrating dev at `0cf7267a3`, the four key regressions passed again. They cover the gated merge, Codex review history, the idle Antigravity PTY and its inherited composer settings.
+
+The same four tests passed with dev at `f49e02da1`. Independent review approved `52ab0cba6` and ran six integration tests. These confirmed that Claude Code clears the delivery view after merge and keeps the audit record, while Codex shows the landed rounds until a new review starts. Vidoc was disabled.
