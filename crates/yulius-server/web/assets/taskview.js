@@ -1126,7 +1126,7 @@ export function mountTaskView(ctx, sandbox, task) {
   async function loadDetail() {
     const read = ++detailRead;
     const heardBefore = changesHeard;
-    const publishParked = ctx.store.beginParkedDetail();
+    const publishParked = ctx.store.beginParkedDetail(current);
     try {
       const fresh = await ctx.api.get(`/api/tasks/${enc(current.id)}`, { signal: reads.signal });
       if (!alive || read < appliedRead) return; // the view was left, or a newer answer was applied

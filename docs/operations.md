@@ -187,6 +187,8 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # A CI rerun refreshes the open sidebar while its Git overview is loading. If the task list
 # cannot verify a known open PR, the row stays under Needs you until verification succeeds.
 # The parked terminal updates its step count and clears resolved owner notices when the list refreshes.
+# A terminal that discovers a missed park or resume updates the active task list. An archive
+# removes its row, and Undo restores it. The row shows the resumed account and shell activity.
 # Opening the parked terminal also refreshes its sidebar row. An unavailable refresh keeps a known
 # open PR under Needs you until verification succeeds. The Git chip shows the last overview.
 # Use task_get for the current parked wait reason or tasks_list with scope needs_you

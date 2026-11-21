@@ -146,7 +146,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   async function loadTasks(sandboxId, watching = false) {
     const atStart = state.tasks.get(sandboxId);
     const order = ++nextListRead;
-    const read = { sandboxId, order, changes: new Map(), parked: new Set(), deleted: new Set(), failedWatchOrder: 0 };
+    const read = { sandboxId, order, changes: new Map(), transitions: new Map(), parked: new Set(), deleted: new Set(), failedWatchOrder: 0 };
     let snapshotOrder = order;
     let confirming = false;
     const path = `/api/sandboxes/${enc(sandboxId)}/tasks?archived=false`;
@@ -192,6 +192,14 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
         const fallbackOrder = Math.max(failureOrder, unverified.get(latest) ?? 0);
         const uncertain = latest.status === 'parked' && fallbackOrder >= rowOrder.get(latest);
         map.set(id, uncertain ? awaitingVerification(latest, listed ?? prior, fallbackOrder) : latest);
+      }
+      // A detail can discover a lifecycle change while this list is reading,
+      // even for a row the older snapshot omitted. Later events and confirmed
+      // lists still take precedence. Permanent removal wins in either order.
+      for (const [id, transition] of read.transitions) {
+        if (rowOrder.get(transition) <= snapshotOrder || read.changes.has(id)) continue;
+        if (transition.archived) map.delete(id);
+        else map.set(id, current?.get(id) ?? transition);
       }
       for (const id of read.deleted) map.delete(id);
       state.taskErrors.delete(sandboxId);
@@ -311,30 +319,64 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     return updated;
   }
 
-  function beginParkedDetail() {
+  // TaskDetail flattens TaskSummary together with private run data. Publish
+  // the public summary on lifecycle changes, including a newly attached account.
+  function lifecycleSummary(detail, prior) {
+    const summary = { ...parkedFacts(detail), account_id: detail.account_id };
+    for (const key of ['id', 'sandbox_id', 'number', 'title', 'harness', 'harness_choice', 'branch', 'origin',
+      'created_by', 'owner', 'control_request', 'control_from', 'owner_asks_first', 'created_at', 'updated_at',
+      'state_since', 'working_since', 'account_label', 'mode', 'resumes_at', 'waits_for_account',
+      'background_shells', 'background_shells_since', 'yulius_wait', 'merge_armed', 'after', 'next', 'attention',
+      'auto', 'supertask', 'held_by', 'queue_reason', 'start_at', 'not_started', 'awaits_start_onboarding',
+      'pause', 'pr_stalled', 'overlaps']) {
+      if (key in detail) summary[key] = detail[key];
+      else if (key in prior) summary[key] = prior[key];
+    }
+    return summary;
+  }
+
+  function beginParkedDetail(startingRow) {
     const order = ++nextListRead;
     return (detail, view = {}) => {
       const map = state.tasks.get(detail.sandbox_id);
       const row = map?.get(detail.id);
-      if (detail.status !== 'parked' || detail.archived || row?.status !== 'parked') return view;
+      if (!row || (detail.status !== 'parked' && row.status !== 'parked' && startingRow?.status !== 'parked')) return view;
+      const transition = detail.archived || row.status !== 'parked' || detail.status !== 'parked';
       recordVerification(detail, order);
       if (rowOrder.get(row) > order) {
         // Preserve the newer event's work and decisions. An older detail may
         // still identify the open PR that an unverified update could not name.
-        const supplement = unverified.has(row) && (verifiedGroup.get(row)?.order ?? 0) < order;
+        const supplement = !transition && unverified.has(row) && (verifiedGroup.get(row)?.order ?? 0) < order;
         const latest = supplement ? publishParkedRow(map, row, awaitingVerification(row, detail)) : row;
-        return { ...view, ...parkedFacts(latest) };
+        return { ...view, ...(transition ? lifecycleSummary(latest, latest) : parkedFacts(latest)) };
       }
-      let updated = { ...row, ...parkedFacts(detail), id: detail.id, sandbox_id: detail.sandbox_id };
+      let updated = transition ? lifecycleSummary(detail, row) : { ...row, ...parkedFacts(detail) };
       const hintOrder = pullWatch.get(detail.sandbox_id)?.changeBeforeParkedRows ?? 0;
       verifiedGroup.set(updated, latestVerification(detail, row));
       const fallbackOrder = Math.max(hintOrder, unverified.get(row) ?? 0, failedWatchOrder.get(map) ?? 0);
-      if (fallbackOrder > order || typeof detail.parked_needs_you !== 'boolean') {
+      if (detail.status === 'parked' && (fallbackOrder > order || typeof detail.parked_needs_you !== 'boolean')) {
         updated = awaitingVerification(updated, row, Math.max(order, fallbackOrder));
       }
       rowOrder.set(updated, order);
-      publishParkedRow(map, row, updated);
-      return { ...view, ...parkedFacts(updated) };
+      if (transition) {
+        for (const read of activeLists) {
+          if (read.sandboxId !== detail.sandbox_id || read.order >= order) continue;
+          read.changes.delete(row.id); // already superseded by the accepted detail
+          read.parked.add(row.id);
+          read.transitions.set(row.id, updated);
+        }
+      }
+      const missedHint = detail.status === 'parked' && hintOrder > order && !hasParkedRows(map);
+      if (updated.archived) {
+        map.delete(row.id);
+        emit('task', updated);
+        emit('tasks', detail.sandbox_id);
+        scheduleCountsRefresh();
+      } else {
+        publishParkedRow(map, row, updated);
+      }
+      if (missedHint) requestRead(detail.sandbox_id, refreshParkedGroups, true, true);
+      return { ...view, ...(transition ? updated : parkedFacts(updated)) };
     };
   }
 

@@ -16,7 +16,7 @@ An older blocking Git chip stays visible when a later list verifies recovery on 
 
 The mounted parked terminal takes the owner notice from the current task summary. It uses a cached plan’s active ordinal while it still names the active step in the current summary and fits the plan. A list that observes completion can therefore update the terminal while its next detail read is pending.
 
-The mounted terminal publishes the parked fields from its detail read to the existing row. Each read receives its order when it starts. A later successful list or detail supplies the verified status and PR identity. An unavailable watch preserves an observed open PR conservatively and a later confirmed closure rules out an older observation of the same PR. The row only receives public summary fields. Task lists and lifecycle events continue to determine membership.
+The mounted terminal publishes the parked fields from its detail read to the existing row. Each read receives its order when it starts. A later successful list or detail supplies the verified status and PR identity. An unavailable watch preserves an observed open PR conservatively and a later confirmed closure rules out an older observation of the same PR. The row only receives public summary fields. A terminal that sees a missed park, resume or archive publishes the lifecycle of an existing task. It copies public summary fields including the current subscription ID. Each older outstanding list retains the transition until it completes. A later event, permanent removal or newer successful confirmation takes precedence. A terminal detail cannot add an absent task. A PR announcement seen before the first parked row appears schedules one verification through the existing watch.
 
 ## Alternatives
 
