@@ -12,6 +12,8 @@ or an imported `auth.json`. The detailed contracts are in
 [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md); crate layering rules are in
 [engineering/architecture.md](engineering/architecture.md).
 
+Contained agent and CI processes have a 1 GiB `/tmp`. The process host creates a run-owned directory inside the sandbox disk quota for disposable builds. Commands receive a build subdirectory. The ownership marker lives in its parent. The host pins the parent directory, and the server retains its launch ownership at readiness or reclaims a stopped host's builds before returning a startup error. Cleanup walks the opened build tree and keeps its versioned receipt with the protected run metadata. Same-boot recovery checks host and child process identities before removing the tree. [Decision 0439](decisions/0439-delivery-checks-mutations-by-hand-and-builds-on-disk.md)
+
 The supervisor terminates a disconnected run using the identities recorded by its host. On Linux it checks exit of the entire process before recording a forced loss. [Decision 0390](decisions/0390-linux-host-exit-is-observed-for-the-whole-process.md)
 
 ```mermaid
@@ -36,7 +38,7 @@ flowchart LR
   CD -->|"dev: deploy + verify, allowed secrets"| SB
   CD -->|"production: deploy + verify (or rollback), allowed secrets"| PSB
   APP -->|"prune caches, quota"| SB
-  CI -->|"jobs in its ci/ leaf, job slots"| SB
+  CI -->|"job slots and per-job CPU and memory budgets"| SB
   SUP <-->|"Unix socket"| PH["yulius ptyhost (per run)"]
   subgraph SB["Sandbox (namespace holder)"]
     PH --> AG["claude, codex or agy TUI"]
@@ -3299,8 +3301,8 @@ Yulius's own `[cd.dev]` deploys to a staging VM, a Yulius instance no person rel
 [Yulius's own staging VM](operations.md#yuliuss-own-staging-vm)). The scripts are `scripts/cd/`,
 the build `deploy/build/Dockerfile`, and the tests `scripts/test_cd.py`, which run against a fake
 root. Production is still a promotion of `dev` to `main` that each instance installs through
-its update helper (decision 0264). `[cd.dev]` is Yulius's merge-first target: both test shards
-and e2e are `after_merge`, and a promotion comes only from the revision staging verified
+its update helper (decision 0264). `[cd.dev]` is Yulius's merge-first target: the two test jobs share one run-scoped nextest archive,
+and both shards and e2e are `after_merge`, and a promotion comes only from the revision staging verified
 ([decision 0436](decisions/0436-yuliuss-full-suite-runs-after-the-merge-and-promotion-comes-from-verified-staging.md)).
 
 ```mermaid

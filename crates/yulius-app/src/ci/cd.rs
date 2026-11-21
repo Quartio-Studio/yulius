@@ -2792,16 +2792,20 @@ impl App {
             && target.name == env
         {
             let request = self.staging_request(&sandbox, &env, ctx, &head).await?;
-            let text = format!(
-                "Staging request {} for revision {} of {}: {}. {}. Yulius tells this session its outcome; meanwhile cd_status shows the queue with its run ids, and cd_deploy again answers with this request.",
-                request.id,
-                short_sha(&request.revision),
-                env_label(&env),
-                request.state.as_str(),
-                request.note.as_deref().unwrap_or(
-                    "Yulius runs the full gate on exactly that merged revision, then deploys and verifies it in revision order"
-                ),
-            );
+            let text = if request.state.is_pending() {
+                format!(
+                    "Staging request {} for revision {} of {}: {}. {}. Yulius tells this session its outcome; meanwhile cd_status shows the queue with its run ids, and cd_deploy again answers with this request.",
+                    request.id,
+                    short_sha(&request.revision),
+                    env_label(&env),
+                    request.state.as_str(),
+                    request.note.as_deref().unwrap_or(
+                        "Yulius runs the full gate on exactly that merged revision, then deploys and verifies it in revision order"
+                    ),
+                )
+            } else {
+                super::staging::staging_outcome_text(&request)
+            };
             return Ok(serde_json::json!({
                 "text": text,
                 "staging": {

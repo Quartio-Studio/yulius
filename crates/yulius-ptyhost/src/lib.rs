@@ -22,6 +22,7 @@
 //! Host mode provides no containment: a descendant that creates its own session escapes process
 //! group cleanup (on Linux the host also sweeps the child's session).
 
+mod build_scratch;
 mod client;
 pub mod containment;
 mod files;
