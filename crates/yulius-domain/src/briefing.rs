@@ -722,7 +722,7 @@ fn review_instructions(harness: Harness) -> &'static str {
     match harness {
         Harness::ClaudeCode => "Agent `yulius-reviewer`, Yulius picks its model",
         Harness::Codex => {
-            "`spawn_agent`, fork_turns=none, model=gpt-6.2-astra, reasoning_effort=high"
+            "`spawn_agent`, fork_turns=none, model=gpt-6.2-astra, reasoning_effort=high, +            task_name=yulius_review_<n> with a fresh positive integer for each reviewer. +            Ask the reviewer to end its report with `Verdict: approve` or `Verdict: request changes`"
         }
         Harness::Antigravity => "`swarm` add a fresh reviewer, model=gemini-4-neon-high",
     }
@@ -1802,6 +1802,16 @@ mod tests {
                     .lines()
                     .find(|line| line.starts_with("- Get an independent review"))
                     .ok_or("missing independent review instructions")?;
+                assert_eq!(
+                    review.contains("task_name=yulius_review_<n>"),
+                    harness == Harness::Codex
+                );
+                if harness == Harness::Codex {
+                    assert!(
+                        review.contains("Verdict: approve")
+                            && review.contains("Verdict: request changes")
+                    );
+                }
                 assert!(
                     review.contains("Re-review until approval without asking")
                         && !review.contains("needs_you"),

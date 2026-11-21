@@ -778,6 +778,16 @@ pub trait CoordinationStore: Send + Sync {
     async fn task_messages(&self, task: &TaskId, limit: u32) -> AppResult<Vec<MessageRecord>>;
     /// Inserts a review round (SPEC-493 REV-004).
     async fn insert_review_round(&self, round: &ReviewRoundRecord) -> AppResult<()>;
+    /// Numbers and records a Codex reviewer's start atomically. The child runs one round.
+    async fn start_codex_review_round(
+        &self,
+        task: &TaskId,
+        id: &str,
+        subagent: &str,
+        model: &str,
+        head: Option<&str>,
+        at: Timestamp,
+    ) -> AppResult<()>;
     /// The review rounds of a task, oldest first: those of its open pull request only
     /// (`open_only`), else all.
     async fn review_rounds(

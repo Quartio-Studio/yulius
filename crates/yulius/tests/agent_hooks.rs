@@ -2030,6 +2030,221 @@ async fn codex_hooks_reach_yulius_for_codex_runs_only() -> TestResult {
     Ok(())
 }
 
+const CODEX_PARENT: &str = "019a6b2e-7c1d-7f00-9a3e-1b2c3d4e5f60";
+const REVIEW_HEAD: &str = "ab1234567890ab1234567890ab1234567890ab12";
+
+async fn codex_review_fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
+    use yulius_app::ports::store::TaskStore;
+    let f = fixture_of(None, |_| {}, Agent::Codex).await?;
+    f.h.store
+        .set_attempt_session(&AttemptId::parse("at1")?, CODEX_PARENT)
+        .await?;
+    Ok(f)
+}
+
+fn codex_child(f: &Fixture, id: &str, parent: &str, path: &str, depth: u32) -> TestResult {
+    let day =
+        f.h._dir
+            .path()
+            .join("sandboxes/s1/codex/sessions/2026/11/21");
+    std::fs::create_dir_all(&day)?;
+    let meta = json!({
+        "type":"session_meta",
+        "payload":{
+            "id":id, "cwd":f.worktree,
+            "source":{"subagent":{"thread_spawn":{
+                "parent_thread_id":parent, "depth":depth, "agent_path":path, "agent_role":null
+            }}},
+            "git":{"commit_hash":REVIEW_HEAD}
+        }
+    });
+    std::fs::write(
+        day.join(format!("rollout-2026-11-21T22-12-05-{id}.jsonl")),
+        format!("{meta}\n"),
+    )?;
+    Ok(())
+}
+
+async fn codex_child_hook(f: &Fixture, event: &str, id: &str, report: Option<&str>) -> TestResult {
+    let r = call(
+        &f.h.internal,
+        Method::POST,
+        &format!("/hooks/codex/{event}"),
+        Some(json!({
+            "hook_event_name":event, "session_id":CODEX_PARENT, "agent_id":id,
+            "agent_type":"default", "model":if report.is_some() {"gpt-6.2-sol"} else {"gpt-6.2-astra"},
+            "transcript_path":"/untrusted/hook-path.jsonl", "last_assistant_message":report
+        })),
+        &agent(),
+    ).await?;
+    assert_eq!(r.status, 200, "{}", r.body);
+    Ok(())
+}
+
+#[tokio::test]
+async fn codex_review_starts_belong_to_named_children_of_the_task_session() -> TestResult {
+    use yulius_app::ports::store::CoordinationStore;
+    let f = codex_review_fixture().await?;
+    for (id, parent, path, depth) in [
+        ("worker", CODEX_PARENT, "/root/worker", 1),
+        (
+            "near-match",
+            CODEX_PARENT,
+            "/root/yulius_review_discovery",
+            1,
+        ),
+        ("nested", CODEX_PARENT, "/root/worker/yulius_review_1", 2),
+        (
+            "other-parent",
+            "unrelated-parent",
+            "/root/yulius_review_1",
+            1,
+        ),
+    ] {
+        codex_child(&f, id, parent, path, depth)?;
+        codex_child_hook(&f, "SubagentStart", id, None).await?;
+    }
+    assert!(f.h.store.review_rounds(&f.task, true).await?.is_empty());
+    codex_child(&f, "review", CODEX_PARENT, "/root/yulius_review_1", 1)?;
+    let start = f.h.app.now();
+    codex_child_hook(&f, "SubagentStart", "review", None).await?;
+    f.h.clock.0.fetch_add(30_000, Ordering::SeqCst);
+    codex_child_hook(&f, "SubagentStart", "review", None).await?;
+    let rows = f.h.store.review_rounds(&f.task, true).await?;
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    assert_eq!(row.round, 1);
+    assert_eq!(row.head.as_deref(), Some(REVIEW_HEAD));
+    assert_eq!(row.subagent_id.as_deref(), Some("review"));
+    assert_eq!(row.model, "gpt-6.2-astra");
+    assert_eq!(row.started_at, start);
+    assert_eq!(row.ended_at, None);
+    Ok(())
+}
+
+#[tokio::test]
+async fn codex_review_reports_settle_only_their_own_round_once() -> TestResult {
+    use yulius_app::ports::store::CoordinationStore;
+    let f = codex_review_fixture().await?;
+    codex_child(&f, "first", CODEX_PARENT, "/root/yulius_review_1", 1)?;
+    codex_child_hook(&f, "SubagentStart", "first", None).await?;
+    codex_child_hook(&f, "SubagentStop", "untracked", Some("Verdict: approve")).await?;
+    codex_child_hook(
+        &f,
+        "SubagentStop",
+        "first",
+        Some("Still checking the tests."),
+    )
+    .await?;
+    let first = f.h.store.review_rounds(&f.task, true).await?;
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].ended_at, None);
+    let end = Timestamp(f.h.clock.0.fetch_add(12_000, Ordering::SeqCst) + 12_000);
+    codex_child_hook(
+        &f,
+        "SubagentStop",
+        "first",
+        Some("Verdict: request changes"),
+    )
+    .await?;
+    codex_child(&f, "second", CODEX_PARENT, "/root/yulius_review_2", 1)?;
+    codex_child_hook(&f, "SubagentStart", "second", None).await?;
+    f.h.clock.0.fetch_add(12_000, Ordering::SeqCst);
+    codex_child_hook(&f, "SubagentStop", "first", Some("Verdict: approve")).await?;
+    codex_child_hook(&f, "SubagentStop", "second", Some("Verdict: approve")).await?;
+    let rows = f.h.store.review_rounds(&f.task, true).await?;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].ended_at, Some(end));
+    assert_eq!(rows[0].verdict.as_deref(), Some("request_changes"));
+    assert_eq!(rows[0].model_answered.as_deref(), Some("gpt-6.2-sol"));
+    assert_eq!(rows[1].round, 2);
+    assert_eq!(rows[1].verdict.as_deref(), Some("approve"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn codex_review_rounds_feed_delivery_and_merged_analytics() -> TestResult {
+    use yulius_app::delivery::DeliveryRecord;
+    use yulius_app::ports::{store::CoordinationStore, store_ext::DeliveryStore};
+    use yulius_domain::delivery::DeliveryStage;
+    let f = codex_review_fixture().await?;
+    let admin = support::superadmin_bearer(&f.h).await?;
+    let delivery = format!("/api/tasks/{}/delivery", f.task);
+    codex_child(&f, "first", CODEX_PARENT, "/root/yulius_review_1", 1)?;
+    codex_child_hook(&f, "SubagentStart", "first", None).await?;
+    let start = f.h.app.now();
+    f.h.clock.0.fetch_add(90_000, Ordering::SeqCst);
+    codex_child_hook(
+        &f,
+        "SubagentStop",
+        "first",
+        Some("Verdict: request changes"),
+    )
+    .await?;
+    let end = f.h.app.now();
+    codex_child(&f, "second", CODEX_PARENT, "/root/yulius_review_2", 1)?;
+    codex_child_hook(&f, "SubagentStart", "second", None).await?;
+    codex_child_hook(&f, "SubagentStop", "second", Some("Verdict: approve")).await?;
+    let active = call(&f.h.router, Method::GET, &delivery, None, &admin).await?;
+    assert_eq!(active.status, 200, "{}", active.body);
+    let rows = active.body["review_rounds"]
+        .as_array()
+        .ok_or("review rows")?;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        rows[0]["started_at"],
+        yulius_domain::time::format_rfc3339(start)
+    );
+    assert_eq!(
+        rows[0]["ended_at"],
+        yulius_domain::time::format_rfc3339(end)
+    );
+
+    f.h.clock.0.fetch_add(60_000, Ordering::SeqCst);
+    assert!(
+        f.h.store
+            .transition_delivery(
+                &DeliveryStage::None,
+                &DeliveryRecord {
+                    task_id: f.task.clone(),
+                    stage: DeliveryStage::MergedIntegration,
+                    pr_number: Some(7),
+                    updated_at: f.h.app.now(),
+                },
+            )
+            .await?
+    );
+    let merged = call(&f.h.router, Method::GET, &delivery, None, &admin).await?;
+    assert_eq!(merged.status, 200, "{}", merged.body);
+    assert_eq!(merged.body["review_rounds"][0]["pr_number"], 7);
+    assert_eq!(merged.body["review_rounds"][1]["verdict"], "approve");
+    let analytics = call(
+        &f.h.router,
+        Method::GET,
+        "/api/analytics/reviews",
+        None,
+        &admin,
+    )
+    .await?;
+    assert_eq!(analytics.status, 200, "{}", analytics.body);
+    assert_eq!(analytics.body["first_rounds_requesting_changes"], 1);
+    assert_eq!(analytics.body["median_rounds"], 2.0);
+    assert_eq!(
+        analytics.body["rounds_by_model"],
+        json!([{"model":"gpt-6.2-sol","rounds":2}])
+    );
+
+    f.h.clock.0.fetch_add(60_000, Ordering::SeqCst);
+    codex_child_hook(&f, "SubagentStart", "first", None).await?;
+    codex_child(&f, "next", CODEX_PARENT, "/root/yulius_review_3", 1)?;
+    codex_child_hook(&f, "SubagentStart", "next", None).await?;
+    let open = f.h.store.review_rounds(&f.task, true).await?;
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0].round, 1);
+    assert_eq!(open[0].subagent_id.as_deref(), Some("next"));
+    Ok(())
+}
+
 /// A live turn with one actionable plan step.
 async fn task_with_open_step(
     agent: Agent,

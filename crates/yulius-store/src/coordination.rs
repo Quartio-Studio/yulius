@@ -380,6 +380,38 @@ impl CoordinationStore for SqliteStore {
         .await
     }
 
+    async fn start_codex_review_round(
+        &self,
+        task: &TaskId,
+        id: &str,
+        subagent: &str,
+        model: &str,
+        head: Option<&str>,
+        at: Timestamp,
+    ) -> AppResult<()> {
+        let (task, id, subagent, model, head) = (
+            task.to_string(),
+            id.to_owned(),
+            subagent.to_owned(),
+            model.to_owned(),
+            head.map(str::to_owned),
+        );
+        self.call(move |c| {
+            c.execute(
+                "INSERT INTO review_rounds (id, task_id, round, head, agent, model, reason, \
+                 subagent_id, started_at) SELECT ?1, ?2, COALESCE((SELECT MAX(round) \
+                 FROM review_rounds WHERE task_id = ?2 AND merged_at IS NULL \
+                 AND ended_at IS NOT NULL), 0) + 1, ?3, 'codex-reviewer', ?4, 'round', ?5, ?6 \
+                 WHERE NOT EXISTS (SELECT 1 FROM review_rounds WHERE task_id = ?2 \
+                 AND (subagent_id = ?5 OR merged_at > ?6))",
+                params![id, task, head, model, subagent, at.0],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
     async fn review_rounds(
         &self,
         task: &TaskId,

@@ -24,8 +24,15 @@ use crate::secret::Secret;
 pub const CLAUDE_PROGRAM: &str = "claude";
 /// Codex CLI executable name (resolved through `PATH` by the spawner).
 pub const CODEX_PROGRAM: &str = "codex";
-/// Hook events registered for Codex (SPEC-503 CDX-007): the same turn boundaries as Claude Code's.
-pub const CODEX_HOOK_EVENTS: [&str; 4] = ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"];
+/// Codex's turn boundaries and the review subagent lifecycle (SPEC-503, SPEC-605).
+pub const CODEX_HOOK_EVENTS: [&str; 6] = [
+    "SessionStart",
+    "UserPromptSubmit",
+    "Stop",
+    "SessionEnd",
+    "SubagentStart",
+    "SubagentStop",
+];
 /// The prompt a Codex session resumed after a usage limit gets: Codex has no way to continue the
 /// cut turn by itself.
 pub const CODEX_CONTINUE_PROMPT: &str = "Continue from where you left off.";
