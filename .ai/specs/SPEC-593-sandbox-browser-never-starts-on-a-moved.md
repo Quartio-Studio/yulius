@@ -50,7 +50,8 @@ browser; the move helper is `crates/yulius/src/instance/migrate`.
   the start fails before the display or Chrome starts, saying which lock and why.
 - **SPL-004** The fake Chromium behaves like the real one: it holds its own `SingletonLock`
   (`<host>-<pid>`) while it runs, refuses a profile whose lock names another host (headless:
-  exit 21; on a display: it never answers), and hands over to a live lock of this host (exit 0).
+  exit 21; on a display: it never answers), hands over to a running fake browser's lock of this
+  host (exit 0) and takes over a lock whose running pid is no browser.
 
 ## Plan
 
@@ -70,8 +71,9 @@ browser; the move helper is `crates/yulius/src/instance/migrate`.
 - **AC-2 (SPL-001)** A lock of this host with a pid that is not running, a lock that is not a
   `<host>-<pid>` link, and cookie/socket links without a lock are all removed before the start.
 - **AC-3 (SPL-002, SPL-003)** A lock of this host naming a running process is kept (all three
-  entries unchanged); the fake hands over and exits, and the error names the holding pid.
-  A second sandbox pointed at the profile of a running browser leaves that browser's lock alone.
+  entries unchanged). A second sandbox pointed at the profile of a running browser leaves that
+  browser's lock alone, and its failed start names the holding pid. A lock naming a running
+  process that is no browser does not block the start: Chrome takes it over.
 - **AC-4 (SPL-003)** A stale lock that cannot be removed fails the start with a profile error
   naming the lock, and no display is started.
 - **AC-5** Real Chrome (opt-in, `YULIUS_TEST_CHROMIUM`) starts headful on a virtual display with
@@ -91,10 +93,15 @@ run it). `scripts/dev quick`, the crate's tests, and Yulius CI for the whole gat
   Chrome start), not in the move helper: a profile also arrives by restore or copy, and a move
   that cleared it would still leave every other path broken. Recorded as
   [ADR-0432](../../docs/decisions/0432-a-browser-start-clears-chrome-profile-locks-no-live-process-holds.md).
-- Decide like Chrome does from the lock's `<host>-<pid>` (split at the last `-`) and the host
-  name of `gethostname`, which Chrome itself compares; a running pid of this host keeps the lock
-  even when it might be another program reusing the pid: Chrome resolves that case itself, and
-  Yulius never breaks a live browser's lock.
+- Read the lock as Chrome does: `<host>-<pid>` split at the last `-`, the host compared with
+  `gethostname`. Yulius differs from Chrome in one case: Chrome also keeps another host's lock
+  when its pid is a running Chrome here (a renamed host shared by two starters), which Yulius
+  removes; the manager never starts two browsers on one profile. A running pid of this host keeps
+  the lock even when another program may have reused the pid: Chrome resolves that case itself,
+  and Yulius never breaks a live browser's lock.
+- A failed start is blamed on the holder only when Chrome gave up on it (it exited, or never
+  answered) and the lock still names the same pid afterwards (review round 1): Chrome replaces a
+  lock whose pid is no Chrome with its own, so a reused pid is never named.
 - A start on a profile held by a running local process is still attempted (Chrome may find the
   pid is not Chrome and proceed); only its failure is explained, so a reused pid never blocks
   the browser.

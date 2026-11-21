@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use yulius_browser::fake::{
-    FAKE_ARGV_FILE, FAKE_CHILD_PID_FILE, FAKE_PID_FILE, FakeCdpServer, FakeChromium,
-    write_fake_chromium,
+    FAKE_ARGV_FILE, FAKE_CHILD_PID_FILE, FAKE_LOCK_OWNER_FILE, FAKE_PID_FILE, FakeCdpServer,
+    FakeChromium, write_fake_chromium,
 };
 use yulius_browser::{
     BrowserConfig, BrowserError, BrowserManager, BrowserNetwork, CdpError, NetworkLease, PIPE_URL,
@@ -870,10 +870,12 @@ async fn a_profile_locked_by_another_host_starts_after_its_stale_locks_are_clear
     Ok(())
 }
 
-/// SPEC-593 AC-3: a lock of this host naming a running process is kept with its links, and the
-/// failed start (Chrome hands over to it) names that process.
+/// SPEC-593 AC-3 (review round 1): a lock of this host naming a running process that is no
+/// browser (a reused pid) is left to Chrome, which takes the profile over: the start is not
+/// refused, and the browser holds the lock afterwards.
 #[tokio::test]
-async fn a_lock_of_a_running_local_process_is_kept_and_named_when_the_start_fails() -> TestResult {
+async fn a_lock_naming_a_running_process_that_is_no_browser_does_not_block_the_start() -> TestResult
+{
     let fake = FakeCdpServer::start().await?;
     let dir = tempfile::tempdir()?;
     let exe = write_fake_chromium(
@@ -884,37 +886,92 @@ async fn a_lock_of_a_running_local_process_is_kept_and_named_when_the_start_fail
         },
     )?;
     let manager = BrowserManager::new(config(exe, dir.path()));
-    let sandbox = SandboxId::parse("held")?;
+    let sandbox = SandboxId::parse("reused")?;
     let profile = manager.default_profile_dir(&sandbox);
     std::fs::create_dir_all(&profile)?;
     let mut holder = std::process::Command::new("sleep").arg("600").spawn()?;
-    let lock = format!("{}-{}", host_name()?, holder.id());
-    link(&profile, "SingletonLock", &lock)?;
     link(
         &profile,
-        "SingletonSocket",
-        "/tmp/.org.chromium.Chromium.live/SingletonSocket",
+        "SingletonLock",
+        &format!("{}-{}", host_name()?, holder.id()),
     )?;
-    link(&profile, "SingletonCookie", "1234")?;
     let result = manager.ensure(&sandbox, &profile).await;
-    let kept = (
-        link_target(&profile, "SingletonLock"),
-        link_target(&profile, "SingletonSocket"),
-        link_target(&profile, "SingletonCookie"),
-    );
     holder.kill()?;
     holder.wait()?;
-    match result {
-        Err(error @ BrowserError::ProfileInUse { pid, .. }) => {
-            assert_eq!(pid, holder.id());
-            let text = error.to_string();
-            assert!(text.contains(&format!("process {pid}")), "{text}");
-        }
-        other => return Err(format!("expected the profile in use, got {other:?}").into()),
+    let pid = result?.pid().ok_or("no pid")?;
+    assert_eq!(
+        link_target(&profile, "SingletonLock")?,
+        format!("{}-{pid}", host_name()?)
+    );
+    manager.shutdown(&sandbox).await?;
+    Ok(())
+}
+
+/// SPEC-593 SPL-004: the fake refuses another host's lock like Chrome (headless: exit 21; on a
+/// display it never answers), hands over to a running fake browser's lock (exit 0) and takes
+/// over a lock whose pid runs but is no browser, without recording itself before that.
+#[tokio::test]
+async fn the_fake_chromium_honours_profile_locks_like_chrome() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let exe = write_fake_chromium(dir.path(), "fake-chromium", FakeChromium::NeverReady)?;
+    let profile = dir.path().join("profile");
+    std::fs::create_dir_all(&profile)?;
+    let run = |extra: &[&str]| {
+        std::process::Command::new(&exe)
+            .arg(format!("--user-data-dir={}", profile.display()))
+            .args(extra)
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+    };
+    link(&profile, "SingletonLock", "old-host-4242")?;
+    let refused = run(&["--headless=new"])?.wait_with_output()?;
+    assert_eq!(refused.status.code(), Some(21));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("another computer (old-host)"));
+    let mut dialog = run(&[])?;
+    let deadline = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < deadline {
+        assert!(
+            dialog.try_wait()?.is_none(),
+            "the dialog never ends by itself"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert_eq!(kept.0?, lock);
-    assert_eq!(kept.1?, "/tmp/.org.chromium.Chromium.live/SingletonSocket");
-    assert_eq!(kept.2?, "1234");
+    dialog.kill()?;
+    dialog.wait()?;
+    assert_eq!(link_target(&profile, "SingletonLock")?, "old-host-4242");
+    assert!(
+        !profile.join(FAKE_PID_FILE).exists(),
+        "a refused start records nothing"
+    );
+
+    // A running process that took the lock as a fake browser gets the window.
+    std::fs::remove_file(profile.join("SingletonLock"))?;
+    let mut browser = std::process::Command::new("sleep").arg("600").spawn()?;
+    let lock = format!("{}-{}", host_name()?, browser.id());
+    link(&profile, "SingletonLock", &lock)?;
+    std::fs::write(profile.join(FAKE_LOCK_OWNER_FILE), browser.id().to_string())?;
+    let handed = run(&[])?.wait_with_output();
+    // Not a browser: the same running pid without the owner record is taken over.
+    std::fs::remove_file(profile.join(FAKE_LOCK_OWNER_FILE))?;
+    let mut taking = run(&[])?;
+    let took = taking.id();
+    let mut lock_now = String::new();
+    let deadline = Instant::now() + WAIT;
+    while Instant::now() < deadline {
+        lock_now = link_target(&profile, "SingletonLock").unwrap_or_default();
+        if lock_now.ends_with(&format!("-{took}")) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    taking.kill()?;
+    taking.wait()?;
+    browser.kill()?;
+    browser.wait()?;
+    let handed = handed?;
+    assert_eq!(handed.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&handed.stderr).contains("existing browser session"));
+    assert_eq!(lock_now, format!("{}-{took}", host_name()?));
     Ok(())
 }
 

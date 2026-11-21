@@ -1425,6 +1425,10 @@ pub enum FakeChromium {
 pub const FAKE_ARGV_FILE: &str = "fake-chromium-argv.txt";
 /// File holding the fake's own pid (stable across its final `exec`).
 pub const FAKE_PID_FILE: &str = "fake-chromium.pid";
+/// File holding the pid of the fake that took the profile's `SingletonLock`: the fake hands
+/// over only to that process (Chrome only to a Chrome process), and takes over a lock whose pid
+/// runs but is not it.
+pub const FAKE_LOCK_OWNER_FILE: &str = "fake-chromium-lock-owner.pid";
 /// File holding the fake's forked descendant pid.
 pub const FAKE_CHILD_PID_FILE: &str = "fake-chromium-child.pid";
 
@@ -1464,12 +1468,14 @@ for arg in "$@"; do
   esac
 done
 if [ -z "$dir" ]; then echo "fake-chromium: missing --user-data-dir" >&2; exit 2; fi
-printf '%s\n' "$@" > "$dir/fake-chromium-argv.txt"
+"#;
+    let record = r#"printf '%s\n' "$@" > "$dir/fake-chromium-argv.txt"
 printf '%s' "$$" > "$dir/fake-chromium.pid"
 "#;
     // Chrome's process singleton (SPEC-593): a lock of another host is refused (headless: exit
     // 21; on a display a dialog that never answers), a running pid of this host gets the window
-    // handed over (exit 0), anything else is replaced by this process's own lock.
+    // handed over when it is the fake that took it (exit 0), anything else is replaced by this
+    // process's own lock.
     let singleton = r#"host="$(uname -n)"
 headless=""
 for arg in "$@"; do
@@ -1486,15 +1492,17 @@ if [ -L "$dir/SingletonLock" ]; then
     if [ -n "$headless" ]; then exit 21; fi
     exec sleep 600
   fi
-  if [ "$lock_host" = "$host" ] && kill -0 "$lock_pid" 2>/dev/null; then
+  owner="$(cat "$dir/fake-chromium-lock-owner.pid" 2>/dev/null)"
+  if [ "$lock_host" = "$host" ] && [ "$owner" = "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
     echo "fake-chromium: Opening in existing browser session." >&2
     exit 0
   fi
 fi
 rm -f "$dir/SingletonLock" "$dir/SingletonCookie" "$dir/SingletonSocket"
 ln -s "$host-$$" "$dir/SingletonLock"
+printf '%s' "$$" > "$dir/fake-chromium-lock-owner.pid"
 "#;
-    let parse_dir = format!("{parse_dir}{singleton}");
+    let parse_dir = format!("{parse_dir}{singleton}{record}");
     // Only the relay keeps fds 3 and 4, so its end (the server dropped the connection) is the
     // end of the pipe for Yulius, as a crashed browser's would be.
     let ready = |port: u16, trap: &str| {

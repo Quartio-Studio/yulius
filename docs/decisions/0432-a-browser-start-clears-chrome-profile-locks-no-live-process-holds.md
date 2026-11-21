@@ -18,7 +18,10 @@ Before every start, `prepare_profile` reads the lock and removes the three entri
 themselves, never their targets) when no running browser can hold it: the lock names another
 host, names this host with a pid that is not running, is not a `<host>-<pid>` link, or is absent
 while a cookie or socket link remains. A lock of this host with a running pid is kept and Chrome
-decides; a start that then fails names the holding process. A stale lock that cannot be removed
+decides; a start that Chrome gave up on (it exited or never answered) while the lock still
+names that pid names the holding process. Unlike Chrome, Yulius also removes another host's
+lock whose pid happens to be a running Chrome here; the manager never starts two browsers on
+one profile. A stale lock that cannot be removed
 fails the start before the display starts.
 
 ## Alternatives

@@ -85,6 +85,12 @@ pub(crate) fn host_name() -> Result<Vec<u8>, BrowserError> {
         })
 }
 
+/// Whether the profile's lock still names `pid` of this host (after a failed start: Chrome
+/// replaces a lock whose pid is no Chrome with its own).
+pub(crate) async fn still_held(profile_dir: &Path, this_host: &[u8], pid: u32) -> bool {
+    matches!(read_lock(profile_dir).await, Ok(Lock::Held { host, pid: held }) if host == this_host && held == pid)
+}
+
 /// Removes the profile's Chrome lock entries unless a running process of this host holds the
 /// lock; returns that process's pid when the lock is kept (Chrome then decides).
 ///
@@ -240,9 +246,28 @@ mod tests {
         Ok(())
     }
 
+    /// After a failed start: does the lock still name the process it named before?
+    #[tokio::test]
+    async fn the_lock_is_still_held_only_by_the_same_process_of_this_host() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        assert!(!still_held(dir.path(), HOST, 4242).await);
+        link(dir.path(), "SingletonLock", "new-host-4242")?;
+        assert!(still_held(dir.path(), HOST, 4242).await);
+        assert!(
+            !still_held(dir.path(), HOST, 4243).await,
+            "Chrome took it over"
+        );
+        assert!(!still_held(dir.path(), b"old-host", 4242).await);
+        Ok(())
+    }
+
     #[test]
     fn this_process_is_running_and_pid_zero_is_not() -> TestResult {
         assert!(process_running(std::process::id()));
+        let mut child = std::process::Command::new("true").spawn()?;
+        let reaped = child.id();
+        child.wait()?;
+        assert!(!process_running(reaped), "a reaped child is not running");
         assert!(!process_running(0));
         assert!(!process_running(u32::MAX));
         assert!(!host_name()?.is_empty());

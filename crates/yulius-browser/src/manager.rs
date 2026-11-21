@@ -256,6 +256,20 @@ async fn wait_until_ready(
     }
 }
 
+/// Chrome handed over to, or waited for, `holder`, which still holds the profile: say so.
+fn blame_holder(error: BrowserError, holder: Option<u32>) -> BrowserError {
+    match (error, holder) {
+        (
+            error @ (BrowserError::ExitedEarly { .. } | BrowserError::StartupTimeout { .. }),
+            Some(pid),
+        ) => BrowserError::ProfileInUse {
+            pid,
+            error: Box::new(error),
+        },
+        (error, _) => error,
+    }
+}
+
 /// Creates the profile (mode 0700) and removes Chrome's locks no running browser holds
 /// (SPEC-593); returns the pid of a running process of this host whose lock was kept.
 async fn prepare_profile(profile_dir: &Path) -> Result<Option<u32>, BrowserError> {
@@ -397,20 +411,12 @@ impl BrowserManager {
     ) -> Result<Arc<BrowserInstance>, BrowserError> {
         let exe = resolve_executable(&self.config.chromium_exe)?;
         let held = prepare_profile(profile_dir).await?;
-        let started = self.start(state, sandbox, profile_dir, &exe).await;
-        match (started, held) {
-            // Chrome handed over to the process holding the profile, or waits for it: say so.
-            (
-                Err(
-                    error @ (BrowserError::ExitedEarly { .. }
-                    | BrowserError::StartupTimeout { .. }
-                    | BrowserError::Cdp(_)),
-                ),
-                Some(pid),
-            ) => Err(BrowserError::ProfileInUse {
-                pid,
-                error: Box::new(error),
-            }),
+        match (self.start(state, sandbox, profile_dir, &exe).await, held) {
+            (Err(error), Some(pid)) => {
+                let host = crate::profile::host_name()?;
+                let still = crate::profile::still_held(profile_dir, &host, pid).await;
+                Err(blame_holder(error, still.then_some(pid)))
+            }
             (started, _) => started,
         }
     }
@@ -585,6 +591,41 @@ mod tests {
             .now_or_never();
         assert!(matches!(result, Some(Err(e)) if e.viewer_code() == ViewerErrorCode::Capacity));
         Ok(())
+    }
+
+    /// SPEC-593 SPL-003 (review round 1): only Chrome's own give-ups (it exited, or never
+    /// answered) are blamed on the process that still holds the profile.
+    #[test]
+    fn a_failed_start_names_the_holder_only_when_chrome_gave_up_on_it() {
+        let exited = || BrowserError::ExitedEarly {
+            status: "exit status: 0".into(),
+            stderr: "Opening in existing browser session.".into(),
+        };
+        let timeout = || BrowserError::StartupTimeout {
+            timeout: Duration::from_secs(30),
+        };
+        for error in [exited(), timeout()] {
+            let blamed = blame_holder(error, Some(77));
+            assert!(
+                matches!(&blamed, BrowserError::ProfileInUse { pid: 77, .. }),
+                "{blamed:?}"
+            );
+            assert!(blamed.to_string().contains("process 77"), "{blamed}");
+        }
+        assert!(matches!(
+            blame_holder(exited(), None),
+            BrowserError::ExitedEarly { .. }
+        ));
+        for other in [
+            BrowserError::Cdp(CdpError::Closed),
+            BrowserError::Display("no Xvfb".into()),
+        ] {
+            let kept = blame_holder(other, Some(77));
+            assert!(
+                !matches!(kept, BrowserError::ProfileInUse { .. }),
+                "{kept:?}"
+            );
+        }
     }
 
     #[test]

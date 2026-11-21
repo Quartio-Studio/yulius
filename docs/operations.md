@@ -704,7 +704,9 @@ the start timed out after 30 s with its display. Before every start Yulius remov
 entries when no running browser can hold them: the lock names another host, names this host
 with a pid that is not running, or is not a Chrome lock, or the links remain without a lock. A
 lock of this host whose pid runs is kept and Chrome decides. If that start fails, the panel
-says "the browser profile is in use by process N on this host". If a stale entry cannot be
+says "the browser profile is in use by process N on this host": look at it with `ps -p N -o
+pid,user,args`. A Chrome left over from a crashed server holds the profile until you stop it
+(`kill N`); then open the panel again. If a stale entry cannot be
 removed, the start fails before a display starts and names the entry
 ([ADR-0432](decisions/0432-a-browser-start-clears-chrome-profile-locks-no-live-process-holds.md)).
 
