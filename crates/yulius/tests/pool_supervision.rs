@@ -711,7 +711,7 @@ fn a_goal_continuation_delivered_by_a_move_counts_once() -> TestResult {
         let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
         let id = app.create_task_internal(NewTask {
             sandbox, created_by: user, prompt: "Verify dev".into(), harness: Harness::ClaudeCode,
-            title: Some("Verification".into()), workflow_id: None, steps: vec!["Verify dev".into()],
+            title: Some("Verification".into()), workflow_id: None, steps: vec!["Build checkout".into(), "Verify dev".into()],
             model: None, effort: None, origin: TaskOrigin::Ui, automation_run: None, start: true,
             mode: yulius_app::model::TaskMode::Goal, supertask: false,
         }).await?.id;
@@ -719,18 +719,38 @@ fn a_goal_continuation_delivered_by_a_move_counts_once() -> TestResult {
             screen(&app, &id).contains("FAKE-AGENT READY")
         }).await?;
         app.deps.store.update_task(&id, &yulius_app::ports::store::TaskFieldUpdate {
-            gate_blocks: Some(1),
+            gate_blocks: Some(2),
             ..Default::default()
         }, app.now()).await?;
         let prompt = "Continue the authorized goal. The next unfinished step is \"Verify dev\". Record the evidence and update the step when its work is complete.";
-        app.switch_with(&id, Some(AccountId::parse("b-second")?), "Capacity",
-            yulius_app::supervisor::RunStart::GoalResume { prompt: prompt.to_owned() }).await?;
+        let step = app.deps.store.steps(&id).await?.into_iter().next().ok_or("step")?;
+        let (recorded, receiving) = tokio::sync::oneshot::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        yulius_app::race::on(yulius_app::race::Point::RunRecorded, Path::new(id.as_str()), move || {
+            let _ = recorded.send(());
+            let _ = tokio::task::block_in_place(|| blocked.recv_timeout(Duration::from_secs(30)));
+        });
+        let progress = async {
+            receiving.await?;
+            app.deps.store.update_step(&step.id, "done", Some("Verified"), "worker", app.now()).await?;
+            assert_eq!(task(&app, &id).await?.gate_blocks, 0);
+            release.send(())?;
+            Ok::<_, Box<dyn std::error::Error>>(())
+        };
+        let (moved, progressed) = tokio::join!(tokio::spawn({
+            let app = app.clone();
+            let id = id.clone();
+            async move { app.switch_with(&id, Some(AccountId::parse("b-second").expect("fixture account")), "Capacity",
+                yulius_app::supervisor::RunStart::GoalResume { prompt: prompt.to_owned() }).await }
+        }), progress);
+        moved??;
+        progressed?;
         let second = app.deps.store.live_attempt(&id).await?.ok_or("resumed run")?;
         wait_for("the resumed launch", Duration::from_secs(30), || async {
             std::fs::read_to_string(Path::new(&second.run_dir).join("fake-launch.txt"))
                 .is_ok_and(|launch| launch.contains("Verify dev"))
         }).await?;
-        assert_eq!(task(&app, &id).await?.gate_blocks, 2);
+        assert_eq!(task(&app, &id).await?.gate_blocks, 1, "the attempt follows the completed step");
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;

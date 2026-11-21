@@ -33,7 +33,8 @@ Earlier user requests establish the ownership rule. Task #534 concerned automate
 - [x] Preserve the in-flight turn during spec publication and a requested subscription switch
 - [x] Distinguish owner input from native goal restoration and preserve prompt-mode rotation
 - [x] Keep a submitted owner instruction through concurrent typing and capacity holds
-- [ ] Carry the source of a continuation across launch and delayed hook delivery
+- [x] Carry the source of a continuation across launch and delayed hook delivery
+- [ ] Protect goal attempts while owners draft and workers complete steps
 - [ ] Verify the fix and obtain independent approval
 
 ## Acceptance criteria
@@ -80,3 +81,4 @@ Make the continuation decision where the agent can act on it, at the shared Stop
 - Sixth review at `84b3013a3` identified a copied gate instruction that cost its owner one attempt at replacement launch, and a fresh owner submit that retained three spent attempts when the next draft arrived before the HTTP callback. Both outcomes reproduced. A queued continuation also lacked a record of its source. Fresh and resumed goal continuations now carry an explicit launch and queue kind. Historical queued fresh and resume instructions retain their existing meanings. Viewer input records only time and order, and the callback selects keys at its client's send time, preserves the next draft and consumes acknowledged keys.
 - The combined frozen follow-up mutation run reported `89 listed, 26 caught, 0 missed, 0 timed out, 19 unviable, 44 not reached` at its 25-minute bound.
 - On the sixth reviewed implementation, 291 of 294 compatibility tests passed. The three failures were the new regression controls for delayed input, copied owner instructions and the missing queue origin. The next implementation passed Clippy with warnings denied. The earlier follow-up mutation that suppressed final goal publication is covered by the synchronized UI and wait-history test, which had failed before publication was coalesced. The budget test now accepts an owner prompt before submitting its automatic continuation, exercising the consumed-input boundary.
+- All 33 focused controls passed for the sixth review fixes, including a 300-key next draft, a copied gate instruction delivered to the replacement subprocess, and durable origin tags for both queued session lineages.

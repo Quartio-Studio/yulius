@@ -2315,6 +2315,15 @@ async fn goal_stop_rechecks_the_remaining_step_after_a_slow_observation() -> Tes
 
 #[tokio::test]
 async fn goal_stop_reads_the_plan_while_a_watcher_publishes_its_spec_sync() -> TestResult {
+    goal_stop_during_spec_publication(false).await
+}
+
+#[tokio::test]
+async fn goal_stop_reads_the_plan_while_an_explicit_spec_check_publishes() -> TestResult {
+    goal_stop_during_spec_publication(true).await
+}
+
+async fn goal_stop_during_spec_publication(check: bool) -> TestResult {
     use std::time::Duration;
     use yulius_app::ports::browser::BrowserPort;
 
@@ -2332,7 +2341,20 @@ async fn goal_stop_reads_the_plan_while_a_watcher_publishes_its_spec_sync() -> T
     let app = yulius_app::context::App::new(f.h.app.config.clone(), deps);
     let task = app.deps.store.task(&f.task).await?.ok_or("task")?;
     let watcher = app.clone();
-    let syncing = tokio::spawn(async move { watcher.sync_steps_from_spec(&task).await });
+    let ctx = app.agent_context(TOKEN).await?;
+    if check {
+        std::fs::write(f.worktree.join("checkout.rs"), "fn checkout() {}")?;
+    }
+    let syncing = tokio::spawn(async move {
+        if check {
+            watcher
+                .tool_spec_check(&ctx)
+                .await
+                .map(|report| report["valid"] == true)
+        } else {
+            watcher.sync_steps_from_spec(&task).await
+        }
+    });
     tokio::time::timeout(Duration::from_secs(5), entered.notified()).await?;
     let stop = tokio::time::timeout(
         Duration::from_secs(4),
@@ -2461,6 +2483,11 @@ async fn goal_stop_budget_survives_submission_of_its_own_continuation() -> TestR
     .await?;
     assert_eq!(entered.status, 200);
     let reason = stop_of(&f, Agent::Codex).await?["reason"].clone();
+    f.h.app.record_typing(&f.task, &UserId::parse("u1")?);
+    assert!(
+        f.h.app.has_draft(&f.task),
+        "the next instruction has not been submitted"
+    );
     let response = call(
         &f.h.internal,
         Method::POST,
@@ -2470,6 +2497,10 @@ async fn goal_stop_budget_survives_submission_of_its_own_continuation() -> TestR
     )
     .await?;
     assert_eq!(response.status, 200);
+    assert!(
+        f.h.app.has_draft(&f.task),
+        "the automatic submit must preserve the unsent draft"
+    );
     assert_eq!(
         f.h.app
             .deps
