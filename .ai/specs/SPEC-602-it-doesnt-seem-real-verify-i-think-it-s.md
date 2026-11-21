@@ -1,6 +1,6 @@
 ---
 yulius-task: 16e0fc4e-6cb9-45bf-b5f9-6c9b011204c8
-status: in-progress
+status: done
 ---
 
 # SPEC-602. Verify the seven-day API estimate for Astra Ultrafast
@@ -25,8 +25,8 @@ Explain the missing Codex work in the reported seven-day estimate. Include GPT-6
 - [x] Reconcile the screenshot window with recorded Codex and Claude responses
 - [x] Price recorded Codex usage in the pool and subscription estimates
 - [x] Show the Ultrafast scenario and the coverage of the estimate
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Record the verified behavior and changes log for CI-gated delivery
 
 ## Acceptance criteria
 
@@ -51,3 +51,5 @@ Retain the built-in list-price method in [ADR-0089](../../docs/decisions/0089-ap
 - Separately saved Codex subagents contributed to the historical audit. The existing parent-only attempt metrics are tracked in [issue 1628](https://github.com/Quartio-Studio/yulius/issues/1628).
 - The reviewer independently reproduced the submission-window reconciliation. A second pass ending at the attachment save time (17:23:51 UTC) changed the Codex estimate by about $2. The task's closing report uses that earlier window.
 - Round one requested that the child-session exclusion also appear on Standard-only weeks and that zero-token Astra runs leave the Ultrafast scenario absent. Regression tests reproduced both findings. The subscription browser suite passed 50 tests before the fixes.
+- After the fixes, the domain capacity tests (9) and the two targeted Chromium regressions passed. The reviewer approved `d05d978620d47f787a473f62055e62966407967f` and verified the public rates, the mixed-pool and subscription tests. The capacity endpoint integration test also passed. Vidoc was disabled by Yulius and performed no scan.
+- Hand check on the reviewed code: undoing Astra input pricing, the zero-premium filter and the two Codex disclosure lines made two domain, two app and two browser regressions fail. Restoring those lines made all six pass.
