@@ -313,7 +313,11 @@ impl App {
         task: &TaskRecord,
         requested: &HashSet<String>,
     ) -> AppResult<TaskGroup> {
-        Ok(self.task_attention_facts(task, requested).await?.group())
+        Ok(self
+            .candidate_attention_facts(task, requested, true)
+            .await?
+            .0
+            .group())
     }
 
     pub(crate) fn status_deadline(&self) -> Instant {
@@ -455,13 +459,17 @@ impl App {
         task: &TaskRecord,
         requested: &HashSet<String>,
     ) -> AppResult<AttentionFacts> {
-        Ok(self.verified_attention_facts(task, requested).await?.0)
+        Ok(self
+            .candidate_attention_facts(task, requested, false)
+            .await?
+            .0)
     }
 
-    pub(crate) async fn verified_attention_facts(
+    pub(crate) async fn candidate_attention_facts(
         &self,
         task: &TaskRecord,
         requested: &HashSet<String>,
+        verify_host: bool,
     ) -> AppResult<(AttentionFacts, bool)> {
         let mut facts = self.local_attention_facts(task, requested).await?;
         let candidate_pending = task.status == TaskStatus::Running
@@ -476,10 +484,11 @@ impl App {
                 .filter(|r| r.stage == yulius_domain::delivery::DeliveryStage::PrOpen)
                 .and_then(|r| r.pr_number)
             {
-                Some(pr) => self
+                Some(pr) if verify_host => self
                     .current_candidate_blocks(task, pr)
                     .await
                     .unwrap_or(true),
+                Some(pr) => self.local_candidate_blocks(task, pr).await.unwrap_or(true),
                 None => false,
             };
         if candidate_pending {

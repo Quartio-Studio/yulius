@@ -4691,7 +4691,7 @@ impl App {
                 .filter(|r| r.stage == DeliveryStage::PrOpen)
                 .and_then(|r| r.pr_number)
             {
-                return matches!(self.recorded_candidate(task, pr).await, Ok(None));
+                return !self.local_candidate_blocks(task, pr).await.unwrap_or(true);
             }
             return true;
         }

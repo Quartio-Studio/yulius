@@ -309,6 +309,12 @@ pub(crate) struct EndedScreen {
     pub(crate) parked: bool,
 }
 
+/// A resume whose account vanished before any process received its prompt.
+pub(crate) fn removed_before_spawn(run: &AttemptRecord) -> bool {
+    run.launch_kind == crate::model::LaunchKind::Resume
+        && run.exit_reason.as_deref() == Some("account_removed")
+}
+
 impl App {
     /// A recorded resume may still be spawning. Until its first host snapshot, only
     /// a committed park from the preceding attempt may be displayed in its place.
@@ -318,15 +324,12 @@ impl App {
         attempts: &[AttemptRecord],
     ) -> Option<EndedScreen> {
         let (latest, prior) = attempts.split_last()?;
-        // Losing the selected account records an ended attempt before any host
-        // spawns. Its replacement still belongs to the original resume.
-        let removed_before_spawn = |run: &AttemptRecord| {
-            run.launch_kind == crate::model::LaunchKind::Resume
-                && run.exit_reason.as_deref() == Some("account_removed")
-        };
         let retrying = matches!(
             task.status,
-            TaskStatus::Starting | TaskStatus::WaitingCapacity | TaskStatus::Queued
+            TaskStatus::Starting
+                | TaskStatus::WaitingCapacity
+                | TaskStatus::Queued
+                | TaskStatus::Parked
         ) && removed_before_spawn(latest);
         if latest.state.is_terminal() && !retrying {
             return self.ended_screen(latest, task).await;

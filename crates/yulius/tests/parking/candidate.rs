@@ -13,6 +13,239 @@ use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::ids::{AttemptId, TaskId};
 
 #[test]
+fn a_stop_publication_with_an_accepted_candidate_does_not_wait_for_github() -> TestResult {
+    with_candidate_owner(false, async |_, app, remote, task| {
+        *remote.pull_read_hold.lock().map_err(|_| "host gate")? =
+            Some(Arc::new(tokio::sync::Notify::new()));
+        tokio::time::timeout(Duration::from_secs(2), app.publish_task(&task.id)).await?;
+        *remote.pull_read_hold.lock().map_err(|_| "host gate")? = None;
+        Ok(())
+    })
+}
+
+#[test]
+fn an_achieved_owner_releases_its_session_slot_after_the_tested_base_moves() -> TestResult {
+    with_candidate_owner(false, async |_, app, remote, task| {
+        let ctx = yulius_app::auth::AuthContext {
+            user: app.deps.store.user(&task.owner).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+
+        app.load_limits([(yulius_domain::limits::Limit::Sessions, 1)].into())
+            .await;
+        app.deps
+            .store
+            .set_activity(
+                &task.id,
+                Some(yulius_domain::task::Activity::Done),
+                app.now(),
+            )
+            .await?;
+        remote.remote.lock().map_err(|_| "origin")?.take();
+        remote.pulls.lock().map_err(|_| "pulls")?[0].base_sha = "new-base".into();
+        assert!(
+            !app.task_detail(&ctx, task.id.as_str())
+                .await?
+                .summary
+                .candidate_pending
+        );
+        let peer = super::new_task(
+            app,
+            &task.sandbox_id,
+            &task.owner,
+            "Another task",
+            yulius_app::model::TaskMode::Prompt,
+        )
+        .await?;
+        super::wait_for("one free working slot", Duration::from_secs(5), || async {
+            app.deps
+                .store
+                .live_attempt(&peer)
+                .await
+                .ok()
+                .flatten()
+                .is_some()
+        })
+        .await?;
+        app.stop_task_now(&peer).await?;
+        Ok(())
+    })
+}
+
+#[test]
+fn a_parked_candidate_waits_for_capacity_without_saving_an_obsolete_prompt() -> TestResult {
+    with_candidate_owner(true, async |_, app, _, task| {
+        app.load_limits([(yulius_domain::limits::Limit::Sessions, 1)].into())
+            .await;
+        let peer = super::new_task(
+            app,
+            &task.sandbox_id,
+            &task.owner,
+            "Use the remaining slot",
+            yulius_app::model::TaskMode::Prompt,
+        )
+        .await?;
+        super::wait_for("occupied slot", Duration::from_secs(5), || async {
+            app.deps
+                .store
+                .live_attempt(&peer)
+                .await
+                .ok()
+                .flatten()
+                .is_some()
+        })
+        .await?;
+        let wake = app.watch_prs(&WatchBounds::default()).await;
+        assert!(wake.is_empty(), "prematurely heard: {wake:?}");
+        assert_eq!(
+            super::status_of(app, &task.id).await.0,
+            Some(yulius_domain::task::TaskStatus::Parked)
+        );
+        ask(app, &task.id).await?;
+        app.stop_task_now(&peer).await?;
+        assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
+        app.deps
+            .store
+            .set_task_needs_you(&task.id, None, app.now())
+            .await?;
+        let wake = app.watch_prs(&WatchBounds::default()).await;
+        assert_eq!(wake.len(), 1, "{wake:?}");
+        assert!(wake[0].1.contains("292.1 ms"));
+        Ok(())
+    })
+}
+
+#[test]
+fn a_parked_candidate_waits_for_subscription_capacity_without_saving_its_prompt() -> TestResult {
+    with_candidate_owner(true, async |_, app, _, task| {
+        let account = yulius_domain::ids::AccountId::parse("a-only")?;
+        let usage = json!({"primary":{"used_percent":100.0,"window_minutes":300,"resets_at":app.now().plus_millis(3_600_000).0}}).to_string();
+        app.deps
+            .store
+            .set_account_state(
+                &account,
+                yulius_app::model::AccountStatus::Limited,
+                Some(&usage),
+                None,
+                app.now(),
+            )
+            .await?;
+        assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
+        assert_eq!(
+            super::status_of(app, &task.id).await.0,
+            Some(yulius_domain::task::TaskStatus::Parked)
+        );
+        assert!(app.deps.store.open_pause(&task.id).await?.is_none());
+        app.deps
+            .store
+            .set_account_state(
+                &account,
+                yulius_app::model::AccountStatus::Ok,
+                None,
+                None,
+                app.now(),
+            )
+            .await?;
+        let wake = app.watch_prs(&WatchBounds::default()).await;
+        assert_eq!(wake.len(), 1, "{wake:?}");
+        Ok(())
+    })
+}
+
+#[test]
+fn a_candidate_whose_subscription_disappears_before_spawn_keeps_its_park() -> TestResult {
+    with_candidate_owner(true, async |data, app, _, task| {
+        let path = data.join("yulius.db");
+        let acc = yulius_domain::ids::AccountId::parse("a-only")?;
+        let original_account = app.deps.store.account(&acc).await?.ok_or("subscription")?;
+        yulius_app::race::on(
+            super::Point::RunRecorded,
+            Path::new(task.id.as_str()),
+            move || {
+                let deleted = rusqlite::Connection::open(&path)
+                    .and_then(|db| db.execute("DELETE FROM accounts WHERE id='a-only'", []));
+                assert!(matches!(deleted, Ok(1)));
+            },
+        );
+        assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
+        assert_eq!(
+            super::status_of(app, &task.id).await.0,
+            Some(yulius_domain::task::TaskStatus::Parked)
+        );
+        assert!(app.deps.store.open_pause(&task.id).await?.is_none());
+        app.deps.store.insert_account(&original_account).await?;
+        let wake = app.watch_prs(&WatchBounds::default()).await;
+        assert_eq!(wake.len(), 1, "{wake:?}");
+        Ok(())
+    })
+}
+
+#[test]
+fn an_unarmed_green_repair_reaches_a_parked_owner_with_an_obsolete_receipt() -> TestResult {
+    with_candidate_owner(true, async |_, app, _, task| {
+        let tree = Path::new(task.worktree_path.as_deref().ok_or("tree")?);
+        crate::pr_watch::git(tree, &["commit", "--allow-empty", "-qm", "Repair"])?;
+        crate::pr_watch::git(tree, &["push", "-q", "origin", "HEAD"])?;
+        let repair = crate::pr_watch::git(tree, &["rev-parse", "HEAD"])?;
+        let (mut run, job) = crate::pr_watch::run(
+            &task.sandbox_id,
+            "repair-green",
+            &repair,
+            RunState::Passed,
+            None,
+            app.now().0,
+        );
+        run.reference = CiRef::PullRequest(1481);
+        app.deps.store.insert_ci_run(&run, &[job]).await?;
+        let wake = app.watch_prs(&WatchBounds::default()).await;
+        assert_eq!(wake.len(), 1, "repaired head has its own actionable event");
+        assert!(
+            wake[0].1.contains(&repair[..9]) && !wake[0].1.contains("292.1 ms"),
+            "{wake:?}"
+        );
+        Ok(())
+    })
+}
+
+/// Restore a real owner after restart. Parked cases make the completed queue
+/// decision visible after the original process has already parked.
+fn with_candidate_owner(
+    parked: bool,
+    check: impl AsyncFnOnce(
+        &Path,
+        &Arc<yulius_app::context::App>,
+        &Arc<crate::support::FakeGitHub>,
+        &yulius_app::model::TaskRecord,
+    ) -> TestResult,
+) -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    let case = ColdCandidate::Backdated;
+    let (id, head, original) = rt.block_on(Box::pin(seed_candidate(&data, &case)))?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    let rt = runtime()?;
+    let (app, remote) =
+        rt.block_on(Box::pin(restore_owner(&data, &case, &id, &head, &original)))?;
+    let verify = async {
+        if parked {
+            let db = rusqlite::Connection::open(data.join("yulius.db"))?;
+            db.execute("UPDATE spans SET outcome='pending' WHERE key='wait@15'", [])?;
+            super::parked(&app, &id).await?;
+            db.execute("UPDATE spans SET outcome='dropped' WHERE key='wait@15'", [])?;
+        }
+        let task = app.deps.store.task(&id).await?.ok_or("owner")?;
+        let result = check(&data, &app, &remote, &task).await;
+        app.stop_task_now(&id).await?;
+        result
+    };
+    rt.block_on(Box::pin(verify))?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+#[test]
 fn a_recorded_candidate_keeps_the_idle_original_owner_out_of_done_and_park() -> TestResult {
     candidate_owner_status(false)
 }
@@ -121,6 +354,18 @@ fn candidate_owner_status(already_parked: bool) -> TestResult {
             );
             let saved = remote.remote.lock().map_err(|_| "remote")?.take();
             remote.pulls.lock().map_err(|_| "PR")?[0].base_sha = "next-base".into();
+            let ctx = yulius_app::auth::AuthContext {
+                user: app.deps.store.user(&task.owner).await?.ok_or("user")?,
+                csrf_token: None,
+                session_hash: None,
+                token: None,
+            };
+            assert!(
+                !app.task_detail(&ctx, id.as_str())
+                    .await?
+                    .summary
+                    .candidate_pending
+            );
             assert!(!app.task_summary(&task).await?.candidate_pending);
             *remote.remote.lock().map_err(|_| "remote")? = saved;
         }

@@ -154,6 +154,12 @@ pub(crate) struct ParkedNotice {
     source: Option<QueueNoticeSource>,
 }
 
+impl ParkedNotice {
+    pub(crate) fn is_candidate(&self) -> bool {
+        self.source.is_some()
+    }
+}
+
 /// What the watch told one task, as saved.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Told {
@@ -588,7 +594,14 @@ impl App {
 
     /// One pass over the live tasks with an open pull request: types into each session what it
     /// was not told yet; returns the tasks and what was typed.
-    pub async fn watch_prs(self: &Arc<Self>, bounds: &WatchBounds) -> Vec<(TaskId, String)> {
+    pub fn watch_prs<'a>(
+        self: &'a Arc<Self>,
+        bounds: &'a WatchBounds,
+    ) -> crate::supervisor::BoxFuture<'a, Vec<(TaskId, String)>> {
+        Box::pin(self.watch_prs_pass(bounds))
+    }
+
+    async fn watch_prs_pass(self: &Arc<Self>, bounds: &WatchBounds) -> Vec<(TaskId, String)> {
         let path = self.config.data_dir.join(PR_NOTICES_FILE);
         let saved = self.with_pr_notices(Clone::clone);
         let attempts = match self.deps.store.live_attempts().await {
@@ -630,8 +643,7 @@ impl App {
             let activation = self.arm_observation(&task.id);
             let slot = self.armed_now(&task.id);
             let facts = if task.status == TaskStatus::Running && !held {
-                self.pr_facts(&task, &told, &mut runs, &activation, &slot)
-                    .await
+                Box::pin(self.pr_facts(&task, &told, &mut runs, &activation, &slot)).await
             } else {
                 None
             };
@@ -803,7 +815,7 @@ impl App {
                 let told = saved.get(task.id.as_str()).cloned().unwrap_or_default();
                 let paused = !matches!(self.deps.store.open_pause(&task.id).await, Ok(None));
                 let facts = if !paused {
-                    self.pr_facts_parked(&task, &told, &mut runs).await
+                    Box::pin(self.pr_facts_parked(&task, &told, &mut runs)).await
                 } else {
                     None
                 };
@@ -1193,6 +1205,12 @@ impl App {
                 if pull.base_sha.is_empty() {
                     return observed_only();
                 }
+                self.cache_candidate_observation(
+                    task,
+                    span.clone(),
+                    self.candidate_pull_signal(task, &sandbox, &decision, &pull)
+                        .is_some(),
+                );
                 receipt = Some((span, decision, pull));
             }
         }
@@ -1580,14 +1598,28 @@ impl App {
         task: &TaskRecord,
         pr: u64,
     ) -> AppResult<Option<crate::merge_train::SingletonDecision>> {
+        Ok(self
+            .candidate_receipt(task, pr)
+            .await?
+            .map(|(_, decision)| decision))
+    }
+
+    async fn candidate_receipt(
+        &self,
+        task: &TaskRecord,
+        pr: u64,
+    ) -> AppResult<
+        Option<(
+            crate::stages::SpanRecord,
+            crate::merge_train::SingletonDecision,
+        )>,
+    > {
         if self.merge_is_armed(&task.id) {
             return Ok(None);
         }
         let mut outcome = self.armed_view(&task.id).1;
-        Ok(self
-            .matching_candidate_receipt(task, pr, &mut outcome)
-            .await?
-            .map(|(_, decision)| decision))
+        self.matching_candidate_receipt(task, pr, &mut outcome)
+            .await
     }
 
     async fn matching_candidate_receipt(
@@ -1627,21 +1659,61 @@ impl App {
         task: &TaskRecord,
         pr: u64,
     ) -> AppResult<bool> {
-        let Some(decision) = self.recorded_candidate(task, pr).await? else {
+        let Some((span, decision)) = self.candidate_receipt(task, pr).await? else {
             return Ok(false);
         };
         let sandbox = self.dlv_sandbox_of(task).await?;
-        let pull = self.read_notice_pull(&sandbox, pr).await?;
-        Ok(self
-            .recorded_candidate(task, pr)
-            .await?
+        let pull = match self.read_notice_pull(&sandbox, pr).await {
+            Ok(pull) => pull,
+            Err(error) => {
+                self.cache_candidate_observation(task, span, true);
+                return Err(error);
+            }
+        };
+        let blocked = self
+            .candidate_pull_signal(task, &sandbox, &decision, &pull)
+            .is_some();
+        let Some((current, _)) = self.candidate_receipt(task, pr).await? else {
+            return Ok(false);
+        };
+        if current != span {
+            return Ok(true);
+        }
+        self.cache_candidate_observation(task, span, blocked);
+        Ok(blocked)
+    }
+
+    fn cache_candidate_observation(
+        &self,
+        task: &TaskRecord,
+        span: crate::stages::SpanRecord,
+        blocked: bool,
+    ) {
+        let runtime = self.runtime(&task.id);
+        *runtime
+            .obsolete_candidate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            (!blocked).then(|| (span, std::time::Instant::now()));
+    }
+
+    /// Capacity and synchronous hook publication use the last verified obsolescence
+    /// of this exact queue decision. On restart or expiry they hold the task for verification.
+    pub(crate) async fn local_candidate_blocks(
+        &self,
+        task: &TaskRecord,
+        pr: u64,
+    ) -> AppResult<bool> {
+        let Some((span, _)) = self.candidate_receipt(task, pr).await? else {
+            return Ok(false);
+        };
+        let runtime = self.runtime(&task.id);
+        Ok(!runtime
+            .obsolete_candidate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
-            .is_some_and(|current| {
-                current != &decision
-                    || self
-                        .candidate_pull_signal(task, &sandbox, current, &pull)
-                        .is_some()
-            }))
+            .is_some_and(|(verified, at)| verified == &span && at.elapsed() < WATCH_EVERY * 2))
     }
 
     pub(crate) fn candidate_pull_signal(
@@ -1949,7 +2021,7 @@ impl App {
         if self.merge_is_armed(&task.id) {
             return None;
         }
-        if self.recorded_candidate(task, pr).await.ok()?.is_some() {
+        if let Some(decision) = self.recorded_candidate(task, pr).await.ok()? {
             // The same queue decision and bounded ordinary rerun wait survive parking.
             // No preliminary train notice or periodic check-in starts a process.
             let (mut facts, source) = Box::pin(self.pr_facts(
@@ -1960,9 +2032,10 @@ impl App {
                 &self.armed_now(&task.id),
             ))
             .await?;
-            facts
-                .events
-                .retain(|e| matches!(e.kind, "run" | "outcome" | "publish" | "conflict"));
+            facts.events.retain(|event| {
+                matches!(event.kind, "run" | "outcome" | "publish" | "conflict")
+                    || (event.kind == "green" && facts.head != decision.head)
+            });
             facts.has_ci = false;
             facts.check_ins = false;
             if source.as_ref().is_none_or(|s| s.decision.is_none()) {

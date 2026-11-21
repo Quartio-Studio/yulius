@@ -105,7 +105,12 @@ The live watcher resolves ordinary CI for the owner at the armed head and reads 
 
 The parking decision and parked status use the queue decision saved for the original task and verify that its PR still has the tested head and integration base. A failed CI run from a larger candidate alone cannot assign work to a member. The parked watcher uses the same outcome identity as the live watcher. Reads of a task page never resume it.
 
+A capacity wait leaves the candidate failure unheard and the owner parked. Once a session and a subscription are available, the PR watch checks the decision again before delivering it. A published repair on a different head can produce its own ordinary green notice. A Stop hook publishes local status immediately. Capacity accounting shares the last hosted observation that disproved the exact recorded decision for two PR-watch intervals. A new decision, an expired observation or a restart requires verification again.
+
 ## Evidence
+
+- Independent review of `2a4901eeb5` requested changes. Four new tests failed there. Stop publication waited on the hosted PR, a superseded base kept a one-session instance full, session contention marked an undelivered wake as heard, and the repaired head's ordinary green notice was missing. Two additional tests reproduced premature acknowledgment on subscription exhaustion and removal before spawn. The full Chromium run passed 1,297 tests and skipped one. No paid provider ran.
+- The first mutation command selected 216 changed-line mutations. Its unmutated baseline aborted with a stack overflow in merge-queue watch tests, so it tested zero mutants. The scoped nextest run also reproduced this on the default stack. Boxing the per-pass watch future allowed the held ordinary failure regression to run on the default stack.
 
 - At dev `742c2a230`, two restart regressions failed. With four completed steps and passing ordinary checks, the live summary had no pending work, and the parked detail returned `parked_needs_you: false`. The Chromium achieved-goal fixture also showed Done with an unresolved integration candidate, both before and after reading an ordinary green PR.
 

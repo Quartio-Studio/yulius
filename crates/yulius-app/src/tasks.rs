@@ -181,7 +181,7 @@ impl App {
     /// Store failures.
     pub async fn task_summary(&self, task: &TaskRecord) -> AppResult<TaskSummary> {
         let steps = self.deps.store.steps(&task.id).await?;
-        self.task_summary_with(task, None, &steps, None, task.archived_at.is_none())
+        self.task_summary_with(task, None, &steps, None, task.archived_at.is_none(), false)
             .await
     }
 
@@ -192,6 +192,7 @@ impl App {
         steps: &[StepRecord],
         requested: Option<&std::collections::HashSet<String>>,
         sync_wait: bool,
+        verify_host: bool,
     ) -> AppResult<TaskSummary> {
         let store = &self.deps.store;
         // A removed subscription is no task's (SPEC-447): neither its name nor its id is shown.
@@ -234,7 +235,8 @@ impl App {
                 &owned_requested
             }
         };
-        let (facts, candidate_pending) = self.verified_attention_facts(task, requested).await?;
+        let (facts, candidate_pending) =
+            Box::pin(self.candidate_attention_facts(task, requested, verify_host)).await?;
         let needs_you_notice = self.resolve_needs_you_notice(task, &facts).await;
         if sync_wait {
             self.sync_wait_message(task, needs_you_notice.as_ref())
@@ -744,7 +746,7 @@ impl App {
         // Defer `sync_wait_message` until after `parked_needs_you` is settled so a parked task
         // whose PR is already green/merged does not record a phantom `parked:resume` history row.
         let mut summary = self
-            .task_summary_with(task, project, &steps, requested, false)
+            .task_summary_with(task, project, &steps, requested, false, true)
             .await?;
         if let Some(read) = status {
             let mut effective = read.facts;
@@ -777,7 +779,7 @@ impl App {
             for task in self.deps.store.tasks(&sandbox.id, true).await? {
                 let steps = self.deps.store.steps(&task.id).await?;
                 out.push(
-                    self.task_summary_with(&task, None, &steps, Some(&empty), false)
+                    self.task_summary_with(&task, None, &steps, Some(&empty), false, false)
                         .await?,
                 );
             }

@@ -52,7 +52,7 @@ Use the queue’s owner-preferred ordinary CI result at the armed head. A shared
 - **A database table for told events**: a migration for a small, per-process cache; the JSON file
   follows `armed-merges.json` and `merge-trains.json`.
 
-A recorded, still-current singleton failure belongs to the same task across parking and restart. Task reads use the decision for status only. The automatic wake verifies its inputs and human decisions and uses the same outcome key as live delivery.
+A recorded, still-current singleton failure belongs to the same task across parking and restart. Task reads use the decision for status only. The automatic wake verifies its inputs and human decisions and uses the same outcome key as live delivery. Session or subscription contention leaves the event unheard. The next watch checks current publication and human decisions before it resumes the owner. Hook publication and session accounting use local data and share a short-lived, receipt-specific observation of a superseded head or base.
 
 ## Consequences
 

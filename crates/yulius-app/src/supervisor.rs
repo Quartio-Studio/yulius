@@ -336,6 +336,8 @@ pub struct TaskRuntime {
     /// Why Yulius could not push or deliver the agent's head, for `yulius wait`: the agent learns
     /// it instead of waiting for a run that never comes (SPEC-050 DLV-201, DLV-204).
     pub(crate) push_problem: Mutex<Option<crate::delivery::PushNote>>,
+    /// A hosted observation disproved this queue receipt's head or base.
+    pub(crate) obsolete_candidate: Mutex<Option<(crate::stages::SpanRecord, std::time::Instant)>>,
     /// The last local head already checked for open-PR CI repair publication by `yulius wait` or
     /// `pr_watch`, so periodic passes and long-poll reconnects do not repeat GitHub calls for the
     /// same head while the server stays up (SPEC-553 REP-004).
@@ -739,6 +741,7 @@ impl TaskRuntime {
             armed: Mutex::new(crate::agent_wait::ArmedSlot::default()),
             arm_writer: tokio::sync::Mutex::new(()),
             push_problem: Mutex::new(None),
+            obsolete_candidate: Mutex::new(None),
             repair_checked_head: Mutex::new(None),
             last_stop_ms: AtomicI64::new(0),
             stop_answered_ms: AtomicI64::new(0),
@@ -1946,6 +1949,18 @@ impl App {
             // While an update pauses the tasks, starts queue like at the session limit and run
             // once it is over (SPEC-002 ADR-18).
             let full = held || live >= self.max_live_sessions() || self.update_holds_starts();
+            let candidate_wake = notice.is_some_and(crate::pr_watch::ParkedNotice::is_candidate);
+            let placement = if candidate_wake {
+                if full {
+                    return Ok(false);
+                }
+                let Some(placed) = self.choose_account(&task, None).await? else {
+                    return Ok(false);
+                };
+                Some(placed)
+            } else {
+                None
+            };
             if let Some(notice) = notice
                 && !self.parked_notice_current(&task, notice).await
             {
@@ -1999,7 +2014,9 @@ impl App {
                 _ => (start, account),
             };
             let launching = Launching::start(&self.supervisor.launching, &task.id);
-            let result = self.launch_attempt(&task, start, account, rest).await;
+            let result = self
+                .launch_attempt(&task, start, account, rest, placement)
+                .await;
             drop(launching);
             drop(guard);
             if let Err(err) = &result {
@@ -2029,7 +2046,7 @@ impl App {
                 // A supertask that could not start no longer holds its project (SUP-005).
                 self.drain_queue().await;
             }
-            result.map(|()| true)
+            result
         })
     }
 
@@ -2065,7 +2082,10 @@ impl App {
         start: RunStart,
         requested: Option<AccountId>,
         rest: Option<IdleRest>,
-    ) -> AppResult<()> {
+        placement: Option<Placed>,
+    ) -> AppResult<bool> {
+        let candidate_wake = placement.is_some();
+        let parked_activity = task.activity;
         let store = &self.deps.store;
         let relaunch = start.clone();
         let sandbox = store
@@ -2122,9 +2142,11 @@ impl App {
             Some(id) if store.account(&id).await?.is_none() => None,
             other => other,
         };
-        let Some(Placed { account, fallback }) =
-            self.choose_account(&task, requested.as_ref()).await?
-        else {
+        let placement = match placement {
+            Some(placed) => Some(placed),
+            None => self.choose_account(&task, requested.as_ref()).await?,
+        };
+        let Some(Placed { account, fallback }) = placement else {
             // No subscription has capacity: the task waits before starting, without a process
             // (ROT-010); the resume loop starts it when capacity returns. A turn a limit cut
             // keeps its `limit` pause, so it still resumes past the limit (SPEC-034).
@@ -2139,7 +2161,7 @@ impl App {
                 _ => None,
             };
             self.pause_task(&task.id, kind, None, continuation).await?;
-            return Ok(());
+            return Ok(true);
         };
         // The run has its subscription: a pause the task waited in is over. Only here, so that
         // a start the full queue refused, and one that finds no capacity after all (the branch
@@ -2615,7 +2637,24 @@ impl App {
             store
                 .transition_attempt(&attempt_id, AttemptState::Exited, &update)
                 .await?;
-            return Box::pin(self.launch_attempt(&task, relaunch, None, rest)).await;
+            if candidate_wake {
+                // No host received the diagnosis. Restore the park if the person has
+                // not stopped the task during launch. The watch will verify it anew.
+                if store
+                    .transition_task(
+                        &task.id,
+                        Some(TaskStatus::Starting),
+                        TaskStatus::Parked,
+                        parked_activity,
+                        self.now(),
+                    )
+                    .await?
+                {
+                    self.publish_task(&task.id).await;
+                }
+                return Ok(false);
+            }
+            return Box::pin(self.launch_attempt(&task, relaunch, None, rest, None)).await;
         }
         // Before the spawn, so the first prompt's hook always finds it (SPEC-068).
         if typed_opening.is_some()
@@ -2815,7 +2854,7 @@ impl App {
                 }
             });
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Writes the task's request file into the sandbox home (`.yulius/tasks/<number>.md`: the
@@ -4878,7 +4917,9 @@ impl App {
             let run = store
                 .attempts(task_id)
                 .await?
-                .pop()
+                .into_iter()
+                .rev()
+                .find(|run| !crate::parking::removed_before_spawn(run))
                 .filter(|run| run.harness == Harness::Codex)
                 .ok_or_else(missing)?;
             let sessions = store.provider_sessions(task_id).await?;
