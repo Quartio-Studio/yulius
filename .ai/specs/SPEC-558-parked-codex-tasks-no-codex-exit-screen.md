@@ -44,7 +44,8 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Reconcile parked lifecycle changes and refresh the sidebar independently of Git
 - [x] Show current parked progress and owner notices in the terminal
 - [x] Publish verified parked task detail to the terminal
-- [ ] Reconcile missed parks, resumes and archives discovered by terminal detail
+- [x] Publish a missed park discovered by terminal detail
+- [ ] Reconcile terminal-discovered resumes, archives and later Undo
 - [ ] Publish verified parked task detail to Task Info
 - [ ] Keep failed integration candidates with their original owner
 - [ ] Deliver bounded Codex goal continuation to dev
@@ -72,6 +73,28 @@ Capture a separate screen at the park decision because exiting can clear the ent
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
 ## Evidence
+
+- Independent review approved `ec67a9270` for terminal discovery of a missed park. The reviewer independently passed all 11 new Chromium regressions and four existing list-confirmation tests. The author passed 14 focused Chromium cases on the approved head. Repository contracts, formatting and spec validation passed. No Rust mutation targets changed, and project Vidoc scanning was disabled. The earlier combined checkpoint `61e81ef4c` passed the complete local Chromium suite with 1,263 passes and one optional skip.
+
+- At `84b230ebe`, a Closed/archived event invalidated a terminal detail while an older active list was outstanding. With the list replying first, detail restored an obsolete parked owner request. With detail replying first, the list restored the old active row. The Chromium regression also exercises local archive and a genuine Undo. The list now retains an archive as a membership change through confirmation and the terminal drops a detail invalidated by that archive.
+
+- At `30d325a62`, a live event arrived while both an explicit task list and terminal detail held earlier parked snapshots. When detail answered first, the list skipped confirmation and hid the current owner request. Chromium reproduced two reads and a Running row in that order, versus three reads and “Review the delivery” in the other. The regression requires one confirmation in both orders, preserves its owner request on success, and keeps the live event if confirmation is unavailable.
+
+- Review of the combined park/resume implementation at `fb7429ded` reproduced a still-parked detail recreating an omitted row despite no lifecycle change, and a live rename dropping a resume notification. Both regressions passed on the corrected combined checkpoint `a4c532c82`. The current delivery publishes missed parks only and preserves a later resume event while processing an older parked detail. Publishing a resume or archive first observed by detail remains the following delivery.
+
+- On `63d02bb5b`, terminal detail observed Running before a newer watched list returned Waiting for capacity. The sidebar updated but the terminal kept Running. The added Chromium test verifies the terminal’s task subscription and the sidebar record in both reply orders. The combined prototype notified that subscriber about live status changes. Detail-discovered resumes remain in the following delivery.
+
+- At `61e81ef4c`, an explicit list replaced a newer running/working event during a pending parked detail. In Chromium the list-first order made the terminal and sidebar parked/done, and the opposite order left the sidebar running/waiting. Retaining that event with the outstanding detail restores running/working to both views and carries the later transition through an older list that is still pending.
+
+- Third-round review at `d4864c7a2` reproduced a missing row when an older empty list answered before the detail. The expanded Chromium regression runs both reply orders for park and resume and checks a subsequent archive, permanent removal and newer empty list. A detail retains its starting public row only for the duration of the read. An archive or deletion invalidates that reference. Terminal-discovered archives and Undo are a separate delivery after the park/resume change. Their implementation and tests are retained at the reviewed prototype.
+
+- Review at `74549c9ff` reproduced a park event arriving during a terminal read begun while the task was running. When subsequent verification failed, the event-first order kept the owner’s rename but lost the older detail’s open PR. The regression checks both orders and a genuine owner decision. A late detail can now supply that PR to the unverified parked row while preserving the event’s public fields.
+
+- Review at `3197dc49b` reproduced an archived row reappearing when a list confirmation failed and replayed an earlier rename. The regression checks the removal as well as the opposite case with a later Undo. A second regression returned the same lifecycle detail and PR-bearing list in both orders after the watch failed. One order lost open PR #42 and showed Done, and the other kept the older title. Lifecycle replay now keeps the PR evidence when the list supplies it, and recognises a transition from the status at the start of the detail read.
+
+- On the merged #1553 base, all ten missed lifecycle Chromium cases failed. A held empty list also removed a task whose newer detail had observed its park or resume. The terminal now publishes public lifecycle fields to the existing row and carries a transition across older list reads. In the combined prototype the active list showed the resumed subscription ID and shell activity and excluded run history, the request and the account email. A further test reproduced a later live rename lost after a missed resume during an explicit list read. Tracking the crossed park retains the event if confirmation fails.
+
+- PR #1553 delivered existing parked-row publication at dev `37f6d05a4`. Run `1ed51bce-2b80-4d14-b5df-bc3c115eb2a2` passed quality, both Rust shards and browser e2e for `2c35308d6`. Vidoc was disabled. The full local Chromium suite on the reviewed product head passed 1,250 cases with one optional skip. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe704d71f9/delivery/evidence/37f6d05a4cd20a826efb37080af88d54b93fb26c)
 
 - Independent review approved the existing-row delivery at `53bd0b02d`. Seven reviewer-run Chromium regressions verified terminal/sidebar agreement, retention of successful detail across failed resync and both reply orders of an unavailable watch with a merged overview. Repeating the four closure/owner cases with server-equivalent owner fields kept the PR closed and preserved the decision. Detail-only prompts, run history and account email stayed out of the shared row. Eight author-run regressions passed on the split implementation. The earlier frozen complete browser suite at `7ca1b7e56` passed 1,248 tests with one optional skip. Repository contracts, formatting and spec validation passed. The mutation command had no changed Rust targets. Vidoc was disabled.
 
