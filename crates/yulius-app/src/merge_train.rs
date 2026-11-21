@@ -865,26 +865,37 @@ impl App {
         let mut text = singleton_failure(member.pr, &member.head, integration, run);
         let jobs = self.deps.store.ci_jobs(run, true).await.ok()?;
         let mut failed = jobs.iter().filter(|job| job.state == RunState::Failed);
-        let Some(job) = failed
+        let has_text = |s: &str| !s.trim().is_empty();
+        let job = failed
             .clone()
-            .find(|job| {
-                job.failures
-                    .as_deref()
-                    .is_some_and(|s| !s.trim().is_empty())
+            .find(|job| job.failures.as_deref().is_some_and(has_text))
+            .or_else(|| {
+                failed
+                    .clone()
+                    .find(|job| job.reason.as_deref().is_some_and(has_text))
             })
-            .or_else(|| failed.next())
-        else {
-            return Some(text);
+            .or_else(|| failed.next())?;
+        let failures = job.failures.as_deref().filter(|s| has_text(s));
+        let label = if failures.is_none() && job.exit_code.is_none() {
+            format!("`{}` failed", job.name)
+        } else {
+            crate::pr_watch::failed_jobs(std::slice::from_ref(job))
         };
-        let label = crate::pr_watch::failed_jobs(std::slice::from_ref(job));
-        let kept = job.failures.as_deref().unwrap_or_default();
-        // The scanner keeps the test header before its output. The label already names
-        // the test; reserve the excerpt for the diagnostic even when its name is long.
         let matcher = self.agent_secret_matcher(&sandbox.id).await.ok()?;
-        let retained = redact_text(&matcher, kept).0;
-        let body = retained
-            .split_once('\n')
-            .map_or(retained.as_str(), |(_, body)| body);
+        let retained = redact_text(
+            &matcher,
+            failures.or(job.reason.as_deref()).unwrap_or_default(),
+        )
+        .0;
+        // The scanner's first line names the test already in the label. A parser's
+        // structured refusal has no such header, so keep its first line.
+        let body = if failures.is_some() {
+            retained
+                .split_once('\n')
+                .map_or(retained.as_str(), |(_, body)| body)
+        } else {
+            retained.as_str()
+        };
         let label = redact_text(&matcher, &label).0;
         text.push(' ');
         text.push_str(&diagnostic_excerpt(&label, 128, &matcher));

@@ -893,6 +893,42 @@ impl yulius_app::ports::vidoc::VidocConnector for AnyVidoc {
     }
 }
 
+#[tokio::test]
+async fn a_singleton_configuration_refusal_tells_the_owner_what_the_parser_rejected() -> TestResult
+{
+    let f = fixture().await?;
+    let app = &f.h.app;
+    let invalid = format!("[commands]\ngate = \"make ci\"\n\n{YULIUS_TOML}");
+    let worktree = f.task(1, &[("yulius.toml", invalid.as_str())]).await?;
+    f.arm(1, &worktree).await?;
+    f.record_passed(app, 1, &git(&worktree, &["rev-parse", "HEAD"])?)
+        .await?;
+    f.advance_dev("other.txt")?;
+    app.merge_armed(&f.sandbox).await;
+    let runs = f.train_runs(app).await?;
+    let refused = runs
+        .iter()
+        .find(|run| run.state == RunState::Failed)
+        .ok_or("refused candidate")?;
+    let jobs = app.deps.store.ci_jobs(&refused.id, true).await?;
+    let job = jobs
+        .iter()
+        .find(|job| job.name == "yulius.toml")
+        .ok_or("config job")?;
+    let reason = job.reason.as_deref().ok_or("parser diagnostic")?;
+    assert!(reason.contains("gate"));
+    app.merge_armed(&f.sandbox).await;
+    let view = f.wait(1, &worktree).await?;
+    let outcome = view["merge_outcome"]
+        .as_str()
+        .ok_or("the owner's refusal")?;
+    assert!(
+        outcome.contains("yulius.toml") && outcome.contains(reason),
+        "{outcome}; expected {reason}"
+    );
+    Ok(())
+}
+
 /// SPEC-504 CFG-002 (review round 1): a merge candidate is checked as what the branch would be:
 /// a member whose `yulius.toml` is invalid (its own run recorded passed, as a behind pull
 /// request's could be on an older base) makes the candidate's run fail at once, with a failed
@@ -1637,7 +1673,20 @@ async fn a_singleton_waits_for_safe_redaction_before_telling_its_owner() -> Test
     reused_singleton(SingletonChange::MatcherRead).await
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reused_failure_pruned_during_the_singleton_decision_keeps_the_original_arm() -> TestResult
+{
+    reused_singleton(SingletonChange::Pruned).await
+}
+
+#[tokio::test]
+async fn a_reused_failure_cannot_drop_a_later_arm_of_the_same_head_after_restart() -> TestResult {
+    reused_singleton(SingletonChange::Rearmed).await
+}
+
 enum SingletonChange {
+    Rearmed,
+    Pruned,
     JobRead,
     MatcherRead,
     Unavailable,
@@ -1681,11 +1730,11 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
         "s".repeat(600),
         "x".repeat(512)
     );
-    // The bookkeeping test installs a process-wide hook for this run id.
-    let run_id = if matches!(change, SingletonChange::Bookkeeping) {
-        "prior-train-bookkeeping"
-    } else {
-        "prior-train"
+    // Race hooks are process-wide, so each held decision uses its own source run.
+    let run_id = match change {
+        SingletonChange::Bookkeeping => "prior-train-bookkeeping",
+        SingletonChange::Pruned => "prior-train-pruned",
+        _ => "prior-train",
     };
     let (mut red, mut job) =
         crate::pr_watch::run(&f.sandbox, run_id, &sha, RunState::Failed, None, 1);
@@ -1739,6 +1788,61 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
             .await?
     );
     app.merge_armed(&f.sandbox).await;
+    if matches!(change, SingletonChange::Rearmed) {
+        // A later arm is persisted before restart, while the previous train still names the old arm.
+        let path = app
+            .config
+            .data_dir
+            .join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+        let mut saved: Vec<Value> = serde_json::from_slice(&std::fs::read(&path)?)?;
+        let entry = saved
+            .iter_mut()
+            .find(|entry| entry["task"] == "t1")
+            .ok_or("owner arm")?;
+        let later = entry["armed_at"].as_i64().ok_or("original arm time")? + 1;
+        entry["armed_at"] = json!(later);
+        std::fs::write(path, serde_json::to_vec(&saved)?)?;
+        let cold = restart(app).await;
+        cold.merge_armed(&f.sandbox).await;
+        assert_eq!(
+            saved_armed(&cold, 1)?.map(|(_, at)| at),
+            Some(later),
+            "a previous train cannot consume the newer arm"
+        );
+        return Ok(());
+    }
+    if matches!(change, SingletonChange::Pruned) {
+        let arm = saved_armed(app, 1)?.ok_or("original arm")?;
+        let (at, go) = support::hold_point(yulius_app::race::Point::FailedTrainDeciding, run_id);
+        let pass = {
+            let app = Arc::clone(app);
+            let sandbox = f.sandbox.clone();
+            tokio::spawn(async move { app.merge_armed(&sandbox).await })
+        };
+        support::point_reached(at).await?;
+        let (mut newer, job) = crate::pr_watch::run(
+            &f.sandbox,
+            "new-train-verdict",
+            "another-tree",
+            RunState::Passed,
+            None,
+            app.now().0,
+        );
+        newer.reference = red.reference.clone();
+        app.deps.store.insert_ci_run(&newer, &[job]).await?;
+        app.deps.store.prune_ci_runs(0, app.now()).await?;
+        assert!(app.deps.store.ci_run(run_id).await?.is_none());
+        assert!(app.deps.store.ci_jobs(run_id, true).await?.is_empty());
+        go.send(())?;
+        pass.await?;
+        assert_eq!(
+            saved_armed(app, 1)?,
+            Some(arm),
+            "a pruned source cannot blame its former singleton"
+        );
+        assert!(f.wait(1, &worktree).await?["merge_outcome"].is_null());
+        return Ok(());
+    }
     if matches!(
         change,
         SingletonChange::JobRead | SingletonChange::MatcherRead
@@ -2048,7 +2152,9 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
                 git(&worktree, &["commit", "--allow-empty", "-qm", "later head"])?;
                 git(&worktree, &["push", "-q", "origin", "HEAD"])?;
             }
-            SingletonChange::JobRead
+            SingletonChange::Rearmed
+            | SingletonChange::Pruned
+            | SingletonChange::JobRead
             | SingletonChange::MatcherRead
             | SingletonChange::Unavailable
             | SingletonChange::Bookkeeping
