@@ -1281,6 +1281,9 @@ impl SpecCheck {
 
 /// The refreshed delivery view and the receipt for the protected merge that produced it.
 pub(crate) struct MergedPull {
+    /// Pull request and head accepted by GitHub's guarded merge request.
+    pub number: u64,
+    pub head: String,
     /// State after the merge for existing delivery callers.
     pub view: Delivery,
     /// The accepted PR head, returned commit and, when confirmed, its base branch.
@@ -4928,16 +4931,32 @@ impl App {
     pub async fn merge_task_pr(&self, ctx: &AuthContext, task_id: &str) -> AppResult<Delivery> {
         let task = self.load_task(ctx, task_id, Action::Work).await?;
         // A playground merges here, with no GitHub identity needed (SPEC-099), on green (SPEC-163).
-        if self.dlv_sandbox_of(&task).await?.is_playground() {
+        let sandbox = self.dlv_sandbox_of(&task).await?;
+        if sandbox.is_playground() {
             return self.playground_merge_now(&ctx.user, &task).await;
         }
         let token = self
             .person_github_token(&ctx.user, "Merging a pull request")
             .await?;
-        self.dlv_merge(ctx, task, &token)
+        let merged = self
+            .dlv_merge(ctx, &task, &token)
             .await
-            .map(|merged| merged.view)
-            .map_err(MergeFailure::into_error)
+            .map_err(MergeFailure::into_error)?;
+        if self.merge_is_armed(&task.id) {
+            let steps = self.deps.store.steps(&task.id).await.unwrap_or_default();
+            let gate = self
+                .ci_gate_for_pull(&sandbox, merged.number, &merged.head)
+                .await;
+            let note = crate::agent_wait::merge_receipt_with_checks(
+                &merged.receipt,
+                &delivery_profile(&sandbox).integration_branch,
+                gate,
+                true,
+                &steps_ahead_note(&steps),
+            );
+            self.settle_armed(&task, Some((&merged.head, note))).await;
+        }
+        Ok(merged.view)
     }
 
     /// [`App::merge_task_pr`] for the task's agent (`delivery_merge`) under its owner's
@@ -4963,7 +4982,7 @@ impl App {
             )));
         }
         let token = self.task_github_token(&task, &sandbox).await?;
-        self.dlv_merge(ctx, task, &token).await
+        self.dlv_merge(ctx, &task, &token).await
     }
 
     /// The branch policy of `yulius.toml` at the tip of the integration branch in the sandbox
@@ -5119,13 +5138,13 @@ impl App {
     async fn dlv_merge(
         &self,
         ctx: &AuthContext,
-        task: TaskRecord,
+        task: &TaskRecord,
         token: &Secret,
     ) -> Result<MergedPull, MergeFailure> {
-        let sandbox = self.dlv_sandbox_of(&task).await?;
+        let sandbox = self.dlv_sandbox_of(task).await?;
         let profile = delivery_profile(&sandbox);
         let observed = self
-            .dlv_observe(&sandbox, &task, &profile, Some(token))
+            .dlv_observe(&sandbox, task, &profile, Some(token))
             .await?;
         dlv::apply(
             &observed.record.stage,
@@ -5140,7 +5159,7 @@ impl App {
             .clone()
             .ok_or_else(|| AppError::Conflict("the pull request cannot be read".into()))?;
         if let Some(title) = self
-            .dlv_merge_title(&sandbox, &profile, &task, &pull, token)
+            .dlv_merge_title(&sandbox, &profile, task, &pull, token)
             .await?
         {
             pull.title = title;
@@ -5259,7 +5278,12 @@ impl App {
             .ok_or(AppError::NotFound)?;
         let mut view = self.delivery_view(&task, Some(&ctx.user)).await?;
         view.notes.extend(notes);
-        Ok(MergedPull { view, receipt })
+        Ok(MergedPull {
+            number: pull.number,
+            head: pull.head_sha,
+            view,
+            receipt,
+        })
     }
 
     // ---------------------------------------------------------------- promotion

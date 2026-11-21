@@ -326,6 +326,8 @@ pub struct TaskRuntime {
     /// of it in progress and how the last one ended (SPEC-028 MSR-003), under one lock so
     /// `yulius wait` reads them together (SPEC-064 WAI-003).
     pub(crate) armed: Mutex<crate::agent_wait::ArmedSlot>,
+    /// Orders durable singleton decisions with an operator or agent changing its arm.
+    pub(crate) arm_writer: tokio::sync::Mutex<()>,
     /// Why Yulius could not push or deliver the agent's head, for `yulius wait`: the agent learns
     /// it instead of waiting for a run that never comes (SPEC-050 DLV-201, DLV-204).
     pub(crate) push_problem: Mutex<Option<crate::delivery::PushNote>>,
@@ -703,6 +705,7 @@ impl TaskRuntime {
             typing_message: AtomicBool::new(false),
             spawned_ms: AtomicI64::new(0),
             armed: Mutex::new(crate::agent_wait::ArmedSlot::default()),
+            arm_writer: tokio::sync::Mutex::new(()),
             push_problem: Mutex::new(None),
             repair_checked_head: Mutex::new(None),
             last_stop_ms: AtomicI64::new(0),

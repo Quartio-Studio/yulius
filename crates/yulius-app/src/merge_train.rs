@@ -283,10 +283,71 @@ fn short(sha: &str) -> &str {
     sha.get(..9).unwrap_or(sha)
 }
 
+/// An accepted queue decision and the redacted instructions its original owner received.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SingletonDecision {
+    pub head: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_at: Option<i64>,
+    /// The ordinary run still active when the queue exhausted its original wait.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expired_ordinary_run: Option<String>,
+    pub singleton: TestedSingleton,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct TestedSingleton {
+    pub pr: u64,
+    pub base: String,
+    pub tree: String,
+    pub run: String,
+}
+
+impl SingletonDecision {
+    /// An ordinary dropped arm recorded only its head. A malformed decision
+    /// cannot establish whether a saved activation was already consumed.
+    pub(crate) fn from_span(
+        span: &crate::stages::SpanRecord,
+    ) -> crate::error::AppResult<Option<Self>> {
+        use crate::error::AppError;
+        if span.outcome.as_deref() != Some("dropped") {
+            return Ok(None);
+        }
+        let unreadable = || AppError::internal("unreadable merge wait decision");
+        let fields: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(span.detail.as_deref().ok_or_else(unreadable)?)
+                .map_err(|_| unreadable())?;
+        if fields.len() == 1
+            && fields
+                .get("head")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|head| !head.is_empty())
+        {
+            return Ok(None);
+        }
+        let decision: Self =
+            serde_json::from_value(serde_json::Value::Object(fields)).map_err(|_| unreadable())?;
+        if [
+            &decision.head,
+            &decision.message,
+            &decision.singleton.base,
+            &decision.singleton.tree,
+            &decision.singleton.run,
+        ]
+        .iter()
+        .any(|value| value.is_empty())
+        {
+            return Err(unreadable());
+        }
+        Ok(Some(decision))
+    }
+}
+
 /// Result of observing a singleton's hosted inputs and ordinary CI at its exact head.
 enum SingletonObservation {
     Changed,
-    Current(Option<RunState>),
+    Current(Option<(RunState, String)>),
 }
 
 /// Fold redacted CI text to a bounded line that can be typed into the owner's terminal.
@@ -522,6 +583,17 @@ impl App {
             tracing::warn!(sandbox = %sandbox.slug, error = %err, "a merge pass could not fetch");
         }
         let mut state = self.read_trains(sandbox_id);
+        // During recovery a saved arm can be known before its history is readable.
+        // A fast CI completion must preserve that train and its original wait deadline.
+        if state.train.as_ref().is_some_and(|train| {
+            train.members.iter().any(|member| {
+                TaskId::parse(&member.task).is_ok_and(|task| {
+                    self.armed_now(&task) == ArmedNow::None && self.merge_is_armed(&task)
+                })
+            })
+        }) {
+            return;
+        }
         let before = state.clone();
         state.train = match state.train.take() {
             Some(train) => self.advance_train(&sandbox, &mut state, train).await,
@@ -782,6 +854,8 @@ impl App {
         .ok()
         .flatten();
         let pr = member.pr;
+        let unavailable_since = train.waiting_since;
+        let mut expired_ordinary_run = None;
         let text = match self
             .singleton_observation(sandbox, &task, member, &integration, &train.base)
             .await
@@ -791,7 +865,7 @@ impl App {
                     .await;
                 return None;
             }
-            Some(SingletonObservation::Current(Some(RunState::Failed))) => {
+            Some(SingletonObservation::Current(Some((RunState::Failed, _)))) => {
                 state.limit = None;
                 state.suspect = None;
                 self.dissolve(
@@ -809,48 +883,75 @@ impl App {
                 if text.is_some() {
                     train.waiting_since = None;
                 }
-                if matches!(ordinary, Some(RunState::Queued | RunState::Running))
-                    && train.wait_for_own(pr, self.now().0)
-                    && text.is_some()
-                {
-                    return Some(train);
+                if let Some((RunState::Queued | RunState::Running, id)) = ordinary {
+                    if train.wait_for_own(pr, self.now().0) && text.is_some() {
+                        return Some(train);
+                    }
+                    expired_ordinary_run = Some(id);
                 }
                 text
             }
             None => None,
         };
-        let Some(text) = text else {
-            let now = self.now().0;
-            let since = *train.waiting_since.get_or_insert(now);
-            if now.saturating_sub(since) <= WAIT_LIMIT_MS {
-                return Some(train);
-            }
-            // Let the original arm proceed one by one on a continuous observation outage.
+        if let Some(text) = text {
+            state.limit = None;
+            state.suspect = None;
             let member = train.members.first()?;
-            state.held_back.push((member.task.clone(), member.armed_at));
-            self.dissolve(
-                sandbox,
-                &train,
-                "its tested inputs or failure stayed unavailable",
-            )
-            .await;
-            return None;
-        };
-        state.limit = None;
-        state.suspect = None;
-        let member = train.members.first()?;
-        // Consume the arm at the final CI observation, before dissolution does I/O.
-        if let Some(deciding) = self.take_armed(&task) {
-            let verdict = if deciding.merge.armed_at == member.armed_at
-                && deciding.merge.head == member.head
-            {
-                Verdict::Decided(text)
-            } else {
-                Verdict::Keep(deciding.merge.clone())
+            let decision = SingletonDecision {
+                head: member.head.clone(),
+                message: text,
+                superseded_at: None,
+                expired_ordinary_run,
+                singleton: TestedSingleton {
+                    pr,
+                    base: train.base.clone(),
+                    tree: member.tree.clone(),
+                    run: train.run.clone(),
+                },
             };
-            self.finish_armed(&task, &deciding, verdict).await;
+            if let Some(deciding) = self.take_armed(&task) {
+                if deciding.merge.armed_at != member.armed_at || deciding.merge.head != member.head
+                {
+                    self.finish_armed(&task, &deciding, Verdict::Keep(deciding.merge.clone()))
+                        .await;
+                } else if !self
+                    .finish_singleton(&task, &sandbox.id, &deciding, &decision)
+                    .await
+                {
+                    train.waiting_since = unavailable_since;
+                    return self
+                        .wait_for_singleton_evidence(sandbox, state, train)
+                        .await;
+                }
+            }
+        } else {
+            return self
+                .wait_for_singleton_evidence(sandbox, state, train)
+                .await;
         }
         self.dissolve(sandbox, &train, "its CI run failed").await;
+        None
+    }
+
+    async fn wait_for_singleton_evidence(
+        &self,
+        sandbox: &SandboxRecord,
+        state: &mut SandboxTrains,
+        mut train: Train,
+    ) -> Option<Train> {
+        let now = self.now().0;
+        let since = *train.waiting_since.get_or_insert(now);
+        if now.saturating_sub(since) <= WAIT_LIMIT_MS {
+            return Some(train);
+        }
+        let member = train.members.first()?;
+        state.held_back.push((member.task.clone(), member.armed_at));
+        self.dissolve(
+            sandbox,
+            &train,
+            "its tested inputs, failure or decision record stayed unavailable",
+        )
+        .await;
         None
     }
 
@@ -947,7 +1048,7 @@ impl App {
                 .await
                 .ok()?;
             Some(SingletonObservation::Current(
-                run_for_pull_head(&runs, member.pr).map(|run| run.state),
+                run_for_pull_head(&runs, member.pr).map(|run| (run.state, run.id.clone())),
             ))
         };
         tokio::time::timeout(Duration::from_secs(5), confirm)
