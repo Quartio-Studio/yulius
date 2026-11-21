@@ -1108,11 +1108,16 @@ impl App {
         sha: &str,
         reference: Option<&CiRef>,
     ) -> GateResult {
-        self.ci_gate_select(sandbox, sha, |runs| {
-            runs.iter()
-                .find(|run| reference.is_none_or(|r| *r == run.reference))
-                .map(|run| run.state)
-        })
+        self.ci_gate_select(
+            sandbox,
+            sha,
+            self.deps.store.ci_runs_for_sha(&sandbox.id, sha),
+            |runs| {
+                runs.iter()
+                    .find(|run| reference.is_none_or(|r| *r == run.reference))
+                    .map(|run| run.state)
+            },
+        )
         .await
     }
 
@@ -1123,9 +1128,12 @@ impl App {
         pr: u64,
         sha: &str,
     ) -> GateResult {
-        self.ci_gate_select(sandbox, sha, |runs| {
-            run_for_pull_head(runs, pr).map(|r| r.state)
-        })
+        self.ci_gate_select(
+            sandbox,
+            sha,
+            self.deps.store.ci_runs_for_pull_head(&sandbox.id, sha),
+            |runs| run_for_pull_head(runs, pr).map(|r| r.state),
+        )
         .await
     }
 
@@ -1133,12 +1141,13 @@ impl App {
         &self,
         sandbox: &SandboxRecord,
         sha: &str,
+        records: impl Future<Output = AppResult<Vec<CiRunRecord>>>,
         select: impl FnOnce(&[CiRunRecord]) -> Option<RunState>,
     ) -> GateResult {
         if !self.config.ci.enabled {
             return GateResult::NotConfigured;
         }
-        if let Ok(runs) = self.deps.store.ci_runs_for_sha(&sandbox.id, sha).await
+        if let Ok(runs) = records.await
             && let Some(state) = select(&runs)
         {
             return GateResult::Run(Some(state));

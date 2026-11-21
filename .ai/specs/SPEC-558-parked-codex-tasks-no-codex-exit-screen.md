@@ -81,6 +81,8 @@ Yulius CI schedules one run per commit even when two PRs publish the same head. 
 
 ## Evidence
 
+- A peer PR that moved onto the owner’s refused SHA inherited an older queue position. At `4a3fc966a`, the wait endpoint still reported the earlier refusal after the replacement passed. Ordinary PR lookups now compare admission order at a single commit. The dispatcher continues to use queue position.
+
 - Five regressions failed at `bb554d9ff`. They cover an external merge followed by a red peer, a peer verdict during a train’s pushed-head confirmation, recovery after the integration CI configuration is repaired, the infrastructure retry budget for the owner, and a short SHA with more than 50 intervening runs. The prefix read checks for a unique commit in the sandbox’s indexed history.
 
 - On dev `437188043`, two shared-head regressions inverted the owner’s CI result in `yulius wait`. On the initial queue-only fix, the final merge refused the green owner because the peer had failed, and a private train could lend a failure. The fixtures exercise the hosted merge, the production commit scheduler, the local CI store and the agent wait endpoint.

@@ -498,12 +498,12 @@ pub trait CiStore: Send + Sync {
         sandbox: &SandboxId,
         sha: &str,
     ) -> AppResult<Vec<crate::ci::CiRunRecord>>;
-    /// Runs of the single commit matching a hexadecimal prefix, newest first.
-    /// Missing or ambiguous prefixes return no records.
-    async fn ci_runs_for_unique_prefix(
+    /// Runs at a full or uniquely abbreviated PR head, latest admission first.
+    /// A transferred queue place can precede an older verdict at the same head.
+    async fn ci_runs_for_pull_head(
         &self,
         sandbox: &SandboxId,
-        prefix: &str,
+        head: &str,
     ) -> AppResult<Vec<crate::ci::CiRunRecord>>;
     /// Queued and running runs of every sandbox, oldest first.
     async fn active_ci_runs(&self) -> AppResult<Vec<crate::ci::CiRunRecord>>;

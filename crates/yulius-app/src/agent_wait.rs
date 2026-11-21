@@ -1322,13 +1322,7 @@ impl App {
         } else {
             let runs;
             let run = if let Some(pr) = pr {
-                runs = if matches!(head.len(), 40 | 64) {
-                    store.ci_runs_for_sha(&task.sandbox_id, &head).await?
-                } else {
-                    store
-                        .ci_runs_for_unique_prefix(&task.sandbox_id, &head)
-                        .await?
-                };
+                runs = store.ci_runs_for_pull_head(&task.sandbox_id, &head).await?;
                 crate::ci::run_for_pull_head(&runs, pr)
             } else {
                 // A playground run can have tested the task head merged with the base (PCI-006).

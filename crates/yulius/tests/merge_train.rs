@@ -1332,8 +1332,35 @@ async fn a_new_shared_run_replaces_a_refusal_for_the_old_integration_configurati
         .transition_ci_run(&owner.id, &[RunState::Running], RunState::Failed, &refused)
         .await?;
     assert_eq!(f.wait(1, &one).await?["checks"], "failed");
-    f.record_passed(app, 2, &head).await?;
-    assert_eq!(f.wait(1, &one).await?["checks"], "passed");
+    // CI scheduling transfers a superseded run’s queue place to the replacement.
+    // This new row was admitted after the refusal, with a place before it.
+    let mut replacement = owner.clone();
+    replacement.id = "scheduled-replacement".into();
+    replacement.reference = CiRef::PullRequest(2);
+    replacement.queued_at.0 -= 1;
+    replacement.state = RunState::Queued;
+    app.deps.store.insert_ci_run(&replacement, &[]).await?;
+    for prefix in [head.as_str(), &head[..9]] {
+        assert_eq!(
+            app.agent_wait_state("tok-t1", Some(prefix)).await?.checks,
+            "queued"
+        );
+    }
+    app.deps
+        .store
+        .transition_ci_run(
+            &replacement.id,
+            &[RunState::Queued],
+            RunState::Passed,
+            &yulius_app::ci::CiRunUpdate::default(),
+        )
+        .await?;
+    for prefix in [head.as_str(), &head[..9]] {
+        assert_eq!(
+            app.agent_wait_state("tok-t1", Some(prefix)).await?.checks,
+            "passed"
+        );
+    }
     // If a later ordinary run observes another invalid configuration, its new
     // refusal supersedes the intervening pass.
     f.record_run(app, 3, &head, RunState::Running).await?;

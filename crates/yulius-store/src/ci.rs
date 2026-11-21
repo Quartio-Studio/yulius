@@ -277,15 +277,22 @@ impl CiStore for SqliteStore {
         .await
     }
 
-    async fn ci_runs_for_unique_prefix(
+    async fn ci_runs_for_pull_head(
         &self,
         sandbox: &SandboxId,
-        prefix: &str,
+        head: &str,
     ) -> AppResult<Vec<CiRunRecord>> {
-        let (sandbox, prefix) = (sandbox.as_str().to_owned(), prefix.to_owned());
+        let (sandbox, head) = (sandbox.as_str().to_owned(), head.to_owned());
         // A hexadecimal range uses the (sandbox_id, sha) index. Two distinct
         // commits suffice to rule out ambiguity, regardless of the sandbox’s age.
         self.call(move |c| {
+            if matches!(head.len(), 40 | 64) {
+                return select_runs(
+                    c,
+                    "sandbox_id = ?1 AND sha = ?2 ORDER BY rowid DESC",
+                    &[&sandbox, &head],
+                );
+            }
             select_runs(
                 c,
                 "sandbox_id = ?1 AND sha = (
@@ -293,8 +300,8 @@ impl CiStore for SqliteStore {
                         SELECT DISTINCT sha FROM ci_runs
                         WHERE sandbox_id = ?1 AND sha >= ?2 AND sha < ?3 LIMIT 2
                     ) HAVING COUNT(*) = 1
-                ) ORDER BY queued_at DESC, rowid DESC",
-                &[&sandbox, &prefix, &format!("{prefix}g")],
+                ) ORDER BY rowid DESC",
+                &[&sandbox, &head, &format!("{head}g")],
             )
         })
         .await

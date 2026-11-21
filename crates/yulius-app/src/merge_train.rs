@@ -1274,7 +1274,7 @@ impl App {
         let member = &train.members[index];
         let store = &self.deps.store;
         let runs = store
-            .ci_runs_for_sha(&sandbox.id, head)
+            .ci_runs_for_pull_head(&sandbox.id, head)
             .await
             .map_err(|_| Step::Wait)?;
         if let Some(latest) = crate::ci::run_for_pull_head(&runs, member.pr) {

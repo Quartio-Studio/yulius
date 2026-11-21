@@ -4876,7 +4876,12 @@ impl App {
 
     /// Retry an infrastructure error once for the selected CI reference at this head.
     async fn retry_errored_run(&self, task: &TaskRecord, pr: u64, sha: &str) {
-        let Ok(runs) = self.deps.store.ci_runs_for_sha(&task.sandbox_id, sha).await else {
+        let Ok(runs) = self
+            .deps
+            .store
+            .ci_runs_for_pull_head(&task.sandbox_id, sha)
+            .await
+        else {
             return;
         };
         let Some(latest) = crate::ci::run_for_pull_head(&runs, pr) else {
