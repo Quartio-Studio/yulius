@@ -347,6 +347,9 @@ impl App {
 
     /// Publishes a task update to the UI.
     pub async fn publish_task(&self, task_id: &TaskId) {
+        if crate::hooks::defer_task_update(task_id, false) {
+            return;
+        }
         let Ok(Some(task)) = self.deps.store.task(task_id).await else {
             return;
         };

@@ -55,6 +55,8 @@ The composer and Settings offer individual Codex and Gemini models grouped by pr
 shows its supported effort levels. Choosing a model that cannot use the saved effort restores the
 High default. [SPEC-521](../.ai/specs/SPEC-521-i-should-be-able-to-selected-every-model.md)
 
+Goal tasks continue their remaining plan steps, including post-merge verification, through the existing turn-end retry budget. Owners see a request when their action is needed or the bounded attempts fail. [SPEC-589](../.ai/specs/SPEC-589-it-shouldnt-ask-for-things-like-that-fix.md)
+
 The authoritative product brief is [SPEC-001](../.ai/specs/SPEC-001-yulius-product.md); this
 page is the short version for anyone who must know the whole product before building.
 

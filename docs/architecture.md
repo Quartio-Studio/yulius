@@ -3981,7 +3981,8 @@ hands on alone leaves one end later
 ```mermaid
 flowchart LR
     prompt["prompt / wake-up\n(hook, user line)"] --> working
-    stop["clean Stop hook"] --> idle["waiting / done"]
+    stop["clean Stop hook"] -->|"turn may settle"| idle["waiting / done"]
+    stop -->|"goal has actionable plan or spec work, within retry bound"| working
     turn["turn_duration:\npending background agents"] --> bg["+ background work\n(shown Working)"]
     launch["transcript: monitor started,\nagent launched (until it ends)"] --> bg
     idle --> bg
@@ -3992,6 +3993,8 @@ flowchart LR
     own["Yulius's own flag: the gate gave up,\nno goal, a full context, a secret\nor browser request, …"] -->|"reason: yulius,\nproblem, to do, page"| attention
     attention -.->|"a notice's flag:\nagent works on"| working
 ```
+
+A goal task with unfinished declared work receives a bounded continuation at Stop. The native goal evaluator, a person with a pending decision, background work or pending delivery news can own the next turn. [ADR-0428](decisions/0428-a-goal-turn-continues-its-declared-work.md)
 
 A `needs_attention` flag keeps its reason with the task
 ([SPEC-472](../.ai/specs/SPEC-472-hey-i-have-a-bug-in-produt-sanbox-this-h.md),
@@ -4826,6 +4829,7 @@ flowchart LR
   sent each hook (`x-yulius-hook-sent-ms`): a prompt hook sent before a Stop that reached Yulius
   or a goal verdict it applied belongs to a turn that is over and changes nothing
   ([ADR-0234](decisions/0234-a-prompt-hook-sent-before-its-turn-ended-changes-nothing.md)).
+  The client assigns each UserPromptSubmit a 32-hex-digit `x-yulius-hook-invocation` and reuses it on every HTTP retry. A goal run uses that ID to distinguish a retry from a fresh submission of identical text. Older clients use terminal input and the run’s recent issued prompts.
   A prompt the transcript watcher reads takes the same per-task turn order as a clean Stop: the
   Stop remembers its time and settles after a prompt that is being applied, and a prompt read
   after it is not a new turn

@@ -428,10 +428,9 @@ impl TaskRecord {
         Ok(())
     }
 
-    /// Whether Yulius follows a goal for this task: a goal-mode task of Claude Code. A Codex or
-    /// Antigravity task in goal mode gets its request as its first message and its turns end it,
-    /// as a prompt-mode task's do (SPEC-503, SPEC-505): its launch sets no `/goal` and its Stop is
-    /// not held as a goal's.
+    /// Whether Yulius launches and follows the native Claude goal evaluator. Codex and
+    /// Antigravity receive the request as their first message. All goal-mode tasks use the
+    /// shared Stop gate for unfinished declared work (SPEC-589).
     #[must_use]
     pub fn follows_goal(&self) -> bool {
         self.mode == TaskMode::Goal && self.harness == yulius_domain::harness::Harness::ClaudeCode
@@ -641,6 +640,10 @@ pub enum PauseKind {
     Start,
     /// No process: keep an explicit fresh launch even if a session ID is already recorded.
     FreshStart,
+    /// No process: an admitted goal continuation must start in a fresh session.
+    GoalFreshStart,
+    /// No process: an admitted goal continuation must resume the selected lineage.
+    GoalResumeStart,
 }
 
 impl PauseKind {
@@ -653,6 +656,8 @@ impl PauseKind {
             Self::Limit => "limit",
             Self::Start => "start",
             Self::FreshStart => "fresh_start",
+            Self::GoalFreshStart => "goal_fresh_start",
+            Self::GoalResumeStart => "goal_resume_start",
         }
     }
 
@@ -664,6 +669,8 @@ impl PauseKind {
             "prompt" => Self::Prompt,
             "limit" => Self::Limit,
             "fresh_start" => Self::FreshStart,
+            "goal_fresh_start" => Self::GoalFreshStart,
+            "goal_resume_start" => Self::GoalResumeStart,
             _ => Self::Start,
         }
     }
@@ -671,7 +678,7 @@ impl PauseKind {
     /// Whether the agent's process stays alive during the pause.
     #[must_use]
     pub fn holds_process(self) -> bool {
-        !matches!(self, Self::Start | Self::FreshStart)
+        matches!(self, Self::Turn | Self::Prompt | Self::Limit)
     }
 }
 
@@ -695,6 +702,10 @@ pub enum QueuedStartKind {
     Fresh,
     /// A resume of the task's latest session.
     Resume,
+    /// A goal Stop continuation admitted in a fresh session.
+    GoalFresh,
+    /// A goal Stop continuation admitted in a resumed session.
+    GoalResume,
     /// A resume past the usage limit that cut the turn (SPEC-034).
     AfterLimit,
 }
@@ -706,6 +717,8 @@ impl QueuedStartKind {
         match self {
             Self::Fresh => "fresh",
             Self::Resume => "resume",
+            Self::GoalFresh => "goal_fresh",
+            Self::GoalResume => "goal_resume",
             Self::AfterLimit => "after_limit",
         }
     }
@@ -716,6 +729,8 @@ impl QueuedStartKind {
         match text {
             "fresh" => Some(Self::Fresh),
             "resume" => Some(Self::Resume),
+            "goal_fresh" => Some(Self::GoalFresh),
+            "goal_resume" => Some(Self::GoalResume),
             "after_limit" => Some(Self::AfterLimit),
             _ => None,
         }
@@ -733,8 +748,7 @@ pub struct PauseRecord {
     pub kind: PauseKind,
     /// The account the paused process runs on (`None` without a process).
     pub account_id: Option<AccountId>,
-    /// Text for the resumed session when it resumes on another account: the held prompt
-    /// (`prompt`); `None` otherwise.
+    /// The held prompt or a Stop continuation owed to a turn held for capacity.
     pub continuation: Option<String>,
     /// A prompt entered while a previous turn still ran: that turn's Stop cannot end the hold.
     pub during_turn: bool,

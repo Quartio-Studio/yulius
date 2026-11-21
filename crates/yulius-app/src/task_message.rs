@@ -948,6 +948,14 @@ impl App {
             );
         }
         tokio::time::sleep(SUBMIT_DELAY).await;
+        if task.mode == crate::model::TaskMode::Goal
+            && matches!(from, Sender::Yulius | Sender::YuliusLastTry)
+            && let Some(text) = paste
+                .strip_prefix(b"\x1b[200~")
+                .and_then(|data| data.strip_suffix(b"\x1b[201~"))
+        {
+            self.note_issued_prompt(&task.id, text);
+        }
         // The submit below carries the owner's draft to the agent with the message: the
         // prompt hook reads this to know the draft ended (also one known from its mark alone,
         // after a restart of the server). Set before the Enter: the hook runs some 30 ms
@@ -976,6 +984,26 @@ impl App {
                 err.public_message()
             ))
         })?;
+        // The task's owner can send the new instruction through a tool as well as by
+        // typing in its terminal. A failed send, a command and a machine wake spend
+        // none of the goal's restored budget.
+        if task.mode == crate::model::TaskMode::Goal
+            && what == Typed::Prompt
+            && matches!(from, Sender::Person | Sender::OwnerPastDraft)
+        {
+            let update = crate::ports::store::TaskFieldUpdate {
+                gate_blocks: Some(0),
+                ..Default::default()
+            };
+            if let Err(err) = self
+                .deps
+                .store
+                .update_task(&task.id, &update, self.now())
+                .await
+            {
+                tracing::warn!(task = %task.id, error = %err, "could not reset the goal attempts after an owner message");
+            }
+        }
         if let (Some(attempt), Some(mark)) = (&released, &mut mark) {
             runtime.box_emptied_ms.fetch_max(typed, Ordering::SeqCst);
             runtime
