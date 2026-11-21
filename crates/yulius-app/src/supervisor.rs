@@ -4397,7 +4397,7 @@ impl App {
             // The stop may have come before this run existed, so it armed no escalation for it.
             self.arm_escalation(task_id, Some(attempt.id.clone()));
             self.end_person_pause(task_id).await;
-            request_shutdown(&runtime).await;
+            request_shutdown(&runtime, None).await;
         }
         // A viewer who took the size while the run was starting (the PTY spawned at the size before
         // it): the screen shows that viewer's size from the start, never the spawn size first,
@@ -5372,7 +5372,7 @@ impl App {
         }
         self.arm_escalation(task_id, closed);
         self.end_person_pause(task_id).await;
-        request_shutdown(&runtime).await;
+        request_shutdown(&runtime, None).await;
         Ok(())
     }
 
@@ -5483,8 +5483,17 @@ impl App {
         }
         {
             let mut intent = runtime.intent.lock().map_err(AppError::internal)?;
-            // A newly armed delivery or another end keeps this park from taking the run.
-            if intent.is_some() || self.merge_is_armed(task_id) {
+            // A reader may have taken Close since the idle probe, or finished the run.
+            let Ok(attached) = runtime.run.try_lock() else {
+                return Ok(false);
+            };
+            if attached
+                .as_ref()
+                .is_none_or(|current| current.attempt_id != run.id)
+                || *runtime.terminal_cleanup.borrow() > 0
+                || intent.is_some()
+                || self.merge_is_armed(task_id)
+            {
                 return Ok(false);
             }
             crate::parking::save_parked_screen(&runtime.hub, Path::new(&run.run_dir), quiet_ms)
@@ -5498,8 +5507,8 @@ impl App {
         drop(arm_writer);
         drop(work);
         crate::race::reached(crate::race::Point::ParkDecided, Path::new(task_id.as_str()));
-        self.arm_escalation(task_id, Some(run.id));
-        request_shutdown(&runtime).await;
+        self.arm_escalation(task_id, Some(run.id.clone()));
+        request_shutdown(&runtime, Some(&run.id)).await;
         Ok(true)
     }
 
@@ -5902,7 +5911,7 @@ impl App {
         let stopped = self.live_attempt_id(task_id).await;
         self.arm_escalation(task_id, stopped);
         self.end_person_pause(task_id).await;
-        request_shutdown(&self.runtime(task_id)).await;
+        request_shutdown(&self.runtime(task_id), None).await;
     }
 
     /// Switches a running task to another account (manual or rotation-driven).
@@ -8110,9 +8119,11 @@ fn model_answered(observation: &Observation) -> bool {
 /// Asks the task's run, if one is attached, to shut down gracefully (interrupt, then TERM, then
 /// kill on the host's side). Taking the run lock and writing are bounded together (SPEC-065
 /// END-005): a stuck host must not hold the lock that ending the run needs.
-async fn request_shutdown(runtime: &TaskRuntime) {
+async fn request_shutdown(runtime: &TaskRuntime, selected: Option<&AttemptId>) {
     let asked = tokio::time::timeout(SHUTDOWN_WRITE_BOUND, async {
-        if let Some(run) = runtime.run.lock().await.as_mut() {
+        if let Some(run) = runtime.run.lock().await.as_mut()
+            && selected.is_none_or(|id| id == &run.attempt_id)
+        {
             let _ = run
                 .writer
                 .shutdown(u32::try_from(STOP_INTERRUPT_GRACE_MS).unwrap_or(5000))

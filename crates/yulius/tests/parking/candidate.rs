@@ -344,6 +344,57 @@ fn a_completed_replacement_arm_keeps_its_owner_when_parking_takes_the_writer() -
 }
 
 #[test]
+fn parking_prepared_before_close_leaves_the_settled_owner_free_to_continue() -> TestResult {
+    close_during_park_preparation(false)
+}
+
+#[test]
+fn parking_prepared_before_close_gives_way_to_the_reader_settling_the_run() -> TestResult {
+    close_during_park_preparation(true)
+}
+
+fn close_during_park_preparation(hold_reader: bool) -> TestResult {
+    with_idle_candidate(async |_, app, remote, id, head| {
+        let owner = pending_owner_merge(app, remote, &id, &head).await?;
+        let gate = hold_reader.then(|| super::pause_watch_or_queue(super::Point::RunEndTaken, &id));
+        let taken = gate.as_ref().map(|(taken, _)| taken.clone());
+        let mut exited = app.runtime(&id).hub.watch();
+        let mut completed = app.runtime(&id).hub.watch();
+        let closing = app.clone();
+        let closing_id = id.clone();
+        let handle = tokio::runtime::Handle::current();
+        let decision = expect_park_deferred(app, &id, move || {
+            let closed = tokio::task::block_in_place(|| {
+                handle.block_on(async {
+                    closing.close_task_now(&closing_id).await?;
+                    if let Some(taken) = taken {
+                        tokio::time::timeout(Duration::from_secs(10), taken.notified()).await?;
+                    } else {
+                        old_run_exited(&mut exited).await?;
+                    }
+                    Ok::<_, Error>(())
+                })
+            });
+            assert!(
+                closed.is_ok(),
+                "Close did not reach the selected point: {closed:?}"
+            );
+        })
+        .await;
+        if let Some((_, release)) = gate {
+            release.notify_one();
+        }
+        old_run_exited(&mut completed).await?;
+        assert_eq!(
+            super::status_of(app, &id).await.0,
+            Some(yulius_domain::task::TaskStatus::Closed)
+        );
+        arm_capacity_delayed_continuation(app, &id, &owner).await?;
+        decision
+    })
+}
+
+#[test]
 fn a_closed_owner_can_arm_during_a_capacity_delayed_continue_after_a_superseded_park() -> TestResult
 {
     use yulius_domain::task::TaskStatus;

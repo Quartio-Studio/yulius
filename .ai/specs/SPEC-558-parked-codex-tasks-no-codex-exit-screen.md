@@ -92,7 +92,7 @@ Use the fake Codex executable, its rollout, real PTY shutdown and the applicatio
 
 ## Decisions
 
-Parking and a replacement merge request share the task’s merge writer at admission. If the writer is busy or a merge is armed, the idle pass leaves the session live. Once the park commits, a new merge request checks the committed run and durable task state before it can arm. Stop, close, or loss can settle that same run and release its park marker.
+Parking and a replacement merge request share the task’s merge writer at admission. If the writer is busy or a merge is armed, the idle pass leaves the session live. Once the park commits, a new merge request checks the committed run and durable task state before it can arm. Stop, close, or loss can settle that same run and release its park marker. Final admission checks the attached attempt while holding the end-intent lock. An exit reader already settling the run takes precedence over an earlier idle observation.
 
 A named Continue checks the current model and the requested subscription when Yulius accepts the start or queue entry. A refusal preserves the resting state, archive and question. The queue checks availability again at dispatch through its existing subscription policy. An immediate launch uses the model and account admitted together.
 
@@ -124,6 +124,7 @@ The SQLite query returning a parked task includes the latest attempt ID in the s
 
 ## Evidence
 
+- Independent review of `3ff7f52cf` found that Close could settle the selected run after the idle pass read it. In `4f7ccb57-8954-42c6-936a-74b788a22f0f`, one case left a stale park blocking a capacity-delayed continuation's merge request. The other committed a park after the reader took Close. The earlier integrated run `c395d83e-8e31-4789-b2b4-5ab351a77efd` had passed all 465 tests, including the corrected live delivery fixtures.
 - The hand check on dev base `13a632c40` removed the writer and final arm check from parking and removed the committed-run and durable-status checks from arming. All six focused cases failed in `c38fb6e7-bd8a-47d3-b180-39c62daa8fcc`. Both source files were restored.
 - Before the merge writer and run checks, six regression cases failed in `2f5c9b57-8f74-4967-bb0d-75c1054e0ce8`. They covered a pending writer, an installed replacement arm, a committed park, a settled park, a switch and a capacity pause. The existing obsolete-PR fixture also timed out. The same baseline binary passed all four obsolete-PR cases under isolated observation in 6.64 seconds. [Issue #1649](https://github.com/Quartio-Studio/yulius/issues/1649)
 - With admission ordered, all parking and merge-train cases passed in `ac714fde-1f14-4238-ace4-d4625bb2a1c8`. Five delivery assertions exposed fixtures that inserted a live attempt on a Closed task. Those fixtures now use the running task and live attempt setup from the existing armed-merge tests.
