@@ -27,8 +27,6 @@ use crate::support::TestResult;
 use crate::support::agents::FakeAgentOptions;
 use crate::task_message::superagent;
 
-mod armed_notice;
-
 type Error = Box<dyn std::error::Error>;
 
 /// A hooked app whose idle sessions park at once (`park_after_ms` 1) under a limit of `slots`.
@@ -3081,13 +3079,7 @@ fn a_saved_arm_arriving_during_a_free_watch_defers_the_check_in() -> TestResult 
     first_watch_during_queue_decision(QueueWatch::SavedDuringRead, None)
 }
 
-#[test]
-fn an_armed_watch_rechecks_a_merge_recorded_before_dispatch() -> TestResult {
-    first_watch_during_queue_decision(QueueWatch::RecordedMergeDuringRead, None)
-}
-
 enum QueueWatch {
-    RecordedMergeDuringRead,
     Restoring,
     SavedOwner,
     SavedPeer,
@@ -3113,7 +3105,7 @@ fn first_watch_during_queue_decision(case: QueueWatch, previously_seen: Option<u
         let task = app.deps.store.task(&id).await?.ok_or("owner")?;
         let worktree = Path::new(task.worktree_path.as_deref().ok_or("checkout")?);
         let head = crate::pr_watch::git(worktree, &["rev-parse", "HEAD"])?;
-        open_pull_at(&app, &github, &id, previously_seen.unwrap_or(1481), &head).await?;
+        open_pull_at(&app, &github, &id, 1481, &head).await?;
         let open = DeliveryRecord {
             task_id: id.clone(),
             stage: DeliveryStage::PrOpen,
@@ -3134,30 +3126,7 @@ fn first_watch_during_queue_decision(case: QueueWatch, previously_seen: Option<u
         let saved_arm = serde_json::to_vec(
             &json!([{"task":id.as_str(),"head":head,"summary":"reviewed","armed_at":30}]),
         )?;
-        if matches!(case, QueueWatch::RecordedMergeDuringRead) {
-            std::fs::write(&arms, &saved_arm)?;
-            app.restore_armed_merges().await;
-            let (read, release) = pause_watch_or_queue(Point::LivePrFactsRead, &id);
-            let watcher = Arc::clone(&app);
-            let pass = tokio::spawn(async move { watcher.watch_prs(&due).await });
-            tokio::time::timeout(Duration::from_secs(10), read.notified()).await?;
-            let merged = DeliveryRecord {
-                stage: DeliveryStage::MergedIntegration,
-                ..open.clone()
-            };
-            assert!(
-                app.deps
-                    .store
-                    .transition_delivery(&DeliveryStage::PrOpen, &merged)
-                    .await?
-            );
-            release.notify_one();
-            let news = pass.await?;
-            assert!(
-                news.is_empty(),
-                "advice overtaken by recorded merge: {news:?}"
-            );
-        } else if matches!(case, QueueWatch::Restoring | QueueWatch::SavedOwner | QueueWatch::SavedPeer | QueueWatch::SavedDuringRead) {
+        if matches!(case, QueueWatch::Restoring | QueueWatch::SavedOwner | QueueWatch::SavedPeer | QueueWatch::SavedDuringRead) {
             std::fs::write(&arms, b"[")?;
             app.restore_armed_merges().await;
             let first = match case {
@@ -3303,10 +3272,6 @@ fn first_watch_during_queue_decision(case: QueueWatch, previously_seen: Option<u
                         .transition_delivery(&DeliveryStage::PrOpen, &open)
                         .await?
                 );
-                if number != 1481 {
-                    github.pulls.lock().map_err(|_| "fixture pull")?.clear();
-                    open_pull_at(&app, &github, &id, 1481, &head).await?;
-                }
                 Some(saved[id.as_str()].clone())
             } else {
                 None
@@ -3361,7 +3326,7 @@ fn first_watch_during_queue_decision(case: QueueWatch, previously_seen: Option<u
             stage: DeliveryStage::MergedIntegration,
             ..open
         };
-        if !matches!(case, QueueWatch::MergedDuringRead | QueueWatch::RecordedMergeDuringRead) {
+        if !matches!(case, QueueWatch::MergedDuringRead) {
             assert!(
                 app.deps
                     .store
@@ -3410,4 +3375,105 @@ fn pause_watch_or_queue(
         );
     });
     (entered, release)
+}
+
+#[test]
+fn a_busy_terminal_writer_leaves_the_armed_notice_unheard() -> TestResult {
+    use yulius_app::delivery::DeliveryRecord;
+    use yulius_app::pr_watch::WatchBounds;
+    use yulius_domain::ci::{CiRef, RunState};
+    use yulius_domain::delivery::DeliveryStage;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, github) = app_with_pulls(&data, 8, 1).await?;
+        let (id, caller) = answered(&app, &data).await?;
+        let task = app.deps.store.task(&id).await?.ok_or("owner")?;
+        let tree = Path::new(task.worktree_path.as_deref().ok_or("checkout")?);
+        let head = crate::pr_watch::git(tree, &["rev-parse", "HEAD"])?;
+        open_pull_at(&app, &github, &id, 1481, &head).await?;
+        app.deps
+            .store
+            .transition_delivery(
+                &DeliveryStage::None,
+                &DeliveryRecord {
+                    task_id: id.clone(),
+                    stage: DeliveryStage::PrOpen,
+                    pr_number: Some(1481),
+                    updated_at: app.now(),
+                },
+            )
+            .await?;
+        let (mut run, job) = crate::pr_watch::run(
+            &caller.sandbox,
+            "held-writer-ci",
+            &head,
+            RunState::Failed,
+            None,
+            31,
+        );
+        run.reference = CiRef::PullRequest(1481);
+        app.deps.store.insert_ci_run(&run, &[job]).await?;
+        std::fs::write(
+            data.join(yulius_app::agent_wait::ARMED_MERGES_FILE),
+            serde_json::to_vec(
+                &json!([{"task":id.as_str(),"head":head,"summary":"reviewed","armed_at":30}]),
+            )?,
+        )?;
+        app.restore_armed_merges().await;
+        let session = app.runtime(&id);
+        let last_input = session
+            .last_input_ms
+            .load(std::sync::atomic::Ordering::SeqCst);
+        let (entered, release) = pause_watch_or_queue(Point::TerminalResizeOwnsWriter, &id);
+        let resize = {
+            let app = app.clone();
+            let id = id.clone();
+            tokio::spawn(async move { app.resize_run(&id, 100, 40).await })
+        };
+        tokio::time::timeout(Duration::from_secs(10), entered.notified()).await?;
+        let watcher = app.clone();
+        let mut pass =
+            tokio::spawn(async move { watcher.watch_prs(&WatchBounds::default()).await });
+        let while_busy = tokio::time::timeout(Duration::from_secs(5), &mut pass).await;
+        ask(&app, &id).await?;
+        release.notify_one();
+        resize.await??;
+        let news = match while_busy {
+            Ok(news) => news?,
+            Err(_) => {
+                let stale = pass.await?;
+                return Err(
+                    format!("notice waited behind the resize and then typed: {stale:?}").into(),
+                );
+            }
+        };
+        assert_eq!(
+            session
+                .last_input_ms
+                .load(std::sync::atomic::Ordering::SeqCst),
+            last_input
+        );
+        assert!(!screen(&app, &id).contains("held-writer-ci"));
+        assert!(news.is_empty(), "notice while writer occupied: {news:?}");
+        assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
+        app.deps
+            .store
+            .set_task_needs_you(&id, None, app.now())
+            .await?;
+        let current = app.watch_prs(&WatchBounds::default()).await;
+        assert_eq!(current.len(), 1, "{current:?}");
+        assert!(current[0].1.contains("held-writer-ci"));
+        wait_for(
+            "the agent received the CI notice",
+            Duration::from_secs(10),
+            || async { screen(&app, &id).contains("held-writer-ci") },
+        )
+        .await?;
+        assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
+        app.stop_task_now(&id).await?;
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
 }

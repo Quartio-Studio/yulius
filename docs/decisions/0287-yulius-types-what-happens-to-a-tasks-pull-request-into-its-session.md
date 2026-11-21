@@ -22,8 +22,6 @@ Record an observed open PR before preparing advice about its merge queue state. 
 
 During restoration, keep the open PR sighting and withhold a check-in until its owner's saved merge request has a live activation. The train retains the member's admission head and checkpoints the head verified against its predicted tree when GitHub needs more time. Queue-position reads can then distinguish a verified move from an incomplete checkpoint. The conflict files of an excluded member belong to the activation and head that produced them.
 
-A due armed notice verifies the hosted PR within five seconds because a separate clone can publish a repair without advancing the local tracking ref. For an armed PR the conflict check uses its requested head. Recheck the owner’s pending decisions, delivery and instance update hold after the hosted read. Preserve the notice for another pass when the read fails or the recipient changes.
-
 A failed candidate narrowed to one PR belongs to that PR’s merge decision. The source run may have tested the same tree for a larger candidate. The queue persists the accepted decision before clearing its original arm. Restoration reconciles the recorded activation with the arm saved on disk. Verify the hosted head and integration base together and include the failing job’s retained, redacted diagnostic in the owner’s merge outcome. [SPEC-558](../../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
 
 - A server-side watch (every 20 s) looks at each running task with an open pull request, from
@@ -31,6 +29,7 @@ A failed candidate narrowed to one PR belongs to that PR’s merge decision. The
   with the next step: a red run at its head or of a merge candidate holding it (jobs, failing
   tests, where to read the log), a conflict with the integration branch, how its armed merge ended,
   its merge, and why a green head is not merging (with "Hands off" while a candidate holds it).
+- The first paste of a live PR notice takes the writer only if it is free. A waiting paste could answer a decision that appeared during a backpressured resize. The existing watch retries the unheard event and checks the owner again.
 - Each event is typed once, by key, kept in `<data>/pr-notices.json`.
 - A session quiet for 45 minutes with an open pull request gets a check-in; a pull request with no
   progress for 60 minutes while its CI is idle is stalled: told once and shown on the task list

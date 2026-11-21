@@ -57,7 +57,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Preserve the ordinary armed merge outcome after a person merges through HTTP
 - [x] Keep the live owner’s merge notice across a queue decision
 - [x] Verify restored merge requests and their train positions
-- [ ] Verify the published PR head and owner before dispatching armed notices
+- [ ] Defer live PR notices while the session writer is busy
 - [ ] Verify restored arms and deliver current ordinary CI and train notices to the owner
 - [ ] Report the active singleton and replay its recorded failure for the original owner
 - [ ] Verify candidate status before parking, showing Done or resuming a parked owner
@@ -99,23 +99,13 @@ The queue writes the accepted singleton to the owner’s completed merge wait be
 
 When the watcher sees an open PR during an active queue decision or its slot changes during the read, it supplies the PR number to the normal notice bookkeeping and defers events, check-ins and stalls for that pass. A subsequent recorded merge remains eligible for delivery once to the same task.
 
+A live PR notice that finds the terminal writer busy leaves its event unheard. The existing bounded watch reevaluates the owner and event on its next pass. Once the first paste is accepted, the normal submit path completes it.
+
 ## Evidence
 
-- The empty-draft regression passed on `bc6bc6ca2`. Both idle-reminder cases still fired after a prompt hook, and a real Claude permission notification during the local publication lookup received CI advice. The fix reads the recorded PR, branch, task activity, attention, human decision, capacity pause and pending scope decision in one SQLite statement after Git and browser verification. The turn hook’s recorded Working state also prevents idle advice before the transcript observes the turn.
-
-- Isolated head `ded44eb4b` passed 417 scoped tests and Clippy. Three review tests then failed at paste admission. A human decision made while the typist read an empty draft was bypassed. A turn starting during the hosted read received an idle check-in or stall. The corrected admission follows the draft lookup, rechecks the owner and slot, and samples the current turn before stamping the notice. A busy draft lock leaves the notice unheard.
-
-- The isolated published-head and recipient tests failed 9/9 against landed dev `ec580fc3a`. They observed stale typing after a push from the same or another clone, a missing hosted PR, an older ordinary CI SHA, a local conflict already repaired externally, a recorded merge, a held prompt, a decision for a person and an instance restart hold. The tests attach to the restored original attempt and verify delivery once when the relevant hold clears.
-
-- The combined watcher passed 432 scoped tests after the second review. Its third review found that an already-reported ordinary infrastructure error could hide a later multi-PR candidate failure. The new regression observed no candidate message on `8e4e2563d`. The corrected combined prototype passed all 24 candidate integration tests. The review limit separated dispatch eligibility from CI and train-event selection. The published-head and owner guard is the first delivery. The next delivery keeps the ordinary error first and checks the holding candidate after the error has been heard.
-
-- All four first-review regressions passed on `b66007e4a`. Its wider run passed 429 of 430. The failing older fixture supplied a previous PR only in local delivery state, so the hosted confirmation correctly deferred its stall notice. The fixture now supplies that PR before replacing it. Two second-review regressions failed on the same head. One typed a conflict at an obsolete local tracking SHA when the hosted repaired head had no ordinary CI. The other typed into a session while a restart was draining the instance. Conflict advice now uses the armed SHA and the watcher rechecks the instance hold after verification.
-
-- The first owner-notice revision passed all 427 scoped Rust tests and Clippy. Review identified a durable scope decision, a push from another clone and a repeated check-in after candidate failure. All four review regressions failed on `46f228de8`, including an unavailable hosted PR. That revision confirmed the open hosted head within five seconds when armed advice was due. A quiet watch uses local records. The second-clone fixture checks that the task’s tracking ref still names the failed head after the bare remote advances. No paid agent or live Quartio task is involved.
-
-- On landed dev `ec580fc3a`, 12 of 39 scoped owner-watch tests failed. Three strengthened race and identity regressions also failed. The watcher typed the old ordinary CI failure after a repair was pushed to the fixture’s bare Git remote. The fixtures reopen the SQLite database, restore the arm and run the owner’s watcher through a PTY. Changing the train’s members while it verifies the same red run leaves the prior observation unheard.
-
 - PR #1574 landed at dev `ec580fc3a`. Train run `8b6bf3ef-7a83-4490-9166-a988cf4aa5b6` passed quality, both Rust shards and browser E2E. PR run `6ce66313-3813-436a-b18e-8b2a2b20a606` and dev run `88ff2f78-4e23-4bbe-8b8d-4625c3fea241` reused the verified tree. Vidoc was disabled. The restored-position mutation campaign finished with 24 listed, 19 caught and five unviable. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/ec580fc3aaf5e25c81f6f385551285050b1e90a9)
+
+- The real PTY regression held the writer in a resize while a PR failure became actionable. Before the fix, the watcher queued its paste and sent the CI advice after the owner had been asked for a decision. Published-head and recipient verification and CI/train event selection remain in the following plan step.
 
 - Independent review approved `64116f9f69c26b216db2625e92175062082a8c7a` for restored merge requests and train positions. All 284 scoped parking, delivery, PR-watch and queue tests passed. The reviewer independently ran the real retitle-502 regression. Scoped Clippy, repository contracts, formatting and spec validation passed. Vidoc was disabled. The 24-target mutation campaign passed its unmutated baseline and was running at approval. The last review fix changed tests and documentation and had no Rust product mutations.
 

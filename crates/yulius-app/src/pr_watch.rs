@@ -25,7 +25,7 @@ use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::ids::TaskId;
 use yulius_domain::task::TaskStatus;
 
-use crate::agent_wait::{ArmObservation, ArmedNow, QueueNote};
+use crate::agent_wait::{ArmedNow, QueueNote};
 use crate::ci::{CiJobRecord, CiRunRecord};
 use crate::context::App;
 use crate::delivery::{delivery_profile, past_merge};
@@ -83,14 +83,6 @@ pub struct Event {
     pub key: String,
     /// What happened and what to do.
     pub text: String,
-}
-
-/// Durable activity and current attention from the same read that admits an armed notice.
-pub struct NoticeRecipient {
-    /// The agent began a turn, including one its transcript has yet to report.
-    pub working: bool,
-    /// The current reason the task needs attention, if any.
-    pub attention: Option<crate::attention::AttentionRecord>,
 }
 
 /// What the watch knows of a task's pull request at one pass.
@@ -592,11 +584,8 @@ impl App {
             }
             let held =
                 update_holds || !matches!(self.deps.store.open_pause(&task.id).await, Ok(None));
-            let activation = self.arm_observation(&task.id);
-            let slot = self.armed_now(&task.id);
             let facts = if task.status == TaskStatus::Running && !held {
-                self.pr_facts(&task, &told, &mut runs, &activation, &slot)
-                    .await
+                self.pr_facts(&task, &told, &mut runs).await
             } else {
                 None
             };
@@ -624,96 +613,32 @@ impl App {
                 Some(text) => {
                     // Job names, reasons and test names come from the project: no control
                     // character may end the paste early (review minor 4).
-                    let prepared = text;
-                    let text = crate::task_message::clean_message(&prepared);
+                    let text = crate::task_message::clean_message(&text);
                     let paste = format!("\x1b[200~{text}\x1b[201~");
                     // From here the task goes on by itself until the turn this starts has
                     // begun (SPEC-487 CHN-002). Stamped before it is typed, as its prompt hook
                     // may be served before the typing returns; when nothing was typed, what
                     // was there before is put back whole. When Claude Code's queue is handing
                     // something on, a turn runs or is coming, and the news waits behind it.
-                    let mut before = None;
-                    let mut stamp = || {
-                        let pending = TypedNews {
-                            typed_ms: self.now().0,
-                            in_queue: runtime.queue().hands_on(),
-                        };
-                        before = Some(
-                            runtime
-                                .pr_news
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .replace(pending),
-                        );
+                    let stamp = TypedNews {
+                        typed_ms: self.now().0,
+                        in_queue: runtime.queue().hands_on(),
                     };
-                    let is_merge_notice = facts.events.iter().any(|event| event.kind == "merged");
-                    let result = if let ArmedNow::Armed(arm) = &slot
-                        && !is_merge_notice
-                    {
-                        let admit = async {
-                            let Ok(Some(sandbox)) = self.deps.store.sandbox(&task.sandbox_id).await
-                            else {
-                                return false;
-                            };
-                            if !self
-                                .hosted_arm_is_current(&task, &sandbox, facts.pr, &arm.head)
-                                .await
-                            {
-                                return false;
-                            }
-                            let Some(recipient) = self
-                                .armed_notice_recipient(&task, facts.pr, &arm.head)
-                                .await
-                            else {
-                                return false;
-                            };
-                            if self.update_holds_starts()
-                                || self.arm_observation(&task.id) != activation
-                                || self.armed_now(&task.id) != slot
-                            {
-                                return false;
-                            }
-                            let mut current = facts.clone();
-                            self.refresh_notice_activity(&task.id, &runtime, &mut current);
-                            if recipient.working {
-                                current.working = true;
-                                current.idle = false;
-                            }
-                            if decide(&current, &told, bounds).0.as_deref()
-                                != Some(prepared.as_str())
-                            {
-                                return false;
-                            }
-                            stamp();
-                            true
-                        };
-                        self.type_into_session_if(
-                            &task,
-                            paste.as_bytes(),
-                            Typed::Prompt,
-                            Sender::Yulius,
-                            Some(admit),
-                        )
-                        .await
-                    } else {
-                        stamp();
-                        self.type_into_session(
-                            &task,
-                            paste.as_bytes(),
-                            Typed::Prompt,
-                            Sender::Yulius,
-                        )
-                        .await
-                    };
+                    let before = runtime
+                        .pr_news
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .replace(stamp);
                     let put_back = || {
-                        if let Some(previous) = before {
-                            *runtime
-                                .pr_news
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner) = previous;
-                        }
+                        *runtime
+                            .pr_news
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = before;
                     };
-                    match result {
+                    match self
+                        .type_into_session(&task, paste.as_bytes(), Typed::PrNotice, Sender::Yulius)
+                        .await
+                    {
                         Ok(()) => {
                             tracing::info!(task = %task.id, pr = facts.pr, "told the task about its pull request");
                             typed.push((task.id.clone(), text));
@@ -1058,11 +983,11 @@ impl App {
         task: &TaskRecord,
         told: &Told,
         runs: &mut BTreeMap<String, Vec<CiRunRecord>>,
-        activation: &ArmObservation,
-        slot: &ArmedNow,
     ) -> Option<PrFacts> {
         // The slot before the delivery: a merge decided in between then reads as merged, never
         // as "no merge armed" on an open pull request (review minor 8).
+        let activation = self.arm_observation(&task.id);
+        let slot = self.armed_now(&task.id);
         let (armed, outcome) = self.armed_view(&task.id);
         // A saved arm may still await restoration (SPEC-487, review round 2).
         let armed = armed || self.merge_is_armed(&task.id);
@@ -1118,14 +1043,9 @@ impl App {
                 ..PrFacts::default()
             })
         };
-        if activation.deciding {
+        if activation.deciding || (armed && !matches!(slot, ArmedNow::Armed(_))) {
             return observed_only();
         }
-        let arm_head = match slot {
-            ArmedNow::Armed(arm) => Some(arm.head.as_str()),
-            _ if armed => return observed_only(),
-            _ => None,
-        };
         let integration = delivery_profile(&sandbox).integration_branch;
         if !runs.contains_key(sandbox.id.as_str()) {
             let read = self
@@ -1189,9 +1109,6 @@ impl App {
             .iter()
             .find(|run| matches!(&run.reference, CiRef::Train(members) if members.contains(&pr)))
             .filter(|run| own.is_none_or(|own| run.queued_at >= own.queued_at));
-        // An earlier ordinary run may still establish ordering in local history, but its
-        // verdict does not describe the armed SHA.
-        let own = own.filter(|run| arm_head.is_none_or(|head| run.sha.eq_ignore_ascii_case(head)));
         let hold = self.train_hold(task);
         let mut events = Vec::new();
         let told_key = |kind: &str, key: &str| told.keys.get(kind).is_some_and(|k| k == key);
@@ -1250,8 +1167,8 @@ impl App {
         // Without a run at its head (a project without Yulius CI) the branch's pushed head is
         // asked: a conflicting pull request is not tested (SPEC-491 DON-003), so its agent has
         // to hear of it there too.
-        let conflict_head = match arm_head.or(head.as_deref()) {
-            Some(head) => Some(head.to_owned()),
+        let conflict_head = match &head {
+            Some(head) => Some(head.clone()),
             None => self.branch_head(task).await,
         };
         // SPEC-553 REP-004: deliver an actionable failed publication once when `yulius wait` is
@@ -1319,102 +1236,37 @@ impl App {
             no_ci_status(armed)
         };
         let runtime = self.existing_runtime(&task.id)?;
-        let mut facts = PrFacts {
+        let idle = !runtime.turn_in_progress() && self.typed_recently(&task.id).is_none();
+        let quiet_since_ms = runtime
+            .turn_closed_ms
+            .load(Ordering::SeqCst)
+            .max(runtime.spawned_ms.load(Ordering::SeqCst));
+        let check_ins = !runtime.goal_achieved.load(Ordering::SeqCst) && !needs_you;
+        crate::race::reached(
+            crate::race::Point::LivePrFactsRead,
+            std::path::Path::new(task.id.as_str()),
+        );
+        if self.arm_observation(&task.id) != activation
+            || self.armed_now(&task.id) != slot
+            || self.merge_is_armed(&task.id) != armed
+        {
+            return observed_only();
+        }
+        Some(PrFacts {
             now_ms,
             pr,
             events,
             progress,
             ci_busy,
             status,
-            check_ins: !needs_you,
+            idle,
+            quiet_since_ms,
+            check_ins,
             person_must_act,
+            working: runtime.turn_in_progress(),
             has_ci,
             head: own.map(|run| run.sha.clone()).unwrap_or_default(),
-            ..PrFacts::default()
-        };
-        self.refresh_notice_activity(&task.id, &runtime, &mut facts);
-        crate::race::reached(
-            crate::race::Point::LivePrFactsRead,
-            std::path::Path::new(task.id.as_str()),
-        );
-        if self.update_holds_starts()
-            || &self.arm_observation(&task.id) != activation
-            || &self.armed_now(&task.id) != slot
-            || self.merge_is_armed(&task.id) != armed
-        {
-            return observed_only();
-        }
-        Some(facts)
-    }
-
-    fn refresh_notice_activity(
-        &self,
-        task: &TaskId,
-        runtime: &crate::supervisor::TaskRuntime,
-        facts: &mut PrFacts,
-    ) {
-        facts.working = runtime.turn_in_progress();
-        facts.idle = !facts.working && self.typed_recently(task).is_none();
-        facts.quiet_since_ms = runtime
-            .turn_closed_ms
-            .load(Ordering::SeqCst)
-            .max(runtime.spawned_ms.load(Ordering::SeqCst));
-        facts.check_ins &= !runtime.goal_achieved.load(Ordering::SeqCst);
-    }
-
-    /// A second clone can publish a repair without advancing this checkout's tracking ref.
-    /// Only a notice ready to type needs a hosted read. Keep outages bounded per notice.
-    async fn hosted_arm_is_current(
-        &self,
-        task: &TaskRecord,
-        sandbox: &SandboxRecord,
-        pr: u64,
-        head: &str,
-    ) -> bool {
-        let read = async {
-            let token = self.dlv_installation_token(sandbox).await?;
-            self.deps
-                .github
-                .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, pr)
-                .await
-        };
-        matches!(tokio::time::timeout(Duration::from_secs(5), read).await,
-            Ok(Ok(pull)) if pull.number == pr && pull.state == "open" && !pull.merged
-                && !pull.from_fork && pull.base == delivery_profile(sandbox).integration_branch
-                && task.branch.as_deref() == Some(pull.head.as_str()) && pull.head_sha.eq_ignore_ascii_case(head))
-    }
-
-    /// Recheck the recipient after the hosted read, before recording anything as heard.
-    async fn armed_notice_recipient(
-        &self,
-        task: &TaskRecord,
-        pr: u64,
-        head: &str,
-    ) -> Option<NoticeRecipient> {
-        if self.run_superseded_by_pushed_head(task, head).await
-            || self
-                .browser_tab_request_for(&task.sandbox_id, &task.id)
-                .await
-                .is_some()
-        {
-            return None;
-        }
-        crate::race::reached(
-            crate::race::Point::ArmedNoticePublicationRead,
-            std::path::Path::new(task.id.as_str()),
-        );
-        let recipient = self
-            .deps
-            .store
-            .armed_notice_recipient(&task.id, pr, task.branch.as_deref()?)
-            .await
-            .ok()??;
-        if let Some(reason) = &recipient.attention
-            && !(self.held_draft_box_cleared(task) && crate::task_message::draft_flag(reason))
-        {
-            return None;
-        }
-        Some(recipient)
+        })
     }
 
     /// The merge notice of `task`'s pull request `pr` (`merged_text`), read from GitHub once and
