@@ -43,6 +43,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Keep verified unfinished parked rows out of Done in the browser
 - [x] Reconcile parked lifecycle changes and refresh the sidebar independently of Git
 - [ ] Publish verified parked task detail to the terminal
+- [ ] Reconcile missed parks, resumes and archives discovered by terminal detail
 - [ ] Publish verified parked task detail to Task Info
 - [ ] Keep failed integration candidates with their original owner
 - [ ] Deliver bounded Codex goal continuation to dev
@@ -70,6 +71,8 @@ Capture a separate screen at the park decision because exiting can clear the ent
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
 ## Evidence
+
+- The mounted terminal publishes verified work into an existing parked row and displays a newly read parked detail. The next slice owns missed lifecycle transitions and their public execution fields. Review reproduced both reply orders of Waiting for capacity against Running and an omitted or obsolete subscription ID. The retained lifecycle implementation at `eb4e65154` passed all four scoped regressions, including public account ID and detail-only email. The current delivery does not derive a resumed or archived sidebar row from the terminal detail.
 
 - Terminal review at `0d4d1cc76` found an older list could restore Waiting for capacity after a detail observed the resumed process Running. Chromium reproduced that reversal and loss of current activity when the stale list already said Running. The list now remembers a parked-to-live transition observed during its request, including when both final rows look live. The regression checks the final activity, shell count, notification and exactly two list reads.
 

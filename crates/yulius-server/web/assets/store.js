@@ -135,7 +135,6 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   const listOrder = new WeakMap();
   const failedWatchOrder = new WeakMap();
   const rowOrder = new WeakMap();
-  const resumedRows = new WeakSet();
   const overviewOrder = new WeakMap();
 
   // Events have second-resolution timestamps. Confirm a lifecycle change seen
@@ -176,7 +175,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       if (watchFailure > snapshotOrder) failedWatchOrder.set(map, watchFailure);
       for (const task of Array.isArray(list) ? list : []) {
         if (task.archived) continue;
-        map.set(task.id, orderedListRow(task, current?.get(task.id), snapshotOrder, failureOrder, read.parked.has(task.id)));
+        map.set(task.id, orderedListRow(task, current?.get(task.id), snapshotOrder, failureOrder));
       }
       for (const [id, task] of read.changes) {
         const listed = map.get(id);
@@ -262,15 +261,14 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     };
   }
 
-  function orderedListRow(listed, prior, snapshotOrder, failureOrder, crossedPark) {
+  function orderedListRow(listed, prior, snapshotOrder, failureOrder) {
     // A detail or lifecycle event that started later supplies the parked state.
     // The list can still carry a new title or discover an open PR.
     const priorOrder = rowOrder.get(prior) ?? 0;
-    const followedPark = prior?.status === 'parked' || resumedRows.has(prior);
-    const keepPrior = priorOrder > snapshotOrder && (crossedPark || followedPark || listed.status === 'parked');
+    const keepPrior = priorOrder > snapshotOrder && prior?.status === 'parked' && listed.status === 'parked';
     const order = keepPrior ? priorOrder : snapshotOrder;
     let row = listed;
-    if (keepPrior) row = prior.status === 'parked' && listed.status === 'parked' ? { ...listed, ...parkedFacts(prior) } : { ...prior };
+    if (keepPrior) row = { ...listed, ...parkedFacts(prior) };
     const fallbackOrder = Math.max(failureOrder, unverified.get(prior) ?? 0);
     if (row.status === 'parked' && fallbackOrder >= order) {
       row = awaitingVerification(row, keepPrior ? listed : prior, fallbackOrder);
@@ -278,7 +276,6 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       unverified.delete(row);
     }
     rowOrder.set(row, order);
-    if (followedPark && row.status !== 'parked') resumedRows.add(row);
     return row;
   }
 
@@ -287,44 +284,24 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     return detail => {
       const map = state.tasks.get(detail.sandbox_id);
       const row = map?.get(detail.id);
-      if (!row || (detail.status !== 'parked' && row.status !== 'parked' && !resumedRows.has(row))) return {};
+      if (detail.status !== 'parked') return {};
       if (rowOrder.get(row) > order) return parkedFacts(row);
-      let updated = { ...row, ...parkedFacts(detail) };
-      if (row.status !== detail.status || resumedRows.has(row)) {
-        // A missed park or resume changes execution fields too. Copy only keys
-        // already exposed by the summary (the detail can include private fields).
-        for (const key of Object.keys(row)) if (key in detail) updated[key] = detail[key];
-        updated.account_id = detail.account_id;
-      }
-      if (updated.archived) {
-        upsertTask(updated); // Apply the same removal and Undo ordering as an archive event.
-        return parkedFacts(updated);
-      }
+      let updated = { ...row, ...parkedFacts(detail), id: detail.id, sandbox_id: detail.sandbox_id };
       const hintOrder = pullWatch.get(detail.sandbox_id)?.changeBeforeParkedRows ?? 0;
-      const missedChange = updated.status === 'parked' && hintOrder > order;
-      const verifyDiscovered = missedChange && !hasParkedRows(map);
       const fallbackOrder = Math.max(hintOrder, unverified.get(row) ?? 0, failedWatchOrder.get(map) ?? 0);
-      // A failed watch has no lifecycle or PR facts. Use the detail, preserving
-      // the later failure's conservative group for a task that is still parked.
-      if (detail.status === 'parked' && (fallbackOrder > order || typeof detail.parked_needs_you !== 'boolean')) {
+      if (fallbackOrder > order || typeof detail.parked_needs_you !== 'boolean') {
         updated = awaitingVerification(updated, row, Math.max(order, fallbackOrder));
       }
-      if (row.status === 'parked' && updated.status !== 'parked') {
-        // An older list may have seen a partially resumed task waiting for capacity.
-        // Remember the transition even when its eventual reply also looks live.
-        for (const read of activeLists) {
-          if (read.sandboxId === detail.sandbox_id && read.order < order) read.parked.add(row.id);
-        }
-      }
+      // Publish verified work into an existing parked row. The list and lifecycle
+      // events own membership; the terminal can already display its fresh detail.
+      if (row?.status !== 'parked' || detail.archived) return parkedFacts(updated);
       rowOrder.set(updated, order);
-      if (updated.status !== 'parked') resumedRows.add(updated);
       map.set(row.id, updated);
       if (JSON.stringify(updated) !== JSON.stringify(row) || pullForStatus(updated) !== pullForStatus(row)) {
         emit('task', updated);
         emit('tasks', detail.sandbox_id);
         scheduleCountsRefresh();
       }
-      if (verifyDiscovered) requestRead(detail.sandbox_id, refreshParkedGroups, true, true);
       return parkedFacts(updated);
     };
   }
@@ -345,7 +322,6 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     const order = ++nextListRead;
     if (recheck) task = awaitingVerification(task, prior, order);
     rowOrder.set(task, order);
-    if (task.status !== 'parked' && (prior?.status === 'parked' || resumedRows.has(prior))) resumedRows.add(task);
     for (const read of pending) {
       if (task.status === 'parked' || prior?.status === 'parked') read.parked.add(task.id);
       read.changes.set(task.id, task);
