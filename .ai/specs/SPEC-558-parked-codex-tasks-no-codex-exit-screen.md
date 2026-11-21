@@ -42,7 +42,8 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Keep the newest successful full task list and recover the cold task page
 - [x] Keep verified unfinished parked rows out of Done in the browser
 - [x] Reconcile parked lifecycle changes and refresh the sidebar independently of Git
-- [ ] Publish verified parked task detail to the terminal and Task Info
+- [ ] Publish verified parked task detail to the terminal
+- [ ] Publish verified parked task detail to Task Info
 - [ ] Keep failed integration candidates with their original owner
 - [ ] Deliver bounded Codex goal continuation to dev
 - [ ] Recover screens from tasks parked before the upgrade
@@ -69,6 +70,8 @@ Capture a separate screen at the park decision because exiting can clear the ent
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
 ## Evidence
+
+- The combined page prototype completed three review rounds. The last review showed that an unavailable watch could discard a PR identity, resume or archive actually observed by an earlier detail. Chromium reproduced all three, then passed with the failure order applied only to parking classification. The detail title regression also failed on `773246b88` and passed on `5d1843cd6`. The terminal and shared store are delivered first. The independently testable Task Info integration and its mounted cases are retained at that combined commit for their next delivery.
 
 - Review of `15dbb5214` found two missed events on the detail route. When a PR rerun arrived during a held detail and Git was unavailable, Task Info kept Done after discovering the park. When an archive arrived through detail, an older list retained the closed task in the active sidebar. Both Chromium regressions failed on that head. The watch now verifies a newly discovered parked row once on the missed hint, and detail uses ordinary archive reconciliation for removal and Undo. All 11 scoped cases passed after correction.
 

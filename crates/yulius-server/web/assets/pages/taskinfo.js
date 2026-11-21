@@ -79,7 +79,7 @@ export function mountTaskInfoView(ctx, sandbox, task) {
     meta);
 
   function renderHead() {
-    const info = taskInfo(current, ctx.store.state.actionRequests, ctx.store.pullForStatus(current));
+    const info = taskInfo(current, ctx.store.state.actionRequests, ctx.store.pullsOf(current.sandbox_id).get(current.id));
     setChildren(titleEl, h('span', { class: 'muted' }, `#${current.number} `), current.title || `Task #${current.number}`);
     reviewButton.hidden = !reviewable(ctx.store.gitRowOf(sandbox.id, current.id));
     const pr = ctx.store.pullsOf(sandbox.id).get(current.id);
@@ -141,7 +141,7 @@ export function mountTaskInfoView(ctx, sandbox, task) {
     // Each time says what it measures (SPEC-087 TIM-003, MET-005): when the task was made, how
     // long it has been in its state, and the agent's work apart from the time its sessions stayed
     // open (idle included).
-    const state = taskTime(current, taskInfo(current, ctx.store.state.actionRequests, ctx.store.pullForStatus(current)));
+    const state = taskTime(current, taskInfo(current, ctx.store.state.actionRequests, pr));
     const facts = h('div', { class: 'stat-grid ti-facts' },
       tile('Created', relLong(current.created_at), dateTime(current.created_at)),
       tile('Now', state.text, state.since === null ? null : `since ${dateTime(new Date(state.since).toISOString())}`),
@@ -225,23 +225,15 @@ export function mountTaskInfoView(ctx, sandbox, task) {
   }
 
   let alive = true;
-  let detailRead = 0;
   async function load() {
-    const read = ++detailRead;
-    const prior = current;
-    const publishParked = ctx.store.beginParkedDetail();
     try {
       const fresh = await ctx.api.get(`/api/tasks/${enc(task.id)}`, { signal: reads.signal });
-      if (!alive || read !== detailRead) return;
+      if (!alive) return;
       detail = fresh;
-      detailError = null;
-      current = current === prior ? { ...current, ...fresh } : { ...fresh, ...current };
-      const accepted = current;
-      const facts = publishParked(fresh); // Can synchronously notify this view with the sidebar title.
-      current = { ...accepted, ...facts };
+      current = { ...current, ...fresh };
       loadWaterfall(ctx, sandbox, `task:${task.id}`, stagesHost, { title: 'Stages of this task' });
     } catch (error) {
-      if (!alive || read !== detailRead || error.code === 'aborted') return;
+      if (!alive || error.code === 'aborted') return;
       detailError = error;
     }
     render();
@@ -259,7 +251,7 @@ export function mountTaskInfoView(ctx, sandbox, task) {
       // A session that starts again may run another model on the same subscription (the
       // fallback, SPEC-482), and is a new entry of the sessions: the detail is read again.
       const restarted = t.status !== current.status;
-      current = { ...current, ...t, parked_needs_you: t.parked_needs_you, parked_pr: t.parked_pr };
+      current = { ...current, ...t };
       if (moved) delete current.account_email;
       if (moved || restarted) load();
       render();
