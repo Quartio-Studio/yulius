@@ -131,6 +131,19 @@ fn task_from_row(row: &Row<'_>) -> rusqlite::Result<TaskRecord> {
     })
 }
 
+fn attempt_state(connection: &rusqlite::Connection, id: &str) -> AppResult<AttemptState> {
+    let state: Option<String> = connection
+        .query_row("SELECT state FROM attempts WHERE id = ?1", [id], |row| {
+            row.get(0)
+        })
+        .optional()
+        .map_err(db)?;
+    state
+        .as_deref()
+        .and_then(AttemptState::parse)
+        .ok_or(AppError::NotFound)
+}
+
 fn attempt_from_row(row: &Row<'_>) -> rusqlite::Result<AttemptRecord> {
     let id: String = row.get("id")?;
     let task: String = row.get("task_id")?;
@@ -1236,6 +1249,11 @@ impl TaskStore for SqliteStore {
         .await
     }
 
+    async fn attempt_state(&self, id: &AttemptId) -> AppResult<AttemptState> {
+        let id = id.as_str().to_owned();
+        self.call(move |c| attempt_state(c, &id)).await
+    }
+
     async fn attempt(&self, id: &AttemptId) -> AppResult<Option<AttemptRecord>> {
         Ok(self
             .attempts_query(
@@ -1333,13 +1351,7 @@ impl TaskStore for SqliteStore {
         let (id, u) = (id.as_str().to_owned(), u.clone());
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
-            let current: Option<String> = tx
-                .query_row("SELECT state FROM attempts WHERE id = ?1", [&id], |r| r.get(0))
-                .optional()
-                .map_err(db)?;
-            let Some(current) = current.as_deref().and_then(AttemptState::parse) else {
-                return Err(AppError::NotFound);
-            };
+            let current = attempt_state(&tx, &id)?;
             // One durable outcome: a terminal attempt is not transitioned again, not even to the
             // same state (its second observer is not first, SPEC-065).
             if (current != next || current.is_terminal()) && !current.can_become(next) {
@@ -1361,6 +1373,13 @@ impl TaskStore for SqliteStore {
             )
             .map_err(db)?;
             tx.commit().map_err(db)?;
+            #[cfg(feature = "test-support")]
+            if next.is_terminal() {
+                yulius_app::race::reached(
+                    yulius_app::race::Point::TerminalOutcomeRecorded,
+                    std::path::Path::new(&id),
+                );
+            }
             Ok(true)
         })
         .await

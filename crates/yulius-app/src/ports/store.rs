@@ -543,6 +543,8 @@ pub trait TaskStore: Send + Sync {
     async fn insert_attempt(&self, attempt: &AttemptRecord) -> AppResult<()>;
     /// Attempt by id.
     async fn attempt(&self, id: &AttemptId) -> AppResult<Option<AttemptRecord>>;
+    /// The recorded state, independently of optional run metadata.
+    async fn attempt_state(&self, id: &AttemptId) -> AppResult<AttemptState>;
     /// Attempt by token hash.
     async fn attempt_by_token(&self, token_hash: &str) -> AppResult<Option<AttemptRecord>>;
     /// Attempts of a task in order.

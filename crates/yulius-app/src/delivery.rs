@@ -4791,6 +4791,10 @@ impl App {
         if status.facts.parked_has_local_work_or_request() {
             return Ok(false);
         }
+        crate::race::reached(
+            crate::race::Point::ParkedPredecessorChecksPr,
+            std::path::Path::new(task.id.as_str()),
+        );
         let Some(prs) = self
             .verify_parking_prs(task, record.as_ref(), PrVerification::Settled)
             .await?
