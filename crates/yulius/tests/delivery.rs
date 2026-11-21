@@ -3212,6 +3212,7 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
         assert_eq!(rounds[0]["pr_number"], 1);
         assert_eq!(rounds[0]["head"], head);
         assert_eq!(rounds[0]["verdict"], "approve");
+        assert_eq!(rounds[0]["reported"], true);
         assert!(f.h.store.review_rounds(&task.id, true).await?.is_empty());
     }
     // F 2026-10-11 (AC-GIT-3): on GitHub the creator merged and promoted, not the App.
