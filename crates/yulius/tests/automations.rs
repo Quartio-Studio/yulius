@@ -1237,6 +1237,7 @@ async fn seed_agent(
     let t = h
         .store
         .insert_task(&TaskRecord {
+            parked_attempt_id: None,
             id: TaskId::parse(task)?,
             sandbox_id: SandboxId::parse(sandbox)?,
             number: 0,

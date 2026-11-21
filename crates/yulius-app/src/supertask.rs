@@ -276,6 +276,7 @@ mod tests {
         use yulius_domain::ids::{SandboxId, UserId};
         use yulius_domain::time::Timestamp;
         TaskRecord {
+            parked_attempt_id: None,
             id: id(text),
             sandbox_id: SandboxId::parse("s1").unwrap_or_else(|_| unreachable!()),
             number: 1,

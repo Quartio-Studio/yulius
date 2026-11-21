@@ -353,6 +353,8 @@ pub struct TaskTimes {
 /// A task.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskRecord {
+    /// Latest attempt when this read saw the task parked. Derived from the attempt history.
+    pub parked_attempt_id: Option<AttemptId>,
     /// Id.
     pub id: TaskId,
     /// Sandbox.
@@ -412,6 +414,20 @@ pub struct TaskRecord {
 }
 
 impl TaskRecord {
+    /// Preserve the parked turn a caller selected across a later lookup of the task.
+    pub(crate) fn check_selected_park(&self, selected: &Self) -> crate::error::AppResult<()> {
+        if selected.status == TaskStatus::Parked
+            && (self.status != TaskStatus::Parked
+                || self.parked_attempt_id != selected.parked_attempt_id)
+        {
+            return Err(crate::error::AppError::Conflict(format!(
+                "task #{} changed since it was selected. Read the current task and try again.",
+                self.number
+            )));
+        }
+        Ok(())
+    }
+
     /// Whether Yulius follows a goal for this task: a goal-mode task of Claude Code. A Codex or
     /// Antigravity task in goal mode gets its request as its first message and its turns end it,
     /// as a prompt-mode task's do (SPEC-503, SPEC-505): its launch sets no `/goal` and its Stop is

@@ -31,6 +31,7 @@ async fn seed_run(
     let t = h
         .store
         .insert_task(&TaskRecord {
+            parked_attempt_id: None,
             id: TaskId::parse(task)?,
             sandbox_id: sid,
             number: 0,

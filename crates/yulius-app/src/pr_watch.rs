@@ -1075,7 +1075,7 @@ impl App {
                             untold(told, &next)
                         } else {
                             let text = crate::task_message::clean_message(&text);
-                            match self.resume_parked(&task.id, Some(text.clone())).await {
+                            match self.resume_parked(&task, Some(text.clone())).await {
                                 Ok(true) => {
                                     tracing::info!(
                                         task = %task.id,

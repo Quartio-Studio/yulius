@@ -479,6 +479,7 @@ mod tests {
             .await?;
         let task = store
             .insert_task(&TaskRecord {
+                parked_attempt_id: None,
                 id: TaskId::parse("t1")?,
                 sandbox_id: SandboxId::parse("s1")?,
                 number: 0,
