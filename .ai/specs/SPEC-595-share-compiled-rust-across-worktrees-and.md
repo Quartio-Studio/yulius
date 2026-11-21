@@ -25,8 +25,8 @@ On November 21 the operator measured about 195 seconds compiling and 151 seconds
 - [x] Specify cache ownership and capture the uncached CI baseline
 - [x] Enable a bounded local compiler cache across project builds
 - [x] Verify concurrent reuse, path correctness and recovery
-- [ ] Measure fresh-worktree test and quality builds and document the choice
-- [ ] Approve the cache implementation for delivery
+- [x] Measure fresh-worktree test and quality builds and document the choice
+- [x] Approve the cache implementation for delivery
 - [ ] Integrate idle compiler stores with instance disk upkeep
 - [ ] Record the observed CI lane reuse and before/after run times
 - [ ] Verify the disk upkeep and CI evidence delivery on dev
@@ -59,10 +59,22 @@ The corrected CI lane-layout replay at `52b59ecb3` used two real Git worktrees u
 
 In the prepared instance-upkeep slice, both Rust upkeep scenarios passed with nextest, including the original failing assertion. The tests cover an active reader, a pressured idle store, an unowned directory, a linked store and the healthy-disk size boundary. The release-integrity suite and the cross-checkout fixture passed with mbx installed. `scripts/dev quick` and `spec_check` passed. `scripts/dev security` reported Vidoc disabled.
 
-
 Independent review of `050869aaa` reproduced three defects. A warm procedural-macro expansion embedded the previous worktree's manifest directory, PID-directed cancellation left a child running with the sandbox lease, and a truncated ownership stamp was accepted by builds. New regressions reproduced all three. The corrected launcher keeps uncontrolled procedural-macro expansion out of the cache, closes the lease at Cargo dispatch, forwards cancellation to the process group and publishes a complete stamp atomically. The macro fixture includes a re-export through a separate library. A first-start interruption leaves the cache available on the next build.
 
 A second independent review of `7a4d5af07` found that a restored registry crate's `file!()` could name the previous Cargo home and a debug binary's DWARF compilation directory could name the previous worktree. A requested `CARGO_INCREMENTAL=1` also lost its private incremental state. Regression fixtures reproduced all three against plain Cargo. The source-path identity is now part of the key whenever an absolute Rust source or debug working directory can be recorded. An explicit incremental request runs with its original Cargo settings. A fresh target using the same registry source root served a cached result, while different Cargo homes printed their own file paths. Both debug binaries named their own checkout in DWARF. Bootstrap continued after a simulated interrupted HTTP download.
 
-
 The third review of `229ff6323` reproduced two caller-contract failures. A foreground test stopped while reading its terminal. GNU Make's inherited pipe jobserver descriptors did not reach Cargo. Separate fixtures compare a foreground read and a live jobserver token with the caller's expected result. This delivery retains plain Cargo in those contexts. Redirected standard input also preserves an accessible foreground `/dev/tty`. Unattended Yulius jobs identify their run and redirect all three standard streams. They use the cache in the PTY runner’s original session and job cgroup. A fixture runs both configured CI commands on a PTY and verifies that Cargo and the cache retain the original session ID.
+
+The independent repository-launcher review approved `8b5554106` against `6810a3c65`. All 19 launcher and release fixtures passed independently under a PTY with inherited Make jobserver flags. Both CI commands used the cache and retained the original runner session. The launcher-only `scripts/dev mutants` reported no mutant in the changed Rust lines. The host-upkeep campaign belongs to its separate delivery.
+
+On the instance, the task's mount table showed a writable mount for its own sandbox root. Exactly one sandbox directory was visible under the parent and the compiler store mode was 0700. The layout fixture selected distinct stores for two project roots. Nested bubblewrap namespace creation was refused in the agent container, so the existing contained-job test's nested launch branch could not be exercised there.
+
+The cold test worktree took 1,160.11 s. Nextest ran all 5,754 selected tests in 908.38 s. One pre-existing terminal test observed an empty attention flag after Ctrl+U. The cold build served zero cache hits and the terminal code and test matched dev. This stopped the command before doctests. The remaining doctest stage passed separately in that cold target with pinned ordinary Cargo in 142.25 s. That duration is separate from the failed command's wall time. [Issue #1615](https://github.com/Quartio-Studio/yulius/issues/1615)
+
+The supplemental harness exposed a caller that selected the project launcher itself through `CARGO`. A four-second regression timed out on `8b5554106`. On the corrected head `7fe27a3d6`, selecting the launcher by absolute path or first in `PATH` dispatched once to the real Cargo executable. Independent review approved that exact head, reproduced the previous timeout and passed all 20 launcher and release tests under a PTY with inherited Make flags. An explicitly selected backend preserved its exit status 43. The local suite and `scripts/dev quick` also passed.
+
+In different empty-target worktrees, both `scripts/dev checks` runs passed in 754.29 s cold and 807.27 s warm. The warm check reused 403/424 eligible requests (95.0%) and 403/777 of all reported requests (51.9%). The macOS step fell from 269 s to 192 s. The whole warm command took 52.98 s longer during overlap with other host work. [ADR-0434 measurements](../../docs/decisions/0434-keep-a-local-compiler-cache-in-each-project-sandbox.md#measurements)
+
+The warm `scripts/dev test` passed in 1,003.30 s, including all 5,754 selected tests and doctests. The nextest run took 665.75 s. The warm worktree restored 398.5 MiB and reused 222/248 eligible compilations (89.5%), or 222/445 of all reported invocations (49.9%). The cold and warm test builds took 246 s and 305 s. Both command families used 19 Cargo jobs and 19 nextest workers under concurrent host load. Only the same command in the preceding worktree populated each store.
+
+Immediately before launcher delivery, dev advanced to `e19ea9f`. Its physical uncached merge-train run `8a5d7592-6a05-42fe-8182-a6ef8a3ca7a8` at `87463f1` passed in 1,077 s. Quality and the two shards ran for 899 s, 689 s and 492 s after admission waits of 51 s, 56 s and 448 s. Dev run `78961328-710a-4c94-8f17-0d78865e9e92` reused the verified tree.
