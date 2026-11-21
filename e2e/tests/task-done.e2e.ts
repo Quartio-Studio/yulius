@@ -470,8 +470,6 @@ test('a paused task, a waiting onboarding task and an armed merge are counted as
       onboarding: of({ status: 'closed', not_started: true, awaits_start_onboarding: true }),
       armedGoal: of({ status: 'running', activity: 'done', yulius_wait: true, merge_armed: true }),
       armedGoalPr: of({ status: 'running', activity: 'done', yulius_wait: true, merge_armed: true }, pr),
-      failedTrain: of({ status: 'running', activity: 'done', candidate_pending: true, yulius_wait: true }, pr),
-      failedTrainBeforeGit: of({ status: 'running', activity: 'done', candidate_pending: true, yulius_wait: true }),
       achieved: of({ status: 'running', activity: 'done' }, pr),
     };
   });
@@ -481,8 +479,6 @@ test('a paused task, a waiting onboarding task and an armed merge are counted as
     onboarding: ['Waits for Start onboarding', 'working', 'queued'],
     armedGoal: ['Waiting for checks or merge', 'working', 'working'],
     armedGoalPr: ['Waiting for checks or merge', 'working', 'working'],
-    failedTrain: ['Waiting for checks or merge', 'working', 'working'],
-    failedTrainBeforeGit: ['Waiting for checks or merge', 'working', 'working'],
     achieved: ['Done · PR #7', 'done', null],
   });
 });

@@ -61,6 +61,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Verify restored arms and deliver current ordinary CI and train notices to the owner
 - [x] Report the active singleton and replay its recorded failure for the original owner
 - [ ] Verify candidate status before parking, showing Done or resuming a parked owner
+- [ ] Render verified live integration status in the terminal, sidebar and Task Info
 - [ ] Deliver bounded Codex goal continuation to dev
 - [ ] Recover screens from tasks parked before the upgrade
 
@@ -108,6 +109,8 @@ The parking decision and parked status use the queue decision saved for the orig
 A capacity wait leaves the candidate failure unheard and the owner parked. Launch-lock contention also defers the notice to the next pass. Once a session and a subscription are available, the PR watch checks the decision again before delivering it. A published repair on a different head can produce its own ordinary green notice. Stop hooks, list rows and Home use the last locally available status for live candidates. A detail read or the periodic watch can refresh it, including when the PR has closed or changed branches. Capacity accounting shares the last hosted observation that disproved the exact recorded decision for two PR-watch intervals. A new decision, an expired observation or a restart requires verification again. Before releasing a successor, the verifier rereads the live owner and its merge request. The last attempt that actually ran supplies the parked goal marker, terminal and rollout after any interrupted resume.
 
 ## Evidence
+
+- The final combined review of `662efef5c` independently passed all 53 parking candidate tests and found a mounted browser defect. After a candidate cleared, task #13's sidebar returned to Done while its terminal header retained an In review label. The server slice delivers candidate status in the task API, uses it in parking, wake and dependency checks, and retains the established parked-row display. Browser classification and application of successive snapshots belong to the next plan item. The integrated Chromium suite passed 1,298 tests with one skipped before that split.
 
 - After integrating dev `414a3dd5c`, all 556 scoped Rust tests passed on the default stack. The nextest selection covered parking, merge trains, ordinary PR watching, delivery, task messages, Done and Codex. It includes each review regression and the real restart/PTY #331 case in both orders. The task list and Home complete while GitHub is held. The successor remains Chained across the replacement arm.
 
