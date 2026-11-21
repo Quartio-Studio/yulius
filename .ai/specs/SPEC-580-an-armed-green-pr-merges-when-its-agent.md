@@ -1,6 +1,6 @@
 ---
 yulius-task: d3ba4ccb-fbf0-413f-862f-371da1a61fed
-status: in-progress
+status: done
 ---
 
 # SPEC-580: An armed green PR merges when its agent parks with a background `yulius wait`
@@ -77,13 +77,13 @@ Codex and Claude Code tasks on the same instance merged normally during the same
 ## Plan
 
 - [x] Specify the four root causes, bounds, and acceptance criteria in SPEC-580
-- [ ] Write failing regression tests reproducing each fault before the fix
-- [ ] Settle Antigravity turn ends with background yulius wait and detect PTY commands in shells probe
-- [ ] Compute fresh PR conflict status in delivery views and drop conflicting armed merges
-- [ ] Add armed-green PR stall check-in and Needs You escalation with auto-resolution
-- [ ] Update ADR-0419, architecture docs, and recent changes
-- [ ] Complete independent review and address all findings test-first
-- [ ] Verify green Yulius CI and deliver to dev
+- [x] Write failing regression tests reproducing each fault before the fix
+- [x] Settle Antigravity turn ends with background yulius wait and detect PTY commands in shells probe
+- [x] Compute fresh PR conflict status in delivery views and drop conflicting armed merges
+- [x] Add armed-green PR stall check-in and Needs You escalation with auto-resolution
+- [x] Update ADR-0419, architecture docs, and recent changes
+- [x] Complete independent review and address all findings test-first
+- [x] Verify green Yulius CI and deliver to dev
 
 ## Acceptance criteria
 
@@ -108,3 +108,43 @@ Codex and Claude Code tasks on the same instance merged normally during the same
 - **Settle every clean Antigravity `Stop` as `Activity::Waiting` and track non-wait background work via `background_agents`/`shells.rs` instead of keeping `Activity::Working`:** Matches Claude Code's canonical lifecycle model (turn ended = `Waiting`, background work = `background_shells > 0`, `yulius wait` = `background_waits > 0` / `active_waits > 0`), fixes both merge-queue readiness and task-list display at the root cause, and preserves SPEC-528 without breaking `turn_in_progress`. Recorded in [ADR-0419](../../docs/decisions/0419-antigravity-stop-settles-turn-and-armed-green-prs-have-a-stall-bound.md).
 - **Refresh the sandbox clone on `pull.mergeable == Some(false)` disagreement in `pull_conflicts` and populate `pr.conflicts` in `delivery_view`:** Eliminates stale-base false negatives while preserving SPEC-491 M1 union merge drivers.
 - **Reuse SPEC-578 (`tasks.needs_you` + `NeedsYouNotice` + `task_wait_messages`) for armed-green PR stall escalation (10 min check-in, +10 min Needs You):** Delivers consistent actionable notices, history, and notifications across every surface without inventing a parallel alert path, with exact-timestamp auto-clear (`end_task_needs_you_at`) on progress.
+
+## Evidence
+
+### Baseline reproducing failures (before production changes)
+Ran `cargo test -p yulius --test main -- antigravity_armed_merge:: --nocapture` on unmodified `dev` (0 passed, 4 failed):
+- `antigravity_armed_green_pr_with_yulius_wait_merges_and_is_not_working`: failed (`left: Some(Working), right: Some(Waiting)` — Antigravity `Stop { fullyIdle: false }` skipped `clean_stop` while `yulius wait` ran).
+- `antigravity_stop_with_non_wait_background_work_preserves_spec_528_and_waits_for_completion`: failed (`left: Some(Working), right: Some(Waiting)`).
+- `armed_green_pr_conflict_reports_conflicts_true_and_drops_arm`: failed (`task_delivery` returned `pr.conflicts: false` on a conflicting PR with stale local `origin/dev`).
+- `stalled_armed_green_pr_checks_in_then_escalates_to_needs_you_and_auto_clears`: failed (`expected SPEC-578 needs_you_notice after armed-PR stall bound`).
+
+### Post-fix verification (on approved HEAD `8fab62b43c99ca877c6a4f0a7230f7edeefa70fd`)
+- `cargo test -p yulius-ptyhost shells::` — **17 passed, 0 failed** (including `pty_hosted_commands_distinguish_yulius_wait_from_real_background_work`).
+- `cargo test -p yulius-app --lib agent_wait::tests::` — **9 passed, 0 failed** (including `active_wait_guard_balances_and_never_underflows`).
+- `cargo test -p yulius-app --lib pr_watch::tests::` — **20 passed, 0 failed** (including `armed_green_stall_checks_in_then_escalates_and_resets_on_progress` and `untold_resets_armed_check_in_on_new_head_and_preserves_on_same_head`).
+- `cargo test -p yulius --test main -- antigravity_armed_merge::` — **10 passed, 0 failed**:
+  - `antigravity_armed_green_pr_with_yulius_wait_merges_and_is_not_working`
+  - `antigravity_stop_with_non_wait_background_work_preserves_spec_528_and_waits_for_completion`
+  - `antigravity_stop_with_both_shell_and_wait_holds_until_shell_exits`
+  - `antigravity_stop_with_active_agent_wait_rpc_settles_without_probe_waits`
+  - `claude_and_codex_armed_green_pr_with_yulius_wait_parity`
+  - `armed_green_pr_conflict_reports_conflicts_true_and_drops_arm`
+  - `union_driver_collision_with_stale_clone_reports_conflicts_false`
+  - `stalled_armed_green_pr_checks_in_then_escalates_to_needs_you_and_auto_clears`
+  - `stalled_armed_green_pr_delivers_live_pty_check_in_then_escalates`
+  - `stalled_armed_green_pr_already_merged_on_github_does_not_escalate`
+- `cargo test -p yulius --test main -- agent_hooks::antigravity_` — **3 passed, 0 failed** (all existing SPEC-528 tests preserved).
+- `cargo test -p yulius --test main -- merge_train::github_s_flag` — **1 passed, 0 failed** (SPEC-491 M1 preserved).
+- `cargo test -p yulius --test main -- parking::armed_notice::` — **16 passed, 0 failed** (origin/dev armed-notice admission guards preserved).
+- `cargo clippy -p yulius-ptyhost -p yulius-app -p yulius --all-targets -- -D warnings` — **0 warnings**.
+- `cargo clippy -p yulius-ptyhost --all-targets --target aarch64-apple-darwin -- -D warnings` — **0 warnings** (verified by independent reviewer).
+- `python3 scripts/decision_slots.py` and `scripts/dev quick` — **PASS** (16 crates, 7 skills, local Markdown links, no conflict markers, unique decision numbers, `cargo fmt --all -- --check`).
+- `scripts/dev security` — **disabled** (Vidoc is switched off in Yulius for this project/instance; nothing was scanned).
+
+### Independent review
+- Independent review by fresh `reviewer` agent (`gemini-4-neon-high`, high effort):
+  - Round 1 on `b1a055e47`: REQUEST CHANGES (1 blocking, 4 major, 1 minor, 1 nit — all fixed test-first in `8fab62b43`).
+  - Round 2 on `8fab62b43c99ca877c6a4f0a7230f7edeefa70fd`: **APPROVE** (all 7 findings verified fixed with dedicated regression tests; 2-line duplicate doc comment nit cleaned up in `finish.rs`).
+
+### Remaining validation limits
+- Full workspace `scripts/dev macos` and full CI gate (`scripts/dev ci`, full integration suite, and `scripts/dev mutants`) are deferred to Yulius CI on the pull request head per `AGENTS.md`.

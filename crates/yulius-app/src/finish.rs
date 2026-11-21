@@ -1296,7 +1296,6 @@ impl App {
 
     /// Probes the background shells of an idle task (bounded) and publishes the task when their
     /// number changed. Busy or ended tasks are not probed; their count is forgotten.
-    /// Probes background shells for an idle task and publishes any change.
     pub async fn probe_idle_shells(self: &Arc<Self>, task_id: &TaskId) {
         let runtime = self.runtime(task_id);
         let idle = matches!(
@@ -1622,7 +1621,6 @@ impl App {
     }
 
     /// Number of open `POST /internal/agent/wait` requests currently served for `task_id`.
-    /// Number of `/internal/agent/wait` long-polls currently active for `task_id`.
     pub fn active_waits_of(&self, task_id: &TaskId) -> u32 {
         self.existing_runtime(task_id)
             .map_or(0, |runtime| runtime.active_waits.load(Ordering::SeqCst))
