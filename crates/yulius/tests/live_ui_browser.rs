@@ -105,7 +105,14 @@ async fn eval(
 async fn until(cdp: &CdpClient, session: &str, what: &str, expression: &str) -> TestResult {
     let deadline = Instant::now() + Duration::from_secs(45);
     loop {
-        if eval(cdp, session, &format!("!!({expression})")).await? == Value::Bool(true) {
+        if eval(
+            cdp,
+            session,
+            &format!("(async () => !!(await ({expression})))()"),
+        )
+        .await?
+            == Value::Bool(true)
+        {
             return Ok(());
         }
         if Instant::now() > deadline {
@@ -126,6 +133,7 @@ fn fixture_site() -> Router {
                     r#"<!doctype html><html><head><link rel="stylesheet" href="/style.css"></head>
 <body><h1 id="title">Fixture page</h1><img id="logo" src="/logo.svg" width="40" height="40">
 <button id="go" onclick="document.getElementById('title').textContent='Clicked!'" style="position:absolute;left:100px;top:160px;width:140px;height:44px">Click me</button>
+<button id="copy" onclick="navigator.clipboard.writeText('first line\nzażółć').then(() => this.textContent = 'Copied')" style="position:absolute;left:100px;top:100px;width:140px;height:44px">Copy</button>
 <canvas id="paint" width="60" height="30" style="position:absolute;left:300px;top:20px"></canvas>
 <input id="name" style="position:absolute;left:100px;top:240px;width:160px">
 <div style="height:3000px"></div>
@@ -351,6 +359,9 @@ async fn the_panel_streams_the_sandbox_chrome_and_takes_input() -> TestResult {
         until(&cdp, session, "the agent's tab selected", &format!("document.querySelector('.bp-bar input').value === 'localhost:{}/'", site.port())).await?;
         // The page's canvas turns green after 1.5 s: the stream shows it.
         until(&cdp, session, "the updated canvas in the stream", "(() => { const c = document.querySelector('.bp-canvas'); const p = c.getContext('2d').getImageData(330, 35, 1, 1).data; return p[1] > 150 && p[0] < 80; })()").await?;
+        if display {
+            assert_eq!(eval(&cdp, session, "navigator.clipboard.writeText('original viewer text').then(() => navigator.clipboard.readText())").await?, json!("original viewer text"));
+        }
         // A click in the panel reaches the page.
         let button = stage_point(&cdp, session, (170.0, 182.0)).await?;
         for kind in ["mouseMoved", "mousePressed", "mouseReleased"] {
@@ -358,6 +369,18 @@ async fn the_panel_streams_the_sandbox_chrome_and_takes_input() -> TestResult {
                 .await?;
         }
         until_page(&browser, &page, "the click", "document.getElementById('title').textContent === 'Clicked!'").await?;
+        // A page button writes its own text without selecting any DOM text.
+        if display {
+            let copy = stage_point(&cdp, session, (170.0, 122.0)).await?;
+            for kind in ["mouseMoved", "mousePressed", "mouseReleased"] {
+                cdp.call_session(session, "Input.dispatchMouseEvent", json!({ "type": kind, "x": copy.0, "y": copy.1, "button": "left", "clickCount": 1 })).await?;
+            }
+            until_page(&browser, &page, "the webpage's successful clipboard write", "document.getElementById('copy').textContent === 'Copied'").await?;
+            until(&cdp, session, "the offer to copy from the sandbox", "document.querySelector('.toast button.btn')?.textContent === 'Copy to my clipboard'").await?;
+            assert_eq!(eval(&cdp, session, "navigator.clipboard.readText()").await?, json!("original viewer text"));
+            eval(&cdp, session, "document.querySelector('.toast button.btn').click(); true").await?;
+            until(&cdp, session, "the button's text on the viewer clipboard", r"navigator.clipboard.readText().then(t => t === 'first line\nzażółć')").await?;
+        }
         // Keys typed in the panel reach the focused field; a paste inserts the user's text.
         let field = stage_point(&cdp, session, (180.0, 251.0)).await?;
         for kind in ["mouseMoved", "mousePressed", "mouseReleased"] {

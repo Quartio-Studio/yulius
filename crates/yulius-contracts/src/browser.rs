@@ -341,6 +341,13 @@ pub enum ViewerClientMsg {
         /// The view.
         mode: ViewMode,
     },
+    /// Transfer the sandbox clipboard selection offered to this connection.
+    AcceptPageCopy {
+        /// Tab shown with the offer.
+        tab_id: TabId,
+        /// One-use identifier from [`ViewerServerMsg::PageCopyAvailable`].
+        offer: u32,
+    },
     /// Copy the shown tab's selection: the server answers [`ViewerServerMsg::Clipboard`].
     Copy {
         /// The tab the user copied in.
@@ -391,6 +398,8 @@ pub enum ViewMode {
 pub enum ViewerErrorCode {
     /// Malformed or out-of-bounds message.
     Invalid,
+    /// The accepted clipboard offer expired or has no transferable plain text.
+    ClipboardUnavailable,
     /// The URL policy refused the address.
     UrlRefused,
     /// Unknown tab.
@@ -480,6 +489,22 @@ pub enum ViewerServerMsg {
         width: u32,
         /// Coded height in device pixels.
         height: u32,
+    },
+    /// A fresh sandbox clipboard selection is available for an explicit transfer.
+    PageCopyAvailable {
+        /// Tab shown with the offer.
+        tab_id: TabId,
+        /// One-use identifier, scoped to the viewer connection.
+        offer: u32,
+    },
+    /// The text of a clipboard selection the viewer explicitly accepted.
+    PageClipboard {
+        /// The tab shown when the viewer clicked.
+        tab_id: TabId,
+        /// Accepted offer identifier.
+        offer: u32,
+        /// Plain text from the sandbox display, at most [`CLIPBOARD_MAX_BYTES`].
+        text: String,
     },
     /// The text the user copied in the page (answer to [`ViewerClientMsg::Copy`]).
     Clipboard {

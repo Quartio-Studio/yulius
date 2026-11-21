@@ -454,6 +454,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0421 -->
 - [0422](0422-cli-and-superagent-task-creation-defaults-to-codex.md) defaults CLI and Superagent task creation to Codex and inherits its model, effort and subscription tier.
 <!-- ADR 0422 -->
+- [0423](0423-a-webpage-copy-returns-through-the-clicking-viewers-connection.md) returns a webpage’s clipboard write through the viewer connection that clicked.
 <!-- ADR 0423 -->
 <!-- ADR 0424 -->
 <!-- ADR 0425 -->
