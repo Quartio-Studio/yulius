@@ -428,8 +428,11 @@ test('switching unfinished drafts keeps late uploads with their owner and discar
 
   await hold();
   await drop(browser, [['discarded.pdf', 'pdf', 'application/pdf']]);
+  // The status belongs to the old view. Wait for its upload callback before checking storage.
+  await browser.evaluate(() => { (window as unknown as { uploadStatus: Element | null }).uploadStatus = document.querySelector('.composer-box .upload-text'); });
   await discardDraft(screen, true);
   await release();
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { uploadStatus: Element }).uploadStatus.textContent)).toBe('Added discarded.pdf');
   await expect.poll(() => promptText(browser)).toBe('Owner');
   await expect.poll(() => attachmentNames(browser)).toEqual(['late.pdf']);
   await browser.reload();
@@ -452,4 +455,48 @@ test('a failed start preserves both unfinished drafts until sign-out', async ({ 
   await screen.getByRole('menuitem', 'Sign out').click();
   await expect(browser).toHaveURL(/#\/signin/);
   expect(await storedDrafts(browser)).toEqual([]);
+});
+
+test('the draft picker follows changes to an inactive draft in another tab', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  const prompt = screen.getByRole('textbox', 'Task prompt');
+  await prompt.fill('First version');
+  await screen.getByRole('button', 'New draft').click();
+  await prompt.fill('Local work');
+  // A write and then a removal as delivered to this tab through the shared browser storage.
+  const updateFromTab = (text: string | null) => browser.evaluate((value) => {
+    const key = 'yulius.draft.usr_1.sb_studio';
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, JSON.stringify({ text: value }));
+    window.dispatchEvent(new StorageEvent('storage', { key, newValue: localStorage.getItem(key), storageArea: localStorage }));
+  }, text);
+  await updateFromTab('Updated elsewhere');
+  await screen.getByRole('button', 'Drafts').click();
+  await expect(screen.getByRole('menuitemradio', 'Updated elsewhere')).toBeVisible();
+  await screen.getByRole('menuitemradio', 'Local work').click();
+  await updateFromTab(null);
+  await screen.getByRole('button', 'Drafts').click();
+  await expect(screen.getByRole('menuitemradio')).toHaveCount(1);
+  await screen.getByRole('menuitemradio', 'Local work').click();
+  await expect.poll(() => promptText(browser)).toBe('Local work');
+});
+
+test('a task that finishes starting while another draft is open leaves that editor in place', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&codex=1'));
+  await browser.evaluate(() => {
+    const w = window as unknown as Holding;
+    w.__yuliusMock.holdCreate = new Promise<void>((resolve) => { w.__release = resolve; });
+  });
+  const prompt = screen.getByRole('textbox', 'Task prompt');
+  await prompt.fill('Start this one');
+  await prompt.press('ControlOrMeta+Enter');
+  await expect(browser.locator('.composer-send')).toBeDisabled();
+  await screen.getByRole('button', 'New draft').click();
+  await prompt.fill('Keep writing here');
+  await browser.evaluate(() => (window as unknown as Holding).__release!());
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Holding).__yuliusMock.tasks.some((task) => task.prompt === 'Start this one'))).toBe(true);
+  await expect.poll(() => storedDrafts(browser)).toHaveLength(1);
+  await expect.poll(() => promptText(browser)).toBe('Keep writing here');
+  await browser.reload();
+  await expect.poll(() => promptText(browser)).toBe('Keep writing here');
 });

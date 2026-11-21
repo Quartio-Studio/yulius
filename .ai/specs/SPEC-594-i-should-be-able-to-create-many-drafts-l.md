@@ -22,7 +22,7 @@ The composer in [SPEC-026](SPEC-026-if-i-type-something-here-and-i-change-ta.md)
 ## Plan
 
 - [x] Reproduce the single-draft behavior in the new-task composer
-- [ ] Cover independent drafts and legacy recovery in the browser
+- [x] Cover independent drafts and legacy recovery in the browser
 - [ ] Let people create, switch and remove individual task drafts
 - [ ] Verify the composer and deliver the reviewed fix to dev
 
@@ -38,4 +38,11 @@ Exercise the real composer in Chromium against the mock API in `drafts.e2e.ts`. 
 
 ## Decisions
 
-Extend the existing browser draft storage with separate keys for additional drafts. This preserves the original key and allows independent writes from different tabs. Keep the selected draft per tab. Attachments follow the existing server retention and browser quota behavior.
+Extend the existing browser draft storage with separate keys for additional drafts. This preserves the original key and allows independent writes from different tabs. Keep the selected draft per tab. Attachments follow the existing server retention and browser quota behavior. [ADR-0433](../../docs/decisions/0433-store-each-new-task-draft-under-its-own-key.md)
+
+## Evidence
+
+- `spec_check` validated the task spec. The independent scope review returned proceed.
+- On the baseline, the same user and sandbox returned the identical draft object. The three-draft and held-upload browser regressions failed looking for the New draft button.
+- A simulated storage event reproduced a stale inactive draft in the picker. The browser regression failed to find the updated name before inactive drafts began following other tabs' storage events.
+- The held-upload test caught the upload status covering New draft above the prompt. Draft controls sit below the composer so a pending upload leaves them reachable.

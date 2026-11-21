@@ -3738,7 +3738,7 @@ flowchart LR
 The web UI is plain ES modules. Server state comes from the API and the UI event stream
 (`store.js`); what only one person's browser needs stays in `localStorage`: preferences (theme,
 column widths, model and effort), the notification history, the new-task composer's drafts
-([decision 0021](decisions/0021-composer-drafts-in-the-browser.md)), and each sandbox's pull
+([decision 0433](decisions/0433-store-each-new-task-draft-under-its-own-key.md)), and each sandbox's pull
 requests as the last Git overview read said them (`yulius.pulls.<user>.<sandbox>`), shown at once
 after a reload, for a sandbox a view watches, until the page's own read replaces them (dropped if
 that read fails, while a later failed read keeps the chips an earlier read on the page showed;
@@ -3797,11 +3797,12 @@ flowchart LR
 ```mermaid
 flowchart LR
   PI["promptinput.js (files inside the text)"] -->|"value with @'path' in place"| C
-  C["Composer (taskview.js)"] -->|"edit, attach"| D["drafts.js (per user and sandbox)"]
+  C["Composer (taskview.js)"] -->|"edit, attach"| D["drafts.js (per user, sandbox and draft)"]
+  D -->|"selected draft key for this tab"| SS[("sessionStorage")]
   C -->|"upload"| U["POST /api/sandboxes/:id/attachments"]
   D -->|"debounced, on leave or hide"| LS[("localStorage yulius.draft.*")]
   LS -->|"after a reload"| D
-  C -->|"task started: clear"| D
+  C -->|"started or discarded: remove this draft"| D
   SO["Sign-out"] -->|"forget"| LS
   G["GET /api/sandboxes/:id/git"] -->|"every read"| P["store.js loadPulls / pullsOf()"]
   EV["pulls.updated (stage moved, CI run changed)"] -->|"read again"| G
