@@ -206,10 +206,6 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       // lists still take precedence. Permanent removal wins in either order.
       for (const [id, transition] of read.transitions) {
         if (rowOrder.get(transition) <= snapshotOrder || read.changes.has(id)) continue;
-        if (transition.archived) {
-          map.delete(id);
-          continue;
-        }
         const latest = current?.get(id) ?? transition;
         // For two parked observations the list loop has already reconciled
         // the PR and verification, keeping the newer lifecycle fields.
@@ -226,8 +222,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
           // A newer list can supersede the resume event retained while a
           // terminal was reading an earlier parked state.
           const resumed = detailResumes.has(prior);
-          // An Undo can also reintroduce a closed row whose terminal is still mounted.
-          if (prior && task.status !== 'parked' && prior.status !== 'parked' && !resumed) continue;
+          if (task.status !== 'parked' && prior?.status !== 'parked' && !resumed) continue;
           if (resumed && task.status !== 'parked') detailResumes.add(task);
           if (!prior || JSON.stringify(task) !== JSON.stringify(prior) || pullForStatus(task) !== pullForStatus(prior)) {
             emit('task', task);
@@ -327,21 +322,6 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   }
 
   function publishParkedRow(map, row, updated) {
-    if (updated.archived) {
-      // Concurrent terminal reads still need the archive's observation order:
-      // an older detail cannot restore it, and a newer detail can discover Undo.
-      for (const pending of activeDetails) {
-        if (pending.row?.id === row.id) pending.row = updated;
-      }
-      const removed = map.delete(row.id);
-      // A list can omit the row before the terminal learns why it vanished.
-      if (removed || !row.archived) emit('task', updated);
-      if (removed) {
-        emit('tasks', row.sandbox_id);
-        scheduleCountsRefresh();
-      }
-      return updated;
-    }
     if (updated !== row) {
       const restored = !map.has(row.id);
       map.set(row.id, updated);
@@ -371,7 +351,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   }
 
   function rememberTransition(row, discovered = false) {
-    if (!row.archived && row.status !== 'parked') detailResumes.add(row);
+    if (row.status !== 'parked') detailResumes.add(row);
     const order = rowOrder.get(row);
     for (const read of activeLists) {
       if (read.sandboxId !== row.sandbox_id || read.order >= order) continue;
@@ -389,34 +369,29 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
 
   function beginParkedDetail(startingRow) {
     const order = ++nextListRead;
-    // A mounted archived task is outside the active list. Its next detail
-    // can establish that Undo restored it while the terminal was open.
-    const read = { row: state.tasks.get(startingRow?.sandbox_id)?.get(startingRow?.id) ??
-      (startingRow?.archived ? startingRow : undefined) };
+    const read = { row: state.tasks.get(startingRow?.sandbox_id)?.get(startingRow?.id) };
     if (read.row) activeDetails.add(read);
     const release = () => activeDetails.delete(read);
     const publish = (detail, view = {}) => {
       release();
       const map = state.tasks.get(detail.sandbox_id);
-      if (!map || read.row === null) return view;
-      // Retain the observed task across an older list omission. A removal
-      // event invalidates the reference before any pending detail can publish.
+      if (!map || read.row === null || detail.archived) return view;
+      // Only a row actually visible at request start can survive omission by
+      // an older list. Archive/delete invalidates that reference synchronously.
       const retained = read.row?.id === detail.id ? read.row : null;
       const listed = map.get(detail.id);
       const listVersion = listOrder.get(map) ?? 0;
       const laterEvent = rowOrder.get(retained) > Math.max(listVersion, rowOrder.get(listed) ?? 0);
       const crossedPark = startingRow && startingRow.status !== detail.status &&
         (startingRow.status === 'parked' || detail.status === 'parked');
-      const undo = startingRow?.archived && !detail.archived;
-      const row = laterEvent ? retained : listed ?? ((crossedPark || startingRow?.archived) && listVersion < order ? retained : null);
-      if (!row) return undo ? { ...view, ...lifecycleSummary(startingRow, startingRow) } : view;
-      if (!startingRow?.archived && detail.status !== 'parked' && row.status !== 'parked' && startingRow?.status !== 'parked') return view;
-      const transition = detail.archived || row.archived || undo || crossedPark || row.status !== detail.status;
+      const row = laterEvent ? retained : listed ?? (crossedPark && listVersion < order ? retained : null);
+      if (!row || (row.status !== 'parked' && detail.status !== 'parked' && startingRow?.status !== 'parked')) return view;
+      const transition = row.status !== detail.status || crossedPark;
       recordVerification(detail, order);
       if (rowOrder.get(row) > order) {
         // Preserve the newer event's work and decisions. An older detail may
         // still identify the open PR that an unverified update could not name.
-        const supplement = detail.status === 'parked' && !detail.archived && row.status === 'parked' &&
+        const supplement = row.status === 'parked' && detail.status === 'parked' &&
           unverified.has(row) && (verifiedGroup.get(row)?.order ?? 0) < order;
         const latest = supplement ? awaitingVerification(row, detail) : row;
         if (transition) rememberTransition(latest);
@@ -427,12 +402,12 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       const hintOrder = pullWatch.get(detail.sandbox_id)?.changeBeforeParkedRows ?? 0;
       verifiedGroup.set(updated, latestVerification(detail, row));
       const fallbackOrder = Math.max(hintOrder, unverified.get(row) ?? 0, failedWatchOrder.get(map) ?? 0);
-      if (!detail.archived && detail.status === 'parked' && (fallbackOrder > order || typeof detail.parked_needs_you !== 'boolean')) {
+      if (detail.status === 'parked' && (fallbackOrder > order || typeof detail.parked_needs_you !== 'boolean')) {
         updated = awaitingVerification(updated, row, Math.max(order, fallbackOrder));
       }
       rowOrder.set(updated, order);
       if (transition) rememberTransition(updated, true);
-      const missedHint = !detail.archived && detail.status === 'parked' && hintOrder > order && !hasParkedRows(map);
+      const missedHint = detail.status === 'parked' && hintOrder > order && !hasParkedRows(map);
       publishParkedRow(map, row, updated);
       if (missedHint) requestRead(detail.sandbox_id, refreshParkedGroups, true, true);
       return { ...view, ...(transition ? updated : parkedFacts(updated)) };

@@ -45,7 +45,8 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Show current parked progress and owner notices in the terminal
 - [x] Publish verified parked task detail to the terminal
 - [x] Publish a missed park discovered by terminal detail
-- [ ] Reconcile terminal-discovered resumes, archives and later Undo
+- [ ] Publish terminal-discovered resumes to the active task list
+- [ ] Reconcile terminal-discovered archives and later Undo
 - [ ] Publish verified parked task detail to Task Info
 - [ ] Keep failed integration candidates with their original owner
 - [ ] Deliver bounded Codex goal continuation to dev
@@ -73,6 +74,8 @@ Capture a separate screen at the park decision because exiting can clear the ent
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
 ## Evidence
+
+- Third-round review of the combined resume/archive change reproduced the server publishing Closed before Archived. If the terminal received only Closed, the active list could retain the archived row and the terminal could miss Undo. The added Chromium regression failed on `fac0b9169` and passed in the corrected combined prototype across both reply orders. Resume publication is delivered separately. The archive findings and tests below describe the prototype for the following step.
 
 - Review at `59552a705` found that an older list could omit the row before terminal detail reported its archive. Chromium reproduced zero notifications in that order, compared with Archive and Restored when detail answered first. The store now notifies the terminal of the first observed archive in both orders and updates the list and counts when it removes a row. An additional red/green regression verifies that a repeated archive confirmation outranks an older Undo without sending a duplicate archive notice.
 

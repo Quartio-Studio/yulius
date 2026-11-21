@@ -2614,42 +2614,13 @@ test('a newer watched list notifies the terminal when it supersedes a detail-dis
   expect(seen).toEqual([waiting, waiting, waiting, waiting]);
 });
 
-test('a detail discovering an archive removes the parked row through older lists and later Undo', async ({ app, browser }) => {
-  await app.open(mock('/s/studio'));
-  const seen = await browser.evaluate(async () => {
-    const module = '/assets/store.js';
-    const { createStore } = await import(module);
-    const initial = { id: 'p', sandbox_id: 's', status: 'parked', archived: false, parked_needs_you: true };
-    const results = [];
-    for (const undo of [false, true]) {
-      let reads = 0;
-      const held = Promise.withResolvers<void>();
-      const store = createStore({ get: async () => {
-        if (++reads === 1) return [initial];
-        if (reads === 2) { await held.promise; return [initial]; }
-        return undo ? [initial] : [];
-      } });
-      await store.loadTasks('s');
-      const pending = store.loadTasks('s', true);
-      store.beginParkedDetail()({ ...initial, status: 'closed', archived: true });
-      const removed = store.tasksOf('s').length === 0;
-      if (undo) store.upsertTask(initial);
-      held.resolve();
-      await pending;
-      results.push([removed, store.tasksOf('s').length, store.findTask('p')?.archived ?? null]);
-    }
-    return results;
-  });
-  expect(seen).toEqual([[true, 0, null], [true, 1, false]]);
-});
-
-test('a failed parked watch preserves PR discovery, resume and archive from an earlier detail', async ({ app, browser }) => {
+test('a failed parked watch preserves PR discovery and resume from an earlier detail', async ({ app, browser }) => {
   await app.open(mock('/s/studio'));
   const seen = await browser.evaluate(async () => {
     const module = '/assets/store.js';
     const { createStore } = await import(module);
     const results = [];
-    for (const transition of ['discovery', 'resume', 'archive']) {
+    for (const transition of ['discovery', 'resume']) {
       const row = { id: 'p', sandbox_id: 's', status: 'parked', archived: false, parked_needs_you: false };
       let calls = 0;
       const store = createStore({ get: async () => {
@@ -2660,224 +2631,33 @@ test('a failed parked watch preserves PR discovery, resume and archive from an e
       const publish = store.beginParkedDetail();
       await store.loadTasks('s', true);
       const facts = publish(transition === 'discovery' ? { ...row, parked_pr: { number: 42, open: true } }
-        : { ...row, status: transition === 'resume' ? 'running' : 'closed', archived: transition === 'archive' });
+        : { ...row, status: 'running', archived: false });
       const current = store.findTask('p');
       results.push([facts.status, current?.status ?? null, current?.parked_pr?.number ?? null, current?.parked_needs_you ?? null]);
     }
     return results;
   });
-  expect(seen).toEqual([['parked', 'parked', 42, true], ['running', 'running', null, false], ['closed', null, null, null]]);
+  expect(seen).toEqual([['parked', 'parked', 42, true], ['running', 'running', null, false]]);
 });
 
-test('a failed confirmation cannot replay an earlier rename over a newly discovered archive', async ({ app, browser }) => {
-  await app.open(mock('/s/studio'));
-  const seen = await browser.evaluate(async () => {
-    const module = '/assets/store.js';
-    const { createStore } = await import(module);
-    const results = [];
-    for (const undo of [false, true]) {
-      const initial = { id: 'p', sandbox_id: 's', status: 'parked', archived: false, title: 'Before', parked_needs_you: false };
-      const first = Promise.withResolvers<void>(), confirming = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
-      let reads = 0;
-      const store = createStore({ get: async () => {
-        if (++reads === 1) return [initial];
-        if (reads === 2) { await first.promise; return [initial]; }
-        confirming.resolve();
-        await finish.promise;
-        throw new Error('confirmation unavailable');
-      } });
-      await store.loadTasks('s');
-      const refresh = store.loadTasks('s');
-      store.upsertTask({ ...initial, title: 'Earlier rename' });
-      first.resolve();
-      await confirming.promise;
-      store.beginParkedDetail(initial)({ ...initial, status: 'closed', archived: true });
-      const removed = !store.findTask('p');
-      if (undo) store.upsertTask({ ...initial, title: 'Restored' });
-      finish.resolve();
-      await refresh;
-      results.push([removed, store.findTask('p')?.title ?? null]);
-    }
-    return results;
+test('opening a parked terminal discovers its missed resume in the sidebar', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&ambient=0&pullgap=0&pullclock=manual'));
+  type Fixture = { __yuliusMock: { tasks: { id: string }[]; holdGitReads: boolean; touchTask(s: string, n: number, fields: object): void } };
+  await browser.evaluate(() => {
+    const db = (window as unknown as Fixture).__yuliusMock;
+    db.touchTask('sb_studio', 13, { status: 'parked', activity: 'waiting', parked_needs_you: true });
   });
-  expect(seen).toEqual([[true, null], [true, 'Restored']]);
-});
-
-test('overlapping terminal reads preserve the later archive or Undo in both reply orders', async ({ app, browser }) => {
-  await app.open(mock('/s/studio'));
-  const seen = await browser.evaluate(async () => {
-    const module = '/assets/store.js';
-    const { createStore } = await import(module);
-    const results = [];
-    for (const undoLast of [false, true]) {
-      for (const laterFirst of [false, true]) {
-        const parked = { id: 'p', sandbox_id: 's', status: 'parked', archived: false };
-        const closed = { ...parked, status: 'closed' };
-        const archived = { ...closed, archived: true };
-        const store = createStore({ get: async () => [parked] });
-        await store.loadTasks('s');
-        const first = store.beginParkedDetail(parked);
-        const later = store.beginParkedDetail(parked);
-        const old = undoLast ? archived : closed, fresh = undoLast ? closed : archived;
-        if (laterFirst) { later(fresh); first(old); }
-        else { first(old); later(fresh); }
-        results.push(store.findTask('p')?.status ?? null);
-      }
-    }
-    return results;
-  });
-  expect(seen).toEqual([null, null, 'closed', 'closed']);
-});
-
-for (const archived of [false, true]) {
-  test(`opening a parked terminal discovers its missed ${archived ? 'archive' : 'resume'} in the sidebar`, async ({ app, browser, screen }) => {
-    await app.open(mock('/s/studio', '&ambient=0&pullgap=0&pullclock=manual'));
-    type Fixture = { __yuliusMock: { tasks: { id: string }[]; holdGitReads: boolean; touchTask(s: string, n: number, fields: object): void } };
-    await browser.evaluate(() => {
-      const db = (window as unknown as Fixture).__yuliusMock;
-      db.touchTask('sb_studio', 13, { status: 'parked', activity: 'waiting', parked_needs_you: true });
+  await expect(screen.getByRole('region', 'Needs you').getByRole('link', /Improve the code/)).toBeVisible();
+  await browser.evaluate(() => {
+    const db = (window as unknown as Fixture).__yuliusMock;
+    db.holdGitReads = true;
+    Object.assign(db.tasks.find(t => t.id === 'tsk_studio_13')!, {
+      status: 'running', activity: 'working', parked_needs_you: undefined,
+      title: 'Verified terminal detail',
     });
-    await expect(screen.getByRole('region', 'Needs you').getByRole('link', /Improve the code/)).toBeVisible();
-    await browser.evaluate((archived) => {
-      const db = (window as unknown as Fixture).__yuliusMock;
-      db.holdGitReads = true;
-      Object.assign(db.tasks.find(t => t.id === 'tsk_studio_13')!, {
-        status: archived ? 'closed' : 'running', archived, activity: archived ? 'done' : 'working', parked_needs_you: undefined,
-        title: 'Verified terminal detail',
-      });
-      location.hash = '/s/studio/t/13';
-    }, archived);
-    await expect(browser.locator('.step-task')).toHaveText(/Verified terminal detail/);
-    await expect(screen.getByRole('region', 'Needs you').getByRole('link', /Improve the code|Verified terminal detail/)).toBeHidden();
-    if (!archived) await expect(screen.getByRole('region', 'Working').getByRole('link', /Verified terminal detail/)).toBeVisible();
-    else await expect(browser.locator('.task-row').getByText('Verified terminal detail')).toBeHidden();
+    location.hash = '/s/studio/t/13';
   });
-}
-
-test('the terminal receives Undo when a newer active list restores a detail-discovered archive', async ({ app, browser }) => {
-  await app.open(mock('/s/studio'));
-  const seen = await browser.evaluate(async () => {
-    const module = '/assets/store.js';
-    const { createStore } = await import(module);
-    const results = [];
-    for (const order of ['detail first', 'list first', 'list starts after archive']) {
-      const parked = { id: 'p', sandbox_id: 's', status: 'parked', archived: false, title: 'Parked' };
-      const archived = { ...parked, status: 'closed', archived: true, title: 'Archive' };
-      const restored = { ...archived, archived: false, title: 'Undo' };
-      const held = Promise.withResolvers<void>();
-      let reads = 0, terminal = parked;
-      const store = createStore({ get: async () => {
-        if (++reads === 1) return [parked];
-        await held.promise;
-        return [restored];
-      } });
-      await store.loadTasks('s');
-      store.on('task', (row: typeof parked) => { terminal = row; });
-      const publish = store.beginParkedDetail(parked);
-      if (order === 'list starts after archive') terminal = publish(archived, terminal);
-      const list = store.loadTasks('s', true);
-      if (order === 'detail first') terminal = publish(archived, terminal);
-      held.resolve(); await list;
-      if (order === 'list first') terminal = publish(archived, terminal);
-      const row = store.findTask('p');
-      results.push([row.archived, row.title, terminal.archived, terminal.title]);
-    }
-    return results;
-  });
-  const undo = [false, 'Undo', false, 'Undo'];
-  expect(seen).toEqual([undo, undo, undo]);
-});
-
-test('a terminal detail begun by archive publication can observe Undo until a newer removal', async ({ app, browser }) => {
-  await app.open(mock('/s/studio'));
-  const seen = await browser.evaluate(async () => {
-    const module = '/assets/store.js';
-    const { createStore } = await import(module);
-    const results = [];
-    for (const removal of ['none', 'delete', 'newer empty list']) {
-      const parked = { id: 'p', sandbox_id: 's', status: 'parked', archived: false };
-      const archive = { ...parked, status: 'closed', archived: true };
-      const undo = { ...archive, archived: false, title: 'Restored' };
-      let reads = 0;
-      const store = createStore({ get: async () => ++reads === 1 ? [parked] : [] });
-      await store.loadTasks('s');
-      let follow: (detail: typeof undo) => unknown;
-      store.on('task', (row: typeof archive) => {
-        if (row.archived) follow = store.beginParkedDetail({ ...row });
-      });
-      store.beginParkedDetail(parked)(archive);
-      if (removal === 'delete') store.removeTask('p');
-      if (removal === 'newer empty list') await store.loadTasks('s', true);
-      follow!(undo);
-      const row = store.findTask('p');
-      results.push(row?.title ?? null);
-    }
-    return results;
-  });
-  expect(seen).toEqual(['Restored', null, null]);
-});
-
-test('an older empty list preserves the terminal archive notification and its follow-up Undo', async ({ app, browser }) => {
-  await app.open(mock('/s/studio'));
-  const seen = await browser.evaluate(async () => {
-    const module = '/assets/store.js';
-    const { createStore } = await import(module);
-    const results = [];
-    for (const listFirst of [true, false]) {
-      const parked = { id: 'p', sandbox_id: 's', status: 'parked', archived: false };
-      const archive = { ...parked, status: 'closed', archived: true };
-      const undo = { ...archive, archived: false };
-      const held = Promise.withResolvers<void>();
-      let reads = 0, terminal = parked;
-      const store = createStore({ get: async () => {
-        if (++reads === 1) return [parked];
-        await held.promise;
-        return [];
-      } });
-      const notifications: boolean[] = [];
-      let follow: ((detail: typeof undo) => typeof undo) | undefined;
-      store.on('task', (row: typeof parked) => {
-        terminal = row;
-        notifications.push(row.archived);
-        if (row.archived) follow = store.beginParkedDetail({ ...row });
-      });
-      await store.loadTasks('s');
-      const list = store.loadTasks('s', true);
-      const publish = store.beginParkedDetail(parked);
-      if (!listFirst) terminal = publish(archive, terminal);
-      held.resolve(); await list;
-      if (listFirst) terminal = publish(archive, terminal);
-      if (follow) terminal = follow(undo);
-      results.push([notifications, terminal.archived, store.findTask('p')?.status ?? null]);
-    }
-    return results;
-  });
-  const restored = [[true, false], false, 'closed'];
-  expect(seen).toEqual([restored, restored]);
-});
-
-test('a later archive confirmation outranks an older Undo without notifying twice about the same archive', async ({ app, browser }) => {
-  await app.open(mock('/s/studio'));
-  const seen = await browser.evaluate(async () => {
-    const module = '/assets/store.js';
-    const { createStore } = await import(module);
-    const results = [];
-    for (const laterFirst of [true, false]) {
-      const parked = { id: 'p', sandbox_id: 's', status: 'parked', archived: false };
-      const archived = { ...parked, status: 'closed', archived: true };
-      const undo = { ...archived, archived: false };
-      const store = createStore({ get: async () => [parked] });
-      await store.loadTasks('s');
-      const notices: boolean[] = [];
-      store.on('task', (t: typeof archived) => notices.push(t.archived));
-      store.beginParkedDetail(parked)(archived);
-      const older = store.beginParkedDetail({ ...archived });
-      const later = store.beginParkedDetail({ ...archived });
-      if (laterFirst) { later(archived); older(undo); }
-      else { older(undo); later(archived); }
-      results.push([!!store.findTask('p'), notices]);
-    }
-    return results;
-  });
-  expect(seen).toEqual([[false, [true]], [false, [true, false, true]]]);
+  await expect(browser.locator('.step-task')).toHaveText(/Verified terminal detail/);
+  await expect(screen.getByRole('region', 'Needs you').getByRole('link', /Improve the code|Verified terminal detail/)).toBeHidden();
+  await expect(screen.getByRole('region', 'Working').getByRole('link', /Verified terminal detail/)).toBeVisible();
 });

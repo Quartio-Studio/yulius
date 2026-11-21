@@ -6,7 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
-- Opening a parked terminal now corrects a missed resume or archive in the sidebar. A later Undo restores the task (SPEC-558).
+- Opening a parked terminal now corrects a missed resume in the sidebar, including the active subscription and background work (SPEC-558).
 
 - A terminal that discovers a missed park updates the sidebar, even if an older task list omitted its row (SPEC-558).
 
