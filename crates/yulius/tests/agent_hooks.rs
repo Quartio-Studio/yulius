@@ -14,8 +14,8 @@ use serde_json::json;
 use support::{Creds, Harness, TestResult, call};
 use yulius_app::hub::HubFrame;
 use yulius_app::model::{
-    AttemptRecord, GitHubTokenRecord, LaunchKind, MessageRecord, SandboxRecord, TaskOrigin,
-    TaskRecord, UserRecord,
+    AttemptRecord, GitHubTokenRecord, LaunchKind, MessageRecord, SandboxRecord, TaskMode,
+    TaskOrigin, TaskRecord, UserRecord,
 };
 use yulius_app::ports::github::GitHubAppConfig;
 use yulius_domain::harness::Harness as Agent;
@@ -2030,25 +2030,758 @@ async fn codex_hooks_reach_yulius_for_codex_runs_only() -> TestResult {
     Ok(())
 }
 
-/// An Antigravity goal task running a step of its plan.
-async fn antigravity_goal() -> Result<Fixture, Box<dyn std::error::Error>> {
+/// A live turn with one actionable plan step.
+async fn task_with_open_step(
+    agent: Agent,
+    mode: TaskMode,
+    step: &str,
+) -> Result<Fixture, Box<dyn std::error::Error>> {
     let f = fixture_of(
         None,
         |task| {
-            task.mode = yulius_app::model::TaskMode::Goal;
+            task.mode = mode;
             task.activity = Some(Activity::Working);
         },
-        Agent::Antigravity,
+        agent,
     )
     .await?;
     let ctx = f.h.app.agent_context(TOKEN).await?;
     f.h.app
         .tool_steps_set(
             &ctx,
-            &json!({"steps": [{"title": "Run the tests", "status": "in_progress"}]}),
+            &json!({"steps": [{"title": step, "status": "in_progress"}]}),
         )
         .await?;
     Ok(f)
+}
+
+async fn stop_of(
+    f: &Fixture,
+    agent_kind: Agent,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    f.h.clock.0.fetch_add(1, Ordering::SeqCst);
+    let reply = call(
+        &f.h.internal,
+        Method::POST,
+        &format!("/hooks/{}/Stop", agent_kind.as_str()),
+        Some(json!({"fully_idle": true})),
+        &agent(),
+    )
+    .await?;
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    Ok(reply.body)
+}
+
+async fn record_verification_merge(f: &Fixture) -> TestResult {
+    use yulius_domain::delivery::DeliveryStage;
+    f.h.app
+        .deps
+        .store
+        .transition_delivery(
+            &DeliveryStage::None,
+            &yulius_app::delivery::DeliveryRecord {
+                task_id: f.task.clone(),
+                stage: DeliveryStage::MergedIntegration,
+                pr_number: Some(17),
+                updated_at: f.h.app.now(),
+            },
+        )
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_continues_verification_after_merge_without_a_person() -> TestResult {
+    let title = "Verify the merged revision on dev";
+    for agent_kind in Agent::ALL {
+        let f = task_with_open_step(agent_kind, TaskMode::Goal, title).await?;
+        record_verification_merge(&f).await?;
+        let stop = stop_of(&f, agent_kind).await?;
+        let brief = task_brief(&f).await?;
+        assert_eq!(stop["decision"], "block", "{agent_kind:?} settled: {brief}");
+        assert!(
+            stop["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains(title)),
+            "{stop}"
+        );
+        assert_eq!(brief["shows"], "working");
+        assert!(brief["needs_you_notice"].is_null());
+        assert!(
+            f.h.app
+                .deps
+                .store
+                .task_wait_messages(&f.task, 1)
+                .await?
+                .is_empty()
+        );
+        assert_eq!(
+            f.h.app.deps.store.steps(&f.task).await?[0].status,
+            "in_progress"
+        );
+
+        let ctx = f.h.app.agent_context(TOKEN).await?;
+        f.h.app
+            .tool_step_update(&ctx, &json!({"ordinal": 1, "status": "done"}))
+            .await?;
+        assert!(stop_of(&f, agent_kind).await?["decision"].is_null());
+        assert_eq!(task_brief(&f).await?["shows"], "done");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_leaves_the_first_native_verdict_to_claude() -> TestResult {
+    for marker in ["launch-goal-pending", "typed-goal-pending"] {
+        let f = task_with_open_step(Agent::ClaudeCode, TaskMode::Goal, "Verify dev").await?;
+        let store = &f.h.app.deps.store;
+        let attempt = store.live_attempt(&f.task).await?.ok_or("live attempt")?;
+        let run_dir = std::path::Path::new(&attempt.run_dir);
+        std::fs::create_dir_all(run_dir)?;
+        std::fs::write(run_dir.join(marker), "")?;
+        let update = yulius_app::ports::store::TaskFieldUpdate {
+            gate_blocks: Some(2),
+            ..Default::default()
+        };
+        store.update_task(&f.task, &update, f.h.app.now()).await?;
+
+        let stop = stop_of(&f, Agent::ClaudeCode).await?;
+        assert!(stop["decision"].is_null(), "{marker}: {stop}");
+        assert_eq!(task_brief(&f).await?["shows"], "working");
+        assert_eq!(store.task(&f.task).await?.ok_or("task")?.gate_blocks, 2);
+
+        std::fs::remove_file(run_dir.join(marker))?;
+        let stop = stop_of(&f, Agent::ClaudeCode).await?;
+        assert_eq!(stop["decision"], "block");
+        assert!(
+            stop["reason"]
+                .as_str()
+                .is_some_and(|s| s.contains("Verify dev"))
+        );
+        assert_eq!(store.task(&f.task).await?.ok_or("task")?.gate_blocks, 3);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_bounds_spec_diagnostics_and_prompt_mode_keeps_the_full_report() -> TestResult {
+    for mode in [TaskMode::Goal, TaskMode::Prompt] {
+        let f = task_with_open_step(Agent::Codex, mode, "Fix the spec").await?;
+        std::fs::write(f.worktree.join("api.rs"), "fn main() {}\n")?;
+        std::fs::create_dir_all(f.worktree.join("docs/specs"))?;
+        let spec = format!("## Plan\n{}", "- [ ] repeated step\n".repeat(2000));
+        std::fs::write(f.worktree.join("docs/specs/checkout.md"), spec)?;
+        let stop = stop_of(&f, Agent::Codex).await?;
+        assert_eq!(stop["decision"], "block");
+        let reason = stop["reason"].as_str().ok_or("spec instruction")?;
+        if mode == TaskMode::Goal {
+            assert!(
+                reason.starts_with("Continue the authorized goal.")
+                    && reason.contains("spec_check")
+            );
+            assert!(reason.len() <= yulius_app::capacity::CONTINUATION_MAX);
+        } else {
+            assert!(reason.starts_with("The task spec"));
+            assert!(reason.len() > yulius_app::capacity::CONTINUATION_MAX);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_continues_unfinished_spec_then_explains_the_retry_limit() -> TestResult {
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Write spec").await?;
+    std::fs::create_dir_all(f.worktree.join("docs/specs"))?;
+    std::fs::write(
+        f.worktree.join("docs/specs/checkout.md"),
+        "---\nyulius-task: t-main\nstatus: in-progress\n---\n# Checkout\n\n## Goal\n\nVerify checkout.\n\n## Context\n\nFixture.\n\n## Requirements\n\n- Verify.\n\n## Plan\n\n- [x] Write spec\n\n## Acceptance criteria\n\nCheckout verified.\n\n## Test plan\n\nRun tests.\n\n## Decisions\n\nUse fixtures.\n",
+    )?;
+    for _ in 0..yulius_app::hooks::MAX_GATE_BLOCKS {
+        let stop = stop_of(&f, Agent::Codex).await?;
+        assert_eq!(stop["decision"], "block", "{stop}");
+        assert!(
+            stop["reason"].as_str().is_some_and(|r| r.contains("spec")),
+            "{stop}"
+        );
+        assert_eq!(task_brief(&f).await?["shows"], "working");
+    }
+    assert!(stop_of(&f, Agent::Codex).await?["decision"].is_null());
+    let brief = task_brief(&f).await?;
+    assert_eq!(brief["shows"], "needs_you");
+    let problem = brief["attention"]["problem"]
+        .as_str()
+        .ok_or("retry limit explanation")?;
+    assert!(
+        problem.contains("3") && problem.contains("spec"),
+        "{problem}"
+    );
+    assert_eq!(
+        brief["attention"]["action"],
+        "Review the last attempt in the task terminal to identify what blocked completion."
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_yields_to_a_live_yulius_wait_then_continues_the_step() -> TestResult {
+    use std::time::Duration;
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Check the build").await?;
+    assert_eq!(stop_of(&f, Agent::Codex).await?["decision"], "block");
+    let app = Arc::clone(&f.h.app);
+    let initial = app.agent_wait_state(TOKEN, None).await?;
+    let waiter = tokio::spawn(async move {
+        app.agent_wait(TOKEN, None, Some(&initial), Duration::from_secs(30))
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while f.h.app.active_waits_of(&f.task) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    assert!(stop_of(&f, Agent::Codex).await?["decision"].is_null());
+    assert_eq!(task_brief(&f).await?["shows"], "working");
+    assert_eq!(
+        f.h.app
+            .deps
+            .store
+            .task(&f.task)
+            .await?
+            .ok_or("task")?
+            .gate_blocks,
+        1,
+        "the same step waits for machine news"
+    );
+    waiter.abort();
+    assert!(waiter.await.is_err_and(|e| e.is_cancelled()));
+    assert_eq!(stop_of(&f, Agent::Codex).await?["decision"], "block");
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_yields_to_a_pending_merge_notice() -> TestResult {
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify checkout").await?;
+    std::fs::write(
+        f.h.app
+            .config
+            .data_dir
+            .join(yulius_app::pr_watch::PR_NOTICES_FILE),
+        serde_json::to_vec(&json!({f.task.as_str(): {"pr":17, "keys": {}}}))?,
+    )?;
+    record_verification_merge(&f).await?;
+    assert!(stop_of(&f, Agent::Codex).await?["decision"].is_null());
+    assert_eq!(task_brief(&f).await?["shows"], "working");
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_after_an_antigravity_model_error_ends_the_turn() -> TestResult {
+    let f = task_with_open_step(Agent::Antigravity, TaskMode::Goal, "Verify checkout").await?;
+    agy_event(
+        &f,
+        "Stop",
+        json!({"fully_idle": true, "error": "Model unavailable"}),
+    )
+    .await?;
+    assert_eq!(activity(&f).await?, Some(Activity::Waiting));
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_continues_when_antigravity_reports_its_worker_finished() -> TestResult {
+    let f = task_with_open_step(Agent::Antigravity, TaskMode::Goal, "Verify dev").await?;
+    agy_event(&f, "Stop", json!({"fully_idle":false})).await?;
+    assert_eq!(task_brief(&f).await?["shows"], "working");
+    let reply = stop_of(&f, Agent::Antigravity).await?;
+    assert_eq!(reply["decision"], "block");
+    assert_eq!(task_brief(&f).await?["shows"], "working");
+    assert!(
+        f.h.app
+            .deps
+            .store
+            .task_wait_messages(&f.task, 1)
+            .await?
+            .is_empty()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_retains_the_one_time_stale_step_guidance() -> TestResult {
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify dev").await?;
+    f.h.clock.0.fetch_add(90 * 60_000, Ordering::SeqCst);
+    let first = stop_of(&f, Agent::Codex).await?;
+    let repeated = stop_of(&f, Agent::Codex).await?;
+    assert_eq!(first["decision"], "block");
+    assert!(
+        first["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("has been in progress for 90 min")),
+        "{first}"
+    );
+    assert_eq!(repeated["decision"], "block");
+    assert!(
+        repeated["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("Verify dev") && !r.contains("has been in progress")),
+        "{repeated}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_rechecks_the_remaining_step_after_a_slow_observation() -> TestResult {
+    use std::time::Duration;
+    use yulius_app::ports::browser::BrowserPort;
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Build checkout").await?;
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    f.h.app.tool_steps_set(&ctx, &json!({"steps":[{"title":"Build checkout","status":"in_progress"},{"title":"Verify dev"}]})).await?;
+    for _ in 0..yulius_app::hooks::MAX_GATE_BLOCKS {
+        assert_eq!(stop_of(&f, Agent::Codex).await?["decision"], "block");
+    }
+    let browser = Arc::new(crate::delivery::HeldBrowserLookup::default());
+    let (entered, release) = browser.hold_publication_lookup(&f.task);
+    browser.running(&f.sandbox).await;
+    let mut deps = f.h.app.deps.clone();
+    deps.browser = browser;
+    let app = yulius_app::context::App::new(f.h.app.config.clone(), deps);
+    let hook_app = app.clone();
+    let stop = tokio::spawn(async move {
+        hook_app
+            .hook_event(TOKEN, "codex", "Stop", &Default::default(), None)
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(4), entered.notified()).await?;
+    app.tool_step_update(&ctx, &json!({"ordinal":1,"status":"done"}))
+        .await?;
+    release.notify_one();
+    let yulius_app::hooks::HookReply::Output(reply) = stop.await?? else {
+        return Err("held".into());
+    };
+    let reply = serde_json::to_value(reply)?;
+    assert_eq!(reply["decision"], "block", "{reply}");
+    assert!(
+        reply["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("Verify dev")),
+        "{reply}"
+    );
+    let task = app.deps.store.task(&f.task).await?.ok_or("task")?;
+    assert_eq!(task.gate_blocks, 1);
+    assert_eq!(task.activity, Some(Activity::Working));
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_reads_the_plan_while_a_watcher_publishes_its_spec_sync() -> TestResult {
+    goal_stop_during_spec_publication(false).await
+}
+
+#[tokio::test]
+async fn goal_stop_reads_the_plan_while_an_explicit_spec_check_publishes() -> TestResult {
+    goal_stop_during_spec_publication(true).await
+}
+
+async fn goal_stop_during_spec_publication(check: bool) -> TestResult {
+    use std::time::Duration;
+    use yulius_app::ports::browser::BrowserPort;
+
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Build checkout").await?;
+    std::fs::create_dir_all(f.worktree.join("docs/specs"))?;
+    std::fs::write(
+        f.worktree.join("docs/specs/checkout.md"),
+        "---\nyulius-task: t-main\nstatus: in-progress\n---\n# Checkout\n\n## Goal\n\nVerify checkout.\n\n## Context\n\nFixture.\n\n## Requirements\n\n- Verify.\n\n## Plan\n\n- [x] Build checkout\n- [ ] Verify dev\n\n## Acceptance criteria\n\nCheckout verified.\n\n## Test plan\n\nRun tests.\n\n## Decisions\n\nUse fixtures.\n",
+    )?;
+    let browser = Arc::new(crate::delivery::HeldBrowserLookup::default());
+    let (entered, release) = browser.hold_publication_lookup(&f.task);
+    browser.running(&f.sandbox).await;
+    let mut deps = f.h.app.deps.clone();
+    deps.browser = browser;
+    let app = yulius_app::context::App::new(f.h.app.config.clone(), deps);
+    let task = app.deps.store.task(&f.task).await?.ok_or("task")?;
+    let watcher = app.clone();
+    let ctx = app.agent_context(TOKEN).await?;
+    if check {
+        std::fs::write(f.worktree.join("checkout.rs"), "fn checkout() {}")?;
+    }
+    let syncing = tokio::spawn(async move {
+        if check {
+            watcher
+                .tool_spec_check(&ctx)
+                .await
+                .map(|report| report["spec"]["valid"] == true)
+        } else {
+            watcher.sync_steps_from_spec(&task).await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(5), entered.notified()).await?;
+    let stop = tokio::time::timeout(
+        Duration::from_secs(4),
+        app.hook_event(TOKEN, "codex", "Stop", &Default::default(), None),
+    )
+    .await;
+    release.notify_one();
+    let checked = syncing.await??;
+    let yulius_app::hooks::HookReply::Output(reply) =
+        stop.map_err(|_| "Stop waited on the spec-check publication")??
+    else {
+        return Err("held".into());
+    };
+    assert!(checked);
+    let reply = serde_json::to_value(reply)?;
+    assert_eq!(reply["decision"], "block");
+    assert!(
+        reply["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("Verify dev")),
+        "{reply}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_restores_working_when_the_turn_was_last_seen_waiting() -> TestResult {
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify dev").await?;
+    f.h.app
+        .deps
+        .store
+        .set_activity(&f.task, Some(Activity::Waiting), f.h.app.now())
+        .await?;
+    std::fs::create_dir_all(f.worktree.join("docs/specs"))?;
+    std::fs::write(
+        f.worktree.join("docs/specs/checkout.md"),
+        "---\nyulius-task: t-main\nstatus: in-progress\n---\n# Checkout\n\n## Goal\n\nVerify checkout.\n\n## Context\n\nFixture.\n\n## Requirements\n\n- Verify.\n\n## Plan\n\n- [x] Build checkout\n- [ ] Verify dev\n\n## Acceptance criteria\n\nCheckout verified.\n\n## Test plan\n\nRun tests.\n\n## Decisions\n\nUse fixtures.\n",
+    )?;
+    let mut events = f.h.app.events.subscribe();
+    assert_eq!(stop_of(&f, Agent::Codex).await?["decision"], "block");
+    let brief = task_brief(&f).await?;
+    assert_eq!(brief["shows"], "working");
+    assert!(brief["needs_you_notice"].is_null());
+    assert!(
+        f.h.app
+            .deps
+            .store
+            .task_wait_messages(&f.task, 1)
+            .await?
+            .is_empty()
+    );
+    let mut updated = false;
+    let mut plan_published = false;
+    while let Ok(envelope) = events.try_recv() {
+        match envelope.event {
+            yulius_contracts::events::UiEvent::TaskUpdated { task }
+                if task.id == f.task.as_str() =>
+            {
+                updated = true;
+                assert!(
+                    task.needs_you_notice.is_none(),
+                    "intermediate notice: {:?}",
+                    task.needs_you_notice
+                );
+            }
+            yulius_contracts::events::UiEvent::StepsUpdated { task_id }
+                if task_id == f.task.as_str() =>
+            {
+                plan_published = true;
+            }
+            _ => {}
+        }
+    }
+    assert!(updated, "the final working state was published");
+    assert!(plan_published, "the synchronized steps were published");
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_counts_consecutive_attempts_on_unresolved_work() -> TestResult {
+    for replace in [false, true] {
+        let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Build checkout").await?;
+        let ctx = f.h.app.agent_context(TOKEN).await?;
+        f.h.app.tool_steps_set(&ctx, &json!({"steps":[{"title":"Build checkout","status":"in_progress"},{"title":"Verify dev"}]})).await?;
+        for _ in 0..yulius_app::hooks::MAX_GATE_BLOCKS {
+            assert_eq!(stop_of(&f, Agent::Codex).await?["decision"], "block");
+        }
+        if replace {
+            f.h.app.tool_steps_set(&ctx, &json!({"steps":[{"title":"Build checkout","status":"done"},{"title":"Verify dev","status":"in_progress"}]})).await?;
+        } else {
+            f.h.app
+                .tool_step_update(&ctx, &json!({"ordinal":1,"status":"done"}))
+                .await?;
+        }
+        let reply = stop_of(&f, Agent::Codex).await?;
+        assert_eq!(reply["decision"], "block", "replace={replace}");
+        assert!(
+            reply["reason"]
+                .as_str()
+                .is_some_and(|s| s.contains("Verify dev"))
+        );
+        assert_eq!(
+            f.h.app
+                .deps
+                .store
+                .task(&f.task)
+                .await?
+                .ok_or("task")?
+                .gate_blocks,
+            1
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_budget_survives_submission_of_its_own_continuation() -> TestResult {
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify dev").await?;
+    // Previously accepted viewer input belongs to that prompt. The next submit
+    // carries an automatic continuation after one attempt has been consumed.
+    f.h.app
+        .record_terminal_frame(&f.task, &UserId::parse("u1")?, b"Verify dev\r");
+    let entered = call(
+        &f.h.internal,
+        Method::POST,
+        "/hooks/codex/UserPromptSubmit",
+        Some(json!({"prompt":"Verify dev"})),
+        &agent(),
+    )
+    .await?;
+    assert_eq!(entered.status, 200);
+    let reason = stop_of(&f, Agent::Codex).await?["reason"].clone();
+    f.h.app.record_typing(&f.task, &UserId::parse("u1")?);
+    assert!(
+        f.h.app.has_draft(&f.task),
+        "the next instruction has not been submitted"
+    );
+    let response = call(
+        &f.h.internal,
+        Method::POST,
+        "/hooks/codex/UserPromptSubmit",
+        Some(json!({"prompt":reason})),
+        &agent(),
+    )
+    .await?;
+    assert_eq!(response.status, 200);
+    assert!(
+        f.h.app.has_draft(&f.task),
+        "the automatic submit must preserve the unsent draft"
+    );
+    assert_eq!(
+        f.h.app
+            .deps
+            .store
+            .task(&f.task)
+            .await?
+            .ok_or("task")?
+            .gate_blocks,
+        1
+    );
+    Ok(())
+}
+
+async fn make_a_subscription_switch_due(f: &Fixture) -> TestResult {
+    let store = &f.h.app.deps.store;
+    let current = yulius_domain::ids::AccountId::parse("acc-1")?;
+    let mut room = store.account(&current).await?.ok_or("account")?;
+    room.id = yulius_domain::ids::AccountId::parse("acc-room")?;
+    store.insert_account(&room).await?;
+    let usage = json!({"primary": {"used_percent":98.0, "window_minutes":300,
+        "resets_at":f.h.app.now().plus_millis(3_600_000).0}})
+    .to_string();
+    store
+        .set_account_state(&current, room.status, Some(&usage), None, f.h.app.now())
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn prompt_stop_preserves_a_subscription_move_when_its_spec_gate_is_exhausted() -> TestResult {
+    let f = fixture().await?;
+    std::fs::write(f.worktree.join("api.rs"), "fn main() {}\n")?;
+    for _ in 0..yulius_app::hooks::MAX_GATE_BLOCKS {
+        assert_eq!(stop_of(&f, Agent::ClaudeCode).await?["decision"], "block");
+    }
+    make_a_subscription_switch_due(&f).await?;
+    let reply =
+        f.h.app
+            .hook_event(TOKEN, "claude", "Stop", &Default::default(), None)
+            .await?;
+    assert!(
+        matches!(reply, yulius_app::hooks::HookReply::Hold { .. }),
+        "prompt-mode move"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_explains_exhaustion_before_a_proactive_switch() -> TestResult {
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify dev").await?;
+    for _ in 0..yulius_app::hooks::MAX_GATE_BLOCKS {
+        assert_eq!(stop_of(&f, Agent::Codex).await?["decision"], "block");
+    }
+    make_a_subscription_switch_due(&f).await?;
+    let response = stop_of(&f, Agent::Codex).await?;
+    assert!(response["decision"].is_null());
+    let brief = task_brief(&f).await?;
+    let problem = brief["attention"]["problem"]
+        .as_str()
+        .ok_or("retry explanation")?;
+    assert!(
+        problem.contains("3") && problem.contains("Verify dev"),
+        "{problem}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_keeps_a_worker_permission_visible_until_answered() -> TestResult {
+    let f = task_with_open_step(Agent::ClaudeCode, TaskMode::Goal, "Verify checkout").await?;
+    let question = "Allow the worker to access the staging account?";
+    hook(
+        &f,
+        "Notification",
+        json!({"notification_type":"worker_permission_prompt", "message":question}),
+    )
+    .await?;
+    assert!(stop_of(&f, Agent::ClaudeCode).await?["decision"].is_null());
+    let brief = task_brief(&f).await?;
+    assert_eq!(brief["activity"], "needs_attention");
+    assert_eq!(brief["attention"]["kind"], "terminal");
+    assert!(
+        brief["attention"]["problem"]
+            .as_str()
+            .is_some_and(|text| text.contains(question))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_explains_an_explicitly_blocked_plan_and_spends_no_retry() -> TestResult {
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify checkout").await?;
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    let note = "The staging account is awaiting access from its administrator.";
+    f.h.app
+        .tool_step_update(&ctx, &json!({"ordinal":1, "status":"blocked", "note":note}))
+        .await?;
+    assert!(stop_of(&f, Agent::Codex).await?["decision"].is_null());
+    let brief = task_brief(&f).await?;
+    assert_eq!(brief["needs_you_notice"]["problem"], note);
+    assert!(
+        !brief["needs_you_notice"]["action"]
+            .as_str()
+            .ok_or("action")?
+            .contains("tell the agent to continue")
+    );
+    assert_eq!(
+        f.h.app
+            .deps
+            .store
+            .task(&f.task)
+            .await?
+            .ok_or("task")?
+            .gate_blocks,
+        0
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_answers_within_the_hook_deadline_while_browser_startup_is_held() -> TestResult {
+    use axum::extract::connect_info::MockConnectInfo;
+    use std::time::Duration;
+    use yulius_app::ports::browser::BrowserPort;
+
+    for hold_first in [true, false] {
+        let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify checkout").await?;
+        let browser = Arc::new(crate::delivery::HeldBrowserLookup::default());
+        if hold_first {
+            browser.running(&f.sandbox).await;
+        }
+        let mut deps = f.h.app.deps.clone();
+        deps.browser = browser;
+        let app = yulius_app::context::App::new(f.h.app.config.clone(), deps);
+        let internal = yulius_server::internal_router(app).layer(MockConnectInfo(
+            std::net::SocketAddr::from(([127, 0, 0, 1], 5002)),
+        ));
+        let response = tokio::time::timeout(
+            Duration::from_secs(4),
+            call(
+                &internal,
+                Method::POST,
+                "/hooks/codex/Stop",
+                Some(json!({})),
+                &agent(),
+            ),
+        )
+        .await??;
+        assert_eq!(response.status, 200);
+        assert_eq!(
+            response.body["decision"], "block",
+            "held first={hold_first}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_preserves_a_request_for_an_external_permission() -> TestResult {
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Check the build").await?;
+    let action = "Grant the build account access to staging";
+    support::mcp_tool(&f.h, TOKEN, "needs_you", json!({"action": action})).await?;
+    assert!(stop_of(&f, Agent::Codex).await?["decision"].is_null());
+    let brief = task_brief(&f).await?;
+    assert_eq!(brief["shows"], "needs_you");
+    assert_eq!(brief["needs_you"]["action"], action);
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_without_background_probe_evidence_continues_in_place() -> TestResult {
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify checkout").await?;
+    // The fixture host cannot read processes. A live PID sends the Stop through that probe.
+    assert!(
+        f.h.app
+            .deps
+            .store
+            .transition_attempt(
+                &AttemptId::parse("at1")?,
+                AttemptState::Live,
+                &yulius_app::ports::store::AttemptUpdate {
+                    child_pid: Some(41),
+                    ..Default::default()
+                },
+            )
+            .await?
+    );
+    assert_eq!(stop_of(&f, Agent::Codex).await?["decision"], "block");
+    assert_eq!(task_brief(&f).await?["shows"], "working");
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_keeps_a_held_scope_decision_with_its_owner() -> TestResult {
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify checkout").await?;
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    let store = &f.h.app.deps.store;
+    store
+        .insert_hold(&yulius_app::intake::HoldRecord {
+            id: "scope-decision".into(),
+            task_id: f.task.clone(),
+            class: yulius_domain::intake::PromptClass::NewScope,
+            prompt: "Support another platform".into(),
+            prompt_sha256: "0".repeat(64),
+            percent: 91,
+            typed_by: Some(ctx.task.owner),
+            state: yulius_app::intake::hold_state::PENDING.into(),
+            created_at: f.h.app.now(),
+            resolved_by: None,
+            resolved_at: None,
+            new_task_id: None,
+        })
+        .await?;
+    assert!(stop_of(&f, Agent::Codex).await?["decision"].is_null());
+    assert_eq!(task_brief(&f).await?["shows"], "needs_you");
+    assert!(store.pending_hold(&f.task).await?.is_some());
+    assert_eq!(store.task(&f.task).await?.ok_or("task")?.gate_blocks, 0);
+    Ok(())
 }
 
 async fn agy_event(f: &Fixture, name: &str, payload: serde_json::Value) -> TestResult {
@@ -2066,7 +2799,7 @@ async fn agy_event(f: &Fixture, name: &str, payload: serde_json::Value) -> TestR
     Ok(())
 }
 
-async fn agy_brief(f: &Fixture) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+async fn task_brief(f: &Fixture) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let reply = support::mcp_tool(&f.h, TOKEN, "task_get", json!({"number": 1})).await?;
     Ok(support::tool_text(&reply))
 }
@@ -2074,7 +2807,7 @@ async fn agy_brief(f: &Fixture) -> Result<serde_json::Value, Box<dyn std::error:
 /// SPEC-528: a background Stop and the agent's wake are both Working.
 #[tokio::test]
 async fn antigravity_background_stop_and_autonomous_invocation() -> TestResult {
-    let f = antigravity_goal().await?;
+    let f = task_with_open_step(Agent::Antigravity, TaskMode::Goal, "Run the tests").await?;
     agy_event(&f, "Stop", json!({"fully_idle": false})).await?;
     let caller = yulius_app::coordination::ProjectCaller {
         sandbox: f.sandbox.clone(),
@@ -2087,15 +2820,15 @@ async fn antigravity_background_stop_and_autonomous_invocation() -> TestResult {
     let scope = json!({"scope": "needs_you"});
     let list = f.h.app.tool_tasks_list(&caller, &scope).await?;
     assert_eq!(list["tasks"], json!([]), "{list}");
-    let busy = agy_brief(&f).await?;
+    let busy = task_brief(&f).await?;
     assert_eq!(busy["shows"], "working", "{busy}");
     agy_event(&f, "PreInvocation", json!({})).await?;
-    assert_eq!(agy_brief(&f).await?["activity"], "working");
+    assert_eq!(task_brief(&f).await?["activity"], "working");
     let action = "Approve access to the staging account";
     support::mcp_tool(&f.h, TOKEN, "needs_you", json!({"action": action})).await?;
     agy_event(&f, "Stop", json!({"fully_idle": false})).await?;
     agy_event(&f, "PreInvocation", json!({})).await?;
-    let requested = agy_brief(&f).await?;
+    let requested = task_brief(&f).await?;
     assert_eq!(requested["shows"], "needs_you");
     assert_eq!(requested["needs_you"]["action"], action);
     let list = f.h.app.tool_tasks_list(&caller, &scope).await?;
@@ -2106,10 +2839,10 @@ async fn antigravity_background_stop_and_autonomous_invocation() -> TestResult {
 
 /// SPEC-528: an idle Stop with open work gives its reason and only a newer wake reopens it.
 #[tokio::test]
-async fn antigravity_idle_stop_with_an_open_step_explains_the_wait() -> TestResult {
-    let f = antigravity_goal().await?;
+async fn antigravity_prompt_mode_idle_stop_with_an_open_step_explains_the_wait() -> TestResult {
+    let f = task_with_open_step(Agent::Antigravity, TaskMode::Prompt, "Run the tests").await?;
     agy_event(&f, "Stop", json!({"fully_idle": true})).await?;
-    let idle = agy_brief(&f).await?;
+    let idle = task_brief(&f).await?;
     assert_eq!(idle["activity"], "waiting");
     assert_eq!(idle["shows"], "needs_you");
     assert!(
@@ -2146,16 +2879,16 @@ async fn antigravity_idle_stop_with_an_open_step_explains_the_wait() -> TestResu
             Some(stale),
         )
         .await?;
-    assert_eq!(agy_brief(&f).await?["activity"], "waiting", "late wake");
+    assert_eq!(task_brief(&f).await?["activity"], "waiting", "late wake");
     agy_event(&f, "PreInvocation", json!({})).await?;
-    assert_eq!(agy_brief(&f).await?["shows"], "working");
+    assert_eq!(task_brief(&f).await?["shows"], "working");
     // Older clients omitted the idle bit. A model error also really ends the turn.
     for stop in [
         json!({}),
         json!({"fully_idle": false, "error": "Model unavailable"}),
     ] {
         agy_event(&f, "Stop", stop).await?;
-        assert_eq!(agy_brief(&f).await?["activity"], "waiting");
+        assert_eq!(task_brief(&f).await?["activity"], "waiting");
         agy_event(&f, "PreInvocation", json!({})).await?;
     }
     let ctx = f.h.app.agent_context(TOKEN).await?;
@@ -2166,7 +2899,7 @@ async fn antigravity_idle_stop_with_an_open_step_explains_the_wait() -> TestResu
         )
         .await?;
     agy_event(&f, "Stop", json!({"fully_idle": true})).await?;
-    let answered = agy_brief(&f).await?;
+    let answered = task_brief(&f).await?;
     assert_eq!(answered["shows"], "done");
     assert!(answered.get("wait_reason").is_none());
     Ok(())
@@ -2218,7 +2951,7 @@ async fn late_agy_stop(exhausted_gate: bool) -> TestResult {
     agy_event(&f, "PreInvocation", json!({})).await?;
     release.send(())?;
     stop.await??;
-    assert_eq!(agy_brief(&f).await?["activity"], "working");
+    assert_eq!(task_brief(&f).await?["activity"], "working");
     Ok(())
 }
 
@@ -2235,13 +2968,17 @@ fn a_key_during_submit_context_lookup_keeps_its_mark() -> TestResult {
         .max_blocking_threads(1)
         .build()?
         .block_on(async {
-            let f = fixture().await?;
+            let f = fixture_with_task(None, |task| {
+                task.mode = TaskMode::Goal;
+                task.gate_blocks = 3;
+            })
+            .await?;
             let app = &f.h.app;
             let run = app.agent_context(TOKEN).await?.attempt.run_dir;
             std::fs::create_dir_all(&run)?;
             let mark = Path::new(&run).join("person-typed");
             let user = UserId::parse("u1")?;
-            app.record_typing(&f.task, &user);
+            app.record_terminal_frame(&f.task, &user, b"old text\r");
 
             // Token lookup submits its SQLite job on the blocking pool. Hold the only
             // worker until the hook has entered and the later viewer key is recorded.
@@ -2274,8 +3011,458 @@ fn a_key_during_submit_context_lookup_keeps_its_mark() -> TestResult {
                 "the submit erased a key received during lookup"
             );
             assert!(app.has_draft(&f.task));
+            assert_eq!(
+                app.deps
+                    .store
+                    .task(&f.task)
+                    .await?
+                    .ok_or("task")?
+                    .gate_blocks,
+                0,
+                "the already-submitted owner prompt starts its own budget"
+            );
             Ok(())
         })
+}
+
+/// The phone Send key may be pressed on an empty box. Multiline input can also
+/// deliver Enter without submitting anything to the agent.
+#[tokio::test]
+async fn goal_stop_rejects_empty_and_multiline_enters_as_owner_replies() -> TestResult {
+    for frames in [
+        vec![b"\r".as_slice()],
+        vec![b"line one\\", b"\r"],
+        vec![b"\x1b[200~line one", b"\r", b"line two\x1b[201~"],
+    ] {
+        let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify dev").await?;
+        let reason = stop_of(&f, Agent::Codex).await?["reason"]
+            .as_str()
+            .ok_or("continuation")?
+            .to_owned();
+        let owner = UserId::parse("u1")?;
+        for frame in frames {
+            f.h.app.record_terminal_frame(&f.task, &owner, frame);
+        }
+        let submit = |prompt: &str| yulius_contracts::hooks::HookInput {
+            prompt: Some(prompt.to_owned()),
+            ..Default::default()
+        };
+        f.h.app
+            .hook_event(TOKEN, "codex", "UserPromptSubmit", &submit(&reason), None)
+            .await?;
+        assert_eq!(
+            f.h.app
+                .deps
+                .store
+                .task(&f.task)
+                .await?
+                .ok_or("task")?
+                .gate_blocks,
+            1,
+            "a keystroke that submitted nothing cannot claim this automatic prompt"
+        );
+        f.h.app
+            .record_terminal_frame(&f.task, &owner, b"Verify dev");
+        f.h.app.record_terminal_frame(&f.task, &owner, b"\r");
+        f.h.app
+            .hook_event(
+                TOKEN,
+                "codex",
+                "UserPromptSubmit",
+                &submit("Verify dev"),
+                None,
+            )
+            .await?;
+        assert!(
+            !f.h.app.has_draft(&f.task),
+            "the owner's actual Enter emptied the box"
+        );
+        assert_eq!(
+            f.h.app
+                .deps
+                .store
+                .task(&f.task)
+                .await?
+                .ok_or("task")?
+                .gate_blocks,
+            0
+        );
+    }
+    Ok(())
+}
+
+/// The browser splits long terminal input into 8192 UTF-16 units. Each interior
+/// cut of the closing escape must allow the next real Enter to submit the paste.
+#[tokio::test]
+async fn goal_stop_attributes_paste_with_a_split_closing_delimiter() -> TestResult {
+    for cut in 1..6 {
+        let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify dev").await?;
+        assert_eq!(stop_of(&f, Agent::Codex).await?["decision"], "block");
+        let text = "v".repeat(8192 - 6 - cut);
+        let paste = format!("\x1b[200~{text}\x1b[201~");
+        let owner = UserId::parse("u1")?;
+        for frame in paste.as_bytes().chunks(8192) {
+            f.h.app.record_terminal_frame(&f.task, &owner, frame);
+        }
+        f.h.app.record_terminal_frame(&f.task, &owner, b"\r");
+        f.h.app
+            .hook_event(
+                TOKEN,
+                "codex",
+                "UserPromptSubmit",
+                &yulius_contracts::hooks::HookInput {
+                    prompt: Some(text),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await?;
+        assert_eq!(
+            f.h.app
+                .deps
+                .store
+                .task(&f.task)
+                .await?
+                .ok_or("task")?
+                .gate_blocks,
+            0,
+            "the closing delimiter split after byte {cut}"
+        );
+        assert!(!f.h.app.has_draft(&f.task));
+    }
+    Ok(())
+}
+
+/// A pause in typing a multiline prompt changes nothing in the live PTY.
+#[tokio::test]
+async fn goal_stop_preserves_a_multiline_draft_after_a_pause_in_typing() -> TestResult {
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify dev").await?;
+    let reason = stop_of(&f, Agent::Codex).await?["reason"]
+        .as_str()
+        .ok_or("continuation")?
+        .to_owned();
+    let owner = UserId::parse("u1")?;
+    f.h.app.record_terminal_frame(&f.task, &owner, b"Verify\\");
+    f.h.clock.0.fetch_add(5_001, Ordering::SeqCst);
+    f.h.app.record_terminal_frame(&f.task, &owner, b"\r");
+    let submit = |prompt: &str| yulius_contracts::hooks::HookInput {
+        prompt: Some(prompt.to_owned()),
+        ..Default::default()
+    };
+    f.h.app
+        .hook_event(TOKEN, "codex", "UserPromptSubmit", &submit(&reason), None)
+        .await?;
+    assert_eq!(
+        f.h.app
+            .deps
+            .store
+            .task(&f.task)
+            .await?
+            .ok_or("task")?
+            .gate_blocks,
+        1
+    );
+    assert!(f.h.app.has_draft(&f.task));
+    f.h.app.record_terminal_frame(&f.task, &owner, b"dev\r");
+    f.h.app
+        .hook_event(
+            TOKEN,
+            "codex",
+            "UserPromptSubmit",
+            &submit("Verify\ndev"),
+            None,
+        )
+        .await?;
+    assert_eq!(
+        f.h.app
+            .deps
+            .store
+            .task(&f.task)
+            .await?
+            .ok_or("task")?
+            .gate_blocks,
+        0
+    );
+    assert!(!f.h.app.has_draft(&f.task));
+    Ok(())
+}
+
+/// History and cursor editing belong to the provider composer. Its submission
+/// confirms which of the owner's edited instructions actually went through.
+#[tokio::test]
+async fn goal_stop_accepts_recalled_and_cursor_edited_owner_work() -> TestResult {
+    for (frames, prompt) in [
+        (
+            vec![b"\x1b[200~Verify dev\rRecord evidence\x1b[201~\r".as_slice()],
+            "Verify dev\nRecord evidence",
+        ),
+        (vec![b" x\x7fVerify dev\r".as_slice()], " Verify dev"),
+        (vec![b"Review checkout\r".as_slice()], "Review checkout"),
+        (vec![b"\x1b[A".as_slice(), b"\r"], "Verify dev"),
+        (vec![b"x".as_slice(), b"\x1b[D", b"\x7f", b"\r"], "x"),
+    ] {
+        let f = task_with_open_step(Agent::Codex, TaskMode::Goal, prompt).await?;
+        let owner = UserId::parse("u1")?;
+        let submit = |text: &str| yulius_contracts::hooks::HookInput {
+            prompt: Some(text.into()),
+            ..Default::default()
+        };
+        let previous = prompt.replace('\n', " ");
+        f.h.app
+            .record_terminal_frame(&f.task, &owner, format!("{previous}\r").as_bytes());
+        f.h.app
+            .hook_event(TOKEN, "codex", "UserPromptSubmit", &submit(&previous), None)
+            .await?;
+        let reason = stop_of(&f, Agent::Codex).await?["reason"]
+            .as_str()
+            .ok_or("continuation")?
+            .to_owned();
+        // The initial callback can finish before the viewer starts editing. A
+        // lost response can then replay the same instruction after the viewer sends.
+        f.h.app
+            .hook_event(TOKEN, "codex", "UserPromptSubmit", &submit(&reason), None)
+            .await?;
+        for frame in frames {
+            f.h.app.record_terminal_frame(&f.task, &owner, frame);
+        }
+        // Repeated callbacks for the same automatic send must leave the owner's
+        // pending submission available for the provider to acknowledge.
+        for _ in 0..2 {
+            f.h.app
+                .hook_event(TOKEN, "codex", "UserPromptSubmit", &submit(&reason), None)
+                .await?;
+            assert_eq!(
+                f.h.app
+                    .deps
+                    .store
+                    .task(&f.task)
+                    .await?
+                    .ok_or("task")?
+                    .gate_blocks,
+                1
+            );
+        }
+        f.h.app
+            .hook_event(TOKEN, "codex", "UserPromptSubmit", &submit(prompt), None)
+            .await?;
+        assert_eq!(
+            f.h.app
+                .deps
+                .store
+                .task(&f.task)
+                .await?
+                .ok_or("task")?
+                .gate_blocks,
+            0,
+            "{prompt}"
+        );
+        assert!(!f.h.app.has_draft(&f.task));
+    }
+    Ok(())
+}
+
+/// A lost machine response keeps its invocation. A new edited submission of
+/// the identical instruction is the owner's, even when both arrive together.
+#[tokio::test]
+async fn goal_stop_distinguishes_replay_from_an_edited_copy_of_the_issued_prompt() -> TestResult {
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify dev").await?;
+    let reason = stop_of(&f, Agent::Codex).await?["reason"]
+        .as_str()
+        .ok_or("missing continuation")?
+        .to_owned();
+    let submit = async |id: u128| {
+        let req = Request::post("/hooks/codex/UserPromptSubmit")
+            .header("Authorization", format!("Bearer {TOKEN}"))
+            .header("Content-Type", "application/json")
+            .header("x-yulius-hook-invocation", format!("{id:032x}"))
+            .body(Body::from(json!({"prompt": reason}).to_string()))?;
+        assert_eq!(f.h.internal.clone().oneshot(req).await?.status(), 200);
+        Ok::<_, Box<dyn std::error::Error>>(())
+    };
+    submit(1).await?;
+    let owner = UserId::parse("u1")?;
+    for frame in [reason.as_bytes(), b"x", b"\x7f", b"\r"] {
+        f.h.app.record_terminal_frame(&f.task, &owner, frame);
+    }
+    submit(1).await?;
+    assert_eq!(
+        f.h.app
+            .deps
+            .store
+            .task(&f.task)
+            .await?
+            .ok_or("task")?
+            .gate_blocks,
+        1
+    );
+    submit(2).await?;
+    assert_eq!(
+        f.h.app
+            .deps
+            .store
+            .task(&f.task)
+            .await?
+            .ok_or("task")?
+            .gate_blocks,
+        0
+    );
+    assert!(!f.h.app.has_draft(&f.task));
+    Ok(())
+}
+
+/// Two invocations can be held at the same boundary. Each release acknowledges
+/// its own edited prompt even while the other one's Enter is outstanding.
+#[tokio::test]
+async fn goal_stop_releases_two_held_owner_submissions_independently() -> TestResult {
+    use yulius_app::hooks::HookReply;
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify dev").await?;
+    let app = &f.h.app;
+    let owner = UserId::parse("u1")?;
+    let store = &app.deps.store;
+    store
+        .set_person_pause(&f.task, &owner, &AttemptId::parse("at1")?, app.now())
+        .await?;
+    let prompts = [(1, "Verify dev"), (2, "Record the result")];
+    let submit = async |id, text: &str| {
+        app.hook_event(
+            TOKEN,
+            "codex",
+            "UserPromptSubmit",
+            &yulius_contracts::hooks::HookInput {
+                prompt: Some(text.to_owned()),
+                invocation: Some(id),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+    };
+    for (id, text) in prompts {
+        app.record_terminal_frame(&f.task, &owner, format!("{text}x\x7f\r").as_bytes());
+        assert!(matches!(submit(id, text).await?, HookReply::Hold { .. }));
+    }
+    store.clear_person_pause(&f.task, app.now()).await?;
+    assert!(matches!(
+        submit(1, prompts[0].1).await?,
+        HookReply::Output(_)
+    ));
+    assert!(
+        app.has_draft(&f.task),
+        "the second submission is still held"
+    );
+    assert!(matches!(
+        submit(2, prompts[1].1).await?,
+        HookReply::Output(_)
+    ));
+    assert!(
+        !app.has_draft(&f.task),
+        "both owner submissions were acknowledged"
+    );
+    Ok(())
+}
+
+/// Two automatic instructions can be issued before either submit hook arrives.
+/// The older acknowledgment must leave a later viewer edit available to its own hook.
+#[tokio::test]
+async fn goal_stop_keeps_both_issued_instructions_until_their_callbacks_arrive() -> TestResult {
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify dev").await?;
+    let app = &f.h.app;
+    let ctx = app.agent_context(TOKEN).await?;
+    let first = stop_of(&f, Agent::Codex).await?["reason"]
+        .as_str()
+        .ok_or("first instruction")?
+        .to_owned();
+    app.tool_steps_set(
+        &ctx,
+        &json!({"steps": [{"title":"Record verification", "status":"in_progress"}]}),
+    )
+    .await?;
+    let second = stop_of(&f, Agent::Codex).await?["reason"]
+        .as_str()
+        .ok_or("second instruction")?
+        .to_owned();
+    assert_ne!(first, second);
+    let spent = app
+        .deps
+        .store
+        .task(&f.task)
+        .await?
+        .ok_or("task")?
+        .gate_blocks;
+    assert!(spent > 0);
+    app.record_terminal_frame(&f.task, &UserId::parse("u1")?, b"Review checkoutx\x7f\r");
+    for (id, text, expected) in [
+        (1, first.as_str(), spent),
+        (2, second.as_str(), spent),
+        (1, first.as_str(), spent),
+        (3, "Review checkout", 0),
+    ] {
+        app.hook_event(
+            TOKEN,
+            "codex",
+            "UserPromptSubmit",
+            &yulius_contracts::hooks::HookInput {
+                prompt: Some(text.to_owned()),
+                invocation: Some(id),
+                ..Default::default()
+            },
+            None,
+        )
+        .await?;
+        assert_eq!(
+            app.deps
+                .store
+                .task(&f.task)
+                .await?
+                .ok_or("task")?
+                .gate_blocks,
+            expected
+        );
+    }
+    assert!(!app.has_draft(&f.task));
+    Ok(())
+}
+
+/// The client has already sent Enter when the next draft reaches Yulius. The HTTP
+/// callback arrives later, carrying the client's send time.
+#[tokio::test]
+async fn a_delayed_goal_submit_retains_the_owner_and_the_next_draft() -> TestResult {
+    let f = fixture_with_task(None, |task| {
+        task.mode = TaskMode::Goal;
+        task.gate_blocks = 3;
+    })
+    .await?;
+    let app = &f.h.app;
+    let owner = UserId::parse("u1")?;
+    app.record_terminal_frame(&f.task, &owner, b"Verify dev\r");
+    f.h.clock.0.fetch_add(1, Ordering::SeqCst);
+    let sent = app.now().0;
+    // More typing in a long next draft cannot displace the submitted Enter.
+    for _ in 0..300 {
+        f.h.clock.0.fetch_add(1, Ordering::SeqCst);
+        app.record_typing(&f.task, &owner);
+    }
+    let input = yulius_contracts::hooks::HookInput {
+        prompt: Some("Verify dev".into()),
+        ..Default::default()
+    };
+    app.hook_event(TOKEN, "claude", "UserPromptSubmit", &input, Some(sent))
+        .await?;
+    assert!(app.has_draft(&f.task), "the owner's next draft");
+    assert_eq!(
+        app.deps
+            .store
+            .task(&f.task)
+            .await?
+            .ok_or("task")?
+            .gate_blocks,
+        0,
+        "the instruction already submitted by the owner"
+    );
+    Ok(())
 }
 
 async fn idle_parking_fixture() -> Result<Fixture, Box<dyn std::error::Error>> {

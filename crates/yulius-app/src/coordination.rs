@@ -573,6 +573,9 @@ impl App {
     }
 
     pub(crate) async fn publish_steps(&self, task: &TaskRecord) {
+        if crate::hooks::defer_task_update(&task.id, true) {
+            return;
+        }
         self.events.publish(
             Some(task.sandbox_id.clone()),
             false,
