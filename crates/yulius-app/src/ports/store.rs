@@ -359,6 +359,14 @@ pub trait TaskStore: Send + Sync {
         reason: Option<&crate::attention::AttentionRecord>,
         at: Timestamp,
     ) -> AppResult<bool>;
+    /// Accepts Continue only for the ended status, attempt and archive the owner selected.
+    /// Clears that archive and question atomically with Starting or the complete queued start.
+    async fn claim_continuation(
+        &self,
+        selected: &TaskRecord,
+        queue: Option<&crate::model::QueuedStart>,
+        at: Timestamp,
+    ) -> AppResult<bool>;
     /// Queues the task `id`, which must read `expected`, and keeps how it is to start, in one
     /// step (SPEC-483 QST-001): [`Self::transition_task`] to `queued` and the start. `false`,
     /// and nothing changed, when the task no longer reads `expected`.

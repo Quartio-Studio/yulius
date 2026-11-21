@@ -2052,7 +2052,7 @@ pub async fn seed_task_of(
     use yulius_domain::ids::{SandboxId, TaskId, UserId};
     let now = h.app.now();
     let task = yulius_app::model::TaskRecord {
-        parked_attempt_id: None,
+        resume_attempt_id: None,
         id: TaskId::parse(id)?,
         sandbox_id: SandboxId::parse(sandbox)?,
         number: 0,

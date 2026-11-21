@@ -2118,6 +2118,8 @@ rollout history leaves its pause and prompt in place for the next capacity round
 
 Each parked task read includes the latest attempt ID from the same SQLite snapshot. A resume carries that ID through permission and account checks, including when a bulk operation, Telegram reply or remote restart first resolves the target. Under the launch lock it checks that the same attempt is still parked before restoring Codex lineage, starting a process or queueing its prompt.
 
+Continue also binds the owner’s selection to the latest attempt and archive state on an ended task. Exit and loss release terminal cleanup before successor checks. Once that cleanup finishes, the store compares the selection and records Starting or a queued start together with clearing the archive and question.
+
 `park_task_now` asks again under the launch lock, sets the run's end intent `Park` and ends the
 session as a close does (graceful shutdown, then the escalation). The run's end, by its exit or
 its loss, makes the task `parked` with its activity (`settle_parked`) and audits `task.parked`.

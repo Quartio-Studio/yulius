@@ -91,6 +91,8 @@ Use the fake Codex executable, its rollout, real PTY shutdown and the applicatio
 
 ## Decisions
 
+An owner can stop a task while its previous run is still finishing a park. Continue waits for that run's terminal cleanup before entering the queue or starting again. A timeout or a refused launch leaves the archive and outstanding question available for retry. The owner can also archive or close a replacement turn during admission. The start or queue claim checks the original attempt, archive and status together with the change that accepts the continuation.
+
 Capture a separate screen at the park decision because exiting can clear the entire alternate screen. Changing shutdown signals would couple presentation to the harness and could interfere with reaping. A separate snapshot lets an unsuccessful park keep its real terminal. Reuse native Codex resume and the Stop hook's persisted three-block budget. Older runs can only recover content still present in their saved screen. A parked owner terminal fits the saved grid to the viewport so the first row, last row and notice survive a smaller window. If the PR is the only remaining work and the Stop lookup cannot finish, the continuation asks the agent to verify its checks. Parking reads the current head before acquiring the launch lock and supplies that signal to the final eligibility check.
 
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
@@ -117,6 +119,9 @@ The SQLite query returning a parked task includes the latest attempt ID in the s
 
 ## Evidence
 
+- Nine continuation regressions failed before the repair. Run `5ac73ba1-8294-4050-88ed-fa7046f9eff1` exposed premature admission during terminal cleanup. Run `18e0d5cf-ae32-4aef-996e-3193f4489cab` admitted both a replacement attempt and a newly archived task. Run `78a8e6e5-8fdf-4029-8b53-a3d0813a3a81` cleared the archive on a live-run refusal.
+
+- PR #1625 delivered the parked screen settlement on dev `14e01f438`. PR run `7504f4a7-0812-45d3-b223-e8c4c94d8a39` passed the merge-first gate. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/14e01f43804f49318f1c2dbb7f3a989987e1ad02)
 - The final-screen ordering fix listed 11 mutations, caught 3 and found 8 unviable. The commit-boundary observation change listed 9, caught 2 and found 7 unviable. Both campaigns reached every mutation with zero missed and zero timed out. Their unmutated baselines passed 3,392 and 3,385 tests respectively.
 
 - On reviewed head `75098e156`, run `0ae29695-1dbf-4b30-a558-94a295201300` passed both SQLite commit-boundary assertions and the delayed-reader replacement park. Workspace Clippy with all targets and features passed with warnings denied. Vidoc was disabled.

@@ -931,7 +931,8 @@ impl RunStart {
     }
 }
 
-enum StartCondition {
+enum StartCondition<'a> {
+    OwnerContinue(&'a TaskRecord),
     Any,
     Status(TaskStatus),
     Parked(Option<AttemptId>),
@@ -1910,15 +1911,14 @@ impl App {
     pub(crate) async fn start_ended_run(
         self: &Arc<Self>,
         task: &TaskRecord,
-        start: RunStart,
         account: Option<AccountId>,
     ) -> AppResult<()> {
         if self
             .start_run_if(
                 &task.id,
-                start,
+                RunStart::Resume { prompt: None },
                 account,
-                StartCondition::Status(task.status),
+                StartCondition::OwnerContinue(task),
                 None,
                 None,
             )
@@ -1959,19 +1959,28 @@ impl App {
         task_id: &'a TaskId,
         start: RunStart,
         account: Option<AccountId>,
-        condition: StartCondition,
+        condition: StartCondition<'a>,
         rest: Option<IdleRest>,
         pause: Option<PausedStart<'a>>,
     ) -> BoxFuture<'a, AppResult<bool>> {
         Box::pin(async move {
             if matches!(condition, StartCondition::Parked(_)) {
-                self.wait_for_parked_screen(task_id).await?;
+                self.wait_for_terminal_cleanup(task_id, true).await?;
                 crate::race::reached(
                     crate::race::Point::ParkedResumePrepared,
                     Path::new(task_id.as_str()),
                 );
             } else {
-                self.settle_resting_run(task_id).await?;
+                let selected = match condition {
+                    StartCondition::OwnerContinue(selected) => Some(selected),
+                    _ => None,
+                };
+                self.settle_resting_run(
+                    task_id,
+                    selected,
+                    matches!(start, RunStart::Resume { .. }),
+                )
+                .await?;
             }
             // The Codex CLI is installed before the launch lock, so a first install does not hold
             // other tasks' starts (SPEC-503 CLI-002); the launch asks again and reports a failure.
@@ -1994,11 +2003,23 @@ impl App {
                 .task(task_id)
                 .await?
                 .ok_or(AppError::NotFound)?;
+            let owner_continue = matches!(condition, StartCondition::OwnerContinue(_));
+            let mut start = start;
             match &condition {
+                StartCondition::OwnerContinue(selected) => {
+                    if !task.matches_continuation(selected) {
+                        return Ok(false);
+                    }
+                    if task.harness == Harness::Codex
+                        && matches!(task.status, TaskStatus::Stopped(_) | TaskStatus::Failed(_))
+                    {
+                        start = self.codex_restart(&task).await?;
+                    }
+                }
                 StartCondition::Status(status) if *status != task.status => return Ok(false),
                 StartCondition::Parked(expected) => {
                     if task.status != TaskStatus::Parked
-                        || task.parked_attempt_id.as_ref() != expected.as_ref()
+                        || task.resume_attempt_id.as_ref() != expected.as_ref()
                     {
                         return Ok(false);
                     }
@@ -2063,11 +2084,15 @@ impl App {
                     let chosen = account
                         .as_ref()
                         .filter(|_| task.status.is_resting() || moving_pause);
-                    let queued = self
-                        .deps
-                        .store
-                        .queue_task(&task.id, task.status, &start.kept(chosen), self.now())
-                        .await?;
+                    let kept = start.kept(chosen);
+                    let queued = if owner_continue {
+                        self.claim_owner_continuation(&task, Some(&kept)).await?
+                    } else {
+                        self.deps
+                            .store
+                            .queue_task(&task.id, task.status, &kept, self.now())
+                            .await?
+                    };
                     // It changed meanwhile (a stop takes no launch lock): nothing was done.
                     if !queued {
                         return Ok(false);
@@ -2092,7 +2117,7 @@ impl App {
             };
             let launching = Launching::start(&self.supervisor.launching, &task.id);
             let result = self
-                .launch_attempt(&task, start, account, rest, pause_outcome)
+                .launch_attempt(&task, start, account, rest, pause_outcome, owner_continue)
                 .await;
             if let Err(err) = &result {
                 // Settle the failed launch before another Continue can install a new pause.
@@ -2158,6 +2183,24 @@ impl App {
         Ok(None)
     }
 
+    async fn claim_owner_continuation(
+        &self,
+        task: &TaskRecord,
+        queue: Option<&QueuedStart>,
+    ) -> AppResult<bool> {
+        let accepted = self
+            .deps
+            .store
+            .claim_continuation(task, queue, self.now())
+            .await?;
+        if accepted {
+            // A resting owner's Continue clears only this task's browser actions (SPEC-494).
+            self.clear_task_browser_actions(&task.sandbox_id, &task.id, None)
+                .await;
+        }
+        Ok(accepted)
+    }
+
     async fn launch_attempt(
         self: &Arc<Self>,
         task: &TaskRecord,
@@ -2165,6 +2208,7 @@ impl App {
         requested: Option<AccountId>,
         rest: Option<IdleRest>,
         pause_outcome: &'static str,
+        owner_continue: bool,
     ) -> AppResult<bool> {
         let store = &self.deps.store;
         let relaunch = start.clone();
@@ -2197,10 +2241,14 @@ impl App {
                 crate::race::Point::StartClaimReady,
                 Path::new(task.id.as_str()),
             );
-            if !store
-                .transition_task(&task.id, Some(task.status), next, None, self.now())
-                .await?
-            {
+            let claimed = if owner_continue {
+                self.claim_owner_continuation(task, None).await?
+            } else {
+                store
+                    .transition_task(&task.id, Some(task.status), next, None, self.now())
+                    .await?
+            };
+            if !claimed {
                 // Stop won the claim. This start owns neither the task nor a replacement pause.
                 return Ok(false);
             }
@@ -2732,7 +2780,15 @@ impl App {
             store
                 .transition_attempt(&attempt_id, AttemptState::Exited, &update)
                 .await?;
-            return Box::pin(self.launch_attempt(&task, relaunch, None, rest, pause_outcome)).await;
+            return Box::pin(self.launch_attempt(
+                &task,
+                relaunch,
+                None,
+                rest,
+                pause_outcome,
+                false,
+            ))
+            .await;
         }
         // Before the spawn, so the first prompt's hook always finds it (SPEC-068).
         if typed_opening.is_some()
@@ -4123,27 +4179,44 @@ impl App {
     ///
     /// # Errors
     /// `Conflict` while the run lives on or cannot be ended.
-    async fn settle_resting_run(self: &Arc<Self>, task_id: &TaskId) -> AppResult<()> {
+    async fn settle_resting_run(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        selected: Option<&TaskRecord>,
+        resume: bool,
+    ) -> AppResult<()> {
         let store = &self.deps.store;
         let Some(task) = store.task(task_id).await? else {
             return Ok(());
         };
+        let changed =
+            || AppError::Conflict("the task changed while it was continued; try again".into());
+        if selected.is_some_and(|seen| !task.matches_continuation(seen)) {
+            return Err(changed());
+        }
         if !task.status.is_resting() {
             return Ok(());
         }
-        let Some(run) = store.live_attempt(task_id).await? else {
-            return Ok(());
-        };
-        if self.holds_run(task_id).await {
-            return Err(AppError::Conflict(
-                "the task still has a live run: stop it first".into(),
-            ));
+        if let Some(run) = store.live_attempt(task_id).await? {
+            if selected.is_some_and(|seen| seen.resume_attempt_id.as_ref() != Some(&run.id)) {
+                return Err(changed());
+            }
+            if self.holds_run(task_id).await {
+                return Err(AppError::Conflict(
+                    "the task still has a live run: stop it first".into(),
+                ));
+            }
+            self.settle_unheld_run(task_id, &run.id).await?;
         }
-        self.settle_unheld_run(task_id, &run.id).await
+        if resume {
+            self.wait_for_terminal_cleanup(task_id, false).await?;
+        }
+        Ok(())
     }
 
-    /// Wait outside the launch lock until the parked reader finishes publishing its grid.
-    async fn wait_for_parked_screen(&self, task_id: &TaskId) -> AppResult<()> {
+    /// Wait outside the launch lock for terminal cleanup. Successor and onboarding checks
+    /// continue independently after the observer releases this count.
+    async fn wait_for_terminal_cleanup(&self, task_id: &TaskId, parked: bool) -> AppResult<()> {
         let Some(runtime) = self.existing_runtime(task_id) else {
             return Ok(());
         };
@@ -4151,19 +4224,22 @@ impl App {
         if *ending.borrow_and_update() == 0 {
             return Ok(());
         }
-        crate::race::reached(
-            crate::race::Point::ParkedResumeWaitsForReader,
-            Path::new(task_id.as_str()),
-        );
+        let (point, retry) = if parked {
+            (
+                crate::race::Point::ParkedResumeWaitsForReader,
+                "The parked screen is still being saved. Retry after the session finishes parking.",
+            )
+        } else {
+            (
+                crate::race::Point::ContinueWaitsForReader,
+                "The previous session is still settling. Retry Continue after terminal exit.",
+            )
+        };
+        crate::race::reached(point, Path::new(task_id.as_str()));
         let bound = Duration::from_millis(self.config.stop_escalation_ms);
         tokio::time::timeout(bound, ending.wait_for(|count| *count == 0))
             .await
-            .map_err(|_| {
-                AppError::Conflict(
-                    "The parked screen is still being saved. Retry after the session finishes parking."
-                        .into(),
-                )
-            })?
+            .map_err(|_| AppError::Conflict(retry.into()))?
             .map(|_| ())
             .map_err(AppError::internal)
     }
@@ -4630,6 +4706,7 @@ impl App {
         if !first {
             return; // another observer already recorded the outcome
         }
+        crate::race::reached(crate::race::Point::RunReaped, Path::new(task_id.as_str()));
         // The losing reader leaves the winner's screen and session state intact.
         if let Ok(mut end) = runtime.session_end.lock() {
             *end = None;
@@ -5050,7 +5127,7 @@ impl App {
             ))
         };
         let run = if task.status == TaskStatus::Parked {
-            let id = task.parked_attempt_id.as_ref().ok_or_else(missing)?;
+            let id = task.resume_attempt_id.as_ref().ok_or_else(missing)?;
             store.attempt(id).await?
         } else {
             store.attempts(&task.id).await?.pop()
@@ -5152,7 +5229,7 @@ impl App {
             &task.id,
             RunStart::Resume { prompt },
             None,
-            StartCondition::Parked(task.parked_attempt_id.clone()),
+            StartCondition::Parked(task.resume_attempt_id.clone()),
             rest,
             None,
         )

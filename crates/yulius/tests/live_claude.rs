@@ -71,7 +71,7 @@ async fn claude_code_runs_yulius_hooks_and_mcp() -> TestResult {
     store.insert_sandbox(&sandbox).await?;
     let now = h.app.now();
     let task = TaskRecord {
-        parked_attempt_id: None,
+        resume_attempt_id: None,
         id: TaskId::parse("t-live")?,
         sandbox_id: sandbox.id.clone(),
         number: 1,

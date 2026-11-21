@@ -67,7 +67,7 @@ fn task(
     by: &UserId,
 ) -> Result<TaskRecord, Box<dyn std::error::Error>> {
     Ok(TaskRecord {
-        parked_attempt_id: None,
+        resume_attempt_id: None,
         id: TaskId::parse(id)?,
         sandbox_id: sandbox.clone(),
         number: 0,

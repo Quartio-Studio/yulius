@@ -10,6 +10,12 @@ use std::path::Path;
 /// Where the server pauses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Point {
+    /// An owner requested continuation of an ended task.
+    OwnerContinueRequested,
+    /// The exit reader recorded the attempt outcome before finishing terminal cleanup.
+    RunReaped,
+    /// A continuation is waiting for the previous reader's cleanup.
+    ContinueWaitsForReader,
     /// A question’s answer passed task authorization, before the current task is read.
     AnswerAuthorized,
     /// A bulk message, Telegram reply or remote restart is about to dispatch a selected task.
