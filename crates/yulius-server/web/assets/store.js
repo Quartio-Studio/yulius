@@ -350,7 +350,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     return summary;
   }
 
-  function rememberTransition(row) {
+  function rememberTransition(row, discovered = false) {
     if (row.status !== 'parked') detailResumes.add(row);
     const order = rowOrder.get(row);
     for (const read of activeLists) {
@@ -362,7 +362,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
         if (rowOrder.get(events.get(row.id)) === order) events.set(row.id, row);
         else events.delete(row.id);
       }
-      if (row.status === 'parked') read.lifecycle.add(row.id);
+      if (discovered || row.status === 'parked') read.lifecycle.add(row.id);
       read.transitions.set(row.id, row);
     }
   }
@@ -375,22 +375,24 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     const publish = (detail, view = {}) => {
       release();
       const map = state.tasks.get(detail.sandbox_id);
-      if (!map || read.row === null || detail.status !== 'parked' || detail.archived) return view;
+      if (!map || read.row === null || detail.archived) return view;
       // Only a row actually visible at request start can survive omission by
       // an older list. Archive/delete invalidates that reference synchronously.
       const retained = read.row?.id === detail.id ? read.row : null;
       const listed = map.get(detail.id);
       const listVersion = listOrder.get(map) ?? 0;
       const laterEvent = rowOrder.get(retained) > Math.max(listVersion, rowOrder.get(listed) ?? 0);
-      const crossedPark = startingRow && startingRow.status !== 'parked';
+      const crossedPark = startingRow && startingRow.status !== detail.status &&
+        (startingRow.status === 'parked' || detail.status === 'parked');
       const row = laterEvent ? retained : listed ?? (crossedPark && listVersion < order ? retained : null);
-      if (!row) return view;
-      const transition = row.status !== 'parked' || crossedPark;
+      if (!row || (row.status !== 'parked' && detail.status !== 'parked' && startingRow?.status !== 'parked')) return view;
+      const transition = row.status !== detail.status || crossedPark;
       recordVerification(detail, order);
       if (rowOrder.get(row) > order) {
         // Preserve the newer event's work and decisions. An older detail may
         // still identify the open PR that an unverified update could not name.
-        const supplement = row.status === 'parked' && unverified.has(row) && (verifiedGroup.get(row)?.order ?? 0) < order;
+        const supplement = row.status === 'parked' && detail.status === 'parked' &&
+          unverified.has(row) && (verifiedGroup.get(row)?.order ?? 0) < order;
         const latest = supplement ? awaitingVerification(row, detail) : row;
         if (transition) rememberTransition(latest);
         publishParkedRow(map, listed ?? row, latest);
@@ -400,12 +402,12 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       const hintOrder = pullWatch.get(detail.sandbox_id)?.changeBeforeParkedRows ?? 0;
       verifiedGroup.set(updated, latestVerification(detail, row));
       const fallbackOrder = Math.max(hintOrder, unverified.get(row) ?? 0, failedWatchOrder.get(map) ?? 0);
-      if (fallbackOrder > order || typeof detail.parked_needs_you !== 'boolean') {
+      if (detail.status === 'parked' && (fallbackOrder > order || typeof detail.parked_needs_you !== 'boolean')) {
         updated = awaitingVerification(updated, row, Math.max(order, fallbackOrder));
       }
       rowOrder.set(updated, order);
-      if (transition) rememberTransition(updated);
-      const missedHint = hintOrder > order && !hasParkedRows(map);
+      if (transition) rememberTransition(updated, true);
+      const missedHint = detail.status === 'parked' && hintOrder > order && !hasParkedRows(map);
       publishParkedRow(map, row, updated);
       if (missedHint) requestRead(detail.sandbox_id, refreshParkedGroups, true, true);
       return { ...view, ...(transition ? updated : parkedFacts(updated)) };

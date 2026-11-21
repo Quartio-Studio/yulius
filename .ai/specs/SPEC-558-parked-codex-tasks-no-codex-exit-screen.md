@@ -45,7 +45,8 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Show current parked progress and owner notices in the terminal
 - [x] Publish verified parked task detail to the terminal
 - [x] Publish a missed park discovered by terminal detail
-- [ ] Reconcile terminal-discovered resumes, archives and later Undo
+- [x] Publish terminal-discovered resumes to the active task list
+- [ ] Reconcile terminal-discovered archives and later Undo
 - [ ] Publish verified parked task detail to Task Info
 - [ ] Keep failed integration candidates with their original owner
 - [ ] Deliver bounded Codex goal continuation to dev
@@ -73,6 +74,20 @@ Capture a separate screen at the park decision because exiting can clear the ent
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
 ## Evidence
+
+- Independent review approved `725fa0f16` for missed resume publication. All nine changed Chromium tests passed independently. The author passed 13 scoped cases, including the existing subscription-switching test and the new mounted-menu regression. Repository contracts, format checks and spec validation passed. There were no changed Rust mutation targets. Vidoc was disabled. The earlier combined checkpoint at `ebd074bfa` passed the complete local Chromium suite with 1,272 passes and one optional skip.
+
+- At `425dfdb98`, a mounted terminal discovered that the task resumed on Claude #4. A newer capacity summary omitted the subscription ID and cleared its label. The chip then showed “No subscription” while the Run on menu still marked #4 “Waits on it”. A Chromium regression uses the same optional-ID serialization as the server and exercises the mounted menu. Both full-summary updates and subsequent detail reads now clear an omitted ID.
+
+- Third-round review of the combined resume/archive change reproduced the server publishing Closed before Archived. If the terminal received only Closed, the active list could retain the archived row and the terminal could miss Undo. The added Chromium regression failed on `fac0b9169` and passed in the corrected combined prototype across both reply orders. Resume publication is delivered separately. The archive findings and tests below describe the prototype for the following step.
+
+- Review at `59552a705` found that an older list could omit the row before terminal detail reported its archive. Chromium reproduced zero notifications in that order, compared with Archive and Restored when detail answered first. The store now notifies the terminal of the first observed archive in both orders and updates the list and counts when it removes a row. An additional red/green regression verifies that a repeated archive confirmation outranks an older Undo without sending a duplicate archive notice.
+
+- At `ebd074bfa`, Undo from a newer task list restored the sidebar but left the mounted terminal archived in two reply schedules. A second regression reproduced Undo from the detail read that archive publication starts. That read left the sidebar empty. A list now notifies subscribers when a row returns, and the terminal can verify Undo using its archived starting summary. A deletion during that read or a newer empty list keeps the row out of the active list.
+
+- On the merged #1554 code, eight of nine resume and archive regression cases failed. A separate test for concurrent terminal reads also failed in both orders. The updated store publishes the resumed public task summary and removes an archived task from the active list. Pending reads retain the archive order until they complete. Thirteen controlled Chromium cases passed, including older parked and capacity lists, failed confirmation, a genuine Undo, and preservation of an owner decision. Two mounted terminal tests verify the sidebar when a resume or archive event was missed.
+
+- PR #1554 delivered missed-park discovery at dev `5611666a0`. Run `3fbfe406-2638-4988-823d-c330bbad6e38` passed quality, both Rust shards and e2e on `95d95b2e2`. Vidoc was disabled. The reviewed product commit also passed the full local browser suite with 1,261 passes and one optional skip. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe704d71f9/delivery/evidence/5611666a071dbd8c7fec626752e23b224110f807)
 
 - Independent review approved `ec67a9270` for terminal discovery of a missed park. The reviewer independently passed all 11 new Chromium regressions and four existing list-confirmation tests. The author passed 14 focused Chromium cases on the approved head. Repository contracts, formatting and spec validation passed. No Rust mutation targets changed, and project Vidoc scanning was disabled. The earlier combined checkpoint `61e81ef4c` passed the complete local Chromium suite with 1,263 passes and one optional skip.
 
