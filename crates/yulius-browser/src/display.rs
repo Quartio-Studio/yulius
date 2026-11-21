@@ -948,12 +948,22 @@ mod copy_input_tests {
             ));
             write()?;
             let offer = tokio::time::timeout(Duration::from_secs(2), pending).await??;
-            assert!(
-                owner.poll_for_event()?.is_none(),
-                "the display read the selection before acceptance"
-            );
-            // The wrong offer cannot ask the owner for anything.
+            // Order the X thread's flushed requests and their delivery to the fixture owner
+            // before checking for a premature read, including one rejected by its token.
+            let no_request = || async {
+                display.settle().await;
+                owner.get_input_focus()?.reply()?;
+                while let Some(event) = owner.poll_for_event()? {
+                    assert!(
+                        !matches!(event, Event::SelectionRequest(_)),
+                        "selection requested before acceptance"
+                    );
+                }
+                Ok::<_, Box<dyn std::error::Error>>(())
+            };
+            no_request().await?;
             assert!(display.accept_copy(offer.wrapping_add(1)).await.is_none());
+            no_request().await?;
             let respond = || async {
                 loop {
                     if let Some(Event::SelectionRequest(req)) = owner.poll_for_event()? {
