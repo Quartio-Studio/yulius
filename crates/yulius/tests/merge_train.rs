@@ -4224,9 +4224,28 @@ fn saved_armed(app: &App, n: u32) -> BoxResult<Option<(String, i64)>> {
 /// catches up, and merges once it has.
 #[tokio::test]
 async fn a_yulius_base_merge_keeps_the_merge_armed() -> TestResult {
+    verified_head_during_github_wait(false).await
+}
+
+#[tokio::test]
+async fn a_transient_pr_title_failure_keeps_the_trains_verified_head() -> TestResult {
+    verified_head_during_github_wait(true).await
+}
+
+async fn verified_head_during_github_wait(retitle_fails: bool) -> TestResult {
     let f = fixture().await?;
     let app = f.h.app.clone();
     let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+    if retitle_fails {
+        // The PR opened with the fallback title. A later conventional commit requires a retitle.
+        std::fs::write(worktree.join("fix.txt"), "reviewed repair")?;
+        git(&worktree, &["add", "fix.txt"])?;
+        git(
+            &worktree,
+            &["commit", "-qm", "fix(queue): finish the repair"],
+        )?;
+        git(&worktree, &["push", "-q", "origin", "HEAD:feat/1-train"])?;
+    }
     f.arm(1, &worktree).await?;
     let reviewed = git(&worktree, &["rev-parse", "HEAD"])?;
     f.record_passed(&app, 1, &reviewed).await?;
@@ -4234,14 +4253,36 @@ async fn a_yulius_base_merge_keeps_the_merge_armed() -> TestResult {
     f.advance_dev("other.txt")?;
     app.merge_armed(&f.sandbox).await;
     assert_eq!(f.train_runs(&app).await?.len(), 1);
-    // GitHub does not show the head Yulius pushes yet.
-    *f.h.github.stale_reads.lock().map_err(|_| "lock")? = u32::MAX;
+    if retitle_fails {
+        // GitHub sees the pushed head and refuses title updates until the fixture releases it.
+        f.h.github
+            .retitle_errors
+            .lock()
+            .map_err(|_| "retitle errors")?
+            .extend((0..8).map(|_| {
+                yulius_app::error::AppError::Upstream("GitHub upstream error (HTTP 502)".into())
+            }));
+    } else {
+        *f.h.github.stale_reads.lock().map_err(|_| "stale reads")? = u32::MAX;
+    }
     f.settle(&app).await?;
     f.decide_until(&app, || async {
         Ok(git(&f.origin, &["rev-parse", "feat/1-train"])? != reviewed)
     })
     .await?;
     let moved = git(&worktree, &["rev-parse", "HEAD"])?;
+    if retitle_fails {
+        let outstanding =
+            f.h.github
+                .retitle_errors
+                .lock()
+                .map_err(|_| "retitle errors")?
+                .len();
+        assert!(
+            (1..8).contains(&outstanding),
+            "the title update must have reached GitHub"
+        );
+    }
     let state = f.wait(1, &worktree).await?;
     assert_eq!(state["merge_armed"], true, "kept: {state}");
     assert_eq!(state["merge_outcome"], Value::Null, "{state}");
@@ -4288,6 +4329,11 @@ async fn a_yulius_base_merge_keeps_the_merge_armed() -> TestResult {
     peer.reference = CiRef::PullRequest(82);
     peer.state = RunState::Failed;
     app.deps.store.insert_ci_run(&peer, &[]).await?;
+    f.h.github
+        .retitle_errors
+        .lock()
+        .map_err(|_| "retitle errors")?
+        .clear();
     *f.h.github.stale_reads.lock().map_err(|_| "lock")? = 0;
     f.decide_until(&app, || async { f.merged(&app, 1).await })
         .await?;
