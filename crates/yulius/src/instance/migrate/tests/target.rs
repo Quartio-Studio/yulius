@@ -759,7 +759,8 @@ fn at(host: &FakeHost, start: &str) -> usize {
         .unwrap_or_else(|| panic!("{start:?} never ran: {:?}", host.log))
 }
 
-const ASK: &str = "curl --silent --show-error --insecure --output /dev/null";
+const ASK: &str = "curl --disable --noproxy * --silent --show-error --insecure --output /dev/null";
+const RESTART: &str = "systemctl restart caddy";
 
 #[test]
 fn the_proxy_starts_only_with_a_valid_configuration() {
@@ -767,9 +768,10 @@ fn the_proxy_starts_only_with_a_valid_configuration() {
     let reply = step(&mut host, &proxy_request(true));
     assert_eq!(only(&reply).0, HostOutcome::Changed, "{reply:?}");
     assert!(host.ran("caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile"));
-    assert!(host.ran("systemctl enable caddy") && host.ran("systemctl reload-or-restart caddy"));
-    assert!(at(&host, "caddy validate") < at(&host, "systemctl reload-or-restart caddy"));
-    assert!(at(&host, "systemctl reload-or-restart caddy") < at(&host, "curl"));
+    assert!(host.ran("systemctl enable caddy") && host.ran(RESTART));
+    assert!(at(&host, "caddy validate") < at(&host, "systemctl daemon-reload"));
+    assert!(at(&host, "systemctl daemon-reload") < at(&host, RESTART));
+    assert!(at(&host, RESTART) < at(&host, "curl"));
 
     // Running, but its files changed.
     caddy_running(&mut host);
@@ -791,20 +793,19 @@ fn the_proxy_starts_only_with_a_valid_configuration() {
 
 /// SPEC-592 CKS-001/004 (AC-1): files reported unchanged in this run prove nothing about the
 /// running Caddy (the package started it before they were copied, or an earlier pass wrote
-/// them): it is reloaded all the same, and HTTPS is asked.
+/// them): it is restarted all the same, so it also reads the carried drop-ins' environment,
+/// and HTTPS is asked.
 #[test]
-fn a_running_caddy_is_reloaded_although_the_files_did_not_change() {
+fn a_running_caddy_is_restarted_although_the_files_did_not_change() {
     let mut host = new_host();
     caddy_running(&mut host);
+    host.says(&["curl"], "502");
     let reply = step(&mut host, &proxy_request(false));
     let (outcome, detail) = only(&reply);
     assert_eq!(outcome, HostOutcome::Ok, "{detail}");
-    assert!(
-        host.ran("systemctl reload-or-restart caddy"),
-        "{:?}",
-        host.log
-    );
-    assert!(at(&host, "caddy validate") < at(&host, "systemctl reload-or-restart caddy"));
+    assert_eq!(host.runs(RESTART).len(), 1, "{:?}", host.log);
+    assert!(!host.ran("systemctl reload"), "{:?}", host.log);
+    assert!(at(&host, "caddy validate") < at(&host, RESTART));
     let asked = host.runs("curl");
     assert_eq!(asked.len(), 1, "{asked:?}");
     assert!(asked[0].starts_with(ASK), "{}", asked[0]);
@@ -815,48 +816,35 @@ fn a_running_caddy_is_reloaded_although_the_files_did_not_change() {
         asked[0]
     );
     assert!(
-        detail.contains("reloaded") && detail.contains("443"),
+        detail.contains("restarted") && detail.contains("443") && detail.contains("HTTP 502"),
         "{detail}"
     );
 }
 
-/// SPEC-592 CKS-001 (AC-2): a reload that fails (`admin off`) falls back to a restart; when
-/// both fail the step fails with both reasons and asks nothing.
+/// SPEC-592 CKS-001 (AC-2): a restart that fails fails the step with its reason and where to
+/// read more, and asks nothing.
 #[test]
-fn a_failed_reload_restarts_caddy_and_both_failing_fail_the_step() {
+fn a_failed_restart_fails_the_step_with_its_reason() {
     let mut host = new_host();
     caddy_running(&mut host);
     host.fails(
-        &["systemctl", "reload-or-restart", "caddy"],
-        "Job for caddy.service failed: admin endpoint disabled",
-    );
-    let reply = step(&mut host, &proxy_request(false));
-    assert_eq!(only(&reply).0, HostOutcome::Ok, "{reply:?}");
-    assert!(at(&host, "systemctl reload-or-restart caddy") < at(&host, "systemctl restart caddy"));
-    assert!(at(&host, "systemctl restart caddy") < at(&host, "curl"));
-
-    host.fails(
         &["systemctl", "restart", "caddy"],
-        "caddy.service: start-limit-hit",
+        "Job for caddy.service failed because the control process exited with error code.",
     );
-    host.log.clear();
     let reply = step(&mut host, &proxy_request(false));
     let (outcome, detail) = only(&reply);
     assert_eq!(outcome, HostOutcome::Failed);
     assert!(
-        detail.contains("admin endpoint disabled")
-            && detail.contains("start-limit-hit")
-            && detail.contains("journalctl -u caddy"),
+        detail.contains("control process exited") && detail.contains("journalctl -u caddy"),
         "{detail}"
     );
     assert!(!host.ran("curl"));
 }
 
-/// SPEC-592 CKS-002 (AC-3): a port 443 that refuses after the reload is a Caddy serving another
-/// configuration: restarted once, asked again, and the step fails with the fix if it still
-/// refuses.
+/// SPEC-592 CKS-002 (AC-3): a port 443 that refuses after the restart is a Caddy that does not
+/// serve the carried site there: the step fails with what to read and the limit it may be.
 #[test]
-fn https_refused_on_443_restarts_caddy_once_then_fails_with_the_fix() {
+fn https_refused_on_443_fails_with_the_fix() {
     let mut host = new_host();
     caddy_running(&mut host);
     host.on(
@@ -868,37 +856,15 @@ fn https_refused_on_443_restarts_caddy_once_then_fails_with_the_fix() {
     let reply = step(&mut host, &proxy_request(false));
     let (outcome, detail) = only(&reply);
     assert_eq!(outcome, HostOutcome::Failed, "{detail}");
-    assert_eq!(host.runs("curl").len(), 2, "{:?}", host.log);
-    assert_eq!(
-        host.runs("systemctl restart caddy").len(),
-        1,
-        "{:?}",
-        host.log
-    );
+    assert_eq!(host.runs("curl").len(), 1, "{:?}", host.log);
+    assert_eq!(host.runs(RESTART).len(), 1, "{:?}", host.log);
     assert!(
         detail.contains("443")
             && detail.contains(SITE)
             && detail.contains("Couldn't connect")
-            && detail.contains("systemctl restart caddy")
-            && detail.contains("journalctl -u caddy"),
-        "{detail}"
-    );
-
-    // Refused until the restart, then answering.
-    let mut host = new_host();
-    caddy_running(&mut host);
-    host.on(&["curl"], 7, "curl: (7) Couldn't connect to server", None);
-    host.on(
-        &["systemctl", "restart", "caddy"],
-        0,
-        "",
-        Some(|h: &mut FakeHost| h.says(&["curl"], "502")),
-    );
-    let reply = step(&mut host, &proxy_request(false));
-    let (outcome, detail) = only(&reply);
-    assert_eq!(outcome, HostOutcome::Ok, "{detail}");
-    assert!(
-        detail.contains("502") || detail.contains("answers"),
+            && detail.contains("systemctl status caddy")
+            && detail.contains("journalctl -u caddy")
+            && detail.contains("no site on port 443"),
         "{detail}"
     );
 
@@ -914,6 +880,31 @@ fn https_refused_on_443_restarts_caddy_once_then_fails_with_the_fix() {
         only(&step(&mut host, &proxy_request(true))).0,
         HostOutcome::Failed
     );
+}
+
+/// SPEC-592 CKS-002: a curl that cannot run is not a closed port: the step says to install it
+/// and restarts nothing more.
+#[test]
+fn a_missing_curl_fails_saying_so() {
+    for (code, why) in [
+        (127, "curl: command not found"),
+        (
+            -1,
+            "cannot run curl: No such file or directory (os error 2)",
+        ),
+    ] {
+        let mut host = new_host();
+        host.on(&["curl"], code, why, None);
+        let reply = step(&mut host, &proxy_request(true));
+        let (outcome, detail) = only(&reply);
+        assert_eq!(outcome, HostOutcome::Failed, "{detail}");
+        assert!(
+            detail.contains("install curl") && detail.contains(why),
+            "{detail}"
+        );
+        assert!(!detail.contains("journalctl"), "{detail}");
+        assert_eq!(host.runs(RESTART).len(), 1, "{:?}", host.log);
+    }
 }
 
 /// SPEC-592 CKS-003/005 (AC-4): a TLS handshake that fails on an open port 443 is a Caddy
@@ -932,10 +923,11 @@ fn a_missing_certificate_is_said_and_no_https_url_asks_nothing() {
     let (outcome, detail) = only(&reply);
     assert_eq!(outcome, HostOutcome::Changed, "{detail}");
     assert!(
-        detail.contains("listens on 443") && detail.contains("certificate"),
+        detail.contains("port 443 takes connections")
+            && detail.contains("no certificate for yulius.example.com"),
         "{detail}"
     );
-    assert_eq!(host.runs("systemctl restart caddy").len(), 0);
+    assert_eq!(host.runs(RESTART).len(), 1);
 
     let mut host = new_host();
     let reply = step(

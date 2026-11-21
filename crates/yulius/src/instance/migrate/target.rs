@@ -1336,17 +1336,19 @@ fn texts(host: &mut dyn Host, name: &str, files: &[TextFile], l: &mut Lines) {
 enum Https {
     /// An HTTP answer, with its status (the instance does not run yet: 502 is expected).
     Answers(String),
-    /// Port 443 is open but the TLS handshake failed: Caddy has no certificate for the host
-    /// yet (its name still leads to the old host).
+    /// Port 443 took the connection but the TLS handshake failed: Caddy has no certificate for
+    /// the name, as while it still leads to the old host.
     NoCertificate(String),
-    /// Nothing answered on port 443: the running Caddy does not serve the carried site.
+    /// Nothing answered on port 443.
     Refused(String),
-    /// It could not be asked (`curl` missing).
+    /// `curl` could not run (exit 126 or 127, or not started).
     Unasked(String),
 }
 
-/// Asks the new host's own port 443 for `name`, accepting any certificate and any status;
-/// `curl` retries a refused connection for a Caddy that is still binding its ports.
+/// Asks the new host's own port 443 for `name`, accepting any certificate and any status.
+/// `--disable` and `--noproxy` keep a `.curlrc` or a proxy in the environment from sending
+/// the question elsewhere; the retries (also of a 5xx answer, so about 3 s while the
+/// instance does not run) cover a Caddy still binding its ports.
 fn ask_https(host: &mut dyn Host, name: &str) -> Https {
     let resolve = format!("{name}:443:127.0.0.1");
     let url = format!("https://{name}/");
@@ -1355,6 +1357,9 @@ fn ask_https(host: &mut dyn Host, name: &str) -> Https {
         &long(
             &[
                 "curl",
+                "--disable",
+                "--noproxy",
+                "*",
                 "--silent",
                 "--show-error",
                 "--insecure",
@@ -1382,6 +1387,7 @@ fn ask_https(host: &mut dyn Host, name: &str) -> Https {
         0 => Https::Answers(out.stdout.trim().to_owned()),
         // CURLE_SSL_CONNECT_ERROR: the port took the connection, the handshake failed.
         35 => Https::NoCertificate(out.why()),
+        // Not found or not executable; -1 is also how a run that could not start comes back.
         -1 | 126 | 127 => Https::Unasked(out.why()),
         _ => Https::Refused(out.why()),
     }
@@ -1396,30 +1402,13 @@ fn plain_host(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
 }
 
-/// Makes the running Caddy load the carried configuration: a reload, or a restart where the
-/// reload fails (`caddy reload` needs the admin endpoint). Says which, or why neither worked.
-fn load_caddy(host: &mut dyn Host) -> Result<&'static str, String> {
-    let reloaded = sh(host, &["systemctl", "reload-or-restart", "caddy"]);
-    if reloaded.ok() {
-        return Ok("reloaded");
-    }
-    let restarted = sh(host, &["systemctl", "restart", "caddy"]);
-    if restarted.ok() {
-        return Ok("restarted");
-    }
-    Err(format!(
-        "Caddy did not take the carried configuration: `systemctl reload-or-restart caddy` \
-         failed ({}) and `systemctl restart caddy` failed ({}); see `journalctl -u caddy -n 50`",
-        reloaded.why(),
-        restarted.why()
-    ))
-}
-
-/// Validates the carried Caddyfile, makes the running Caddy load it whatever this run wrote
-/// (Caddy may have started before the files were there: the package's postinst, or an earlier
-/// pass), and asks port 443 for the public host (SPEC-592).
+/// Validates the carried Caddyfile, restarts Caddy with it whatever this run wrote (Caddy may
+/// have started before the files were there: the package's postinst, or an earlier pass; and
+/// only a restart reads the carried drop-ins' environment), and asks port 443 for the public
+/// host (SPEC-592). The new host serves nobody yet, so the restart costs nothing.
 fn proxy(host: &mut dyn Host, changed: bool, https: Option<&str>, l: &mut Lines) {
     const ITEM: &str = "reverse proxy";
+    const LOOK: &str = "see `systemctl status caddy` and `journalctl -u caddy -n 50`";
     if let Some(name) = https
         && !plain_host(name)
     {
@@ -1461,54 +1450,52 @@ fn proxy(host: &mut dyn Host, changed: bool, https: Option<&str>, l: &mut Lines)
     if !enabled.ok() {
         return l.failed(ITEM, format!("Caddy cannot be enabled: {}", enabled.why()));
     }
-    let how = match load_caddy(host) {
-        Ok(how) => how,
-        Err(why) => return l.failed(ITEM, why),
-    };
+    let restarted = sh(host, &["systemctl", "restart", "caddy"]);
+    if !restarted.ok() {
+        return l.failed(
+            ITEM,
+            format!(
+                "Caddy did not start with the carried configuration: {}; {LOOK}, then run the \
+                 move again",
+                restarted.why()
+            ),
+        );
+    }
     let answered = match https {
         None => "no https:// public URL, so port 443 was not asked".to_owned(),
-        Some(name) => {
-            let mut asked = ask_https(host, name);
-            if let Https::Refused(_) = asked {
-                // A Caddy that took the reload but still serves another configuration.
-                let restarted = sh(host, &["systemctl", "restart", "caddy"]);
-                if restarted.ok() {
-                    asked = ask_https(host, name);
-                }
+        Some(name) => match ask_https(host, name) {
+            Https::Answers(status) => {
+                format!("https://{name} answers on this host's port 443 (HTTP {status})")
             }
-            match asked {
-                Https::Answers(status) => {
-                    format!("https://{name} answers on this host's port 443 (HTTP {status})")
-                }
-                Https::NoCertificate(why) => format!(
-                    "Caddy listens on 443 for {name} but has no certificate yet ({why}); it gets \
-                     one once {name} leads to this host"
-                ),
-                Https::Refused(why) => {
-                    return l.failed(
-                        ITEM,
-                        format!(
-                            "Caddy runs but nothing answers HTTPS for {name} on this host's port \
-                             443 ({why}): it does not serve the carried {}. Run `systemctl \
-                             restart caddy`, read `journalctl -u caddy -n 50`, then run the move \
-                             again",
-                            profile::CADDYFILE
-                        ),
-                    );
-                }
-                Https::Unasked(why) => {
-                    return l.failed(
-                        ITEM,
-                        format!(
-                            "port 443 cannot be asked for {name} ({why}): install curl and run \
-                             the move again"
-                        ),
-                    );
-                }
+            Https::NoCertificate(why) => format!(
+                "port 443 takes connections but Caddy has no certificate for {name} yet ({why}); \
+                 it gets one once {name} leads to this host"
+            ),
+            Https::Refused(why) => {
+                return l.failed(
+                    ITEM,
+                    format!(
+                        "Caddy was restarted with the carried {} but nothing answers HTTPS for \
+                         {name} on this host's port 443 ({why}): Caddy is not running it, or it \
+                         has no site on port 443 (TLS that ends in front of Caddy is not \
+                         carried); {LOOK}, then run the move again",
+                        profile::CADDYFILE
+                    ),
+                );
             }
-        }
+            Https::Unasked(why) => {
+                return l.failed(
+                    ITEM,
+                    format!(
+                        "port 443 could not be asked for {name} ({why}): install curl on this \
+                         host, then run the move again"
+                    ),
+                );
+            }
+        },
     };
-    let detail = format!("Caddy validated the carried configuration and {how} with it; {answered}");
+    let detail =
+        format!("Caddy validated the carried configuration and restarted with it; {answered}");
     if changed || !was {
         l.changed(ITEM, detail);
     } else {
