@@ -113,6 +113,8 @@ impl Default for EgressConfig {
 
 /// The egress proxy.
 pub struct EgressProxy {
+    #[cfg(target_os = "linux")]
+    holder_relays: std::sync::OnceLock<Arc<yulius_sandbox::relay::handoff::OutboundRelays>>,
     policy: Arc<dyn EgressPolicy>,
     ca: CertificateAuthority,
     http: reqwest::Client,
@@ -658,6 +660,8 @@ impl EgressProxy {
         }
         let table = table(&config);
         Ok(Self {
+            #[cfg(target_os = "linux")]
+            holder_relays: std::sync::OnceLock::new(),
             policy,
             ca,
             http: builder.build()?,
@@ -831,7 +835,14 @@ impl EgressProxy {
                                 yulius_app::ports::egress::EgressCaller::Agent { .. }
                             ) =>
                         {
-                            handoff::agent_tunnel(addrs, upgraded, permit, client.use_key()).await
+                            handoff::agent_tunnel(
+                                addrs,
+                                upgraded,
+                                permit,
+                                client.use_key(),
+                                proxy.holder_relays.get().map(Arc::as_ref),
+                            )
+                            .await
                         }
                         Ok(upgraded) => tunnel(addrs, upgraded, permit).await,
                         Err(error) => tracing::debug!(%error, "proxy tunnel was not opened"),

@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- Established opaque HTTP/1.1 CONNECT tunnels through the sandbox holder now resume on the same sockets after an orderly Linux server restart. Frozen clients receive queued bytes after thaw, and the restored relay counts against its original limits. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
 - A live task’s PR notice stays pending when a terminal resize or another input owns the writer. The next watch checks whether the owner can receive it (SPEC-558).
 
 - A saved merge request holds its owner’s PR check-in during startup. A passed train keeps the verified member head while GitHub catches up, and `yulius wait` names conflicting files only for the excluded request that produced them (SPEC-558).

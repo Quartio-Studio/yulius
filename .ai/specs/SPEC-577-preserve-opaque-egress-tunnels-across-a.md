@@ -60,8 +60,9 @@ new request after the old sockets reach EOF. The issue requires the original con
 - [x] Verify same-socket continuity, admission limits and intercepted traffic through restart
 - [x] Quiesce outbound relay admissions without recording a capacity refusal
 - [x] Obtain independent approval for the holder relay lifecycle slice
-- [ ] Restore matched proxy and relay pairs on the delivered holder lifecycle
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Restore matched proxy and relay pairs on the delivered holder lifecycle
+- [x] Bind the original relay at CONNECT and retain final bytes until both copies drain
+- [x] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
@@ -603,3 +604,101 @@ matched relay and proxy restoration has its own review and CI.
   69 mutations in 18 minutes. It caught 30 and found 39 unviable. The follow-up
   against the reviewed head for the unique-link correction reached all six mutations,
   caught two and found four unviable. Both runs reported zero missed or timed out.
+
+- PR #1573 merged at dev `4e6095745` with the same tree as reviewed head `7d53333a2`.
+  PR run `7d035774-e362-41d3-8964-ce678f9f5234` and dev run
+  `647eab7e-5495-44b6-b092-db32111b6771` passed quality, both test shards and e2e.
+  The security scan was disabled.
+  [Dev verification](https://yulius.quartio.ai/api/tasks/35adb14d-65fe-4a9f-b9fa-370d776d4139/delivery/evidence/4e6095745150d9233b5f1a4958a013bf7c8fc0f6?run_id=647eab7e-5495-44b6-b092-db32111b6771)
+
+### Matched successor restoration
+
+- The stopped-client regression failed with BrokenPipe on the shipped capture-only tree.
+  Its destination listener accepts once and closes, so the test requires both original
+  peers to exchange bytes through the replacement server.
+- The earlier pairing implementation retained both the healthy tunnel and an ambiguous
+  one in a mixed batch containing duplicate records. The new selection rejects duplicate
+  internal endpoints before requesting a relay or starting either restored copy. The
+  updated fixture kept only the healthy tunnel. Both rejected external peers observed EOF.
+
+- On the exact dev server at `4e6095745` the stopped client lost its original tunnel
+  with BrokenPipe in 0.43 seconds. The first joined candidate `71879bf4d` passed the
+  ten real-server fixtures, five service wiring cases and 938 library and integration
+  tests. Two host-dependent cases were skipped.
+- Independent review of that candidate found that an internal TCP address pair can
+  outlive its original connection and that the proxy can finish before an outbound
+  relay drains. The synthetic identity regression retained two records where only
+  the healthy original qualified. A separate Linux fixture waited for the old proxy
+  to finish its internal write half before SIGTERM. The original Unix client received
+  196,608 of 1,048,576 ordered bytes after the successor became ready.
+- The departing proxy now enrolls the actual outbound socket during an authorized
+  opaque CONNECT, while both internal TCP endpoints still name one another. The
+  namespace record carries its kernel socket cookie. Capture and adoption check this
+  identity, and each copy remains available while its enrolled peer finishes a write.
+  The same process fixture received the full ordered 1,048,576 bytes and EOF on the
+  original Unix socket. The identity regression retained only the healthy tunnel. A
+  live relay test also confirmed that cookie-based capture refuses an unenrolled
+  connection. The synthetic intercepted host policies and four consecutive updates
+  on one original connection passed with this change.
+- The checked-in final-reply regression reproduced the 196,608-byte short read on
+  `71879bf4d` in 0.50 seconds. All 11 `opaque_restart` cases passed on the corrected
+  binary in 10.05 seconds in an isolated Linux network. Two distinct compatible builds
+  exchanged fresh request and response bytes on the original TLS session and HTTP/2 stream.
+  Six service wiring cases, ten relay handoff cases and 940 domain, sandbox and egress
+  tests passed. Two environment-dependent sandbox tests were skipped. Scoped Clippy passed.
+- A second independent review of `077006a7c` found that startup discarded a distinct
+  enrolled socket when its addresses had been reused. The synthetic two-place fixture
+  failed with InvalidData. Startup now checks the original relay cookie and admission
+  order. The fixture reserves both distinct sockets, rejects the replay, and verifies
+  both restored cookies.
+- The same review found a cancellation race before the first restart. When eviction
+  closed the checkpoint sender, the proxy could finish its transfer with a success
+  result and leave the idle relay waiting for Unix input. The bounded fixture failed
+  in 2 seconds on that path. An abandoned checkpoint reply reproduced the same failure
+  on each copy after the sender-close fix. Both transfers now propagate cancellation
+  when either side of the checkpoint is gone. The fixtures observe EOF with the external
+  write halves open and verify that the relay place can be admitted again.
+- A fresh reviewer approved `d9e7f9e3d` against `ec580fc3a` and independently
+  passed 11 relay handoff, three proxy handoff and six service wiring tests. The author
+  passed 942 domain, sandbox and egress tests, with two environment-dependent skips,
+  and all 11 real-server cases. The isolated fixtures also passed the four successive
+  replacements, the distinct-binary TLS/HTTP2 upgrade and intercepted-host checks.
+  Scoped Clippy and quick checks passed. The Vidoc scan was disabled in Yulius.
+- `scripts/dev mutants --base 4e6095745` reached all 71 mutations on the first
+  successor candidate in 17 minutes. It caught 55 and found 16 unviable, with zero
+  misses or timeouts. On the corrected head the relay fixture also caught all six
+  mutations of the endpoint and uniqueness predicates in `OutboundRelays::enroll`.
+- `scripts/dev mutants --base 71879bf4d` reached all 72 review-fix mutations in
+  19 minutes. It caught 45, found 24 unviable and missed three, with zero timeouts.
+  The missed changes removed the live manager binding, returned a constant socket
+  cookie and allowed duplicate enrollment candidates. The real-server fixture below
+  caught the binding change. The final two-place fixture caught both constant-cookie
+  mutations, and the six enrollment predicate checks caught the duplicate-candidate change.
+- The opt-in real-server holder fixture passed with the normal manager binding.
+  `cargo mutants` then removed only `bind_holder_relays`. The original client received
+  EOF while reading the downtime marker in 0.54 seconds. The fixture caught that mutation.
+- The final review corrections (`scripts/dev mutants --base 077006a7c`) reached all
+  eight mutations in nine minutes. Seven were caught and one was unviable. None were
+  missed or timed out.
+- PR #1575 run `dc901963-b755-425f-b61d-fab252fce2f6` on `746436fdf` reported
+  the two restored-connection cleanup fixtures failing during argument parsing.
+  The runner sets `YULIUS_CI=1`; the server's CI argument accepts `on` or `off`.
+  Setting the same environment locally reproduced both failures. With the fixture
+  passing `--ci off` explicitly, all six service-wiring cases passed under nextest
+  with `YULIUS_CI=1`, including the original socket-closure and admission assertions.
+- PR #1575 run `36ba6f1e-42f4-47d5-9fe5-e533dbc8472a` on `33e3eaab2` passed
+  quality and both Rust shards. The Chromium job reported `route.fulfill: Route is
+  already handled!` during mock startup. The startup fixture was identical on the PR
+  and dev. Two held loopback responses reproduced the error in 0.404 seconds on the
+  branch. The final regression also checked a new request during teardown and failed
+  in 0.793 seconds on dev `d1ff0e4ee`. Removing interception let Chromium
+  continue the second request while its handler still owned the response. Teardown
+  now drains active handlers before unregistering routes, within the fixture's
+  30-second bound. All eight scheduled regression runs preserved both original
+  response markers and passed the new request through to the static server. All
+  14 startup and mock-readiness cases passed with retries disabled.
+  [Browser fixture report #1551](https://github.com/Quartio-Studio/yulius/issues/1551)
+- Independent review found that the fresh-response assertion also accepted a 404.
+  Substituting a synthetic 404 confirmed the gap. The strengthened test rejected
+  that status and a synthetic empty 200 response. All eight repetitions then passed
+  with HTTP 200 and the exact repository `api.js` returned by the static server.
