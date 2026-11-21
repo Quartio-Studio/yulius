@@ -2,6 +2,7 @@
 //! task's session (real processes: supervisor → detached `yulius ptyhost` → fake agent), or adds
 //! it to the request of a task that has not started, and refuses what cannot take one.
 
+use std::net::TcpListener;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -26,7 +27,7 @@ use yulius_app::model::TaskMode;
 
 use crate::first_message::{
     ShiftedClock, activity, data_dir, hooked, new_task, notices, runtime, screen, start, start_on,
-    start_with, stop, wait_for,
+    start_on_listener, start_with, stop, wait_for,
 };
 use crate::pool_supervision::{HOUR, ScriptedUsage, refresh, seed, usage};
 use crate::support::agents::FakeAgentOptions;
@@ -1760,14 +1761,19 @@ const CODEX_EMPTY_COMPOSER: &str = concat!(
     "\x1b[34;3H\x1b[?25h",
 );
 
-async fn codex_with_pr_news(data: &Path) -> Result<(Arc<App>, TaskId, ProjectCaller, u16), Error> {
+async fn codex_with_pr_news(
+    data: &Path,
+) -> Result<(Arc<App>, TaskId, ProjectCaller, TcpListener), Error> {
     use yulius_app::pr_watch::WatchBounds;
     use yulius_domain::ci::RunState;
 
     let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
     let clock = Arc::new(ShiftedClock(AtomicI64::new(-13 * MINUTE)));
     let probe = Arc::new(ScriptedUsage::default());
-    let (app, port) = start_on(data, &fake, fake_agent(), 0, probe, clock, |_| {}).await?;
+    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
+    listener.set_nonblocking(true)?;
+    let accepting = tokio::net::TcpListener::from_std(listener.try_clone()?)?;
+    let app = start_on_listener(data, &fake, fake_agent(), accepting, probe, clock).await?;
     let (sandbox, user) = seed(&app, data, &[]).await?;
     crate::codex::add_codex_account(&app, "a-codex", r#"{"OPENAI_API_KEY":"synthetic"}"#).await?;
     let id = crate::codex::new_codex_task(&app, &sandbox, &user, "Codex PR news").await?;
@@ -1785,7 +1791,7 @@ async fn codex_with_pr_news(data: &Path) -> Result<(Arc<App>, TaskId, ProjectCal
     assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
     let (red, job) = crate::pr_watch::run(&sandbox, "r1", &head, RunState::Failed, None, 1);
     app.deps.store.insert_ci_run(&red, &[job]).await?;
-    Ok((app, id, superagent(&sandbox, &user, "admin"), port))
+    Ok((app, id, superagent(&sandbox, &user, "admin"), listener))
 }
 
 fn paint_codex(app: &App, id: &TaskId, picture: &str) {
@@ -1958,8 +1964,8 @@ fn codex_paste_across_restart(interrupt_before_enter: bool) -> TestResult {
 
     let (_dir, data) = data_dir()?;
     let first = runtime()?;
-    let (id, caller, port) = first.block_on(async {
-        let (app, id, caller, port) = codex_with_pr_news(&data).await?;
+    let (id, caller, listener) = first.block_on(async {
+        let (app, id, caller, listener) = codex_with_pr_news(&data).await?;
         let drawn = (Arc::clone(&app), id.clone());
         if interrupt_before_enter {
             let (pasted, observed) = tokio::sync::oneshot::channel();
@@ -1983,14 +1989,26 @@ fn codex_paste_across_restart(interrupt_before_enter: bool) -> TestResult {
             assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
         }
         assert!(screen(&app, &id).contains("Approaching rate limits"));
-        Ok::<_, Error>((id, caller, port))
+        Ok::<_, Error>((id, caller, listener))
     })?;
     first.shutdown_timeout(Duration::from_secs(5));
+    let occupied = TcpListener::bind(listener.local_addr()?);
+    assert!(
+        matches!(occupied, Err(err) if err.kind() == std::io::ErrorKind::AddrInUse),
+        "the saved PTY's hook endpoint remains reserved throughout the restart"
+    );
 
     runtime()?.block_on(async {
         let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
-        let (app, _) = start(&data, &fake, fake_agent(), port, Arc::new(ScriptedUsage::default()))
-            .await?;
+        let app = start_on_listener(
+            &data,
+            &fake,
+            fake_agent(),
+            tokio::net::TcpListener::from_std(listener)?,
+            Arc::new(ScriptedUsage::default()),
+            Arc::new(ShiftedClock(AtomicI64::new(0))),
+        )
+        .await?;
         app.reconcile().await?;
         paint_codex(
             &app,

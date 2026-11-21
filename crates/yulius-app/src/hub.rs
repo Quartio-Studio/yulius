@@ -696,8 +696,6 @@ mod tests {
         );
     }
 
-    /// Every viewer's hello repeats its size: the same size again changes nothing and tells
-    /// nobody (F 2026-10-09: no state frames, no redraws for nothing).
     #[test]
     fn a_partial_codex_picker_repaint_cannot_take_automated_input() {
         let hub = Hub::new(120, 40);
@@ -721,6 +719,8 @@ mod tests {
         assert_eq!(hub.codex_rate_limit_picker_shown(), Some(false));
     }
 
+    /// Every viewer's hello repeats its size: the same size again changes nothing and tells
+    /// nobody (F 2026-10-09: no state frames, no redraws for nothing).
     #[test]
     fn resizing_to_the_same_size_sends_nothing() {
         let hub = Hub::new(20, 5);

@@ -1,6 +1,6 @@
 ---
 yulius-task: adab5cc1-e96b-4b19-b932-9362085d4855
-status: in-progress
+status: done
 ---
 
 # SPEC-603 — Codex keeps its task model at the rate-limit reminder
@@ -29,7 +29,7 @@ On 21 November 2026 around 21:30–21:40 UTC, Codex 0.170.0 showed an “Approac
 - [x] Suppress the model switch reminder in new and resumed Codex sessions
 - [x] Protect automated messages while the Codex reminder is visible
 - [x] Hold Codex input until a resized terminal repaints
-- [ ] Verify the behavior and obtain independent approval
+- [x] Verify the behavior and obtain independent approval
 
 ## Acceptance criteria
 
@@ -61,3 +61,5 @@ Extend the launch assertions for both launch modes. Run the pinned native CLI ag
 - On `21c97081d`, 27 launch and 172 scoped integration tests passed, including all six picker cases. Targeted Clippy and quick checks passed. Review then identified a grid resize between paste and Enter. The new regression failed on that head because the watch reported delivery after the resize cropped out the picker and before the terminal repainted.
 - On `647b66a1a`, all seven picker regressions and all 27 launch tests passed. In the new case neither the cropped grid nor an erase released the notice. A complete composer repaint at the smaller dimensions released it once.
 - The focused review found that a partial redraw can have erased the old grid and drawn the title while the question and switch row are still in transit. The new hub test failed on `647b66a1a` with `Some(false)` in that state. The updated PTY regression inserts this partial draw before the first Enter check.
+- All 13 hub tests passed at `0408cbd4d`, including the partial redraw. The independent reviewer reproduced the passing hub suite and approved that head. The native terminal hides its cursor before flushing frame updates and shows it only for a completed frame with an input cursor. [Native terminal draw](https://github.com/openai/codex/blob/rust-v0.170.0/codex-rs/tui/src/custom_terminal.rs#L444-L481)
+- The final product code passed all 99 scoped Codex and task-message tests. A concurrent duplicate exposed an `AddrInUse` in the new restart fixture between shutdown and rebind. The fixture now keeps the listener reserved and asserts a competing bind is refused. All 31 picker and first-message tests passed with that correction. The post-approval changes are test fixtures, one test comment and evidence.
