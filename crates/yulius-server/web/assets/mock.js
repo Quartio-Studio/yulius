@@ -3967,8 +3967,9 @@ route('POST', `/api/sandboxes/${ID}/superagent/requests/${ID}`, async ({ db, p, 
   const opts = request.view.options || {};
   const prepared = opts.prepared === true;
   const model = opts.model?.trim();
-  const drawn = (!opts.harness || opts.harness === 'auto') && !model;
-  const harness = drawn ? drawHarness(db) : chosenHarness(opts.harness, model);
+  const named = opts.harness?.trim() || (model ? undefined : 'codex');
+  const drawn = named === 'auto' && !model;
+  const harness = drawn ? drawHarness(db) : chosenHarness(named, model);
   const task = {
     id, sandbox_id: target.id, number, title, harness, harness_choice: drawn ? 'random' : 'chosen',
     status: prepared ? 'prepared' : 'queued', activity: null,

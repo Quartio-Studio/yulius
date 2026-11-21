@@ -31,6 +31,12 @@ fn codex_auth(last_refresh: &str) -> String {
     )
 }
 
+/// Connects a synthetic Codex sign-in for tests that create Codex tasks through other interfaces.
+pub(super) async fn connect_codex(app: &App) -> TestResult {
+    add_codex_account(app, "a-codex", &codex_auth("2026-11-01T10:00:00Z")).await?;
+    Ok(())
+}
+
 pub(super) async fn add_codex_account(
     app: &App,
     id: &str,
