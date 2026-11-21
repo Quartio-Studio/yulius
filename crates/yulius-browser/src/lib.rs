@@ -47,6 +47,7 @@ mod snapshot;
 mod url_policy;
 mod video;
 mod wheel;
+mod xclipboard;
 mod xserver;
 
 #[cfg(feature = "fake")]

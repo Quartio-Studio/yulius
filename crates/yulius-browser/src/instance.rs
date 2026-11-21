@@ -2568,6 +2568,15 @@ impl BrowserInstance {
     /// # Errors
     /// [`BrowserError::InvalidInput`] for non-finite or huge values; tab or CDP failures.
     pub async fn dispatch_mouse(&self, tab: &TabId, input: MouseInput) -> Result<(), BrowserError> {
+        self.dispatch_mouse_with_copy(tab, input, None).await
+    }
+
+    async fn dispatch_mouse_with_copy(
+        &self,
+        tab: &TabId,
+        input: MouseInput,
+        copy: Option<tokio::sync::oneshot::Sender<u32>>,
+    ) -> Result<(), BrowserError> {
         self.touch();
         for (name, value) in [
             ("x", input.x),
@@ -2584,7 +2593,10 @@ impl BrowserInstance {
             if input.event == MouseEventKind::Down && !self.viewer_input_allowed().await {
                 return Err(self.input_locked());
             }
-            return self.display_mouse(display, input).await;
+            // A late click may still reach the shared display after another viewer switched tabs.
+            // Only associate a clipboard reply with a click on the tab the sender actually saw.
+            let copy = copy.filter(|_| lock(&self.state).active.as_ref() == Some(tab));
+            return self.display_mouse(display, input, copy).await;
         }
         let session = self.session(tab).await?;
         if input.event == MouseEventKind::Wheel {
@@ -2616,12 +2628,20 @@ impl BrowserInstance {
         &self,
         display: &VirtualDisplay,
         input: MouseInput,
+        copy: Option<tokio::sync::oneshot::Sender<u32>>,
     ) -> Result<(), BrowserError> {
         match input.event {
             MouseEventKind::Move => display.pointer(input.x, input.y),
             MouseEventKind::Down | MouseEventKind::Up => {
                 display.pointer(input.x, input.y)?;
-                display.button(input.button, input.event == MouseEventKind::Down)
+                if input.event == MouseEventKind::Down
+                    && input.button == MouseButton::Left
+                    && let Some(result) = copy
+                {
+                    display.copy_press(result)
+                } else {
+                    display.button(input.button, input.event == MouseEventKind::Down)
+                }
             }
             MouseEventKind::Wheel => {
                 let Some(tab) = lock(&self.state).active.clone() else {
@@ -2786,6 +2806,11 @@ impl BrowserInstance {
         }
     }
 
+    /// Reads an offered text selection after this viewer accepts it. A stale offer has no text.
+    pub async fn accept_page_copy(&self, offer: u32) -> Option<String> {
+        self.display.as_ref()?.accept_copy(offer).await
+    }
+
     /// The text selected in a tab (the focused field's selection or the page's), at most
     /// [`CLIPBOARD_MAX_BYTES`]: what the user copied.
     ///
@@ -2921,6 +2946,18 @@ impl BrowserInstance {
         &self,
         message: ViewerClientMsg,
     ) -> Result<Option<TabId>, BrowserError> {
+        self.apply_viewer_msg_with_copy(message, None).await
+    }
+
+    /// Applies viewer input with an optional recipient for a clipboard offer following a primary click.
+    ///
+    /// # Errors
+    /// The same validation and input failures as [`Self::apply_viewer_msg`].
+    pub async fn apply_viewer_msg_with_copy(
+        &self,
+        message: ViewerClientMsg,
+        copy: Option<tokio::sync::oneshot::Sender<u32>>,
+    ) -> Result<Option<TabId>, BrowserError> {
         match message {
             ViewerClientMsg::Open { url } => self.open(&url).await.map(Some),
             ViewerClientMsg::Navigate { tab_id, url } => {
@@ -2951,7 +2988,9 @@ impl BrowserInstance {
                     dy: dy.unwrap_or(0.0),
                     modifiers: modifiers.unwrap_or(0) & 0x0F,
                 };
-                self.dispatch_mouse(&tab_id, input).await.map(|()| None)
+                self.dispatch_mouse_with_copy(&tab_id, input, copy)
+                    .await
+                    .map(|()| None)
             }
             ViewerClientMsg::Key {
                 tab_id,
@@ -2976,6 +3015,7 @@ impl BrowserInstance {
             // Per-connection choices and answers, handled by the viewer connection.
             ViewerClientMsg::View { .. }
             | ViewerClientMsg::Copy { .. }
+            | ViewerClientMsg::AcceptPageCopy { .. }
             | ViewerClientMsg::Watch { .. }
             | ViewerClientMsg::Ack { .. }
             | ViewerClientMsg::Keyframe => Ok(None),
