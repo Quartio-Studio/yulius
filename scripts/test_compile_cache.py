@@ -38,7 +38,8 @@ class CompileCache(unittest.TestCase):
         home.mkdir(parents=True, exist_ok=True)
         env = dict(os.environ, HOME=str(home), CARGO=str(cargo), YULIUS_SANDBOX="project",
                    YULIUS_TOOLS_CACHE=str(home / ".cache/yulius-tools"), XDG_CONFIG_HOME=str(home / ".config"))
-        for name in ("RUSTC_WRAPPER", "CARGO_INCREMENTAL", "MAKEFLAGS", "MFLAGS", "CARGO_MAKEFLAGS", "MBX_REMOTE_URL"):
+        for name in ("RUSTC_WRAPPER", "CARGO_INCREMENTAL", "MAKEFLAGS", "MFLAGS", "CARGO_MAKEFLAGS",
+                     "MBX_REMOTE_URL", "YULIUS_CI", "YULIUS_CI_RUN"):
             env.pop(name, None)
         return env
 
@@ -50,7 +51,7 @@ class CompileCache(unittest.TestCase):
         env = self.cargo_env(home, self.cargo)
         env.update(RECORD=str(self.record), CARGO_RESULT=str(cargo_result))
         return subprocess.run([tree / "scripts/cargo", "build"], cwd=tree, env=env,
-                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
+                              start_new_session=True, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
 
     def test_worktree_and_ci_lane_share_only_their_sandbox_store(self):
         import_script = ("print(__import__('json').dumps([os.environ['MBX_CACHE_DIR'], os.getcwd()]), flush=True)\n"
@@ -192,7 +193,8 @@ class CompileCache(unittest.TestCase):
             os.write(write, b"X")
             env.update(CARGO_MAKEFLAGS=f"-j --jobserver-auth={read},{write}", TOKEN_FD=str(read))
             result = subprocess.run([self.task / "scripts/cargo", "build"], env=env,
-                                    stdin=subprocess.DEVNULL, pass_fds=(read, write), capture_output=True, text=True, timeout=5)
+                                    start_new_session=True, stdin=subprocess.DEVNULL, pass_fds=(read, write),
+                                    capture_output=True, text=True, timeout=5)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.strip(), "X")
         finally:
@@ -200,13 +202,23 @@ class CompileCache(unittest.TestCase):
             os.close(write)
 
     def test_a_foreground_test_reads_its_controlling_terminal(self):
+        self.check_foreground_terminal(redirect_stdin=False)
+
+    def test_a_foreground_command_with_redirected_input_can_read_dev_tty(self):
+        self.check_foreground_terminal(redirect_stdin=True)
+
+    def check_foreground_terminal(self, redirect_stdin):
         import pty
         import select
         import signal
         import time
-        env = self.caller_fixture("print('ready',flush=True);print('received '+input(),flush=True)")
+        read = "open('/dev/tty').readline().strip()" if redirect_stdin else "input()"
+        env = self.caller_fixture(f"print('ready',flush=True);print('received '+{read},flush=True)")
         pid, terminal = pty.fork()
         if pid == 0:
+            if redirect_stdin:
+                with open(os.devnull, "rb") as empty:
+                    os.dup2(empty.fileno(), 0)
             os.execve(self.task / "scripts/cargo", ["cargo", "test", "--", "--nocapture"], env)
         try:
             received = b""
@@ -226,6 +238,38 @@ class CompileCache(unittest.TestCase):
             os.waitpid(pid, 0)
             os.close(terminal)
 
+    @unittest.skipUnless(shutil.which("script"), "Linux CI terminal required")
+    def test_unattended_ci_caches_inside_the_original_runner_session(self):
+        import tomllib
+        env = self.caller_fixture("print('cargo-session',os.getsid(0))")
+        env.update(YULIUS_CI="1", YULIUS_CI_RUN="fixture-run")
+        tools = self.task / "fixture-bin"
+        tools.mkdir()
+        # Let the checked-in CI command skip its bootstrap in this synthetic checkout.
+        bootstrap = tools / "python3"
+        bootstrap.write_text(f'#!/bin/sh\n[ "$1" = scripts/bootstrap.py ] && exit 0\nexec "{sys.executable}" "$@"\n')
+        bootstrap.chmod(0o755)
+        env["PATH"] = str(tools) + os.pathsep + env["PATH"]
+        dev = self.task / "scripts/dev"
+        dev.write_text(f"#!{sys.executable}\nimport os,sys\n"
+                       "if sys.argv[1]=='help': print('  checks ');sys.exit(0)\n"
+                       "os.execv('scripts/cargo',['scripts/cargo','check'])")
+        dev.chmod(0o755)
+        mbx = self.task / ".tools/bin/mbx"
+        mbx.write_text(f"#!{sys.executable}\nimport os,sys\nprint('cache-session',os.getsid(0),flush=True)\n"
+                       "os.execv(os.environ['CARGO'],[os.environ['CARGO'],*sys.argv[1:]])")
+        jobs = tomllib.loads((SCRIPTS.parent / "yulius.toml").read_text())["ci"]["jobs"]
+        for job in jobs:
+            if job["name"] in {"quality", "test"}:
+                script = "exec >ci.log 2>&1 </dev/null\n" + f"{sys.executable} -c 'import os;print(os.getsid(0))'\n" + job["command"]
+                result = subprocess.run(["script", "-qec", script, os.devnull], cwd=self.task, env=env,
+                                        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
+                log = (self.task / "ci.log").read_text()
+                self.assertEqual(result.returncode, 0, log)
+                session = log.splitlines()[0]
+                self.assertIn(f"cache-session {session}", log)
+                self.assertIn(f"cargo-session {session}", log)
+
     def build_fixture(self, tree, target, *, plain=False, incremental=None, package=None):
         home = self.sandbox / ("ci/home" if tree == self.lane else "home")
         home.mkdir(parents=True, exist_ok=True)
@@ -241,7 +285,7 @@ class CompileCache(unittest.TestCase):
         args = [command, "build", "--offline", "--target-dir", target]
         if package:
             args.extend(["--package", package])
-        result = subprocess.run(args, cwd=tree,
+        result = subprocess.run(args, cwd=tree, start_new_session=True,
                                 env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
         self.assertEqual(result.returncode, 0, result.stderr)
         return tree / target / "debug/fixture", result.stderr

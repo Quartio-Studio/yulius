@@ -6,7 +6,7 @@ import shutil
 import sys
 import tempfile
 
-from compile_cache import installed, open_store, run_session, sandbox_for
+from compile_cache import foreground_terminal, installed, open_store, run_session, sandbox_for
 
 root = Path(__file__).resolve().parent.parent
 args = sys.argv[1:]
@@ -31,10 +31,13 @@ if marker is not None:
     plain(os.environ.pop("YULIUS_MBX_CARGO"))
 
 cargo = os.environ.get("CARGO") or shutil.which("cargo") or "cargo"
+# Yulius CI keeps the runner's session for cancellation and redirects all three streams.
+unattended_ci = (os.environ.get("YULIUS_CI") == "1" and os.environ.get("YULIUS_CI_RUN")
+                 and not any(os.isatty(fd) for fd in (0, 1, 2)))
 if (sys.platform != "linux" or not os.environ.get("YULIUS_SANDBOX")
         or not args or args[0] not in {"build", "check", "clippy", "doc", "nextest", "run", "test"}
         or "RUSTC_WRAPPER" in os.environ or os.environ.get("CARGO_INCREMENTAL", "0") != "0"
-        or sys.stdin.isatty()
+        or sys.stdin.isatty() or (not unattended_ci and foreground_terminal())
         or any("--jobserver-" in os.environ.get(name, "") for name in ("CARGO_MAKEFLAGS", "MAKEFLAGS", "MFLAGS"))):
     plain(cargo)
 

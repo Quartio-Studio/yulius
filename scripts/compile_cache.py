@@ -15,6 +15,20 @@ import tempfile
 from home_lock import exclusive
 
 
+def foreground_terminal():
+    """A program can open its controlling terminal even when standard input is redirected."""
+    try:
+        terminal = os.open("/dev/tty", os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY)
+    except OSError:
+        return False
+    try:
+        return os.tcgetpgrp(terminal) == os.getpgrp()
+    except OSError:
+        return True
+    finally:
+        os.close(terminal)
+
+
 def open_store(cache, checkout):
     """Publish the complete ownership stamp in one rename, even on competing first builds."""
     stamp = ".yulius-mbx-v1"
