@@ -110,7 +110,7 @@ const storedThumbs = (browser: Browser) => browser.evaluate(() => {
 type Holding = Window & { __yuliusMock: { holdUpload?: Promise<void>; holdCreate?: Promise<void>; tasks: { prompt: string }[] }; __release?: () => void };
 
 test('the draft survives a reload and is cleared once the task starts', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio'));
+  await app.open(mock('/s/studio', '&codex=1'));
   await screen.getByRole('textbox', 'Task prompt').fill('Kept across a reload');
   await dropImage(browser, 'screen.png');
   await drop(browser, [['notes.pdf', 'pdf', 'application/pdf']]);
@@ -190,7 +190,7 @@ test('an upload that ends after leaving and coming back shows in the composer', 
 });
 
 test('a file whose upload ends while the prompt is being read says it was not added', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio'));
+  await app.open(mock('/s/studio', '&codex=1'));
   await browser.evaluate(() => {
     const w = window as unknown as Holding & { __releaseCreate?: () => void };
     w.__yuliusMock.holdUpload = new Promise<void>((resolve) => { w.__release = resolve; });
@@ -209,7 +209,7 @@ test('a file whose upload ends while the prompt is being read says it was not ad
 });
 
 test('a task still starting is not started again from a returned composer', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio'));
+  await app.open(mock('/s/studio', '&codex=1'));
   const before = await browser.evaluate(() => (window as unknown as Holding).__yuliusMock.tasks.length);
   await browser.evaluate(() => {
     const w = window as unknown as Holding;
@@ -235,7 +235,7 @@ const MIXED = [
 ].join('\n');
 
 test('a split into several tasks clears the draft too', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio'));
+  await app.open(mock('/s/studio', '&codex=1'));
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.fill(MIXED);
   await drop(browser, [['spec.pdf', 'pdf', 'application/pdf']]);

@@ -4,7 +4,7 @@
 // Claude Code's `--model` and a level to `--effort`; choosing "Random" sends no model and no agent,
 // so the server draws uniformly across Claude Code (on Yulius's default, Opus 5.5 at high effort;
 // SPEC-023, SPEC-462, SPEC-493), Codex and Antigravity among those with non-exhausted
-// subscriptions (SPEC-520 RHM-001/006). The first model listed is the default, as on the server.
+// subscriptions (SPEC-520 RHM-001/006). The browser starts on Codex default (SPEC-587).
 // Choosing Codex default sends `harness: codex` and no model: the server runs GPT-6.2 Astra, at
 // extra high effort unless one is chosen (SPEC-561). An explicit Codex model sends its id. Choosing a
 // Gemini model sends `harness: antigravity` and the model; Antigravity's default is Gemini 4
@@ -147,7 +147,9 @@ function effortLevels(modelId) {
 
 /** A browser's new-task picks, shared by Settings and the composer. */
 export function modelPreferences() {
-  const model = findModel(readJson(MODEL_PREF_KEY, null))?.model.id ?? null;
+  // Choosing Random saves JSON null. An absent or unreadable key returns undefined.
+  const savedModel = readJson(MODEL_PREF_KEY, undefined);
+  const model = savedModel === null ? null : findModel(savedModel)?.model.id ?? 'codex';
   const saved = readJson(EFFORT_PREF_KEY, null);
   return {
     model,

@@ -22,7 +22,7 @@ import { findModel, findEffort, modelFields, modelMenuItems, effortMenuItems, mo
 import { randomQuote } from './quotes.js';
 import { brandSmoke } from './brandfx.js';
 import { BRAND } from './brand.js';
-import { antigravityConnected, claudeConnected, codexConnected, connectClaudeStep } from './claude.js';
+import { antigravityConnected, claudeConnected, codexConnected, connectAccountStep } from './claude.js';
 import { aName, agentOfHarness } from './agents.js';
 import { isPhone } from './theme.js';
 import { draftFor, saveDraft, clearDraft, attachToDraft, onDraftChange } from './drafts.js';
@@ -1651,7 +1651,7 @@ export function mountComposer(ctx, sandbox) {
   }
 
   function openModelMenu(anchor) {
-    openMenu(anchor, modelMenuItems(picks.model, (id) => { picks.setModel(id); renderChips(); prompt.focus(); }));
+    openMenu(anchor, modelMenuItems(picks.model, (id) => { picks.setModel(id); renderChips(); renderBanner(); prompt.focus(); }));
   }
 
   function openEffortMenu(anchor) {
@@ -1758,10 +1758,10 @@ export function mountComposer(ctx, sandbox) {
     card.hidden = preparing;
     el.classList.toggle('gated', preparing);
     if (!write) items.push(h('div', { class: 'banner' }, icon('lock'), h('span', { class: 'banner-text' }, 'Read-only (GitHub: read). You can watch tasks but not start them.')));
-    // A task needs an agent: without a Claude account the composer says so first (SPEC-246).
-    // Codex and Antigravity tasks start on their own accounts alone (SPEC-503 CDX-014,
-    // SPEC-505): no Claude step then.
-    else if (!connected && !codexConnected(me) && !antigravityConnected(me) && !preparing) items.push(connectClaudeStep(me, 'Tasks start once one is usable.'));
+    // With an empty pool, offer the subscription the current model needs.
+    else if (!connected && !codexConnected(me) && !antigravityConnected(me) && !preparing) {
+      items.push(connectAccountStep(me, 'Tasks start once one is usable.', findModel(picks.model)?.provider.harness));
+    }
     setChildren(banner, items);
     startButton.disabled = !write;
     prompt.disabled = !write;
@@ -1863,7 +1863,7 @@ export function mountComposer(ctx, sandbox) {
       plan ? h('ol', { class: 'onboarding-gate-steps' }, plan.steps.map((step) => h('li', null, step)))
         : plan === null ? skeleton('Loading what onboarding will do…', 4) : null,
       h('p', null, `It changes documentation, configuration and CI only, never application code, and any change reaches ${branchOf(sb)} through a pull request. ${ready}`),
-      connected ? null : connectClaudeStep(ctx.store.state.me, 'Onboarding starts once one is usable.'),
+      connected ? null : connectAccountStep(ctx.store.state.me, 'Onboarding starts once one is usable.'),
       failed ? h('p', { class: 'onboarding-gate-failed' }, prep.status === 'failed_no_account'
         ? `Onboarding couldn’t start because no Claude account was usable.${connected ? ' One is usable now.' : ''}`
         : 'Onboarding couldn’t start last time.') : null,

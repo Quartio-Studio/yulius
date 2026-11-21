@@ -8,9 +8,46 @@ type Mocked = {
   __yuliusMock: {
     accounts: { id: string; provider: string; label: string; status: string }[];
     lastTaskCreate: { harness?: string; model?: string; effort?: string };
-    tasks: { harness: string; model: string; effort: string; model_default: boolean }[];
+    tasks: { harness: string; harness_choice: string; model: string; effort: string; model_default: boolean }[];
   };
 };
+
+test('an untouched new task inherits the Codex model and effort', async ({ app, browser, screen }) => {
+  await app.open(mock('/settings'));
+  await expect(screen.getByRole('button', /^Model for new tasks:/)).toContainText('Codex default');
+  await app.open(mock('/s/studio', '&codex=1'));
+  await expect(screen.getByRole('button', /^Model:/)).toContainText('Codex default');
+  await screen.getByRole('textbox', 'Task prompt').fill('Add a health check');
+  await screen.getByRole('button', 'Start task').click();
+  await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
+  const { lastTaskCreate, task } = await browser.evaluate(() => {
+    const { lastTaskCreate, tasks } = (window as unknown as Mocked).__yuliusMock;
+    return { lastTaskCreate, task: tasks.at(-1) };
+  });
+  expect(lastTaskCreate.harness).toBe('codex');
+  expect(Object.hasOwn(lastTaskCreate, 'model')).toBe(false);
+  expect(Object.hasOwn(lastTaskCreate, 'effort')).toBe(false);
+  expect(task).toMatchObject({ harness: 'codex', harness_choice: 'chosen', model: 'gpt-6.2-astra', model_default: true, effort: 'xhigh' });
+});
+
+test('unrecognized and unreadable saved models recover to Codex', async ({ app, browser, screen }) => {
+  await app.open(mock('/settings'));
+  for (const raw of ['"removed-model"', '{']) {
+    await browser.evaluate((value) => localStorage.setItem('yulius.composer.model', value), raw);
+    await app.open(mock('/s/studio'));
+    await expect(screen.getByRole('button', /^Model:/)).toContainText('Codex default');
+    await app.open(mock('/settings'));
+  }
+});
+
+test('the untouched composer offers the Codex connection when no subscription is usable', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&claude=0'));
+  await expect(screen.getByRole('link', 'Connect Codex')).toHaveAttribute('href', /\/admin\/accounts\?add=codex$/);
+  await screen.getByRole('textbox', 'Task prompt').fill('Add a health check');
+  await screen.getByRole('button', 'Start task').click();
+  await browser.locator('.toast-error').getByRole('button', { name: 'Connect Codex' }).click();
+  await expect(screen.getByRole('dialog', 'Add a Codex subscription')).toBeVisible();
+});
 
 for (const choice of [
   { label: 'GPT-6.2 Sol', query: '6.2 Sol', id: 'gpt-6.2-sol', provider: 'openai', harness: 'codex', tier: 'Ultra', effort: 'ultra' },

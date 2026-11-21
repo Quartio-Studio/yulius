@@ -15,6 +15,8 @@ keeps the calling task's agent, stands.
 
 [ADR-0422](0422-cli-and-superagent-task-creation-defaults-to-codex.md) supersedes the default draw for direct CLI and Superagent task creation.
 
+[ADR-0426](0426-the-new-task-composer-defaults-to-codex.md) supersedes the initial Random selection in the browser.
+
 ## Context
 
 - Task #496 ("make sure harnesses doesnt change themselves between tasks (like claude -> gemini)
