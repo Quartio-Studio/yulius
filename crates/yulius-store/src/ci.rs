@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params, params_from_iter};
 use yulius_app::ci::{
-    CiJobRecord, CiJobUpdate, CiMinutesRow, CiRunRecord, CiRunUpdate, FiledFinding, PullHead,
-    Quarantined,
+    CiJobRecord, CiJobUpdate, CiMinutesRow, CiRunRecord, CiRunUpdate, FiledFinding, GateJob,
+    GateVerdict, PullHead, Quarantined,
 };
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::ports::store_ext::CiStore;
@@ -154,8 +154,118 @@ fn select_runs(
     Ok(rows)
 }
 
+/// Keep only completed job verdicts and test names. Logs follow CI retention.
+fn gate_jobs(c: &rusqlite::Connection, id: &str) -> AppResult<Vec<GateJob>> {
+    use yulius_domain::ci::failures::{failed_test_names, omitted_tests};
+    let mut stmt = c
+        .prepare(
+            "SELECT name, state, failures, reason FROM ci_jobs WHERE run_id = ?1
+         AND state IN ('passed','failed','error','cancelled') ORDER BY ordinal",
+        )
+        .map_err(db)?;
+    let mut rows = stmt.query([id]).map_err(db)?;
+    let mut jobs = Vec::new();
+    while let Some(row) = rows.next().map_err(db)? {
+        let state = state(&row.get::<_, String>(1).map_err(db)?).map_err(db)?;
+        let passed = state == RunState::Passed;
+        let partial = state == RunState::Cancelled;
+        let kept = row
+            .get::<_, Option<String>>(2)
+            .map_err(db)?
+            .unwrap_or_default();
+        let tests = if partial {
+            let reason: Option<String> = row.get(3).map_err(db)?;
+            let names = yulius_app::ci::sibling_failure_names(reason.as_deref(), &kept);
+            if names.is_empty() {
+                continue;
+            }
+            names
+        } else {
+            failed_test_names(&kept)
+        };
+        jobs.push(GateJob {
+            name: row.get(0).map_err(db)?,
+            passed,
+            partial,
+            unknown: !passed
+                && (state == RunState::Error || tests.is_empty() || omitted_tests(&kept) > 0),
+            tests,
+        });
+    }
+    Ok(jobs)
+}
+
 #[async_trait]
 impl CiStore for SqliteStore {
+    async fn integration_verdicts(
+        &self,
+        sandbox: &SandboxId,
+        branch: &str,
+        revisions: &[String],
+        settled_only: bool,
+    ) -> AppResult<Vec<GateVerdict>> {
+        let (sandbox, branch) = (sandbox.to_string(), branch.to_owned());
+        let revisions = serde_json::to_string(revisions).map_err(AppError::internal)?;
+        self.call(move |c| {
+            let mut stmt = c.prepare(
+                "WITH history AS (SELECT key, value AS sha FROM json_each(?3)),
+                 runs AS (
+                    SELECT h.key, r.id, r.sha, r.state, r.queued_at, r.rowid AS seq, NULL AS jobs
+                    FROM history h JOIN ci_runs r ON r.sandbox_id = ?1 AND r.sha = h.sha
+                    WHERE (r.reference = 'branch/' || ?2 OR r.reference = 'candidate/' || h.sha)
+                      AND (r.state IN ('running','queued','passed','failed','error','skipped')
+                           OR (r.state = 'cancelled' AND r.reference = 'candidate/' || h.sha))
+                      AND (?5 = 0 OR r.state NOT IN ('running','queued'))
+                      AND NOT EXISTS (SELECT 1 FROM ci_jobs j WHERE j.run_id = r.id AND j.state = 'skipped' AND instr(j.reason, ?4) = 1)
+                    UNION ALL SELECT h.key, a.run_id, a.sha, a.state, a.queued_at, a.sequence, a.jobs
+                    FROM history h JOIN archived_gate_verdicts a ON a.sandbox_id = ?1 AND a.sha = h.sha
+                    WHERE a.reference = 'branch/' || ?2 OR a.reference = 'candidate/' || h.sha
+                 ), ranked AS (SELECT *, row_number() OVER (PARTITION BY sha ORDER BY queued_at DESC, seq DESC) AS newest FROM runs)
+                 SELECT r.id, r.sha, r.state, r.jobs, o.task_number, t.status
+                 FROM ranked r LEFT JOIN gate_merge_owners o ON o.sandbox_id = ?1 AND o.branch = ?2 AND o.sha = r.sha
+                 LEFT JOIN tasks t ON t.sandbox_id = ?1 AND t.number = o.task_number AND t.id IN
+                    (SELECT task_id FROM task_merges WHERE sandbox_id = ?1 AND branch = ?2 AND merged_sha = r.sha) WHERE r.newest = 1 ORDER BY r.key"
+            ).map_err(db)?;
+            let mut rows = stmt.query(params![sandbox, branch, revisions, yulius_domain::ci::AFTER_MERGE_SKIP_REASON, settled_only]).map_err(db)?;
+            let mut result = Vec::new();
+            while let Some(row) = rows.next().map_err(db)? {
+                let run: String = row.get(0).map_err(db)?;
+                let state = state(&row.get::<_, String>(2).map_err(db)?).map_err(db)?;
+                let archive: Option<String> = row.get(3).map_err(db)?;
+                let jobs = if matches!(state, RunState::Failed | RunState::Error) {
+                    match archive.as_deref() {
+                        Some(archived) => serde_json::from_str(archived).map_err(AppError::internal)?,
+                        None => gate_jobs(c, &run)?,
+                    }
+                } else { Vec::new() };
+                result.push(GateVerdict {
+                    run,
+                    sha: row.get(1).map_err(db)?,
+                    state,
+                    jobs,
+                    archived: archive.is_some(),
+                    owner: row.get(4).map_err(db)?,
+                    status: row.get::<_, Option<String>>(5).map_err(db)?.and_then(|s| yulius_domain::task::TaskStatus::parse(&s)),
+                });
+            }
+            Ok(result)
+        }).await
+    }
+
+    async fn has_unowned_gate_failure(&self, sandbox: &SandboxId, branch: &str) -> AppResult<bool> {
+        let (sandbox, branch) = (sandbox.to_string(), branch.to_owned());
+        self.call(move |c| c.query_row("SELECT EXISTS (
+            SELECT 1 FROM (
+                SELECT sandbox_id, reference, sha FROM ci_runs WHERE sandbox_id = ?1 AND state IN ('failed','error')
+                UNION ALL SELECT sandbox_id, reference, sha FROM archived_gate_verdicts WHERE sandbox_id = ?1 AND state IN ('failed','error')
+            ) r WHERE r.sandbox_id = ?1
+            AND (r.reference = 'branch/' || ?2 OR r.reference = 'candidate/' || r.sha)
+            AND NOT EXISTS (SELECT 1 FROM task_merges m JOIN tasks t ON t.id = m.task_id
+                WHERE m.sandbox_id = r.sandbox_id AND m.merged_sha = r.sha AND m.branch = ?2
+                AND t.status != 'closed' AND t.status NOT LIKE 'stopped_%' AND t.status NOT LIKE 'failed_%'))",
+            params![sandbox, branch], |row| row.get(0)).map_err(db)).await
+    }
+
     async fn ci_admitted_pulls(&self, sandbox: &SandboxId) -> AppResult<Vec<u64>> {
         let sandbox = sandbox.as_str().to_owned();
         self.call(move |c| {
@@ -1085,12 +1195,8 @@ impl CiStore for SqliteStore {
 
     async fn prune_ci_runs(&self, keep: u32, before: Timestamp) -> AppResult<u64> {
         self.call(move |c| {
-            let changed = c
-                .execute(
-                    // The newest verdict of every reference (a branch, a pull request) is kept,
-                    // however many runs came since: without it the planner tests that head again
-                    // and its commit status goes back to pending (F 2026-10-13, main re-queued).
-                    "DELETE FROM ci_runs WHERE state NOT IN ('queued', 'running') AND (\
+            let tx = c.transaction().map_err(db)?;
+            let prune = "WHERE state NOT IN ('queued', 'running') AND (\
                        queued_at < ?1 OR id IN (\
                          SELECT id FROM (\
                            SELECT id, ROW_NUMBER() OVER (\
@@ -1100,10 +1206,20 @@ impl CiStore for SqliteStore {
                        SELECT id FROM (\
                          SELECT id, ROW_NUMBER() OVER (\
                            PARTITION BY sandbox_id, reference ORDER BY queued_at DESC, rowid DESC) AS v \
-                         FROM ci_runs WHERE state IN ('passed', 'failed', 'error')) WHERE v = 1)",
-                    params![before.0, i64::from(keep)],
-                )
-                .map_err(db)?;
+                         FROM ci_runs WHERE state IN ('passed', 'failed', 'error')) WHERE v = 1)";
+            let ids = {
+                let mut stmt = tx.prepare(&format!("SELECT id FROM ci_runs {prune} AND (reference LIKE 'branch/%' OR reference LIKE 'candidate/%') AND state IN ('passed','failed','error') AND NOT EXISTS (SELECT 1 FROM ci_jobs WHERE run_id = ci_runs.id AND state = 'skipped' AND instr(reason, ?3) = 1)")).map_err(db)?;
+                stmt.query_map(params![before.0, i64::from(keep), yulius_domain::ci::AFTER_MERGE_SKIP_REASON], |row| row.get::<_, String>(0)).map_err(db)?.collect::<Result<Vec<_>,_>>().map_err(db)?
+            };
+            for id in ids {
+                let jobs = serde_json::to_string(&gate_jobs(&tx, &id)?).map_err(AppError::internal)?;
+                tx.execute("INSERT INTO archived_gate_verdicts SELECT r.sandbox_id,r.reference,r.sha,r.id,r.state,r.queued_at,r.rowid,?2
+                       FROM ci_runs r WHERE r.id = ?1
+                       ON CONFLICT(sandbox_id,sha,reference) DO UPDATE SET run_id=excluded.run_id,state=excluded.state,queued_at=excluded.queued_at,sequence=excluded.sequence,jobs=excluded.jobs
+                       WHERE (excluded.queued_at,excluded.sequence) > (queued_at,sequence)", params![id, jobs]).map_err(db)?;
+            }
+            let changed = tx.execute(&format!("DELETE FROM ci_runs {prune}"), params![before.0, i64::from(keep)]).map_err(db)?;
+            tx.commit().map_err(db)?;
             Ok(u64::try_from(changed).unwrap_or(0))
         })
         .await

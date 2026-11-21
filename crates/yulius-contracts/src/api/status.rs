@@ -41,6 +41,9 @@ pub struct SessionCounts {
 /// Per-sandbox status (visible sandboxes only).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxStatus {
+    /// Integration gate failures that need a person.
+    #[serde(default)]
+    pub gate_notices: Vec<super::ci::GateNotice>,
     /// Sandbox id.
     pub id: String,
     /// Slug.

@@ -221,6 +221,7 @@ const MIGRATIONS: &[&str] = &[
     // SPEC-605. The position is the schema version, 0084 is the reserved file number.
     include_str!("migrations/0084_review_round_delivery.sql"),
     include_str!("migrations/0085_ci_pull_window.sql"),
+    include_str!("migrations/0086_inherited_staging.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -554,6 +555,7 @@ mod tests {
                 include_str!("migrations/0084_review_round_delivery.sql"),
             ),
             (84, include_str!("migrations/0085_ci_pull_window.sql")),
+            (85, include_str!("migrations/0086_inherited_staging.sql")),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -562,7 +564,7 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 84, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 85, "a new migration is pinned here too");
     }
 
     #[test]

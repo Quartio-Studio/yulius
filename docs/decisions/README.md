@@ -506,6 +506,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0448 -->
 - [0449](0449-use-codex-quota-headroom-and-preserve-idle-moves.md) Automatic Codex placement prefers the most remaining quota in the tightest binding window. A moved idle Codex task keeps its activity when the replacement opens without a turn.
 <!-- ADR 0449 -->
+- [0450](0450-attribute-integration-test-failures-in-first-parent-order.md) Attribute integration test failures in first-parent order.
 <!-- ADR 0450 -->
 <!-- ADR 0451 -->
 <!-- ADR 0452 -->

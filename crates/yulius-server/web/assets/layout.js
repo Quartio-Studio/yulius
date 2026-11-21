@@ -1,6 +1,7 @@
 // Global layout pieces (SPEC-001 §6.1): thin sandbox tab row with the Status panel, and the
 // left sidebar with navigation, the active task list and the user menu at its foot.
 
+import { gateNotices } from './gatenotices.js';
 import { DRAG_TAB_HINT, h, icon, iconButton, openMenu, setChildren, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused, prChip, skeleton, bar, skeletonOf } from './dom.js';
 import { bytes, duration, dateTime, resetLabel, compact, accountEmail, plausibleEmail } from './format.js';
 import { agentOfProvider } from './agents.js';
@@ -294,7 +295,7 @@ function createStatusPanel(ctx, button) {
     try {
       const data = await ctx.api.get('/api/status');
       if (!el) return;
-      const render = () => { if (el) keepFocus(el, () => setChildren(el, renderStatus(data || {}))); };
+      const render = () => { if (el) keepFocus(el, () => setChildren(el, renderStatus(data || {}, ctx.store.state.sandboxes))); };
       render();
       clearTimeout(expiry);
       if (githubWaitText(data?.github_reset_at_ms)) {
@@ -449,7 +450,7 @@ export function githubWaitText(reset) {
  * zero. Account last_error/in_use_by are present for admins only (their presence marks an admin's
  * view); every signed-in person gets the id (SPEC-447).
  */
-export function renderStatus(data) {
+export function renderStatus(data, projects = []) {
   const vm = data.vm || {};
   const memPct = pct(vm.memory_used_bytes, vm.memory_total_bytes);
   const diskPct = pct(vm.disk_used_bytes, vm.disk_total_bytes);
@@ -501,6 +502,7 @@ export function renderStatus(data) {
   const accountSummary = [`${ready} ready`, limited ? `${limited} at the limit` : null, troubled.length ? `${troubled.length} need attention` : null].filter(Boolean);
 
   return [
+    ...sandboxes.flatMap((s) => gateNotices(s, s.gate_notices, allows(projects.find((p) => p.id === s.id)?.access, 'write'))),
     githubWait ? h('div', { class: 'github-wait', role: 'status' }, githubWait) : null,
     githubWait && health.tone === 'ok' ? null : h('div', { class: ['status-health', `health-${health.tone}`] }, icon(health.icon, { size: 16 }), h('span', null, health.text)),
     h('div', { class: 'status-section' },

@@ -498,6 +498,16 @@ pub trait UpdateStore: Send + Sync {
 /// Yulius-run CI (SPEC-001 DLV-006, SPEC-002 ADR-21, tables `ci_runs` and `ci_jobs`).
 #[async_trait]
 pub trait CiStore: Send + Sync {
+    /// The newest full verdict of each supplied integration revision in the given history order.
+    async fn integration_verdicts(
+        &self,
+        sandbox: &SandboxId,
+        branch: &str,
+        revisions: &[String],
+        settled_only: bool,
+    ) -> AppResult<Vec<crate::ci::GateVerdict>>;
+    /// Whether a failed integration gate has a missing or resting merge owner.
+    async fn has_unowned_gate_failure(&self, sandbox: &SandboxId, branch: &str) -> AppResult<bool>;
     /// PRs occupying this sandbox's CI places, in admission order, including shared commits.
     async fn ci_admitted_pulls(&self, sandbox: &SandboxId) -> AppResult<Vec<u64>>;
     /// Atomically replaces that bounded window.

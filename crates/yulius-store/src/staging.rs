@@ -150,7 +150,7 @@ impl StagingStore for SqliteStore {
                 .prepare(&format!(
                     "SELECT {COLUMNS} FROM staging_requests \
                      WHERE sandbox_id = ?1 AND environment = ?2 \
-                       AND state IN ('testing', 'ready', 'deploying') \
+                       AND state IN ('testing', 'inherited', 'ready', 'deploying') \
                      ORDER BY created_at, rowid"
                 ))
                 .map_err(db)?;
@@ -167,7 +167,7 @@ impl StagingStore for SqliteStore {
             let mut statement = c
                 .prepare(
                     "SELECT DISTINCT sandbox_id, environment FROM staging_requests \
-                     WHERE state IN ('testing', 'ready', 'deploying') \
+                     WHERE state IN ('testing', 'inherited', 'ready', 'deploying') \
                         OR (state = 'deploy_failed' AND updated_at >= ?1) ORDER BY sandbox_id",
                 )
                 .map_err(db)?;
@@ -241,7 +241,7 @@ impl StagingStore for SqliteStore {
                      ci_run_id = COALESCE(?4, ci_run_id), \
                      cd_run_id = CASE WHEN ?9 THEN NULL ELSE COALESCE(?5, cd_run_id) END, \
                      attempts = COALESCE(?6, attempts), note = COALESCE(?7, note), \
-                     told = 0, updated_at = MAX(updated_at + 1, ?8) \
+                     told = (?3 = 'inherited' OR ?2 = 'inherited'), updated_at = MAX(updated_at + 1, ?8) \
                  WHERE id = ?1 AND state = ?2",
                 params![
                     id,

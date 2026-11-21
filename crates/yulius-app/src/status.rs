@@ -68,17 +68,16 @@ impl App {
                     .or_default() += 1;
             }
         }
-        let sandboxes = self
-            .visible_sandboxes(&ctx.user)
-            .await?
-            .into_iter()
-            .map(|(s, _)| SandboxStatus {
+        let mut sandboxes = Vec::new();
+        for (s, _) in self.visible_sandboxes(&ctx.user).await? {
+            sandboxes.push(SandboxStatus {
+                gate_notices: self.project_gate_notices(&s).await?,
                 live_sessions: live_by_sandbox.get(s.id.as_str()).copied().unwrap_or(0),
                 id: s.id.to_string(),
                 name: s.repo_name.clone(),
                 slug: s.slug,
-            })
-            .collect();
+            });
+        }
         let admin = ctx.user.is_superadmin || ctx.user.is_instance_admin;
         let accounts = store
             .accounts()

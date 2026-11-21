@@ -3263,6 +3263,10 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
 - **Candidate gate.** The integration branch's run of that exact commit, or a
   `candidate/<sha>` run queued for it, judges it. A run that skipped the full suite judges
   nothing. `dom::plan` counts a candidate run as testing its commit and never supersedes it.
+- When a test fails, first-parent gate evidence identifies its origin. Candidate runs are queued
+  one at a time. The queue records inherited tests and completes those requests in revision
+  order once a verified deployment contains them. CI and Status expose failures whose tasks
+  are unavailable. [ADR-0450](decisions/0450-attribute-integration-test-failures-in-first-parent-order.md)
 - **Pick.**
   - Revisions are ordered by their first-parent position on the verified head
     (`Git::first_parent_position`, in the CD mirror).
@@ -3282,7 +3286,7 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
     staging queue wakes a running or parked agent when that request is decided. Each stage change
     updates the task view. If the summary exceeds its budget, sandbox viewers receive a resync.
     [ADR-0437](decisions/0437-the-staging-request-keeps-its-task-waiting-until-the-outcome-is-delivered.md)
-  - `tell_staging_outcomes` types each task's outcome into its session once.
+  - `tell_staging_outcomes` types actionable outcomes into the owning session once.
   - `delivery_status` tells a merged task its request is due, then where it stands
     (`staging_note`).
   - `cd_status` and the CD page (`CdEnvironment.staging`) list the queue with revisions and run

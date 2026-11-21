@@ -68,7 +68,7 @@ fn queue_lock(sandbox: &yulius_domain::ids::SandboxId) -> Arc<tokio::sync::Mutex
     map.entry(sandbox.as_str().to_owned()).or_default().clone()
 }
 
-fn short(sha: &str) -> &str {
+pub(super) fn short(sha: &str) -> &str {
     sha.get(..12).unwrap_or(sha)
 }
 
@@ -329,8 +329,7 @@ impl App {
         let lock = queue_lock(&sandbox.id);
         let _queue = lock.lock().await;
         let store = &self.deps.store;
-        let mut pending = store.pending_staging_requests(&sandbox.id, env).await?;
-        pending.truncate(MAX_PENDING);
+        let pending = store.pending_staging_requests(&sandbox.id, env).await?;
         let (head, target) = self.staging_target(sandbox).await?;
         // The running deploy settles first, whatever the environment became (review round 1).
         let now_pending: Vec<&StagingRequestRecord> = pending.iter().collect();
@@ -346,8 +345,7 @@ impl App {
                 }
             }
         }
-        let mut pending = store.pending_staging_requests(&sandbox.id, env).await?;
-        pending.truncate(MAX_PENDING);
+        let pending = store.pending_staging_requests(&sandbox.id, env).await?;
         if target.as_ref().is_none_or(|t| t.name != env) {
             // The environment is no longer the staging target: nothing it waits for will come.
             for request in pending
@@ -372,12 +370,13 @@ impl App {
             return Ok(());
         };
         self.staging_restore(sandbox, &target).await?;
-        self.staging_judge(sandbox, &pending).await?;
-        let pending = store.pending_staging_requests(&sandbox.id, env).await?;
-        // A Git failure ends the round, to be tried again: it never reads as "not on the branch".
         let positions = self
             .staging_positions(sandbox, &head, pending.iter().map(|r| r.revision.as_str()))
             .await?;
+        self.staging_judge(sandbox, &positions, &pending).await?;
+        let pending = store.pending_staging_requests(&sandbox.id, env).await?;
+        // A Git failure ends the round, to be tried again: it never reads as "not on the branch".
+
         // A revision no longer on the branch's own history never deploys.
         for request in &pending {
             if request.state != StagingState::Deploying
@@ -396,16 +395,24 @@ impl App {
                     .await?;
             }
         }
-        let (current, verified_run) = self.staging_current(sandbox, &target, &head).await?;
+        let (current, served) = self.staging_current(sandbox, &target, &head).await?;
         let facts: Vec<Facts> = pending.iter().map(|r| facts_of(r, &positions)).collect();
         let pick = stg::pick(&facts, current);
         for id in &pick.included {
             if let Some(request) = pending.iter().find(|r| &r.id == id) {
                 let change = StagingChange {
-                    cd_run_id: verified_run.clone(),
-                    note: Some(
-                        "included: staging already serves a verified revision containing it".into(),
-                    ),
+                    cd_run_id: served.as_ref().map(|(_, run)| run.clone()),
+                    note: served.as_ref().map(|(sha, _)| {
+                        let earlier = if request.state == StagingState::Inherited {
+                            request.note.as_deref().unwrap_or("")
+                        } else {
+                            ""
+                        };
+                        format!(
+                            "included in verified staging revision {}. {earlier}",
+                            short(sha)
+                        )
+                    }),
                     ..StagingChange::default()
                 };
                 self.staging_move(request, StagingState::Included, change)
@@ -427,82 +434,80 @@ impl App {
     async fn staging_judge(
         self: &Arc<Self>,
         sandbox: &SandboxRecord,
+        positions: &[(String, Option<u64>)],
         pending: &[StagingRequestRecord],
     ) -> AppResult<()> {
-        for request in pending.iter().filter(|r| r.state == StagingState::Testing) {
-            let runs = self
+        let testing = pending.iter().filter(|r| r.state == StagingState::Testing);
+        let mut ordered: Vec<_> = testing
+            .filter_map(|r| {
+                positions
+                    .iter()
+                    .find(|(sha, _)| sha == &r.revision)?
+                    .1
+                    .map(|at| (at, r))
+            })
+            .collect();
+        ordered.sort_by_key(|(at, _)| *at);
+        let integration = delivery_profile(sandbox).integration_branch;
+        for (_, request) in ordered.into_iter().take(MAX_PENDING) {
+            let verdicts = self
                 .deps
                 .store
-                .ci_runs_for_sha(&sandbox.id, &request.revision)
+                .integration_verdicts(
+                    &sandbox.id,
+                    &integration,
+                    std::slice::from_ref(&request.revision),
+                    false,
+                )
                 .await?;
-            // Only the merged revision's own runs judge it: the integration branch's run or a
-            // candidate's, never one that skipped the full suite.
-            let integration = delivery_profile(sandbox).integration_branch;
-            let mut judging = None;
-            for run in runs.iter().filter(|r| match &r.reference {
-                CiRef::Branch(name) => *name == integration,
-                CiRef::Candidate(_) => true,
-                _ => false,
-            }) {
-                // A superseded branch run says nothing; a cancelled candidate is a person's
-                // decision to stop its full gate (review round 1): the gate failed.
-                if run.state == RunState::Cancelled {
-                    if matches!(run.reference, CiRef::Candidate(_)) {
-                        judging = Some(run.clone());
-                        break;
-                    }
-                    continue;
-                }
-                if run.state.is_active() {
-                    judging = Some(run.clone());
-                    break;
-                }
-                let jobs = self.deps.store.ci_jobs(&run.id, false).await?;
-                if jobs
-                    .iter()
-                    .any(|j| yulius_domain::ci::skipped_after_merge(j.state, j.reason.as_deref()))
-                {
-                    continue;
-                }
-                judging = Some(run.clone());
-                break;
-            }
-            match judging {
+            match verdicts.into_iter().find(|run| !run.archived) {
                 Some(run) => {
                     let verdict = if run.state == RunState::Cancelled {
                         RunState::Error
                     } else {
                         run.state
                     };
-                    let Some(next) = stg::after_verdict(Some(verdict)) else {
-                        continue;
+                    let Some(mut next) = stg::after_verdict(Some(verdict)) else {
+                        break;
                     };
                     let note = if next == StagingState::GateFailed {
-                        let jobs = self.deps.store.ci_jobs(&run.id, false).await?;
-                        let failed: Vec<String> = jobs
-                            .iter()
-                            .filter(|j| matches!(j.state, RunState::Failed | RunState::Error))
-                            .map(|j| j.name.clone())
-                            .collect();
-                        Some(format!(
-                            "the full gate failed on revision {}: run {} ({}); staging did not change",
+                        let history = self
+                            .gate_failures_at(
+                                sandbox,
+                                &self.cd_mirror(&sandbox.id),
+                                &request.revision,
+                                false,
+                            )
+                            .await?;
+                        if history.waiting {
+                            break;
+                        }
+                        let requester = match &request.task_id {
+                            Some(id) => self.deps.store.task(id).await?.map(|t| t.number),
+                            None => run.owner,
+                        };
+                        let (inherited, detail) = history.describe(&run, requester);
+                        if inherited {
+                            next = StagingState::Inherited;
+                        }
+                        format!(
+                            "the full gate failed on revision {}: run {} ({detail}); staging did not change",
                             short(&request.revision),
-                            run.id,
-                            if failed.is_empty() {
-                                run.state.as_str().to_owned()
-                            } else {
-                                failed.join(", ")
-                            }
-                        ))
+                            run.run
+                        )
                     } else {
-                        Some(format!("the full gate passed: run {}", run.id))
+                        format!("the full gate passed: run {}", run.run)
                     };
-                    let change = StagingChange {
-                        ci_run_id: Some(run.id.clone()),
-                        note,
-                        ..StagingChange::default()
-                    };
-                    self.staging_move(request, next, change).await?;
+                    self.staging_move(
+                        request,
+                        next,
+                        StagingChange {
+                            ci_run_id: Some(run.run),
+                            note: Some(note),
+                            ..StagingChange::default()
+                        },
+                    )
+                    .await?;
                 }
                 None => {
                     let gate = self
@@ -522,6 +527,11 @@ impl App {
                             .await?;
                         continue;
                     };
+                    if self.deps.store.active_ci_runs().await?.iter().any(|r| {
+                        r.sandbox_id == sandbox.id && matches!(r.reference, CiRef::Candidate(_))
+                    }) {
+                        break;
+                    }
                     let run = self
                         .ci_queue(
                             sandbox,
@@ -539,6 +549,7 @@ impl App {
                     self.staging_move(request, StagingState::Testing, change)
                         .await?;
                     self.ci_wake();
+                    break;
                 }
             }
         }
@@ -767,7 +778,7 @@ impl App {
         sandbox: &SandboxRecord,
         target: &CdTarget,
         head: &str,
-    ) -> AppResult<(Option<u64>, Option<String>)> {
+    ) -> AppResult<(Option<u64>, Option<(String, String)>)> {
         let Some((sha, run)) = self.staging_serving(sandbox, target).await? else {
             return Ok((None, None));
         };
@@ -780,7 +791,7 @@ impl App {
             .await
             .ok()
             .flatten();
-        Ok((at, Some(run)))
+        Ok((at, Some((sha, run))))
     }
 
     /// The run that put on staging a revision containing `revision`, if what staging serves
@@ -1364,7 +1375,11 @@ pub(super) fn staging_outcome_text(request: &StagingRequestRecord) -> String {
     );
     // A successful request records what its run verified, even after a later deploy or rollback.
     let detail = if request.state.is_success() {
-        run_ids(request)
+        format!(
+            "{} {}",
+            run_ids(request),
+            request.note.as_deref().unwrap_or("")
+        )
     } else {
         request
             .note
@@ -1377,6 +1392,7 @@ pub(super) fn staging_outcome_text(request: &StagingRequestRecord) -> String {
 /// The next step a request's state leaves its task (empty while it is on its way).
 fn staging_next(request: &StagingRequestRecord) -> String {
     match request.state {
+        StagingState::Inherited => "Staging will serve this request when it verifies a revision containing the fix.".to_owned(),
         StagingState::Verified => {
             "Staging deployed and verified your revision, so this task's staging deployment is done."
                 .to_owned()
