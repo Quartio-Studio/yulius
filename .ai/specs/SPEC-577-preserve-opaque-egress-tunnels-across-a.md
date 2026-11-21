@@ -54,7 +54,7 @@ new request after the old sockets reach EOF. The issue requires the original con
 - [x] Keep each original deadline during custody and preserve the live remainder of a mixed batch
 - [x] Obtain independent approval for the custody deadline slice
 - [x] Preserve original terminal receive queues and isolate connection loss during custody
-- [ ] Obtain independent approval for terminal socket custody
+- [x] Obtain independent approval for terminal socket custody
 - [ ] Obtain independent approval for the proxy restart slice
 - [ ] Hand established opaque connections and matching relay sockets to the restarted server
 - [ ] Verify same-socket continuity, admission limits and intercepted traffic through restart
@@ -416,3 +416,17 @@ without adoption support or a remote peer that times out can end a tunnel.
   0x42 from MSG_PEEK (0x02) and MSG_DONTWAIT (0x40). The terminal read now uses the flag
   type's named union operation. The final-FIN process fixture checks that the peek leaves
   the queued bytes for the successor.
+- After merging current dev `1d97b363c`, independent review approved the custody slice
+  at `407be69d9` and reran all 49 relay tests. All seven helper-process tests passed
+  on the same head. The review corrected ADR-0413's description of wire receipt.
+  The receiver verifies original socket roles and identities before taking custody. The
+  original deadline covers the subsequent state-length read and bounded allocation.
+- The capture-validation mutation run passed all 3,302 selected baseline tests. It listed
+  seven mutations, caught five and found two unviable. The terminal-read change passed
+  all 3,314 selected baseline tests and caught both mutations. Both runs reported zero
+  missed, timed out or unreached. Targeted Clippy passed with warnings denied. The instance
+  disabled Vidoc.
+- On the current custody-only server, the original client and destination exchanged bytes
+  through the holder before shutdown. The successor became healthy with that same holder.
+  The original client then received EOF in place of the marker written during restart.
+  Proxy and holder wiring remain necessary for AC-1.
