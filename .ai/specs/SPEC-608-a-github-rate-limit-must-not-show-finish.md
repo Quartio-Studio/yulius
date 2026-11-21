@@ -1,6 +1,6 @@
 ---
 yulius-task: a7e07e4a-e6e5-4986-bcd4-becfa2aa104b
-status: in-progress
+status: done
 ---
 
 # SPEC-608. Preserve task state during a GitHub outage
@@ -26,8 +26,8 @@ Task #592 reports two GitHub App quota resets on 21 November. During the second 
 - [x] Show the shared wait in Status and task lists
 - [x] Review and deliver the verified fix to dev
 - [x] Verify task attention during a blocked browser lookup and overlapping Git timeouts
-- [ ] Verify the other failures from the merged revision against their owning fixes
-- [ ] Deliver the reviewed fix forward and request staging for the new revision
+- [x] Verify the other failures from the merged revision against their owning fixes
+- [x] Deliver the reviewed fix forward and request staging for the new revision
 
 ## Acceptance criteria
 
@@ -55,3 +55,6 @@ Use the existing delivery and pull observation paths for display and keep the qu
 - Independent review approved commit `09f98caa9` after all findings were addressed. The scoped nextest run passed 73 of 73 on that commit. A separate run of the GitHub client, CI status publication and production-branch tests passed 49 of 49. The delivery record for task #592 supplies the exact Yulius CI result and merged revision. Live production quota exhaustion was simulated with a refusing GitHub fixture.
 - When integrating PR #1657, the Rust test build caught the new required `webhook_secret` field in the rate-limit fixture. The fixture uses `None` because it exercises outbound requests. Both projects’ product notes survived the documentation conflict.
 - Staging gate `6f7921e2-c888-4098-a3e0-90b5008634e7` reported two deadline tests that still expected verification timeouts to create attention. Both failed locally with that expectation. The browser deadline now checks the recorded open PR and the absence of a new notice. The worker test seeds a real PR failure and checks its notice across two batches of twelve overlapping reads and while the workers drain. After verification resumes, the notice clears on green. All 12 scoped parked-detail and outage tests passed.
+- Independent review approved `7e64e3f1e` and independently passed both revised cases. In a detached checkout with task #589’s owning fix at `7c49b5015`, every one of the 17 failures from both shards passed. The complete `agent_hooks` and `delivery` modules passed 258 of 258. The shared fixture attaches its recorded idle attempts, and delivered review rounds are visible through the task’s delivery view.
+- A manual one-line check in that temporary checkout restored the old `PullSignal::Errored` timeout mapping. Both revised tests failed. The browser timeout created a false Needs-you notice, and the concurrent reads replaced the known failing-check episode with a CI-error episode. Restoring the real timeout handling passed both tests again.
+- PR #1669 landed the shared fixes on dev at `2c386072c`. The clean integration at `d9eee5acf` passed all 17 previously failing tests again. Task #592’s delivery evidence records the fix-forward merge and its staging request.
