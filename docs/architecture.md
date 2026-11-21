@@ -1040,11 +1040,18 @@ flowchart LR
   R -->|"launch credential still current"| A["Mark subscription relogin"]
   M -->|"switch_from: end run, start_run_if"| C{"choose_account"}
   C -->|"a subscription"| RUN["Same session on it"]
+  RUN -->|"idle Codex resume without a turn"| I["Restore Waiting or Done"]
   C -->|"none"| W["waiting_capacity"]
   D --> T["tell_left: one line"]
   R --> T
   T -->|"nothing usable left"| N["Needs you, ended with the pause"]
 ```
+
+A live Codex task resumed without a turn keeps its saved Waiting or Done activity, including in
+Goal mode. The supervisor determines activity from the final launch mode, so a recovered reviewer
+or another opening instruction still starts a turn. Automatic Codex placement ranks eligible
+subscriptions by headroom in the tightest binding window before considering reset urgency.
+[Decision 0449](decisions/0449-use-codex-quota-headroom-and-preserve-idle-moves.md)
 
 ## Subscription names and emails
 
@@ -4247,6 +4254,8 @@ flowchart TD
   K -->|yes| R["run with the gate in force, its own changed jobs beside (never instead)"]
   R -->|"merge-first target at the integration head"| Q["after_merge jobs skipped: they run on the merged revision"]
 ```
+
+Yulius’s own `file-contracts` job looks up Rust tests that read paths in the candidate’s diff. Its path filters cover the UI, catalog, documentation and other repository inputs. The full Rust shards cover those tests on dev. [Decision 0448](decisions/0448-repository-file-readers-run-before-merge.md)
 
 ## CI job output
 

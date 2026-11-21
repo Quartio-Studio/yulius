@@ -1013,6 +1013,17 @@ enum StartCondition<'a> {
     Parked(Option<AttemptId>),
 }
 
+/// Which task state the requested switch may take over.
+pub(crate) enum SwitchCondition<'a> {
+    Any,
+    Status(TaskStatus),
+    Paused(&'a PauseRecord),
+    IdleCodex {
+        from: (Activity, Timestamp),
+        attempt: AttemptId,
+    },
+}
+
 /// A capacity worker selects its subscription again if queued. A Move keeps its person's choice.
 #[derive(Clone, Copy)]
 enum PausedStart<'a> {
@@ -3252,6 +3263,14 @@ impl App {
         runtime.run_starts(self.now().0).await;
         self.attach_run(&task.id, &attempt, &host_token).await?;
         runtime.hub.state_changed();
+        // The move starts a working timer. Probe the idle replacement before publishing it
+        // so that timer ends when the new session has no background work (SPEC-611 CQS-001).
+        if harness == Harness::Codex
+            && current.status == TaskStatus::Switching
+            && activity.is_idle()
+        {
+            self.probe_idle_shells(&task.id).await;
+        }
         self.publish_task(&task.id).await;
         // Control passed during the launch, after this run took its owner's personal MCP servers
         // and before a hand-over could see it live: it resumes for the new owner (SPEC-332). The
@@ -5928,7 +5947,7 @@ impl App {
         reason: &str,
         start: RunStart,
     ) -> AppResult<()> {
-        self.switch_from(task_id, None, account, reason, start, None)
+        self.switch_from(task_id, account, reason, start, SwitchCondition::Any)
             .await
     }
 
@@ -5946,28 +5965,31 @@ impl App {
     ) -> AppResult<()> {
         self.switch_from(
             task_id,
-            Some(TaskStatus::WaitingCapacity),
             account,
             reason,
             RunStart::AfterLimit,
-            None,
+            SwitchCondition::Status(TaskStatus::WaitingCapacity),
         )
         .await
     }
 
-    /// [`Self::switch_with`] of a task that must still be `expected` (any switchable status when
-    /// `None`); the status change compares with what was read, so a concurrent change refuses.
+    /// [`Self::switch_with`] of a task that still meets `condition`.
     pub(crate) async fn switch_from(
         self: &Arc<Self>,
         task_id: &TaskId,
-        expected: Option<TaskStatus>,
         account: Option<AccountId>,
         reason: &str,
         start: RunStart,
-        pause: Option<&PauseRecord>,
+        condition: SwitchCondition<'_>,
     ) -> AppResult<()> {
         let store = &self.deps.store;
         let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
+        let (expected, pause) = match &condition {
+            SwitchCondition::Any => (None, None),
+            SwitchCondition::Status(status) => (Some(*status), None),
+            SwitchCondition::Paused(pause) => (Some(TaskStatus::WaitingCapacity), Some(*pause)),
+            SwitchCondition::IdleCodex { .. } => (Some(TaskStatus::Running), None),
+        };
         if expected.is_some_and(|status| status != task.status) {
             return Err(AppError::Conflict(format!(
                 "task is {}",
@@ -5975,6 +5997,19 @@ impl App {
             )));
         }
         let attempt = store.live_attempt(task_id).await?;
+        let idle_codex = match &condition {
+            SwitchCondition::IdleCodex { from, attempt } => Some((*from, attempt)),
+            _ if task.harness == Harness::Codex
+                && task.status == TaskStatus::Running
+                && matches!(start, RunStart::Resume { prompt: None }) =>
+            {
+                task.activity
+                    .filter(|activity| activity.is_idle())
+                    .zip(attempt.as_ref())
+                    .map(|(activity, run)| ((activity, task.updated_at), &run.id))
+            }
+            _ => None,
+        };
         if pause.is_some() && attempt.is_some() {
             return Err(AppError::Conflict(
                 "the paused start has already run".into(),
@@ -6025,10 +6060,18 @@ impl App {
         // A saved start has no live run to switch out. Keep its pause until the launch lock
         // claims that exact pause, even if Stop and Continue created a new one during preflight.
         if pause.is_none() {
-            if !store
-                .transition_task(task_id, Some(task.status), next, None, self.now())
-                .await?
-            {
+            let claimed = if let Some((from, attempt)) = idle_codex {
+                let runtime = self.runtime(task_id);
+                let _order = runtime.turn_order.lock().await;
+                store
+                    .claim_idle_switch(task_id, from, attempt, self.now())
+                    .await?
+            } else {
+                store
+                    .transition_task(task_id, Some(task.status), next, None, self.now())
+                    .await?
+            };
+            if !claimed {
                 return Err(AppError::Conflict("task state changed concurrently".into()));
             }
             self.end_pause(task_id, "switched").await;
@@ -6195,15 +6238,14 @@ impl App {
             crate::race::Point::SwitchLaunching,
             Path::new(task_id.as_str()),
         );
-        // A prompt-mode session that was idle and gets nothing typed is idle again once it
-        // runs (SPEC-447 MOV-002; a restart on a newer Claude Code, SPEC-461 CCM-013): no turn
-        // would end to say so, and it reads as it did, from its launch on (SPEC-468 CCF-008).
+        // An idle session that opens without a turn retains its activity (SPEC-447 MOV-002).
+        // Codex reopens at its prompt in both task modes (SPEC-611 CQS-001).
         let rest = task
             .activity
             .filter(|activity| {
                 activity.is_idle()
                     && task.status == TaskStatus::Running
-                    && task.mode == TaskMode::Prompt
+                    && (task.mode == TaskMode::Prompt || task.harness == Harness::Codex)
                     && matches!(start, RunStart::Resume { prompt: None })
                     // A session told to resume its workflow opens with that turn (SPEC-486).
                     && runtime.with_workflows(|workflows| workflows.runs().is_empty())

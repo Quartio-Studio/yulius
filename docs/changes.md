@@ -7,6 +7,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-21
 
 - Task reads reuse terminal pull requests and share open refreshes. Status reports the installation quota and request purposes, including when display yields capacity to delivery. [SPEC-609](../.ai/specs/SPEC-609-reading-tasks-must-not-spend-the-github.md)
+- Pull requests and merge trains run the Rust tests that read changed UI assets, catalog entries and documentation. Task briefings call for every test in a touched binary. [SPEC-610](../.ai/specs/SPEC-610-a-pull-request-runs-the-tests-that-read.md)
+
+- Codex starts and resumes prefer the subscription with the most remaining quota. Idle tasks keep Waiting or Done after a subscription move and can be closed without another turn. [SPEC-611](../.ai/specs/SPEC-611-a-moved-task-is-not-shown-as-working-and.md)
 - The opaque tunnel restart tests reserve their internal port through both server generations and check that each child bound it before probing health. [SPEC-597](../.ai/specs/SPEC-597-tests-that-hold-under-a-loaded-host-and.md)
 - A signed GitHub PR opening queues CI for its exact head without a discovery API read. Existing Apps can enable the webhook in their registration. [SPEC-606](../.ai/specs/SPEC-606-a-pull-request-not-opened-by-a-task-wait.md)
 - Antigravity conversations reopened without a prompt show Waiting and can release their session slots while the Gemini announcement is visible. The composer regression checks the inherited model and effort of a task drawn to Antigravity. [SPEC-604](../.ai/specs/SPEC-604-an-idle-antigravity-session-under-the-ge.md)
