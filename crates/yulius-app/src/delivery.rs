@@ -2182,6 +2182,28 @@ impl App {
                 access,
             )
             .await;
+        // `pull_view` leaves `conflicts = false` so callers decide per task via `pull_conflicts`
+        // (SPEC-491, SPEC-580 AWM-003). Parked tasks use the bounded display Git pool and deadline
+        // so overlapping detail reads cannot hang or exceed `PARKED_READS` when local Git stalls.
+        if let Some(pull) = observed.pr.as_ref().filter(|p| is_open(p))
+            && let Some(pr) = view.pr.as_mut()
+        {
+            pr.conflicts = if task.status == yulius_domain::task::TaskStatus::Parked {
+                let (task, sandbox, pull_owned) = (task.clone(), sandbox.clone(), pull.clone());
+                tokio::time::timeout_at(
+                    self.status_deadline(),
+                    self.verification_git(PrVerification::Display, move |app| async move {
+                        Ok(app.pull_conflicts(&task, &sandbox, &pull_owned).await)
+                    }),
+                )
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or(pull.mergeable == Some(false))
+            } else {
+                self.pull_conflicts(task, &sandbox, pull).await
+            };
+        }
         if past_merge(&observed.record.stage) {
             let known = observed
                 .pr
@@ -4800,7 +4822,45 @@ impl App {
         pull: &GhPull,
     ) -> bool {
         match self.local_conflict(task, sandbox, &pull.head_sha).await {
-            Some(conflicts) => conflicts,
+            Some(true) => true,
+            Some(false) if pull.mergeable == Some(false) => {
+                // GitHub reports CONFLICTING/DIRTY while our local clone said clean: either the
+                // clone's `origin/<integration>` is stale (the base moved on GitHub) or a union
+                // merge driver resolves it (SPEC-491 DON-001). First check whether our local
+                // `origin/<integration>` already matches `pull.base_sha` — if so, `local_conflict`
+                // already evaluated the exact base GitHub used (clean union-driver merge) and no
+                // network fetch is needed (SPEC-580 review F3).
+                let integration =
+                    format!("origin/{}", delivery_profile(sandbox).integration_branch);
+                let base_matches = !pull.base_sha.is_empty()
+                    && match task.worktree_path.as_deref() {
+                        Some(wt) => self
+                            .deps
+                            .git
+                            .resolve_commit(std::path::Path::new(wt), &integration)
+                            .await
+                            .ok()
+                            .flatten()
+                            .is_some_and(|local_base| {
+                                local_base.eq_ignore_ascii_case(&pull.base_sha)
+                            }),
+                        None => false,
+                    };
+                if base_matches {
+                    return false;
+                }
+                // Local clone base differs (or `pull.base_sha` was absent): refresh and re-check;
+                // if the clone cannot be refreshed, trust GitHub's flag rather than a stale base
+                // (SPEC-580 AWM-003).
+                if self.dlv_refresh_clone(sandbox).await.is_ok() {
+                    self.local_conflict(task, sandbox, &pull.head_sha)
+                        .await
+                        .unwrap_or(true)
+                } else {
+                    true
+                }
+            }
+            Some(false) => false,
             None => pull.mergeable == Some(false),
         }
     }
