@@ -353,6 +353,8 @@ pub struct TaskTimes {
 /// A task.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskRecord {
+    /// Latest attempt when this read saw the task parked. Derived from the attempt history.
+    pub parked_attempt_id: Option<AttemptId>,
     /// Id.
     pub id: TaskId,
     /// Sandbox.

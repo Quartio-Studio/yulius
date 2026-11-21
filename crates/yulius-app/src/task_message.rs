@@ -296,7 +296,7 @@ impl App {
                 .get("text")
                 .and_then(Value::as_str)
                 .ok_or_else(|| AppError::Invalid("missing string argument `text`".into()))?;
-            self.answer_needs_you(&ctx, task.id.as_str(), text, asked_at_ms)
+            self.answer_observed_question(&ctx, &task, text, asked_at_ms)
                 .await?;
             // Audited as a message too, with the channel it came through (TMS-005).
             let named = json!({
@@ -384,9 +384,13 @@ impl App {
             // Writing to a parked task resumes it in its own session, with the message as its
             // first prompt; it is the person's answer, so the request it had open ends (SPEC-512
             // PRK-005, TMS-006).
+            crate::race::reached(
+                crate::race::Point::ParkedMessageSelected,
+                std::path::Path::new(task.id.as_str()),
+            );
             let login = self.login_of(&caller.user).await;
             let prompt = message_prompt(&login, caller.channel, &text);
-            if !self.resume_parked(&task.id, Some(prompt)).await? {
+            if !self.resume_parked(&task, Some(prompt)).await? {
                 return Err(AppError::Conflict(format!(
                     "task #{} changed while it was resumed: try again",
                     task.number
@@ -484,15 +488,34 @@ impl App {
         asked_at_ms: Option<i64>,
     ) -> AppResult<TaskSummary> {
         // A disabled account has no access to any project, so this refuses it too.
-        let task = self.load_task_to(ctx, id, TaskAction::Answer).await?;
+        let id = TaskId::parse(id).map_err(|_| AppError::NotFound)?;
+        let task = self.deps.store.task(&id).await?.ok_or(AppError::NotFound)?;
+        self.answer_observed_question(ctx, &task, text, asked_at_ms)
+            .await
+    }
+
+    async fn answer_observed_question(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        observed: &TaskRecord,
+        text: &str,
+        asked_at_ms: Option<i64>,
+    ) -> AppResult<TaskSummary> {
+        self.require_task(ctx, observed, TaskAction::Answer).await?;
         // The access check may have waited on GitHub: what the task does now is read after it
         // (review round 1), so a question opened in its terminal meanwhile is not answered.
         let task = self
             .deps
             .store
-            .task(&task.id)
+            .task(&observed.id)
             .await?
             .ok_or(AppError::NotFound)?;
+        if observed.status == TaskStatus::Parked
+            && (task.status != TaskStatus::Parked
+                || task.parked_attempt_id != observed.parked_attempt_id)
+        {
+            return Err(AppError::Conflict("the task changed while you were answering; read the current question and try again".into()));
+        }
         let text = clean_message(text);
         if text.is_empty() {
             return Err(AppError::Invalid("the answer is empty".into()));
@@ -535,7 +558,7 @@ impl App {
             // Resumed in its own session with the answer as its first prompt, as a message to a
             // parked task resumes it (PRK-005); it stays its owner's.
             let prompt = answer_prompt(&login, &owner, mine, &text);
-            if !self.resume_parked(&task.id, Some(prompt)).await? {
+            if !self.resume_parked(&task, Some(prompt)).await? {
                 return Err(AppError::Conflict(format!(
                     "task #{} changed while it was resumed: try again",
                     task.number

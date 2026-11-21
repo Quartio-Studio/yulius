@@ -356,22 +356,26 @@ fn a_parked_message_can_retry_after_screen_publication_times_out() -> TestResult
 
 #[test]
 fn a_parked_message_checked_on_an_earlier_run_is_refused_during_screen_restore() -> TestResult {
-    replaced_parked_message(true)
+    replaced_parked_message(Point::ParkedResumePrepared, true)
 }
 
 #[test]
 fn a_parked_message_checked_on_an_earlier_run_is_refused_after_settlement() -> TestResult {
-    replaced_parked_message(false)
+    replaced_parked_message(Point::ParkedResumePrepared, false)
 }
 
-fn replaced_parked_message(while_restoring: bool) -> TestResult {
+#[test]
+fn a_message_selected_before_preflight_cannot_answer_a_later_park() -> TestResult {
+    replaced_parked_message(Point::ParkedMessageSelected, false)
+}
+fn replaced_parked_message(checkpoint: Point, while_restoring: bool) -> TestResult {
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     let result = rt.block_on(async {
         let app = app(&data, 8, 1).await?;
         let (id, caller) = answered(&app, &data).await?;
         parked(&app, &id).await?;
-        let (prepared, submit) = pause_watch_or_queue(Point::ParkedResumePrepared, &id);
+        let (prepared, submit) = pause_watch_or_queue(checkpoint, &id);
         let first = app.clone();
         let first_caller = caller.clone();
         let first = tokio::spawn(async move {
@@ -441,6 +445,63 @@ fn replaced_parked_message(while_restoring: bool) -> TestResult {
             assert_eq!(fresh?["delivered"], "resumed");
             app.stop_task_now(&id).await?;
         }
+        Ok::<_, Error>(())
+    });
+    rt.shutdown_timeout(Duration::from_secs(5));
+    result
+}
+
+#[test]
+fn a_parked_message_resumes_while_its_successor_checks_the_pull_request() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    let result = rt.block_on(async {
+        let (app, github) = configured_app_with_pulls(&data, 8, 1, |config| {
+            config.stop_escalation_ms = 500;
+        })
+        .await?;
+        let (id, caller) = answered(&app, &data).await?;
+        let (recorded, publish) = pause_watch_or_queue(Point::ParkStateRecorded, &id);
+        parked(&app, &id).await?;
+        tokio::time::timeout(Duration::from_secs(10), recorded.notified()).await?;
+        app.deps
+            .store
+            .set_activity(&id, Some(Activity::Done), app.now())
+            .await?;
+        open_pull_at(&app, &github, &id, 1481, "0123456789abcdef").await?;
+        let mut next = app.deps.store.task(&id).await?.ok_or("parked owner")?;
+        next.id = TaskId::parse("t-next")?;
+        next.number = 99;
+        next.status = TaskStatus::Chained;
+        next.activity = None;
+        next.branch = None;
+        next.worktree_path = None;
+        app.deps.store.insert_task(&next).await?;
+        yulius_app::ports::store_ext::IntakeStore::insert_chain(
+            app.deps.store.as_ref(),
+            &yulius_app::intake::ChainRecord {
+                task_id: next.id.clone(),
+                after_task_id: Some(id.clone()),
+                after_number: 1,
+                blocked_reason: None,
+                created_at: app.now(),
+                rule: None,
+            },
+        )
+        .await?;
+        let (checking, release) = pause_watch_or_queue(Point::ParkedPredecessorChecksPr, &id);
+        publish.notify_one();
+        tokio::time::timeout(Duration::from_secs(12), checking.notified()).await?;
+        let message = app
+            .tool_task_message(
+                &caller,
+                &json!({"number": 1, "text": "Read this while the successor waits"}),
+            )
+            .await;
+        release.notify_one();
+        assert_eq!(message?["delivered"], "resumed");
+        assert_eq!(status_of(&app, &next.id).await.0, Some(TaskStatus::Chained));
+        app.stop_task_now(&id).await?;
         Ok::<_, Error>(())
     });
     rt.shutdown_timeout(Duration::from_secs(5));

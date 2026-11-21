@@ -316,6 +316,7 @@ impl App {
             TaskStatus::Closed
         };
         let record = TaskRecord {
+            parked_attempt_id: None,
             id: TaskId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?,
             sandbox_id: sandbox.id.clone(),
             number: 0,
@@ -683,7 +684,7 @@ impl App {
                 )));
             }
             self.ensure_agent_account(task.harness.provider()).await?;
-            if !self.resume_parked(&task.id, cleaned.clone()).await? {
+            if !self.resume_parked(&task, cleaned.clone()).await? {
                 return Err(AppError::Conflict(
                     "the task changed while it was resumed; try again".into(),
                 ));

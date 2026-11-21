@@ -112,9 +112,11 @@ The live watcher resolves ordinary CI for the owner at the armed head and reads 
 
 The final parking check compares the owner’s saved singleton decision with the verified PR head and integration base. A change to the saved merge decision during hosted verification defers the pass. A changed base or published repair retires the old failure for this decision.
 
-A parked resume captures the attempt ID before preparing the next launch. It waits outside the launch lock for the previous reader to publish the saved screen, within the stop escalation interval. Admission rechecks the parked status and attempt ID under the lock before restoring Codex lineage or accepting a prompt. A new turn can park while a message is waiting, so simply checking the status twice would allow a stale message to start another turn.
+The SQLite read which returns a Parked task also returns its latest attempt ID. Every parked resume carries that observation through account and permission checks. It waits outside the launch lock for the prior run to publish its saved screen, end its pause and send terminal exit, within the stop escalation interval. A successor’s hosted PR check can continue after that point. Admission rechecks the parked status and attempt ID under the lock before restoring Codex lineage or accepting a prompt. A new turn can park while a message is waiting, so simply checking the status twice would allow a stale message to start another turn.
 
 ## Evidence
+
+- Two real-PTY tests failed on the prototype at `dc1fec449` because an old message started a third turn. At `44b61d2de` both passed, together with deadline/retry, Codex rollout and capacity coverage. All 149 parking, Codex and Antigravity integration tests passed on that head. Independent review identified an earlier observation in the public message handler and a later successor lookup after terminal exit.
 
 - Independent review of the combined Continue prototype found that a second turn could resume and park between preflight and launch. The parked-message regression holds a real PTY reader before screen restoration and also exercises admission after the replacement reader finishes. Continue after Stop is tracked separately.
 

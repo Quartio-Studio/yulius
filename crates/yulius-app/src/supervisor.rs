@@ -493,6 +493,8 @@ pub struct TaskRuntime {
     /// Run endings being recorded (`finalize_attempt`, `mark_lost`): raised before the attempt is
     /// marked ended, lowered once its chains and queue work is done (SPEC-065 END-003).
     finalizing: tokio::sync::watch::Sender<u32>,
+    /// A park is publishing its grid and cleaning up its run, before chain evaluation.
+    park_cleanup: tokio::sync::watch::Sender<u32>,
     /// The run whose host could not be terminated after its stop or close escalation, and why
     /// (SPEC-065 END-001): it stays live until its processes are gone.
     end_failed: Mutex<Option<(AttemptId, String)>>,
@@ -794,6 +796,7 @@ impl TaskRuntime {
             claude_move_refused_ms: AtomicI64::new(0),
             context: Mutex::new(crate::context_full::ContextEpisode::default()),
             finalizing: tokio::sync::watch::channel(0).0,
+            park_cleanup: tokio::sync::watch::channel(0).0,
             end_failed: Mutex::new(None),
             parked_activity: Mutex::new(None),
             taken_request: Mutex::new(None),
@@ -1935,15 +1938,11 @@ impl App {
             match condition {
                 StartCondition::Status(status) if status != task.status => return Ok(false),
                 StartCondition::Parked(expected) => {
-                    if task.status != TaskStatus::Parked {
-                        return Ok(false);
-                    }
-                    let latest = self.deps.store.latest_attempt(task_id).await?;
-                    if latest.as_ref().map(|run| &run.id) != expected.as_ref() {
+                    if task.status != TaskStatus::Parked || task.parked_attempt_id != expected {
                         return Ok(false);
                     }
                     if task.harness == Harness::Codex {
-                        self.restore_parked_codex_rollout(&task, latest).await?;
+                        self.restore_parked_codex_rollout(&task).await?;
                     }
                 }
                 _ => {}
@@ -4045,7 +4044,7 @@ impl App {
         let Some(runtime) = self.existing_runtime(task_id) else {
             return Ok(());
         };
-        let mut ending = runtime.finalizing.subscribe();
+        let mut ending = runtime.park_cleanup.subscribe();
         if *ending.borrow_and_update() == 0 {
             return Ok(());
         }
@@ -4242,6 +4241,10 @@ impl App {
             // No exit will consume it: the next run must not inherit it.
             replace_intent(&mut intent, None, SwitchEnd::Lost);
         }
+        let park_cleanup = runtime
+            .as_ref()
+            .filter(|_| matches!(request, Some(TakenRequest::Park)))
+            .map(|rt| Finalizing::start(&rt.park_cleanup));
         match request {
             Some(TakenRequest::Close) => self.settle_ended(task_id, now, after_close).await,
             Some(TakenRequest::Cancel) => self.settle_ended(task_id, now, after_cancel).await,
@@ -4267,6 +4270,7 @@ impl App {
             };
             rt.hub.exit(ended.as_str(), None);
         }
+        drop(park_cleanup);
         self.publish_task(task_id).await;
         self.advance_chains(task_id).await;
         self.drain_queue().await;
@@ -4522,6 +4526,8 @@ impl App {
                 *run = None;
             }
         }
+        let park_cleanup = matches!(intent, Some(EndIntent::Park))
+            .then(|| Finalizing::start(&runtime.park_cleanup));
         match intent {
             Some(EndIntent::Switch(done)) => {
                 let _ = done.send(SwitchEnd::Ended);
@@ -4569,6 +4575,7 @@ impl App {
             .flatten()
             .map_or_else(|| "stopped_lost".into(), |t| t.status.as_str().to_owned());
         runtime.hub.exit_at(&status, exit.code, cause);
+        drop(park_cleanup);
         self.publish_task(task_id).await;
         if let Ok(Some(task)) = self.deps.store.task(task_id).await
             && let Err(err) = self.refresh_onboarding(&task.sandbox_id).await
@@ -4895,11 +4902,7 @@ impl App {
     }
 
     /// Recover the rollout only after the parked attempt has been admitted under the launch lock.
-    async fn restore_parked_codex_rollout(
-        &self,
-        task: &TaskRecord,
-        latest_attempt: Option<AttemptRecord>,
-    ) -> AppResult<()> {
+    async fn restore_parked_codex_rollout(&self, task: &TaskRecord) -> AppResult<()> {
         // Do not fall back to a fresh session if an old attempt has no lineage.
         // SessionStart stores the attempt id before it records lineage, so a
         // restart between those writes can recover from the parked attempt.
@@ -4907,7 +4910,10 @@ impl App {
         let missing = || {
             AppError::Conflict("This parked Codex task has no recorded rollout to resume.".into())
         };
-        let run = latest_attempt
+        let attempt_id = task.parked_attempt_id.as_ref().ok_or_else(missing)?;
+        let run = store
+            .attempt(attempt_id)
+            .await?
             .filter(|run| run.harness == Harness::Codex)
             .ok_or_else(missing)?;
         let sessions = store.provider_sessions(&task.id).await?;
@@ -4946,27 +4952,13 @@ impl App {
     /// As [`App::start_run`].
     pub(crate) async fn resume_parked(
         self: &Arc<Self>,
-        task_id: &TaskId,
+        task: &TaskRecord,
         prompt: Option<String>,
     ) -> AppResult<bool> {
-        // Observe the attempt first. A launch between the two reads makes this
-        // request stale, even if its replacement has already parked again.
-        let parked_run = self
-            .deps
-            .store
-            .latest_attempt(task_id)
-            .await?
-            .map(|run| run.id);
-        let task = self
-            .deps
-            .store
-            .task(task_id)
-            .await?
-            .ok_or(AppError::NotFound)?;
         if task.status != TaskStatus::Parked {
             return Ok(false);
         }
-        let goal_unfinished = self.goal_unfinished_of(&task).await;
+        let goal_unfinished = self.goal_unfinished_of(task).await;
         let rest = task
             .activity
             .filter(|activity| {
@@ -4977,10 +4969,10 @@ impl App {
                 goal_unfinished,
             });
         self.start_run_if(
-            task_id,
+            &task.id,
             RunStart::Resume { prompt },
             None,
-            StartCondition::Parked(parked_run),
+            StartCondition::Parked(task.parked_attempt_id.clone()),
             rest,
         )
         .await

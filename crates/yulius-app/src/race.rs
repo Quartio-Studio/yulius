@@ -10,6 +10,10 @@ use std::path::Path;
 /// Where the server pauses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Point {
+    /// An owner's message selected its parked task before the caller's preflight.
+    ParkedMessageSelected,
+    /// The parked predecessor's local work is settled and its successor needs hosted PR facts.
+    ParkedPredecessorChecksPr,
     /// A parked resume completed preflight, before it owns the launch lock.
     ParkedResumePrepared,
     /// The parked status is durable, just before the reader restores the saved grid.
