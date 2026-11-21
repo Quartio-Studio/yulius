@@ -1310,6 +1310,98 @@ async fn a_production_secret_is_never_typed_into_a_page() -> TestResult {
 }
 
 #[tokio::test]
+async fn goal_stop_observes_the_browser_action_for_its_own_task() -> TestResult {
+    with_fixture(|f| async move {
+        let mut task = f.h.store.task(&TaskId::parse("t1")?).await?.ok_or("task")?;
+        task.id = TaskId::parse("browser-goal")?;
+        task.mode = yulius_app::model::TaskMode::Goal;
+        task.activity = Some(Activity::Working);
+        let task = f.h.store.insert_task(&task).await?;
+        let token = "fixture-browser-goal";
+        let mut run =
+            f.h.store
+                .live_attempt(&TaskId::parse("t1")?)
+                .await?
+                .ok_or("fixture run")?;
+        run.id = yulius_domain::ids::AttemptId::parse("browser-goal-run")?;
+        run.task_id = task.id.clone();
+        run.account_id =
+            Some(crate::pool_supervision::add_account(&f.h.app, "browser-account").await?);
+        run.token_hash = f.h.app.deps.crypto.sha256_hex(token.as_bytes());
+        let run_dir = tempfile::tempdir()?;
+        run.run_dir = run_dir.path().to_string_lossy().into_owned();
+        f.h.store.insert_attempt(&run).await?;
+        let ctx = f.h.app.agent_context(token).await?;
+        f.h.app
+            .tool_steps_set(
+                &ctx,
+                &json!({"steps":[{"title":"Verify dev","status":"in_progress"}]}),
+            )
+            .await?;
+        let opened = mcp_tool(
+            &f.h,
+            token,
+            "browser_open",
+            json!({"url":"https://fixture.test"}),
+        )
+        .await?;
+        assert_eq!(opened["isError"], false, "{opened}");
+        let browser =
+            f.h.app
+                .deps
+                .browser
+                .running(&task.sandbox_id)
+                .await
+                .ok_or("browser")?;
+        let tab = browser.tabs().first().ok_or("tab")?.id.clone();
+        // The live tab already owns a human action before the task activity has caught up.
+        browser.request_user_action(&tab, "Sign in to the test account", Some(&task.id))?;
+        use yulius_app::ports::browser::BrowserPort;
+        let lookup = Arc::new(crate::delivery::HeldBrowserLookup::with_session(
+            browser.clone(),
+        ));
+        let (entered, release) = lookup.hold_publication_lookup(&task.id);
+        lookup.running(&task.sandbox_id).await;
+        let mut deps = f.h.app.deps.clone();
+        deps.browser = lookup;
+        let app = yulius_app::context::App::new(f.h.app.config.clone(), deps);
+        let observing = app.clone();
+        let stop = tokio::spawn(async move {
+            observing
+                .hook_event(token, "claude", "Stop", &Default::default(), None)
+                .await
+        });
+        tokio::time::timeout(WAIT, entered.notified()).await?;
+        release.notify_one();
+        let yulius_app::hooks::HookReply::Output(held) = stop.await?? else {
+            return Err("capacity hold".into());
+        };
+        assert!(held.decision.is_none());
+        assert!(browser.clear_action(&tab));
+        browser.request_user_action(
+            &tab,
+            "Sign in for a different task",
+            Some(&TaskId::parse("t1")?),
+        )?;
+        let yulius_app::hooks::HookReply::Output(resumed) = app
+            .hook_event(token, "claude", "Stop", &Default::default(), None)
+            .await?
+        else {
+            return Err("capacity hold".into());
+        };
+        assert_eq!(resumed.decision.as_deref(), Some("block"));
+        assert!(
+            resumed
+                .reason
+                .as_deref()
+                .is_some_and(|r| r.contains("Verify dev"))
+        );
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
 async fn user_action_requests_mark_the_task_notify_viewers_and_return_a_link() -> TestResult {
     with_fixture(|f| async move {
         let served = serve(f.h.router.clone()).await?;

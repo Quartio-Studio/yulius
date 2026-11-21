@@ -919,10 +919,21 @@ impl App {
                             let continuation = match kind {
                                 PauseKind::Prompt => pause.continuation.clone(),
                                 PauseKind::Turn => self.stop_continuation(&task).await,
-                                PauseKind::Limit | PauseKind::Start | PauseKind::FreshStart => None,
+                                _ => None,
                             };
-                            self.switch_task_now(&task.id, account, &reason, continuation)
-                                .await
+                            self.switch_with(
+                                &task.id,
+                                account,
+                                &reason,
+                                RunStart::Resume {
+                                    prompt: continuation,
+                                }
+                                .with_goal_continuation(
+                                    task.mode == crate::model::TaskMode::Goal
+                                        && kind == PauseKind::Turn,
+                                ),
+                            )
+                            .await
                         }
                     };
                     if let Err(err) = switched {
@@ -937,25 +948,8 @@ impl App {
                     }
                     // The start ends the pause once it is made or waits in the queue
                     // (`start_run`); one that is refused (the queue is full) leaves it open.
-                    let start = match store.provider_sessions(&task.id).await {
-                        Ok(_) if pause.kind == PauseKind::FreshStart => RunStart::Fresh {
-                            prompt: pause.continuation.clone(),
-                        },
-                        Ok(_)
-                            if pause.kind == PauseKind::Prompt
-                                && self.held_opening(&task.id).await =>
-                        {
-                            RunStart::Fresh { prompt: None }
-                        }
-                        Ok(lineage) if !lineage.is_empty() && pause.kind == PauseKind::Limit => {
-                            RunStart::AfterLimit
-                        }
-                        Ok(lineage) if !lineage.is_empty() => RunStart::Resume {
-                            prompt: pause.continuation.clone(),
-                        },
-                        Ok(_) => RunStart::Fresh {
-                            prompt: pause.continuation.clone(),
-                        },
+                    let start = match self.start_for_capacity_pause(&task, pause).await {
+                        Ok(start) => start,
                         Err(err) => {
                             tracing::warn!(error = %err, task = %task.id, "cannot select a session for the capacity retry");
                             return Resume::Waiting(None);
@@ -977,6 +971,49 @@ impl App {
                 Resume::Resumed
             }
         }
+    }
+
+    /// Rebuild a start that waited without a process. An admitted goal keeps both its
+    /// launch mode and its instruction. An older turn hold decides from current work and lineage.
+    pub(crate) async fn start_for_capacity_pause(
+        &self,
+        task: &TaskRecord,
+        pause: &PauseRecord,
+    ) -> AppResult<RunStart> {
+        let prompt = pause.continuation.clone();
+        match pause.kind {
+            PauseKind::FreshStart => return Ok(RunStart::Fresh { prompt }),
+            PauseKind::GoalFreshStart => {
+                return Ok(RunStart::GoalFresh {
+                    prompt: crate::hooks::retained_goal_instruction(prompt),
+                });
+            }
+            PauseKind::GoalResumeStart => {
+                return Ok(RunStart::GoalResume {
+                    prompt: crate::hooks::retained_goal_instruction(prompt),
+                });
+            }
+            PauseKind::Prompt if self.held_opening(&task.id).await => {
+                return Ok(RunStart::Fresh { prompt: None });
+            }
+            _ => {}
+        }
+        let prompt = if pause.kind == PauseKind::Turn {
+            self.stop_continuation(task).await
+        } else {
+            prompt
+        };
+        let lineage = self.deps.store.provider_sessions(&task.id).await?;
+        let start = if lineage.is_empty() {
+            RunStart::Fresh { prompt }
+        } else if pause.kind == PauseKind::Limit {
+            RunStart::AfterLimit
+        } else {
+            RunStart::Resume { prompt }
+        };
+        Ok(start.with_goal_continuation(
+            task.mode == crate::model::TaskMode::Goal && pause.kind == PauseKind::Turn,
+        ))
     }
 
     /// Whether a move of the task's session, whose turn is held at its Stop, would lose a
@@ -1021,7 +1058,13 @@ impl App {
         self.end_pause(&task.id, "released").await;
         if let Ok(next) = task.status.apply(TaskEvent::CapacityReturned) {
             let activity = match pause.kind {
-                PauseKind::Turn => Activity::Waiting,
+                PauseKind::Turn
+                    if task.mode == crate::model::TaskMode::Prompt
+                        || (pause.continuation.is_none()
+                            && self.stop_continuation(task).await.is_none()) =>
+                {
+                    Activity::Waiting
+                }
                 _ => Activity::Working,
             };
             let _ = store
@@ -1371,14 +1414,14 @@ mod tests {
         for (kind, holds_process) in [
             (PauseKind::Start, false),
             (PauseKind::FreshStart, false),
+            (PauseKind::GoalFreshStart, false),
+            (PauseKind::GoalResumeStart, false),
             (PauseKind::Prompt, true),
             (PauseKind::Turn, true),
             (PauseKind::Limit, true),
         ] {
-            assert_eq!(
-                PauseKind::parse(kind.as_str()).holds_process(),
-                holds_process
-            );
+            assert_eq!(PauseKind::parse(kind.as_str()), kind);
+            assert_eq!(kind.holds_process(), holds_process);
         }
     }
 
