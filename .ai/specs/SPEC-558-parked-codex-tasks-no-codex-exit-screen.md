@@ -75,6 +75,10 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- At `40db6a8bb`, an active list between an archive read and an Undo read could still remove the restored row. The expanded Chromium regression schedules all six reply orders for a Closed, Stopped or Failed task and discards an obsolete archive response as the mounted terminal does. Nine of 18 schedules lost the row before the fix. The newer detail now publishes a resting task’s archive flag directly, so the list and terminal agree even when the older detail is discarded. All 13 focused Chromium tests passed.
+
+- The full Chromium run `01a1fbf6-23d3-7082-91c1-507ebb85541c` on the earlier head `3c574cf45` reported a teardown timeout in the existing persistent-startup-interruptions test. That test and its startup fixture were unchanged in this delivery. [Issue #1556](https://github.com/Quartio-Studio/yulius/issues/1556)
+
 - At `3c574cf45`, two detail reads began on a Closed task. The older one observed Archive and the newer one observed Undo, but the active row remained absent in both reply orders. In the mounted terminal, releasing Archive then Undo left the title “Held archive”. The store now retains the newer public summary for the lifetime of an older overlapping request. The expanded ordering test and mounted regression both passed after the correction.
 
 - On the merged #1555 code, nine of ten controlled archive/Undo cases failed. The regression for Closed followed by a missed Archived event checks both reply orders of an outstanding active list. Additional coverage starts the list after terminal detail and lets it omit the task first. The initial prototype skipped the terminal notification in that order. The store now accepts a compatible archive observation to explain the omission while preserving the newer list’s membership.

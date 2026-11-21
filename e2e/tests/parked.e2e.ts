@@ -3038,3 +3038,40 @@ test('a mounted Closed terminal keeps Undo from its second outstanding detail re
   await browser.evaluate(() => (window as unknown as Fixture).releaseUndo());
   await expect(title).toHaveText(/Undo from newer detail/);
 });
+
+test('a newer unarchived detail restores the task across an intermediate empty list in every reply order', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const results = [];
+    for (const status of ['closed', 'stopped_cancelled', 'failed_spawn_error']) {
+      for (const schedule of ['ALU', 'AUL', 'LAU', 'LUA', 'UAL', 'ULA']) {
+        const initial = { id: 'p', sandbox_id: 's', status, archived: false, title: 'Before' };
+        const held = Promise.withResolvers<void>();
+        let reads = 0;
+        const store = createStore({ get: async () => {
+          if (++reads === 1) return [initial];
+          await held.promise;
+          return [];
+        } });
+        await store.loadTasks('s');
+        const archive = store.beginParkedDetail(initial);
+        const list = store.loadTasks('s', true);
+        const undo = store.beginParkedDetail(initial);
+        for (const reply of schedule) {
+          if (reply === 'A') {
+            // The mounted terminal drops an older reply after applying a newer detail.
+            if (schedule.indexOf('U') < schedule.indexOf('A')) archive.release();
+            else archive({ ...initial, archived: true });
+          }
+          if (reply === 'L') { held.resolve(); await list; }
+          if (reply === 'U') undo({ ...initial, archived: false, title: 'Restored' });
+        }
+        results.push(store.findTask('p')?.title ?? null);
+      }
+    }
+    return results;
+  });
+  expect(seen).toEqual(Array(18).fill('Restored'));
+});
