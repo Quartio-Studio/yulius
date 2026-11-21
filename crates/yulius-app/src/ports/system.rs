@@ -31,6 +31,10 @@ pub trait SystemProbe: Send + Sync {
     /// Current metrics; disk figures describe the volume that holds `data_dir`.
     fn snapshot(&self, data_dir: &Path) -> SystemSnapshot;
 
+    /// Allocated bytes beneath a held directory, measured through directory handles. Hard links
+    /// count once and traversal has entry and depth bounds. A truncated measurement is a lower bound.
+    fn allocated_tree_bytes(&self, directory: &Path) -> u64;
+
     /// Total and used bytes of the volume that holds `data_dir` (SPEC-276), read every minute by
     /// the disk upkeep: only the disk, so the CPU reading of the status panel is left alone.
     fn disk(&self, data_dir: &Path) -> Option<(u64, u64)> {

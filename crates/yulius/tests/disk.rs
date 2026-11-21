@@ -1624,12 +1624,85 @@ async fn pressure_reclaims_the_compiler_cache_only_without_build_readers() -> Bo
     assert!(cache.exists());
     drop(active);
     let report = w.h.app.disk_upkeep_needing(&w.sandbox, true, 1).await?;
-    assert!(!cache.exists());
+    assert!(!cache.join("artifact").exists());
+    assert_eq!(std::fs::read(cache.join(".yulius-mbx-v1"))?, b"mbx-v1\n");
     assert_eq!(report.caches, 1, "exactly the shared store was reclaimed");
     assert!(report.freed >= BIG as u64);
+    std::fs::remove_file(cache.join(".yulius-mbx-v1"))?;
+    std::fs::remove_dir(&cache)?;
     std::os::unix::fs::symlink(&w.repo, &cache)?;
     w.h.app.disk_upkeep_needing(&w.sandbox, true, 1).await?;
     assert!(w.repo.join("Cargo.toml").is_file());
     assert!(cache.is_symlink());
+    Ok(())
+}
+
+/// Upkeep operates on the marked store it opened, even if the directory entry is replaced.
+#[tokio::test]
+async fn compiler_upkeep_preserves_an_unmarked_replacement() -> BoxResult<()> {
+    let w = world().await?;
+    let cache = w.root.join("rust-compile-cache");
+    std::fs::create_dir(&cache)?;
+    std::fs::write(cache.join(".yulius-mbx-v1"), "mbx-v1\n")?;
+    std::fs::write(cache.join("old"), b"compiled")?;
+    let name = cache.clone();
+    let moved = w.root.join("previous-store");
+    yulius_app::race::on(yulius_app::race::Point::CachePrune, &cache, move || {
+        std::fs::rename(&name, moved).expect("swap out the inspected store");
+        std::fs::create_dir(&name).expect("install an unowned directory");
+        std::fs::write(name.join("keep"), b"unrelated").expect("write replacement contents");
+    });
+    w.h.app.disk_upkeep_needing(&w.sandbox, true, 1).await?;
+    assert_eq!(std::fs::read(cache.join("keep"))?, b"unrelated");
+    Ok(())
+}
+
+/// An interrupted eviction keeps the stamp and resumes on the next healthy-disk round.
+#[tokio::test]
+async fn compiler_upkeep_recovers_after_partial_removal() -> BoxResult<()> {
+    use std::sync::atomic::AtomicUsize;
+    let w = world().await?;
+    let cache = w.root.join("rust-compile-cache");
+    std::fs::create_dir(&cache)?;
+    std::fs::write(cache.join(".yulius-mbx-v1"), "mbx-v1\n")?;
+    let visited = Arc::new(AtomicUsize::new(0));
+    for name in ["actions", "shims"] {
+        let child = cache.join(name);
+        std::fs::create_dir(&child)?;
+        std::fs::write(child.join("blob"), b"cached output")?;
+        let count = visited.clone();
+        yulius_app::race::on(yulius_app::race::Point::CachePrune, &child, move || {
+            assert_eq!(
+                count.fetch_add(1, Ordering::SeqCst),
+                0,
+                "cut off the worker after one removal"
+            );
+        });
+    }
+    w.h.app.disk_upkeep_needing(&w.sandbox, true, 1).await?;
+    assert_eq!(visited.load(Ordering::SeqCst), 2);
+    assert_eq!(std::fs::read(cache.join(".yulius-mbx-v1"))?, b"mbx-v1\n");
+    assert_ne!(cache.join("actions").exists(), cache.join("shims").exists());
+    w.h.app.disk_upkeep(&w.sandbox, false).await?;
+    assert_eq!(std::fs::read_dir(&cache)?.count(), 1);
+    assert_eq!(std::fs::read(cache.join(".yulius-mbx-v1"))?, b"mbx-v1\n");
+    Ok(())
+}
+
+/// The 20 GiB threshold applies to allocated blocks even when many names refer to one inode.
+#[tokio::test]
+async fn compiler_upkeep_counts_a_hardlinked_artifact_once() -> BoxResult<()> {
+    let w = world().await?;
+    let cache = w.root.join("rust-compile-cache");
+    std::fs::create_dir(&cache)?;
+    std::fs::write(cache.join(".yulius-mbx-v1"), "mbx-v1\n")?;
+    let blob = cache.join("blob");
+    std::fs::write(&blob, vec![1u8; 32 << 20])?;
+    for index in 0..640 {
+        std::fs::hard_link(&blob, cache.join(index.to_string()))?;
+    }
+    let report = w.h.app.disk_upkeep(&w.sandbox, false).await?;
+    assert!(blob.exists(), "the store occupies about 32 MiB");
+    assert_eq!(report.caches, 0);
     Ok(())
 }

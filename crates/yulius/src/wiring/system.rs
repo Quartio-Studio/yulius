@@ -94,6 +94,10 @@ fn cpu_ticks_of(stat: &str) -> Option<(u64, u64)> {
 }
 
 impl SystemProbe for SysinfoProbe {
+    fn allocated_tree_bytes(&self, directory: &Path) -> u64 {
+        yulius_sandbox::usage::measure(&[(directory, Some("compiler store"))]).bytes
+    }
+
     fn disk(&self, data_dir: &Path) -> Option<(u64, u64)> {
         volume_of(data_dir)
     }

@@ -1266,7 +1266,8 @@ loopback `/internal/leftovers*` with the key in `<data>/leftovers-cli.key`; the 
 For this repository, Cargo writes targets per checkout and mbx stores compiled artifacts in
 `<sandbox>/rust-compile-cache`. Each build owns its mbx session. mbx collects at 16 GiB.
 Instance upkeep can reclaim a stamped, idle store above 20 GiB or under remaining disk pressure.
-A shared lock protects active builds. [ADR-0434](decisions/0434-keep-a-local-compiler-cache-in-each-project-sandbox.md).
+A shared lock protects active builds. Upkeep clears the opened store and keeps its ownership stamp. A pending
+marker lets upkeep finish an interrupted removal while builds continue through Cargo. [ADR-0434](decisions/0434-keep-a-local-compiler-cache-in-each-project-sandbox.md).
 
 The disk upkeep (`yulius-app::disk`) reads the data disk every minute through
 `SystemProbe::disk`; `yulius-domain::sweep` turns it into a level (low from 85 %, critical from

@@ -47,6 +47,12 @@ def open_store(cache, checkout):
                     raise
     directory = os.open(cache, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
+        try:
+            os.stat(".yulius-mbx-pruning", dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            return False
         with os.fdopen(os.open(stamp, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
                                dir_fd=directory), "rb") as owner:
             return stat.S_ISREG(os.fstat(owner.fileno()).st_mode) and owner.read(len(contents) + 1) == contents

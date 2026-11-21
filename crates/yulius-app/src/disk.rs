@@ -155,31 +155,67 @@ fn remove_cache(root: &Path, path: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Reclaim the project compiler store under pressure. Repository builds acquire a shared
-/// flock on the sandbox root. The root survives eviction, so the next reader takes the same
-/// lock even when it has to recreate the store. Only the launcher's marked cache is ours.
-fn prune_compile_cache(root: &Path, limit: u64) -> std::io::Result<u64> {
+/// Hold the sandbox lease and the stamped directory's identity while clearing its contents.
+/// Keeping the stamp lets builds initialize new entries. A pending marker makes an interrupted
+/// removal resumable on a healthy disk and tells builds to use ordinary Cargo in the meantime.
+fn prune_compile_cache(
+    root: &Path,
+    limit: u64,
+    measure: impl Fn(&Path) -> u64,
+) -> std::io::Result<u64> {
+    use nix::errno::Errno;
+    use nix::fcntl::{OFlag, openat};
+    use nix::sys::stat::Mode;
+    use std::os::fd::AsRawFd as _;
     use std::os::unix::fs::OpenOptionsExt as _;
-    let cache = root.join("rust-compile-cache");
-    if !cfg!(target_os = "linux") || !real_dir_from(root, &cache) {
+    const STORE: &str = "rust-compile-cache";
+    const OWNER: &str = ".yulius-mbx-v1";
+    const PENDING: &str = ".yulius-mbx-pruning";
+
+    if !cfg!(target_os = "linux") {
         return Ok(0);
     }
-    let flags = nix::fcntl::OFlag::O_DIRECTORY.union(nix::fcntl::OFlag::O_NOFOLLOW);
-    let lease = std::fs::OpenOptions::new()
+    let flags = OFlag::O_DIRECTORY.union(OFlag::O_NOFOLLOW);
+    let lease = match std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(flags.bits())
-        .open(root)?;
-    if lease.try_lock().is_err()
-        || read_small_file(&cache.join(".yulius-mbx-v1"), 7).as_deref() != Some("mbx-v1\n")
+        .open(root)
     {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        result => result?,
+    };
+    if lease.try_lock().is_err() {
         return Ok(0);
     }
-    let bytes = dir_size(&cache);
-    if bytes <= limit {
+    let store = match openat(&lease, STORE, flags.union(OFlag::O_CLOEXEC), Mode::empty()) {
+        Err(Errno::ENOENT | Errno::ENOTDIR | Errno::ELOOP) => return Ok(0),
+        result => result?,
+    };
+    // The final "." lets the measurement open the held directory with O_NOFOLLOW.
+    let through = PathBuf::from(format!("/proc/self/fd/{}/.", store.as_raw_fd()));
+    if read_small_file(&through.join(OWNER), 7).as_deref() != Some("mbx-v1\n") {
         return Ok(0);
     }
-    remove_cache(root, &cache)?;
-    Ok(bytes)
+    let pending = through.join(PENDING);
+    let bytes = measure(&through);
+    if bytes <= limit && std::fs::symlink_metadata(&pending).is_err() {
+        return Ok(0);
+    }
+    match std::fs::create_dir(&pending) {
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+        result => result?,
+    }
+    let shown = root.join(STORE);
+    crate::race::reached(crate::race::Point::CachePrune, &shown);
+    for entry in std::fs::read_dir(&through)? {
+        let name = entry?.file_name();
+        if name != OWNER && name != PENDING {
+            crate::race::reached(crate::race::Point::CachePrune, &shown.join(&name));
+            crate::leftovers::remove_below(&through, &through.join(name))?;
+        }
+    }
+    crate::leftovers::remove_below(&through, &pending)?;
+    Ok(bytes.saturating_sub(measure(&through)))
 }
 
 fn root_entries(worktree: &Path) -> Vec<String> {
@@ -345,7 +381,12 @@ impl App {
             COMPILE_CACHE_LIMIT
         };
         let root = self.sandbox_dir(&sandbox.id);
-        match tokio::task::spawn_blocking(move || prune_compile_cache(&root, limit)).await {
+        let probe = Arc::clone(&self.deps.system);
+        match tokio::task::spawn_blocking(move || {
+            prune_compile_cache(&root, limit, |dir| probe.allocated_tree_bytes(dir))
+        })
+        .await
+        {
             Ok(Ok(0)) => {}
             Ok(Ok(bytes)) => {
                 report.caches += 1;
@@ -819,10 +860,16 @@ mod tests {
         let cache = root.path().join("rust-compile-cache");
         std::fs::create_dir(&cache)?;
         std::fs::write(cache.join(".yulius-mbx-v1"), "mbx-v1\n")?;
+        let empty = dir_size(&cache);
+        std::fs::write(cache.join("artifact"), vec![1u8; 8192])?;
         let bytes = dir_size(&cache);
-        assert_eq!(prune_compile_cache(root.path(), bytes)?, 0);
-        assert_eq!(prune_compile_cache(root.path(), bytes - 1)?, bytes);
-        assert!(!cache.exists());
+        assert_eq!(prune_compile_cache(root.path(), bytes, dir_size)?, 0);
+        assert_eq!(
+            prune_compile_cache(root.path(), bytes - 1, dir_size)?,
+            bytes - empty
+        );
+        assert_eq!(dir_size(&cache), empty);
+        assert!(cache.join(".yulius-mbx-v1").is_file());
         Ok(())
     }
 
@@ -833,15 +880,19 @@ mod tests {
         let root = parent.path().join("sandbox");
         let link = parent.path().join("linked-sandbox");
         let cache = root.join("rust-compile-cache");
-        assert_eq!(prune_compile_cache(&root, 0)?, 0, "sandbox not on disk");
+        assert_eq!(
+            prune_compile_cache(&root, 0, dir_size)?,
+            0,
+            "sandbox not on disk"
+        );
         std::fs::create_dir_all(&cache)?;
         std::fs::write(cache.join(".yulius-mbx-v1"), "mbx-v1\n")?;
         std::os::unix::fs::symlink(&root, &link)?;
-        assert!(prune_compile_cache(&link, COMPILE_CACHE_LIMIT).is_err());
+        assert!(prune_compile_cache(&link, COMPILE_CACHE_LIMIT, dir_size).is_err());
         let original = root.join("original");
         std::fs::rename(&cache, &original)?;
         std::os::unix::fs::symlink(&original, &cache)?;
-        assert_eq!(prune_compile_cache(&root, 0)?, 0);
+        assert_eq!(prune_compile_cache(&root, 0, dir_size)?, 0);
         assert!(original.join(".yulius-mbx-v1").is_file());
         Ok(())
     }
