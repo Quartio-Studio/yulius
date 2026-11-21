@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- CLI and Superagent task creation now defaults to GPT-6.2 Astra at extra high effort, with Ultrafast on ChatGPT Pro 500. [SPEC-583](../.ai/specs/SPEC-583-cli-nad-superagents-should-spawn-tasks-i.md)
+
 - A plain right-click in a Codex terminal opens the clipboard menu. Paste now uses the viewer’s clipboard, fixing “clipboard text is unavailable” on headless sandboxes. [SPEC-582](../.ai/specs/SPEC-582-fix-clipboard-on-codex.md)
 
 - After a restart, a failed single-PR merge train reports its recorded job failure once to the original task. The watcher checks for repairs, reruns and human decisions before sending it (SPEC-558).
