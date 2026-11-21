@@ -464,6 +464,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0427 -->
 <!-- ADR 0428 -->
 <!-- ADR 0429 -->
+- [0430](0430-yuliuss-staging-builds-in-cds-builder-and-installs-a-kept-release-with-its-store.md): Yulius's own staging (`[cd.dev]`) builds the exact commit in CD's Docker builder (Ubuntu 24.04, pinned toolchain), uploads it by SHA-256 over SSH with a pinned host key, and installs it with the replaced release's store kept beside it; verify proves the commit, HTTPS, the contained doctor, no lost rows and the Docker smoke; a rollback restores the release's own store across a schema change; rejected: the VM's update helper (main only, never older, needs a repository credential, rebuilds on rollback) (SPEC-591).
 <!-- ADR 0430 -->
 <!-- ADR 0431 -->
 <!-- ADR 0432 -->

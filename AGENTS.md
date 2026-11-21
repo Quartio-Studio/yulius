@@ -20,9 +20,11 @@ Project map for Yulius, configured in [yulius.toml](yulius.toml): [product](docs
 [remote control](docs/remote-control.md). They summarise and point to the specs
 above; the rules in this file stay authoritative. Yulius CI is the only CI: it runs the gate
 (`[[ci.jobs]]` in `yulius.toml`) and publishes the `yulius/ci` commit status; there are no GitHub Actions.
-CD (deployment) is `[cd.dev]` (empty: no shared target, so the full suite gates each pull request;
-no dev machine yet) and `[cd.prod]` (promotion of `dev` to
-`main`) in `yulius.toml`; another target would be a `[cd.<name>]` with its `stage`
+CD (deployment) is `[cd.dev]` (Yulius's own staging VM: `scripts/cd/` builds the exact dev
+revision and installs it there with its store kept,
+[ADR-0430](docs/decisions/0430-yuliuss-staging-builds-in-cds-builder-and-installs-a-kept-release-with-its-store.md),
+[operations](docs/operations.md#yuliuss-own-staging-vm); the full suite still gates each pull
+request) and `[cd.prod]` (promotion of `dev` to `main`) in `yulius.toml`; another target would be a `[cd.<name>]` with its `stage`
 ([ADR-0195](docs/decisions/0195-cd-environments-are-named-and-take-their-rules-from-a-stage.md)). Yulius runs them from the protected branches
 ([ADR-0109](docs/decisions/0109-cd-runs-verified-commits-out-of-the-agents-reach.md)); a merge
 deploys nothing by itself (a shared staging target uses merge-first staging via `cd_deploy` after
