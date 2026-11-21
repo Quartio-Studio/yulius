@@ -1,6 +1,6 @@
 ---
 yulius-task: b2d041b9-f438-4630-8b8c-a686f9c0ef0d
-status: in-progress
+status: done
 ---
 
 # SPEC-589 Continue authorized work at the end of a goal turn
@@ -43,7 +43,7 @@ Earlier user requests establish the ownership rule. Task #534 concerned automate
 - [x] Preserve the native evaluator on a goal’s first Stop
 - [x] Carry the opening verification turn across a capacity move before its native goal starts
 - [x] Keep a delayed native-goal Stop and its verdict with their originating attempt
-- [ ] Keep transcript goal verdicts with their run and order them with timeout settlement
+- [x] Keep transcript goal verdicts with their run and order them with timeout settlement
 
 ## Acceptance criteria
 
@@ -129,3 +129,7 @@ Make the continuation decision where the agent can act on it, at the shared Stop
 - The preceding opening-turn mutation run finished all 8 candidates, with 2 caught and 6 unviable. The first-native-verdict run reported 25 listed, 5 caught, 3 missed, 0 timed out, 15 unviable and 2 not reached within 12 minutes. The three survivors replaced the capacity-recovery instruction with no text, an empty string or unrelated text. The expanded subprocess filter exercises the replacement launch instruction and its durable attempt count.
 - The authenticated Stop and the deadline each passed their two-run ownership regression at `91cbf6dab`. All 1,137 selected Rust tests passed on that implementation and all-feature Clippy passed with warnings denied.
 - The review of `91cbf6dab` found two transcript races. Both failed in test-first commit `e601fd4f2` using a real watcher and synthetic Claude records. After the old run reported Met, the replacement incorrectly became Done. When the live run reported Met as its deadline settled it, the task incorrectly stayed Waiting.
+- Independent review approved `5d7231ff10b6fbe594736b4fd76b6218309bb0a5`. The reviewer reproduced both wrong activities on the previous binary and passed both watcher regressions and the native first-Stop control on the fix. All 841 affected Rust tests passed locally, including the original verification-only Stop through all three harnesses, the onboarding archive, process-free capacity recovery and merge-train controls. The format and repository checks and all-target, all-feature Clippy with warnings denied passed. Vidoc reported disabled.
+- The targeted follow-up for the first native verdict reported `3 mutants tested in 8m: 3 caught`. Returning no capacity instruction, empty text or unrelated text each failed the queued replacement’s launch assertion.
+- The bounded Stop and timeout campaign reported `62 listed, 5 caught, 0 missed, 0 timed out, 0 unviable, 57 not reached` at 12 minutes.
+- The transcript-verdict campaign reported `21 listed, 1 caught, 0 missed, 0 timed out, 1 unviable, 19 not reached` at 8 minutes. Neither bounded campaign tested all candidates.
