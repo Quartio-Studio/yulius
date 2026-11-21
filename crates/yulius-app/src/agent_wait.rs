@@ -363,17 +363,14 @@ impl App {
         );
         // A request can have verified its head before parking took the writer.
         // The reader may already have taken the intent to persist the Parked state.
-        if self.parking(&task.id)
-            || (task.status == yulius_domain::task::TaskStatus::Running && runtime.finalizing())
-            || self
-                .deps
-                .store
-                .task(&task.id)
-                .await?
-                .is_some_and(|now| now.status == yulius_domain::task::TaskStatus::Parked)
-        {
+        use yulius_domain::task::TaskStatus;
+        let parking = runtime.park_committed();
+        if self.deps.store.task(&task.id).await?.is_some_and(|now| {
+            now.status == TaskStatus::Parked
+                || (parking && matches!(now.status, TaskStatus::Running | TaskStatus::Switching))
+        }) {
             return Err(crate::error::AppError::Conflict(
-                "The session is ending or parked. Resume it before arming the merge.".into(),
+                "The session is parking or parked. Resume it before arming the merge.".into(),
             ));
         }
         self.reconcile_arm_change(&task.id, &runtime).await?;

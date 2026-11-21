@@ -111,6 +111,8 @@ The final parking check compares the owner’s saved singleton decision with the
 
 ## Evidence
 
+- At `ee1f09933`, a person could arm a pending merge after parking won, a subscription switch set the task to Switching, and the run reader consumed the park intent. The regression received `armed: true`. A normal subscription switch accepted the same request. The final parking decision now keeps the original attempt ID and idle activity until its task state is stored. This keeps merge admission ordered with parking throughout that interval.
+
 - On `3eceb717f`, parking accepted a decision for a new base against the previous hosted observation. It also parked while the person's replacement merge request held the arm writer. In the opposite order the request returned `armed: true` after parking had committed its end intent. A separate parked-detail regression returned “could not be verified” for an unchanged ordinarily failing PR head after its base advanced. Each case failed before the fix. The request fixture uses a conventional PR title so it reaches merge admission.
 
 - On the integrated dev baseline `e55073a71`, both restart regressions reached the final parking decision and reported one park when zero were expected. One had a current failed singleton on ordinary green PR #1481. In the other, a replacement arm retired the failed decision at the final park hook. The fixture waits for the eligibility decision after host reattachment.

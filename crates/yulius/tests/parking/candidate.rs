@@ -147,37 +147,7 @@ fn a_merge_requested_while_its_owner_is_committed_to_park_is_refused() -> TestRe
 
 fn contending_merge_request(arm_first: bool) -> TestResult {
     with_idle_candidate(async |_, app, remote, id, head| {
-        let task = app.deps.store.task(&id).await?.ok_or("task")?;
-        let span = app
-            .deps
-            .store
-            .latest_merge_wait(&id)
-            .await?
-            .ok_or("candidate")?;
-        assert!(
-            app.deps
-                .store
-                .retire_singleton(&id, &span, app.now())
-                .await?
-        );
-        let (mut rerun, job) = crate::pr_watch::run(
-            &task.sandbox_id,
-            "ordinary-rerun",
-            &head,
-            RunState::Running,
-            None,
-            app.now().0,
-        );
-        rerun.reference = CiRef::PullRequest(1481);
-        app.deps.store.insert_ci_run(&rerun, &[job]).await?;
-        remote.set_checks(&head, ChecksState::Pending);
-        remote.pulls.lock().map_err(|_| "pulls")?[0].title = "fix(search): repair latency".into();
-        let ctx = yulius_app::auth::AuthContext {
-            user: app.deps.store.user(&task.owner).await?.ok_or("owner")?,
-            csrf_token: None,
-            session_hash: None,
-            token: None,
-        };
+        let ctx = pending_owner_merge(app, remote, &id, &head).await?;
         if !arm_first {
             let (decided, release) = super::pause_watch_or_queue(super::Point::ParkDecided, &id);
             let park = {
@@ -214,6 +184,115 @@ fn contending_merge_request(arm_first: bool) -> TestResult {
         let armed = arming.await??;
         decision?;
         assert_eq!(armed["armed"], true);
+        Ok(())
+    })
+}
+
+async fn pending_owner_merge(
+    app: &Arc<yulius_app::context::App>,
+    remote: &Arc<crate::support::FakeGitHub>,
+    id: &TaskId,
+    head: &str,
+) -> Result<yulius_app::auth::AuthContext, Error> {
+    let task = app.deps.store.task(id).await?.ok_or("task")?;
+    let span = app
+        .deps
+        .store
+        .latest_merge_wait(id)
+        .await?
+        .ok_or("candidate")?;
+    assert!(
+        app.deps
+            .store
+            .retire_singleton(id, &span, app.now())
+            .await?
+    );
+    let (mut rerun, job) = crate::pr_watch::run(
+        &task.sandbox_id,
+        "ordinary-rerun",
+        head,
+        RunState::Running,
+        None,
+        app.now().0,
+    );
+    rerun.reference = CiRef::PullRequest(1481);
+    app.deps.store.insert_ci_run(&rerun, &[job]).await?;
+    remote.set_checks(head, ChecksState::Pending);
+    remote.pulls.lock().map_err(|_| "pulls")?[0].title = "fix(search): repair latency".into();
+    let ctx = yulius_app::auth::AuthContext {
+        user: app.deps.store.user(&task.owner).await?.ok_or("owner")?,
+        csrf_token: None,
+        session_hash: None,
+        token: None,
+    };
+    Ok(ctx)
+}
+
+#[test]
+fn an_overtaken_switch_refuses_to_arm_after_the_run_reader_takes_the_park() -> TestResult {
+    merge_while_switching(true)
+}
+
+#[test]
+fn a_normal_subscription_switch_allows_the_owners_pending_merge() -> TestResult {
+    merge_while_switching(false)
+}
+
+fn merge_while_switching(parking: bool) -> TestResult {
+    with_idle_candidate(async |_, app, remote, id, head| {
+        let ctx = pending_owner_merge(app, remote, &id, &head).await?;
+        let (taken, release) = super::pause_watch_or_queue(super::Point::RunEndTaken, &id);
+        let app2 = app.clone();
+        let id2 = id.clone();
+        let settling = if parking {
+            let switch_app = app.clone();
+            let switch_id = id.clone();
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                super::Point::ParkDecided,
+                Path::new(id.as_str()),
+                move || {
+                    let switched = tokio::task::block_in_place(|| {
+                        handle
+                            .block_on(switch_app.switch_task_now(&switch_id, None, "manual", None))
+                    });
+                    assert!(
+                        switched.is_err_and(|err| err
+                            .to_string()
+                            .contains("the idle session was parked"))
+                    );
+                },
+            );
+            tokio::spawn(async move {
+                super::parked(&app2, &id2)
+                    .await
+                    .map_err(|err| err.to_string())
+            })
+        } else {
+            tokio::spawn(async move {
+                app2.switch_task_now(&id2, None, "manual", None)
+                    .await
+                    .map(|_| ())
+                    .map_err(|err| err.to_string())
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(10), taken.notified()).await?;
+        let state = super::status_of(app, &id).await.0;
+        let request = app.merge_for_person(&ctx, id.as_str()).await;
+        let armed = app.merge_state_for_person(&ctx, id.as_str()).await?;
+        release.notify_one();
+        settling.await??;
+        assert_eq!(state, Some(yulius_domain::task::TaskStatus::Switching));
+        if parking {
+            assert!(
+                matches!(&request, Err(yulius_app::error::AppError::Conflict(reason)) if reason.contains("park")),
+                "{request:?}"
+            );
+            assert_eq!(armed["armed"], false);
+        } else {
+            assert_eq!(request?["armed"], true);
+            assert_eq!(armed["armed"], true);
+        }
         Ok(())
     })
 }
