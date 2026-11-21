@@ -1,12 +1,13 @@
 //! Run-directory file primitives: crash-safe replacement and bounded record reads (DATA-001).
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::File;
 use std::io::{self, Read, Write};
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use nix::fcntl::OFlag;
+use nix::fcntl::{OFlag, openat, renameat};
+use nix::sys::stat::Mode;
+use nix::unistd::{UnlinkatFlags, unlinkat};
 use serde::de::DeserializeOwned;
 use yulius_contracts::ptyhost::{EXIT_FILE, ExitFile, ExitRecord, RECORD_VERSION, StatusRecord};
 
@@ -16,23 +17,26 @@ pub(crate) const MAX_RECORD_BYTES: u64 = 1 << 20;
 /// Replaces `dir/name` atomically: write `dir/.name.tmp` (mode `mode`, no symlink following),
 /// fsync it, rename over the target and fsync the directory.
 pub(crate) fn atomic_write(dir: &Path, name: &str, bytes: &[u8], mode: u32) -> io::Result<()> {
-    let tmp = dir.join(format!(".{name}.tmp"));
-    let target = dir.join(name);
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(mode)
-        .custom_flags(OFlag::O_NOFOLLOW.bits())
-        .open(&tmp)?;
+    atomic_write_at(&File::open(dir)?, name, bytes, mode)
+}
+
+/// Publish only in this opened control directory, even if CI reuses its pathname.
+pub(crate) fn atomic_write_at(dir: &File, name: &str, bytes: &[u8], mode: u32) -> io::Result<()> {
+    let tmp = format!(".{name}.tmp");
+    let mut file = File::from(openat(
+        dir,
+        tmp.as_str(),
+        OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_TRUNC | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+        Mode::from_bits_truncate(mode as _),
+    )?);
     let result = file.write_all(bytes).and_then(|()| file.sync_all());
     drop(file);
     if let Err(error) = result {
-        let _ = fs::remove_file(&tmp);
+        let _ = unlinkat(dir, tmp.as_str(), UnlinkatFlags::NoRemoveDir);
         return Err(error);
     }
-    fs::rename(&tmp, &target)?;
-    File::open(dir)?.sync_all()
+    renameat(dir, tmp.as_str(), dir, name)?;
+    dir.sync_all()
 }
 
 /// Errors reading a JSON record.
@@ -108,6 +112,7 @@ pub(crate) fn truncate_utf8(mut text: String, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::os::unix::fs::PermissionsExt;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
