@@ -83,6 +83,8 @@ struct Control {
     _end: oneshot::Sender<()>,
     #[cfg(target_os = "linux")]
     capture: Option<(handoff::TcpLink, handoff::Capture)>,
+    #[cfg(target_os = "linux")]
+    enrollment: Option<handoff::Enrollment>,
 }
 
 impl Control {
@@ -91,6 +93,8 @@ impl Control {
             _end: end,
             #[cfg(target_os = "linux")]
             capture: None,
+            #[cfg(target_os = "linux")]
+            enrollment: None,
         }
     }
 }
@@ -784,7 +788,8 @@ async fn outbound_connection(
             stream.write_u8(RELAY_OK).await?;
             #[cfg(target_os = "linux")]
             if let Some(holder) = holder {
-                return handoff::transfer(stream, upstream, &holder).await;
+                return handoff::transfer(stream, upstream, CopyState::default(), &holder, None)
+                    .await;
             }
             CopyState::default()
                 .transfer(&mut stream, &mut upstream)
