@@ -65,7 +65,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Bind a parked message to the attempt its caller observed
 - [x] Resume only the parked run whose screen finished saving
 - [x] Preserve a continuation while its previous parked run settles
-- [ ] Verify the current model and subscription before accepting a named Continue
+- [x] Verify the current model and subscription before accepting a named Continue
 - [ ] Order parking and replacement merge requests through run settlement
 - [ ] Deliver the recorded integration failure once to an already parked owner
 - [ ] Hold the original owner’s session and successor while its open delivery cannot be verified
@@ -91,6 +91,8 @@ The failed-integration-candidate step covers the owner's November 20 observation
 Use the fake Codex executable, its rollout, real PTY shutdown and the application Stop hook. Exercise saved-screen and terminal readers, terminal restoration, step and pull combinations and historical statuses. Run scoped Rust and web tests, repository quick checks, the security command and Yulius CI.
 
 ## Decisions
+
+A named Continue checks the current model and the requested subscription when Yulius accepts the start or queue entry. A refusal preserves the resting state, archive and question. The queue checks availability again at dispatch through its existing subscription policy. An immediate launch uses the model and account admitted together.
 
 An owner can stop a task while its previous run is still finishing a park. Continue waits for that run's terminal cleanup before entering the queue or starting again. A settlement timeout or a refusal because the previous run is still live leaves the archive and outstanding question available for retry. The owner can also archive or close a replacement turn during admission. The start or queue claim checks the original attempt, archive and status together with the change that accepts the continuation. A remote restart keeps its first selection through the permission check. A goal resume waits for terminal cleanup under the same bound. Direct resume, including onboarding, carries the resting selection through acquisition of the launch lock. A replacement attempt must settle under its own admission check. Answering the question records the timestamp of acceptance.
 
@@ -119,6 +121,15 @@ The final parking check compares the owner’s saved singleton decision with the
 The SQLite query returning a parked task includes the latest attempt ID in the same snapshot. Admission checks that ID under the launch lock after caller preflight. A message can wait while another turn resumes and parks, so task status alone cannot identify the session the sender observed. Only a matching parked attempt can restore Codex lineage or accept the prompt. Bulk messages, Telegram replies and remote restarts carry the attempt from their first task lookup through dispatch. They check the caller’s current access before acting.
 
 ## Evidence
+
+- The named-Continue hand check used the earlier model, allowed a refused placement through the claim, and discarded the admitted launch model. All five focused regressions failed in `7b1d5a68-7dcb-4b24-8e10-95706bae88df`. The affected source files were restored to the reviewed commit.
+- Independent review approved `156cb1b43c23a60f2617fdc2cf11ac3aa2554d54` against dev `3b72387f1` and ran 22 integration and store checks. Run `1d21f3e2-e866-4def-8c0e-9264054d775c` passed all 241 scoped tests, including the actual model and subscription delivered through the real PTY to a fake agent. Repository quick checks and spec validation passed. Vidoc was disabled.
+
+- Review of `fb23d8916` found that launch-error cleanup could still answer a subscription sign-in request after the database rolled back the refusal. Run `550f59be-28dc-494e-ad81-aefea904e0c9` returned no question for that case. The test checks its exact contents and open wait span. A separate post-acceptance edit checks both the model saved for the future and the actual model and subscription of the admitted run.
+
+- Before named admission changed, run `89dd2ac7-960d-4871-a1fb-6ab1c6df5b17` passed the available model change but failed both refusal races and the queued refusal. The original positive fixture also archived its fake Git worktree and lost its launch directory. The corrected positive fixture isolates the model edit, and the queue fixture seeds the persisted archive directly.
+
+- PR #1635 landed on dev `14de9b011`. Its PR CI run `59ebc354-1a2b-4308-af19-e7c0abe25609` and train run `3c7e1a6f-13ea-4f10-b128-2f92347b5d80` passed. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/14de9b01164c094d7a187e80d3ffd64c14962489)
 
 - In the hand check, undoing the reader wait, selection checks, named placement prototype and answer timestamp made 13 regressions fail in `21b03c1d-a422-44a3-b537-8631b04579de`. Undoing the direct selection guard and clearing a held owner's question early failed both checks in `bd0b1557-3c74-4662-96b8-a9919225d2a7`. The source was restored to the reviewed commit.
 - Independent review approved the terminal-settlement delivery at `1cd4a5d826ebac1a698255fe1727dfe2427fcbc0` against dev `612f787b3` and independently ran 13 focused regressions. Run `da13b65f-349d-4995-b14d-978f4fdb2c5f` passed all 270 scoped tests. The fixtures used real PTYs and a fake agent. Repository quick checks and spec validation passed. Vidoc was disabled.

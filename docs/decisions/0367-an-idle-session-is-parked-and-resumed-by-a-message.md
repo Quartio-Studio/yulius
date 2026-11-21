@@ -46,7 +46,7 @@ issue #1412. Extends SPEC-050 SES-101 (Done tasks' sessions do not count toward 
 
 Capture the attempt ID in the task read that sees Parked, then check it at launch. Another turn can start and park during account or permission checks. Its outstanding decision belongs to that later turn.
 
-Continue on a closed, stopped or failed task carries the same attempt identity and the archive state the owner saw. A run can already appear ended while its reader is finishing a park. Continue waits for the terminal cleanup bound, then accepts the launch or queue entry in the same transaction that removes the archive and clears the old question. A later archive or replacement run wins if it was recorded first.
+Continue on a closed, stopped or failed task carries the same attempt identity and the archive state the owner saw. A run can already appear ended while its reader is finishing a park. Continue waits for the terminal cleanup bound, then accepts the launch or queue entry in the same transaction that removes the archive and clears the old question. A later archive or replacement run wins if it was recorded first. When the owner names a subscription, this transaction reads current subscription eligibility and the task’s model before committing. Refusal rolls back the archive, question and its answer timestamp. The queue retains the accepted subscription and checks it again at dispatch.
 
 ## Alternatives
 

@@ -109,7 +109,7 @@ async fn gate(f: &Fixture, sha: &str, full: RunState) -> BoxResult<String> {
 }
 
 /// `task`'s agent asks for staging; the request it was given.
-async fn ask(f: &Fixture, task: &str) -> BoxResult<Value> {
+async fn staging_answer(f: &Fixture, task: &str) -> BoxResult<Value> {
     let answer = support::mcp_tool(
         &f.h,
         &token(task),
@@ -118,7 +118,11 @@ async fn ask(f: &Fixture, task: &str) -> BoxResult<Value> {
     )
     .await?;
     assert_eq!(answer["isError"], false, "{answer}");
-    Ok(support::tool_text(&answer)["staging"].clone())
+    Ok(support::tool_text(&answer))
+}
+
+async fn ask(f: &Fixture, task: &str) -> BoxResult<Value> {
+    Ok(staging_answer(f, task).await?["staging"].clone())
 }
 
 async fn request(f: &Fixture, id: &str) -> BoxResult<StagingRequestRecord> {
@@ -249,7 +253,18 @@ async fn a_failing_candidate_leaves_staging_on_its_release_and_the_fix_deploys()
         "the failing candidate never deployed"
     );
     // Asking again for the same failing revision deploys nothing: it is fixed forward.
-    assert_eq!(ask(&f, "t2").await?["id"], failing["id"]);
+    assert!(f.h.store.mark_staging_told(&failed.id).await?);
+    let repeated = staging_answer(&f, "t2").await?;
+    assert_eq!(repeated["staging"]["id"], failing["id"]);
+    let text = repeated["text"].as_str().ok_or("receipt text")?;
+    assert!(
+        text.contains("fix it forward") && text.contains(&ci2),
+        "{text}"
+    );
+    assert!(
+        !text.contains("End this turn") && !text.contains("wakes the task"),
+        "{text}"
+    );
 
     // The fix lands at r3 and passes: that tested revision is the one verified on staging.
     let r3 = land(&f, "t2", "fix.txt").await?;
@@ -266,9 +281,15 @@ async fn a_failing_candidate_leaves_staging_on_its_release_and_the_fix_deploys()
     assert_eq!(deployed(&f).await?, [r1.clone(), r3.clone()]);
 
     // A duplicate request is the same request; nothing deploys again.
-    let again = ask(&f, "t2").await?;
-    assert_eq!(again["id"], fixed["id"]);
-    assert_eq!(again["state"], "verified");
+    assert!(f.h.store.mark_staging_told(&three.id).await?);
+    let again = staging_answer(&f, "t2").await?;
+    assert_eq!(again["staging"]["id"], fixed["id"]);
+    let text = again["text"].as_str().ok_or("receipt text")?;
+    assert!(
+        text.contains("this task's staging deployment is done") && !text.contains("wakes the task"),
+        "{text}"
+    );
+    assert_eq!(again["staging"]["state"], "verified");
     settle(&f).await?;
     assert_eq!(deployed(&f).await?, [r1.clone(), r3.clone()]);
 
@@ -317,6 +338,59 @@ async fn a_failing_candidate_leaves_staging_on_its_release_and_the_fix_deploys()
             && text.contains(&format!("CD run {release3}")),
         "{text}"
     );
+    Ok(())
+}
+
+/// A previously admitted request loses its gate before any run is queued. Restoring CI
+/// leaves that revision's decision final. The next delivery can be judged on its own gate.
+#[tokio::test]
+async fn a_gate_failure_without_a_run_directs_the_task_to_a_new_landing() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "t1").await?;
+    let revision = land(&f, "t1", "one.txt").await?;
+    let sandbox = sandbox(&f).await?;
+    let pending = StagingRequestRecord {
+        id: "sr_without_gate".into(),
+        sandbox_id: sandbox.id.clone(),
+        task_id: Some(TaskId::parse("t1")?),
+        environment: "staging".into(),
+        revision,
+        state: StagingState::Testing,
+        ci_run_id: None,
+        cd_run_id: None,
+        attempts: 0,
+        note: None,
+        requested_by: "task:1".into(),
+        told: false,
+        created_at: f.h.app.now(),
+        updated_at: f.h.app.now(),
+    };
+    assert!(f.h.store.insert_staging_request(&pending).await?);
+    let mut no_ci = f.h.app.config.clone();
+    no_ci.ci.enabled = false;
+    let disabled = yulius_app::context::App::new(no_ci, f.h.app.deps.clone());
+    disabled.staging_advance(&sandbox, "staging").await?;
+    let failed = request(&f, &pending.id).await?;
+    assert_eq!(failed.state, StagingState::GateFailed);
+    assert!(failed.ci_run_id.is_none());
+
+    let repeated = staging_answer(&f, "t1").await?;
+    assert_eq!(repeated["staging"]["id"], pending.id);
+    let text = repeated["text"].as_str().ok_or("terminal receipt")?;
+    assert!(
+        text.contains("no CI run")
+            && text.contains("fix it forward")
+            && text.contains("delivery_merge"),
+        "{text}"
+    );
+    assert!(deployed(&f).await?.is_empty());
+
+    let fixed = land(&f, "t1", "restored-gate.txt").await?;
+    gate(&f, &fixed, RunState::Passed).await?;
+    let next = ask(&f, "t1").await?;
+    assert_ne!(next["id"], pending.id);
+    settle(&f).await?;
+    assert_eq!(serving(&f)?, fixed);
     Ok(())
 }
 
@@ -410,6 +484,14 @@ async fn a_lost_deploy_is_retried_and_concurrent_tasks_deploy_in_revision_order(
     assert_eq!(three.state, StagingState::Verified, "{three:?}");
     assert!(two.state.is_success(), "{two:?}");
     assert_eq!(serving(&f)?, r3);
+    let previous = staging_answer(&f, "t1").await?;
+    assert_eq!(previous["staging"]["revision"], r1);
+    let text = previous["text"].as_str().ok_or("verified receipt")?;
+    assert!(
+        text.contains("Staging deployed and verified your revision")
+            && !text.contains("Staging serves your tested revision"),
+        "the receipt for r1 is historical while staging serves r3: {text}"
+    );
     let revisions = deployed(&f).await?;
     let after: Vec<&String> = revisions.iter().filter(|sha| **sha != r1).collect();
     assert!(
@@ -428,6 +510,13 @@ async fn a_lost_deploy_is_retried_and_concurrent_tasks_deploy_in_revision_order(
     let inside = ask(&f, "t4").await?;
     assert_eq!(inside["state"], "included", "{inside}");
     assert_eq!(inside["cd_run_id"], json!(three.cd_run_id), "{inside}");
+    let included = staging_answer(&f, "t4").await?;
+    let text = included["text"].as_str().ok_or("included receipt")?;
+    assert!(
+        text.contains("included your revision")
+            && text.contains(three.cd_run_id.as_deref().ok_or("containing run")?),
+        "{text}"
+    );
     settle(&f).await?;
     assert_eq!(deployed(&f).await?, revisions, "nothing deployed twice");
     // One successful staging deployment per task.

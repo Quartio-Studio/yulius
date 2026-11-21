@@ -1288,7 +1288,7 @@ fn run_ids_of(ci: Option<&str>, cd: Option<&str>) -> String {
 }
 
 /// What a task reads about its staging request's outcome, with the next step.
-fn staging_outcome_text(request: &StagingRequestRecord) -> String {
+pub(super) fn staging_outcome_text(request: &StagingRequestRecord) -> String {
     let what = format!(
         "Yulius: staging request {} for revision {} of [cd.{}] is {}",
         request.id,
@@ -1296,26 +1296,33 @@ fn staging_outcome_text(request: &StagingRequestRecord) -> String {
         request.environment,
         request.state.as_str()
     );
-    let note = request.note.as_deref().unwrap_or_default();
-    format!("{what}: {note}. {}", staging_next(request))
+    // A successful request records what its run verified, even after a later deploy or rollback.
+    let detail = if request.state.is_success() {
+        run_ids(request)
+    } else {
+        request
+            .note
+            .as_ref()
+            .map_or_else(String::new, |note| format!(": {note}"))
+    };
+    format!("{what}{detail}. {}", staging_next(request))
 }
 
 /// The next step a request's state leaves its task (empty while it is on its way).
 fn staging_next(request: &StagingRequestRecord) -> String {
     match request.state {
         StagingState::Verified => {
-            "Staging serves your tested revision: this task's staging deployment is done."
+            "Staging deployed and verified your revision, so this task's staging deployment is done."
                 .to_owned()
         }
-        StagingState::Included => format!(
-            "Staging serves a verified revision that contains yours (run {}): nothing more to deploy.",
-            request.cd_run_id.as_deref().unwrap_or("?")
-        ),
+        StagingState::Included => {
+            "The verified staging deployment included your revision. This request is complete.".to_owned()
+        }
         StagingState::GateFailed => match &request.ci_run_id {
             Some(run) => format!(
                 "Staging did not change. Read the run with ci_status {{\"run_id\": \"{run}\"}}, fix it forward on this branch, merge with delivery_merge, then cd_deploy again."
             ),
-            None => "Staging did not change; once a CI gate can judge it, cd_deploy again.".to_owned(),
+            None => "Staging did not change. There was no CI run for this revision. Restore the gate, fix it forward on a new revision, merge with delivery_merge, then cd_deploy for that landing.".to_owned(),
         },
         StagingState::DeployFailed => format!(
             "Read the run with cd_status {{\"run_id\": \"{}\"}}; fix it forward and merge, or cd_deploy again to retry the same revision.",

@@ -7,6 +7,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-21
 
 - Agent and CI attempts receive private disk scratch for build trees. The process host caps each session’s memory-backed `/tmp` at 1 GiB. Named mutation campaigns reclaim their disk copies when workers exit. [SPEC-600](../.ai/specs/SPEC-600-mutation-testing-sized-to-the-change-wit.md)
+- Repeating a decided staging request gives the recorded verdict and the action its revision needs.
+  [SPEC-597](../.ai/specs/SPEC-597-tests-that-hold-under-a-loaded-host-and.md)
+- CI gives each quality pass its own budget and verdict. Both Rust test partitions use one build. [SPEC-598](../.ai/specs/SPEC-598-shorten-a-yulius-ci-run-parallel-quality.md)
+- Continue on a named subscription checks the current model and subscription before starting or queuing the task. A refusal keeps the task stopped and preserves its archive and question. [SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
 
 - Deliveries check new tests by hand and request staging once after merge. The project mutation command runs only when a task requests it by name. New projects receive the same rule at bootstrap. [SPEC-600](../.ai/specs/SPEC-600-mutation-testing-sized-to-the-change-wit.md)
 - Continuing a stopped task waits for its previous terminal to finish parking. A timeout, a later archive or a replacement run leaves the task’s question and archive intact. [SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)

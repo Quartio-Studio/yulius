@@ -36,6 +36,16 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<AccountRecord> {
     })
 }
 
+pub(crate) fn list_accounts(c: &rusqlite::Connection) -> AppResult<Vec<AccountRecord>> {
+    let mut stmt = c
+        .prepare(&format!(
+            "SELECT {COLS} FROM accounts ORDER BY provider, created_at, id"
+        ))
+        .map_err(db)?;
+    let rows = stmt.query_map([], from_row).map_err(db)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(db)
+}
+
 /// Each account's runs, tasks and tokens since `?1` (`account_tokens`).
 pub(crate) const ACCOUNT_TOKENS_SQL: &str = "SELECT a.account_id, COUNT(*), COUNT(DISTINCT a.task_id), \
      SUM(m.input_tokens), SUM(m.output_tokens), SUM(m.cache_read), SUM(m.cache_write) \
@@ -87,16 +97,7 @@ impl AccountStore for SqliteStore {
     }
 
     async fn accounts(&self) -> AppResult<Vec<AccountRecord>> {
-        self.call(|c| {
-            let mut stmt = c
-                .prepare(&format!(
-                    "SELECT {COLS} FROM accounts ORDER BY provider, created_at, id"
-                ))
-                .map_err(db)?;
-            let rows = stmt.query_map([], from_row).map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
-        })
-        .await
+        self.call(|c| list_accounts(c)).await
     }
 
     async fn update_account(
