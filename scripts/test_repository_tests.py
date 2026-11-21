@@ -45,6 +45,8 @@ class RepositoryTests(unittest.TestCase):
         self.assertIn("the_composer_offers_antigravity_on_its_default_model", web)
         self.assertIn("every_end_has_the_web_uis_words", names("crates/yulius-server/web/assets/status.js"))
         self.assertIn("the_composer_offers_the_models_the_server_checks", names("crates/yulius-server/web/assets/models.js"))
+        self.assertNotIn("every_end_has_the_web_uis_words", web)
+        self.assertNotIn("the_operations_guide_shows_the_units_the_setup_writes", names("docs/changes.md"))
         self.assertIn("the_operations_guide_shows_the_units_the_setup_writes", names("docs/operations.md"))
         for path in ("docs/engineering/workflow.md", "catalog/skills/new/SKILL.md", "AGENTS.md"):
             self.assertIn("every_place_states_one_rule_for_local_checks", names(path))

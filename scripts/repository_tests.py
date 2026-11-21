@@ -63,6 +63,11 @@ def inputs_for(root, crate, path, text, caller_text=None):
             for name in PATH_LITERAL.findall(caller_text or text):
                 if "/" in name or "." in name:
                     add(root, name)
+                    # Workspace text contracts compare policy across many docs
+                    # and catalog entries. Keep these families together.
+                    family = name.split("/", 1)[0]
+                    if family in {"docs", "catalog"}:
+                        inputs.add(family)
             for name in JOIN.findall(caller_text or text):
                 add(root, name)
         elif base != crate:
@@ -73,11 +78,6 @@ def inputs_for(root, crate, path, text, caller_text=None):
     for accessor, directory in EMBEDDED.items():
         if accessor in text:
             inputs.add(directory)
-    # A new sibling document, asset or catalog entry can change directory
-    # enumeration and embedded defaults. Select the family on every such edit.
-    for family in ("docs", "catalog", "crates/yulius-server/web"):
-        if any(dep == family or dep.startswith(family + "/") for dep in inputs):
-            inputs.add(family)
     return inputs
 
 

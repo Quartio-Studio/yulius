@@ -26,8 +26,8 @@ PR #1645 changed the composer mock. The merge train passed and dev revision 13a6
 
 - [x] Identify repository file readers and specify the pre-merge contract
 - [x] Run the affected contract tests in the pull request gate
-- [ ] Require whole touched test binaries in task briefings
-- [ ] Verify reader coverage, timing and delivery evidence
+- [x] Require whole touched test binaries in task briefings
+- [x] Verify reader coverage, timing and delivery evidence
 - [ ] Approve the change for delivery to dev
 
 ## Acceptance criteria
@@ -42,9 +42,16 @@ Exercise native job declarations and source discovery with real paths and synthe
 
 Use the existing path-filtered PR gate. It owns the checkout, timeout, exit status and candidate coverage, including outside PRs. Adding execution to delivery_merge would duplicate those responsibilities and miss independent CI runs. Group readers of shared inputs conservatively. No persistence or API changes are needed.
 
+The selector reads Rust test sources in the workspace crates and tools. It resolves literal filesystem reads, compile-time includes and manifest-directory joins. Workspace-rooted policy tests collect their quoted file paths. Embedded workflow, automation and skill accessors cover tests that compare bundled data. Unit cases share their file’s inputs. A shared integration helper selects its sibling cases, while a direct integration read selects its case. A separate test helper with unidentified callers fails the repository check. CI checks the outer job globs against discovered tracked inputs.
+
+The change diff uses the merge base with the integration branch and includes both names of a rename. An unavailable base selects all discovered readers. An unrelated change returns exit 78 before tool bootstrap. On a protected branch the full test shards execute the readers.
+
 ## Evidence
 
 - On base 13a632c40, the initial web-path selection ran all 12 ui_contract tests. Eleven passed and the reported Antigravity assertion failed. Nextest reported 0.473 s of test execution. The first build in this worktree took 3m10s. PR #1651 then corrected the assertion on dev at 1f9314339.
 - The Python regressions first failed on the absent job and selector. A new source-only reader, a workspace-root helper, a concatenated compile-time path and chained directory joins exercise discovery without adding test names to the implementation. A separate test-only helper with unknown callers fails the coverage check. A real Git fixture covers removal, rename and an unavailable base. The native path check compares the job globs with discovered tracked inputs. All seven cases passed.
 - An unrelated Rust edit returned CI's skip code 78 in 0.43 s, before bootstrap or Cargo.
 - The briefing assertion failed on the old rendered instructions. Running the entire domain test binary also caught three section-budget regressions in the first wording. The shorter discipline paragraph preserves the existing budget.
+- The completed domain library run passed all 603 tests, including the rendered wording and section budgets. The combined web, catalog and docs probe on the corrected composer passed 165 tests in 1.06 s of nextest execution.
+- Exact file includes retain their specific paths. A mock.js-only edit selects the 12 ui_contract cases. A changes-note edit selects the 22 skills unit cases. An operations-guide edit additionally selects its systemd examples. This avoids building extra package targets for the common single-file changes.
+- On the integrated checkout, all 165 selected tests passed in 1.240 s. The build took 3m02s, and the command took 185.34 s including discovery and compilation. The repository quick checks passed. Vidoc reported disabled and performed no scan.
