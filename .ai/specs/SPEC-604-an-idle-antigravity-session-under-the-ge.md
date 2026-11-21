@@ -1,6 +1,6 @@
 ---
 yulius-task: bc5e9db9-59da-4313-bc95-0a804b81deab
-status: done
+status: in-progress
 ---
 
 # SPEC-604 An idle Antigravity conversation shows Waiting after a restart
@@ -32,6 +32,9 @@ The incident report describes two completed and merged tasks that occupied sessi
 - [x] Reproduce the merged composer contract failure
 - [x] Verify the shared composer correction alongside idle resume
 - [x] Approve the corrected staging revision
+- [x] Reproduce the merged review-round failure
+- [x] Verify delivery behavior for Claude Code and Codex
+- [ ] Approve the delivery correction for staging
 
 ## Acceptance criteria
 
@@ -67,3 +70,13 @@ All 11 Antigravity browser tests passed. A manual mutation marked the inherited 
 All twelve Rust UI contracts and the PTY idle-resume regression passed together on this branch with the shared correction. PR #1651 landed that same Rust change at `1f9314339`.
 
 Independent review approved the fix-forward at `2eb1ab6d9` with no findings. The reviewer independently ran all 11 Antigravity Chromium tests, the 12 Rust UI contracts and the idle-resume regression. The task delivery record identifies the follow-up merge and renewed staging request.
+
+### Review rounds after a merge
+
+PR #1654 landed at `3b95efbd8` after its merge train passed. Staging request `df03c04f-6c06-4c00-b50f-be68422d5bea` failed in full-gate run `ffd7ab0f-7208-498c-8453-95656973dcb3`. In test partition 2, `delivery::agents_merge_only_through_gated_tools` expected the Claude Code task's rounds for the next PR to be empty. It received the approved round assigned to the merged PR. The harness-specific contracts are recorded in [SPEC-605](SPEC-605-record-the-review-rounds-of-codex-tasks.md).
+
+The exact nextest case failed locally on the landed tree with one completed Claude Code review where an empty list was expected. The branch incorporates task #589's correction from `ddf2a8809`. The delivery view passes the task's harness to the round lookup. Codex retains its landed review history, and Claude Code again reads the rounds available for its next pull request.
+
+Scoped nextest ran 154 tests across `delivery`, `review_rounds`, Codex review hooks, the Antigravity idle PTY fixture and the composer contract. All passed, including the exact gated-tools case from the failed staging run and the Codex merged-analytics case.
+
+After integrating dev at `0cf7267a3`, the four key regressions passed again. They cover the gated merge, Codex review history, the idle Antigravity PTY and its inherited composer settings.
