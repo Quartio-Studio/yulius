@@ -453,6 +453,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0421 -->
 <!-- ADR 0422 -->
 <!-- ADR 0423 -->
+- [0424](0424-keep-a-recorded-merge-visible-when-follow-up-discovery-is-unavailable.md) keeps a recorded merge visible when follow-up discovery is unavailable.
 <!-- ADR 0424 -->
 <!-- ADR 0425 -->
 <!-- ADR 0426 -->
