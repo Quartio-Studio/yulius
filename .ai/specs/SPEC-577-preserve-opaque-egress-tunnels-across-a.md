@@ -55,7 +55,7 @@ new request after the old sockets reach EOF. The issue requires the original con
 - [x] Obtain independent approval for the custody deadline slice
 - [x] Preserve original terminal receive queues and isolate connection loss during custody
 - [x] Obtain independent approval for terminal socket custody
-- [ ] Obtain independent approval for the proxy restart slice
+- [x] Obtain independent approval for the proxy restart slice
 - [ ] Hand established opaque connections and matching relay sockets to the restarted server
 - [ ] Verify same-socket continuity, admission limits and intercepted traffic through restart
 - [ ] Independent review in a fresh session, findings fixed test-first
@@ -453,3 +453,13 @@ without adoption support or a remote peer that times out can end a tunnel.
   inside an opaque HTTP/1.1 CONNECT. The destination accepted one TLS session. Its original
   HTTP/2 stream delivered a response written while the direct server was down, received
   more request bytes after successor readiness, and returned its final reply.
+- Fresh review approved the direct delivery at `a58afc499`. The reviewer passed all five
+  real-server restart tests and five egress handoff tests. It verified both the original
+  inner TLS/HTTP/2 session and the outer HTTP/2 reconnect. The successor refused the old
+  synthetic attempt with HTTP 407 and admitted a fresh live attempt with HTTP 200. Locally
+  the domain, egress and sandbox suites passed 929 tests, with two host-dependent skips.
+  Targeted Clippy, repository contracts and formatting passed. Vidoc was disabled.
+- The mutation run against the landed custody base `e8759b018` passed all 3,333
+  selected baseline tests. Of 129 mutations, 77 were caught and 52 were unviable.
+  None were missed, timed out or unreached. The follow-up on the protocol documentation
+  changed no Rust lines.
