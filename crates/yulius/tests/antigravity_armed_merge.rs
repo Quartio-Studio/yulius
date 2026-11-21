@@ -347,6 +347,7 @@ impl Fixture {
         self.h
             .store
             .insert_task(&TaskRecord {
+                parked_attempt_id: None,
                 id: TaskId::parse(&id)?,
                 sandbox_id: self.sandbox.clone(),
                 number: n,

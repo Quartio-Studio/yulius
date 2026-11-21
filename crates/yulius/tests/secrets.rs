@@ -2287,6 +2287,7 @@ async fn agents_list_names_and_read_redacted_results() -> TestResult {
         );
         w.h.store
             .insert_task(&yulius_app::model::TaskRecord {
+                parked_attempt_id: None,
                 id: yulius_domain::ids::TaskId::parse("t4")?,
                 ..record
             })

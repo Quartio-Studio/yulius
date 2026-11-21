@@ -598,49 +598,29 @@ impl App {
                 let task = self.agent_task_ref(project, args).await?;
                 let id = task.id.as_str();
                 let summary = match name {
-                    // Continue takes a resting task; what else the task is doing decides
-                    // what its person is told to do instead. Whose task it is comes first, as
-                    // it does in Continue: advice is for a task the person may change (review
-                    // of slice 2, R3-1). The state is the one that check read.
-                    // A parked task resumes in its session (SPEC-512 PRK-005).
-                    "task_restart" if task.status == TaskStatus::Parked => self
-                        .continue_task(
-                            ctx,
-                            id,
-                            &ContinueTask {
-                                account_id: None,
-                                prompt: None,
-                            },
-                        )
-                        .await
-                        .map_err(|err| restart_refusal(err, task.number))?,
-                    "task_restart" if !task.status.is_resting() => {
-                        let task = self.load_task(ctx, id, Action::Work).await?;
-                        if !task.status.is_resting() && task.status != TaskStatus::Parked {
-                            return Err(not_resting(task.number, task.status));
+                    "task_restart" => {
+                        crate::race::reached(
+                            crate::race::Point::SelectedTaskDispatched,
+                            std::path::Path::new(id),
+                        );
+                        // Give state-specific advice only after verifying control of this task.
+                        let current = self.load_task(ctx, id, Action::Work).await?;
+                        current.check_selected_park(&task)?;
+                        if !current.status.is_resting() && current.status != TaskStatus::Parked {
+                            return Err(not_resting(current.number, current.status));
                         }
-                        self.continue_task(
+                        self.continue_loaded_task(
                             ctx,
-                            id,
+                            current,
                             &ContinueTask {
                                 account_id: None,
                                 prompt: None,
                             },
+                            None,
                         )
                         .await
                         .map_err(|err| restart_refusal(err, task.number))?
                     }
-                    "task_restart" => self
-                        .continue_task(
-                            ctx,
-                            id,
-                            &ContinueTask {
-                                account_id: None,
-                                prompt: None,
-                            },
-                        )
-                        .await
-                        .map_err(|err| restart_refusal(err, task.number))?,
                     "task_pause" => self.pause_task_for_person(ctx, id).await?,
                     "task_unpause" => self.resume_task_for_person(ctx, id).await?,
                     _ => self.start_chained_now(ctx, id).await?,

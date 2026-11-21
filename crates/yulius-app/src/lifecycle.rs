@@ -316,6 +316,7 @@ impl App {
             TaskStatus::Closed
         };
         let record = TaskRecord {
+            parked_attempt_id: None,
             id: TaskId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?,
             sandbox_id: sandbox.id.clone(),
             number: 0,
@@ -653,6 +654,17 @@ impl App {
         prompt: Option<&str>,
     ) -> AppResult<TaskSummary> {
         let task = self.load_task(ctx, id, Action::Work).await?;
+        self.continue_loaded_task(ctx, task, req, prompt).await
+    }
+
+    /// Continue the task returned by the caller's work access check.
+    pub(crate) async fn continue_loaded_task(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        task: TaskRecord,
+        req: &ContinueTask,
+        prompt: Option<&str>,
+    ) -> AppResult<TaskSummary> {
         // A parked task resumes in its session (SPEC-512 PRK-005): with nothing typed, its
         // request stays until the person writes; with a prompt, it wakes with that prompt and
         // ends any open `needs_you` request (SPEC-553 PRK-102).
@@ -683,7 +695,7 @@ impl App {
                 )));
             }
             self.ensure_agent_account(task.harness.provider()).await?;
-            if !self.resume_parked(&task.id, cleaned.clone()).await? {
+            if !self.resume_parked(&task, cleaned.clone()).await? {
                 return Err(AppError::Conflict(
                     "the task changed while it was resumed; try again".into(),
                 ));

@@ -169,12 +169,17 @@ impl App {
             actor: format!("telegram:{}", person.label()),
             detail: json!({ "via": "telegram" }),
         };
+        crate::race::reached(
+            crate::race::Point::SelectedTaskDispatched,
+            std::path::Path::new(record.id.as_str()),
+        );
         // A reply to a notice of a request answers that request and no later one (ANS-004).
         let mut answer = match self
             .task_message_as(
                 &caller,
                 &json!({ "task_id": record.id.as_str(), "text": text }),
                 sent.asked_at,
+                Some(&record),
             )
             .await
         {

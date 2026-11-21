@@ -136,6 +136,7 @@ async fn running_task_of_agent(
     let task = h
         .store
         .insert_task(&TaskRecord {
+            parked_attempt_id: None,
             id: TaskId::parse("t-pool")?,
             sandbox_id: yulius_domain::ids::SandboxId::parse("s1")?,
             number: 0,
@@ -560,6 +561,7 @@ async fn the_capacity_view_reports_burn_forecast_and_recommendation() -> TestRes
     // One task ran for the last 40 hours; it was held for capacity for 8 of them.
     h.store
         .insert_task(&TaskRecord {
+            parked_attempt_id: None,
             id: TaskId::parse("t1")?,
             sandbox_id: yulius_domain::ids::SandboxId::parse("s1")?,
             number: 0,

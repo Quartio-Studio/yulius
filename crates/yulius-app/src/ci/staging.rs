@@ -1159,10 +1159,7 @@ impl App {
                 .redact_for_sandbox(&task.sandbox_id, &staging_outcome_text(&request))
                 .await;
             let delivered = match task.status {
-                TaskStatus::Parked => self
-                    .resume_parked(&task.id, Some(text))
-                    .await
-                    .unwrap_or(false),
+                TaskStatus::Parked => self.resume_parked(&task, Some(text)).await.unwrap_or(false),
                 TaskStatus::Running => {
                     let paste = format!(
                         "\x1b[200~{}\x1b[201~",

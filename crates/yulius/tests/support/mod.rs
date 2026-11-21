@@ -2069,6 +2069,7 @@ pub async fn seed_task_of(
     use yulius_domain::ids::{SandboxId, TaskId, UserId};
     let now = h.app.now();
     let task = yulius_app::model::TaskRecord {
+        parked_attempt_id: None,
         id: TaskId::parse(id)?,
         sandbox_id: SandboxId::parse(sandbox)?,
         number: 0,
@@ -2140,6 +2141,112 @@ pub async fn seed_live_attempt_at(
             exit_reason: None,
         })
         .await?;
+    Ok(())
+}
+
+/// Arrange a newer parked attempt and a fresh question after a caller has selected its targets.
+pub async fn replace_park_at(
+    h: &Harness,
+    point: yulius_app::race::Point,
+    dispatched: &yulius_domain::ids::TaskId,
+    task: &yulius_app::model::TaskRecord,
+) -> TestResult {
+    use yulius_app::ports::store::{AttemptUpdate, TaskStore};
+    use yulius_app::ports::store_ext::NeedsYouStore;
+    use yulius_domain::task::AttemptState;
+    let target = &task.id;
+    let tree = h
+        .app
+        .config
+        .data_dir
+        .join("sandboxes")
+        .join(task.sandbox_id.as_str())
+        .join("worktrees")
+        .join(target.as_str());
+    std::fs::create_dir_all(&tree)?;
+    repos::git(&tree, &["init", "--quiet"])?;
+    seed_live_attempt(h, target.as_str(), "first parked attempt").await?;
+    let mut run = h
+        .store
+        .live_attempt(target)
+        .await?
+        .ok_or("parked fixture run")?;
+    let now = h.app.now();
+    h.store
+        .transition_attempt(
+            &run.id,
+            AttemptState::Killed,
+            &AttemptUpdate {
+                ended_at: Some(now),
+                exit_code: Some(0),
+                exit_reason: Some("parked".into()),
+                ..Default::default()
+            },
+        )
+        .await?;
+    run.id = yulius_domain::ids::AttemptId::parse("later-parked-run")?;
+    run.seq = 2;
+    run.state = AttemptState::Killed;
+    run.exit_code = Some(0);
+    run.exit_reason = Some("parked".into());
+    run.ended_at = Some(now);
+    run.token_hash = "later-parked-token".into();
+    let mut question = yulius_app::needs_you::NeedsYouRecord {
+        action: "Decide the original turn".into(),
+        happened: None,
+        problem: None,
+        decision: true,
+        link: None,
+        at: now.0,
+        cause: None,
+        named: yulius_app::needs_you::Named {
+            who: vec!["bob".into()],
+            withdrawn: Vec::new(),
+        },
+    };
+    h.store
+        .set_task_needs_you(target, Some(&question), now)
+        .await?;
+    question.action = "Decide the replacement turn".into();
+    let store = h.store.clone();
+    let handle = tokio::runtime::Handle::current();
+    yulius_app::race::on(
+        point,
+        std::path::Path::new(dispatched.as_str()),
+        move || {
+            tokio::task::block_in_place(|| {
+                handle.block_on(async {
+                    let inserted = store.insert_attempt(&run).await;
+                    assert!(inserted.is_ok(), "replacement parked run: {inserted:?}");
+                    let asked = store
+                        .set_task_needs_you(&run.task_id, Some(&question), now)
+                        .await;
+                    assert!(asked.is_ok(), "replacement question: {asked:?}");
+                })
+            });
+        },
+    );
+    Ok(())
+}
+
+pub async fn assert_replacement_parked(
+    h: &Harness,
+    target: &yulius_domain::ids::TaskId,
+) -> TestResult {
+    use yulius_app::ports::store::TaskStore;
+    use yulius_app::ports::store_ext::NeedsYouStore;
+    assert_eq!(
+        h.store.task(target).await?.ok_or("target")?.status,
+        yulius_domain::task::TaskStatus::Parked
+    );
+    assert_eq!(h.store.attempts(target).await?.len(), 2);
+    let question = h
+        .store
+        .task_needs_you(target)
+        .await?
+        .ok_or("replacement question")?;
+    assert_eq!(question.action, "Decide the replacement turn");
+    assert_eq!(question.named.who, ["bob"]);
     Ok(())
 }
 

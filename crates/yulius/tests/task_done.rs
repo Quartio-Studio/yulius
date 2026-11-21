@@ -6709,6 +6709,7 @@ fn a_reboot_closes_a_done_task_and_keeps_every_screen() -> TestResult {
             .deps
             .store
             .insert_task(&TaskRecord {
+                parked_attempt_id: None,
                 id: TaskId::parse("t-unattached")?,
                 sandbox_id: sandbox.clone(),
                 number: 0,

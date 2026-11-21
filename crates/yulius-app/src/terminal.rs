@@ -300,7 +300,7 @@ impl App {
             .map(|text| crate::task_message::clean_message(&text))
             .map(|text| text.trim().to_owned())
             .filter(|text| !text.is_empty());
-        if self.resume_parked(&task.id, cleaned.clone()).await? {
+        if self.resume_parked(&task, cleaned.clone()).await? {
             if cleaned.is_some() {
                 self.end_needs_you(&task.id).await;
             }
