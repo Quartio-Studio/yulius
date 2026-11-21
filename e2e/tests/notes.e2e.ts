@@ -629,8 +629,11 @@ test('Team comes first and opens first; the tabs move by drag, keyboard and menu
   await browser.reload();
   await screen.getByRole('navigation', 'Tools').getByRole('button', 'Notes').click();
   expect(await tabOrder(browser)).toEqual(['Team', 'Me', 'This sandbox']);
+  await screen.getByRole('tab', 'This sandbox').click();
+  await browser.evaluate(() => (window as unknown as MockNotes).__yuliusMock.editNote('sandbox:sb_product', 'Product handoff', 'anna-q', { announce: false }));
   await app.open(mock('/s/product'));
-  expect(await tabOrder(browser)).toEqual(['Team', 'Me', 'This sandbox']);
+  await expect(screen.getByRole('textbox', 'Sandbox notes')).toHaveValue('Product handoff', { timeout: FIRST_LOAD_MS });
+  await expect.poll(() => tabOrder(browser)).toEqual(['Team', 'Me', 'This sandbox']);
 
   // A stored order that is not the three tabs is ignored.
   await browser.evaluate(() => localStorage.setItem('yulius.notesOrder', JSON.stringify(['team', 'team', 'me'])));

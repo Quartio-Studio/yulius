@@ -27,7 +27,7 @@ SPEC-575 already has a durable staging queue, explicit admission through `cd_dep
 - [x] Trace the failed waits and report the quartio-v2 evidence
 - [x] Make the affected browser and merge-train tests wait for observable progress
 - [x] Keep the merged task waiting for its gate and staging decision
-- [ ] Approve the browser and merge-train test fixes for delivery
+- [x] Approve the browser and merge-train test fixes for delivery
 - [x] Direct a superseding final staging request to the newer landing
 - [ ] Prove the staging failure and recovery paths and approve their delivery after the CI test merge
 - [ ] Deliver the reviewed change and request staging
@@ -80,3 +80,7 @@ The 42 scoped CI-profile Rust cases passed on `330207331`. The reviewer confirme
 The third review confirmed the previous landing, capacity and UI fixes. It identified a final receipt that could still point at an older testing or ready request. The tests-under-load slice delivers LHW-001 and the quartio-v2 operator handoff. The staging work and its supersession regression deliver LHW-003 and LHW-004 in the follow-up.
 
 On the previous head, B’s receipt reported the pending request for A and the supersession regression failed. The receipt now uses the same admission decision as the staging queue. The same assertion passed, along with 38 other CI-profile Rust cases. A verified earlier revision still limits the task to one successful staging deployment.
+
+The CI-only review approved `ead7b3699`. The reviewer found an existing Notes assertion that accepted the previous sandbox’s identical tabs. With the navigation omitted it passed on the old test, then failed on the amended observation. With navigation enabled the test observed the destination sandbox’s unique note and the expected tab order. The project tracks the reproduced browser timeouts in [#1629](https://github.com/Quartio-Studio/yulius/issues/1629) and the real-Git fixture timeouts in [#1610](https://github.com/Quartio-Studio/yulius/issues/1610).
+
+The CI test slice listed no mutable Rust product lines. The narrower staging landing-query campaign listed 10 mutations, all unviable at compile time, with none missed or unreached in 401 seconds. The SQL regression itself failed before the fix and passed after it.
