@@ -1984,3 +1984,36 @@ test('a held capacity snapshot cannot reverse a later detail that saw the parked
   });
   expect(seen).toEqual([['running', 'working', 1, ['running'], 2], ['running', 'working', 1, ['running'], 2]]);
 });
+
+test('a detail after an earlier live list publishes the completed resume and its public subscription ID', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const parked = { id: 'p', sandbox_id: 's', status: 'parked', activity: 'done', background_shells: 0 };
+    const results = [];
+    for (const intermediate of ['waiting_capacity', 'running']) {
+      let reads = 0;
+      const gate = Promise.withResolvers<void>();
+      const store = createStore({ get: async () => {
+        if (++reads === 1) return [parked];
+        await gate.promise;
+        return [{ ...parked, status: intermediate, activity: 'waiting' }];
+      } });
+      await store.loadTasks('s');
+      const list = store.loadTasks('s', true);
+      const publish = store.beginParkedDetail();
+      gate.resolve();
+      await list;
+      const live = { ...parked, status: 'running', activity: 'working', background_shells: 1, account_id: 'new-account', account_email: 'private@example.invalid' };
+      publish(live);
+      store.beginParkedDetail()(live);
+      const reached = store.findTask('p');
+      store.beginParkedDetail()(parked);
+      const back = store.findTask('p');
+      results.push([reached.status, reached.activity, reached.background_shells, reached.account_id ?? null, Object.hasOwn(reached, 'account_email'), back.account_id ?? null]);
+    }
+    return results;
+  });
+  expect(seen).toEqual([['running', 'working', 1, 'new-account', false, null], ['running', 'working', 1, 'new-account', false, null]]);
+});

@@ -135,6 +135,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   const listOrder = new WeakMap();
   const failedWatchOrder = new WeakMap();
   const rowOrder = new WeakMap();
+  const resumedRows = new WeakSet();
   const overviewOrder = new WeakMap();
 
   // Events have second-resolution timestamps. Confirm a lifecycle change seen
@@ -265,7 +266,8 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     // A detail or lifecycle event that started later supplies the parked state.
     // The list can still carry a new title or discover an open PR.
     const priorOrder = rowOrder.get(prior) ?? 0;
-    const keepPrior = priorOrder > snapshotOrder && (crossedPark || prior.status === 'parked' || listed.status === 'parked');
+    const followedPark = prior?.status === 'parked' || resumedRows.has(prior);
+    const keepPrior = priorOrder > snapshotOrder && (crossedPark || followedPark || listed.status === 'parked');
     const order = keepPrior ? priorOrder : snapshotOrder;
     let row = listed;
     if (keepPrior) row = prior.status === 'parked' && listed.status === 'parked' ? { ...listed, ...parkedFacts(prior) } : { ...prior };
@@ -276,6 +278,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       unverified.delete(row);
     }
     rowOrder.set(row, order);
+    if (followedPark && row.status !== 'parked') resumedRows.add(row);
     return row;
   }
 
@@ -284,13 +287,14 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     return detail => {
       const map = state.tasks.get(detail.sandbox_id);
       const row = map?.get(detail.id);
-      if (!row || (detail.status !== 'parked' && row.status !== 'parked')) return {};
+      if (!row || (detail.status !== 'parked' && row.status !== 'parked' && !resumedRows.has(row))) return {};
       if (rowOrder.get(row) > order) return parkedFacts(row);
       let updated = { ...row, ...parkedFacts(detail) };
-      if (row.status !== detail.status) {
+      if (row.status !== detail.status || resumedRows.has(row)) {
         // A missed park or resume changes execution fields too. Copy only keys
         // already exposed by the summary (the detail can include private fields).
         for (const key of Object.keys(row)) if (key in detail) updated[key] = detail[key];
+        updated.account_id = detail.account_id;
       }
       if (updated.archived) {
         upsertTask(updated); // Apply the same removal and Undo ordering as an archive event.
@@ -313,6 +317,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
         }
       }
       rowOrder.set(updated, order);
+      if (updated.status !== 'parked') resumedRows.add(updated);
       map.set(row.id, updated);
       if (JSON.stringify(updated) !== JSON.stringify(row) || pullForStatus(updated) !== pullForStatus(row)) {
         emit('task', updated);
@@ -340,6 +345,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     const order = ++nextListRead;
     if (recheck) task = awaitingVerification(task, prior, order);
     rowOrder.set(task, order);
+    if (task.status !== 'parked' && (prior?.status === 'parked' || resumedRows.has(prior))) resumedRows.add(task);
     for (const read of pending) {
       if (task.status === 'parked' || prior?.status === 'parked') read.parked.add(task.id);
       read.changes.set(task.id, task);
