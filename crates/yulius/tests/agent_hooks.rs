@@ -7027,6 +7027,7 @@ async fn a_rate_limited_github_leaves_merged_tasks_done_and_reports_one_reset() 
         client_id: "test".into(),
         client_secret: "test".into(),
         private_key_pem: FAKE_APP_KEY_PEM.into(),
+        webhook_secret: None,
     };
     let mut deps = f.h.app.deps.clone();
     deps.store
