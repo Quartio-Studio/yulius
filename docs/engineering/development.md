@@ -32,6 +32,8 @@ in PATH cannot override the project. Direct `cargo xtask` is equivalent only whe
 Cargo is the selected rustup toolchain and `.tools/bin` is on PATH. Prefer the wrapper.
 Python's standard-library `tomllib` means Python 3.10 and older are unsupported.
 
+On the instance, bootstrap installs the optional pinned mbx executable. A fresh task worktree can use the pin already installed in its agent home. Use `scripts/dev` for the gates and `scripts/cargo` for a targeted build, check or nextest run. Their cache is on the project sandbox's disk and lists its hit counts in command output. An explicit `RUSTC_WRAPPER` takes precedence. [ADR-0434](../decisions/0434-keep-a-local-compiler-cache-in-each-project-sandbox.md)
+
 ## Gates
 
 | Command | Actual work |

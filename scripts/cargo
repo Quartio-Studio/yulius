@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""Run a project Cargo command with a sandbox-local compiler cache when bootstrapped."""
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+
+from compile_cache import installed, sandbox_for
+
+root = Path(__file__).resolve().parent.parent
+args = sys.argv[1:]
+os.environ["PATH"] = str(root / ".tools/bin") + os.pathsep + os.environ.get("PATH", "")
+
+
+def plain(cargo):
+    os.environ["CARGO"] = cargo
+    os.execvp(cargo, [cargo, *args])
+
+
+# mbx invokes Cargo for discovery before the build. Mark the actual dispatch, so a cache
+# startup error can fall back without ever retrying a test, an executable or a failed build.
+marker = os.environ.pop("YULIUS_MBX_DISPATCH", None)
+if marker is not None:
+    if args and args[0] not in {"metadata", "locate-project", "-V", "-vV", "--version"}:
+        Path(marker).touch()
+    plain(os.environ.pop("YULIUS_MBX_CARGO"))
+
+cargo = os.environ.get("CARGO") or shutil.which("cargo") or "cargo"
+if (sys.platform != "linux" or not os.environ.get("YULIUS_SANDBOX")
+        or not args or args[0] not in {"build", "check", "clippy", "doc", "nextest", "run", "test"}
+        or "RUSTC_WRAPPER" in os.environ):
+    plain(cargo)
+
+import fcntl
+
+sandbox = sandbox_for(root, Path.home().resolve())
+if sandbox is None:
+    plain(cargo)
+# Leave explicit global or remote mbx configurations outside this repository policy.
+config_home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+if os.environ.get("MBX_REMOTE_URL") or (config_home / "mbx/config.toml").exists():
+    plain(cargo)
+cache = sandbox / "rust-compile-cache"
+try:
+    mbx = installed(root)
+    if not os.access(mbx, os.X_OK):
+        plain(cargo)
+    # Disk upkeep locks this same directory exclusively before reclaiming the cache. A build
+    # arriving during reclamation starts immediately with plain Cargo.
+    lease = os.open(sandbox, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    fcntl.flock(lease, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    owner = cache / ".yulius-mbx-v1"
+    try:
+        cache.mkdir(mode=0o700)
+        with owner.open("x") as stamp:
+            stamp.write("mbx-v1\n")
+    except FileExistsError:
+        if cache.is_symlink() or owner.is_symlink() or not owner.is_file():
+            plain(cargo)
+    with tempfile.TemporaryDirectory(prefix="yulius-cargo-") as scratch:
+        marker = Path(scratch) / "dispatched"
+        env = dict(os.environ, CARGO=str(root / "scripts/cargo"), YULIUS_MBX_CARGO=cargo,
+                   YULIUS_MBX_DISPATCH=str(marker), MBX_CACHE_DIR=str(cache),
+                   MBX_GC_MAX_TOTAL_SIZE="16GiB", MBX_GC_INTERVAL="1m", MBX_TARGET_VIEWS="0",
+                   MBX_RESTORE_HARDLINK="0", MBX_SCHEDULER="0", MBX_BUILD_SCRIPT_EXECUTION="0",
+                   MBX_CC="0", MBX_SHARE_WORKSPACE_ROOT="1", MBX_SHARE_OUT_DIR="0",
+                   MBX_LEARNED_INCREMENTAL="0", MBX_DISPLAY="plain", MBX_SUMMARY="full")
+        result = subprocess.run([mbx, *args], env=env, pass_fds=(lease,))
+        if marker.exists() or result.returncode < 0:
+            sys.exit(result.returncode if result.returncode >= 0 else 128 - result.returncode)
+except (OSError, KeyError, ValueError) as error:
+    print(f"Rust compile cache unavailable ({error}); running Cargo directly", file=sys.stderr)
+plain(cargo)

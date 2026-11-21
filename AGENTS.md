@@ -151,8 +151,10 @@ changes a file they read. They take seconds, and each one that fails in CI costs
 `checks` run it first.
 
 `scripts/dev` selects the pinned Rust even if Homebrew Cargo is first in PATH.
+On the instance, `scripts/dev` and `scripts/cargo` share compiled Rust across this sandbox's
+worktrees and CI lanes ([ADR-0434](docs/decisions/0434-keep-a-local-compiler-cache-in-each-project-sandbox.md)).
 The `yulius` crate's integration tests are one binary (ADR-0028): run one file's tests with
-`cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^<file>::/)'` (the `cargo test`
+`scripts/cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^<file>::/)'` (the `cargo test`
 filter `<file>::` is a substring: `supervision::` also runs `pool_supervision::`), and declare a
 new test file in `tests/main.rs`.
 `cargo xtask <command>` also works with the pinned rustup toolchain and `.tools/bin` on PATH.
