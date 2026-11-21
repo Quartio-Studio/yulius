@@ -62,6 +62,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Report the active singleton and replay its recorded failure for the original owner
 - [x] Reproduce candidate status across restart on the live and parked PR owner
 - [x] Verify the failed integration candidate before parking its original owner
+- [ ] Resume only the parked run whose screen finished saving
 - [ ] Preserve a continuation while its previous parked run settles
 - [ ] Order parking and replacement merge requests through run settlement
 - [ ] Deliver the recorded integration failure once to an already parked owner
@@ -111,18 +112,11 @@ The live watcher resolves ordinary CI for the owner at the armed head and reads 
 
 The final parking check compares the owner’s saved singleton decision with the verified PR head and integration base. A change to the saved merge decision during hosted verification defers the pass. A changed base or published repair retires the old failure for this decision.
 
-A Stop can settle a task while its reaped run is still finalizing. Continue waits outside the launch lock for that finalization before deciding whether its new session runs, queues or waits for subscription capacity. If the wait expires, the caller receives a retryable conflict and the owner retains the archive and any outstanding decision. A later Archive accepted while Continue waits takes precedence. The supervisor verifies the resting status and archive timestamp at admission before ending the owner’s request. This prevents the old reader from closing the new continuation.
+A parked resume captures the attempt ID before preparing the next launch. It waits outside the launch lock for the previous reader to publish the saved screen, within the stop escalation interval. Admission rechecks the parked status and attempt ID under the lock before restoring Codex lineage or accepting a prompt. A new turn can park while a message is waiting, so simply checking the status twice would allow a stale message to start another turn.
 
 ## Evidence
 
-- Independent review of `152859f3a` found that two observers can race to settle an unheld attempt after restart. A real detached-host regression showed Continue returning successfully while the observer that recorded the loss still held the task. Waiting for that observer preserved the new capacity pause. A second regression held the finalizer between the durable Parked status and restoring the saved grid. The old `task_message` returned a running task while that restore was still pending. Parked resumes now wait on the same reader as stopped owners.
-
-- At `f42ae9dc0`, all 17 focused nextest cases passed in run `7af47f2e-6d96-43f5-9b4e-b49c6c9ffa42`. The three review regressions had all failed on `ceea0550e`. The passing cases cover queued and capacity-delayed continuations, both reader orderings, a later Archive, timeout and retry, ordinary parked messages, escalation, switches and orphaned attempts. The real PTY ran a local fake agent. Vidoc was disabled.
-
-- Independent review of `ceea0550e` found two owner-state races. Three public Continue regressions failed on that implementation. A held live run and a run reaped after the owner submitted Continue both produced conflicts after the task had been unarchived. An Archive accepted while Continue was waiting instead let Continue succeed. The supervisor now checks the original status and archive timestamp under the launch lock after its single settlement check.
-
-- A further regression caught the first timeout implementation unarchiving the stopped task. The test now checks the archive and the outstanding decision both after the conflict and after a successful retry.
-- Three real-PTY regressions held the old reader after its attempt was recorded as ended. Before the fix, Continue returned early in all three cases, with the stopped task already queued or waiting for subscription capacity. The separate capacity race also reproduced the old reader closing a new continuation that had reached the same state.
+- Independent review of the combined Continue prototype found that a second turn could resume and park between preflight and launch. The parked-message regression holds a real PTY reader before screen restoration and also exercises admission after the replacement reader finishes. Continue after Stop is tracked separately.
 
 - PR #1597 landed on dev at `03661c9dc`. PR run `bfbedf0a-3e2a-4aec-bf84-15a2f70b8ab6` passed on `84a430398`. Train run `2efca3b9-8474-44d2-aa83-7a1e74ae94fe` passed quality, both test shards and browser E2E. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/03661c9dcf52a7ad1d4562f0873a8b9cd8cc994e)
 - Independent review of `5656ac726` found that Continue could queue after Stop recorded the task as resting, before the run reader finished its task transition. The continuation ordering and merge admission are now separate deliveries. Merge admission remains open.

@@ -44,7 +44,7 @@ issue #1412. Extends SPEC-050 SES-101 (Done tasks' sessions do not count toward 
 - A queued task says what it waits for (`queue_reason`), and the Capacity card shows working,
   parked, idle and queued sessions apart.
 
-When Stop overtakes a park, Continue waits for the reaped run’s final state write before it starts or queues the next session. Use the supervisor’s existing reader count and stop escalation interval to bound the wait outside the launch lock.
+A parked resume waits for the old reader to publish its screen. Check the attempt ID again at launch because a second turn can run and park during that wait. The existing reader count and stop escalation interval bound the wait outside the launch lock.
 
 ## Alternatives
 

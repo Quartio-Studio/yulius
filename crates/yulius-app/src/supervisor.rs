@@ -922,16 +922,10 @@ impl RunStart {
     }
 }
 
-/// The state a start must still find once it owns the launch lock.
-/// An owner's Continue also carries the archive value they observed.
-#[derive(Clone, Copy)]
 enum StartCondition {
     Any,
     Status(TaskStatus),
-    OwnerContinue {
-        status: TaskStatus,
-        archived_at: Option<Timestamp>,
-    },
+    Parked(Option<AttemptId>),
 }
 
 /// What an idle session is after a switch that types nothing into it (a person's move of an idle
@@ -1896,42 +1890,27 @@ impl App {
         })
     }
 
-    /// Continues the resting task the owner saw. A later archive or status change
-    /// wins while the previous reader settles or the agent executable is prepared.
-    pub(crate) async fn continue_resting_run(
-        self: &Arc<Self>,
-        task: &TaskRecord,
-        account: Option<AccountId>,
-    ) -> AppResult<()> {
-        let condition = StartCondition::OwnerContinue {
-            status: task.status,
-            archived_at: task.archived_at,
-        };
-        self.start_run_if(
-            &task.id,
-            RunStart::Resume { prompt: None },
-            account,
-            condition,
-            None,
-        )
-        .await
-        .map(drop)
-    }
-
-    /// [`App::start_run`] with its admission condition checked under the launch lock.
-    /// A changed status skips a conditional start. A superseded owner Continue returns a conflict. With
+    /// [`App::start_run`], only while the task still meets its start condition, checked
+    /// under the launch lock: `false` when it no longer has it, so nothing was done. With
     /// `rest`, the run's task is idle again from its launch on ([`IdleRest`]).
     fn start_run_if<'a>(
         self: &'a Arc<Self>,
         task_id: &'a TaskId,
         start: RunStart,
         account: Option<AccountId>,
-        only: StartCondition,
+        condition: StartCondition,
         rest: Option<IdleRest>,
     ) -> BoxFuture<'a, AppResult<bool>> {
         Box::pin(async move {
-            self.settle_resting_run(task_id, matches!(start, RunStart::Resume { .. }))
-                .await?;
+            if matches!(condition, StartCondition::Parked(_)) {
+                self.wait_for_parked_screen(task_id).await?;
+                crate::race::reached(
+                    crate::race::Point::ParkedResumePrepared,
+                    Path::new(task_id.as_str()),
+                );
+            } else {
+                self.settle_resting_run(task_id).await?;
+            }
             // The Codex CLI is installed before the launch lock, so a first install does not hold
             // other tasks' starts (SPEC-503 CLI-002); the launch asks again and reports a failure.
             if let Ok(Some(task)) = self.deps.store.task(task_id).await {
@@ -1953,32 +1932,18 @@ impl App {
                 .task(task_id)
                 .await?
                 .ok_or(AppError::NotFound)?;
-            match only {
-                StartCondition::Status(status) if task.status != status => return Ok(false),
-                StartCondition::OwnerContinue {
-                    status,
-                    archived_at,
-                } => {
-                    if task.status != status || task.archived_at != archived_at {
-                        return Err(AppError::Conflict(
-                            "The task changed while Continue waited. Check its state before continuing.".into(),
-                        ));
+            match condition {
+                StartCondition::Status(status) if status != task.status => return Ok(false),
+                StartCondition::Parked(expected) => {
+                    if task.status != TaskStatus::Parked {
+                        return Ok(false);
                     }
-                    // The resting owner's previous run settled before the launch lock.
-                    // Accept the person's Continue only now, so a refusal keeps their request.
-                    self.end_needs_you(&task.id).await;
-                    if archived_at.is_some() {
-                        self.deps
-                            .store
-                            .update_task(
-                                &task.id,
-                                &TaskFieldUpdate {
-                                    archived_at: Some(None),
-                                    ..TaskFieldUpdate::default()
-                                },
-                                self.now(),
-                            )
-                            .await?;
+                    let latest = self.deps.store.latest_attempt(task_id).await?;
+                    if latest.as_ref().map(|run| &run.id) != expected.as_ref() {
+                        return Ok(false);
+                    }
+                    if task.harness == Harness::Codex {
+                        self.restore_parked_codex_rollout(&task, latest).await?;
                     }
                 }
                 _ => {}
@@ -4055,35 +4020,28 @@ impl App {
     /// restart (ADR-0050): ended and counted, or killed and, once proven gone, recorded lost.
     ///
     /// # Errors
-    /// `Conflict` while the run lives on, cannot be ended, or its final write is still pending.
-    async fn settle_resting_run(self: &Arc<Self>, task_id: &TaskId, resume: bool) -> AppResult<()> {
+    /// `Conflict` while the run lives on or cannot be ended.
+    async fn settle_resting_run(self: &Arc<Self>, task_id: &TaskId) -> AppResult<()> {
         let store = &self.deps.store;
         let Some(task) = store.task(task_id).await? else {
             return Ok(());
         };
-        let resuming_park = resume && task.status == TaskStatus::Parked;
-        if !task.status.is_resting() && !resuming_park {
+        if !task.status.is_resting() {
             return Ok(());
         }
-        if let Some(run) = store.live_attempt(task_id).await? {
-            if self.holds_run(task_id).await {
-                return Err(AppError::Conflict(
-                    "the task still has a live run: stop it first".into(),
-                ));
-            }
-            self.settle_unheld_run(task_id, &run.id).await?;
+        let Some(run) = store.live_attempt(task_id).await? else {
+            return Ok(());
+        };
+        if self.holds_run(task_id).await {
+            return Err(AppError::Conflict(
+                "the task still has a live run: stop it first".into(),
+            ));
         }
-        // Another observer may have won the write that ended the unheld attempt.
-        // Its reader owns the task until finalization, just as when we found no attempt.
-        if resume {
-            self.wait_for_previous_reader(task_id).await?;
-        }
-        Ok(())
+        self.settle_unheld_run(task_id, &run.id).await
     }
 
-    /// A reaped attempt's reader can still be writing the task's last state.
-    /// Wait before reusing that state or changing the owner's archive or request.
-    async fn wait_for_previous_reader(&self, task_id: &TaskId) -> AppResult<()> {
+    /// Wait outside the launch lock until the parked reader finishes publishing its grid.
+    async fn wait_for_parked_screen(&self, task_id: &TaskId) -> AppResult<()> {
         let Some(runtime) = self.existing_runtime(task_id) else {
             return Ok(());
         };
@@ -4092,7 +4050,7 @@ impl App {
             return Ok(());
         }
         crate::race::reached(
-            crate::race::Point::ContinueWaitsForReader,
+            crate::race::Point::ParkedResumeWaitsForReader,
             Path::new(task_id.as_str()),
         );
         let bound = Duration::from_millis(self.config.stop_escalation_ms);
@@ -4100,7 +4058,7 @@ impl App {
             .await
             .map_err(|_| {
                 AppError::Conflict(
-                    "The previous session is still settling. Retry Continue after terminal exit."
+                    "The parked screen is still being saved. Retry after the session finishes parking."
                         .into(),
                 )
             })?
@@ -4538,7 +4496,6 @@ impl App {
         if !first {
             return; // another observer already recorded the outcome
         }
-        crate::race::reached(crate::race::Point::RunReaped, Path::new(task_id.as_str()));
         // This reader won and settles its request below.
         runtime.take_reader_request(attempt_id);
         runtime.clear_start_counters(attempt_id);
@@ -4937,6 +4894,49 @@ impl App {
         })
     }
 
+    /// Recover the rollout only after the parked attempt has been admitted under the launch lock.
+    async fn restore_parked_codex_rollout(
+        &self,
+        task: &TaskRecord,
+        latest_attempt: Option<AttemptRecord>,
+    ) -> AppResult<()> {
+        // Do not fall back to a fresh session if an old attempt has no lineage.
+        // SessionStart stores the attempt id before it records lineage, so a
+        // restart between those writes can recover from the parked attempt.
+        let store = &self.deps.store;
+        let missing = || {
+            AppError::Conflict("This parked Codex task has no recorded rollout to resume.".into())
+        };
+        let run = latest_attempt
+            .filter(|run| run.harness == Harness::Codex)
+            .ok_or_else(missing)?;
+        let sessions = store.provider_sessions(&task.id).await?;
+        let latest = sessions
+            .last()
+            .filter(|entry| entry.harness == Harness::Codex);
+        if let Some(id) = run.provider_session_id {
+            if latest.is_none_or(|entry| entry.session_id != id) {
+                self.record_lineage(task, Harness::Codex, &id, "native")
+                    .await?;
+                // The store preserves another task's claim on a rollout. Confirm
+                // that the launch will actually read this attempt's identity.
+                if !store
+                    .provider_sessions(&task.id)
+                    .await?
+                    .last()
+                    .is_some_and(|entry| entry.harness == Harness::Codex && entry.session_id == id)
+                {
+                    return Err(missing());
+                }
+            }
+        } else if latest.is_none_or(|entry| {
+            entry.last_seen < run.started_at || run.ended_at.is_none_or(|end| entry.last_seen > end)
+        }) {
+            return Err(missing());
+        }
+        Ok(())
+    }
+
     /// Resumes a parked task in its own session (SPEC-512 PRK-005), with `prompt` as the turn it
     /// opens with, or with nothing typed: a prompt-mode session that gets nothing reads as it
     /// did, idle, from its launch on ([`IdleRest`]). At the session limit it waits in the queue
@@ -4949,6 +4949,14 @@ impl App {
         task_id: &TaskId,
         prompt: Option<String>,
     ) -> AppResult<bool> {
+        // Observe the attempt first. A launch between the two reads makes this
+        // request stale, even if its replacement has already parked again.
+        let parked_run = self
+            .deps
+            .store
+            .latest_attempt(task_id)
+            .await?
+            .map(|run| run.id);
         let task = self
             .deps
             .store
@@ -4957,50 +4965,6 @@ impl App {
             .ok_or(AppError::NotFound)?;
         if task.status != TaskStatus::Parked {
             return Ok(false);
-        }
-        if task.harness == Harness::Codex {
-            // Do not fall back to a fresh session if an old attempt has no lineage.
-            // SessionStart stores the attempt id before it records lineage, so a
-            // restart between those writes can recover from the parked attempt.
-            let store = &self.deps.store;
-            let missing = || {
-                AppError::Conflict(
-                    "This parked Codex task has no recorded rollout to resume.".into(),
-                )
-            };
-            let run = store
-                .attempts(task_id)
-                .await?
-                .pop()
-                .filter(|run| run.harness == Harness::Codex)
-                .ok_or_else(missing)?;
-            let sessions = store.provider_sessions(task_id).await?;
-            let latest = sessions
-                .last()
-                .filter(|entry| entry.harness == Harness::Codex);
-            if let Some(id) = run.provider_session_id {
-                if latest.is_none_or(|entry| entry.session_id != id) {
-                    self.record_lineage(&task, Harness::Codex, &id, "native")
-                        .await?;
-                    // The store preserves another task's claim on a rollout. Confirm
-                    // that the launch will actually read this attempt's identity.
-                    if !store
-                        .provider_sessions(task_id)
-                        .await?
-                        .last()
-                        .is_some_and(|entry| {
-                            entry.harness == Harness::Codex && entry.session_id == id
-                        })
-                    {
-                        return Err(missing());
-                    }
-                }
-            } else if latest.is_none_or(|entry| {
-                entry.last_seen < run.started_at
-                    || run.ended_at.is_none_or(|end| entry.last_seen > end)
-            }) {
-                return Err(missing());
-            }
         }
         let goal_unfinished = self.goal_unfinished_of(&task).await;
         let rest = task
@@ -5016,7 +4980,7 @@ impl App {
             task_id,
             RunStart::Resume { prompt },
             None,
-            StartCondition::Status(TaskStatus::Parked),
+            StartCondition::Parked(parked_run),
             rest,
         )
         .await

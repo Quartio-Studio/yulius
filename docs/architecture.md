@@ -2097,7 +2097,7 @@ If the server restarted between writing the attempt’s ID and writing its sessi
 resume path recovers the ID from the parked attempt. If capacity holds a resume, an unreadable
 rollout history leaves its pause and prompt in place for the next capacity round.
 
-When Stop rests an owner during park shutdown, the run may already be reaped while its reader is still recording the final task state. Continue waits for that reader outside the launch lock before admitting the next session or placing it in a queue. The stop escalation interval bounds this wait. The same wait covers an orphaned run that another observer records as lost and a parked task whose saved grid is still being published.
+A parked resume records the latest attempt ID and waits outside the launch lock for the reader to publish the saved grid. Under the lock it checks that the same attempt is still parked before restoring Codex lineage, starting a process or queueing its prompt. The stop escalation interval bounds the wait.
 
 `park_task_now` asks again under the launch lock, sets the run's end intent `Park` and ends the
 session as a close does (graceful shutdown, then the escalation). The run's end, by its exit or

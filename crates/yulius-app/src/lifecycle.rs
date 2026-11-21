@@ -734,11 +734,24 @@ impl App {
                 Some(_) => {}
             }
         }
-        crate::race::reached(
-            crate::race::Point::OwnerContinueRequested,
-            std::path::Path::new(id),
-        );
-        self.continue_resting_run(&task, account).await?;
+        // A person continues it: whatever its agent asked a person before is past (SPEC-134).
+        self.end_needs_you(&task.id).await;
+        if task.archived_at.is_some() {
+            let now = self.now();
+            self.deps
+                .store
+                .update_task(
+                    &task.id,
+                    &TaskFieldUpdate {
+                        archived_at: Some(None),
+                        ..TaskFieldUpdate::default()
+                    },
+                    now,
+                )
+                .await?;
+        }
+        self.start_run(&task.id, RunStart::Resume { prompt: None }, account)
+            .await?;
         // Its waiting successors wait for it again (TSK-012).
         self.unblock_successors(&task.id).await;
         let task = self

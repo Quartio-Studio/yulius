@@ -191,311 +191,6 @@ async fn parked(app: &Arc<App>, id: &TaskId) -> TestResult {
     .await
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ContinuedOwner {
-    Queued,
-    WaitingCapacity,
-    SettlementTimeout,
-    ArchivedDuringWait,
-}
-
-#[test]
-fn a_queued_continue_waits_for_the_reaped_park_reader() -> TestResult {
-    continue_during_park_settlement(ContinuedOwner::Queued)
-}
-
-#[test]
-fn a_capacity_delayed_continue_waits_for_the_reaped_park_reader() -> TestResult {
-    continue_during_park_settlement(ContinuedOwner::WaitingCapacity)
-}
-
-#[test]
-fn a_continue_that_exhausts_the_settlement_wait_can_retry_after_exit() -> TestResult {
-    continue_during_park_settlement(ContinuedOwner::SettlementTimeout)
-}
-
-#[test]
-fn a_later_archive_wins_over_a_continue_waiting_for_the_reader() -> TestResult {
-    continue_during_park_settlement(ContinuedOwner::ArchivedDuringWait)
-}
-
-#[test]
-fn a_live_run_refusal_preserves_the_continuing_owners_archive_and_decision() -> TestResult {
-    refuse_continuation_of_held_owner(false)
-}
-
-#[test]
-fn a_run_reaped_during_continue_admission_preserves_the_owners_archive_and_decision() -> TestResult
-{
-    refuse_continuation_of_held_owner(true)
-}
-
-fn refuse_continuation_of_held_owner(reap_during_admission: bool) -> TestResult {
-    let (_dir, data) = data_dir()?;
-    let rt = runtime()?;
-    let result = rt.block_on(async {
-        let (app, _) = configured_app_with_pulls(&data, 1, 1, |config| {
-            config.stop_escalation_ms = 500;
-        }).await?;
-        let (id, caller) = answered(&app, &data).await?;
-        let ctx = AuthContext {
-            user: app.deps.store.user(&caller.user).await?.ok_or("owner")?,
-            csrf_token: None, session_hash: None, token: None,
-        };
-        // SPEC-458 permits a resting task whose process is still held by this server.
-        let status = TaskStatus::Stopped(StopReason::ServerLost);
-        assert!(app.deps.store.transition_task(&id, Some(TaskStatus::Running), status, None, app.now()).await?);
-        assert!(app.deps.store.live_attempt(&id).await?.is_some());
-        app.archive_task(&ctx, id.as_str(), true).await?;
-        ask(&app, &id).await?;
-        let req = serde_json::from_value(json!({}))?;
-        let refusal = if reap_during_admission {
-            let (prepared, enter) = pause_watch_or_queue(Point::OwnerContinueRequested, &id);
-            let (reaped, settle) = pause_watch_or_queue(Point::RunReaped, &id);
-            let owner = ctx.clone();
-            let stopped_id = id.clone();
-            let continuing_app = app.clone();
-            let continuing = tokio::spawn(async move {
-                continuing_app.continue_task(&owner, stopped_id.as_str(), &req).await
-            });
-            tokio::time::timeout(Duration::from_secs(10), prepared.notified()).await?;
-            app.stop_task_now(&id).await?;
-            tokio::time::timeout(Duration::from_secs(10), reaped.notified()).await?;
-            assert!(app.deps.store.live_attempt(&id).await?.is_none());
-            enter.notify_one();
-            let result = tokio::time::timeout(Duration::from_secs(10), continuing).await??;
-            settle.notify_one();
-            result
-        } else {
-            app.continue_task(&ctx, id.as_str(), &req).await
-        };
-        let reason = if reap_during_admission { "settling" } else { "live run" };
-        assert!(matches!(refusal, Err(yulius_app::error::AppError::Conflict(ref msg)) if msg.contains(reason)), "{refusal:?}");
-        let current = app.deps.store.task(&id).await?.ok_or("stopped owner")?;
-        assert_eq!(current.status, status);
-        assert!(current.archived_at.is_some(), "refused Continue unarchived the owner");
-        assert!(asks(&app, &id).await?);
-        if !reap_during_admission {
-            app.stop_task_now(&id).await?;
-        }
-        Ok::<_, Error>(())
-    });
-    rt.shutdown_timeout(Duration::from_secs(5));
-    result
-}
-
-fn continue_during_park_settlement(case: ContinuedOwner) -> TestResult {
-    let (_dir, data) = data_dir()?;
-    let rt = runtime()?;
-    let result = rt.block_on(exercise_continue_during_park(&data, case));
-    rt.shutdown_timeout(Duration::from_secs(5));
-    result
-}
-
-async fn exercise_continue_during_park(data: &Path, case: ContinuedOwner) -> TestResult {
-    let (app, _) = configured_app_with_pulls(data, 2, 1, |config| {
-        if case == ContinuedOwner::SettlementTimeout {
-            config.stop_escalation_ms = 500;
-        }
-    })
-    .await?;
-    let (id, caller) = answered(&app, data).await?;
-    let ctx = AuthContext {
-        user: app.deps.store.user(&caller.user).await?.ok_or("owner")?,
-        csrf_token: None,
-        session_hash: None,
-        token: None,
-    };
-    // Establish the occupied slot before holding the old reader. Spawning a second
-    // host while that reader is held would spend the race budget on fixture setup.
-    let peer = if case == ContinuedOwner::Queued {
-        let peer = new_task(
-            &app,
-            &caller.sandbox,
-            &caller.user,
-            "Keep this session occupied",
-            TaskMode::Prompt,
-        )
-        .await?;
-        wait_for("the occupied session", Duration::from_secs(30), || async {
-            screen(&app, &peer).contains("ECHO: Keep this session occupied")
-        })
-        .await?;
-        app.pause_task_for_person(&ctx, peer.as_str()).await?;
-        app.load_limits([(yulius_domain::limits::Limit::Sessions, 1)].into())
-            .await;
-        assert_eq!(app.max_live_sessions(), 1);
-        Some(peer)
-    } else {
-        None
-    };
-    let mut frames = app.runtime(&id).hub.watch();
-    let (ending, release) = pause_watch_or_queue(Point::EndDecided, &id);
-    let paused = app.clone();
-    let paused_id = id.clone();
-    let handle = tokio::runtime::Handle::current();
-    yulius_app::race::on(Point::ParkDecided, Path::new(id.as_str()), move || {
-        let result = tokio::task::block_in_place(|| {
-            handle.block_on(paused.pause_task(
-                &paused_id,
-                yulius_app::model::PauseKind::Prompt,
-                None,
-                None,
-            ))
-        });
-        assert!(result.is_ok(), "{result:?}");
-    });
-    wait_for(
-        "the park with a capacity hold",
-        Duration::from_secs(20),
-        || async { app.park_idle_sessions_now().await == 1 },
-    )
-    .await?;
-    tokio::time::timeout(Duration::from_secs(10), ending.notified()).await?;
-    assert!(app.deps.store.live_attempt(&id).await?.is_none());
-    app.stop_task_now(&id).await?;
-    let stopped = Some(TaskStatus::Stopped(StopReason::Cancelled));
-    assert_eq!(status_of(&app, &id).await.0, stopped);
-    if case == ContinuedOwner::SettlementTimeout {
-        app.archive_task(&ctx, id.as_str(), true).await?;
-        ask(&app, &id).await?;
-    }
-    if case != ContinuedOwner::Queued {
-        let account = yulius_domain::ids::AccountId::parse("a-only")?;
-        let usage = json!({
-            "primary": {
-                "used_percent": 100.0,
-                "window_minutes": 300,
-                "resets_at": app.now().plus_millis(3_600_000).0
-            }
-        })
-        .to_string();
-        app.deps
-            .store
-            .set_account_state(
-                &account,
-                yulius_app::model::AccountStatus::Limited,
-                Some(&usage),
-                None,
-                app.now(),
-            )
-            .await?;
-    }
-    let waiting = Arc::new(tokio::sync::Notify::new());
-    let ready = waiting.clone();
-    yulius_app::race::on(
-        Point::ContinueWaitsForReader,
-        Path::new(id.as_str()),
-        move || ready.notify_one(),
-    );
-    let continuing_app = app.clone();
-    let continuing_id = id.clone();
-    let owner = ctx.clone();
-    let req = serde_json::from_value(json!({}))?;
-    let mut continuing = tokio::spawn(async move {
-        if case == ContinuedOwner::WaitingCapacity {
-            // Restart and onboarding also resume directly through the supervisor.
-            continuing_app
-                .start_run(
-                    &continuing_id,
-                    yulius_app::supervisor::RunStart::Resume { prompt: None },
-                    None,
-                )
-                .await
-        } else {
-            continuing_app
-                .continue_task(&owner, continuing_id.as_str(), &req)
-                .await
-                .map(drop)
-        }
-    });
-    tokio::select! {
-        early = &mut continuing => {
-            release.notify_one();
-            let result = early?;
-            return Err(format!("Continue completed before its reaped reader settled: {result:?}").into());
-        },
-        () = waiting.notified() => (),
-    }
-    assert_eq!(status_of(&app, &id).await.0, stopped);
-    if case == ContinuedOwner::ArchivedDuringWait {
-        app.archive_task(&ctx, id.as_str(), true).await?;
-        ask(&app, &id).await?;
-    }
-    if case == ContinuedOwner::SettlementTimeout {
-        let result = tokio::time::timeout(Duration::from_secs(5), &mut continuing).await??;
-        assert!(matches!(
-            result,
-            Err(yulius_app::error::AppError::Conflict(reason)) if reason.contains("settling")
-        ));
-        assert_eq!(status_of(&app, &id).await.0, stopped);
-        assert!(
-            app.deps
-                .store
-                .task(&id)
-                .await?
-                .ok_or("task")?
-                .archived_at
-                .is_some(),
-            "a timed-out Continue unarchived the stopped task"
-        );
-        assert!(
-            asks(&app, &id).await?,
-            "a timed-out Continue cleared the person's decision"
-        );
-    }
-    release.notify_one();
-    tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            if matches!(frames.recv().await?, yulius_app::hub::HubFrame::Exit { .. }) {
-                return Ok::<(), tokio::sync::broadcast::error::RecvError>(());
-            }
-        }
-    })
-    .await??;
-    if case == ContinuedOwner::ArchivedDuringWait {
-        let result = continuing.await?;
-        assert!(
-            matches!(result, Err(yulius_app::error::AppError::Conflict(_))),
-            "Continue passed a later Archive: {result:?}"
-        );
-        let owner = app.deps.store.task(&id).await?.ok_or("archived owner")?;
-        assert_eq!(Some(owner.status), stopped);
-        assert!(owner.archived_at.is_some());
-        assert!(asks(&app, &id).await?);
-        assert!(app.deps.store.live_attempt(&id).await?.is_none());
-        return Ok(());
-    }
-    if case == ContinuedOwner::SettlementTimeout {
-        app.continue_task(&ctx, id.as_str(), &serde_json::from_value(json!({}))?)
-            .await?;
-        assert!(
-            app.deps
-                .store
-                .task(&id)
-                .await?
-                .ok_or("task")?
-                .archived_at
-                .is_none()
-        );
-        assert!(!asks(&app, &id).await?);
-    } else {
-        continuing.await??;
-    }
-    let state = if peer.is_some() {
-        TaskStatus::Queued
-    } else {
-        TaskStatus::WaitingCapacity
-    };
-    assert_eq!(status_of(&app, &id).await.0, Some(state));
-    assert!(app.deps.store.live_attempt(&id).await?.is_none());
-    app.stop_task_now(&id).await?;
-    if let Some(peer) = peer {
-        app.stop_task_now(&peer).await?;
-    }
-    Ok(())
-}
-
 /// Waits until the task's state is older than a 1 ms grace period, so a pass that parks
 /// nothing says so because of what it checks, not because the grace is not over yet.
 async fn past_the_grace(app: &App, id: &TaskId) -> TestResult {
@@ -619,6 +314,139 @@ fn an_answered_task_parks_and_its_slot_starts_a_queued_task() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn a_parked_message_can_retry_after_screen_publication_times_out() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    let result = rt.block_on(async {
+        let (app, _) = configured_app_with_pulls(&data, 8, 1, |config| {
+            config.stop_escalation_ms = 500;
+        })
+        .await?;
+        let (id, caller) = answered(&app, &data).await?;
+        ask(&app, &id).await?;
+        let (recorded, restore) = pause_watch_or_queue(Point::ParkStateRecorded, &id);
+        parked(&app, &id).await?;
+        tokio::time::timeout(Duration::from_secs(10), recorded.notified()).await?;
+        let prompt = json!({"number": 1, "text": "Retry the saved turn"});
+        let expired = tokio::time::timeout(
+            Duration::from_secs(5),
+            app.tool_task_message(&caller, &prompt),
+        )
+        .await?;
+        let still_asks = asks(&app, &id).await?;
+        let attempts = app.deps.store.attempts(&id).await?.len();
+        restore.notify_one();
+        assert!(matches!(
+            expired,
+            Err(yulius_app::error::AppError::Conflict(_))
+        ));
+        assert_eq!(attempts, 1);
+        assert!(still_asks);
+        assert_eq!(
+            app.tool_task_message(&caller, &prompt).await?["delivered"],
+            "resumed"
+        );
+        app.stop_task_now(&id).await?;
+        Ok::<_, Error>(())
+    });
+    rt.shutdown_timeout(Duration::from_secs(5));
+    result
+}
+
+#[test]
+fn a_parked_message_checked_on_an_earlier_run_is_refused_during_screen_restore() -> TestResult {
+    replaced_parked_message(true)
+}
+
+#[test]
+fn a_parked_message_checked_on_an_earlier_run_is_refused_after_settlement() -> TestResult {
+    replaced_parked_message(false)
+}
+
+fn replaced_parked_message(while_restoring: bool) -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    let result = rt.block_on(async {
+        let app = app(&data, 8, 1).await?;
+        let (id, caller) = answered(&app, &data).await?;
+        parked(&app, &id).await?;
+        let (prepared, submit) = pause_watch_or_queue(Point::ParkedResumePrepared, &id);
+        let first = app.clone();
+        let first_caller = caller.clone();
+        let first = tokio::spawn(async move {
+            first
+                .tool_task_message(
+                    &first_caller,
+                    &json!({"number": 1, "text": "Old pending message"}),
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(15), prepared.notified()).await?;
+        let accepted = app
+            .tool_task_message(&caller, &json!({"number": 1, "text": "Intervening turn"}))
+            .await?;
+        assert_eq!(accepted["delivered"], "resumed");
+        wait_for(
+            "the intervening answer",
+            Duration::from_secs(20),
+            || async {
+                screen(&app, &id).contains("Intervening turn")
+                    && status_of(&app, &id).await.1 == Some(Activity::Waiting)
+            },
+        )
+        .await?;
+        let (recorded, restore) = pause_watch_or_queue(Point::ParkStateRecorded, &id);
+        parked(&app, &id).await?;
+        tokio::time::timeout(Duration::from_secs(15), recorded.notified()).await?;
+        ask(&app, &id).await?;
+        // A fresh Continue reaches its preflight checkpoint only after the new reader ends.
+        let last = if while_restoring {
+            None
+        } else {
+            let (ready, launch) = pause_watch_or_queue(Point::ParkedResumePrepared, &id);
+            restore.notify_one();
+            let app = app.clone();
+            let caller = caller.clone();
+            let fresh = tokio::spawn(async move {
+                app.tool_task_message(
+                    &caller,
+                    &json!({"number": 1, "text": "Message for the latest park"}),
+                )
+                .await
+            });
+            tokio::time::timeout(Duration::from_secs(15), ready.notified()).await?;
+            Some((fresh, launch))
+        };
+        submit.notify_one();
+        let stale = tokio::time::timeout(Duration::from_secs(10), first).await??;
+        let state = status_of(&app, &id).await.0;
+        let attempts = app.deps.store.attempts(&id).await?.len();
+        let still_asks = asks(&app, &id).await?;
+        restore.notify_one();
+        let fresh = if let Some((fresh, launch)) = last {
+            launch.notify_one();
+            Some(fresh.await?)
+        } else {
+            None
+        };
+        assert!(
+            matches!(stale, Err(yulius_app::error::AppError::Conflict(_))),
+            "message prepared for the old park was accepted"
+        );
+        assert_eq!(state, Some(TaskStatus::Parked));
+        assert_eq!(attempts, 2);
+        assert!(still_asks);
+        if let Some(fresh) = fresh {
+            assert_eq!(fresh?["delivered"], "resumed");
+            app.stop_task_now(&id).await?;
+        }
+        Ok::<_, Error>(())
+    });
+    rt.shutdown_timeout(Duration::from_secs(5));
+    result
+}
+
 /// PRK-005: `task_message` to a parked task resumes it in the same provider session with the
 /// message as its first prompt, and ends the request it had open.
 #[test]
@@ -635,7 +463,7 @@ fn a_message_resumes_a_parked_task_in_its_own_session() -> TestResult {
         assert!(asks(&app, &id).await?, "the request stays");
         let waiting = Arc::new(tokio::sync::Notify::new());
         let ready = waiting.clone();
-        yulius_app::race::on(Point::ContinueWaitsForReader, Path::new(id.as_str()), move || ready.notify_one());
+        yulius_app::race::on(Point::ParkedResumeWaitsForReader, Path::new(id.as_str()), move || ready.notify_one());
         let resumed = app.clone();
         let mut message = tokio::spawn(async move {
             resumed.tool_task_message(&caller, &json!({"number": 1, "text": "Blue: answer with an echo"})).await

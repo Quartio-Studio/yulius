@@ -1279,6 +1279,17 @@ impl TaskStore for SqliteStore {
         .await
     }
 
+    async fn latest_attempt(&self, task: &TaskId) -> AppResult<Option<AttemptRecord>> {
+        Ok(self
+            .attempts_query(
+                format!("SELECT {ATTEMPT_COLS} FROM attempts WHERE task_id = ?1 ORDER BY seq DESC LIMIT 1"),
+                vec![task.as_str().to_owned()],
+            )
+            .await?
+            .into_iter()
+            .next())
+    }
+
     async fn live_attempt(&self, task: &TaskId) -> AppResult<Option<AttemptRecord>> {
         Ok(self
             .attempts_query(

@@ -208,9 +208,8 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # rerun for the owner takes precedence in yulius wait and in its merge queue decision.
 # If a later run finds the integration CI configuration invalid, earlier completed runs
 # at that head become obsolete. After repair, even an owner that passed can show queued.
-# Continue waits for the previous run to finish recording its end if Stop overtook parking.
-# If settlement exceeds the stop escalation interval, retry Continue after terminal exit.
-# An Archive accepted during that wait leaves the task archived. Open it again to continue.
+# A message to a parked task waits for its saved screen. If the wait expires or another
+# turn runs and parks in the meantime, read the current screen and send the message again.
 # A partial Git overview keeps a known failing PR under Needs you. A complete lookup
 # can clear it. Refreshing this display sends no message to the parked task.
 # A successor waiting for Done (after_task or #N done) stays chained while its parked predecessor
