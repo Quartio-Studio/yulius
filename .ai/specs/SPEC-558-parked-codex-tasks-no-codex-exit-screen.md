@@ -111,6 +111,9 @@ A capacity wait leaves the candidate failure unheard and the owner parked. Launc
 
 ## Evidence
 
+- The first unreadable-record fix passed both successor regressions. Independent review of `74fa84c12` then traced the cold task detail's ordinary PR lookup ahead of the candidate check. Reading the achieved owner before repairing the persisted stage reproduced the SQLite decode error. The status read now supplies both the ordinary cold-cache fallback and the candidate check from one delivery observation. The regression reads both the owner's detail and its task-list row while the malformed stage persists.
+
+
 - After integrating dev `e55073a71` (PR #1581), independent review of `ed672eb60` identified an achieved owner releasing its session and dependency when the PR identity could not be read. Both regressions failed there. A malformed delivery and an open delivery with no PR number reported a free slot. The task detail had no pending candidate and the successor moved to Queued. Losing the number during the hosted Done check also moved the successor to Queued. The recovery fixture restores #1481, keeps the successor Chained through the current failure and then advances the integration base.
 
 

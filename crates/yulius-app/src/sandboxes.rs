@@ -470,15 +470,36 @@ impl App {
         requested: &HashSet<String>,
         verify_host: bool,
     ) -> AppResult<(AttentionFacts, bool)> {
-        let mut facts = self.local_attention_facts(task, requested).await?;
-        if task.status != TaskStatus::Running
+        let live = task.status == TaskStatus::Running;
+        if !(live || task.status == TaskStatus::Parked)
             || !task
                 .activity
                 .is_some_and(yulius_domain::task::Activity::is_idle)
         {
+            return Ok((
+                self.local_attention_facts(task, requested, None).await?,
+                false,
+            ));
+        }
+        let observed = self.observed_pulls.get(&task.sandbox_id, &task.id);
+        let record = if live || observed.is_none() {
+            self.deps.store.delivery(&task.id).await
+        } else {
+            Ok(None)
+        };
+        // A cold ordinary-status read and the integration check use the same delivery.
+        let pull = observed.unwrap_or_else(|| match &record {
+            Ok(record) => record
+                .as_ref()
+                .filter(|r| crate::delivery::past_merge(&r.stage))
+                .map(|_| PullSignal::Merged),
+            Err(_) => Some(PullSignal::Errored),
+        });
+        let mut facts = self.local_attention_facts(task, requested, pull).await?;
+        if !live {
             return Ok((facts, false));
         }
-        let blocked = match self.deps.store.delivery(&task.id).await {
+        let blocked = match record {
             Ok(record) => {
                 self.delivery_candidate_blocks(task, record.as_ref(), verify_host)
                     .await
@@ -499,6 +520,7 @@ impl App {
         &self,
         task: &TaskRecord,
         requested: &HashSet<String>,
+        mut pull: Option<PullSignal>,
     ) -> AppResult<AttentionFacts> {
         let store = &self.deps.store;
         if task.status.is_resting() || task.status == TaskStatus::Stopping {
@@ -523,25 +545,16 @@ impl App {
         let live = task.status == TaskStatus::Running && idle;
         // The pull request, the plan and the goal matter only after a finished turn: with no step
         // open and no unfinished goal, an idle agent answered (SPEC-429).
-        let (pull, plan_open, spec_unfinished) = if finished {
-            let mut pull = match self.observed_pulls.get(&task.sandbox_id, &task.id) {
-                Some(observed) => observed,
-                // Not read since the server started: a merge recorded earlier is still known.
-                None => store
-                    .delivery(&task.id)
-                    .await?
-                    .filter(|record| crate::delivery::past_merge(&record.stage))
-                    .map(|_| PullSignal::Merged),
-            };
+        let (plan_open, spec_unfinished) = if finished {
             // A newer Yulius CI run already queued or running supersedes a stale failing
             // pull-request observation on a live task (SPEC-578).
             if live && pull == Some(PullSignal::Failing) && self.pr_ci_progressing(task).await {
                 pull = Some(PullSignal::InReview);
             }
             let plan_open = plan_open(&store.steps(&task.id).await?);
-            (pull, plan_open, self.spec_unfinished(&task.id).await)
+            (plan_open, self.spec_unfinished(&task.id).await)
         } else {
-            (None, false, false)
+            (false, false)
         };
         Ok(AttentionFacts {
             status: task.status,

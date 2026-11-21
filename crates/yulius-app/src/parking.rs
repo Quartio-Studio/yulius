@@ -214,12 +214,11 @@ impl App {
                     || !runtime.with_workflows(|workflows| workflows.runs().is_empty())
             }
         };
-        let mut facts = self.local_attention_facts(task, &requested.all).await.ok();
-        if let Some(facts) = &mut facts {
-            // The supervisor verifies the current head before the launch lock.
-            // Local eligibility must not depend on a previous overview.
-            facts.pull = None;
-        }
+        // The supervisor verifies the current head separately before the launch lock.
+        let facts = self
+            .local_attention_facts(task, &requested.all, None)
+            .await
+            .ok();
         let group = facts
             .as_ref()
             .map_or(TaskGroup::Working, |facts| facts.group());

@@ -420,6 +420,16 @@ fn an_unreadable_open_delivery_holds_the_owner_slot_and_successor_until_verifica
             [task.id.as_str()],
         )?;
         let unreadable_slot = app.task_summary(&queued).await?.queue_reason;
+        let unreadable_owner = app.task_detail(&ctx, task.id.as_str()).await?;
+        assert!(unreadable_owner.summary.candidate_pending && unreadable_owner.summary.yulius_wait);
+        let listed = app
+            .list_tasks(&ctx, task.sandbox_id.as_str(), false)
+            .await?;
+        assert!(
+            listed
+                .iter()
+                .any(|row| row.id == task.id.as_str() && row.candidate_pending)
+        );
         db.execute(
             "UPDATE delivery SET stage=?1, pr_number=NULL WHERE task_id=?2",
             rusqlite::params![DeliveryStage::PrOpen.wire_name(), task.id.as_str()],
