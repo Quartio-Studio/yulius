@@ -124,6 +124,10 @@ The SQLite query returning a parked task includes the latest attempt ID in the s
 
 ## Evidence
 
+- The hand check on dev base `13a632c40` removed the writer and final arm check from parking and removed the committed-run and durable-status checks from arming. All six focused cases failed in `c38fb6e7-bd8a-47d3-b180-39c62daa8fcc`. Both source files were restored.
+- Before the merge writer and run checks, six regression cases failed in `2f5c9b57-8f74-4967-bb0d-75c1054e0ce8`. They covered a pending writer, an installed replacement arm, a committed park, a settled park, a switch and a capacity pause. The existing obsolete-PR fixture also timed out. The same baseline binary passed all four obsolete-PR cases under isolated observation in 6.64 seconds. [Issue #1649](https://github.com/Quartio-Studio/yulius/issues/1649)
+- With admission ordered, all parking and merge-train cases passed in `ac714fde-1f14-4238-ace4-d4625bb2a1c8`. Five delivery assertions exposed fixtures that inserted a live attempt on a Closed task. Those fixtures now use the running task and live attempt setup from the existing armed-merge tests.
+
 - PR #1638 delivered named Continue on dev `21e580070`. Its head passed CI run `626c72ad-54a8-4204-be61-0d6e29e53a9f`. The merged revision passed quality, both test shards and e2e in `bd5b55c7-ef1f-4baa-8e5c-060c6b4d0fd3`. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/21e580070b129943e914fa8fb02b2ef5911ec2e6)
 
 - The named-Continue hand check used the earlier model, allowed a refused placement through the claim, and discarded the admitted launch model. All five focused regressions failed in `7b1d5a68-7dcb-4b24-8e10-95706bae88df`. The affected source files were restored to the reviewed commit.

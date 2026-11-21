@@ -2564,6 +2564,43 @@ async fn two_ci_syncs_of_a_sandbox_queue_a_head_once() -> TestResult {
     Ok(())
 }
 
+async fn start_delivery_attempt(f: &Fixture) -> TestResult {
+    let task = TaskId::parse("t1")?;
+    f.h.store
+        .insert_attempt(&AttemptRecord {
+            id: AttemptId::parse("a1")?,
+            task_id: task.clone(),
+            seq: 1,
+            harness: Harness::ClaudeCode,
+            account_id: None,
+            provider_session_id: None,
+            launch_kind: LaunchKind::New,
+            model: None,
+            state: AttemptState::Live,
+            run_dir: "/tmp/none".into(),
+            token_hash: f.h.app.deps.crypto.sha256_hex(b"tok-agent"),
+            host_token: Sealed(vec![0]),
+            ptyhost_pid: None,
+            child_pid: None,
+            started_at: Timestamp(1),
+            ended_at: None,
+            exit_code: None,
+            exit_reason: None,
+        })
+        .await?;
+    // A live run is a running task (an armed merge lives with it, SPEC-483 D6).
+    f.h.store
+        .transition_task(
+            &task,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Waiting),
+            f.h.app.now(),
+        )
+        .await?;
+    Ok(())
+}
+
 /// What `delivery_merge` answers for the reviewed head after `follow` changed the branch: whether
 /// it refused, its text, and the newest armed merge's audit entries. The task's pull request is open with `feature.rs` (30 lines) and its
 /// spec; the head at that point is the reviewed one; the checks are pending (an accepted call
@@ -2587,28 +2624,7 @@ async fn deliver_after_follow_up(
     follow(&f, &wt)?;
     let head = git(&wt, &["rev-parse", "HEAD"])?;
     f.h.github.set_checks(&head, ChecksState::Pending);
-    f.h.store
-        .insert_attempt(&AttemptRecord {
-            id: AttemptId::parse("a1")?,
-            task_id: TaskId::parse("t1")?,
-            seq: 1,
-            harness: Harness::ClaudeCode,
-            account_id: None,
-            provider_session_id: None,
-            launch_kind: LaunchKind::New,
-            model: None,
-            state: AttemptState::Live,
-            run_dir: "/tmp/none".into(),
-            token_hash: f.h.app.deps.crypto.sha256_hex(b"tok-agent"),
-            host_token: Sealed(vec![0]),
-            ptyhost_pid: None,
-            child_pid: None,
-            started_at: Timestamp(1),
-            ended_at: None,
-            exit_code: None,
-            exit_reason: None,
-        })
-        .await?;
+    start_delivery_attempt(&f).await?;
     let internal = yulius_server::internal_router(f.h.app.clone())
         .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1))));
     let agent = Creds {
@@ -2959,28 +2975,7 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
     let main_before = f.origin_sha("main")?;
 
     // An agent run of the task.
-    f.h.store
-        .insert_attempt(&AttemptRecord {
-            id: AttemptId::parse("a1")?,
-            task_id: TaskId::parse("t1")?,
-            seq: 1,
-            harness: Harness::ClaudeCode,
-            account_id: None,
-            provider_session_id: None,
-            launch_kind: LaunchKind::New,
-            model: None,
-            state: AttemptState::Live,
-            run_dir: "/tmp/none".into(),
-            token_hash: f.h.app.deps.crypto.sha256_hex(b"tok-agent"),
-            host_token: Sealed(vec![0]),
-            ptyhost_pid: None,
-            child_pid: None,
-            started_at: Timestamp(1),
-            ended_at: None,
-            exit_code: None,
-            exit_reason: None,
-        })
-        .await?;
+    start_delivery_attempt(&f).await?;
     let internal = yulius_server::internal_router(f.h.app.clone())
         .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1))));
     let agent = Creds {
@@ -5728,38 +5723,7 @@ impl ArmedTask {
         f.h.github.set_checks(&head, ChecksState::Pending);
         // Its plan is finished, as `delivery_merge` needs to deliver a later head (DMG-001).
         set_steps(&f, "t1", &["done", "done"]).await?;
-        f.h.store
-            .insert_attempt(&AttemptRecord {
-                id: AttemptId::parse("a1")?,
-                task_id: TaskId::parse("t1")?,
-                seq: 1,
-                harness: Harness::ClaudeCode,
-                account_id: None,
-                provider_session_id: None,
-                launch_kind: LaunchKind::New,
-                model: None,
-                state: AttemptState::Live,
-                run_dir: "/tmp/none".into(),
-                token_hash: f.h.app.deps.crypto.sha256_hex(b"tok-agent"),
-                host_token: Sealed(vec![0]),
-                ptyhost_pid: None,
-                child_pid: None,
-                started_at: Timestamp(1),
-                ended_at: None,
-                exit_code: None,
-                exit_reason: None,
-            })
-            .await?;
-        // A live run is a running task (an armed merge lives with it, SPEC-483 D6).
-        f.h.store
-            .transition_task(
-                &TaskId::parse("t1")?,
-                None,
-                TaskStatus::Running,
-                Some(Activity::Waiting),
-                f.h.app.now(),
-            )
-            .await?;
+        start_delivery_attempt(&f).await?;
         let internal = yulius_server::internal_router(f.h.app.clone())
             .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1))));
         let agent = Creds {
