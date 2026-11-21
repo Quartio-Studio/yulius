@@ -64,7 +64,8 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Verify the failed integration candidate before parking its original owner
 - [x] Bind a parked message to the attempt its caller observed
 - [x] Resume only the parked run whose screen finished saving
-- [ ] Preserve a continuation while its previous parked run settles
+- [x] Preserve a continuation while its previous parked run settles
+- [ ] Verify the current model and subscription before accepting a named Continue
 - [ ] Order parking and replacement merge requests through run settlement
 - [ ] Deliver the recorded integration failure once to an already parked owner
 - [ ] Hold the original owner’s session and successor while its open delivery cannot be verified
@@ -90,6 +91,8 @@ The failed-integration-candidate step covers the owner's November 20 observation
 Use the fake Codex executable, its rollout, real PTY shutdown and the application Stop hook. Exercise saved-screen and terminal readers, terminal restoration, step and pull combinations and historical statuses. Run scoped Rust and web tests, repository quick checks, the security command and Yulius CI.
 
 ## Decisions
+
+An owner can stop a task while its previous run is still finishing a park. Continue waits for that run's terminal cleanup before entering the queue or starting again. A settlement timeout or a refusal because the previous run is still live leaves the archive and outstanding question available for retry. The owner can also archive or close a replacement turn during admission. The start or queue claim checks the original attempt, archive and status together with the change that accepts the continuation. A remote restart keeps its first selection through the permission check. A goal resume waits for terminal cleanup under the same bound. Direct resume, including onboarding, carries the resting selection through acquisition of the launch lock. A replacement attempt must settle under its own admission check. Answering the question records the timestamp of acceptance.
 
 Capture a separate screen at the park decision because exiting can clear the entire alternate screen. Changing shutdown signals would couple presentation to the harness and could interfere with reaping. A separate snapshot lets an unsuccessful park keep its real terminal. Reuse native Codex resume and the Stop hook's persisted three-block budget. Older runs can only recover content still present in their saved screen. A parked owner terminal fits the saved grid to the viewport so the first row, last row and notice survive a smaller window. If the PR is the only remaining work and the Stop lookup cannot finish, the continuation asks the agent to verify its checks. Parking reads the current head before acquiring the launch lock and supplies that signal to the final eligibility check.
 
@@ -117,6 +120,20 @@ The SQLite query returning a parked task includes the latest attempt ID in the s
 
 ## Evidence
 
+- In the hand check, undoing the reader wait, selection checks, named placement prototype and answer timestamp made 13 regressions fail in `21b03c1d-a422-44a3-b537-8631b04579de`. Undoing the direct selection guard and clearing a held owner's question early failed both checks in `bd0b1557-3c74-4662-96b8-a9919225d2a7`. The source was restored to the reviewed commit.
+- Independent review approved the terminal-settlement delivery at `1cd4a5d826ebac1a698255fe1727dfe2427fcbc0` against dev `612f787b3` and independently ran 13 focused regressions. Run `da13b65f-349d-4995-b14d-978f4fdb2c5f` passed all 270 scoped tests. The fixtures used real PTYs and a fake agent. Repository quick checks and spec validation passed. Vidoc was disabled.
+
+- Run `5952686a-6987-4a5d-ad9a-fc2ca08a659c` reproduced a direct resume finishing preflight for an earlier closed run and then entering capacity while the replacement’s reader was held. The regression checks the refusal and that a subsequent resume retains its capacity pause after terminal exit.
+
+- The named-subscription admission prototype is a separate plan step. In the combined review, a model or subscription becoming unavailable during admission could leave the controls cleared or accept an obsolete placement. The terminal-settlement delivery retains the existing subscription selection at launch. The follow-up covers a named refusal with the original and changed model, and a subscription losing access before admission.
+
+- Integrating dev `cf492c608` added a distinct goal-resume start. On `7c4bccc2e`, run `e9865414-7746-4b65-a264-73db5d96df42` caught both review findings. Goal resume entered capacity before the reader settled, and a named Continue launched Opus after the owner selected Sonnet.
+
+- On `339c789e1`, 210 scoped supervisor, parking and Codex tests passed in run `a8f4c1fd-be12-4292-96cb-d12cf17521ae`. The independent review identified three additional cases. In run `bd0d8c29-284c-4072-a132-c1a764cb9e4a`, the named subscription refusal changed the resting status, the remote restart went past a later archive, and a question answered at 5,400 ms recorded 1,100 ms. All three regressions failed on the reviewed implementation.
+
+- Nine continuation regressions failed before the repair. Run `5ac73ba1-8294-4050-88ed-fa7046f9eff1` exposed premature admission during terminal cleanup. Run `18e0d5cf-ae32-4aef-996e-3193f4489cab` admitted both a replacement attempt and a newly archived task. Run `78a8e6e5-8fdf-4029-8b53-a3d0813a3a81` cleared the archive on a live-run refusal.
+
+- PR #1625 delivered the parked screen settlement on dev `14e01f438`. PR run `7504f4a7-0812-45d3-b223-e8c4c94d8a39` passed the merge-first gate. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/14e01f43804f49318f1c2dbb7f3a989987e1ad02)
 - The final-screen ordering fix listed 11 mutations, caught 3 and found 8 unviable. The commit-boundary observation change listed 9, caught 2 and found 7 unviable. Both campaigns reached every mutation with zero missed and zero timed out. Their unmutated baselines passed 3,392 and 3,385 tests respectively.
 
 - On reviewed head `75098e156`, run `0ae29695-1dbf-4b30-a558-94a295201300` passed both SQLite commit-boundary assertions and the delayed-reader replacement park. Workspace Clippy with all targets and features passed with warnings denied. Vidoc was disabled.

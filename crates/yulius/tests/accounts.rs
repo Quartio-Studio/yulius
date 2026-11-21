@@ -1603,7 +1603,7 @@ async fn insert_live_attempt(h: &support::Harness, account: &AccountId) -> TestR
     let task = h
         .store
         .insert_task(&TaskRecord {
-            parked_attempt_id: None,
+            resume_attempt_id: None,
             id: TaskId::parse("t-live")?,
             sandbox_id: SandboxId::parse("s1")?,
             number: 0,

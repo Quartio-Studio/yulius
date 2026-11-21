@@ -611,7 +611,7 @@ impl App {
                         }
                         self.continue_loaded_task(
                             ctx,
-                            current,
+                            task,
                             &ContinueTask {
                                 account_id: None,
                                 prompt: None,
@@ -619,7 +619,7 @@ impl App {
                             None,
                         )
                         .await
-                        .map_err(|err| restart_refusal(err, task.number))?
+                        .map_err(|err| restart_refusal(err, current.number))?
                     }
                     "task_pause" => self.pause_task_for_person(ctx, id).await?,
                     "task_unpause" => self.resume_task_for_person(ctx, id).await?,

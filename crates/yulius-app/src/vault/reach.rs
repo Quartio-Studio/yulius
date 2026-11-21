@@ -209,7 +209,7 @@ mod tests {
     fn task(origin: TaskOrigin, owner: &str) -> Result<TaskRecord, Box<dyn std::error::Error>> {
         use yulius_domain::ids::TaskId;
         Ok(TaskRecord {
-            parked_attempt_id: None,
+            resume_attempt_id: None,
             id: TaskId::parse("t1")?,
             sandbox_id: SandboxId::parse("s1")?,
             number: 1,
