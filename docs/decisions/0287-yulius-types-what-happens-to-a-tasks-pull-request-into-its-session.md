@@ -18,7 +18,7 @@ planned to merge by hand.
 
 ## Decision
 
-Record an observed open PR before preparing advice about its merge queue state. A first pass during arm restoration or a queue decision can then defer all typing and still recognize the PR on a subsequent merge.
+Record an observed open PR before preparing advice about its merge queue state. Use the slot’s generation and arm state to check that the same queue request is still current. A pass overtaken by a queue decision can then defer typing and still recognize the PR after its merge.
 
 A failed candidate narrowed to one PR belongs to that PR’s merge decision. The source run may have tested the same tree for a larger candidate. The queue persists the accepted decision before clearing its original arm. Restoration reconciles the recorded activation with the arm saved on disk. Verify the hosted head and integration base together and include the failing job’s retained, redacted diagnostic in the owner’s merge outcome. [SPEC-558](../../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
 

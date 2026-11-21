@@ -3030,11 +3030,6 @@ fn a_cold_parked_summary_reads_historical_spec_and_goal_evidence() -> TestResult
 }
 
 #[test]
-fn a_first_pr_watch_during_arm_restoration_remembers_the_merge() -> TestResult {
-    first_watch_during_queue_decision(QueueWatch::Restoring, None)
-}
-
-#[test]
 fn a_first_pr_watch_during_an_active_queue_decision_remembers_the_merge() -> TestResult {
     first_watch_during_queue_decision(QueueWatch::Taken, None)
 }
@@ -3054,8 +3049,13 @@ fn a_free_pr_watch_overtaken_by_a_queue_decision_remembers_the_merge() -> TestRe
     first_watch_during_queue_decision(QueueWatch::TakenDuringRead, None)
 }
 
+#[test]
+fn a_new_arm_that_merges_before_the_free_watch_returns_is_observed_once() -> TestResult {
+    first_watch_during_queue_decision(QueueWatch::MergedDuringRead, None)
+}
+
 enum QueueWatch {
-    Restoring,
+    MergedDuringRead,
     Taken,
     TakenDuringRead,
 }
@@ -3072,7 +3072,10 @@ fn first_watch_during_queue_decision(case: QueueWatch, previously_seen: Option<u
         let clock = Arc::new(crate::support::TestClock(PRIOR_OBSERVATION.into()));
         let (app, github) = app_with_pulls_and_clock(&data, 8, 1, clock.clone()).await?;
         let (id, caller) = answered(&app, &data).await?;
-        open_pull_at(&app, &github, &id, 1481, "head").await?;
+        let task = app.deps.store.task(&id).await?.ok_or("owner")?;
+        let worktree = Path::new(task.worktree_path.as_deref().ok_or("checkout")?);
+        let head = crate::pr_watch::git(worktree, &["rev-parse", "HEAD"])?;
+        open_pull_at(&app, &github, &id, 1481, &head).await?;
         let open = DeliveryRecord {
             task_id: id.clone(),
             stage: DeliveryStage::PrOpen,
@@ -3090,37 +3093,58 @@ fn first_watch_during_queue_decision(case: QueueWatch, previously_seen: Option<u
         };
         let arms = data.join(yulius_app::agent_wait::ARMED_MERGES_FILE);
         let notices = data.join(yulius_app::pr_watch::PR_NOTICES_FILE);
-        if matches!(case, QueueWatch::TakenDuringRead) {
+        let saved_arm = serde_json::to_vec(
+            &json!([{"task":id.as_str(),"head":head,"summary":"reviewed","armed_at":30}]),
+        )?;
+        if matches!(
+            case,
+            QueueWatch::TakenDuringRead | QueueWatch::MergedDuringRead
+        ) {
             let (read, release_read) = pause_watch_or_queue(Point::LivePrFactsRead, &id);
             let (taken, release_queue) = pause_watch_or_queue(Point::FreeArmTaken, &id);
             let watcher = Arc::clone(&app);
             let pass = tokio::spawn(async move { watcher.watch_prs(&due).await });
             tokio::time::timeout(Duration::from_secs(10), read.notified()).await?;
-            std::fs::write(
-                &arms,
-                serde_json::to_vec(
-                    &json!([{"task":id.as_str(),"head":"head","summary":"reviewed","armed_at":30}]),
-                )?,
-            )?;
+            std::fs::write(&arms, &saved_arm)?;
             app.restore_armed_merges().await;
             let queue = Arc::clone(&app);
             let decision = tokio::spawn(async move { queue.merge_armed(&caller.sandbox).await });
             tokio::time::timeout(Duration::from_secs(10), taken.notified()).await?;
-            release_read.notify_one();
-            let news = pass.await?;
-            release_queue.notify_one();
-            decision.await?;
+            let news = if matches!(case, QueueWatch::MergedDuringRead) {
+                {
+                    let mut pulls = github.pulls.lock().map_err(|_| "pull registry")?;
+                    let pull = pulls
+                        .iter_mut()
+                        .find(|pr| pr.number == 1481)
+                        .ok_or("hosted PR")?;
+                    pull.merged = true;
+                    pull.state = "closed".into();
+                    pull.merge_commit_sha = Some(head.clone());
+                }
+                release_queue.notify_one();
+                decision.await?;
+                let recorded = app
+                    .deps
+                    .store
+                    .delivery(&id)
+                    .await?
+                    .ok_or("queue merge outcome")?;
+                assert_eq!(recorded.stage, DeliveryStage::MergedIntegration);
+                release_read.notify_one();
+                pass.await?
+            } else {
+                release_read.notify_one();
+                let news = pass.await?;
+                release_queue.notify_one();
+                decision.await?;
+                news
+            };
             assert!(
                 news.is_empty(),
                 "stale free-arm news during the decision: {news:?}"
             );
-        } else if matches!(case, QueueWatch::Taken) {
-            std::fs::write(
-                &arms,
-                serde_json::to_vec(
-                    &json!([{"task":id.as_str(),"head":"head","summary":"reviewed","armed_at":30}]),
-                )?,
-            )?;
+        } else {
+            std::fs::write(&arms, &saved_arm)?;
             app.restore_armed_merges().await;
             let prior = if let Some(number) = previously_seen {
                 let old = DeliveryRecord {
@@ -3136,7 +3160,7 @@ fn first_watch_during_queue_decision(case: QueueWatch, previously_seen: Option<u
                 let (mut run, job) = crate::pr_watch::run(
                     &caller.sandbox,
                     "old",
-                    "head",
+                    &head,
                     yulius_domain::ci::RunState::Cancelled,
                     None,
                     1,
@@ -3193,14 +3217,6 @@ fn first_watch_during_queue_decision(case: QueueWatch, previously_seen: Option<u
                 seen.load(std::sync::atomic::Ordering::SeqCst),
                 "queue took the arm"
             );
-        } else {
-            std::fs::write(&arms, b"[")?;
-            app.restore_armed_merges().await;
-            let first = app.watch_prs(&due).await;
-            assert!(
-                first.is_empty(),
-                "first watch during restoration: {first:?}"
-            );
         }
         if previously_seen.is_none() {
             let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&notices)?)?;
@@ -3217,10 +3233,14 @@ fn first_watch_during_queue_decision(case: QueueWatch, previously_seen: Option<u
             stage: DeliveryStage::MergedIntegration,
             ..open
         };
-        app.deps
-            .store
-            .transition_delivery(&DeliveryStage::PrOpen, &merged)
-            .await?;
+        if !matches!(case, QueueWatch::MergedDuringRead) {
+            assert!(
+                app.deps
+                    .store
+                    .transition_delivery(&DeliveryStage::PrOpen, &merged)
+                    .await?
+            );
+        }
         let news = app.watch_prs(&WatchBounds::default()).await;
         let repeat = app.watch_prs(&WatchBounds::default()).await;
         app.stop_task_now(&id).await?;

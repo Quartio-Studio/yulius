@@ -797,16 +797,21 @@ impl App {
 
     /// `task`'s armed merge as a merge train sees it (SPEC-084).
     pub(crate) fn armed_now(&self, task: &TaskId) -> ArmedNow {
+        self.arm_observation(task).1
+    }
+
+    /// The generation distinguishes an unchanged empty slot from an intervening arm
+    /// that finished. Read it under the same lock as the request and its decision state.
+    pub(crate) fn arm_observation(&self, task: &TaskId) -> (u64, ArmedNow) {
         let runtime = self.runtime(task);
         let slot = lock_slot(&runtime);
-        if slot.retirement_pending.is_some() {
-            return ArmedNow::None;
-        }
-        match (&slot.merge, slot.deciding) {
+        let state = match (&slot.merge, slot.deciding) {
+            _ if slot.retirement_pending.is_some() => ArmedNow::None,
             (_, 1..) => ArmedNow::Deciding,
             (Some(merge), 0) => ArmedNow::Armed(merge.clone()),
             (None, 0) => ArmedNow::None,
-        }
+        };
+        (slot.generation, state)
     }
 
     /// Takes `task`'s armed merge out to decide it (a merge train's step); `None` when nothing

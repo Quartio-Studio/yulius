@@ -986,14 +986,10 @@ impl App {
     ) -> Option<PrFacts> {
         // The slot before the delivery: a merge decided in between then reads as merged, never
         // as "no merge armed" on an open pull request (review minor 8).
-        let read_arm = || match self.armed_now(&task.id) {
-            // Restoration can know a task may be armed before it can read the saved activation.
-            ArmedNow::None if self.merge_is_armed(&task.id) => ArmedNow::Deciding,
-            state => state,
-        };
-        let activation = read_arm();
-        let armed = activation != ArmedNow::None;
-        let (_, outcome) = self.armed_view(&task.id);
+        let activation = self.arm_observation(&task.id);
+        let (armed, outcome) = self.armed_view(&task.id);
+        // A saved arm may still await restoration (SPEC-487, review round 2).
+        let armed = armed || self.merge_is_armed(&task.id);
         let record = self.deps.store.delivery(&task.id).await.ok()??;
         let pr = record.pr_number?;
         let sandbox = self.deps.store.sandbox(&task.sandbox_id).await.ok()??;
@@ -1046,7 +1042,7 @@ impl App {
                 ..PrFacts::default()
             })
         };
-        if activation == ArmedNow::Deciding || read_arm() != activation {
+        if activation.1 == ArmedNow::Deciding {
             return observed_only();
         }
         let integration = delivery_profile(&sandbox).integration_branch;
@@ -1249,7 +1245,7 @@ impl App {
             crate::race::Point::LivePrFactsRead,
             std::path::Path::new(task.id.as_str()),
         );
-        if read_arm() != activation {
+        if self.arm_observation(&task.id) != activation {
             return observed_only();
         }
         Some(PrFacts {

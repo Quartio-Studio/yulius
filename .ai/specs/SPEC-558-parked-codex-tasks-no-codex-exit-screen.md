@@ -55,8 +55,8 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Preserve the latest queue decision for each existing task during history cleanup
 - [x] Recover the recorded singleton decision and its replacement arm
 - [x] Preserve the ordinary armed merge outcome after a person merges through HTTP
-- [ ] Remember an open PR seen during an unresolved merge decision
-- [ ] Deliver verified ordinary CI and current train notices to the original owner
+- [ ] Keep the live owner’s merge notice across a queue decision
+- [ ] Verify restored arms and deliver current ordinary CI and train notices to the owner
 - [ ] Report the active singleton and replay its recorded failure for the original owner
 - [ ] Verify candidate status before parking, showing Done or resuming a parked owner
 - [ ] Deliver bounded Codex goal continuation to dev
@@ -95,9 +95,13 @@ The hourly telemetry cleanup retains the latest merge wait for each existing tas
 
 The queue writes the accepted singleton to the owner’s completed merge wait before releasing the original arm. The receipt carries the redacted reason and exact tested inputs. A reviewed head move preserves its activation time. A new request saves a strictly later activation before retiring the earlier receipt. The queue verifies retirement against the observed row and detail before taking the replacement. A direct merge or already-merged retry also reconciles pending retirement. Unreadable evidence leaves the saved request available to the next pass. The subsequent watcher slice must confirm the current holder and its members independently of a cached source run before sending instructions.
 
-When the watcher sees an open PR during an unresolved arm decision, it supplies the PR number to the normal notice bookkeeping and defers events, check-ins and stalls for that pass. A subsequent recorded merge remains eligible for delivery once to the same task.
+When the watcher sees an open PR during an active queue decision or its slot changes during the read, it supplies the PR number to the normal notice bookkeeping and defers events, check-ins and stalls for that pass. A subsequent recorded merge remains eligible for delivery once to the same task.
 
 ## Evidence
+
+- On `0cf75ad35` the queue reconciled a hosted merge and released the new arm before the watch returned. Both reads found an empty slot, and the task was told to rearm a PR whose merge had already been recorded. The regression requires the first pass to stay quiet and the next pass to deliver that merge once.
+
+- The live queue decision and startup registry recovery are separate deliveries. The startup-only regression from prototype `0cf75ad35` remains with the restored-arm step. The live watcher uses the queue’s existing generation to distinguish an unchanged free slot from a new request that finished before the watcher returned.
 
 - On `e90df3599`, a first watch that started with no merge armed told the owner to call delivery_merge after the queue had taken the newly restored arm. The fixture interrupts both the watch and the real queue at their decision points. A second fixture uses distinct controlled clock readings to verify the exact timestamp for a replacement PR.
 
