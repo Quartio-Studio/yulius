@@ -22,6 +22,8 @@ pub const LARGEST: usize = 5;
 pub struct Usage {
     /// Bytes allocated (512-byte blocks × 512), hard links counted once.
     pub bytes: u64,
+    /// Allocated bytes of non-directory entries with multiple hard links, counted once.
+    pub shared_file_bytes: u64,
     /// Entries visited.
     pub entries: u64,
     /// A bound was reached ([`MAX_ENTRIES`], [`MAX_DEPTH`]); `bytes` is a lower bound.
@@ -112,6 +114,9 @@ pub fn measure(roots: &[(&Path, Option<&str>)]) -> Usage {
                 if stat.st_nlink <= 1 || seen.insert((stat.st_dev, stat.st_ino)) {
                     let bytes = blocks_bytes(stat.st_blocks);
                     usage.bytes = usage.bytes.saturating_add(bytes);
+                    if !is_dir && stat.st_nlink > 1 {
+                        usage.shared_file_bytes = usage.shared_file_bytes.saturating_add(bytes);
+                    }
                     if let Some(group) = group {
                         let total = groups.entry(group).or_default();
                         *total = total.saturating_add(bytes);
@@ -170,6 +175,11 @@ mod tests {
         );
         assert!(!usage.truncated);
         assert!(usage.entries >= 5);
+        use std::os::unix::fs::MetadataExt as _;
+        let allocated = std::fs::metadata(dir.path().join("a/b/big"))?.blocks() * 512;
+        assert_eq!(usage.shared_file_bytes, allocated);
+        std::fs::remove_file(dir.path().join("a/again"))?;
+        assert_eq!(measure(&[(dir.path(), None)]).shared_file_bytes, 0);
         Ok(())
     }
 

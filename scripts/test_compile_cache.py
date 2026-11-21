@@ -132,10 +132,11 @@ class CompileCache(unittest.TestCase):
         dispatch = "print('cached', flush=True); os.execv(os.environ['CARGO'], [os.environ['CARGO'], *sys.argv[1:]])"
         self.assertEqual(self.launch(self.task, home, dispatch).stdout.strip(), "cached")
         pending = cache / ".yulius-mbx-pruning"
-        pending.mkdir()
+        ready = cache / ".yulius-mbx-v1"
+        ready.rename(pending)
         self.assertEqual(self.launch(self.task, home, dispatch).stdout, "")
         self.assertEqual(self.record.read_text().splitlines(), ["build", "build"])
-        pending.rmdir()
+        pending.rename(ready)
         self.assertEqual(self.launch(self.task, home, dispatch).stdout.strip(), "cached")
 
     def test_interrupted_publication_leaves_the_next_launcher_able_to_initialize(self):

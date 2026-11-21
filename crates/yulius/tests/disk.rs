@@ -1614,14 +1614,20 @@ async fn pressure_reclaims_the_compiler_cache_only_without_build_readers() -> Bo
     std::fs::create_dir(&cache)?;
     std::fs::write(cache.join("artifact"), vec![0u8; BIG])?;
     w.h.app.disk_upkeep_needing(&w.sandbox, true, 1).await?;
-    assert!(cache.exists(), "another owner's directory");
+    assert!(
+        cache.join("artifact").is_file(),
+        "another owner's directory"
+    );
     std::fs::write(cache.join(".yulius-mbx-v1"), "mbx-v1\n")?;
     w.h.app.disk_upkeep(&w.sandbox, false).await?;
     assert!(cache.exists());
     let active = std::fs::File::open(&w.root)?;
     active.lock_shared()?;
     w.h.app.disk_upkeep_needing(&w.sandbox, true, 1).await?;
-    assert!(cache.exists());
+    assert!(
+        cache.join("artifact").is_file(),
+        "the build holds its lease"
+    );
     drop(active);
     let report = w.h.app.disk_upkeep_needing(&w.sandbox, true, 1).await?;
     assert!(!cache.join("artifact").exists());
@@ -1681,7 +1687,14 @@ async fn compiler_upkeep_recovers_after_partial_removal() -> BoxResult<()> {
     }
     w.h.app.disk_upkeep_needing(&w.sandbox, true, 1).await?;
     assert_eq!(visited.load(Ordering::SeqCst), 2);
-    assert_eq!(std::fs::read(cache.join(".yulius-mbx-v1"))?, b"mbx-v1\n");
+    assert!(
+        !cache.join(".yulius-mbx-v1").exists(),
+        "even an older launcher must use Cargo"
+    );
+    assert_eq!(
+        std::fs::read(cache.join(".yulius-mbx-pruning"))?,
+        b"mbx-v1\n"
+    );
     assert_ne!(cache.join("actions").exists(), cache.join("shims").exists());
     w.h.app.disk_upkeep(&w.sandbox, false).await?;
     assert_eq!(std::fs::read_dir(&cache)?.count(), 1);
@@ -1704,5 +1717,32 @@ async fn compiler_upkeep_counts_a_hardlinked_artifact_once() -> BoxResult<()> {
     let report = w.h.app.disk_upkeep(&w.sandbox, false).await?;
     assert!(blob.exists(), "the store occupies about 32 MiB");
     assert_eq!(report.caches, 0);
+    Ok(())
+}
+
+/// Removing the cache's name for a file another directory still links releases no artifact blocks.
+#[tokio::test]
+async fn compiler_upkeep_credits_only_unshared_blocks_when_relief_is_needed() -> BoxResult<()> {
+    let w = world().await?;
+    let cache = w.root.join("rust-compile-cache");
+    std::fs::create_dir(&cache)?;
+    std::fs::write(cache.join(".yulius-mbx-v1"), "mbx-v1\n")?;
+    let original = cache.join("artifact");
+    std::fs::write(&original, vec![5u8; BIG])?;
+    let retained = w.root.join("retained");
+    std::fs::hard_link(&original, &retained)?;
+    let report = w.h.app.disk_upkeep_needing(&w.sandbox, true, 1).await?;
+    assert_eq!(report.caches, 1);
+    assert!(!original.exists());
+    assert_eq!(std::fs::metadata(retained)?.len(), BIG as u64);
+    assert!(
+        report.freed < BIG as u64,
+        "the linked artifact is still allocated: {report:?}"
+    );
+    let empty = w.h.app.disk_upkeep_needing(&w.sandbox, true, 1).await?;
+    assert_eq!(
+        empty.caches, 0,
+        "the empty stamped directory was already cleared"
+    );
     Ok(())
 }
