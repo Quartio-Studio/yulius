@@ -70,6 +70,7 @@ pub(crate) struct ObservedPull {
     pub(crate) head: Option<Arc<str>>,
     pub(crate) number: u64,
     pub(crate) open: bool,
+    pub(crate) conflicts: bool,
     pub(crate) signal: Option<PullSignal>,
 }
 
@@ -81,7 +82,7 @@ impl ObservedPull {
         complete: bool,
         unavailable: Option<u64>,
     ) -> Option<Self> {
-        let prior = prior?;
+        let mut prior = prior?;
         let keep = match read {
             None => !complete || unavailable == Some(prior.number),
             Some(pr) if pr.open => {
@@ -93,6 +94,19 @@ impl ObservedPull {
             }
             Some(pr) => !complete && prior.open && pr.number != prior.number,
         };
+        if keep
+            && let Some(read) = read.filter(|pr| {
+                pr.open && pr.number == prior.number && pr.head == prior.head && pr.conflicts
+            })
+        {
+            prior.conflicts = read.conflicts;
+            if prior
+                .signal
+                .is_none_or(|signal| signal == PullSignal::Tested)
+            {
+                prior.signal = Some(PullSignal::Conflicting);
+            }
+        }
         keep.then_some(prior)
     }
 
@@ -260,6 +274,7 @@ impl OverviewRead {
             head: None,
             number: replacement.unwrap_or(merged),
             open: replacement.is_some(),
+            conflicts: false,
             signal: Some(if replacement.is_some() {
                 PullSignal::InReview
             } else {
@@ -656,6 +671,7 @@ impl App {
             let pull = observed.pr.map(|pr| ObservedPull {
                 number: pr.number,
                 open: pr.open,
+                conflicts: status.facts.pull == Some(PullSignal::Conflicting),
                 head: observed.head.clone(),
                 signal: status.facts.pull,
             });
@@ -909,12 +925,14 @@ mod overview_tests {
             head: None,
             number: 2,
             open: true,
+            conflicts: false,
             signal: Some(PullSignal::Failing),
         });
         let landed = Some(ObservedPull {
             head: None,
             number: 1,
             open: false,
+            conflicts: false,
             signal: Some(PullSignal::Merged),
         });
         for (complete, later, expected) in [
@@ -926,6 +944,7 @@ mod overview_tests {
                     head: None,
                     number: 2,
                     open: false,
+                    conflicts: false,
                     signal: None,
                 }),
                 None,
@@ -974,6 +993,7 @@ mod overview_tests {
             head: None,
             number: 2,
             open: true,
+            conflicts: false,
             signal: Some(PullSignal::Failing),
         });
         let rows = HashMap::from([(task.clone(), red.clone()), (other.clone(), red)]);
@@ -1033,6 +1053,7 @@ mod overview_tests {
             head: None,
             number: 2,
             open: true,
+            conflicts: false,
             signal: Some(PullSignal::Failing),
         });
         for _ in 1..OVERVIEW_WINDOW {

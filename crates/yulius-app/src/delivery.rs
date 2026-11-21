@@ -241,6 +241,7 @@ impl FollowupDiscovery {
                         head: observed.head.clone(),
                         number,
                         open: true,
+                        conflicts: signal == PullSignal::Conflicting,
                         signal: Some(signal),
                     }),
                 );
@@ -253,6 +254,7 @@ impl FollowupDiscovery {
                     crate::sandboxes::ObservedPull {
                         number,
                         open: true,
+                        conflicts: false,
                         head: observed.head.clone(),
                         signal: Some(PullSignal::InReview),
                     },
@@ -2627,37 +2629,48 @@ impl App {
             }
             // Publish only facts from this request. A displayed fallback must still be
             // resolved in request order when another overview is in flight.
+            if let Some(pr) = view
+                .pr
+                .as_mut()
+                .filter(|pr| partial_checks.contains(&pr.number))
+            {
+                pr.checks = "unknown".into();
+            }
             let fresh = view.pr.as_ref().map(|pr| crate::sandboxes::ObservedPull {
                 head,
                 open: pr.state == "open",
+                conflicts: pr.conflicts,
                 number: pr.number,
                 signal: PullSignal::from_wire(&pr.state, &pr.checks, pr.conflicts),
             });
             let gap = unread_recorded.or_else(|| {
                 view.pr
                     .as_ref()
-                    .filter(|pr| pr.checks == "unknown" || partial_checks.contains(&pr.number))
+                    .filter(|pr| pr.checks == "unknown")
                     .map(|pr| pr.number)
             });
             if let Some(number) = gap {
                 unavailable.insert(task.id.clone(), number);
             }
-            if let Some(mut known) = crate::sandboxes::ObservedPull::fallback(
+            let mut display = crate::sandboxes::ObservedPull::fallback(
                 self.observed_pulls
                     .known_pull(&sandbox.id, &task.id)
                     .flatten(),
                 fresh.as_ref(),
                 overview_complete,
                 gap,
-            ) {
-                if known.open
-                    && let Some(sha) = known.head.as_deref()
-                {
-                    known.signal = self
-                        .parking_ci_signal(&task, known.number, sha, None)
-                        .await?
-                        .or(known.signal);
-                }
+            );
+            let unchecked = fresh.as_ref().filter(|pr| gap == Some(pr.number));
+            if let Some(pr) = display.as_ref().or(unchecked).filter(|pr| pr.open)
+                && let Some(sha) = pr.head.as_deref()
+                && let Some(signal) = self.parking_ci_signal(&task, pr.number, sha, None).await?
+            {
+                display = Some(crate::sandboxes::ObservedPull {
+                    signal: Some(signal),
+                    ..pr.clone()
+                });
+            }
+            if let Some(known) = display {
                 let pr = view.pr.get_or_insert_with(|| PullView {
                     number: known.number,
                     url: String::new(),
@@ -2693,7 +2706,7 @@ impl App {
                 };
                 pr.state = state.into();
                 pr.checks = checks.into();
-                pr.conflicts |= known.signal == Some(PullSignal::Conflicting);
+                pr.conflicts |= known.conflicts;
             }
             observed.insert(task.id.clone(), fresh);
             tasks.push(view);

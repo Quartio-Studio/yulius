@@ -7263,3 +7263,94 @@ async fn a_partial_green_check_report_keeps_the_prior_failure_for_the_same_head(
     assert_eq!(pr.checks, "failure");
     Ok(())
 }
+
+#[tokio::test]
+async fn a_partial_success_on_a_new_head_cannot_test_that_head_during_an_outage() -> TestResult {
+    use yulius_app::ports::github::{ChecksReport, ChecksSource, ChecksState};
+    use yulius_domain::ci::{CiRef, RunState};
+    let (f, owner) = owner_observed_external_pr().await?;
+    install_app(&f).await?;
+    let app = &f.h.app;
+    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let args = json!({"task_id":f.task.as_str()});
+    f.h.github.set_checks("abc123", ChecksState::Success);
+    assert_eq!(app.tool_task_get(&caller, &args).await?["shows"], "done");
+    for (head, expected) in [("unverified", "unknown"), ("local-error", "error")] {
+        f.h.github.pulls.lock().map_err(|_| "pulls")?[0].head_sha = head.into();
+        f.h.github.set_checks_report(
+            head,
+            ChecksReport {
+                state: ChecksState::Success,
+                unreadable: vec![ChecksSource::CommitStatuses],
+            },
+        );
+        if head == "local-error" {
+            super::delivery::insert_ci_attempt(
+                &f.h.store,
+                "error-at-new-head",
+                head,
+                CiRef::PullRequest(1461),
+                RunState::Error,
+                app.now().0,
+                &[],
+            )
+            .await?;
+        }
+        let overview = app.git_overview(&owner, f.sandbox.as_str()).await?;
+        let pull = overview
+            .tasks
+            .iter()
+            .find(|t| t.task_id == f.task.as_str())
+            .and_then(|t| t.pr.as_ref())
+            .ok_or("pull")?;
+        assert_eq!(pull.checks, expected);
+        f.h.github.no_installation.store(true, Ordering::SeqCst);
+        app.deps.store.set_installation(None).await?;
+        assert_eq!(
+            app.tool_task_get(&caller, &args).await?["shows"],
+            "needs_you"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_newly_confirmed_conflict_survives_an_unavailable_overview() -> TestResult {
+    use yulius_app::ports::github::{ChecksReport, ChecksSource, ChecksState};
+    let (f, owner) = owner_observed_external_pr().await?;
+    install_app(&f).await?;
+    f.h.github.set_checks("abc123", ChecksState::Success);
+    let app = &f.h.app;
+    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let args = json!({"task_id":f.task.as_str()});
+    assert_eq!(app.tool_task_get(&caller, &args).await?["shows"], "done");
+    f.h.github.pulls.lock().map_err(|_| "pulls")?[0].mergeable = Some(false);
+    f.h.github.set_checks_report(
+        "abc123",
+        ChecksReport {
+            state: ChecksState::Success,
+            unreadable: vec![ChecksSource::CommitStatuses],
+        },
+    );
+    for unavailable in [false, true] {
+        f.h.github
+            .fail_overview_pulls
+            .store(unavailable, Ordering::SeqCst);
+        let overview = app.git_overview(&owner, f.sandbox.as_str()).await?;
+        let pull = overview
+            .tasks
+            .iter()
+            .find(|t| t.task_id == f.task.as_str())
+            .and_then(|t| t.pr.as_ref())
+            .ok_or("pull")?;
+        assert!(pull.conflicts, "{pull:?}");
+        assert_eq!(pull.checks, "success");
+    }
+    f.h.github.no_installation.store(true, Ordering::SeqCst);
+    app.deps.store.set_installation(None).await?;
+    assert_eq!(
+        app.tool_task_get(&caller, &args).await?["shows"],
+        "needs_you"
+    );
+    Ok(())
+}
