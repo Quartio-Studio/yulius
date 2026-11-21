@@ -210,6 +210,7 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # at that head become obsolete. After repair, even an owner that passed can show queued.
 # Continue waits for the previous run to finish recording its end if Stop overtook parking.
 # If settlement exceeds the stop escalation interval, retry Continue after terminal exit.
+# An Archive accepted during that wait leaves the task archived. Open it again to continue.
 # A partial Git overview keeps a known failing PR under Needs you. A complete lookup
 # can clear it. Refreshing this display sends no message to the parked task.
 # A successor waiting for Done (after_task or #N done) stays chained while its parked predecessor

@@ -734,27 +734,11 @@ impl App {
                 Some(_) => {}
             }
         }
-        // A busy reader can time out. Leave the owner's archive and decision intact until
-        // that reader finishes, before changing anything on behalf of this Continue.
-        self.wait_for_previous_reader(&task.id).await?;
-        // A person continues it: whatever its agent asked a person before is past (SPEC-134).
-        self.end_needs_you(&task.id).await;
-        if task.archived_at.is_some() {
-            let now = self.now();
-            self.deps
-                .store
-                .update_task(
-                    &task.id,
-                    &TaskFieldUpdate {
-                        archived_at: Some(None),
-                        ..TaskFieldUpdate::default()
-                    },
-                    now,
-                )
-                .await?;
-        }
-        self.start_run(&task.id, RunStart::Resume { prompt: None }, account)
-            .await?;
+        crate::race::reached(
+            crate::race::Point::OwnerContinueRequested,
+            std::path::Path::new(id),
+        );
+        self.continue_resting_run(&task, account).await?;
         // Its waiting successors wait for it again (TSK-012).
         self.unblock_successors(&task.id).await;
         let task = self

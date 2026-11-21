@@ -10,6 +10,10 @@ use std::path::Path;
 /// Where the server pauses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Point {
+    /// An owner Continue is about to enter the supervisor's normal admission path.
+    OwnerContinueRequested,
+    /// The host exit is recorded while the reader still owns finalization.
+    RunReaped,
     /// Continue waits for the previous attempt's reader to finish writing its task state.
     ContinueWaitsForReader,
     /// A parked read classified the task, before the response renders its plan. Keyed by task ID.

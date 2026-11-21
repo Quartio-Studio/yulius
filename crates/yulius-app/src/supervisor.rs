@@ -922,6 +922,18 @@ impl RunStart {
     }
 }
 
+/// The state a start must still find once it owns the launch lock.
+/// An owner's Continue also carries the archive value they observed.
+#[derive(Clone, Copy)]
+enum StartCondition {
+    Any,
+    Status(TaskStatus),
+    OwnerContinue {
+        status: TaskStatus,
+        archived_at: Option<Timestamp>,
+    },
+}
+
 /// What an idle session is after a switch that types nothing into it (a person's move of an idle
 /// task, SPEC-447 MOV-002; a restart on a newer Claude Code, SPEC-461 CCM-013): its launch gives
 /// the task this back, so it never reads Working, which viewers would take for work and a
@@ -1878,10 +1890,32 @@ impl App {
         account: Option<AccountId>,
     ) -> BoxFuture<'a, AppResult<()>> {
         Box::pin(async move {
-            self.start_run_if(task_id, start, account, None, None)
+            self.start_run_if(task_id, start, account, StartCondition::Any, None)
                 .await
                 .map(|_| ())
         })
+    }
+
+    /// Continues the resting task the owner saw. A later archive or status change
+    /// wins while the previous reader settles or the agent executable is prepared.
+    pub(crate) async fn continue_resting_run(
+        self: &Arc<Self>,
+        task: &TaskRecord,
+        account: Option<AccountId>,
+    ) -> AppResult<()> {
+        let condition = StartCondition::OwnerContinue {
+            status: task.status,
+            archived_at: task.archived_at,
+        };
+        self.start_run_if(
+            &task.id,
+            RunStart::Resume { prompt: None },
+            account,
+            condition,
+            None,
+        )
+        .await
+        .map(drop)
     }
 
     /// [`App::start_run`], only while the task still has the status `only` (when given), checked
@@ -1892,7 +1926,7 @@ impl App {
         task_id: &'a TaskId,
         start: RunStart,
         account: Option<AccountId>,
-        only: Option<TaskStatus>,
+        only: StartCondition,
         rest: Option<IdleRest>,
     ) -> BoxFuture<'a, AppResult<bool>> {
         Box::pin(async move {
@@ -1919,8 +1953,35 @@ impl App {
                 .task(task_id)
                 .await?
                 .ok_or(AppError::NotFound)?;
-            if only.is_some_and(|status| status != task.status) {
-                return Ok(false);
+            match only {
+                StartCondition::Status(status) if task.status != status => return Ok(false),
+                StartCondition::OwnerContinue {
+                    status,
+                    archived_at,
+                } => {
+                    if task.status != status || task.archived_at != archived_at {
+                        return Err(AppError::Conflict(
+                            "The task changed while Continue waited. Check its state before continuing.".into(),
+                        ));
+                    }
+                    // The resting owner's previous run settled before the launch lock.
+                    // Accept the person's Continue only now, so a refusal keeps their request.
+                    self.end_needs_you(&task.id).await;
+                    if archived_at.is_some() {
+                        self.deps
+                            .store
+                            .update_task(
+                                &task.id,
+                                &TaskFieldUpdate {
+                                    archived_at: Some(None),
+                                    ..TaskFieldUpdate::default()
+                                },
+                                self.now(),
+                            )
+                            .await?;
+                    }
+                }
+                _ => {}
             }
             // Already running: another start won the race (the queue and a direct start).
             if task.status == TaskStatus::Running {
@@ -4019,7 +4080,7 @@ impl App {
 
     /// A reaped attempt's reader can still be writing the task's last state.
     /// Wait before reusing that state or changing the owner's archive or request.
-    pub(crate) async fn wait_for_previous_reader(&self, task_id: &TaskId) -> AppResult<()> {
+    async fn wait_for_previous_reader(&self, task_id: &TaskId) -> AppResult<()> {
         let Some(runtime) = self.existing_runtime(task_id) else {
             return Ok(());
         };
@@ -4470,6 +4531,7 @@ impl App {
         if !first {
             return; // another observer already recorded the outcome
         }
+        crate::race::reached(crate::race::Point::RunReaped, Path::new(task_id.as_str()));
         // This reader won and settles its request below.
         runtime.take_reader_request(attempt_id);
         runtime.clear_start_counters(attempt_id);
@@ -4685,7 +4747,13 @@ impl App {
             // Only while it is still queued, checked under the launch lock: a task stopped or
             // started meanwhile is not resumed here.
             if let Err(err) = self
-                .start_run_if(&task.id, start, None, Some(TaskStatus::Queued), None)
+                .start_run_if(
+                    &task.id,
+                    start,
+                    None,
+                    StartCondition::Status(TaskStatus::Queued),
+                    None,
+                )
                 .await
             {
                 tracing::warn!(error = %err, task = %task.id, "queued task failed to start");
@@ -4941,7 +5009,7 @@ impl App {
             task_id,
             RunStart::Resume { prompt },
             None,
-            Some(TaskStatus::Parked),
+            StartCondition::Status(TaskStatus::Parked),
             rest,
         )
         .await
@@ -5563,7 +5631,8 @@ impl App {
                 activity,
                 goal_unfinished: runtime.goal_unfinished.load(Ordering::SeqCst),
             });
-        let started = self.start_run_if(task_id, start, account, Some(from), rest);
+        let started =
+            self.start_run_if(task_id, start, account, StartCondition::Status(from), rest);
         match started.await {
             // Another start (the capacity loop's) ran the paused task first: it won, the switch
             // is made.

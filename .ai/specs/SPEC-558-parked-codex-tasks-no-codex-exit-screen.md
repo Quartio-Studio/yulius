@@ -111,9 +111,11 @@ The live watcher resolves ordinary CI for the owner at the armed head and reads 
 
 The final parking check compares the owner’s saved singleton decision with the verified PR head and integration base. A change to the saved merge decision during hosted verification defers the pass. A changed base or published repair retires the old failure for this decision.
 
-A Stop can settle a task while its reaped run is still finalizing. Continue waits outside the launch lock for that finalization before deciding whether its new session runs, queues or waits for subscription capacity. If the wait expires, the caller receives a retryable conflict and the owner retains the archive and any outstanding decision. This prevents the old reader from closing the new continuation.
+A Stop can settle a task while its reaped run is still finalizing. Continue waits outside the launch lock for that finalization before deciding whether its new session runs, queues or waits for subscription capacity. If the wait expires, the caller receives a retryable conflict and the owner retains the archive and any outstanding decision. A later Archive accepted while Continue waits takes precedence. The supervisor verifies the resting status and archive timestamp at admission before ending the owner’s request. This prevents the old reader from closing the new continuation.
 
 ## Evidence
+
+- Independent review of `ceea0550e` found two owner-state races. Three public Continue regressions failed on that implementation. A held live run and a run reaped after the owner submitted Continue both produced conflicts after the task had been unarchived. An Archive accepted while Continue was waiting instead let Continue succeed. The supervisor now checks the original status and archive timestamp under the launch lock after its single settlement check.
 
 - A further regression caught the first timeout implementation unarchiving the stopped task. The test now checks the archive and the outstanding decision both after the conflict and after a successful retry.
 - Three real-PTY regressions held the old reader after its attempt was recorded as ended. Before the fix, Continue returned early in all three cases, with the stopped task already queued or waiting for subscription capacity. The separate capacity race also reproduced the old reader closing a new continuation that had reached the same state.

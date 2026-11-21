@@ -196,6 +196,7 @@ enum ContinuedOwner {
     Queued,
     WaitingCapacity,
     SettlementTimeout,
+    ArchivedDuringWait,
 }
 
 #[test]
@@ -211,6 +212,76 @@ fn a_capacity_delayed_continue_waits_for_the_reaped_park_reader() -> TestResult 
 #[test]
 fn a_continue_that_exhausts_the_settlement_wait_can_retry_after_exit() -> TestResult {
     continue_during_park_settlement(ContinuedOwner::SettlementTimeout)
+}
+
+#[test]
+fn a_later_archive_wins_over_a_continue_waiting_for_the_reader() -> TestResult {
+    continue_during_park_settlement(ContinuedOwner::ArchivedDuringWait)
+}
+
+#[test]
+fn a_live_run_refusal_preserves_the_continuing_owners_archive_and_decision() -> TestResult {
+    refuse_continuation_of_held_owner(false)
+}
+
+#[test]
+fn a_run_reaped_during_continue_admission_preserves_the_owners_archive_and_decision() -> TestResult
+{
+    refuse_continuation_of_held_owner(true)
+}
+
+fn refuse_continuation_of_held_owner(reap_during_admission: bool) -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    let result = rt.block_on(async {
+        let (app, _) = configured_app_with_pulls(&data, 1, 1, |config| {
+            config.stop_escalation_ms = 500;
+        }).await?;
+        let (id, caller) = answered(&app, &data).await?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&caller.user).await?.ok_or("owner")?,
+            csrf_token: None, session_hash: None, token: None,
+        };
+        // SPEC-458 permits a resting task whose process is still held by this server.
+        let status = TaskStatus::Stopped(StopReason::ServerLost);
+        assert!(app.deps.store.transition_task(&id, Some(TaskStatus::Running), status, None, app.now()).await?);
+        assert!(app.deps.store.live_attempt(&id).await?.is_some());
+        app.archive_task(&ctx, id.as_str(), true).await?;
+        ask(&app, &id).await?;
+        let req = serde_json::from_value(json!({}))?;
+        let refusal = if reap_during_admission {
+            let (prepared, enter) = pause_watch_or_queue(Point::OwnerContinueRequested, &id);
+            let (reaped, settle) = pause_watch_or_queue(Point::RunReaped, &id);
+            let owner = ctx.clone();
+            let stopped_id = id.clone();
+            let continuing_app = app.clone();
+            let continuing = tokio::spawn(async move {
+                continuing_app.continue_task(&owner, stopped_id.as_str(), &req).await
+            });
+            tokio::time::timeout(Duration::from_secs(10), prepared.notified()).await?;
+            app.stop_task_now(&id).await?;
+            tokio::time::timeout(Duration::from_secs(10), reaped.notified()).await?;
+            assert!(app.deps.store.live_attempt(&id).await?.is_none());
+            enter.notify_one();
+            let result = tokio::time::timeout(Duration::from_secs(10), continuing).await??;
+            settle.notify_one();
+            result
+        } else {
+            app.continue_task(&ctx, id.as_str(), &req).await
+        };
+        let reason = if reap_during_admission { "settling" } else { "live run" };
+        assert!(matches!(refusal, Err(yulius_app::error::AppError::Conflict(ref msg)) if msg.contains(reason)), "{refusal:?}");
+        let current = app.deps.store.task(&id).await?.ok_or("stopped owner")?;
+        assert_eq!(current.status, status);
+        assert!(current.archived_at.is_some(), "refused Continue unarchived the owner");
+        assert!(asks(&app, &id).await?);
+        if !reap_during_admission {
+            app.stop_task_now(&id).await?;
+        }
+        Ok::<_, Error>(())
+    });
+    rt.shutdown_timeout(Duration::from_secs(5));
+    result
 }
 
 fn continue_during_park_settlement(case: ContinuedOwner) -> TestResult {
@@ -347,6 +418,10 @@ async fn exercise_continue_during_park(data: &Path, case: ContinuedOwner) -> Tes
         () = waiting.notified() => (),
     }
     assert_eq!(status_of(&app, &id).await.0, stopped);
+    if case == ContinuedOwner::ArchivedDuringWait {
+        app.archive_task(&ctx, id.as_str(), true).await?;
+        ask(&app, &id).await?;
+    }
     if case == ContinuedOwner::SettlementTimeout {
         let result = tokio::time::timeout(Duration::from_secs(5), &mut continuing).await??;
         assert!(matches!(
@@ -378,6 +453,19 @@ async fn exercise_continue_during_park(data: &Path, case: ContinuedOwner) -> Tes
         }
     })
     .await??;
+    if case == ContinuedOwner::ArchivedDuringWait {
+        let result = continuing.await?;
+        assert!(
+            matches!(result, Err(yulius_app::error::AppError::Conflict(_))),
+            "Continue passed a later Archive: {result:?}"
+        );
+        let owner = app.deps.store.task(&id).await?.ok_or("archived owner")?;
+        assert_eq!(Some(owner.status), stopped);
+        assert!(owner.archived_at.is_some());
+        assert!(asks(&app, &id).await?);
+        assert!(app.deps.store.live_attempt(&id).await?.is_none());
+        return Ok(());
+    }
     if case == ContinuedOwner::SettlementTimeout {
         app.continue_task(&ctx, id.as_str(), &serde_json::from_value(json!({}))?)
             .await?;
