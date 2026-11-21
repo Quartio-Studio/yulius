@@ -1457,7 +1457,13 @@ impl<'a> Move<'a> {
                 .lines
                 .iter()
                 .any(|l| l.outcome == HostOutcome::Changed);
-            self.call("reverse proxy", &Request::Proxy { changed })?;
+            self.call(
+                "reverse proxy",
+                &Request::Proxy {
+                    changed,
+                    https: None,
+                },
+            )?;
         }
         // The unit's drop-in, the binary's owner and the sandbox base: the host is proven ready
         // while the old instance still runs, not found wanting after the copy.

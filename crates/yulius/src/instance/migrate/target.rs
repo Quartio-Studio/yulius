@@ -172,10 +172,14 @@ pub enum Request {
         /// The files.
         files: Vec<TextFile>,
     },
-    /// Validate and start Caddy.
+    /// Validate Caddy's configuration, make the running Caddy load it and ask its port 443
+    /// (SPEC-592).
     Proxy {
         /// Its files changed in this run.
         changed: bool,
+        /// The public URL's host when it is `https://`: the name port 443 is asked for.
+        #[serde(default)]
+        https: Option<String>,
     },
     /// Say how the next copy is installed.
     Expect(Expect),
@@ -1926,7 +1930,7 @@ pub fn handle(host: &mut dyn Host, env: &mut Env<'_>, request: &Request) -> Repl
         }
         Request::BeforeStart { setup } => l.0 = (env.setup)(host, Part::BeforeStart, setup),
         Request::Texts { name, files } => texts(host, name, files, &mut l),
-        Request::Proxy { changed } => proxy(host, *changed, &mut l),
+        Request::Proxy { changed, https: _ } => proxy(host, *changed, &mut l),
         Request::Expect(expect) => {
             let text = serde_json::to_string(expect).unwrap_or_default();
             if let Err(why) = host.write(Path::new(EXPECT_FILE), &text, 0o600) {

@@ -736,38 +736,215 @@ fn text_files_are_written_when_they_differ() {
     assert_eq!(only(&step(&mut host, &bad)).0, HostOutcome::Failed);
 }
 
+const SITE: &str = "yulius.example.com";
+
+fn proxy_request(changed: bool) -> Request {
+    Request::Proxy {
+        changed,
+        https: Some(SITE.into()),
+    }
+}
+
+/// Caddy active and enabled, as after the package's postinst started it with its default site.
+fn caddy_running(host: &mut FakeHost) {
+    host.says(&["systemctl", "is-active", "caddy"], "active\n");
+    host.says(&["systemctl", "is-enabled", "caddy"], "enabled\n");
+}
+
+/// The position of the first command starting with `start` in the host's log.
+fn at(host: &FakeHost, start: &str) -> usize {
+    host.log
+        .iter()
+        .position(|l| l.starts_with(start))
+        .unwrap_or_else(|| panic!("{start:?} never ran: {:?}", host.log))
+}
+
+const ASK: &str = "curl --silent --show-error --insecure --output /dev/null";
+
 #[test]
 fn the_proxy_starts_only_with_a_valid_configuration() {
     let mut host = new_host();
-    let reply = step(&mut host, &Request::Proxy { changed: true });
-    assert_eq!(only(&reply).0, HostOutcome::Changed);
+    let reply = step(&mut host, &proxy_request(true));
+    assert_eq!(only(&reply).0, HostOutcome::Changed, "{reply:?}");
     assert!(host.ran("caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile"));
     assert!(host.ran("systemctl enable caddy") && host.ran("systemctl reload-or-restart caddy"));
+    assert!(at(&host, "caddy validate") < at(&host, "systemctl reload-or-restart caddy"));
+    assert!(at(&host, "systemctl reload-or-restart caddy") < at(&host, "curl"));
 
-    // Running and unchanged.
-    host.says(&["systemctl", "is-active", "caddy"], "active\n");
-    host.says(&["systemctl", "is-enabled", "caddy"], "enabled\n");
-    host.log.clear();
-    assert_eq!(
-        only(&step(&mut host, &Request::Proxy { changed: false })).0,
-        HostOutcome::Ok
-    );
-    assert!(!host.ran("systemctl reload-or-restart"));
     // Running, but its files changed.
-    assert_eq!(
-        only(&step(&mut host, &Request::Proxy { changed: true })).0,
-        HostOutcome::Changed
-    );
+    caddy_running(&mut host);
+    assert_eq!(only(&step(&mut host, &proxy_request(true))).0, HostOutcome::Changed);
 
     let mut host = new_host();
     host.fails(
         &["caddy", "validate"],
         "Error: adapting config: unrecognized directive",
     );
-    let reply = step(&mut host, &Request::Proxy { changed: true });
+    let reply = step(&mut host, &proxy_request(true));
     let (outcome, detail) = only(&reply);
     assert_eq!(outcome, HostOutcome::Failed);
-    assert!(detail.contains("unrecognized directive") && !host.ran("systemctl enable"));
+    assert!(detail.contains("unrecognized directive") && !host.ran("systemctl"));
+}
+
+/// SPEC-592 CKS-001/004 (AC-1): files reported unchanged in this run prove nothing about the
+/// running Caddy (the package started it before they were copied, or an earlier pass wrote
+/// them): it is reloaded all the same, and HTTPS is asked.
+#[test]
+fn a_running_caddy_is_reloaded_although_the_files_did_not_change() {
+    let mut host = new_host();
+    caddy_running(&mut host);
+    let reply = step(&mut host, &proxy_request(false));
+    let (outcome, detail) = only(&reply);
+    assert_eq!(outcome, HostOutcome::Ok, "{detail}");
+    assert!(host.ran("systemctl reload-or-restart caddy"), "{:?}", host.log);
+    assert!(at(&host, "caddy validate") < at(&host, "systemctl reload-or-restart caddy"));
+    let asked = host.runs("curl");
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert!(asked[0].starts_with(ASK), "{}", asked[0]);
+    assert!(
+        asked[0].contains(&format!("--resolve {SITE}:443:127.0.0.1"))
+            && asked[0].ends_with(&format!("https://{SITE}/")),
+        "{}",
+        asked[0]
+    );
+    assert!(detail.contains("reloaded") && detail.contains("443"), "{detail}");
+}
+
+/// SPEC-592 CKS-001 (AC-2): a reload that fails (`admin off`) falls back to a restart; when
+/// both fail the step fails with both reasons and asks nothing.
+#[test]
+fn a_failed_reload_restarts_caddy_and_both_failing_fail_the_step() {
+    let mut host = new_host();
+    caddy_running(&mut host);
+    host.fails(
+        &["systemctl", "reload-or-restart", "caddy"],
+        "Job for caddy.service failed: admin endpoint disabled",
+    );
+    let reply = step(&mut host, &proxy_request(false));
+    assert_eq!(only(&reply).0, HostOutcome::Ok, "{reply:?}");
+    assert!(at(&host, "systemctl reload-or-restart caddy") < at(&host, "systemctl restart caddy"));
+    assert!(at(&host, "systemctl restart caddy") < at(&host, "curl"));
+
+    host.fails(&["systemctl", "restart", "caddy"], "caddy.service: start-limit-hit");
+    host.log.clear();
+    let reply = step(&mut host, &proxy_request(false));
+    let (outcome, detail) = only(&reply);
+    assert_eq!(outcome, HostOutcome::Failed);
+    assert!(
+        detail.contains("admin endpoint disabled")
+            && detail.contains("start-limit-hit")
+            && detail.contains("journalctl -u caddy"),
+        "{detail}"
+    );
+    assert!(!host.ran("curl"));
+}
+
+/// SPEC-592 CKS-002 (AC-3): a port 443 that refuses after the reload is a Caddy serving another
+/// configuration: restarted once, asked again, and the step fails with the fix if it still
+/// refuses.
+#[test]
+fn https_refused_on_443_restarts_caddy_once_then_fails_with_the_fix() {
+    let mut host = new_host();
+    caddy_running(&mut host);
+    host.on(
+        &["curl"],
+        7,
+        "curl: (7) Failed to connect to yulius.example.com port 443 after 0 ms: Couldn't connect to server",
+        None,
+    );
+    let reply = step(&mut host, &proxy_request(false));
+    let (outcome, detail) = only(&reply);
+    assert_eq!(outcome, HostOutcome::Failed, "{detail}");
+    assert_eq!(host.runs("curl").len(), 2, "{:?}", host.log);
+    assert_eq!(host.runs("systemctl restart caddy").len(), 1, "{:?}", host.log);
+    assert!(
+        detail.contains("443")
+            && detail.contains(SITE)
+            && detail.contains("Couldn't connect")
+            && detail.contains("systemctl restart caddy")
+            && detail.contains("journalctl -u caddy"),
+        "{detail}"
+    );
+
+    // Refused until the restart, then answering.
+    let mut host = new_host();
+    caddy_running(&mut host);
+    host.on(&["curl"], 7, "curl: (7) Couldn't connect to server", None);
+    host.on(
+        &["systemctl", "restart", "caddy"],
+        0,
+        "",
+        Some(|h: &mut FakeHost| h.says(&["curl"], "502")),
+    );
+    let reply = step(&mut host, &proxy_request(false));
+    let (outcome, detail) = only(&reply);
+    assert_eq!(outcome, HostOutcome::Ok, "{detail}");
+    assert!(detail.contains("502") || detail.contains("answers"), "{detail}");
+
+    // A timeout is no answer either.
+    let mut host = new_host();
+    host.on(&["curl"], 28, "curl: (28) Connection timed out after 5001 ms", None);
+    assert_eq!(only(&step(&mut host, &proxy_request(true))).0, HostOutcome::Failed);
+}
+
+/// SPEC-592 CKS-003/005 (AC-4): a TLS handshake that fails on an open port 443 is a Caddy
+/// without a certificate yet (the name still leads to the old host): said, not failed. No
+/// `https://` URL or a name that is not plain: nothing is asked.
+#[test]
+fn a_missing_certificate_is_said_and_no_https_url_asks_nothing() {
+    let mut host = new_host();
+    host.on(
+        &["curl"],
+        35,
+        "curl: (35) OpenSSL/3.5.3: error:0A000438:SSL routines::tlsv1 alert internal error",
+        None,
+    );
+    let reply = step(&mut host, &proxy_request(true));
+    let (outcome, detail) = only(&reply);
+    assert_eq!(outcome, HostOutcome::Changed, "{detail}");
+    assert!(
+        detail.contains("listens on 443") && detail.contains("certificate"),
+        "{detail}"
+    );
+    assert_eq!(host.runs("systemctl restart caddy").len(), 0);
+
+    let mut host = new_host();
+    let reply = step(
+        &mut host,
+        &Request::Proxy {
+            changed: true,
+            https: None,
+        },
+    );
+    let (outcome, detail) = only(&reply);
+    assert_eq!(outcome, HostOutcome::Changed, "{detail}");
+    assert!(!host.ran("curl") && detail.contains("no https://"), "{detail}");
+
+    let mut host = new_host();
+    let reply = step(
+        &mut host,
+        &Request::Proxy {
+            changed: true,
+            https: Some("evil.example.com:443:10.0.0.1".into()),
+        },
+    );
+    let (outcome, detail) = only(&reply);
+    assert_eq!(outcome, HostOutcome::Failed, "{detail}");
+    assert!(!host.ran("curl") && detail.contains("not a plain host name"), "{detail}");
+}
+
+/// The request as the old host of an earlier build sends it still reads.
+#[test]
+fn a_proxy_request_without_a_host_reads() {
+    let request: Request =
+        serde_json::from_str(r#"{"step":"proxy","changed":false}"#).expect("reads");
+    assert_eq!(
+        request,
+        Request::Proxy {
+            changed: false,
+            https: None
+        }
+    );
 }
 
 fn inventory_of(entries: u64) -> Inventory {
