@@ -36,7 +36,7 @@ The hour ending at the warning and GitHub's quota window also differ. If the rep
 - [x] Share conditional display reads and retain terminal pull requests
 - [x] Attribute hourly requests and reserve capacity for delivery
 - [x] Serve budget evidence in instance status and the Status panel
-- [ ] Persist confirmed reopenings across a restart before any display read
+- [x] Persist confirmed reopenings across a restart before any display read
 - [ ] Verify the behavior, obtain independent review and deliver to dev
 
 ## Acceptance criteria
@@ -66,3 +66,5 @@ The terminal receipt integration test exposed an existing mismatch after merging
 Confirming a contradictory open listing uses a numbered, credential-scoped conditional request subject to the display reserve. In a regression with a warm numbered response, the pre-fix adapter returned it without revalidation (zero 304s, expected one). A local HTTP/2 server that refused the update request observed three streams for one metered send before implicit retries were disabled.
 
 The restart recovery slice uses the existing compare-and-set delivery transaction to bind a confirmed open PR, record its base for landing recovery, and retire its old closure together. A pre-fix restart test lost the open number (expected PR 1), and an external merge before any intervening delivery read remained at stage none. Background reconciliation and Git overview exercise both entry points. The compare-and-set leaves an already merged delivery on its recorded stage.
+
+Both restart regressions then passed. Local verification included `scripts/dev quick`, workspace Clippy with warnings denied, 45 fake GitHub HTTP tests, six release adapter tests and five database migration and discovery tests. The scoped task, staging and cockpit suite passed all 231 tests before the recovery slice. Hosted merge and staging receipts are available through the task’s delivery status.
