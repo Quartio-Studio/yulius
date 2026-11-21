@@ -70,6 +70,8 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- PR #1550 CI run `08d1a211-76c5-4327-901b-b5ebedbf1b7e` failed when Chromium exhausted the startup recovery budget inside `browser.reload`. A regression interrupted the first entry script and held the recovery request open. Before the fix it reproduced CI's `operation timed out in browser.reload`. After the fix all 10 tests in `tests/initial-load.e2e.ts` passed, including persistent interruptions, ordinary failures and later navigations.
+
 - Independent review approved step 20 at `a2c8c0182`. The reviewer verified cold and cached rename outcomes, recovery after an unavailable verifier and both group transitions while the Git request remained pending. The remaining terminal/detail ordering, failed integration candidate, Codex goal and legacy screen deliveries stay open.
 
 - Review of `d3971166f` reproduced an unverified rename discarding Needs you when the prior verifier timed out before finding the PR. Cold and cached rows both showed Done incorrectly. The browser now preserves the title and Needs you across the failed read, then returns to Done on verified recovery. Six focused Chromium cases passed. The wider parked, onboarding and Git scope passed 72 cases on the initial integration. The mutation command found no changed Rust code. Vidoc was disabled.
