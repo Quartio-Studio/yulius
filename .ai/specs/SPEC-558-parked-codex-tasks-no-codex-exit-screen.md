@@ -70,6 +70,9 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- PR #1549 landed at `3290ef9ef` after run `852b8619-2b99-4c5c-860a-f333640bba9c` passed quality, both test shards and browser e2e. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/3290ef9efde99bb4eaff888ac511e820bcd12df7)
+- Chromium on that base reproduced four failures with held reads covering an idle sidebar, a lifecycle change during a list read, failed verification after an older list succeeded and a cold-navigation hint. A mounted regression also kept the failing Git chip visible across a newer verified recovery for PR #520 and kept Needs you when the verification named #521. A held Git reply uncovered a stale replacement identity, retaining #7 instead of #8. After correction all eight focused cases passed. The browser watch and bounded confirmation rules are recorded in [ADR-0417](../../docs/decisions/0417-refresh-parked-task-status-alongside-the-git-overview.md).
+
 - Independent review approved `82ab510c7` for the conservative parked classification and checked 48 combinations of activity, plan, spec, goal and verified state, including owner requests and failing PRs. The subsequent completion record changes only this spec. The live sidebar watch, detail ordering, candidate ownership, bounded goal continuation and historical screens remain open.
 
 - PR #1548 landed in dev at `d54e2f190` on green Yulius CI. Its integration candidate and delivery commit passed quality, both test shards and browser e2e. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/d54e2f1909c84093bc2fd0cf2bcba80cac425805)

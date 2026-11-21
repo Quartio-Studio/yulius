@@ -382,8 +382,8 @@ export async function deleteTask(ctx, task) {
 /** Archive is a one-click action with Undo (UI-006). */
 export async function archiveTask(ctx, task) {
   const updated = await taskPost(ctx, task, 'archive', () => ctx.api.post(`/api/tasks/${enc(task.id)}/archive`));
-  if (updated) {
-    ctx.store.removeTask(task.id, { byUser: true });
+  if (updated && updated.archived !== false) {
+    ctx.store.removeTask(task.id, { byUser: true, archived: true });
     toast(`Task #${task.number} archived.`, { kind: 'ok', action: { label: 'Undo', run: () => restoreTask(ctx, task) } });
     const route = ctx.route();
     if (route && route.name === 'task' && route.number === task.number) {
@@ -434,7 +434,8 @@ export async function archiveAll(ctx, tasks, what) {
     try {
       const updated = await ctx.api.post(`/api/tasks/${enc(task.id)}/archive`);
       if (updated && updated.id) ctx.store.upsertTask(updated);
-      ctx.store.removeTask(task.id, { byUser: true });
+      if (updated?.archived === false) return;
+      ctx.store.removeTask(task.id, { byUser: true, archived: true });
       archived.push(task);
     } finally {
       inFlight.delete(`${task.id}:archive`);
