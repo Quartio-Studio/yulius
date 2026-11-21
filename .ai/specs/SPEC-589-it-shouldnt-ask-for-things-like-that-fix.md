@@ -32,7 +32,8 @@ Earlier user requests establish the ownership rule. Task #534 concerned automate
 - [x] Track completed background work and concurrent plan progress at Stop
 - [x] Preserve the in-flight turn during spec publication and a requested subscription switch
 - [x] Distinguish owner input from native goal restoration and preserve prompt-mode rotation
-- [ ] Keep a submitted owner instruction through concurrent typing and capacity holds
+- [x] Keep a submitted owner instruction through concurrent typing and capacity holds
+- [ ] Carry the source of a continuation across launch and delayed hook delivery
 - [ ] Verify the fix and obtain independent approval
 
 ## Acceptance criteria
@@ -75,3 +76,4 @@ Make the continuation decision where the agent can act on it, at the shared Stop
 - At `82d06c58c`, all 29 focused Stop, owner-input and recovery controls passed. Clippy passed for the app, store and executable with all targets, all features and warnings denied. The next frozen follow-up mutation run reported `64 listed, 13 caught, 1 missed, 0 timed out, 19 unviable, 31 not reached` at its 30-minute bound. The surviving removal of step publication is covered by the StepsUpdated assertion.
 - Fifth review at `d003d45cd` found two owner submissions that inherited the previous work's exhausted budget. With the SQLite token lookup held, a later viewer key preserved the next draft but prevented the submitted prompt from resetting three attempts. When capacity returned on a different account, the real replacement process received the owner's instruction with all three attempts still spent. The regressions assert both receipt and the durable count.
 - The submit now captures the task's latest viewer key before token lookup, preserves its attribution through hook retries and records a fresh budget before publishing a capacity hold. A replacement run starts with fresh input state. A trace of the existing prompt-mode queue test also showed a CLI move probe running after the prompt's gate was exhausted. The prompt-mode path retains its previous probe bound and publication on a gate block.
+- The integrated fix passed all 32 focused tests, including both fifth-review regressions, two existing prompt-mode queue regressions and all three harnesses. Four control tests passed on the unmodified dev baseline. A broader local run overlapped a test binary rebuild and produced executable-not-found errors. The final compatibility run uses a stable executable.

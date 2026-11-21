@@ -679,7 +679,14 @@ fn a_goal_continuation_queued_after_a_hold_preserves_session_lineage() -> TestRe
                 .queued_start(&id)
                 .await?
                 .ok_or("queued continuation")?;
-            assert_eq!(queued.kind, kind);
+            assert_eq!(
+                queued.kind.as_str(),
+                if kind == QueuedStartKind::Fresh {
+                    "goal_fresh"
+                } else {
+                    "goal_resume"
+                }
+            );
             let prompt = queued.prompt.ok_or("verification prompt")?;
             assert!(
                 prompt.contains("Continue the authorized goal.") && prompt.contains("Verify dev")
@@ -763,7 +770,7 @@ async fn check_held_owner_prompt(
             )
             .await?;
     }
-    let fresh = "Verify the corrected revision";
+    let fresh = "Continue the authorized goal. Verify the corrected revision";
     let terminal = app.terminal_open(ctx, id.as_str(), None).await?;
     app.terminal_input(ctx, &terminal, format!("{fresh}\r").as_bytes(), false)
         .await?;

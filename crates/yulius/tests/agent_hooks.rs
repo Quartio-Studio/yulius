@@ -2919,6 +2919,42 @@ fn a_key_during_submit_context_lookup_keeps_its_mark() -> TestResult {
         })
 }
 
+/// The client has already sent Enter when the next draft reaches Yulius. The HTTP
+/// callback arrives later, carrying the client's send time.
+#[tokio::test]
+async fn a_delayed_goal_submit_retains_the_owner_and_the_next_draft() -> TestResult {
+    let f = fixture_with_task(None, |task| {
+        task.mode = TaskMode::Goal;
+        task.gate_blocks = 3;
+    })
+    .await?;
+    let app = &f.h.app;
+    let owner = UserId::parse("u1")?;
+    app.record_typing(&f.task, &owner);
+    f.h.clock.0.fetch_add(1, Ordering::SeqCst);
+    let sent = app.now().0;
+    f.h.clock.0.fetch_add(1, Ordering::SeqCst);
+    app.record_typing(&f.task, &owner);
+    let input = yulius_contracts::hooks::HookInput {
+        prompt: Some("Verify dev".into()),
+        ..Default::default()
+    };
+    app.hook_event(TOKEN, "claude", "UserPromptSubmit", &input, Some(sent))
+        .await?;
+    assert!(app.has_draft(&f.task), "the owner's next draft");
+    assert_eq!(
+        app.deps
+            .store
+            .task(&f.task)
+            .await?
+            .ok_or("task")?
+            .gate_blocks,
+        0,
+        "the instruction already submitted by the owner"
+    );
+    Ok(())
+}
+
 async fn idle_parking_fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
     let f = fixture().await?;
     let ctx = f.h.app.agent_context(TOKEN).await?;
