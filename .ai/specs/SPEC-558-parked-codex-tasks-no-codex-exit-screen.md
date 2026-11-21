@@ -105,6 +105,8 @@ The live watcher resolves ordinary CI for the owner at the armed head and reads 
 
 ## Evidence
 
+- Head `11d851430` passed 397 scoped tests. Three follow-up regressions failed there. A repair pushed from a second clone during the local Git check still received obsolete advice. A manual account switch before paste or before Enter let the old watch report delivery to its replacement. The correction checks the hosted head after local Git and binds both writes to the observed attempt under the session writer lock.
+
 - On #1576’s landed tree, 31 of 37 focused owner/queue tests failed. The fixtures retain the original attempt across restart. They reproduced a stale ordinary failure after a push from a second clone, a CI paste during a human decision, an obsolete train list, and a missing red train notice after an ordinary infrastructure error was already reported. The hosted service and agent are fixtures.
 
 - PR #1576 landed at `d1ff0e4ee`. Run `6e2aec15-3b4b-48f5-b91d-44d33e036a8a` passed quality, both Rust shards and browser E2E on the PR head. Dev run `14ffd9d7-b80a-42d7-aa24-7cbb70378808` reused the same tree. Vidoc was disabled. Writer mutation testing finished with one caught and 14 unviable. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/d1ff0e4ee96ccc4c646ac8c1a153254f1d15f932)

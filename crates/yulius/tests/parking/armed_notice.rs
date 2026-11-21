@@ -22,7 +22,28 @@ fn a_repair_pushed_during_dispatch_suppresses_the_old_ordinary_failure() -> Test
 
 #[test]
 fn a_repair_published_by_another_clone_during_dispatch_suppresses_stale_advice() -> TestResult {
-    armed_owner_case(OwnerCase::ExternalRepair)
+    armed_owner_case(OwnerCase::ExternalRepair(super::Point::LivePrFactsRead))
+}
+
+#[test]
+fn an_external_repair_during_the_local_publication_lookup_keeps_the_failure_unheard() -> TestResult
+{
+    armed_owner_case(OwnerCase::ExternalRepair(
+        super::Point::ArmedNoticePublicationRead,
+    ))
+}
+
+#[test]
+fn an_account_switch_during_armed_verification_leaves_the_notice_for_the_new_attempt() -> TestResult
+{
+    armed_owner_case(OwnerCase::ReplacedAttempt(
+        super::Point::ArmedNoticePublicationRead,
+    ))
+}
+
+#[test]
+fn a_replacement_after_a_pr_paste_does_not_receive_the_original_attempts_enter() -> TestResult {
+    armed_owner_case(OwnerCase::ReplacedAttempt(super::Point::PrNoticePasted))
 }
 
 #[test]
@@ -66,7 +87,8 @@ enum OwnerCase {
     WorkingDuringCheckIn,
     WorkingDuringStall,
     PreviousCiHead,
-    ExternalRepair,
+    ExternalRepair(super::Point),
+    ReplacedAttempt(super::Point),
     HeldHumanDecision,
     HostedPullUnavailable,
     RepairPushedDuringRead,
@@ -221,6 +243,43 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
             );
             run.reference = CiRef::PullRequest(1481);
             cold.deps.store.insert_ci_run(&run, &[job]).await?;
+        }
+        if let OwnerCase::ReplacedAttempt(point) = case {
+            let replacement = crate::pool_supervision::add_account(&cold, "b-replacement").await?;
+            let (entered, release) = super::pause_watch_or_queue(point, id);
+            let watcher = Arc::clone(&cold);
+            let pass = tokio::spawn(async move { watcher.watch_prs(&bounds).await });
+            tokio::time::timeout(Duration::from_secs(10), entered.notified()).await?;
+            cold.switch_task_now(
+                id,
+                Some(replacement),
+                "manual",
+                Some("Replacement session ready".into()),
+            )
+            .await?;
+            super::wait_for(
+                "the new attempt to attach",
+                Duration::from_secs(10),
+                || async {
+                    cold.deps
+                        .store
+                        .live_attempt(id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .is_some_and(|a| a.id != original)
+                        && super::screen(&cold, id).contains("Replacement session ready")
+                        && super::status_of(&cold, id).await.1
+                            == Some(yulius_domain::task::Activity::Waiting)
+                },
+            )
+            .await?;
+            release.notify_one();
+            let stale = pass.await?;
+            assert!(
+                stale.is_empty(),
+                "watch of the previous attempt typed into its replacement: {stale:?}"
+            );
         }
         if matches!(case, OwnerCase::TerminalPermission) {
             let token = "fixture-permission-hook";
@@ -402,9 +461,13 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
         }
         if matches!(
             case,
-            OwnerCase::RepairPushedDuringRead | OwnerCase::ExternalRepair
+            OwnerCase::RepairPushedDuringRead | OwnerCase::ExternalRepair(_)
         ) {
-            let (entered, release) = super::pause_watch_or_queue(super::Point::LivePrFactsRead, id);
+            let point = match case {
+                OwnerCase::ExternalRepair(point) => point,
+                _ => super::Point::LivePrFactsRead,
+            };
+            let (entered, release) = super::pause_watch_or_queue(point, id);
             let watcher = Arc::clone(&cold);
             let pass = tokio::spawn(async move { watcher.watch_prs(&bounds).await });
             tokio::time::timeout(Duration::from_secs(10), entered.notified()).await?;
@@ -412,7 +475,7 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
             let tree = Path::new(task.worktree_path.as_deref().ok_or("checkout")?);
             let branch = task.branch.as_deref().ok_or("branch")?;
             let other = data.join("repair-clone");
-            let tree = if matches!(case, OwnerCase::ExternalRepair) {
+            let tree = if matches!(case, OwnerCase::ExternalRepair(_)) {
                 crate::pr_watch::git(
                     tree,
                     &["clone", "-q", ".", other.to_str().ok_or("clone path")?],
@@ -444,7 +507,7 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
                 tree,
                 &["push", "-q", "origin", &format!("HEAD:refs/heads/{branch}")],
             )?;
-            if matches!(case, OwnerCase::ExternalRepair) {
+            if matches!(case, OwnerCase::ExternalRepair(_)) {
                 let checkout = Path::new(task.worktree_path.as_deref().ok_or("owner checkout")?);
                 assert_eq!(
                     crate::pr_watch::git(

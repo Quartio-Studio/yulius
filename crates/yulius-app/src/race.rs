@@ -20,6 +20,8 @@ pub enum Point {
     LivePrFactsRead,
     /// The armed watcher completed its local publication lookup before final recipient admission.
     ArmedNoticePublicationRead,
+    /// A live PR notice was pasted into the attempt; its submit is still pending.
+    PrNoticePasted,
     /// A free arm has been taken by the queue, before its merge is decided.
     FreeArmTaken,
     /// A review starts reading its Git head. Keyed by worktree path.

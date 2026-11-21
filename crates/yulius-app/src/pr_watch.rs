@@ -664,12 +664,6 @@ impl App {
                             else {
                                 return false;
                             };
-                            if !self
-                                .hosted_arm_is_current(&task, &sandbox, facts.pr, &arm.head)
-                                .await
-                            {
-                                return false;
-                            }
                             let Some(recipient) = self
                                 .armed_notice_recipient(
                                     &task, &sandbox, facts.pr, &arm.head, source,
@@ -704,7 +698,7 @@ impl App {
                         self.type_into_session_if(
                             &task,
                             paste.as_bytes(),
-                            Typed::PrNotice,
+                            Typed::PrNotice(&attempt.id),
                             Sender::Yulius,
                             Some(admit),
                         )
@@ -714,7 +708,7 @@ impl App {
                         self.type_into_session(
                             &task,
                             paste.as_bytes(),
-                            Typed::PrNotice,
+                            Typed::PrNotice(&attempt.id),
                             Sender::Yulius,
                         )
                         .await
@@ -1484,7 +1478,14 @@ impl App {
         head: &str,
         source: &ArmedNoticeSource,
     ) -> Option<NoticeRecipient> {
-        if self.run_superseded_by_pushed_head(task, head).await
+        if self.run_superseded_by_pushed_head(task, head).await {
+            return None;
+        }
+        crate::race::reached(
+            crate::race::Point::ArmedNoticePublicationRead,
+            std::path::Path::new(task.id.as_str()),
+        );
+        if !self.hosted_arm_is_current(task, sandbox, pr, head).await
             || self
                 .browser_tab_request_for(&task.sandbox_id, &task.id)
                 .await
@@ -1492,10 +1493,6 @@ impl App {
         {
             return None;
         }
-        crate::race::reached(
-            crate::race::Point::ArmedNoticePublicationRead,
-            std::path::Path::new(task.id.as_str()),
-        );
         let (ordinary, candidate) = tokio::try_join!(
             self.ordinary_pull_run(sandbox, pr, head),
             self.holding_run(sandbox, source.candidate_id.as_deref()),
