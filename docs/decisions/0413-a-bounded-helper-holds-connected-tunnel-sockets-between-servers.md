@@ -18,7 +18,9 @@ during an orderly update. The server selects opaque tunnels and their correspond
 The helper receives connected descriptors and bounded private copy state, then makes the batch
 available to one successor through a socket in a service-owned private directory. It uses the
 kernel's peer credentials to check the service UID. The old server receives an acknowledgement
-when the batch and listener are ready. Admission, destination checks, interception and
+when the batch and listener are ready. Orderly shutdown starts capture and deposit alongside
+HTTP shutdown. The two operations have fifteen seconds and five seconds respectively.
+Admission, destination checks, interception and
 credential handling stay in the serving process.
 
 The batch accommodates 256 opaque tunnels and 256 relay pairs. Each pair has up to 32 KiB of
@@ -42,6 +44,12 @@ stream. This also closes the connection when a duplicate descriptor is still que
 successor's control socket. The socket name
 is removed on adoption or orderly exit. Payload bytes live in memory.
 
+Under a delegated Linux service, the helper joins the sessions unit's service-owned legacy
+leaf. If that unit is unavailable and the server unit delegates controllers to its children,
+retaining the helper there requires a systemd version that can restart that layout. Failed
+placement ends the handoff before acknowledgement so the server can restart.
+[ADR-0298](0298-sessions-live-in-their-own-unit.md)
+
 ## Alternatives
 
 A permanently running proxy would also need current admission policy, host bindings, eviction
@@ -52,6 +60,10 @@ TLS session.
 
 ## Consequences
 
-The handoff protocol must carry pending bytes, half-closes and accounting when the server paths
-are wired. An incompatible successor, an elapsed deadline or a crash before deposit can end a
-tunnel. Intercepted traffic reconnects through the successor's host-bound credential checks.
+An established direct HTTP/1.1 CONNECT in Linux legacy mode gives the opaque agent tunnel its
+own socket pair. It retains pending bytes, write-half state, admission owner, byte activity and
+absolute expiry. HTTP/2 inside this tunnel is ordinary payload. An outer HTTP/2 CONNECT
+shares its transport and HTTP session state with other streams, so it reconnects on restart.
+Namespace mode also requires the matching host-side relay and its live holder. An incompatible
+successor, an elapsed deadline or a crash before deposit can end a tunnel. Intercepted traffic
+reconnects through the successor's host-bound credential checks.
