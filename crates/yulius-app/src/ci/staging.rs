@@ -79,11 +79,17 @@ impl App {
         let lock = mirror_lock(&sandbox.id);
         let _mirror = lock.lock().await;
         let profile = delivery_profile(sandbox);
-        self.dlv_refresh_clone(sandbox).await?;
+        let branch = &profile.integration_branch;
         let token = self.dlv_installation_token(sandbox).await?;
-        let head = self
-            .cd_verified_head(sandbox, &profile.integration_branch, &token)
-            .await?;
+        // The clone usually has the head already; it is fetched only when it does not, as for
+        // the CI gate (`ci_verified_gate`).
+        let head = match self.cd_verified_head(sandbox, branch, &token).await {
+            Ok(head) => head,
+            Err(_) => {
+                self.dlv_refresh_clone(sandbox).await?;
+                self.cd_verified_head(sandbox, branch, &token).await?
+            }
+        };
         let config = self.cd_verified_config(sandbox, &head).await?;
         Ok((head, config.merge_first().cloned()))
     }
@@ -848,6 +854,77 @@ impl App {
         )))
     }
 
+    /// What `delivery_status` tells `task` about its staging (SPEC-575 MFS-013), once its work
+    /// merged into a project with a merge-first target: that its request is due, or where its
+    /// newest request stands. `None` without a landing or a merge-first target, and when the
+    /// verified tables cannot be read now (`delivery_status` still answers).
+    pub(crate) async fn staging_note(
+        &self,
+        task: &crate::model::TaskRecord,
+        sandbox: &SandboxRecord,
+    ) -> Option<String> {
+        if sandbox.is_playground() || !self.deps.git.has_cd_mirror() {
+            return None;
+        }
+        let branch = delivery_profile(sandbox).integration_branch;
+        let store = &self.deps.store;
+        let read = async {
+            let Some(landing) = store.task_landings(&task.id, &branch).await?.pop() else {
+                return Ok(None);
+            };
+            let Some(target) = self.staging_target(sandbox).await?.1 else {
+                return Ok(None);
+            };
+            let newest = store
+                .staging_requests_of(&sandbox.id, &target.name, Some(&task.id), &landing)
+                .await?
+                .pop();
+            AppResult::Ok(Some((landing, target, newest)))
+        };
+        let (landing, target, newest) = match read.await {
+            Ok(found) => found?,
+            Err(err) => {
+                tracing::warn!(task = %task.id, error = %err, "delivery_status: staging could not be read");
+                return None;
+            }
+        };
+        let lead = format!("Staging ([cd.{}], merge-first)", target.name);
+        // A failed or superseded request of an older revision leaves the fix's revision due.
+        let ended = |r: &StagingRequestRecord| {
+            matches!(
+                r.state,
+                StagingState::GateFailed | StagingState::DeployFailed | StagingState::Superseded
+            )
+        };
+        let Some(request) = newest.filter(|r| !(ended(r) && r.revision != landing)) else {
+            return Some(format!(
+                "{lead}: your merged revision {} has no staging request. Once your whole \
+                 delivery merged (no steps open), ask once with cd_deploy {}: Yulius runs the \
+                 full gate on that revision, then deploys it (or answers included when staging \
+                 already contains it) and tells you the outcome.",
+                short(&landing),
+                serde_json::json!({"environment": target.name}),
+            ));
+        };
+        let next = staging_next(&request);
+        Some(format!(
+            "{lead}: request {} for revision {} is {}{}{}.{}",
+            request.id,
+            short(&request.revision),
+            request.state.as_str(),
+            run_ids(&request),
+            request
+                .note
+                .as_deref()
+                .map_or_else(String::new, |n| format!(" ({n})")),
+            if next.is_empty() {
+                String::new()
+            } else {
+                format!(" {next}")
+            },
+        ))
+    }
+
     /// The revision production may be promoted from (SPEC-575 MFS-009): what staging serves,
     /// when a verified request deployed it.
     pub(crate) async fn staging_verified_revision(
@@ -1187,27 +1264,32 @@ pub(crate) fn staging_text(
     ));
     for request in staging.requests.iter().take(8) {
         text.push_str(&format!(
-            "  - request {} {} revision {}: {}{}{}{}\n",
+            "  - request {} {} revision {}: {}{}{}\n",
             request.id,
             request
                 .task_number
                 .map_or_else(|| "a deleted task's".to_owned(), |n| format!("task #{n}")),
             short(&request.revision),
             request.state,
-            request
-                .ci_run_id
-                .as_deref()
-                .map_or_else(String::new, |id| format!(", CI run {id}")),
-            request
-                .cd_run_id
-                .as_deref()
-                .map_or_else(String::new, |id| format!(", CD run {id}")),
+            run_ids_of(request.ci_run_id.as_deref(), request.cd_run_id.as_deref()),
             request
                 .note
                 .as_deref()
                 .map_or_else(String::new, |n| format!(" ({n})")),
         ));
     }
+}
+
+/// ", CI run …, CD run …" of a request, for its lines.
+fn run_ids(request: &StagingRequestRecord) -> String {
+    run_ids_of(request.ci_run_id.as_deref(), request.cd_run_id.as_deref())
+}
+
+/// ", CI run …, CD run …" for the ids a request has.
+fn run_ids_of(ci: Option<&str>, cd: Option<&str>) -> String {
+    let run =
+        |label: &str, id: Option<&str>| id.map_or_else(String::new, |id| format!(", {label} {id}"));
+    format!("{}{}", run("CI run", ci), run("CD run", cd))
 }
 
 /// What a task reads about its staging request's outcome, with the next step.
@@ -1220,7 +1302,12 @@ fn staging_outcome_text(request: &StagingRequestRecord) -> String {
         request.state.as_str()
     );
     let note = request.note.as_deref().unwrap_or_default();
-    let next = match request.state {
+    format!("{what}: {note}. {}", staging_next(request))
+}
+
+/// The next step a request's state leaves its task (empty while it is on its way).
+fn staging_next(request: &StagingRequestRecord) -> String {
+    match request.state {
         StagingState::Verified => {
             "Staging serves your tested revision: this task's staging deployment is done."
                 .to_owned()
@@ -1243,6 +1330,5 @@ fn staging_outcome_text(request: &StagingRequestRecord) -> String {
             "It will not deploy; cd_deploy again for the task's current merged revision if it still needs staging.".to_owned()
         }
         _ => String::new(),
-    };
-    format!("{what}: {note}. {next}")
+    }
 }

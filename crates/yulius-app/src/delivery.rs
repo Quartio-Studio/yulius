@@ -6516,6 +6516,13 @@ impl App {
         let before = args["before"].as_str();
         let run_id = args["run_id"].as_str();
         let selected_sha = args["merged_sha"].as_str();
+        // A merged task of a merge-first project asks for staging (SPEC-575 MFS-013); a page of
+        // older evidence does not read it again.
+        let staging = if selected_sha.is_some() || before.is_some() || run_id.is_some() {
+            None
+        } else {
+            self.staging_note(&task, &sandbox).await
+        };
         let evidence = if selected_sha.is_some() || before.is_some() || run_id.is_some() {
             let sha = selected_sha
                 .or_else(|| view.evidence.as_ref().map(|e| e.merged_sha.as_str()))
@@ -6547,6 +6554,7 @@ impl App {
             "next_actions_for_people": view.next_actions,
             "blocked": view.blocked,
             "notes": view.notes,
+            "staging": staging,
             "checks_access": view.checks_access.as_ref().map(|a| &a.message),
             "review_rounds": view.review_rounds,
             "evidence": evidence.map(|mut evidence| {
