@@ -555,7 +555,8 @@ watching, steering and unblocking.
   and kept 180 days (SPEC-137): a task's waits, states, steps (with their tokens), runs, pauses,
   pull request and merge waits; a CI run's queue (and why), jobs and the stages their output names
   (`::yulius-stage`, with test counts); a deploy's confirmation, promotion, deploy and verify; what a
-  CI job or deploy used (CPU time, peak memory, bytes written; SPEC-154). The Dashboard's Pipeline
+  CI job or deploy used (CPU time, peak memory, bytes written; SPEC-154). Each task keeps its
+  latest completed merge wait beyond the telemetry window (SPEC-558). The Dashboard's Pipeline
   (stages) tab (`?section=pipeline`; `/pipeline` still opens it) shows deployment frequency, lead
   time, change failure rate and time to restore for dev and production, any stage's daily p50 and
   p90 and the stage table (with CPU and memory p50 · p90) with CSV/JSON export; a CI run, a deploy

@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- Hourly history cleanup preserves each existing task’s latest merge queue decision, even if the arm began before the telemetry cutoff (SPEC-558).
+
 - A failed single-PR merge candidate tells its original owner which job failed. It verifies the current PR head and integration base and retries unreadable diagnostics, including when a multi-PR run tested the same tree (SPEC-558).
 
 - When open PRs share a commit, the merge queue and `yulius wait` use the owner’s ordinary CI result. A PR without its own run can use the shared result for that commit (SPEC-558).
