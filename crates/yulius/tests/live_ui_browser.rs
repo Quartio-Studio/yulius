@@ -373,6 +373,9 @@ async fn the_panel_streams_the_sandbox_chrome_and_takes_input() -> TestResult {
                 cdp.call_session(session, "Input.dispatchMouseEvent", json!({ "type": kind, "x": copy.0, "y": copy.1, "button": "left", "clickCount": 1 })).await?;
             }
             until_page(&browser, &page, "the webpage's successful clipboard write", "document.getElementById('copy').textContent === 'Copied'").await?;
+            until(&cdp, session, "the offer to copy from the sandbox", "document.querySelector('.toast button.btn')?.textContent === 'Copy to my clipboard'").await?;
+            assert_ne!(eval(&cdp, session, "navigator.clipboard.readText()").await?, json!("first line\nzażółć"));
+            eval(&cdp, session, "document.querySelector('.toast button.btn').click(); true").await?;
             until(&cdp, session, "the button's text on the viewer clipboard", r"navigator.clipboard.readText().then(t => t === 'first line\nzażółć')").await?;
         }
         // Keys typed in the panel reach the focused field; a paste inserts the user's text.

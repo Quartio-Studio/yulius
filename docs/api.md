@@ -1364,6 +1364,7 @@ resolves to nothing, the run gets the server without that variable or token.
     with Ctrl/Alt/Meta held the user's Shift is kept; other keys by `code`; a `key` no US key types
     and `char` text up to 64 characters are typed as real key presses in order; longer `char` text,
     a paste, is inserted with CDP `Input.insertText`; lock keys and AltGraph are ignored),
+    `{"type":"accept_page_copy","tab_id","offer"}` (accept a one-use offer issued to this socket),
     `{"type":"copy","tab_id"}` (answered with `clipboard`), `{"type":"viewport","width",
     "height"}` (the panel size in CSS pixels; shared by every viewer, clamped to the configured
     maximum), `{"type":"view","mode":"video|pixels"}` (default `video`), `{"type":"watch",
@@ -1386,6 +1387,8 @@ resolves to nothing, the run gets the server without that variable or token.
     timestamp in µs, then one H.264 access unit as length-prefixed NAL units (the first frame after
     a configuration is a keyframe), binary JPEG frames (pixels) `u8 3` + 32-byte tab id (ASCII,
     space padded) + image, `{"type":"clipboard","text"}` (the selection, at most 1 MiB),
+    `{"type":"page_copy_available","tab_id","offer"}` (a fresh virtual-display selection),
+    `{"type":"page_clipboard","tab_id","offer","text"}` (plain text, at most 1 MiB, after this viewer accepts),
     `{"type":"agent_activity","tab_id","x","y","action":"click|type|open|navigate","label"}` (an
     agent acted; `x`/`y` in viewport CSS pixels or null), `{"type":"action_requested","tab_id",
     "reason","task_id"}`, `{"type":"error","code":"invalid|url_refused|not_found|capacity|

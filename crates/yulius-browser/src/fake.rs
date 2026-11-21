@@ -1496,6 +1496,8 @@ struct FakeDisplayInner {
     config: Mutex<DisplayConfig>,
     inputs: Mutex<Vec<DisplayInput>>,
     inputs_seen: watch::Sender<u64>,
+    next_copy: Mutex<Option<String>>,
+    offered_copy: Mutex<(u32, Option<String>)>,
     encoders: Mutex<Vec<(u32, u32)>>,
     tiers: Mutex<Vec<Tier>>,
     running: AtomicUsize,
@@ -1544,6 +1546,8 @@ impl FakeDisplay {
                 config: Mutex::new(config),
                 inputs: Mutex::new(Vec::new()),
                 inputs_seen: watch::channel(0).0,
+                next_copy: Mutex::new(None),
+                offered_copy: Mutex::new((0, None)),
                 encoders: Mutex::new(Vec::new()),
                 tiers: Mutex::new(Vec::new()),
                 running: AtomicUsize::new(0),
@@ -1590,6 +1594,29 @@ impl FakeDisplay {
         tokio::time::timeout(timeout, waiting)
             .await
             .unwrap_or(false)
+    }
+
+    /// Makes the next primary press imitate a webpage that writes text to the display.
+    pub fn copy_on_next_press(&self, text: &str) {
+        *lock(&self.inner.next_copy) = Some(text.to_owned());
+    }
+
+    pub(crate) fn copy_press(&self, result: tokio::sync::oneshot::Sender<u32>) {
+        self.record(DisplayInput::Button {
+            button: 1,
+            press: true,
+        });
+        let mut offer = lock(&self.inner.offered_copy);
+        offer.0 = offer.0.wrapping_add(1);
+        offer.1 = lock(&self.inner.next_copy).take();
+        if offer.1.is_some() {
+            let _ = result.send(offer.0);
+        }
+    }
+
+    pub(crate) fn accept_copy(&self, id: u32) -> Option<String> {
+        let mut offer = lock(&self.inner.offered_copy);
+        (id == offer.0).then(|| offer.1.take()).flatten()
     }
 
     /// Sizes the encoder was started at (device pixels), in order.

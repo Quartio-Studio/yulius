@@ -1927,6 +1927,45 @@ async fn chooser_before_the_policy(tool: &'static str, args: fn(&str) -> Value) 
     .await
 }
 
+#[tokio::test]
+async fn a_page_button_returns_its_fresh_copy_only_to_the_clicking_socket() -> TestResult {
+    with_display(FakeDisplay::new(), |f| async move {
+        let display = display_of(&f)?;
+        let served = serve(f.h.router.clone()).await?;
+        let path = "/api/sandboxes/s1/browser";
+        let mut viewer = ws_connect(served.addr, path, &f.writer, ORIGIN).await?;
+        let mut observer = ws_connect(served.addr, path, &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut viewer).await?;
+        let tab = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?;
+        wait_json(&mut observer, |m| m["type"] == "tabs").await?;
+        let press = json!({"type": "mouse", "tab_id": tab, "event": "down", "x": 10, "y": 20, "button": "left"});
+        let release = json!({"type": "mouse", "tab_id": tab, "event": "up", "x": 10, "y": 20, "button": "left"});
+        display.copy_on_next_press("copied by button");
+        send(&mut viewer, press.clone()).await?;
+        send(&mut viewer, release.clone()).await?;
+        let offer = wait_json(&mut viewer, |m| m["type"] == "page_copy_available" || m["type"] == "page_clipboard").await?;
+        assert_eq!(offer["type"], "page_copy_available");
+        assert!(offer.get("text").is_none(), "the offer contains no clipboard contents");
+        let accept = json!({"type":"accept_page_copy", "tab_id":tab, "offer":offer["offer"]});
+        send(&mut observer, accept.clone()).await?;
+        assert_eq!(wait_json(&mut observer, |m| matches!(m["type"].as_str(), Some("error" | "page_copy_available" | "page_clipboard"))).await?["type"], "error");
+        send(&mut viewer, accept.clone()).await?;
+        assert_eq!(wait_json(&mut viewer, |m| m["type"] == "page_clipboard").await?,
+            json!({"type":"page_clipboard", "tab_id":tab, "offer":offer["offer"], "text":"copied by button"}));
+        send(&mut viewer, accept).await?;
+        assert_eq!(wait_json(&mut viewer, |m| matches!(m["type"].as_str(), Some("error" | "page_copy_available" | "page_clipboard"))).await?["type"], "error");
+
+        // The observer's ordinary click copies nothing. Its selection reply is a barrier.
+        send(&mut observer, press).await?;
+        send(&mut observer, release).await?;
+        f.fake.set_selection("keyboard selection");
+        send(&mut observer, json!({"type":"copy", "tab_id":tab})).await?;
+        let reply = wait_json(&mut observer, |m| matches!(m["type"].as_str(), Some("clipboard" | "page_copy_available" | "page_clipboard"))).await?;
+        assert_eq!(reply, json!({"type":"clipboard", "text":"keyboard selection"}));
+        Ok(())
+    }).await
+}
+
 /// ADR-15: a viewer's pointer and keys are real input on the display (XTest), the wheel scrolls
 /// the shown tab by CSS pixels through CDP, text no key types is inserted, copy answers with the
 /// selection, and everything the viewer held is released when it leaves.

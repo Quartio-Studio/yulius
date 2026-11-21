@@ -240,6 +240,13 @@ fn display_error(detail: impl Into<String>) -> BrowserError {
     BrowserError::Display(detail.into())
 }
 
+fn input_error(error: XSendError) -> BrowserError {
+    match error {
+        XSendError::Busy => BrowserError::InputBacklog,
+        XSendError::Gone => display_error("the display stopped"),
+    }
+}
+
 /// Creates `dir` (and missing parents) owner-only.
 fn private_dir(dir: &Path) -> Result<(), BrowserError> {
     use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
@@ -537,12 +544,7 @@ impl VirtualDisplay {
 
     fn send(&self, input: DisplayInput) -> Result<(), BrowserError> {
         match &self.backend {
-            Backend::Xvfb { x, .. } => x.send(input).map_err(|error| match error {
-                // Only discrete input queues (moves are coalesced): the X server stopped
-                // taking input.
-                XSendError::Busy => BrowserError::InputBacklog,
-                XSendError::Gone => display_error("the display stopped"),
-            }),
+            Backend::Xvfb { x, .. } => x.send(input).map_err(input_error),
             #[cfg(feature = "fake")]
             Backend::Fake(fake) => {
                 fake.record(input);
@@ -592,6 +594,38 @@ impl VirtualDisplay {
             x: device(x, width),
             y: device(y, height),
         })
+    }
+
+    pub(crate) async fn accept_copy(&self, offer: u32) -> Option<String> {
+        match &self.backend {
+            Backend::Xvfb { x, .. } => {
+                let (reply, text) = tokio::sync::oneshot::channel();
+                x.queue(xserver::XCommand::AcceptCopy(offer, reply)).ok()?;
+                tokio::time::timeout(Duration::from_secs(3), text)
+                    .await
+                    .ok()?
+                    .ok()
+            }
+            #[cfg(feature = "fake")]
+            Backend::Fake(fake) => fake.accept_copy(offer),
+        }
+    }
+
+    /// Queues a primary press together with a one-shot recipient for a fresh clipboard write.
+    pub(crate) fn copy_press(
+        &self,
+        result: tokio::sync::oneshot::Sender<u32>,
+    ) -> Result<(), BrowserError> {
+        match &self.backend {
+            Backend::Xvfb { x, .. } => x
+                .queue(xserver::XCommand::CopyPress(result))
+                .map_err(input_error),
+            #[cfg(feature = "fake")]
+            Backend::Fake(fake) => {
+                fake.copy_press(result);
+                Ok(())
+            }
+        }
     }
 
     /// Presses or releases a pointer button (`None` does nothing).

@@ -84,18 +84,26 @@ test('a blocked Browser clipboard write can be completed with an explicit click'
   await screen.getByRole('navigation', 'Tools').getByRole('button', /^Browser/).click();
   await expect(screen.getByRole('tab', /^Checkout/)).toHaveAttribute('aria-selected', 'true');
   await browser.evaluate(() => {
-    type Socket = { push(message: string): void };
+    type Socket = { push(message: string): void; send(message: string): void };
     type Mock = { browsers: Map<string, { viewers: Map<Socket, string> }> };
     const session = (window as unknown as { __yuliusMock: Mock }).__yuliusMock.browsers.get('sb_studio')!;
     navigator.clipboard.writeText = async () => { throw new DOMException('Blocked', 'NotAllowedError'); };
     document.addEventListener('copy', event => {
       document.body.dataset.copiedText = event.clipboardData?.getData('text/plain');
     });
-    for (const socket of session.viewers.keys()) socket.push(JSON.stringify({ type: 'clipboard', text: 'first line\nzażółć' }));
+    for (const socket of session.viewers.keys()) {
+      const send = socket.send.bind(socket);
+      socket.send = message => {
+        const request = JSON.parse(message);
+        if (request.type === 'accept_page_copy' && request.tab_id === 'tab-app' && request.offer === 7) {
+          socket.push(JSON.stringify({ type: 'page_clipboard', tab_id: 'tab-app', offer: 7, text: 'first line\nzażółć' }));
+        } else { send(message); }
+      };
+      socket.push(JSON.stringify({ type: 'page_copy_available', tab_id: 'tab-app', offer: 7 }));
+    }
   });
-  const copy = screen.getByRole('button', 'Copy to my clipboard');
-  await expect(copy).toBeVisible();
-  await copy.click();
+  await screen.getByRole('button', 'Copy to my clipboard').click();
+  await screen.getByRole('button', 'Retry copy').click();
   expect(await browser.evaluate(() => document.body.dataset.copiedText)).toBe('first line\nzażółć');
 });
 

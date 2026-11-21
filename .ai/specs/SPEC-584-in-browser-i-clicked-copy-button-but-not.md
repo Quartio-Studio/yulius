@@ -1,6 +1,6 @@
 ---
 yulius-task: 94533bcb-3c26-400e-accf-9972ce2e54ae
-status: draft
+status: in-progress
 ---
 
 # SPEC-584. Copy text from a webpage in the sandbox Browser
@@ -11,25 +11,27 @@ A person can click a webpage’s Copy button in the Browser panel and paste its 
 
 ## Context
 
-The panel streams another Chromium process. Copying a selection with the keyboard asks for the selected text over the viewer socket. A webpage’s button can write different text directly to the sandbox clipboard. A pointer event currently has no path for returning that text. The existing live test selects a heading before pressing the copy shortcut. The separate Codex terminal menu is covered by [SPEC-582](SPEC-582-fix-clipboard-on-codex.md).
+The panel streams another Chromium process. Copying a selection with the keyboard asks for the selected text over the viewer socket. A webpage’s button can write different text directly to the sandbox clipboard. A pointer event currently has no path for returning that text. The existing live test selects a heading before pressing the copy shortcut. In the two-browser reproduction the page acknowledged its write and the viewer timed out reading the expected text. [Issue #1587](https://github.com/Quartio-Studio/yulius/issues/1587)
+
+The separate Codex terminal menu is covered by [SPEC-582](SPEC-582-fix-clipboard-on-codex.md).
 
 ## Requirements
 
-- **BCP-001** A text copy initiated by clicking a webpage on the sandbox’s virtual display reaches the clicking viewer. Preserve multiline and Unicode text.
-- **BCP-002** An ordinary click leaves the viewer’s clipboard alone. Limit transfers to fresh text, the initiating viewer and the existing clipboard size limit. Cancel outstanding work when the input is superseded or the viewer leaves.
-- **BCP-003** Keep keyboard selection copy working. When the viewer’s browser refuses an automatic write, give the person a way to complete the copy.
+- **BCP-001** A fresh clipboard write following a click on the sandbox’s virtual display offers **Copy to my clipboard** to that viewer. Accepting transfers the text to their device. Preserve multiline and Unicode text.
+- **BCP-002** An ordinary click leaves the viewer’s clipboard alone. Limit transfers to fresh text, the initiating viewer and the existing clipboard size limit. The offer carries no text. Read the selection only after explicit acceptance on the originating socket. Expire replaced and unused offers.
+- **BCP-003** Keep keyboard selection copy working. When the viewer’s browser refuses the accepted write, give the person a way to complete the copy.
 
 ## Plan
 
-- [ ] Reproduce the browser Copy failure
-- [ ] Capture the clipboard regression in a spec and test
+- [x] Reproduce the browser Copy failure
+- [x] Capture the clipboard regression in a spec and test
 - [ ] Make Copy deliver the requested text
 - [ ] Verify, review and merge the fix into dev
 
 ## Acceptance criteria
 
-- **AC-1 (BCP-001)** With no selection, click Copy on a fixture that writes a known multiline string. Read that exact string from the viewer’s clipboard.
-- **AC-2 (BCP-002)** An ordinary click with an older value on the sandbox clipboard transfers nothing. Another viewer receives no text.
+- **AC-1 (BCP-001)** With no selection, click Copy on a fixture that writes a known multiline string. Verify the device clipboard stays unchanged until the viewer accepts, then read the exact string.
+- **AC-2 (BCP-002)** An ordinary click with an older value on the sandbox clipboard transfers nothing. Another viewer cannot accept the offer. A consumed offer cannot be replayed.
 - **AC-3 (BCP-003)** The selection shortcut still copies the heading. A refused local write offers an explicit copy gesture and reports success only when it works.
 
 ## Test plan
@@ -38,4 +40,12 @@ Exercise the button through the streamed panel using separate sandbox and viewer
 
 ## Decisions
 
-The report names the browser without identifying a site. Use a synthetic page in the sandbox Browser panel with a native plain-text clipboard write. Restrict display clipboard access to that sandbox’s private virtual display.
+The report names the browser without identifying a site. Use a synthetic page in the sandbox Browser panel with a native plain-text clipboard write. Restrict clipboard access to that sandbox’s private virtual display. X reports a change of clipboard owner without attributing it to a webpage or person. The local action explicitly requests a transfer from the shared sandbox clipboard.
+
+[ADR-0423](../../docs/decisions/0423-a-webpage-copy-returns-through-the-clicking-viewers-connection.md) records the display transfer and its lifetime.
+
+## Evidence
+
+- The two-Chromium regression failed on the original implementation after the fixture acknowledged its write. The viewer timed out waiting for the exact multiline UTF-8 text. The corrected keyboard assertion also awaits the actual clipboard read.
+- The browser E2E regression failed before the Browser panel handled the offer. The focused suite now passes, including a refused asynchronous write followed by a native copy gesture.
+- The two clipboard decoding unit tests pass. They cover ordinary UTF-8, invalid or incomplete data, characters split across incremental chunks and the combined byte limit.
