@@ -6610,49 +6610,62 @@ async fn github_outage_keeps_the_last_verified_parked_pull() -> TestResult {
 
 #[tokio::test]
 async fn a_parked_directly_observed_merge_survives_an_unavailable_direct_read() -> TestResult {
-    let f = fixture().await?;
-    let owner = idle_for_parking(&f).await?;
-    install_compatibility_pull(&f).await?;
-    let app = &f.h.app;
-    app.deps
-        .store
-        .transition_task(
-            &f.task,
-            None,
-            TaskStatus::Parked,
-            Some(Activity::Done),
-            app.now(),
-        )
-        .await?;
-    {
-        let mut pulls = f.h.github.pulls.lock().map_err(|_| "pulls")?;
-        pulls[0].merged = true;
-        pulls[0].state = "closed".into();
-    }
-    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
-    for unavailable in [false, true] {
-        f.h.github
-            .fail_merged_reads
-            .store(unavailable, Ordering::SeqCst);
-        let row = app
-            .tool_task_get(&caller, &json!({"task_id": f.task.as_str()}))
+    for merged in [true, false] {
+        let f = fixture().await?;
+        let owner = idle_for_parking(&f).await?;
+        install_compatibility_pull(&f).await?;
+        let app = &f.h.app;
+        app.deps
+            .store
+            .transition_task(
+                &f.task,
+                None,
+                TaskStatus::Parked,
+                Some(Activity::Done),
+                app.now(),
+            )
             .await?;
-        assert_eq!(
-            row["parked_pr"],
-            json!({"number":1461,"open":false}),
-            "{row}"
-        );
-        assert_eq!(row["shows"], "done");
-        assert!(row["needs_you"].is_null());
-        if unavailable {
-            let overview = app.git_overview(&owner, f.sandbox.as_str()).await?;
-            let pull = overview
-                .tasks
-                .iter()
-                .find(|row| row.task_id == f.task.as_str())
-                .and_then(|row| row.pr.as_ref())
-                .ok_or("lost merged PR")?;
-            assert_eq!((pull.number, pull.state.as_str()), (1461, "merged"));
+        {
+            let mut pulls = f.h.github.pulls.lock().map_err(|_| "pulls")?;
+            pulls[0].merged = merged;
+            pulls[0].state = "closed".into();
+        }
+        let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+        for unavailable in [false, true] {
+            if unavailable {
+                f.h.github.pulls.lock().map_err(|_| "pulls")?.clear();
+                f.h.github.fail_overview_pulls.store(true, Ordering::SeqCst);
+            }
+            let row = app
+                .tool_task_get(&caller, &json!({"task_id": f.task.as_str()}))
+                .await?;
+            assert_eq!(
+                row["parked_pr"],
+                json!({"number":1461,"open":false}),
+                "{row}"
+            );
+            assert_eq!(row["shows"], if merged { "done" } else { "needs_you" });
+            if merged {
+                assert!(row["needs_you"].is_null());
+            }
+            if unavailable {
+                let overview = app.git_overview(&owner, f.sandbox.as_str()).await?;
+                let pull = overview
+                    .tasks
+                    .iter()
+                    .find(|row| row.task_id == f.task.as_str())
+                    .and_then(|row| row.pr.as_ref())
+                    .ok_or("lost merged PR")?;
+                assert_eq!(
+                    (pull.number, pull.state.as_str()),
+                    (1461, if merged { "merged" } else { "closed" })
+                );
+                let after = app
+                    .tool_task_get(&caller, &json!({"task_id": f.task.as_str()}))
+                    .await?;
+                assert_eq!(after["parked_pr"], row["parked_pr"]);
+                assert_eq!(after["shows"], row["shows"]);
+            }
         }
     }
     Ok(())
@@ -6878,6 +6891,29 @@ async fn a_real_local_ci_error_supersedes_cached_green_during_a_github_outage() 
     assert_eq!(
         brief["wait_reason"],
         "CI could not complete the checks for the parked task's pull request."
+    );
+    app.deps
+        .store
+        .transition_task(
+            &f.task,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Done),
+            app.now(),
+        )
+        .await?;
+    let live = app.tool_task_get(&caller, &args).await?;
+    f.h.github.fail_overview_pulls.store(true, Ordering::SeqCst);
+    let overview = app.git_overview(&owner, f.sandbox.as_str()).await?;
+    let pr = overview
+        .tasks
+        .iter()
+        .find(|t| t.task_id == f.task.as_str())
+        .and_then(|t| t.pr.as_ref())
+        .ok_or("open pull")?;
+    assert_eq!(
+        (live["shows"].as_str(), pr.checks.as_str()),
+        (Some("working"), "error")
     );
     Ok(())
 }
