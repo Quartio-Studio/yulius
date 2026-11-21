@@ -31,7 +31,7 @@
 // movepoll=<ms> (how often the card reads a move in flight; 3 s without it).
 
 import { counter, taskInfo } from './status.js';
-import { defaultEffort } from './models.js';
+import { DEFAULT_EFFORT } from './models.js';
 import { plausibleEmail } from './format.js';
 import { agentOfHarness, agentOfProvider, aName } from './agents.js';
 import { parsePrompt } from './promptparts.js';
@@ -1509,7 +1509,7 @@ route('GET', `/api/sandboxes/${ID}/tasks`, ({ db, p, query }) => {
 /** The effective model and effort, retaining each omitted task setting (SPEC-561). */
 function taskModelSettings(harness, options = {}) {
   const model = options.model || (harness === 'codex' ? 'gpt-6.2-astra' : harness === 'antigravity' ? 'gemini-4-neon' : 'claude-opus-4');
-  const effort = options.effort || (harness === 'codex' ? defaultEffort(model) : harness === 'antigravity' ? 'high' : 'default');
+  const effort = options.effort || (harness === 'claude' ? 'default' : DEFAULT_EFFORT);
   return { model, model_default: !options.model, effort, effort_default: !options.effort };
 }
 route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
