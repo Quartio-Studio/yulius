@@ -91,7 +91,9 @@ its runs' rollouts. In the web UI, Subscriptions' Add dialog chooses the agent f
 or Codex) and then its way in, a Codex card imports a new `auth.json`, the composer's model menu
 groups explicit model IDs by provider. Each Codex or Gemini choice sends its harness and model,
 and the Codex default choice sends its harness alone. Settings and the composer share the model's
-supported effort levels and browser preferences. An automation chooses the agent of the tasks it
+supported effort levels and browser preferences. A missing or unusable model preference selects
+Codex default, while a saved JSON null selects Random. [Decision 0426](decisions/0426-the-new-task-composer-defaults-to-codex.md)
+An automation chooses the agent of the tasks it
 creates. See [ADR-0372](decisions/0372-model-pickers-use-provider-reasoning-levels.md).
 
 Rotation picks only accounts of the task's provider, so a Codex task moves only between Codex
@@ -105,9 +107,12 @@ its model implies (Codex for `gpt-*`, Antigravity for `gemini-*`, otherwise Clau
 draws uniformly (`1 / k`, rejection-sampled over `random_bytes`) across the harnesses in `Harness::ALL` (`claude`, `codex`, `antigravity`) that have at least one healthy
 non-exhausted subscription for their default model (falling back to healthy `Usable` pools when
 every connected pool is temporarily limited, else `ClaudeCode`), recorded in `task_harness_draws`
-(`harness_choice: random`). A running task agent's `task_create` and `automation_create` without
-`harness` (or `model`) keep the calling task's agent (`chosen`), while explicit `auto`, Superagent
-calls and `auto` automations draw per created task.
+(`harness_choice: random`). With harness and model omitted, the shared `task_create` tool
+selects the parent task's harness for a follow-up and Codex for the CLI or either Superagent,
+including approved cross-sandbox requests. Codex then inherits its model, effort and tier as
+described above. Explicit `auto` still draws. An automation created by a task inherits its
+parent's harness by default. Other automations default to a draw on each run.
+[Decision 0422](decisions/0422-cli-and-superagent-task-creation-defaults-to-codex.md)
 
 An Antigravity task ([decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md),
 [decision 0373](decisions/0373-gemini-4-neon-is-antigravitys-default-model-on-agy-1-5-12.md))

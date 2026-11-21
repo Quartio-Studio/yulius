@@ -10,7 +10,7 @@ import { href, placeFor } from '../router.js';
 import { BRAND } from '../brand.js';
 import { openSandboxDialog } from '../actions.js';
 import { folderDropZone } from '../playground.js';
-import { claudeConnected, connectClaudeStep } from '../claude.js';
+import { claudeConnected, connectAccountStep } from '../claude.js';
 
 /** At most this many task lists load at once for the cards' last activity. */
 const LOAD_CONCURRENCY = 3;
@@ -159,7 +159,7 @@ export function mountHomePage(ctx) {
       // The first step on a fresh instance: tasks need a Claude account (SPEC-246 CLA-007), GitHub
       // can wait.
       needsClaude ? [
-        connectClaudeStep(store.state.me, 'Playgrounds and tasks start once one is usable.'),
+        connectAccountStep(store.state.me, 'Playgrounds and tasks start once one is usable.'),
         h('p', { class: 'text-2' }, 'Then drop a project folder or a repository here, and start tasks in it a minute later. It becomes a playground: its Git stays on this server and nothing is pushed anywhere.'),
       ] : [
         h('p', { class: 'text-2' }, 'Drop a project folder or a repository here, and start tasks in it a minute later. It becomes a playground: its Git stays on this server and nothing is pushed anywhere, so GitHub need not be connected first.'),
@@ -191,7 +191,7 @@ export function mountHomePage(ctx) {
         h('h1', { class: 'page-title' }, 'Sandboxes'),
         h('span', { class: 'page-sub' }, 'one repository each, with its tasks, browser and editor'),
         h('div', { class: 'page-actions' }, addActions(needsGithub, user, needsClaude))),
-      needsClaude ? connectClaudeStep(me) : null,
+      needsClaude ? connectAccountStep(me) : null,
       h('div', { class: 'home-grid', 'aria-busy': String(sandboxes.some((s) => store.tasksOf(s.id) === null && !store.tasksError(s.id))) }, sandboxes.map(card))))));
   }
 

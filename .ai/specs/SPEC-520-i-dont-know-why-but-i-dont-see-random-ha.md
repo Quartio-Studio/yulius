@@ -8,6 +8,10 @@ status: done
 Issue: [#1437](https://github.com/Quartio-Studio/yulius/issues/1437)
 ADR: [0377](../../docs/decisions/0377-random-draws-uniformly-across-harnesses-with-available-subscriptions.md)
 
+[SPEC-583](SPEC-583-cli-nad-superagents-should-spawn-tasks-i.md) supersedes the RHM-004 default draw for direct CLI and Superagent task creation.
+
+[SPEC-587](SPEC-587-codex-should-be-default-for-example-bart.md) supersedes the initial Random selection in the browser under RHM-006.
+
 ## Goal
 
 Restore the random harness feature as the default for new tasks and automations, drawing uniformly across **all** added harnesses (`claude`, `codex`, `antigravity`) that currently have at least one non-exhausted subscription. Every eligible harness gets the exact same selection probability (`1 / k`), even when one harness has many more subscriptions than another, while any harness with zero subscriptions or whose subscriptions are all finished (at limit or exhausted) is excluded whenever another harness has capacity.

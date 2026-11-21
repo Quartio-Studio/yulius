@@ -10,6 +10,7 @@ automation. GPT-6.2 Astra is the default model and inherits extra high effort. O
 inherit high effort. A task's explicit effort takes precedence.
 [SPEC-561](../.ai/specs/SPEC-561-default-astra-6-2-to-xhigh-for-new-work.md)
 
+Tasks created by the CLI or either Superagent default to Codex when harness and model are omitted.
 A task created with a `gpt-*` model and no explicit agent selects Codex.
 A task keeps its agent for life, and a Codex task moves only between Codex subscriptions. On ChatGPT Pro 500,
 Codex defaults to Ultrafast for models that support it. A Codex
@@ -33,7 +34,7 @@ moves only between Antigravity subscriptions, and Yulius provides the pinned Ant
 [ADR-0373](decisions/0373-gemini-4-neon-is-antigravitys-default-model-on-agy-1-5-12.md)). An
 Antigravity task stays Working while its command runs in the background or its agent resumes by
 itself ([SPEC-528](../.ai/specs/SPEC-528-antigravity-tasks-show-needs-its-person.md)). A
-task created without choosing an agent (the composer's and Settings' `Random`, or `auto`) and
+task created with the composer’s `Random` setting or an explicit `auto` harness and
 without a model that implies one draws uniformly across all added harnesses (`claude`, `codex`,
 `antigravity`) that currently have at least one non-exhausted subscription — one equal chance per
 eligible harness regardless of subscription count, excluding harnesses with zero or only finished
@@ -45,6 +46,8 @@ agent it names (`F 2026-11-19 Random harness`,
 [ADR-0377](decisions/0377-random-draws-uniformly-across-harnesses-with-available-subscriptions.md),
 superseding the no-draw part of [SPEC-514](../.ai/specs/SPEC-514-make-sure-harnesses-doesnt-change-themse.md)
 / [ADR-0368](decisions/0368-a-tasks-agent-is-set-never-drawn.md)).
+
+The composer and Settings start on Codex default in a browser without a saved model. A saved Random choice or specific model takes precedence. [SPEC-587](../.ai/specs/SPEC-587-codex-should-be-default-for-example-bart.md)
 
 The composer and Settings offer individual Codex and Gemini models grouped by provider. Each model
 shows its supported effort levels. Choosing a model that cannot use the saved effort restores the
