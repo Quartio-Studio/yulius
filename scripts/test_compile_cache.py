@@ -105,6 +105,17 @@ class CompileCache(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(outside.exists(), "Cargo wrote intermediates outside scratch")
         self.assertEqual(result.stdout.splitlines(), ["one", "two"])
+        config = f'build.build-dir="{outside}"'
+        result = subprocess.run([*command, "--config", config, "-", "--config", "build.jobs=3"],
+                                cwd=self.task, env=env, capture_output=True, text=True, timeout=15)
+        self.assertFalse(outside.exists(), "bare dash allowed intermediates outside scratch")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("use -- before program options", result.stderr)
+        result = subprocess.run([*command, "--config", config, "--", "-", "--config", "build.jobs=3"],
+                                cwd=self.task, env=env, capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ["-", "--config", "build.jobs=3"])
+        self.assertFalse(outside.exists())
         for flag in ("--config", "--target-dir"):
             with self.subTest(program_flag=flag):
                 result = subprocess.run([*command, "one", flag, "program-value"], cwd=self.task,

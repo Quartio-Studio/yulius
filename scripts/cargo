@@ -49,7 +49,7 @@ def scratch_config_end(args):
                     sys.exit("Cargo --config requires a value")
                 index = value[0]
             end = index + 1
-        elif not arg.startswith("-"):
+        elif arg == "-" or not arg.startswith("-"):
             # A bare word may be either a Cargo option value or the first
             # argument to the executable. Require unambiguous config placement.
             possible_program_arg = True
