@@ -265,8 +265,8 @@ export function mountTaskInfoView(ctx, sandbox, task) {
       // A session that starts again may run another model on the same subscription (the
       // fallback, SPEC-482), and is a new entry of the sessions: the detail is read again.
       const restarted = t.status !== current.status;
-      current = { ...current, ...t, account_id: t.account_id,
-        parked_needs_you: t.parked_needs_you, parked_pr: t.parked_pr };
+      // TaskSummary is a complete snapshot. Omitted owner notices and PRs have cleared.
+      current = t;
       if (moved || restarted) load();
       render();
     }),

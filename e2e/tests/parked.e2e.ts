@@ -1468,33 +1468,36 @@ for (const [name, finishActive, rename] of [
   });
 }
 
-test('the terminal drops a resolved owner action when a parked PR later needs attention', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio', '&ambient=0&pullgap=0&pullclock=manual'));
-  type Fixture = { __yuliusMock: { tasks: { id: string; parked_needs_you?: boolean; needs_you_notice?: object }[];
-    holdGitReads: boolean; touchTask(s: string, n: number, f: object): void; changePull(s: string, n: number, f: object): void } };
-  await touchTask(browser, 'sb_studio', 13, { status: 'parked', activity: 'done', needs_you_notice: { happened: 'Old owner action', action: 'Choose the old option' }, parked_needs_you: true, parked_pr: { number: 520, open: true } });
-  await expect(screen.getByRole('region', 'Needs you').getByRole('link', /Improve the code/)).toBeVisible();
-  await browser.evaluate(() => {
-    const db = (window as unknown as Fixture).__yuliusMock;
-    db.holdGitReads = true;
-    location.hash = '/s/studio/t/13';
-  });
-  const strip = browser.locator('.strip-status');
-  await expect(strip).toHaveText(/Old owner action/);
-  for (const needs of [false, true]) {
-    await browser.evaluate(needs => {
-      const db = (window as unknown as Fixture).__yuliusMock;
-      const task = db.tasks.find(t => t.id === 'tsk_studio_13')!;
-      delete task.needs_you_notice;
-      task.parked_needs_you = needs;
-      db.changePull('sb_studio', 520, { checks: needs ? 'failure' : 'success' });
-    }, needs);
-    await expect(strip).toHaveText(needs ? /Your turn.*parked/ : /Done.*parked/);
-  }
-  await expect(strip).not.toHaveText(/Old owner action/);
-});
-
 const parkedPages = [['terminal', 't', '.strip-status'], ['Task Info', 'tasks', '.gt-state']] as const;
+
+for (const [page, route, statusSelector] of parkedPages) {
+  test(`${page} drops a resolved owner action when a parked PR later needs attention`, async ({ app, browser, screen }) => {
+    await app.open(mock('/s/studio', '&ambient=0&pullgap=0&pullclock=manual'));
+    type Fixture = { __yuliusMock: { tasks: { id: string; parked_needs_you?: boolean; needs_you_notice?: object }[];
+      holdGitReads: boolean; touchTask(s: string, n: number, f: object): void; changePull(s: string, n: number, f: object): void } };
+    await touchTask(browser, 'sb_studio', 13, { status: 'parked', activity: 'done', needs_you_notice: { happened: 'Old owner action', action: 'Choose the old option' }, parked_needs_you: true, parked_pr: { number: 520, open: true } });
+    await expect(screen.getByRole('region', 'Needs you').getByRole('link', /Improve the code/)).toBeVisible();
+    await browser.evaluate((route) => {
+      const db = (window as unknown as Fixture).__yuliusMock;
+      db.holdGitReads = true;
+      location.hash = `/s/studio/${route}/13`;
+    }, route);
+    if (page === 'Task Info') await expect(browser.locator('.ti-kv')).toBeVisible();
+    const strip = browser.locator(page === 'Task Info' ? '.gt-meta' : statusSelector);
+    await expect(strip).toHaveText(/Old owner action/);
+    for (const needs of [false, true]) {
+      await browser.evaluate(needs => {
+        const db = (window as unknown as Fixture).__yuliusMock;
+        const task = db.tasks.find(t => t.id === 'tsk_studio_13')!;
+        delete task.needs_you_notice;
+        task.parked_needs_you = needs;
+        db.changePull('sb_studio', 520, { checks: needs ? 'failure' : 'success' });
+      }, needs);
+      await expect(strip).toHaveText(needs ? /Your turn.*parked/ : /Done.*parked/);
+    }
+    await expect(strip).not.toHaveText(/Old owner action/);
+  });
+}
 
 for (const [page, route, statusSelector] of parkedPages) {
   test(`an older ${page} detail cannot undo a verified parked rerun`, async ({ app, browser }) => {
