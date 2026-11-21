@@ -878,7 +878,7 @@ pub fn plan(targets: &[Target], runs: &[RunFacts]) -> Plan {
     for target in targets {
         let tested = runs
             .iter()
-            .any(|run| run.sha == target.sha && (run.state.is_active() || has_verdict(run.state)));
+            .any(|run| run.sha == target.sha && covers_shared_commit(run.state));
         let cancelled_here = runs.iter().any(|run| {
             run.sha == target.sha
                 && run.reference == target.reference
@@ -917,8 +917,10 @@ pub fn copied_job_verdict(source: Option<RunState>) -> (RunState, i32) {
     }
 }
 
-fn has_verdict(state: RunState) -> bool {
-    matches!(state, RunState::Passed | RunState::Failed | RunState::Error)
+/// Whether the scheduler can use a run to cover another reference at the same commit.
+#[must_use]
+pub fn covers_shared_commit(state: RunState) -> bool {
+    state.is_active() || matches!(state, RunState::Passed | RunState::Failed | RunState::Error)
 }
 
 /// A GitHub commit status state.

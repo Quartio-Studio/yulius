@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- When open PRs share a commit, the merge queue and `yulius wait` use the owner’s ordinary CI result. A PR without its own run can use the shared result for that commit (SPEC-558).
+
 - Repairing invalid integration CI schedules a fresh run for a refused PR head even when that head passed before the configuration broke (SPEC-558).
 
 - Task Info updates the sidebar when it verifies a parked task. Its header and Now tile follow the latest verified status while the PR chip shows the last Git overview (SPEC-558).

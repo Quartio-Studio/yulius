@@ -80,9 +80,13 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 The scheduler discards older completed verdicts for a head after a later run was refused because the integration configuration was invalid and that configuration has since been repaired. A fresh queued run covers the repair. The scheduler reads the 200 most recently admitted records through a sandbox index so a superseded queue position cannot reverse the history.
 
-The pending shared-head work addresses the following contract. Yulius CI schedules one run per commit even when two PRs publish the same head. The queue and `yulius wait` prefer the owner’s own ordinary run when one exists. Otherwise they use the run that covers that commit under the scheduler’s rule. A cancellation of a different reference cannot lend a verdict. GitHub still enforces its required commit status when the queue submits the merge.
+Yulius CI schedules one run per commit even when two PRs publish the same head. The queue and `yulius wait` prefer the owner’s own ordinary run when one exists. Otherwise they use the run that covers that commit under the scheduler’s rule. A cancellation of a different reference cannot lend a verdict. Queue decisions and merged receipts use the full object name supplied by Git or the host. The wait endpoint also accepts a unique abbreviation. GitHub still enforces its required commit status when the queue submits the merge.
 
 ## Evidence
+
+- On dev `95750eae4`, 10 of 15 selected queue and wait tests failed with the new shared-owner fixtures. They observed inverted owner verdicts, a missing shared replacement, incorrect infrastructure retries and a rejected merged receipt. On the first port, a hosted 40-digit head borrowed a failure from an unrelated 64-digit object with that prefix and dropped its arm. The queue fixture requires it to keep waiting for CI at the full hosted head.
+
+- PR #1561 landed on dev at `95750eae4`. Its head `4cc1226f6` passed quality, both Rust shards and browser e2e in run `9e599dd7-1fe7-4454-aff2-70508c24b3d5`. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/95750eae424114768e782c149b901da52a8b7238)
 
 - PR #1561 CI run `031a2785-9e3f-4963-9133-641cab097cc3` passed quality and both Rust shards. Chromium failed before the first Take control click because a detail refresh had already rendered Request control. A forced refresh reproduced the missing button. The fixture now opens the confirmation before changing the mock owner’s policy, then checks the refusal toast and the Request control action. All 17 ownership tests passed alone and in the nine-worker full suite. That suite reported 1,295 passes, one skip and one failure in the separately tracked startup fixture. [Ownership fixture #1558](https://github.com/Quartio-Studio/yulius/issues/1558) · [Startup fixture #1551](https://github.com/Quartio-Studio/yulius/issues/1551)
 
@@ -92,7 +96,7 @@ The pending shared-head work addresses the following contract. Yulius CI schedul
 
 - On dev `437188043`, a real ordinary head passed, a rerun was refused for the broken integration configuration, and restoring valid CI left the latest run `failed` when the next scheduler sync should have admitted one replacement. The fixture checks that repeated syncs keep a single replacement and that its job passes.
 
-- At the shared-head prototype, a peer PR that moved onto the owner’s refused SHA inherited an older queue position. At `4a3fc966a`, the wait endpoint still reported the earlier refusal after the replacement passed. The prototype at `6665e593e` compared admission order at a single commit and passed 354 scoped tests. Its independent review identified the scheduler recovery case and a SHA-256 abbreviation. Shared-owner selection remains open. The dispatcher continues to use queue position.
+- At the shared-head prototype, a peer PR that moved onto the owner’s refused SHA inherited an older queue position. At `4a3fc966a`, the wait endpoint still reported the earlier refusal after the replacement passed. The prototype at `6665e593e` compared admission order at a single commit and passed 354 scoped tests. Its independent review identified the scheduler recovery case and a SHA-256 abbreviation. The dispatcher continues to use queue position.
 
 - Five regressions failed at `bb554d9ff`. They cover an external merge followed by a red peer, a peer verdict during a train’s pushed-head confirmation, recovery after the integration CI configuration is repaired, the infrastructure retry budget for the owner, and a short SHA with more than 50 intervening runs. The prefix read checks for a unique commit in the sandbox’s indexed history.
 
