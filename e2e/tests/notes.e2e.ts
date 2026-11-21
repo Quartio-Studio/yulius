@@ -1,6 +1,6 @@
 import { test, type Browser, type Screen } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, firstShown, mock as mockPage } from './support.ts';
+import { axeViolations, failOnPageErrors, FIRST_LOAD_MS, firstShown, mock as mockPage } from './support.ts';
 
 failOnPageErrors();
 
@@ -95,7 +95,7 @@ test('team notes are the same in every sandbox; sandbox notes are each its own',
 
   // Another sandbox: the panel stays on Notes, with the tab used last.
   await app.open(mock('/s/product'));
-  await expect(screen.getByRole('textbox', 'Team notes')).toHaveValue('Standup at 10:30');
+  await expect(screen.getByRole('textbox', 'Team notes')).toHaveValue('Standup at 10:30', { timeout: FIRST_LOAD_MS });
   await screen.getByRole('tab', 'This sandbox').click();
   await expect(screen.getByRole('textbox', 'Sandbox notes')).toHaveValue('');
   expect(await stored(browser, 'team')).toBe('Standup at 10:30');
@@ -524,7 +524,7 @@ test('Me after Team is the person’s own notepad, the same in every sandbox', a
 
   // Another sandbox: the same notepad, still on the Me tab.
   await app.open(mock('/s/product'));
-  await expect(screen.getByRole('textbox', 'My notes')).toHaveValue('grep instead of read?');
+  await expect(screen.getByRole('textbox', 'My notes')).toHaveValue('grep instead of read?', { timeout: FIRST_LOAD_MS });
 
   // A reload keeps it.
   await browser.reload();
@@ -629,8 +629,11 @@ test('Team comes first and opens first; the tabs move by drag, keyboard and menu
   await browser.reload();
   await screen.getByRole('navigation', 'Tools').getByRole('button', 'Notes').click();
   expect(await tabOrder(browser)).toEqual(['Team', 'Me', 'This sandbox']);
+  await screen.getByRole('tab', 'This sandbox').click();
+  await browser.evaluate(() => (window as unknown as MockNotes).__yuliusMock.editNote('sandbox:sb_product', 'Product handoff', 'anna-q', { announce: false }));
   await app.open(mock('/s/product'));
-  expect(await tabOrder(browser)).toEqual(['Team', 'Me', 'This sandbox']);
+  await expect(screen.getByRole('textbox', 'Sandbox notes')).toHaveValue('Product handoff', { timeout: FIRST_LOAD_MS });
+  await expect.poll(() => tabOrder(browser)).toEqual(['Team', 'Me', 'This sandbox']);
 
   // A stored order that is not the three tabs is ignored.
   await browser.evaluate(() => localStorage.setItem('yulius.notesOrder', JSON.stringify(['team', 'team', 'me'])));

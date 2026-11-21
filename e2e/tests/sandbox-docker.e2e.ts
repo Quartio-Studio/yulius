@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, firstShown, mock } from './support.ts';
 
 failOnPageErrors();
 
@@ -13,8 +13,8 @@ failOnPageErrors();
 const bodyText = (browser: { evaluate: (fn: () => string) => Promise<string> }) => browser.evaluate(() => document.body.innerText);
 
 test('sandboxes get Docker and the smoke check passes check by check', async ({ app, browser, screen }) => {
-  await app.open(mock('/admin/instance'));
-  await expect(screen.getByRole('heading', { level: 2, name: 'Sandbox Docker' })).toBeVisible();
+  await app.open(mock('/admin/instance', '&smokeclock=manual'));
+  await firstShown(screen.getByRole('heading', { level: 2, name: 'Sandbox Docker' }));
   await expect(screen.getByText('sandboxes get Docker')).toBeVisible();
   await expect(screen.getByText(/each isolated sandbox gets its own engine/)).toBeVisible();
   await expect(screen.getByText('base base-9')).toBeVisible();
@@ -23,11 +23,16 @@ test('sandboxes get Docker and the smoke check passes check by check', async ({ 
   await screen.getByRole('button', 'Run smoke check').click();
   await expect(screen.getByText('Smoke check running')).toBeVisible();
   await expect(screen.getByRole('button', 'Run smoke check')).toBeDisabled();
-  // Checks arrive while it still runs, not only at the end.
+  const advanceSmoke = (ms: number) => browser.evaluate((elapsed) => {
+    (window as unknown as { __yuliusMock: { docker: { clock: { advance(ms: number): void } } } }).__yuliusMock.docker.clock.advance(elapsed);
+  }, ms);
+  await advanceSmoke(1_000);
+  // Only the first check has finished. Keep that state until the card has displayed it.
   await expect.poll(() => browser.evaluate(() => {
     const running = document.querySelector('.sandbox-docker-smoke-running');
     return running ? running.querySelectorAll('.sandbox-docker-checks li').length : -1;
-  }), { timeout: 6000 }).toBeGreaterThan(0);
+  }), { timeout: 30_000, message: 'the running smoke check displays its first result' }).toBe(1);
+  await advanceSmoke(4_000);
   await expect(screen.getByText('Smoke check passed')).toBeVisible({ timeout: 10000 });
   expect(await browser.locator('.sandbox-docker-checks li.ok').count()).toBe(5);
   expect(await bodyText(browser)).toMatch(/docker compose up \(two services\) in the old run/);
@@ -46,7 +51,7 @@ test('a failing smoke check stops at the check that failed and says why', async 
 
 test('a base being rebuilt, a sandbox on its own Docker and a re-check problem are said plainly', async ({ app, browser, screen }) => {
   await app.open(mock('/admin/instance', '&docker=rebuild'));
-  await expect(screen.getByText('no Docker in sandboxes')).toBeVisible();
+  await firstShown(screen.getByText('no Docker in sandboxes'));
   await expect(screen.getByText(/base-3\) has no `dockerd` though the host has one/)).toBeVisible();
   // The rebuild: running, with when it will be ready.
   await expect(screen.getByText(/Rebuilding the sandbox base .* ready around .* \(the last build took 3 min\)/)).toBeVisible();
@@ -67,7 +72,7 @@ const count = (text: string, part: string) => text.split(part).length - 1;
 
 test('a host check that kept Docker says so, with its items and the fix, not that Docker may be lost', async ({ app, browser, screen }) => {
   await app.open(mock('/admin/instance', '&docker=kept'));
-  await expect(screen.getByText('sandboxes get Docker')).toBeVisible();
+  await firstShown(screen.getByText('sandboxes get Docker'));
   await expect(screen.getByText(/left 3 items to fix\. Sandboxes get Docker; run `sudo yulius host setup` on the server to fix them\./)).toBeVisible();
   await expect(screen.getByText(KEPT_ITEM)).toBeVisible();
   await expect(screen.getByText(/update helper: cannot write \/etc\/modules-load\.d after an update/)).toBeVisible();
@@ -78,7 +83,7 @@ test('a host check that kept Docker says so, with its items and the fix, not tha
 test('an update whose re-check kept Docker says so in one line and lists its items once, in the card', async ({ app, browser, screen }) => {
   // No host check before this update: the card shows the update's own once it ends.
   await app.open(mock('/admin/instance', '&update=1&docker=kept'));
-  await expect(screen.getByText('sandboxes get Docker')).toBeVisible();
+  await firstShown(screen.getByText('sandboxes get Docker'));
   expect(await bodyText(browser)).not.toMatch(/last host check/);
   await screen.getByRole('button', 'Update now…').click();
   await screen.getByRole('dialog', /to 9c1e7d3\?$/).getByRole('button', 'Update to 9c1e7d3').click();
@@ -94,7 +99,7 @@ test('an update whose re-check kept Docker says so in one line and lists its ite
 
 test('without isolation the card says why and offers no smoke check', async ({ app, screen }) => {
   await app.open(mock('/admin/instance', '&docker=legacy'));
-  await expect(screen.getByText(/sandboxes are not isolated on this server/)).toBeVisible();
+  await firstShown(screen.getByText(/sandboxes are not isolated on this server/));
   await expect(screen.getByText(/sudo yulius host setup/)).toBeVisible();
   await expect(screen.getByRole('button', 'Run smoke check')).toBeDisabled();
 });
@@ -113,6 +118,6 @@ test('an update whose re-check finds a regression says so in its outcome', async
 
 test('members never see it', async ({ app, screen }) => {
   await app.open(mock('/admin/instance', '&role=member'));
-  await expect(screen.getByText(/Only the superadmin manages updates/)).toBeVisible();
+  await firstShown(screen.getByText(/Only the superadmin manages updates/));
   await expect(screen.getByRole('heading', { level: 2, name: 'Sandbox Docker' })).toBeHidden();
 });
