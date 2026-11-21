@@ -491,6 +491,7 @@ If a reservation skips past all available slots, land an empty extension first w
 - [0440](0440-estimate-codex-work-at-standard-and-ultrafast-api-prices.md). Recorded GPT-6 work enters the standard API estimate and the pool shows the cost of using Ultrafast for eligible runs.
 <!-- ADR 0440 -->
 <!-- ADR 0441 -->
+- [0442](0442-identify-codex-reviewers-by-their-child-rollout.md): identify Codex reviewers by their child rollout.
 <!-- ADR 0442 -->
 <!-- ADR 0443 -->
 - [0444](0444-codex-tasks-inherit-high-effort-on-every-model.md) Codex tasks inherit High effort on every model. A task can explicitly choose Extra high or Max on GPT-6.2 Astra and Sol.

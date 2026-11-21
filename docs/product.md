@@ -380,7 +380,9 @@ watching, steering and unblocking.
   model Yulius picks per round: Fable 5.2 for a pull request's first two rounds, Opus 5.5 from
   the third, and Opus 5.5 when the task's subscription cannot run Fable then; each round is
   recorded with its reviewer, its model and its verdict. Continuing a reviewer after it reports
-  counts as a new round in the Review card (SPEC-565). Codex tasks request GPT-6.2 Astra for every review round, and Antigravity tasks request Gemini 4 Neon (High).
+  counts as a new round in the Review card (SPEC-565). Codex tasks request GPT-6.2 Astra for every
+  review round, and their named review subagents populate the same delivery history and Review
+  card. Antigravity tasks request Gemini 4 Neon (High).
   Task intake splits mixed requests, holds scope changes and chains
   dependent tasks, also by a logical rule such as "#12 done and #13 done", which the composer
   builds from picked conditions (a task, its state, all or any). A task that waits for another
