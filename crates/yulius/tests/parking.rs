@@ -27,7 +27,7 @@ use crate::support::TestResult;
 use crate::support::agents::FakeAgentOptions;
 use crate::task_message::superagent;
 
-mod candidate;
+mod armed_notice;
 
 type Error = Box<dyn std::error::Error>;
 
@@ -41,21 +41,11 @@ async fn app_with_pulls(
     slots: u32,
     park_after_ms: u64,
 ) -> Result<(Arc<App>, Arc<crate::support::FakeGitHub>), Error> {
-    configured_app_with_pulls(data, slots, park_after_ms, |_| {}).await
-}
-
-async fn configured_app_with_pulls(
-    data: &Path,
-    slots: u32,
-    park_after_ms: u64,
-    configure: impl FnOnce(&mut yulius_app::context::AppConfig),
-) -> Result<(Arc<App>, Arc<crate::support::FakeGitHub>), Error> {
     app_with_pulls_and_clock(
         data,
         slots,
         park_after_ms,
         Arc::new(yulius::wiring::clock::SystemClock),
-        configure,
     )
     .await
 }
@@ -65,7 +55,6 @@ async fn app_with_pulls_and_clock(
     slots: u32,
     park_after_ms: u64,
     clock: Arc<dyn yulius_app::ports::Clock>,
-    configure: impl FnOnce(&mut yulius_app::context::AppConfig),
 ) -> Result<(Arc<App>, Arc<crate::support::FakeGitHub>), Error> {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let agent = FakeAgentOptions {
@@ -83,7 +72,6 @@ async fn app_with_pulls_and_clock(
         |config| {
             config.max_live_sessions = slots;
             config.park_after_ms = park_after_ms;
-            configure(config);
         },
     )
     .await?;
@@ -206,7 +194,7 @@ async fn past_the_grace(app: &App, id: &TaskId) -> TestResult {
 }
 
 /// The task's agent asks its person to choose (`needs_you`).
-pub(crate) async fn ask(app: &App, id: &TaskId) -> TestResult {
+async fn ask(app: &App, id: &TaskId) -> TestResult {
     let asked = NeedsYouRecord {
         action: "Choose the colour".into(),
         happened: None,
@@ -3120,7 +3108,7 @@ fn first_watch_during_queue_decision(case: QueueWatch, previously_seen: Option<u
         const PRIOR_OBSERVATION: i64 = 1_800_000_000_000;
         const NEXT_OBSERVATION: i64 = PRIOR_OBSERVATION + 17_000;
         let clock = Arc::new(crate::support::TestClock(PRIOR_OBSERVATION.into()));
-        let (app, github) = app_with_pulls_and_clock(&data, 8, 1, clock.clone(), |_| {}).await?;
+        let (app, github) = app_with_pulls_and_clock(&data, 8, 1, clock.clone()).await?;
         let (id, caller) = answered(&app, &data).await?;
         let task = app.deps.store.task(&id).await?.ok_or("owner")?;
         let worktree = Path::new(task.worktree_path.as_deref().ok_or("checkout")?);

@@ -57,6 +57,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Preserve the ordinary armed merge outcome after a person merges through HTTP
 - [x] Keep the live owner’s merge notice across a queue decision
 - [x] Verify restored merge requests and their train positions
+- [ ] Verify the published PR head and owner before dispatching armed notices
 - [ ] Verify restored arms and deliver current ordinary CI and train notices to the owner
 - [ ] Report the active singleton and replay its recorded failure for the original owner
 - [ ] Verify candidate status before parking, showing Done or resuming a parked owner
@@ -100,9 +101,13 @@ When the watcher sees an open PR during an active queue decision or its slot cha
 
 ## Evidence
 
+- The isolated published-head and recipient tests failed 9/9 against landed dev `ec580fc3a`. They observed stale typing after a push from the same or another clone, a missing hosted PR, an older ordinary CI SHA, a local conflict already repaired externally, a recorded merge, a held prompt, a decision for a person and an instance restart hold. The tests attach to the restored original attempt and verify delivery once when the relevant hold clears.
+
+- The combined watcher passed 432 scoped tests after the second review. Its third review found that an already-reported ordinary infrastructure error could hide a later multi-PR candidate failure. The new regression observed no candidate message on `8e4e2563d`. The corrected combined prototype passed all 24 candidate integration tests. The review limit separated dispatch eligibility from CI and train-event selection. The published-head and owner guard is the first delivery. The next delivery keeps the ordinary error first and checks the holding candidate after the error has been heard.
+
 - All four first-review regressions passed on `b66007e4a`. Its wider run passed 429 of 430. The failing older fixture supplied a previous PR only in local delivery state, so the hosted confirmation correctly deferred its stall notice. The fixture now supplies that PR before replacing it. Two second-review regressions failed on the same head. One typed a conflict at an obsolete local tracking SHA when the hosted repaired head had no ordinary CI. The other typed into a session while a restart was draining the instance. Conflict advice now uses the armed SHA and the watcher rechecks the instance hold after verification.
 
-- The first owner-notice revision passed all 427 scoped Rust tests and Clippy. Review identified a durable scope decision, a push from another clone and a repeated check-in after candidate failure. All four review regressions failed on `46f228de8`, including an unavailable hosted PR. Armed advice now confirms the open hosted head within five seconds when a notice is due. A quiet watch uses local records. The second-clone fixture checks that the task’s tracking ref still names the failed head after the bare remote advances. No paid agent or live Quartio task is involved.
+- The first owner-notice revision passed all 427 scoped Rust tests and Clippy. Review identified a durable scope decision, a push from another clone and a repeated check-in after candidate failure. All four review regressions failed on `46f228de8`, including an unavailable hosted PR. That revision confirmed the open hosted head within five seconds when armed advice was due. A quiet watch uses local records. The second-clone fixture checks that the task’s tracking ref still names the failed head after the bare remote advances. No paid agent or live Quartio task is involved.
 
 - On landed dev `ec580fc3a`, 12 of 39 scoped owner-watch tests failed. Three strengthened race and identity regressions also failed. The watcher typed the old ordinary CI failure after a repair was pushed to the fixture’s bare Git remote. The fixtures reopen the SQLite database, restore the arm and run the owner’s watcher through a PTY. Changing the train’s members while it verifies the same red run leaves the prior observation unheard.
 
