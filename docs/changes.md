@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- Recorded Yulius's Infra bootstrap revision 1 posture in `yulius.toml` (`[cd.dev] about`) and `AGENTS.md`: the repository has no shared staging target, so all CI jobs remain on pull requests ([SPEC-579](../.ai/specs/SPEC-579-adopt-merge-first-staging-infra-bootstra.md)).
+
 - The merge queue saves a failed single-PR decision before clearing its request. After restart it preserves a later request for the same head, including a retry that finds the PR already merged. When a person merges the armed head, its agent can read the merge receipt immediately in `yulius wait` (SPEC-558).
 
 - Hourly history cleanup preserves each existing task’s latest merge queue decision, even if the arm began before the telemetry cutoff (SPEC-558).
