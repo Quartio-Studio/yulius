@@ -7,10 +7,10 @@ status: in-progress
 
 ## Goal
 
-The move's reverse-proxy step leaves the new host's Caddy serving the carried Caddyfile, and
-proves it answers HTTPS on port 443 for the instance's public host before it reports the
-proxy as done. A Caddy that still serves an older or default configuration never passes the
-step unnoticed.
+The move's reverse-proxy step leaves the new host's Caddy running the carried Caddyfile and
+drop-ins, and checks that port 443 answers for the instance's public host before it reports
+the proxy as done. The restart is what guarantees the carried configuration; the check catches
+a Caddy with nothing open on port 443, as in the incident.
 
 ## Context
 
@@ -35,24 +35,25 @@ after the start (`after()` in `migrate.rs`, MIG-039) stays as it is.
 
 - **CKS-001** After `caddy validate` accepts the carried Caddyfile, the step always makes the
   running Caddy load it: `systemctl daemon-reload`, `systemctl enable caddy` and
-  `systemctl reload-or-restart caddy`, whatever the files' state in this run. When the reload
-  fails (for example `admin off` in the Caddyfile, which `caddy reload` needs), it restarts
-  Caddy (`systemctl restart caddy`). When both fail, the step fails naming both reasons and
-  the fix (`journalctl -u caddy`).
-- **CKS-002** When the instance's public URL (the new one, else the old host's) is `https://`,
-  the step then asks the new host's own port 443 for that host name
-  (`curl --insecure --resolve <host>:443:127.0.0.1 https://<host>/`, bounded retries on a
-  refused connection). Any HTTP answer, whatever its status, is HTTPS answering. A refused or
-  timed-out connection means Caddy does not serve the carried site: the step restarts Caddy
-  once and asks again, and then fails with the fix (`systemctl restart caddy`,
-  `journalctl -u caddy`) instead of reporting the proxy as done.
+  `systemctl restart caddy`, whatever the files' state in this run. A restart, not a reload:
+  only a start reads the carried `caddy.service.d` drop-ins' environment (the proxy secret),
+  and the new host serves nobody before the cutover. A failed restart fails the step with its
+  reason and where to look (`systemctl status caddy`, `journalctl -u caddy -n 50`).
+- **CKS-002** When the new public URL is `https://`, the step then asks the new host's own
+  port 443 for its host name (`curl --disable --noproxy '*' --insecure --resolve
+  <host>:443:127.0.0.1 https://<host>/`, bounded retries, within a 60 s command bound). Any
+  HTTP answer, whatever its status, is HTTPS answering. A refused or timed-out connection fails
+  the step instead of reporting the proxy as done: Caddy is not running the carried site, or
+  that site has no listener on 443 (TLS ending in front of Caddy, which the move does not
+  carry); the detail names both and where to look. A curl that cannot run (exit 126, 127, or
+  not started) fails the step saying to install curl.
 - **CKS-003** A TLS handshake that fails while port 443 accepts connections (Caddy has no
   certificate for the host yet, as when the host name still leads to the old host) does not
-  fail the step: its line says that Caddy listens on 443 and gets the certificate once the
-  host leads here. Without an `https://` URL the step makes no HTTPS check and says so.
+  fail the step: its line says that port 443 takes connections and the certificate comes once
+  the host leads here. Without an `https://` URL the step makes no HTTPS check and says so.
 - **CKS-004** The line is `changed` when the files changed in this run or Caddy was not active
   and enabled, `ok` otherwise (a rerun of a finished step stays `ok`), and its detail says
-  that Caddy was reloaded and what port 443 answered.
+  that Caddy was restarted and what port 443 answered.
 - **CKS-005** `Request::Proxy` carries the host name to ask as `https: Option<String>`
   (`#[serde(default)]`); a name that is not a plain DNS name (letters, digits, `.` and `-`) is
   not asked: the step fails saying why, before it runs anything.
@@ -70,14 +71,13 @@ after the start (`after()` in `migrate.rs`, MIG-039) stays as it is.
 ## Acceptance criteria
 
 - **AC-1** Caddy active and enabled, files unchanged in this run: the step runs `caddy
-  validate`, then `systemctl reload-or-restart caddy`, then the HTTPS check, and its line is
+  validate`, then `systemctl restart caddy` (no reload), then the HTTPS check, and its line is
   `ok`. (CKS-001, CKS-004)
-- **AC-2** `systemctl reload-or-restart caddy` fails and `systemctl restart caddy` succeeds:
-  the step passes; both fail: the step fails naming both reasons, and no HTTPS check runs.
-  (CKS-001)
-- **AC-3** Port 443 refuses (curl exit 7) after the reload and after the restart: the step
-  fails with `systemctl restart caddy` and `journalctl -u caddy` in its detail; refuses once
-  and answers after the restart: the step passes. (CKS-002)
+- **AC-2** `systemctl restart caddy` fails: the step fails with its reason and
+  `journalctl -u caddy`, and no HTTPS check runs. (CKS-001)
+- **AC-3** Port 443 refuses (curl exit 7) or times out (exit 28): the step fails with
+  `systemctl status caddy`, `journalctl -u caddy` and the no-site-on-443 limit in its detail.
+  curl exits 127 or does not start: the step fails saying to install curl. (CKS-002)
 - **AC-4** The TLS handshake fails (curl exit 35): the step passes and its line says that the
   certificate comes once the host leads here. No `https://` URL: no curl runs. (CKS-003)
 - **AC-5** The old host's move sends the new public URL's host in `Request::Proxy`; a host
@@ -90,16 +90,16 @@ after the start (`after()` in `migrate.rs`, MIG-039) stays as it is.
 Fake-host unit tests in `crates/yulius/src/instance/migrate/tests/target.rs` script
 `systemctl` and `curl` answers (exit codes) and assert the commands run, their order and the
 line's outcome and detail; they are written first and fail against the old `proxy()`. The
-flow tests (`tests/flow.rs`) assert the request the old host sends. A real Caddy is not
-started: the step's commands are the package's own (`systemctl reload` runs `caddy reload
---force`), and the 2026-11-21 move proved that a reload fixes the symptom.
+flow tests (`tests/flow.rs`) assert the request the old host sends, and that an `http://`
+public URL asks nothing on port 443. No real Caddy runs in the tests; the reviewer probed the
+exact curl command against a real Caddy 2.11.9 for the exit codes the step reads.
 
 ## Decisions
 
-- Reload always instead of proving the loaded configuration through Caddy's admin API: a
-  reload of an unchanged configuration costs nothing before the cutover, while the admin API
-  can be off (`admin off`) or moved, and comparing its JSON with `caddy adapt` is fragile.
-  [ADR-0431](../../docs/decisions/0431-the-move-reloads-caddy-and-asks-its-own-port-443.md)
+- Restart always, instead of a reload or proving the loaded configuration through Caddy's
+  admin API: a reload never reads the unit's environment, the admin API can be off or moved,
+  and a restart costs nothing before the cutover.
+  [ADR-0431](../../docs/decisions/0431-the-move-restarts-caddy-and-asks-its-own-port-443.md)
 - Ask the new host's own port 443 with `curl` (argv, no shell) rather than from the old host:
   before the cutover the public name may lead to the old host, and the new host's loopback
   is what the carried site must answer on. A missing certificate is not a failure at this
