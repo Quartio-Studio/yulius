@@ -138,6 +138,9 @@ pub struct StatusView {
     /// GitHub installation request usage.
     #[serde(default = "GitHubBudget::empty")]
     pub github_budget: GitHubBudget,
+    /// End of the GitHub App request limit, in Unix milliseconds, while active.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_reset_at_ms: Option<i64>,
     /// VM metrics.
     pub vm: VmStatus,
     /// Live sessions vs limit.

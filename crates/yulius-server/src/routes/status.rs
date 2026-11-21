@@ -13,6 +13,11 @@ pub async fn status(State(app): State<AppState>, Auth(ctx): Auth) -> ApiResult<J
     Ok(Json(app.status(&ctx).await?))
 }
 
+/// Current GitHub App reset time, read locally for task lists.
+pub async fn github_reset(State(app): State<AppState>, Auth(_ctx): Auth) -> Json<Option<i64>> {
+    Json(app.deps.github.rate_limit_reset().map(|t| t.0))
+}
+
 /// `GET /api/disk`: how full the server's data disk is (SPEC-276 RDA-007), for everyone signed in.
 pub async fn disk(State(app): State<AppState>, Auth(_ctx): Auth) -> ApiResult<Json<DiskView>> {
     Ok(Json(app.disk_view().await))

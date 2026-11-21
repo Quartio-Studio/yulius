@@ -7,6 +7,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-21
 
 - Task reads reuse terminal pull requests and share open refreshes. Status reports the installation quota and request purposes, including when display yields capacity to delivery. [SPEC-609](../.ai/specs/SPEC-609-reading-tasks-must-not-spend-the-github.md)
+- Claude Code task delivery shows current review rounds. Codex task delivery also keeps the
+  just-merged PR's review visible. [SPEC-605](../.ai/specs/SPEC-605-record-the-review-rounds-of-codex-tasks.md)
+- Task lists retain observed pull request state during a GitHub outage. The Status panel and task lists report when the GitHub App’s request budget resets. [SPEC-608](../.ai/specs/SPEC-608-a-github-rate-limit-must-not-show-finish.md)
+- Claude Code task delivery shows current review rounds. Codex task delivery also keeps the
+  just-merged PR's review visible. [SPEC-605](../.ai/specs/SPEC-605-record-the-review-rounds-of-codex-tasks.md)
+- An idle task stays live while its merge request is being armed. If parking wins, Yulius asks the owner to resume before arming the merge. [SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
 - Pull requests and merge trains run the Rust tests that read changed UI assets, catalog entries and documentation. Task briefings call for every test in a touched binary. [SPEC-610](../.ai/specs/SPEC-610-a-pull-request-runs-the-tests-that-read.md)
 
 - Codex starts and resumes prefer the subscription with the most remaining quota. Idle tasks keep Waiting or Done after a subscription move and can be closed without another turn. [SPEC-611](../.ai/specs/SPEC-611-a-moved-task-is-not-shown-as-working-and.md)

@@ -16,7 +16,7 @@ use yulius_domain::ci::actions::{MAX_WORKFLOW_BYTES, summarize_workflow};
 use yulius_domain::ci::{self as dom};
 use yulius_domain::spec_format::{MAX_CONFIG_BYTES, parse_yulius_toml};
 
-use super::{MAX_WORKFLOW_FILES, WORKFLOWS_DIR, run_view};
+use super::{MAX_WORKFLOW_FILES, WORKFLOWS_DIR};
 use crate::context::App;
 use crate::coordination::AgentContext;
 use crate::error::{AppError, AppResult};
@@ -74,7 +74,8 @@ impl App {
             for job in &mut jobs {
                 job.output = tail(&job.output, TOOL_OUTPUT_BYTES);
             }
-            return serde_json::to_value(run_view(&run, &jobs, true)).map_err(AppError::internal);
+            return serde_json::to_value(self.ci_run_view(&sandbox, &run, &jobs, true))
+                .map_err(AppError::internal);
         }
         let view = self.ci_gate(&sandbox).await;
         let pr = self
@@ -90,8 +91,8 @@ impl App {
             // the runs of its head merged into the integration branch (SPEC-163).
             let mine = pr.is_some_and(|n| run.reference.covers(n))
                 || run.reference == yulius_domain::ci::CiRef::Task(u64::from(ctx.task.number));
-            let mut value =
-                serde_json::to_value(run_view(&run, &jobs, false)).map_err(AppError::internal)?;
+            let mut value = serde_json::to_value(self.ci_run_view(&sandbox, &run, &jobs, false))
+                .map_err(AppError::internal)?;
             value["this_task"] = Value::Bool(mine);
             runs.push(value);
         }
@@ -126,7 +127,8 @@ impl App {
             .ok_or_else(|| AppError::Invalid("run_id is required".into()))?;
         let run = self.ci_rerun(&sandbox, run_id, &ctx.actor()).await?;
         let jobs = self.deps.store.ci_jobs(&run.id, false).await?;
-        serde_json::to_value(run_view(&run, &jobs, false)).map_err(AppError::internal)
+        serde_json::to_value(self.ci_run_view(&sandbox, &run, &jobs, false))
+            .map_err(AppError::internal)
     }
 
     /// `ci_setup`: what onboarding needs to move GitHub Actions into Yulius CI: the workflows

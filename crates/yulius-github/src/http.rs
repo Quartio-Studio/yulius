@@ -1,5 +1,6 @@
 //! HTTP transport: fixed headers, bounded bodies, status mapping and GET-only retries.
 
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Once};
 use std::time::Duration;
 
@@ -89,6 +90,7 @@ pub(crate) struct Transport {
     clock: Arc<dyn Clock>,
     pub(crate) meter: crate::RequestMeter,
     pub(crate) purpose: fn() -> yulius_contracts::api::status::GitHubPurpose,
+    reset_at_ms: AtomicI64,
 }
 
 static CRYPTO_PROVIDER: Once = Once::new();
@@ -122,6 +124,7 @@ impl Transport {
             clock,
             meter,
             purpose,
+            reset_at_ms: AtomicI64::new(0),
         })
     }
 
@@ -195,6 +198,15 @@ impl Transport {
             .await?;
         let status = response.status().as_u16();
         let headers = response.headers().clone();
+        if call.bearer.is_some() && is_rate_limited(status, &headers) {
+            let now = self.now();
+            if let Some(wait) = server_wait(&headers, now) {
+                let reset = now
+                    .0
+                    .saturating_add(i64::try_from(wait.as_millis()).unwrap_or(i64::MAX));
+                self.reset_at_ms.fetch_max(reset, Ordering::Relaxed);
+            }
+        }
         if response
             .content_length()
             .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
@@ -287,6 +299,11 @@ impl Transport {
             *request.url_mut() = url;
         }
         Err(GitHubError::Transport("too many redirects".into()))
+    }
+
+    pub(crate) fn rate_limit_reset(&self) -> Option<Timestamp> {
+        let reset = self.reset_at_ms.load(Ordering::Relaxed);
+        (reset > self.now().0).then_some(Timestamp(reset))
     }
 
     pub(crate) fn now(&self) -> Timestamp {

@@ -275,15 +275,18 @@ impl App {
         let rows = self
             .list_briefs(&tasks, limit, filtered, caller.task.is_none())
             .await?;
-        let mut view = json!({"tasks": rows});
+        let mut listing = json!({"tasks": rows});
         if let Some(own) = &caller.task {
-            view["you"] = self.task_brief(own).await?;
+            listing["you"] = self.task_brief(own).await?;
+        }
+        if let Some(wait) = self.github_wait() {
+            listing["github_wait"] = json!(wait);
         }
         if self.github_budget().await?.display_paused {
-            view["github_refresh_note"] =
+            listing["github_refresh_note"] =
                 json!("Live GitHub display refreshes are paused to reserve requests for delivery.");
         }
-        Ok(view)
+        Ok(listing)
     }
 
     /// Apply the owner's limit after the Needs you filter. Only time spent on

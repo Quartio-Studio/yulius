@@ -1332,7 +1332,11 @@ impl App {
         }
         // What staging serves (a rollback moves it back), when a verified request put it there.
         let verified = self.staging_verified_revision(sandbox, target).await?;
-        Ok(yulius_contracts::api::cd::CdStaging { verified, requests })
+        Ok(yulius_contracts::api::cd::CdStaging {
+            verified,
+            requests,
+            github_wait: self.github_wait(),
+        })
     }
 }
 
@@ -1346,6 +1350,10 @@ pub(crate) fn staging_text(
         "  staging queue of [cd.{env}] (merge-first: a task's cd_deploy asks for its merged revision; the full gate runs on exactly it first): verified revision {}\n",
         staging.verified.as_deref().map_or("none yet", short)
     ));
+    if let Some(wait) = &staging.github_wait {
+        text.push_str(wait);
+        text.push('\n');
+    }
     for request in staging.requests.iter().take(8) {
         text.push_str(&format!(
             "  - request {} {} revision {}: {}{}{}\n",

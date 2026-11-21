@@ -326,6 +326,11 @@ pub trait GitHubPort: Send + Sync {
     fn budget(&self, _installation: Option<u64>) -> GitHubBudget {
         GitHubBudget::empty()
     }
+    /// Active reset deadline of the instance's GitHub App.
+    fn rate_limit_reset(&self) -> Option<Timestamp> {
+        None
+    }
+
     /// OAuth authorization URL for user sign-in; `select_account` makes GitHub show its account
     /// picker (to continue with another GitHub account than the one signed in to github.com).
     fn authorize_url(

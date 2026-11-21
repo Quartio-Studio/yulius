@@ -12,6 +12,8 @@ or an imported `auth.json`. The detailed contracts are in
 [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md); crate layering rules are in
 [engineering/architecture.md](engineering/architecture.md).
 
+The GitHub adapter exposes the active reset time for App-authenticated requests. Task displays use the recorded delivery and ordered pull observations during an outage. [Decision 0446](decisions/0446-keep-github-availability-separate-from-task-state.md)
+
 Contained agent and CI processes have a 1 GiB `/tmp`. The process host creates a run-owned directory inside the sandbox disk quota for disposable builds. Commands receive a build subdirectory. The ownership marker lives in its parent. The host pins the parent directory, and the server retains its launch ownership at readiness or reclaims a stopped host's builds before returning a startup error. Cleanup walks the opened build tree and keeps its versioned receipt with the protected run metadata. Same-boot recovery checks host and child process identities before removing the tree. [Decision 0439](decisions/0439-delivery-checks-mutations-by-hand-and-builds-on-disk.md)
 
 The supervisor terminates a disconnected run using the identities recorded by its host. On Linux it checks exit of the entire process before recording a forced loss. [Decision 0390](decisions/0390-linux-host-exit-is-observed-for-the-whole-process.md)
@@ -1467,8 +1469,9 @@ The transcript watch also reads each subagent of the session's own thread
 (`Observation::SubagentCutOff`). The supervisor uses the transcript time to identify the round
 that ran when the observation was written, including during restart replay
 (`model_answered`, `cut_off`). The delivery view (`Delivery.review_rounds`, also in
-`delivery_status`) lists the current review or the rounds of the pull request just delivered.
-Each round includes its start, optional end and pull request number when known. When a merge is recorded,
+`delivery_status`) lists the current review. A Codex task can also show its just-delivered pull
+request's rounds when no review is open. Each round includes its start, optional end and pull
+request number when known. When a merge is recorded,
 `dlv_transition_at` writes the merge record `delivery.review.models` (actor `yulius`): the
 models of the runs that worked on the pull request (those still going when the previous one
 merged, known from its rounds or its own merge record, and every later one), and each round
@@ -2161,6 +2164,8 @@ rollout history leaves its pause and prompt in place for the next capacity round
 Each parked task read includes the latest attempt ID from the same SQLite snapshot. A resume carries that ID through permission and account checks, including when a bulk operation, Telegram reply or remote restart first resolves the target. Under the launch lock it checks that the same attempt is still parked before restoring Codex lineage, starting a process or queueing its prompt.
 
 Continue also binds the owner’s selection to the latest attempt and archive state on an ended task. Exit and loss release terminal cleanup before successor checks. Once that cleanup finishes, the store compares the selection and records Starting or a queued start together with clearing the archive and question. A named Continue applies the pool’s manual placement policy to the task model and subscription records in that transaction. An immediate launch uses the accepted model and subscription. A queued start retains its subscription choice for the normal dispatch check.
+
+Parking takes the task’s merge writer for the final eligibility check and releases it before requesting terminal shutdown. It verifies that the selected attempt is still attached and its reader has not started settling it. The shutdown request names that attempt. The runtime records which attempt committed to park until its exit or loss settles. A new merge request checks that marker and the durable status while holding the same writer.
 
 `park_task_now` asks again under the launch lock, sets the run's end intent `Park` and ends the
 session as a close does (graceful shutdown, then the escalation). The run's end, by its exit or

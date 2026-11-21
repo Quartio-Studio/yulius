@@ -2300,5 +2300,23 @@ async fn confirming_a_reopen_revalidates_even_a_fresh_numbered_display_reply() -
         client.confirm_pull(&token, "acme", "app", number).await,
         Err(GitHubError::DisplayPaused)
     ));
+}
+
+#[tokio::test]
+async fn github_reset_expires_at_the_reported_instant() -> TestResult {
+    let fake = FakeGitHub::start().await?;
+    let now = SystemClock.now().0;
+    let clock = Arc::new(TestClock(AtomicI64::new(now)));
+    let client = GitHubClient::with_clock(fake.config(), clock.clone())?;
+    let reset = now / 1000 + 904;
+    fake.inject_fault(
+        FakeFault::new("GET", "/app/installations", 403, 1)
+            .header("x-ratelimit-remaining", "0")
+            .header("x-ratelimit-reset", &reset.to_string()),
+    );
+    assert!(client.find_installation("acme").await.is_err());
+    assert_eq!(client.rate_limit_reset(), Some(Timestamp(reset * 1000)));
+    clock.0.store(reset * 1000, Ordering::SeqCst);
+    assert_eq!(client.rate_limit_reset(), None);
     Ok(())
 }
