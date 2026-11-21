@@ -6878,13 +6878,15 @@ impl App {
             }
         }
         let runtime = self.runtime(&task.id);
+        runtime
+            .replace_goal_unfinished(goal.map_or(unfinished, crate::finish::goal_unfinished))
+            .await;
+        // A late Stop or verdict can finish only before this run installs its goal state.
+        let _order = runtime.turn_order.lock().await;
         runtime.goal_open.store(
             goal.is_some_and(crate::finish::goal_stays_open),
             Ordering::SeqCst,
         );
-        runtime
-            .replace_goal_unfinished(goal.map_or(unfinished, crate::finish::goal_unfinished))
-            .await;
         runtime.goal_achieved.store(false, Ordering::SeqCst);
         runtime.goal_submitted.store(false, Ordering::SeqCst);
         runtime.verdict_stop_ms.clear();
@@ -7414,7 +7416,9 @@ impl App {
                 runtime.end_turn();
                 self.turn_interrupted(task_id, at).await;
             }
-            Observation::Goal(outcome, at) => self.goal_observed(task_id, outcome, at).await,
+            Observation::Goal(outcome, at) => {
+                self.goal_observed(task_id, &attempt.id, outcome, at).await
+            }
             Observation::TurnEnded {
                 background_agents,
                 at,
@@ -7427,7 +7431,7 @@ impl App {
                 runtime.with_queue(yulius_domain::agent_cli::Queue::turn_closed);
                 self.background_agents_observed(task_id, background_agents.unwrap_or(0))
                     .await;
-                self.turn_record_seen(task_id, at).await;
+                self.turn_record_seen(task_id, &attempt.id, at).await;
             }
             Observation::AgentWork { at } => {
                 runtime.goal_retry_armed.store(false, Ordering::SeqCst);
@@ -7440,7 +7444,7 @@ impl App {
                 runtime.at_limit.store(false, Ordering::SeqCst);
                 // The agent works: a goal pause before it asks nobody any more (SPEC-469).
                 self.goal_pause_overtaken(task_id).await;
-                self.agent_worked(task_id, at).await;
+                self.agent_worked(task_id, &attempt.id, at).await;
             }
             Observation::GoalRetry { armed, notice } => {
                 self.goal_retry_observed(task_id, armed, &notice).await;

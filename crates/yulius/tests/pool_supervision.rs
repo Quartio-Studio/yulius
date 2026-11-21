@@ -851,7 +851,15 @@ fn a_manual_move_delivers_saved_fresh_and_resumed_goals_across_harnesses() -> Te
 /// replacement has submitted its opening turn. Its verdict deadline belongs to the old run.
 #[test]
 fn a_late_native_goal_stop_cannot_settle_a_replacement_turn() -> TestResult {
-    use yulius_app::race::{Point, on};
+    check_replaced_goal_stop(yulius_app::race::Point::StopClean)
+}
+
+#[test]
+fn a_claimed_native_goal_verdict_cannot_settle_a_replacement_turn() -> TestResult {
+    check_replaced_goal_stop(yulius_app::race::Point::GoalVerdictReady)
+}
+
+fn check_replaced_goal_stop(point: yulius_app::race::Point) -> TestResult {
     use yulius_domain::task::Activity;
     let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
     let (_dir, data) = temp()?;
@@ -902,7 +910,7 @@ fn a_late_native_goal_stop_cannot_settle_a_replacement_turn() -> TestResult {
         bind_token(&first.id, "test-old-goal-stop")?;
         let (arrived, parked) = tokio::sync::oneshot::channel();
         let (release, blocked) = std::sync::mpsc::channel();
-        on(Point::StopClean, Path::new(id.as_str()), move || {
+        yulius_app::race::on(point, Path::new(id.as_str()), move || {
             let _ = arrived.send(());
             let _ = tokio::task::block_in_place(|| blocked.recv_timeout(limit));
         });

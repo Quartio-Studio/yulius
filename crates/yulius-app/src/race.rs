@@ -193,6 +193,8 @@ pub enum Point {
     /// A Stop hook (SPEC-453) found its turn ended cleanly; it has not taken the turn lock to
     /// remember when, or settled the turn, yet. The path is the task id.
     StopClean,
+    /// A verdict or timeout found its Stop and is about to claim the turn for settlement.
+    GoalVerdictReady,
     /// `validate_checkout` (SPEC-394): the checkout's root was resolved and the file's path
     /// worked out; the file is not opened yet. The path is the file's.
     CheckoutRead,

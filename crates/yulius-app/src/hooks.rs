@@ -1220,7 +1220,11 @@ impl App {
     }
 
     /// Local work is read after live observations, under the plan writers' lock at Stop.
-    async fn declared_stop_work(&self, task: &TaskRecord) -> AppResult<StopGate> {
+    async fn declared_stop_work(
+        &self,
+        task: &TaskRecord,
+        run_dir: Option<&Path>,
+    ) -> AppResult<StopGate> {
         if self.turn_handoff_pending(task).await? {
             return Ok(StopGate::Handoff);
         }
@@ -1230,8 +1234,7 @@ impl App {
         if task.follows_goal()
             && !runtime.opening_turn.load(Ordering::SeqCst)
             && !runtime.goal_submitted.load(Ordering::SeqCst)
-            && let Some(run) = self.deps.store.live_attempt(&task.id).await?
-            && crate::supervisor::native_goal_pending(Path::new(&run.run_dir))
+            && run_dir.is_some_and(crate::supervisor::native_goal_pending)
         {
             return Ok(StopGate::NativeGoal);
         }
@@ -1275,7 +1278,14 @@ impl App {
             return None;
         }
         let gate = if matches!(gate, StopGate::Declared) {
-            self.declared_stop_work(&task).await.ok()?
+            let run = if task.follows_goal() {
+                self.deps.store.live_attempt(&task.id).await.ok()?
+            } else {
+                None
+            };
+            self.declared_stop_work(&task, run.as_ref().map(|run| Path::new(&run.run_dir)))
+                .await
+                .ok()?
         } else {
             gate
         };
@@ -1502,10 +1512,14 @@ impl App {
         } else {
             None
         };
+        if !self.attempt_live(&task.id, &ctx.attempt.id).await {
+            return Ok(HookReply::Output(HookOutput::default()));
+        }
         let current_task = store.task(&task.id).await?.ok_or(AppError::NotFound)?;
         task = &current_task;
         let gate = if declared {
-            self.declared_stop_work(task).await?
+            self.declared_stop_work(task, Some(Path::new(&ctx.attempt.run_dir)))
+                .await?
         } else {
             gate
         };
@@ -1688,7 +1702,7 @@ impl App {
             }
             // Done when the goal is achieved, waiting otherwise (TSK-014), once the goal verdict
             // came while a goal is open (SPEC-079 BGW-005).
-            self.clean_stop(task, pending_goal).await?;
+            self.clean_stop(task, &ctx.attempt.id, pending_goal).await?;
             return Ok(HookReply::Output(HookOutput::default()));
         };
 
