@@ -72,6 +72,8 @@ account is left there. If a session document predates its rollout, transcript re
 file by session ID and the next index refresh saves its path on the same document.
 [SPEC-538](../.ai/specs/SPEC-538-repair-codex-session-documents-when-the.md)
 
+For an explicit restart of stopped Codex work, the supervisor carries a continuation prompt through admission and into the native resume. It derives initial activity from the launch mode and observes subsequent turns in the rollout. [Decision 0429](decisions/0429-continue-stopped-codex-work-in-its-saved-session.md)
+
 ```mermaid
 flowchart LR
   ACC["openai account (vault: auth.json)"] -->|"written before each run"| HOME["sandbox/codex/account: auth.json, config.toml, hooks.json"]
@@ -558,6 +560,7 @@ blocks; `yulius_browser::policy`, written by `yulius host setup`;
 [ADR-0318](decisions/0318-viewers-input-reaches-a-sandbox-browser-only-under-the-hosts-managed-policy.md)).
 The private X display watches for a fresh CLIPBOARD owner after a viewer’s primary click. The viewer receives a one-use offer. Accepting it reads the selection and returns plain text on that socket. [ADR-0423](decisions/0423-a-webpage-copy-returns-through-the-clicking-viewers-connection.md)
 A writer can restart this sandbox's browser through the same grant. The manager reaps its process and display, reuses the profile, and installs the address guard before reopening the tabs. [ADR-0404](decisions/0404-restart-one-sandbox-browser-through-its-viewer-grant.md)
+Before each start the manager removes the profile's Chrome lock entries (`SingletonLock`, `SingletonCookie`, `SingletonSocket`) unless a running process of this host holds the lock, so a profile carried from another host starts. This happens before the display starts (`yulius_browser::profile`). [ADR-0432](decisions/0432-a-browser-start-clears-chrome-profile-locks-no-live-process-holds.md)
 
 Sandbox browsers skip default app installation. On a virtual display they also leave profile
 extensions unloaded, so a later policy reload can take effect without a native administrator
@@ -1260,6 +1263,10 @@ loopback `/internal/leftovers*` with the key in `<data>/leftovers-cli.key`; the 
 
 **Build caches and disk pressure** ([SPEC-276](../.ai/specs/SPEC-276-reclaim-disk-automatically-ask-on-sandbo.md),
 [decision 0205](decisions/0205-build-caches-are-swept-under-cargo-s-lock-and-a-removed-sandbox-s-files-go-on-request.md)).
+For this repository, Cargo writes targets per checkout and mbx stores compiled artifacts in
+`<sandbox>/rust-compile-cache`. Each build owns its mbx session. The project's 16 GiB collection
+budget and the planned instance-upkeep integration are defined in [ADR-0434](decisions/0434-keep-a-local-compiler-cache-in-each-project-sandbox.md).
+
 The disk upkeep (`yulius-app::disk`) reads the data disk every minute through
 `SystemProbe::disk`; `yulius-domain::sweep` turns it into a level (low from 85 %, critical from
 95 %) and a policy. `yulius-app::pressure` runs a round every 5 minutes, and at once when the level
@@ -1739,6 +1746,17 @@ ownership by location: an untracked or ignored path of the task's worktree
 (`YULIUS_TASK_WORKTREE`), or a path on the run's own tmpfs (`/`, `/tmp`, `/run`, `/dev/shm`) of a
 contained run; mount points, directories holding one and the root's links are refused, and a
 link is removed as a link. Task runs get `TMPDIR=/tmp`, so `$TMPDIR/x` is not `/x`.
+
+For a contained Claude task, a Bash permission request about a recursive scratch removal such
+as `rm -rf $S/$d` returns a checked retry directly to the calling agent, including a reviewer.
+The local hook leaves the original script unexecuted. The agent retries it with the checked
+removal in place, preserving its conditions and loop bindings. File-only cleanup unlinks files
+and links and fails on directories. Cleanup without force reports missing targets as errors.
+The hook reads the Bash syntax tree and excludes shell jobs and command-local redirections or environment assignments. The retry
+checks how Bash resolves the command and runs the helper only for the system rm executable.
+When the original removal omitted `--`, an option-like expanded operand stops the entire retry.
+On retry, a trailing slash on the expanded path requires a directory. A directory symlink
+spelled this way produces a refusal and preserves its target. [Decision 0435](decisions/0435-claude-returns-variable-path-cleanup-to-the-calling-agent.md)
 
 ```mermaid
 flowchart TD

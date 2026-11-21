@@ -88,6 +88,8 @@ enum Command {
     /// worktree, paths of the session's own `/`, `/tmp`, `/run` and `/dev/shm`), refusing anything
     /// else.
     Remove {
+        #[command(flatten)]
+        options: yulius::remove_cli::RemovalOptions,
         /// Files or directories to remove; a link is removed, not what it points to.
         #[arg(required = true)]
         paths: Vec<PathBuf>,
@@ -738,9 +740,8 @@ fn main() -> ExitCode {
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Command::SecurityScan { args } => yulius::security_scan::run(&args),
-        Command::Remove { paths } => {
-            let code =
-                yulius::remove_cli::run(&mut std::io::stdout(), &paths, &|k| std::env::var(k).ok());
+        Command::Remove { options, paths } => {
+            let code = options.run(&mut std::io::stdout(), &paths, &|k| std::env::var(k).ok());
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Command::GhToken => {

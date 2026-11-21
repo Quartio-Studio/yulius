@@ -22,6 +22,16 @@ pub enum Point {
     ParkedStatusRead,
     /// A queued row reads session capacity to explain its wait. Keyed by task ID.
     QueuedRowCapacity,
+    /// The capacity worker selected a saved start and has not yet claimed the task.
+    CapacityStartReady,
+    /// The capacity worker confirmed its pause before reading the task state.
+    CapacityPauseObserved,
+    /// A capacity worker read an ended task and is about to clean up its observed pause.
+    CapacityStaleCleanup,
+    /// A start is about to claim its observed task state. Keyed by task ID.
+    StartClaimReady,
+    /// The supervisor released the launch lock after the attempted claim. Keyed by task ID.
+    StartLockReleased,
     /// An idle running row reads its pending PR news. Keyed by task ID.
     LiveRowPrNews,
     /// The live watch has read an open PR, before returning its advice. Keyed by task ID.

@@ -746,6 +746,14 @@ impl App {
                 Some(_) => {}
             }
         }
+        // A bare Codex resume only reopens history. Carry the next turn through the queue
+        // with this request. Without a saved session, the launch uses the original request.
+        let start = match (task.harness, task.status) {
+            (Harness::Codex, TaskStatus::Stopped(_) | TaskStatus::Failed(_)) => {
+                self.codex_restart(&task).await?
+            }
+            _ => RunStart::Resume { prompt: None },
+        };
         // A person continues it: whatever its agent asked a person before is past (SPEC-134).
         self.end_needs_you(&task.id).await;
         if task.archived_at.is_some() {
@@ -762,8 +770,7 @@ impl App {
                 )
                 .await?;
         }
-        self.start_run(&task.id, RunStart::Resume { prompt: None }, account)
-            .await?;
+        self.start_ended_run(&task, start, account).await?;
         // Its waiting successors wait for it again (TSK-012).
         self.unblock_successors(&task.id).await;
         let task = self

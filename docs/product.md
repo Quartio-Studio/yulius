@@ -10,6 +10,8 @@ automation. GPT-6.2 Astra is the default model and inherits extra high effort. O
 inherit high effort. A task's explicit effort takes precedence.
 [SPEC-561](../.ai/specs/SPEC-561-default-astra-6-2-to-xhigh-for-new-work.md)
 
+Continue resumes a stopped Codex task in its saved conversation. Reopening a closed Codex conversation shows Waiting until its next turn. [SPEC-590](../.ai/specs/SPEC-590-look-bro-the-taks-says-it-working-but-th.md)
+
 Tasks created by the CLI or either Superagent default to Codex when harness and model are omitted.
 A task created with a `gpt-*` model and no explicit agent selects Codex.
 A task keeps its agent for life, and a Codex task moves only between Codex subscriptions. On ChatGPT Pro 500,
@@ -55,6 +57,8 @@ High default. [SPEC-521](../.ai/specs/SPEC-521-i-should-be-able-to-selected-ever
 
 The authoritative product brief is [SPEC-001](../.ai/specs/SPEC-001-yulius-product.md); this
 page is the short version for anyone who must know the whole product before building.
+
+Yulius's own Rust builds share compiled artifacts across task worktrees and CI lanes on the project sandbox's disk. [ADR-0434](decisions/0434-keep-a-local-compiler-cache-in-each-project-sandbox.md)
 
 ## Who it is for
 
@@ -671,7 +675,8 @@ watching, steering and unblocking.
   `yulius wait`, `ci_status` and `delivery_status`. A Yulius restart is invisible to a session:
   its Yulius tools and `yulius wait` hold on until Yulius is back, and a task that went idle
   meanwhile is told "Yulius is back; continue" (SPEC-358). An agent removes the files its task created
-  with `yulius remove` instead of asking a person when Claude Code stops an `rm` (SPEC-192).
+  with `yulius remove` (SPEC-192). A contained Claude reviewer whose scratch cleanup uses
+  a variable or names a root-level scratch file receives a checked retry directly. [SPEC-596](../.ai/specs/SPEC-596-such-requests-should-be-answered-automat.md)
 - **Agent primitives as code**: Yulius's own skills are APM packages with a lockfile, deployed to
   every harness and checked for drift; onboarding codifies a project's conventions as primitives.
 - **Secrets vault**: secrets are a title, a value and notes. Team secrets are for people; agent

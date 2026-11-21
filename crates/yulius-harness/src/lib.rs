@@ -13,6 +13,7 @@ mod antigravity_hooks;
 pub mod claude;
 pub mod claude_config;
 pub mod claude_plugins;
+mod cleanup_permission;
 pub mod codex;
 pub mod guard_client;
 pub mod hook_client;

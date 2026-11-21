@@ -378,11 +378,14 @@ fn valid_effort(effort: &str) -> bool {
 }
 
 fn valid_env_name(name: &str) -> bool {
+    name.len() <= 128 && shell_identifier(name)
+}
+
+pub(crate) fn shell_identifier(name: &str) -> bool {
     let mut bytes = name.bytes();
-    name.len() <= 128
-        && bytes
-            .next()
-            .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+    bytes
+        .next()
+        .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
         && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
@@ -616,6 +619,16 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
                 "type": "command",
                 "command": hook_command(request, "claude", event)?,
                 "timeout": timeout
+            }] }]),
+        );
+    }
+    if request.contained {
+        hooks.insert(
+            "PermissionRequest".to_owned(),
+            json!([{ "matcher": "Bash", "hooks": [{
+                "type": "command",
+                "command": hook_command(request, "claude", "PermissionRequest")?,
+                "timeout": CLAUDE_HOOK_TIMEOUT_SECONDS,
             }] }]),
         );
     }

@@ -192,7 +192,11 @@ fn execute(task: &str) -> io::Result<()> {
 
 /// Runs `task`; `after_quick` leaves out of `check` and `lint` what `quick` already ran.
 fn execute_in(task: &str, after_quick: bool) -> io::Result<()> {
-    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let mut cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    // scripts/dev names the pinned Cargo it launched. Preserve explicit overrides by callers.
+    if env::var("YULIUS_PROJECT_CARGO").as_deref() == Ok(cargo.as_str()) {
+        cargo = "scripts/cargo".to_owned();
+    }
     let python = env::var("PYTHON").unwrap_or_else(|_| "python3".into());
     match task {
         "doctor" => run(&python, &["scripts/check_repository.py", "--doctor"]),

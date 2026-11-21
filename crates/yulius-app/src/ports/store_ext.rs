@@ -317,7 +317,17 @@ pub trait CapacityStore: Send + Sync {
         continuation: Option<&str>,
     ) -> AppResult<bool>;
     /// Closes the open pause of a task with `outcome`; `false` when there was none.
-    async fn end_pause(&self, task: &TaskId, at: Timestamp, outcome: &str) -> AppResult<bool>;
+    async fn end_pause(&self, task: &TaskId, at: Timestamp, outcome: &str) -> AppResult<bool> {
+        self.end_pause_if(task, None, at, outcome).await
+    }
+    /// Closes only the observed open pause when its ID is supplied.
+    async fn end_pause_if(
+        &self,
+        task: &TaskId,
+        observed: Option<&str>,
+        at: Timestamp,
+        outcome: &str,
+    ) -> AppResult<bool>;
     /// Pauses open at or after `since` (still open or ended later), oldest first.
     async fn pauses_since(&self, since: Timestamp) -> AppResult<Vec<crate::model::PauseRecord>>;
     /// Stores provider readings and drops readings older than `keep_after`.
