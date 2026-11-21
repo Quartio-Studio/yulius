@@ -196,9 +196,10 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # A pending scope decision holds the notice until the person resolves it. Once a train failure
 # has been reported, further check-ins wait for the queue to act on it.
 
-# When a failed train has one PR left, its owner waits while Yulius verifies the head and checks.
+# When a failed train has one PR left, its owner gets the run ID while Yulius verifies the head
+# and checks. The accepted decision provides the bounded, redacted job diagnostic.
 # If the server restarts after the queue drops the arm, the owner hears the recorded job failure
-# once. A newer ordinary run gets 15 minutes from admission, including across restart.
+# once. A newer ordinary run gets 15 minutes from the watcher’s first observation, including across restart.
 # A replacement head gets its current CI or conflict.
 # A busy terminal writer defers the notice. On its next pass the watcher checks the owner again.
 # When PRs share a head, their tasks can wait on the same ordinary CI run. An explicit

@@ -121,8 +121,18 @@ pub struct PrFacts {
     pub working: bool,
     /// The project has Yulius CI: without it no run ever comes, which is no stall (review M2).
     pub has_ci: bool,
+    /// A newly observed ordinary rerun whose wait must survive the next pass and restart.
+    pub singleton_wait: Option<SingletonWait>,
     /// The pull request's head, from its newest run (empty when none).
     pub head: String,
+}
+
+/// First watcher observation of an ordinary rerun holding a recorded queue decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SingletonWait {
+    request: String,
+    run: String,
+    since_ms: i64,
 }
 
 /// Evidence for a notice from a live merge request or the queue's last completed decision.
@@ -140,6 +150,9 @@ struct QueueNoticeSource {
 pub struct Told {
     /// The pull request it is about: another one starts afresh.
     pub pr: u64,
+    /// The ordinary rerun holding the last observed singleton and when its wait started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub singleton_wait: Option<SingletonWait>,
     /// The last key typed of each kind.
     #[serde(default)]
     pub keys: BTreeMap<String, String>,
@@ -175,6 +188,9 @@ pub fn decide(facts: &PrFacts, told: &Told, bounds: &WatchBounds) -> (Option<Str
             ..Told::default()
         }
     };
+    if let Some(wait) = &facts.singleton_wait {
+        next.singleton_wait = Some(wait.clone());
+    }
     if !facts.head.is_empty() {
         next.head.clone_from(&facts.head);
     }
@@ -343,14 +359,10 @@ fn red_candidate_text(
     integration: &str,
 ) -> String {
     let listed: Vec<String> = members.iter().map(|n| format!("#{n}")).collect();
-    let next = if members.len() > 1 {
-        "Yulius tests smaller candidates and tells the pull request that breaks it."
-    } else {
-        "Yulius is verifying this pull request's head and checks before reporting the failure."
-    };
     format!(
         "Merge candidate {} (run {}), which holds it, failed: {}. Read `ci_status` with run_id {}. \
-         Set job to a listed name for its full details. {next} Do not re-arm, merge `{integration}` or push \
+         Set job to a listed name for its full details. Yulius tests smaller candidates \
+         and tells the pull request that breaks it. Do not re-arm, merge `{integration}` or push \
          to this branch meanwhile.",
         listed.join(", "),
         run.id,
@@ -1119,21 +1131,17 @@ impl App {
             return None;
         }
         // A deferred pass remembers the open PR and leaves its existing stall clock alone.
-        let observed_only = || {
-            Some((
-                PrFacts {
-                    pr,
-                    now_ms,
-                    progress: if told.pr == pr {
-                        told.progress.clone()
-                    } else {
-                        String::new()
-                    },
-                    ..PrFacts::default()
-                },
-                None,
-            ))
+        let observed = || PrFacts {
+            pr,
+            now_ms,
+            progress: if told.pr == pr {
+                told.progress.clone()
+            } else {
+                String::new()
+            },
+            ..PrFacts::default()
         };
+        let observed_only = || Some((observed(), None));
         if activation.deciding {
             return observed_only();
         }
@@ -1322,16 +1330,24 @@ impl App {
             && !own.is_some_and(|run| run.state == RunState::Failed)
             && !told_key(candidate_kind, &run.id)
         {
-            let jobs = self
-                .deps
-                .store
-                .ci_jobs(&run.id, true)
-                .await
-                .unwrap_or_default();
+            let text = if let [pr] = members.as_slice() {
+                format!(
+                    "Merge candidate #{pr} (run {}) failed. Yulius is verifying this pull request's head and checks before reporting the failure. Do not re-arm, merge `{integration}` or push to this branch meanwhile.",
+                    run.id
+                )
+            } else {
+                let jobs = self
+                    .deps
+                    .store
+                    .ci_jobs(&run.id, true)
+                    .await
+                    .unwrap_or_default();
+                red_candidate_text(run, members, &jobs, &integration)
+            };
             events.push(Event {
                 kind: candidate_kind,
                 key: run.id.clone(),
-                text: red_candidate_text(run, members, &jobs, &integration),
+                text,
             });
         }
         if !armed && let Some((head, text)) = outcome {
@@ -1438,16 +1454,34 @@ impl App {
             head: own.map(|run| run.sha.clone()).unwrap_or_default(),
             ..PrFacts::default()
         };
-        if let Some((_, decision, pull)) = &receipt {
+        if let Some((span, decision, pull)) = &receipt {
             facts.head.clone_from(&pull.head_sha);
             if pull.head_sha == decision.head && pull.base_sha == decision.singleton.base {
-                if own.is_some_and(|run| {
-                    run.state.is_active()
-                        && decision.expired_ordinary_run.as_ref() != Some(&run.id)
-                        && now_ms.saturating_sub(run.queued_at.0)
-                            <= crate::merge_train::WAIT_LIMIT_MS
-                }) {
-                    return observed_only();
+                if let Some(run) = own
+                    && run.state.is_active()
+                    && decision.expired_ordinary_run.as_ref() != Some(&run.id)
+                {
+                    // queued_at is a mutable queue position. Persist the first observation
+                    // of this run and request, as the active train does for its ordinary wait.
+                    let prior = told
+                        .singleton_wait
+                        .as_ref()
+                        .filter(|wait| wait.request == span.key && wait.run == run.id);
+                    if now_ms.saturating_sub(prior.map_or(now_ms, |wait| wait.since_ms))
+                        <= crate::merge_train::WAIT_LIMIT_MS
+                    {
+                        return Some((
+                            PrFacts {
+                                singleton_wait: prior.is_none().then(|| SingletonWait {
+                                    request: span.key.clone(),
+                                    run: run.id.clone(),
+                                    since_ms: now_ms,
+                                }),
+                                ..observed()
+                            },
+                            None,
+                        ));
+                    }
                 }
                 facts.events.retain(|event| event.kind != "green");
                 if !own.is_some_and(|run| run.state == RunState::Failed) {

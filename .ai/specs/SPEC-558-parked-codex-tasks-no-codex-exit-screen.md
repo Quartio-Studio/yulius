@@ -105,6 +105,8 @@ The live watcher resolves ordinary CI for the owner at the armed head and reads 
 
 ## Evidence
 
+- On `eabcb9322`, 420 scoped tests passed. Two further regressions reproduced a promoted ordinary rerun receiving the diagnosis immediately and a singleton verification prompt including a synthetic secret from a 4 KiB job reason. The watcher now persists its first observation of the ordinary run and queue decision. Queue ordering can change independently of that timer. The preliminary notice uses the PR number and run ID. The accepted outcome supplies the queue’s bounded, redacted diagnostic.
+
 - Head `f2a33fd11` passed all 419 scoped delivery, parking, train, message and PR-watch tests on the default test stack. Independent review identified two additional orders. A failed larger train consumed the singleton verification notice when both used the same CI run. A newer ordinary run still queued after restart suppressed the accepted failure beyond its 15-minute wait. Both regressions failed on that head. The singleton now has a distinct persisted notice kind. The ordinary wait uses the run’s recorded admission time, including after restart.
 
 - With a recorded singleton and a failing ordinary PR run, the first replay implementation left a clean committed repair unpublished. The bare origin still pointed to the failed head. The watcher now uses the existing repair publication path and defers the notice until it reads the newly published head.

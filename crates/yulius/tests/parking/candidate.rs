@@ -225,7 +225,7 @@ fn a_new_ordinary_reruns_deadline_survives_restart_and_delivers_the_singleton_on
         &ColdCandidate::TimedOutOrdinary,
     )))?;
     rt.shutdown_timeout(Duration::from_secs(5));
-    let queued = 1000;
+    let queued = 1_200_000;
     for (now, expect_diagnosis) in [
         (queued, false),
         (queued + WAIT_LIMIT_MS, false),
@@ -264,6 +264,23 @@ fn a_new_ordinary_reruns_deadline_survives_restart_and_delivers_the_singleton_on
                 run.started_at = None;
                 run.ended_at = None;
                 app.deps.store.insert_ci_run(&run, &[job]).await?;
+                let (peer, job) = crate::pr_watch::run(
+                    &owner.sandbox_id,
+                    "unrelated-queued",
+                    "peer-head",
+                    RunState::Queued,
+                    None,
+                    30_000,
+                );
+                app.deps.store.insert_ci_run(&peer, &[job]).await?;
+                assert!(app.deps.store.ci_run_to_front(&run.id).await?);
+                let promoted = app
+                    .deps
+                    .store
+                    .ci_run(&run.id)
+                    .await?
+                    .ok_or("promoted rerun")?;
+                assert!(promoted.queued_at.0 < now - WAIT_LIMIT_MS);
             }
             let bounds = WatchBounds::default();
             let news = Box::pin(app.watch_prs(&bounds)).await;
@@ -1458,6 +1475,12 @@ async fn check_live_queue(
                 "{larger_notice:?}"
             );
             assert!(cold.watch_prs(&bounds).await.is_empty());
+            // The source run has not been attributed to this member yet. Its raw job
+            // reason must stay out of the preliminary verification prompt.
+            let private_reason = format!("synthetic-CHECK_KEY-{}", "x".repeat(4096));
+            let connection = rusqlite::Connection::open(data.join("yulius.db"))?;
+            assert_eq!(connection.execute("UPDATE ci_jobs SET exit_code = NULL, reason = ?1 WHERE run_id = 'earlier-bisection'", [&private_reason])?, 1);
+            drop(connection);
             std::fs::write(&path, serde_json::to_vec(&current)?)?;
             let held = cold.watch_prs(&bounds).await;
             assert_eq!(held.len(), 1, "current failed singleton: {held:?}");
@@ -1466,6 +1489,10 @@ async fn check_live_queue(
                     && held[0].1.contains("verifying")
                     && !held[0].1.contains("smaller candidates"),
                 "{held:?}"
+            );
+            assert!(
+                !held[0].1.contains("synthetic-CHECK_KEY") && held[0].1.len() < 1024,
+                "preliminary notice included the raw job reason"
             );
             assert!(cold.watch_prs(&bounds).await.is_empty());
             current[task.sandbox_id.as_str()]["train"]["run"] = json!("gone");
