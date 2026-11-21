@@ -782,7 +782,7 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          request (about 400 changed lines outside tests); split bigger work into chained tasks.\n\
          - Get an independent review in a fresh session ({review}), read-only, given the diff range, \
          spec and `om-code-review`, marking findings own code or pre-existing; answer all. \
-         Fix own code test-first, never as an issue; after 3 rounds split or `needs_you`.\n\
+         Fix own code test-first, never as an issue. Re-review until approval without asking the user.\n\
          - Yulius pushes your branch and opens the pull request (spec valid if needed, all \
          committed) at your turn's end once all steps are done{review_start}, or when \
          you call `delivery_merge` for the finished part (steps ahead stay open); later commits \
@@ -844,7 +844,7 @@ fn playground_git_rules(input: &BriefingInput<'_>) -> String {
          tests after a conflict.\n\
          - Get an independent review in a fresh session ({review}), read-only, given the diff range, \
          spec and `om-code-review`. The reviewer marks each finding own code or pre-existing. \
-         Fix every own-code finding test-first before the merge, never deferring it (after 3 rounds: keep fixing, split the change or `needs_you`).\n\
+         Fix every own-code finding test-first. Re-review until approval without asking the user.\n\
          - Before delivery, run every project gate yourself. When the work is ready (spec valid \
          if needed, steps done, all committed) and the review approved the exact head, call \
          `delivery_merge`: Yulius CI tests your head merged into {integration} (when the \
@@ -1798,6 +1798,15 @@ mod tests {
             for (harness, expected) in policies {
                 input.harness = harness;
                 let briefing = build_briefing(&input, DEFAULT_BUDGET_BYTES);
+                let review = briefing
+                    .lines()
+                    .find(|line| line.starts_with("- Get an independent review"))
+                    .ok_or("missing independent review instructions")?;
+                assert!(
+                    review.contains("Re-review until approval without asking")
+                        && !review.contains("needs_you"),
+                    "{harness:?}, playground={playground}: {review}"
+                );
                 assert_eq!(
                     briefing.contains("when the review starts"),
                     !playground && harness == Harness::ClaudeCode
@@ -1869,7 +1878,7 @@ mod tests {
             "marking findings own code or pre-existing",
             "answer all.",
             "never as an issue",
-            "never as an issue; after 3 rounds split or `needs_you`",
+            "a permission outside the repository), ask with `needs_you`",
             "for one met on the way, an unrelated flaky test or a leftover nit, say why it is \
              outside your change",
             // SPEC-517 FIX-005 (quartio-v2 task #312): the request's own defect is fixed, never
@@ -2495,7 +2504,6 @@ mod tests {
             "`ci_rerun`",
             "marks each finding own code or pre-existing",
             "Fix every own-code finding",
-            "split the change or `needs_you`",
             "List in your summary what is outside your change",
         ] {
             assert!(text.contains(present), "{present} not in {text}");
