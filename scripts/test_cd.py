@@ -99,6 +99,20 @@ class CdFilesTest(unittest.TestCase):
             (src / "migrations" / "0002_b.sql").write_text(
                 "-- DELETE FROM a\nCREATE TRIGGER t AFTER INSERT ON a BEGIN\n  DELETE FROM b;\nEND;\n"
                 "delete from Notes WHERE 1;\n"
+                "/* DELETE FROM blocked */\n"
+                "CREATE TRIGGER u AFTER UPDATE ON a BEGIN\n"
+                "  UPDATE a SET x = CASE WHEN NEW.x IS NULL THEN 0 ELSE NEW.x END;\n"
+                "  DELETE FROM c;\n"
+                "END;\n"
+                "CREATE TRIGGER v BEFORE DELETE ON a BEGIN\n"
+                "  SELECT RAISE(ABORT, 'no; DELETE FROM e here');\n"
+                "END;\n"
+                # Without skipping strings, these name e (a quote ends the trigger early) and g.
+                "CREATE TRIGGER w AFTER DELETE ON a BEGIN\n"
+                "  SELECT RAISE(ABORT, 'at its end'); DELETE FROM e;\n"
+                "END;\n"
+                "INSERT INTO a VALUES ('DELETE FROM g');\n"
+                "DELETE FROM d WHERE x = 'it''s';\n"
             )
             (src / "migrations" / "0003_c.sql").write_text("")
             (src / "lib.rs").write_text(
@@ -111,7 +125,7 @@ class CdFilesTest(unittest.TestCase):
                 "];\n"
             )
             out = subprocess.run(["python3", "-I", str(DELETES), tmp], capture_output=True, text=True, check=True)
-            self.assertEqual(out.stdout.strip(), "2:notes")
+            self.assertEqual(out.stdout.strip(), "2:d,2:notes")
 
 
 class CdScriptsTest(unittest.TestCase):
@@ -605,13 +619,17 @@ class CdScriptsTest(unittest.TestCase):
         self.releases.mkdir(parents=True)
         (self.releases / NEW).mkdir()
         shutil.copy2(self.release(NEW, schema=5), self.releases / NEW / "yulius")
-        for bad in ("tasks", "5:Tasks", "5:ta-sks", "x:tasks"):
+        for bad in ("tasks", "5:Tasks", "5:ta-sks", "x:tasks", "69:a,b", "69:a,7:b:c", "69:a,"):
             with self.subTest(bad):
                 out = self.remote("activate", NEW, bad)
                 self.assertNotEqual(out.returncode, 0)
                 self.assertIn("not a list of <schema>:<table>", out.stderr)
         self.assertEqual(self.running(), OLD)
         self.assertEqual(self.systemctl_log(), ["start yulius.service"])
+        # The real shape, several pairs, is accepted.
+        out = self.remote("activate", NEW, "69:session_chunks,72:session_chunks")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(self.running(), NEW)
 
     def test_rows_deleted_after_the_start_do_not_fail_verify(self) -> None:
         """Retention at the server's start or a person's delete is no migration loss."""
@@ -692,16 +710,27 @@ class CdScriptsTest(unittest.TestCase):
 
     def test_one_cd_step_at_a_time(self) -> None:
         self.deployed()
-        holder = subprocess.Popen(["flock", str(self.releases / ".lock"), "sleep", "30"])
-        self.addCleanup(holder.kill)
+        holder = subprocess.Popen(
+            ["flock", str(self.releases / ".lock"), "sleep", "30"], start_new_session=True
+        )
+
+        def stop_holder() -> None:
+            # flock's child holds the lock too: end the whole group (once).
+            if holder.poll() is None:
+                try:
+                    os.killpg(holder.pid, 9)
+                except ProcessLookupError:
+                    pass
+                holder.wait()
+
+        self.addCleanup(stop_holder)
         deadline = __import__("time").monotonic() + 10
         while subprocess.run(["flock", "-n", str(self.releases / ".lock"), "true"]).returncode == 0:
             self.assertLess(__import__("time").monotonic(), deadline, "the holder never took the lock")
         out = self.remote("verify", NEW, "5", "0", YULIUS_CD_LOCK_WAIT="1")
         self.assertNotEqual(out.returncode, 0)
         self.assertIn("another CD step holds", out.stderr)
-        holder.kill()
-        holder.wait()
+        stop_holder()
         self.assertEqual(self.remote("verify", NEW, "5", "0").returncode, 0)
 
     def test_a_rollback_whose_store_restore_fails_keeps_the_release_and_store_it_had(self) -> None:
@@ -714,6 +743,55 @@ class CdScriptsTest(unittest.TestCase):
         self.assertIn(f"putting back release {NEW} and its store", out)
         self.assertEqual(self.running(), NEW)
         self.assertEqual(dump(self.data / "yulius.db"), before)
+
+    def test_a_put_back_that_cannot_restore_the_store_leaves_the_server_stopped(self) -> None:
+        """No start on a store that is not the binary's (or none): the snapshot stays intact."""
+        self.release(NEW, schema=5)
+        self.deploy(NEW)
+        self.write("INSERT INTO tasks VALUES ('written by new')")
+        (self.run_dir / "fail-cp-from").write_text("/store/")
+        out = self.fails("rollback.sh", "dev", YULIUS_CD_RELEASE=OLD, YULIUS_CD_KIND="rollback")
+        self.assertIn("stays stopped", out)
+        self.assertIn(f"restore by hand from {self.releases}/{NEW}", out)
+        self.assertFalse((self.run_dir / "active").exists())
+        snapshot = self.releases / NEW / "store" / "yulius.db"
+        (self.run_dir / "fail-cp-from").unlink()
+        self.assertEqual(
+            sqlite3.connect(snapshot).execute("SELECT count(*) FROM tasks WHERE title = 'written by new'").fetchone()[0],
+            1,
+        )
+        self.assert_held(out, NEW, snapshot)
+
+    def test_an_undo_that_cannot_restore_the_store_leaves_the_server_stopped(self) -> None:
+        self.release(NEW, schema=5, mode="halfway")
+        (self.run_dir / "fail-cp-from").write_text("/store/")
+        out = self.deploy_fails(NEW)
+        self.assertIn("stays stopped", out)
+        self.assertFalse((self.run_dir / "active").exists())
+        snapshot = self.releases / OLD / "store" / "yulius.db"
+        self.assertEqual(sqlite3.connect(snapshot).execute("PRAGMA user_version").fetchone()[0], 4)
+        (self.run_dir / "fail-cp-from").unlink()
+        self.assert_held(out, OLD, snapshot)
+
+    def assert_held(self, out: str, prev: str, snapshot: Path) -> None:
+        """Held after a failed put back: Yulius is told not to restore staging by itself, and the
+        rollback it would start, a redeploy and a verify all refuse until a person removed the
+        marker, never starting the server on another or an empty store."""
+        self.assertIn("\n::yulius-rollback-barrier staging is held", "\n" + out)
+        held = self.releases / "HELD"
+        self.assertTrue(held.is_file())
+        before = digest(snapshot)
+        for script, extra in (
+            ("rollback.sh", {"YULIUS_CD_RELEASE": prev, "YULIUS_CD_KIND": "rollback"}),
+            ("deploy.sh", {"YULIUS_CD_SHA": prev, "YULIUS_CD_KIND": "deploy"}),
+            ("verify.sh", {"YULIUS_CD_RELEASE": prev, "YULIUS_CD_KIND": "rollback"}),
+        ):
+            with self.subTest(script):
+                refused = self.fails(script, "dev", **extra)
+                self.assertIn("staging is held", refused)
+                self.assertIn(f"remove {held}", refused)
+        self.assertFalse((self.run_dir / "active").exists())
+        self.assertEqual(digest(snapshot), before)
 
     def test_a_killed_switch_and_a_redeploy_keep_the_release_to_go_back_to(self) -> None:
         self.release(NEW, schema=5)

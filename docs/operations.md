@@ -1804,8 +1804,9 @@ erased.
 
 It does not pause tasks as the update helper's restart does: a staging instance's tasks see their
 server restart. A lost connection does not stop a switch half way, and any other failure after
-the stop starts the server again with a binary and store that belong together. One CD step runs
-at a time (`/var/lib/yulius-releases/.lock`).
+the stop starts the server again with a binary and store that belong together; when the
+previous store cannot be put back, the server stays stopped and the run says to restore it by hand
+(never a start on another store or an empty one). One CD step runs at a time (`/var/lib/yulius-releases/.lock`).
 
 **What verify proves** (`scripts/cd/verify.sh dev`):
 
@@ -1828,9 +1829,25 @@ at a time (`/var/lib/yulius-releases/.lock`).
 - By hand, as root: `systemctl stop yulius`, copy the binary and the store back from
   `/var/lib/yulius-releases/<commit>/`, `chown yulius:yulius` the store files, then
   `systemctl start yulius`.
+- **Held staging.** A run that could not put the previous store back leaves the server stopped and
+  writes `/var/lib/yulius-releases/HELD`, naming the release. It also prints a rollback barrier,
+  so Yulius starts no rollback of staging by itself. Every deploy, rollback and verify refuses
+  while the file exists. Restore the store by hand as above, then remove the file and ask for a
+  deploy again.
 
-**Who deploys.** A task's agent with `cd_deploy`, or a person on the CD page. The rollback drill
-follows each deploy by itself. A merge deploys nothing.
+**Who deploys.** Staging is Yulius's merge-first target
+([ADR-0436](decisions/0436-yuliuss-full-suite-runs-after-the-merge-and-promotion-comes-from-verified-staging.md)).
+A pull request merges on `quality` and `security`. Both `test` shards and `e2e` run once on each
+merged revision of `dev`.
+
+- **Staging changes only through its queue** (ADR-0411). The agent of a task whose work merged
+  asks with `cd_deploy`. Yulius deploys that revision, or a newer verified one that contains it,
+  once its full suite passed. The rollback drill follows by itself.
+- **A person cannot deploy the head from the CD page.** A person can still roll staging back
+  there.
+- **A red `dev` never reaches staging.** The request ends `gate_failed`, its task fixes forward,
+  and no promotion happens meanwhile.
+- **Production is promoted only from what staging verified**, by a person (ADR-0425).
 
 **The update helper stays off there.** `yulius-update.path` is disabled: "Update now" would
 install `main` over a dev release. A deploy refuses while `yulius-update.service` runs. Root's
@@ -1851,8 +1868,9 @@ or address beyond the variable and the pinned key.
 6. Pin the new host key in a pull request: the line `yulius-staging ssh-ed25519 <key>` from
    `/etc/ssh/ssh_host_ed25519_key.pub` in `scripts/cd/known_hosts`. Check its fingerprint on the
    VM (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`) before committing it.
-7. Deploy from the CD page. The first deploy keeps the binary it finds (and its store) on the
-   VM, but Yulius's CD never recorded it as a release: the CD page and `cd_rollback` cannot
+7. Have a task's agent ask for staging with `cd_deploy` once its work merged, for example the task
+   that pinned the new key (a merge-first target is not deployed from the CD page). The first
+   deploy keeps the binary it finds (and its store) on the VM, but Yulius's CD never recorded it as a release: the CD page and `cd_rollback` cannot
    return to it, and the first deploy has no drill (it needs two). Return to it by hand (above).
 
 **Who can reach it.** `STAGING_VM_SSH_KEY` may be copied to `.env` files, so dev CD runs get it,

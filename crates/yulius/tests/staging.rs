@@ -1999,6 +1999,44 @@ fn promoting_toml() -> String {
     )
 }
 
+/// SPEC-591 STG-008: Yulius's own `yulius.toml` makes `[cd.dev]` its merge-first staging target, so
+/// a person's production deploy and the Delivery page's promotion are refused while staging has
+/// not verified a revision whose full suite passed: a red or untested dev is fixed forward, never
+/// promoted.
+#[tokio::test]
+async fn yuliuss_own_config_promotes_only_what_staging_verified() -> TestResult {
+    let f = fixture(include_str!("../../../yulius.toml")).await?;
+    agent(&f, "t1").await?;
+    let r1 = land(&f, "t1", "one.txt").await?;
+    let deploy = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(
+        deploy.status,
+        axum::http::StatusCode::CONFLICT,
+        "{}",
+        deploy.body
+    );
+    let why = deploy.body.to_string();
+    assert!(
+        why.contains("[cd.dev] staging verified nothing yet"),
+        "{why}"
+    );
+    let page = promote_page(&f).await?;
+    assert_eq!(
+        page.status,
+        axum::http::StatusCode::CONFLICT,
+        "{}",
+        page.body
+    );
+    let page_why = page.body.to_string();
+    assert!(
+        page_why.contains("[cd.dev]") && page_why.contains("staging verified nothing yet"),
+        "{page_why}"
+    );
+    assert_ne!(f.head("main")?, r1);
+    assert!(!git_contains(&f, "main", &r1)?);
+    Ok(())
+}
+
 /// The Delivery page's promotion, as an administrator who typed the slug.
 async fn promote_page(f: &Fixture) -> BoxResult<support::Resp> {
     support::call(
