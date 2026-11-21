@@ -235,14 +235,17 @@ def run(readers, bootstrap=False):
         names = sorted({reader.name for reader in readers if reader.package == package})
         filters.append(f"(package(={package}) & test(/(^|::)({'|'.join(names)})$/))")
     print("Repository reader sources:", *sorted({reader.source for reader in readers}), sep="\n  ", flush=True)
+    env = os.environ.copy()
     if bootstrap:
         subprocess.run([sys.executable, "scripts/bootstrap.py", "--install-rustup"], cwd=ROOT, check=True)
+        # Bootstrap installs rustup without editing the CI runner's shell profile.
+        env["PATH"] = os.pathsep.join([str(Path.home() / ".cargo/bin"), env.get("PATH", "")])
     command = [str(ROOT / "scripts/cargo"), "nextest", "run", "--locked"]
     for package in packages:
         command.extend(["-p", package])
     for target in targets:
         command.extend(target)
-    return subprocess.run([*command, "-E", " | ".join(filters)], cwd=ROOT).returncode
+    return subprocess.run([*command, "-E", " | ".join(filters)], cwd=ROOT, env=env).returncode
 
 
 if __name__ == "__main__":

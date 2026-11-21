@@ -31,6 +31,7 @@ PR #1645 changed the composer mock. The merge train passed and dev revision 13a6
 - [x] Resolve named runtime paths in repository tests
 - [x] Trace exported file constants into their consumer tests
 - [x] Approve the change for delivery to dev
+- [x] Run the file-contract gate with Cargo on a clean CI path
 
 ## Acceptance criteria
 
@@ -63,3 +64,4 @@ The change diff uses the merge base with the integration branch and includes bot
 - The third review found a typed path constant and the public SCANNER include. The follow-up work split runtime binding and exported data discovery. Both new fixtures failed first. The selector now derives public file constants at their definitions across the workspace and selects cases that use them, including the real scanner refusal test. Typed let, const and static path bindings resolve at filesystem reads. Eleven Python tests passed, and the compiled scanner refusal case passed.
 - The final catalog audit found Auto’s assertion about the first advertised workflow. Its shared helper reads the workflow-list HTTP route. The new selection assertion failed before catalog route discovery, then passed alongside the ten other selector regressions. The real Auto case passed. The selector also recognizes skill and automation catalog routes and the catalog-facing MCP reads.
 - Independent review approved fc9b924ba. The reviewer independently ran all eleven selector regressions and the compiled Auto case, verified UI-only and unrelated-file selection, and checked the diff. The local PR-diff probe ran 58 cases in 0.966 s of test execution and 130.07 s wall time with its build. Hosted gate and staging evidence follow in the task delivery record.
+- PR run 146de3ea-c4a0-4f88-8564-d3261d0e04d1 at 069615ed9 failed before any reader ran. Bootstrap installed the Rust tools, but the launcher could not find Cargo on the CI path. A clean-path fixture reproduced the same FileNotFoundError before the fix. The gate now includes the bootstrapped Cargo directory in its child process path. All 12 selector regressions passed, including propagation of a failing nextest exit. With PATH=/usr/bin:/bin and CI bootstrap enabled, the real PR diff ran 58 tests across four binaries. All passed in 1.469 s after a 1m41s build. Repository contracts and formatting passed.

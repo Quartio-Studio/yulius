@@ -2,14 +2,42 @@
 from pathlib import Path
 import os
 import subprocess
+import sys
 import tempfile
 import tomllib
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class RepositoryTests(unittest.TestCase):
+    def test_bootstrapped_cargo_runs_nextest_on_a_clean_ci_path(self):
+        from repository_tests import Reader, run
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            scripts = root / "scripts"
+            scripts.mkdir()
+            (scripts / "cargo").symlink_to(ROOT / "scripts/cargo")
+            fake_cargo = root / "fake-cargo"
+            fake_cargo.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > arguments\nexit 42\n')
+            fake_cargo.chmod(0o755)
+            (scripts / "bootstrap.py").write_text(
+                'from pathlib import Path\n'
+                'cargo = Path.home() / ".cargo/bin/cargo"\n'
+                'cargo.parent.mkdir(parents=True)\n'
+                'cargo.symlink_to(Path.cwd() / "fake-cargo")\n')
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            (bin_dir / "python3").symlink_to(sys.executable)
+            reader = Reader("sample", ("--lib",), "sample.rs", {"docs/guide.md"}, "pins_guide")
+            with patch("repository_tests.ROOT", root), patch.dict(os.environ, {
+                    "PATH": str(bin_dir), "HOME": str(root / "home"), "YULIUS_CI": "1"}, clear=True):
+                self.assertEqual(run([reader], bootstrap=True), 42)
+            arguments = (root / "arguments").read_text().splitlines()
+            self.assertEqual(arguments[:3], ["nextest", "run", "--locked"])
+            self.assertIn("pins_guide", arguments[-1])
+
     def test_the_gate_selects_repository_readers_before_merge(self):
         jobs = {job["name"]: job for job in tomllib.loads((ROOT / "yulius.toml").read_text())["ci"]["jobs"]}
         job = jobs["file-contracts"]
