@@ -2356,9 +2356,7 @@ impl App {
                 );
             }
         }
-        view.review_rounds = self
-            .review_round_views(&observed.record, task.harness)
-            .await;
+        view.review_rounds = self.review_round_views(&observed.record).await;
         Ok(view)
     }
 
