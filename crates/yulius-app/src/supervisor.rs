@@ -1887,6 +1887,25 @@ impl App {
         })
     }
 
+    /// A person's Continue can start afresh if Codex stopped before creating its rollout.
+    pub(crate) async fn start_ended_run(
+        self: &Arc<Self>,
+        task: &TaskRecord,
+        start: RunStart,
+        account: Option<AccountId>,
+    ) -> AppResult<()> {
+        if self
+            .start_run_if(&task.id, start, account, Some(task.status), None)
+            .await?
+        {
+            Ok(())
+        } else {
+            Err(AppError::Conflict(
+                "the task changed while it was continued; try again".into(),
+            ))
+        }
+    }
+
     /// [`App::start_run`], only while the task still has the status `only` (when given), checked
     /// under the launch lock: `false` when it no longer has it, so nothing was done. With
     /// `rest`, the run's task is idle again from its launch on ([`IdleRest`]).
@@ -1931,8 +1950,9 @@ impl App {
             }
             // A fresh start is for a task that waits to start (queued, paused for capacity). One
             // that ended meanwhile — closed before the start spawned at its creation ran — stays
-            // ended: only Continue (a resume) brings a resting task back.
-            if task.status.is_resting() && matches!(start, RunStart::Fresh { .. }) {
+            // ended. Only Continue authorizes a fresh start from the observed resting state.
+            if only.is_none() && task.status.is_resting() && matches!(start, RunStart::Fresh { .. })
+            {
                 tracing::info!(
                     task = %task.id,
                     status = task.status.as_str(),
@@ -2124,15 +2144,13 @@ impl App {
             // No subscription has capacity: the task waits before starting, without a process
             // (ROT-010); the resume loop starts it when capacity returns. A turn a limit cut
             // keeps its `limit` pause, so it still resumes past the limit (SPEC-034).
-            let kind = if matches!(start, RunStart::AfterLimit) {
-                PauseKind::Limit
-            } else {
-                PauseKind::Start
-            };
-            // A resume's text (a held prompt a move carried, SPEC-447) is typed when it starts.
-            let continuation = match &start {
-                RunStart::Resume { prompt } => prompt.clone(),
-                _ => None,
+            let (kind, continuation) = match &start {
+                RunStart::AfterLimit => (PauseKind::Limit, None),
+                RunStart::Fresh { prompt } if harness == Harness::Codex => {
+                    (PauseKind::FreshStart, prompt.clone())
+                }
+                RunStart::Resume { prompt } => (PauseKind::Start, prompt.clone()),
+                RunStart::Fresh { .. } => (PauseKind::Start, None),
             };
             self.pause_task(&task.id, kind, None, continuation).await?;
             return Ok(());
@@ -4847,7 +4865,7 @@ impl App {
 
     /// Confirms which Codex conversation a native resume will open. SessionStart may have
     /// saved the attempt's ID before an outage interrupted the lineage write.
-    pub(crate) async fn codex_resume_available(&self, task: &TaskRecord) -> AppResult<bool> {
+    async fn codex_resume_session(&self, task: &TaskRecord) -> AppResult<Option<String>> {
         let store = &self.deps.store;
         let missing = || {
             AppError::Conflict(format!(
@@ -4861,11 +4879,12 @@ impl App {
             .last()
             .filter(|entry| entry.harness == Harness::Codex);
         let Some(run) = run else {
-            // A person can continue an imported conversation before its first native run.
             return match (task.status, sessions.last()) {
                 (TaskStatus::Parked, _) => Err(missing()),
-                (_, None) => Ok(false),
-                (_, Some(entry)) if entry.harness == Harness::Codex => Ok(true),
+                (_, None) => Ok(None),
+                (_, Some(entry)) if entry.harness == Harness::Codex => {
+                    Ok(Some(entry.session_id.clone()))
+                }
                 _ => Err(missing()),
             };
         };
@@ -4886,14 +4905,36 @@ impl App {
                     return Err(missing());
                 }
             }
-        } else if sessions.is_empty() && task.status != TaskStatus::Parked {
-            return Ok(false);
-        } else if latest.is_none_or(|entry| {
-            entry.last_seen < run.started_at || run.ended_at.is_none_or(|end| entry.last_seen > end)
-        }) {
-            return Err(missing());
+            return Ok(Some(id));
         }
-        Ok(true)
+        if sessions.is_empty() && task.status != TaskStatus::Parked {
+            return Ok(None);
+        }
+        let entry = latest
+            .filter(|entry| {
+                run.ended_at
+                    .is_some_and(|end| (run.started_at..=end).contains(&entry.last_seen))
+            })
+            .ok_or_else(missing)?;
+        Ok(Some(entry.session_id.clone()))
+    }
+
+    /// SessionStart precedes the first rollout write. Only a saved rollout can receive the
+    /// continuation. An absent rollout starts the original request, including after admission.
+    pub(crate) async fn codex_restart(&self, task: &TaskRecord) -> AppResult<RunStart> {
+        if let Some(id) = self.codex_resume_session(task).await?
+            && self
+                .deps
+                .harness
+                .find_codex_rollout(&self.codex_sessions(&task.sandbox_id), &id)?
+                .is_some()
+        {
+            Ok(RunStart::Resume {
+                prompt: Some(CONTINUE_TASK_PROMPT.into()),
+            })
+        } else {
+            Ok(RunStart::Fresh { prompt: None })
+        }
     }
 
     /// Resumes a parked task in its own session (SPEC-512 PRK-005), with `prompt` as the turn it
@@ -4918,7 +4959,7 @@ impl App {
             return Ok(false);
         }
         if task.harness == Harness::Codex {
-            self.codex_resume_available(&task).await?;
+            self.codex_resume_session(&task).await?;
         }
         let goal_unfinished = self.goal_unfinished_of(&task).await;
         let rest = task

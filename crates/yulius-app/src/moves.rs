@@ -188,6 +188,12 @@ impl App {
         }
         let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
         let prompt = match pause {
+            Some(pause) if pause.kind == PauseKind::FreshStart => {
+                let start = RunStart::Fresh {
+                    prompt: pause.continuation,
+                };
+                return self.switch_with(task_id, account, reason, start).await;
+            }
             Some(pause) if matches!(pause.kind, PauseKind::Prompt | PauseKind::Start) => {
                 pause.continuation
             }

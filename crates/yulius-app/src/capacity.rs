@@ -455,7 +455,7 @@ impl App {
             // A start with no account to run on waits for one to be connected, and says so
             // (SPEC-246 CLA-004); otherwise (or when the accounts cannot be read) the pool is only
             // out of capacity.
-            let accounts = if kind == PauseKind::Start {
+            let accounts = if !kind.holds_process() {
                 self.agent_accounts(task.harness.provider())
                     .await
                     .unwrap_or(crate::account_gate::AgentAccounts::Usable)
@@ -908,7 +908,7 @@ impl App {
                             let continuation = match kind {
                                 PauseKind::Prompt => pause.continuation.clone(),
                                 PauseKind::Turn => self.stop_continuation(&task).await,
-                                PauseKind::Limit | PauseKind::Start => None,
+                                PauseKind::Limit | PauseKind::Start | PauseKind::FreshStart => None,
                             };
                             self.switch_task_now(&task.id, account, &reason, continuation)
                                 .await
@@ -927,6 +927,9 @@ impl App {
                     // The start ends the pause once it is made or waits in the queue
                     // (`start_run`); one that is refused (the queue is full) leaves it open.
                     let start = match store.provider_sessions(&task.id).await {
+                        Ok(_) if pause.kind == PauseKind::FreshStart => RunStart::Fresh {
+                            prompt: pause.continuation.clone(),
+                        },
                         Ok(_)
                             if pause.kind == PauseKind::Prompt
                                 && self.held_opening(&task.id).await =>

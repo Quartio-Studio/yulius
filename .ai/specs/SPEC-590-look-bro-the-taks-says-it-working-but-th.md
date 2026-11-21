@@ -21,7 +21,7 @@ The page's Continue action and the Superagent's `task_restart` share `continue_t
 
 - CCR-001. Continue on a stopped Codex task with a saved conversation submits one continuation in that conversation. A retry after a failed start follows the same rule. A task without a saved conversation starts with its original request. A recorded attempt ID recovers a missing history index entry. Conflicting or stale history must be resolved before resuming.
 - CCR-002. A native Codex resume that opens without a turn shows idle activity. A new prompt starts work, and a recorded interruption returns the live task to Waiting. Opening a closed conversation allows the person to supply the next prompt.
-- CCR-003. The existing session queue and capacity pause retain the continuation until the requested start can run. A person stopping an agent authorizes no automatic restart.
+- CCR-003. The session queue and capacity pause retain the selected fresh or resumed launch and its prompt until the requested start can run. A person stopping an agent authorizes no automatic restart.
 
 ## Plan
 
@@ -54,3 +54,5 @@ The corrected supervisor passed all 132 Codex and parking integration tests in n
 Independent review of `19c85e1e7` found two recovery paths requiring changes. Against that head, three regression cases failed. A missing index entry lost the continuation, stale history reopened the wrong session and moving a capacity-paused restart dropped the prompt. The correction shares the parked task’s session identity check and forwards the saved start-pause continuation on a move.
 
 After both corrections, the 159 Codex, parking, subscription move and native harness checks passed in nextest run `090c7c24-3bbb-493c-8320-65ced95d22e2`. They include recovery from the missing index write and refusal of an unrelated rollout. Repository quick checks passed. Vidoc was disabled for this project.
+
+The second independent review identified the interval between SessionStart recording an ID and the first rollout write. On `85a755963`, nextest run `64df5e76-7867-4bdf-8a46-0b2ba2d77b15` reproduced Continue queueing a native resume for an ID with no file. Continue checks the rollout lookup and admits a fresh start when Codex has no saved conversation. A lookup error is returned to the caller.

@@ -317,6 +317,15 @@ fn continuing_a_codex_task_stopped_before_launch_delivers_its_original_request()
 
 #[test]
 fn a_stopped_codex_id_without_a_rollout_restarts_with_its_original_request() -> TestResult {
+    restart_before_rollout(false)
+}
+
+#[test]
+fn a_stopped_codex_id_without_a_rollout_moves_with_its_original_request() -> TestResult {
+    restart_before_rollout(true)
+}
+
+fn restart_before_rollout(manual_move: bool) -> TestResult {
     let (_dir, data) = temp()?;
     runtime()?.block_on(async {
         let (app, sandbox, user, id, session) = restart_fixture(&data).await?;
@@ -332,7 +341,24 @@ fn a_stopped_codex_id_without_a_rollout_restarts_with_its_original_request() -> 
             .find_codex_rollout(&sessions, &session)?
             .ok_or("rollout")?;
         // Reproduce the persisted state after SessionStart and before the first rollout write.
-        std::fs::remove_file(rollout)?;
+        let saved = data.join("rollout.fixture");
+        std::fs::rename(&rollout, &saved)?;
+        let moved_sessions = data.join("sessions.fixture");
+        std::fs::rename(&sessions, &moved_sessions)?;
+        std::fs::write(&sessions, b"not a directory")?;
+        let refused = app
+            .continue_task(&ctx, id.as_str(), &Default::default())
+            .await;
+        assert!(
+            refused.is_err(),
+            "an unreadable rollout directory started fresh"
+        );
+        assert!(matches!(
+            task(&app, &id).await?.status,
+            TaskStatus::Stopped(_)
+        ));
+        std::fs::remove_file(&sessions)?;
+        std::fs::rename(moved_sessions, &sessions)?;
         let blocker = new_codex_task(&app, &sandbox, &user, "Occupy the slot").await?;
         wait_for("the occupied slot", Duration::from_secs(30), || {
             screen_contains(&app, &blocker, "ECHO: Occupy the slot")
@@ -378,17 +404,23 @@ fn a_stopped_codex_id_without_a_rollout_restarts_with_its_original_request() -> 
             },
         )
         .await?;
+        // Even a late first write cannot turn the accepted fresh start into an idle resume.
+        std::fs::rename(saved, rollout)?;
         let replacement =
             add_codex_account(&app, "replacement", &codex_auth("2026-11-01T10:00:00Z")).await?;
-        app.switch_task(
-            &ctx,
-            id.as_str(),
-            &yulius_contracts::api::tasks::ContinueTask {
-                account_id: Some(replacement.to_string()),
-                ..Default::default()
-            },
-        )
-        .await?;
+        if manual_move {
+            app.switch_task(
+                &ctx,
+                id.as_str(),
+                &yulius_contracts::api::tasks::ContinueTask {
+                    account_id: Some(replacement.to_string()),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        } else {
+            let _ = app.resume_round().await;
+        }
         let run = app.deps.store.live_attempt(&id).await?.ok_or("fresh run")?;
         assert_eq!(run.launch_kind, LaunchKind::New);
         wait_for("the full original request", Duration::from_secs(30), || {

@@ -10,7 +10,7 @@ A native Codex resume can reopen history and sit at an empty prompt. After a per
 
 ## Decision
 
-Continue on a stopped or failed Codex task with a saved conversation submits a continuation in that conversation. The latest attempt’s Codex session ID can restore a missing history index entry. When older history cannot identify that attempt, Continue reports the conflict. The supervisor’s queue, capacity pause and subscription move carry the prompt. A fresh launch uses the original request.
+Continue on a stopped or failed Codex task with a saved conversation submits a continuation in that conversation. The latest attempt’s Codex session ID can restore a missing history index entry. When older history cannot identify that attempt, Continue reports the conflict. Codex can supply its ID before it writes the first rollout. The supervisor checks for that file and starts with the original request when the lookup confirms its absence. The session queue and capacity pause preserve the chosen launch mode and prompt through a subscription move.
 
 The supervisor initializes a bare Codex resume with idle activity. Reopening a closed conversation leaves the next prompt to the person. Submitting a prompt and interrupting a turn use the existing hook and rollout observations.
 
