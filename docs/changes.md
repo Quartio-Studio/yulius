@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- The staging line in `delivery_status` names the fix's revision as due after a failed request, and carries each request's next step. Reading the merge-first target fetches the clone only when it lacks the verified head. [SPEC-575](../.ai/specs/SPEC-575-make-task-local-testing-and-one-staging.md)
 - In a merge-first project, `delivery_status` tells a task whose work merged that its staging request is due, then where that request stands with its run ids. In the rollout, three upgrade tasks switched their project and ended without asking, because their briefing predated the switch. [SPEC-575](../.ai/specs/SPEC-575-make-task-local-testing-and-one-staging.md)
 - Recorded Yulius's Infra bootstrap revision 1 posture in `yulius.toml` (`[cd.dev] about`) and `AGENTS.md`: the repository has no shared staging target, so all CI jobs remain on pull requests ([SPEC-579](../.ai/specs/SPEC-579-adopt-merge-first-staging-infra-bootstra.md)).
 - An armed PR’s owner now hears its current ordinary CI failure once, including a run shared at the same head. A train notice identifies the current members and waits if a repair is published or a person takes the decision during the read (SPEC-558).

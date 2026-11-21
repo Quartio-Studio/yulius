@@ -88,9 +88,9 @@ that failed.
     gate failed with the run, deploy failed with the run and what happened to staging, or
     superseded by Yulius.
   - Until it asked, `delivery_status` tells a task whose work merged that its request is due,
-    and afterwards where its newest request stands (MFS-013). The receipt of a merge on green
-    sends the agent there, so a task whose briefing predates the switch, such as the switch's own task,
-    learns it too.
+    and afterwards where its newest request stands (MFS-013). The receipt of a merge on
+    green sends the agent there, so a task whose briefing predates the switch, such as the
+    switch's own task, learns it too.
   - Ticks never overlap.
   - `cd_status` and the CD page list the queue with its revisions and run ids, and the revision
     staging serves.

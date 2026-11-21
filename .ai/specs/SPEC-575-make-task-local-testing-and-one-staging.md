@@ -145,8 +145,8 @@ What exists today (map of 2026-11-20, `dev` at f80f42cad):
   - Once it asked, the same line says where its newest request stands, with its run ids and
     the next step. A failed or superseded request of an older revision leaves the newer landing
     due again.
-  - The receipt of a merge on green sends the agent to `delivery_status`, so a task whose session began
-    before its project switched learns it there. The rollout of 2026-11-21 showed the need:
+  - The receipt of a merge on green sends the agent to `delivery_status`, so a task whose
+    session began before its project switched learns it there. The rollout of 2026-11-21 showed the need:
     three upgrade tasks switched their project and ended without a staging request (their
     briefing still said merges deploy nothing), and only a task can ask.
 
