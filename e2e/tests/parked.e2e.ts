@@ -1994,6 +1994,7 @@ test('a failed watch cannot reopen a PR that a newer parked list verified closed
 
 test('a successful parked detail still updates the terminal when resync reads fail', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio', '&ambient=0&pullgap=0&pullclock=manual'));
+  await expect(screen.getByRole('link', /Improve the code/).first()).toBeVisible();
   type Fixture = { releaseDetail: () => void; __yuliusTaskListReply?: () => Promise<Response>;
     __yuliusMock: { tasks: { id: string }[]; failNextDetail?: boolean; holdDetail?: Promise<void>; heldDetailAnswered?: boolean;
       resyncNow(): void; changePull(s: string, n: number, fields: object): void; touchTask(s: string, n: number, fields: object): void } };

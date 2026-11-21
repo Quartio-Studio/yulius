@@ -212,6 +212,8 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # read the current screen and send the message again. Its current decision stays open.
 # If Yulius says the parked screen is still being saved, send the message again after
 # parking finishes. The task keeps its question open and the timed-out message starts no turn.
+# A merge request being armed keeps the session live. If Yulius says the session
+# is parking, resume it before requesting the merge again.
 # If you stopped the task during parking and Continue says the previous session is still
 # settling, retry after terminal exit. The settlement timeout preserves the archive and question.
 # If Continue on a named subscription reports that it needs a new sign-in or has no room

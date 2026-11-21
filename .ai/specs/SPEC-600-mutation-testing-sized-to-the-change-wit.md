@@ -32,6 +32,7 @@ On 2026-11-21 the owner measured 105 minutes waiting for mutation tests in 22 Co
 - [x] Deliver disk build scratch, the tmpfs cap and on-request campaign cleanup
 - [x] Deliver disposable targets for built-in Cargo commands
 - [x] Deliver external Cargo commands and cache reuse, then request staging
+- [x] Verify the shared delivery regression fix before requesting staging again
 
 ## Acceptance criteria
 
@@ -158,3 +159,10 @@ A second review finding left the sandbox's shared lease held during a plain scra
 
 
 The final independent review approved b9c15e428 on dev base 13a632c40. All 49 launcher and compiler-cache tests passed locally in 38.756 seconds and in the independent review. Repository contracts and formatting passed. Vidoc was disabled. Yulius records the final exact-head CI, merged revision and single post-merge staging request in the task delivery record.
+
+
+### Staging gate follow-up
+
+Staging request 00316b3b-4411-48a3-95b7-6c9bb6b34770 left staging unchanged. Run 4ab3206f-78fd-4deb-9ad3-f854ebeff382 on merged revision 9eb21d694 failed one of the 2,987 tests in shard 2. The test `delivery::agents_merge_only_through_gated_tools` expected the Claude Code task's current review list to be empty after merge. It received the completed reviewer’s approval for pull request 1. Task #589 introduced the merged-round read in #1648, the preceding member of the same train, and owns the compatibility correction. [Review-round specification](SPEC-605-record-the-review-rounds-of-codex-tasks.md)
+
+On dev base 3b95efbd8 the focused delivery test reproduced the gate failure locally, returning one completed review instead of the empty list. This branch integrated task #589's correction ddf2a8809 with the existing delivery assertion intact. On the corrected tree, the original failure, the Codex merged-review test and the shared merged-review analytics test all passed. The broader delivery, review and Codex review-hook selection passed all 152 tests in 32.175 seconds. The next staging request is for the corrected merged revision.

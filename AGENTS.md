@@ -78,9 +78,9 @@ Create a typed branch and worktree together from `origin/dev` with `git worktree
 never switch an existing worktree to another branch. Never work directly on
 `dev` or `main`. Follow the task briefing for the reviewer and model of the active harness. While iterating, run the checks your change touches. The whole gate is Yulius CI's job: it tests the head while the reviewer reads. Do not run the whole gate locally before a review or between rounds, except to reproduce a CI failure or when CI cannot run (a playground without CI, an outage). Yulius is merge-first
 ([ADR-0436](docs/decisions/0436-yuliuss-full-suite-runs-after-the-merge-and-promotion-comes-from-verified-staging.md)):
-a pull request merges on `quality` (check), `lint`, `macos`, `docs`, `deps` and `security`, plus
-any job it adds or changes. The two partitions of `test` share a build, and `e2e` also runs on the merged revision. So before the review run the tests and e2e
-specs your change touches yourself. After the merge, ask once for staging with `cd_deploy` when
+a pull request merges on `quality` (check), `lint`, `macos`, `docs`, `deps`, `security`,
+the affected `file-contracts` tests and any job it adds or changes. The two partitions of `test` share a build, and `e2e` also runs on the merged revision. Before review, run the whole test binary you touched, including its other tests,
+and the e2e specs your change touches. After the merge, ask once for staging with `cd_deploy` when
 `delivery_status` says it is due: it deploys your merged revision once its full suite passed. The task ends after asking. Yulius reports a gate, deployment or verification failure for a fix forward. A task explicitly assigned to verify the staging verdict leaves that step in progress. Yulius shows the current wait and wakes its agent with the result. Only a revision that passed the full suite and that staging verified is
 promoted to `main` (a person's). Green Yulius CI + an independent review in a fresh session of the exact head →
 `delivery_merge` → Yulius squashes the pull request into `dev` on green Yulius CI through its
