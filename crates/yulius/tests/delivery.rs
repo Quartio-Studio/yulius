@@ -9680,6 +9680,15 @@ async fn open_pr_ci_repair_preserves_safeguards_and_surfaces_actionable_failures
 #[tokio::test]
 async fn open_pr_ci_repair_queues_exact_head_ci_and_recovers_via_pr_watch_without_stale_notice()
 -> TestResult {
+    check_repair_publication(false).await
+}
+
+#[tokio::test]
+async fn a_recorded_singleton_does_not_hide_an_unpublished_ordinary_ci_repair() -> TestResult {
+    check_repair_publication(true).await
+}
+
+async fn check_repair_publication(recorded_singleton: bool) -> TestResult {
     use yulius_app::ci::{CiJobRecord, CiRunRecord};
     use yulius_app::ports::store_ext::CiStore;
     use yulius_app::pr_watch::WatchBounds;
@@ -9806,6 +9815,37 @@ async fn open_pr_ci_repair_queues_exact_head_ci_and_recovers_via_pr_watch_withou
     f.h.store
         .insert_ci_run(&failed_run2, &[failed_job2])
         .await?;
+    if recorded_singleton {
+        let detail = json!({
+            "head": repair1,
+            "message": "The candidate check failed.",
+            "singleton": {
+                "pr": 1,
+                "base": f.origin_sha("dev")?,
+                "tree": git(&wt, &["rev-parse", "HEAD^{tree}"])?,
+                "run": "earlier-candidate",
+            },
+        });
+        f.h.app
+            .deps
+            .store
+            .insert_span(&yulius_app::stages::NewSpan {
+                sandbox_id: sandbox.clone(),
+                subject_kind: yulius_domain::stages::SubjectKind::Task,
+                subject_id: t1.to_string(),
+                key: "wait@1".into(),
+                parent_key: None,
+                kind: "wait".into(),
+                name: "merge_armed".into(),
+                environment: None,
+                job: None,
+                started_at: Timestamp(1),
+                ended_at: Some(Timestamp(2)),
+                outcome: Some("dropped".into()),
+                detail: Some(detail.to_string()),
+            })
+            .await?;
+    }
     commit_file(&wt, "app.txt", "v3 repair\n", "CI repair 2")?;
     let repair2 = git(&wt, &["rev-parse", "HEAD"])?;
     let bounds = WatchBounds::default();

@@ -105,6 +105,12 @@ The live watcher resolves ordinary CI for the owner at the armed head and reads 
 
 ## Evidence
 
+- With a recorded singleton and a failing ordinary PR run, the first replay implementation left a clean committed repair unpublished. The bare origin still pointed to the failed head. The watcher now uses the existing repair publication path and defers the notice until it reads the newly published head.
+
+- On the #1578 dev tree, 17 of 40 candidate regressions failed. The owner could receive an unarmed-green instruction after its train had failed, and the active singleton supplied no verification notice. The tests use synthetic tasks, a real Git origin, a local database and the original reattached session. The first combined fixture exceeded the default Rust test stack. An 8 MiB diagnostic run established the behavioral failures, and the fixture now runs setup, live queue checks and recorded-decision checks separately.
+
+- PR #1578 landed at `0c53d8243`. Train run `2bb13e83-2d98-4fb8-90e8-acabb8544b6b` passed quality, both Rust test shards and browser E2E. PR run `9455b033-1c79-4a53-88c0-8c752f319ef8` and dev run `7e7db4ec-66f1-4418-8443-065bc2642d0a` reused the verified tree. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/0c53d8243fe6322e250b008a8c7ac6251034c15a)
+
 - Independent review approved `1da356a01` after running 39 restored-arm and candidate regressions. All 401 scoped tests passed on the reviewed head and again after removing a duplicate queue-note comparison. The strengthened regressions hold publication while a late queue retry returns the same arm and note, or while an instance update starts. Both keep the notice pending. The ordinary merge fixture also verified that a human decision preserves progress and that the eventual notice records its delivery time. Scoped Clippy passed. Vidoc was disabled.
 
 - The mutation runs for the two review fixes tested 15 and three mutations respectively. They caught four and two, with the remaining 11 and one unviable. The first run selected PR-watch and candidate tests and omitted the merge-train restart fixture. That fixture caught both disabled train reads and disabled writes in the follow-up. The late queue and instance-update tests caught both mutations to the final dispatch guard.

@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- After a restart, a failed single-PR merge train reports its recorded job failure once to the original task. The watcher checks for repairs, reruns and human decisions before sending it (SPEC-558).
+
 - An armed PR’s owner now hears its current ordinary CI failure once, including a run shared at the same head. A train notice identifies the current members and waits if a repair is published or a person takes the decision during the read (SPEC-558).
 
 - Established opaque HTTP/1.1 CONNECT tunnels through the sandbox holder now resume on the same sockets after an orderly Linux server restart. Frozen clients receive queued bytes after thaw, and the restored relay counts against its original limits. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
