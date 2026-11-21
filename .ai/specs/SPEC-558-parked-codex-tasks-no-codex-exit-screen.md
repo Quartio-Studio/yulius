@@ -46,7 +46,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Publish verified parked task detail to the terminal
 - [x] Publish a missed park discovered by terminal detail
 - [x] Publish terminal-discovered resumes to the active task list
-- [ ] Restore resting tasks when terminal detail or the active list discovers Undo
+- [x] Restore resting tasks when terminal detail or the active list discovers Undo
 - [ ] Publish terminal-discovered archive removal after Closed
 - [ ] Publish verified parked task detail to Task Info
 - [ ] Keep failed integration candidates with their original owner
@@ -75,6 +75,8 @@ Capture a separate screen at the park decision because exiting can clear the ent
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
 ## Evidence
+
+- Independent review approved `01095a7c4` for verified restoration. All four new Chromium regressions failed against the merged #1555 product code. The author passed nine focused tests, and the reviewer independently passed seven including both mounted Stopped-task cases. Direct checks confirmed that later removal took precedence and that private run data and the account email stayed out of the public row. Repository contracts, formatting and spec validation passed. No Rust mutation targets changed, and project Vidoc scanning was disabled.
 
 - The combined archive and Undo review found that an empty list could remove the mounted row before its Undo read started. The original store left all three restored resting tasks absent. The correction published each verified unarchived task and honored deletion or a newer empty list. Restoration is delivered first. The archive-removal prototype, including its mounted two-event regression, is retained for the following step.
 
