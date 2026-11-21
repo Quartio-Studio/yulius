@@ -283,7 +283,13 @@ class CompileCache(unittest.TestCase):
     def test_a_handled_terminal_interrupt_reaps_workers_before_releasing_scratch(self):
         self.check_terminal_interrupt("lambda *_: sys.exit(130)")
 
-    def check_terminal_interrupt(self, handler):
+    def test_terminal_hangup_preserves_the_cargo_exit_status(self):
+        self.check_terminal_interrupt("signal.SIG_DFL", hangup=True)
+
+    def test_hangup_keeps_scratch_when_worker_shutdown_is_unconfirmed(self):
+        self.check_terminal_interrupt("signal.SIG_DFL", hangup=True, unconfirmed=True)
+
+    def check_terminal_interrupt(self, handler, *, hangup=False, unconfirmed=False):
         import pty
         import select
         import signal
@@ -302,6 +308,10 @@ if os.fork() == 0:
         signal.pause()
 signal.pause()
 """)
+        if unconfirmed:
+            with (self.task / "scripts/compile_cache.py").open("a") as fixture:
+                fixture.write("\ndef stop_build_group(group, requested=None):\n"
+                              "    raise UnreapedBuild('process observation unavailable')\n")
         env.update(READY=str(ready), YULIUS_BUILD_SCRATCH=str(root))
         with socket.socket(socket.AF_UNIX) as listener:
             listener.bind(str(ready))
@@ -309,6 +319,8 @@ signal.pause()
             listener.settimeout(6)
             pid, terminal = pty.fork()
             if pid == 0:
+                with (self.sandbox / "launcher.stderr").open("w") as errors:
+                    os.dup2(errors.fileno(), 2)
                 os.execve(self.task / "scripts/cargo", ["cargo", "--scratch-target", "build"], env)
             worker = None
             reaped = False
@@ -316,11 +328,20 @@ signal.pause()
                 conn, _ = listener.accept()
                 with conn, os.fdopen(os.pidfd_open(pid), "rb", buffering=0) as launcher:
                     worker = int(conn.recv(32))
-                    os.write(terminal, b"\x03")
-                    self.assertTrue(select.select([launcher], [], [], 8)[0], "launcher missed Ctrl-C")
+                    if hangup:
+                        os.close(terminal)
+                        terminal = None
+                    else:
+                        os.write(terminal, b"\x03")
+                    self.assertTrue(select.select([launcher], [], [], 8)[0], "launcher missed terminal signal")
                     _, status = os.waitpid(pid, 0)
                     reaped = True
-                    self.assertEqual(os.waitstatus_to_exitcode(status), 130)
+                    if unconfirmed:
+                        self.assertNotEqual(os.waitstatus_to_exitcode(status), 0)
+                        self.assertIn("retained build target", (self.sandbox / "launcher.stderr").read_text())
+                        self.assertEqual(len(list(root.iterdir())), 1)
+                        return
+                    self.assertEqual(os.waitstatus_to_exitcode(status), 129 if hangup else 130)
                     self.assertTrue(select.select([conn], [], [], 0)[0], "worker survived launcher exit")
                     self.assertEqual(conn.recv(1), b"")
                     worker = None
@@ -334,7 +355,8 @@ signal.pause()
                 if not reaped:
                     os.kill(pid, signal.SIGKILL)
                     os.waitpid(pid, 0)
-                os.close(terminal)
+                if terminal is not None:
+                    os.close(terminal)
 
     def check_foreground_terminal(self, redirect_stdin, scratch=False):
         import pty

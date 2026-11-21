@@ -432,12 +432,14 @@ fn campaign(
             .args(selection(&diff_file))
             .arg("--list")
             .stdout(std::fs::File::create(&list_path)?);
-        let status = process::run(&mut command, started + bound, stop)?.ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::TimedOut,
-                "deadline reached during mutation discovery",
-            )
-        })?;
+        let status = process::run(&mut command, started + bound, stop)
+            .map_err(process::RunError::into_io)?
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "deadline reached during mutation discovery",
+                )
+            })?;
         if !status.success() {
             return Err(io::Error::other(format!(
                 "cargo mutants --list failed ({status})"
@@ -530,8 +532,8 @@ fn campaign(
         }
         std::fs::rename(&current, old)?;
     }
-    let status = process::run(&mut command, started + bound, stop)?;
-    scratch.close()?;
+    let run = process::run(&mut command, started + bound, stop);
+    let status = scratch.finish(run)?;
     if let Some(status) = status {
         if status.code() == Some(4) {
             return Err(io::Error::other(format!(
@@ -631,8 +633,19 @@ impl CampaignScratch {
         &self.path
     }
 
-    fn close(mut self) -> io::Result<()> {
-        self.reclaim()
+    fn finish(
+        mut self,
+        run: Result<Option<std::process::ExitStatus>, process::RunError>,
+    ) -> io::Result<Option<std::process::ExitStatus>> {
+        if let Err(process::RunError::Unreaped(error)) = run {
+            self.tree = None;
+            return Err(io::Error::other(format!(
+                "{error}; retained build scratch {}",
+                self.path.display()
+            )));
+        }
+        self.reclaim()?;
+        run.map_err(process::RunError::into_io)
     }
 
     fn reclaim(&mut self) -> io::Result<()> {
@@ -658,6 +671,36 @@ mod tests {
 
     fn run(root: &Path, cargo: &str, settings: &Settings) -> io::Result<Option<Outcomes>> {
         campaign(root, cargo, settings, &AtomicBool::new(false))
+    }
+
+    #[test]
+    fn only_unconfirmed_worker_shutdown_retains_command_scratch() -> io::Result<()> {
+        let parent = tempfile::tempdir()?;
+        for unconfirmed in [true, false] {
+            let scratch = allocate_campaign_scratch(parent.path())?;
+            let path = scratch.path().to_owned();
+            std::fs::write(path.join("artifact"), b"build")?;
+            let failure = io::Error::other("worker observation failed");
+            let outcome = if unconfirmed {
+                process::RunError::Unreaped(failure)
+            } else {
+                process::RunError::Command(failure)
+            };
+            let error = scratch
+                .finish(Err(outcome))
+                .err()
+                .ok_or("expected a failed command")
+                .map_err(io::Error::other)?;
+            assert_eq!(
+                path.join("artifact").exists(),
+                unconfirmed,
+                "scratch lifetime"
+            );
+            if unconfirmed {
+                assert!(error.to_string().contains(path.to_string_lossy().as_ref()));
+            }
+        }
+        Ok(())
     }
 
     #[cfg(target_os = "linux")]
@@ -686,7 +729,7 @@ mod tests {
                 .remove(CapabilitySet::DAC_OVERRIDE | CapabilitySet::DAC_READ_SEARCH);
             set_capabilities(None, limited)?;
             let result = if completed {
-                scratch.close()
+                scratch.finish(Ok(None)).map(|_| ())
             } else {
                 // An early error in command setup or supervision drops its owner.
                 drop(scratch);

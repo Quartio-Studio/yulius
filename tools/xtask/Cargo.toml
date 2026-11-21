@@ -16,6 +16,7 @@ layer = "tooling"
 [dependencies]
 yulius-sandbox.workspace = true
 nix.workspace = true
+rustix = { workspace = true, features = ["process"] }
 serde_json.workspace = true
 signal-hook.workspace = true
 tempfile.workspace = true

@@ -6,6 +6,7 @@ import platform
 import signal
 import stat
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 import shutil
@@ -73,8 +74,11 @@ def stop_build_group(group, requested=None):
             if force:
                 send(signal.SIGKILL)
             try:
-                rows = subprocess.check_output(["/bin/ps", "-A", "-o", "pgid=,stat="],
-                                               text=True, timeout=max(0.01, deadline - time.monotonic()))
+                ps = ["/bin/ps", "-A"]
+                if sys.platform == "linux":
+                    ps.append("-L")  # A zombie leader can have other live threads.
+                rows = subprocess.check_output([*ps, "-o", "pgid=,stat="], text=True,
+                                               timeout=max(0.01, deadline - time.monotonic()))
             except (OSError, subprocess.SubprocessError) as error:
                 raise UnreapedBuild(f"cannot verify build group {group}: {error}") from error
             if not any(pgid == str(group) and not state.startswith("Z")
@@ -181,13 +185,23 @@ def run_session(command, env, lease=None, *, interactive=False):
             child.wait()
         raise
     finally:
-        if terminal is not None:
-            try:
-                foreground(os.getpgrp())
-            finally:
-                os.close(terminal)
-        for sig, handler in previous.items():
-            signal.signal(sig, handler)
+        pending = sys.exception()
+        try:
+            if terminal is not None:
+                try:
+                    foreground(os.getpgrp())
+                finally:
+                    os.close(terminal)
+        except OSError as error:
+            # A hung-up terminal no longer has a foreground group to restore.
+            # Even unexpected restoration errors must preserve an uncertain shutdown.
+            if error.errno not in (errno.ENOTTY, errno.EIO):
+                if pending is None:
+                    raise
+                pending.add_note(f"cannot restore terminal: {error}")
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
 
 
 def sandbox_for(checkout, home):
