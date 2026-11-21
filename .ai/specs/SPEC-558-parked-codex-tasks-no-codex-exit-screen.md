@@ -57,7 +57,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Preserve the ordinary armed merge outcome after a person merges through HTTP
 - [x] Keep the live owner’s merge notice across a queue decision
 - [x] Verify restored merge requests and their train positions
-- [ ] Defer live PR notices while the session writer is busy
+- [x] Defer live PR notices while the session writer is busy
 - [ ] Verify restored arms and deliver current ordinary CI and train notices to the owner
 - [ ] Report the active singleton and replay its recorded failure for the original owner
 - [ ] Verify candidate status before parking, showing Done or resuming a parked owner
@@ -102,6 +102,8 @@ When the watcher sees an open PR during an active queue decision or its slot cha
 A live PR notice that finds the terminal writer busy leaves its event unheard. The existing bounded watch reevaluates the owner and event on its next pass. Once the first paste is accepted, the normal submit path completes it.
 
 ## Evidence
+
+- The writer-contention regression failed on the landed implementation at `ec580fc3a` and on the earlier recipient-check prototype. Both pasted the red CI notice after the resize released the writer and a human decision had opened. On `1425811da`, all 201 scoped tests passed. The fixture verified the session input time and screen, a second pass during the human decision, and one delivery when the decision cleared. Independent review approved the exact commit after running the fixture. Clippy, repository contracts, formatting and spec validation passed. Vidoc was disabled. The bounded mutation run listed 15 targets and was running at approval.
 
 - PR #1574 landed at dev `ec580fc3a`. Train run `8b6bf3ef-7a83-4490-9166-a988cf4aa5b6` passed quality, both Rust shards and browser E2E. PR run `6ce66313-3813-436a-b18e-8b2a2b20a606` and dev run `88ff2f78-4e23-4bbe-8b8d-4625c3fea241` reused the verified tree. Vidoc was disabled. The restored-position mutation campaign finished with 24 listed, 19 caught and five unviable. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/ec580fc3aaf5e25c81f6f385551285050b1e90a9)
 
