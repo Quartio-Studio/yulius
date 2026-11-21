@@ -18,6 +18,8 @@ pub enum Point {
     ParkedMessageSelected,
     /// The parked predecessor's local work is settled and its successor needs hosted PR facts.
     ParkedPredecessorChecksPr,
+    /// The ending observer recorded this attempt's terminal outcome.
+    TerminalOutcomeRecorded,
     /// A host exit was received, before the run reader enters finalization.
     HostExitReceived,
     /// A host exit reader finished finalizing its attempt.

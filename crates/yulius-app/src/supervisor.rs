@@ -493,6 +493,8 @@ pub struct TaskRuntime {
     /// Run endings being recorded (`finalize_attempt`, `mark_lost`): raised before the attempt is
     /// marked ended, lowered once its chains and queue work is done (SPEC-065 END-003).
     finalizing: tokio::sync::watch::Sender<u32>,
+    /// Serializes final-screen publication and the corresponding attempt transition.
+    recording_exit: tokio::sync::Mutex<()>,
     /// Run-ending observers using the old terminal or run, before onboarding and chain work.
     terminal_cleanup: tokio::sync::watch::Sender<u32>,
     /// The run whose host could not be terminated after its stop or close escalation, and why
@@ -796,6 +798,7 @@ impl TaskRuntime {
             claude_move_refused_ms: AtomicI64::new(0),
             context: Mutex::new(crate::context_full::ContextEpisode::default()),
             finalizing: tokio::sync::watch::channel(0).0,
+            recording_exit: tokio::sync::Mutex::new(()),
             terminal_cleanup: tokio::sync::watch::channel(0).0,
             end_failed: Mutex::new(None),
             parked_activity: Mutex::new(None),
@@ -4276,6 +4279,36 @@ impl App {
             .await;
     }
 
+    /// Publish the attached attempt's final grid before its terminal state becomes visible.
+    /// Exit and loss can race. The second observer checks the durable outcome under the
+    /// same lock and leaves the first observer's file in place (SPEC-301 LRS-001).
+    async fn record_terminal_attempt(
+        &self,
+        runtime: Option<&TaskRuntime>,
+        id: &AttemptId,
+        state: AttemptState,
+        update: &AttemptUpdate,
+        run: Option<&AttemptRecord>,
+    ) -> AppResult<bool> {
+        let store = &self.deps.store;
+        let Some(runtime) = runtime else {
+            return store.transition_attempt(id, state, update).await;
+        };
+        let _recording = runtime.recording_exit.lock().await;
+        if store.attempt_state(id).await?.is_terminal() {
+            return Ok(false);
+        }
+        if let Some(run) = run
+            && runtime
+                .screen_of
+                .lock()
+                .is_ok_and(|shown| shown.as_ref() == Some(id))
+        {
+            save_screen(&runtime.hub, Path::new(&run.run_dir));
+        }
+        store.transition_attempt(id, state, update).await
+    }
+
     async fn mark_lost(
         self: &Arc<Self>,
         task_id: &TaskId,
@@ -4294,27 +4327,24 @@ impl App {
             exit_reason: Some("lost".into()),
             ..AttemptUpdate::default()
         };
+        let run = self.deps.store.attempt(attempt_id).await.ok().flatten();
         let first = self
-            .deps
-            .store
-            .transition_attempt(attempt_id, AttemptState::Lost, &update)
+            .record_terminal_attempt(
+                runtime.as_deref(),
+                attempt_id,
+                AttemptState::Lost,
+                &update,
+                run.as_ref(),
+            )
             .await
             .unwrap_or(false);
         if !first {
             return; // another observer already recorded the outcome
         }
-        // Keep the screen the run was lost on, not its last settled turn's (SPEC-301 LRS-001). A
-        // runtime made after a restart has no output: the saved screen stays. Only when the hub
-        // shows this run: until its attach resets the hub, it shows the run before.
-        if let Some(rt) = &runtime
-            && rt
-                .screen_of
-                .lock()
-                .is_ok_and(|shown| shown.as_ref() == Some(attempt_id))
-            && let Ok(Some(attempt)) = self.deps.store.attempt(attempt_id).await
-        {
-            save_screen(&rt.hub, Path::new(&attempt.run_dir));
-        }
+        crate::race::reached(
+            crate::race::Point::TerminalOutcomeRecorded,
+            Path::new(attempt_id.as_str()),
+        );
         crate::race::reached(
             crate::race::Point::LossRecorded,
             Path::new(task_id.as_str()),
@@ -4595,24 +4625,28 @@ impl App {
             }),
             ..AttemptUpdate::default()
         };
-        let first = store
-            .transition_attempt(attempt_id, state, &update)
+        // Optional metadata may be unreadable on a historical run. Its confirmed exit still counts.
+        let run = store.attempt(attempt_id).await.ok().flatten();
+        let first = self
+            .record_terminal_attempt(Some(&runtime), attempt_id, state, &update, run.as_ref())
             .await
             .unwrap_or(false);
         if !first {
             return; // another observer already recorded the outcome
         }
+        crate::race::reached(
+            crate::race::Point::TerminalOutcomeRecorded,
+            Path::new(attempt_id.as_str()),
+        );
         // The losing reader leaves the winner's screen and session state intact.
         if let Ok(mut end) = runtime.session_end.lock() {
             *end = None;
         }
         runtime.verdict_stop_ms.clear();
         runtime.watcher_alive.store(false, Ordering::SeqCst);
-        let mut session_started = true;
-        if let Ok(Some(attempt)) = store.attempt(attempt_id).await {
-            save_screen(&runtime.hub, Path::new(&attempt.run_dir));
-            session_started = session_started_marked(Path::new(&attempt.run_dir));
-        }
+        let session_started = run
+            .as_ref()
+            .is_none_or(|attempt| session_started_marked(Path::new(&attempt.run_dir)));
         // This reader won and settles its request below.
         runtime.take_reader_request(attempt_id);
         runtime.clear_start_counters(attempt_id);

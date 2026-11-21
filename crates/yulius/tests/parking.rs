@@ -663,13 +663,12 @@ fn losing_exit_reader(before_finalization: bool) -> TestResult {
             .await?
         };
         assert_eq!(accepted["delivered"], "resumed");
-        if before_finalization {
-            assert_eq!(
-                std::fs::read(&saved)?,
-                original,
-                "the stale exit reader rewrote the lost run's saved screen"
-            );
-        } else {
+        assert_eq!(
+            std::fs::read(&saved)?,
+            original,
+            "the stale exit reader rewrote the lost run's saved screen"
+        );
+        if !before_finalization {
             app.stop_task_now(&id).await?;
         }
         Ok::<_, Error>(())

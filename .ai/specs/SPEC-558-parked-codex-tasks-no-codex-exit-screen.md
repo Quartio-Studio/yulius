@@ -117,6 +117,10 @@ The SQLite query returning a parked task includes the latest attempt ID in the s
 
 ## Evidence
 
+- Run `34079a24-c366-464b-a57f-c583ddc0860f` reproduced the final-screen ordering regression for both host loss and normal close. A reader at the durable attempt transition saw the previous turn’s file even though later output was already visible in the hub. The corrected exit and loss paths serialize the final screen write and the attempt transition and recheck the attempt inside that critical section.
+
+- The held replacement park passed with the guard present, together with seven admission and metadata controls in run `2c97d193-88e3-4f61-b520-0fd600322bab`. The test-only review delta contained no eligible mutation. Further review identified the separate requirement to publish the final screen before committing an exit or loss so a restart at that boundary sees current output. [SPEC-301](SPEC-301-a-run-lost-while-yulius-runs-saves-its-l.md)
+
 - In isolated run `746fa1e0-e581-400a-a775-c0cf19d5e4c0`, removing only the terminal-attempt guard allowed the stale reader to consume the replacement’s park request. The replacement recorded `exited code=None signal=Some(2)` instead of `parked`. The regression holds both exit readers and checks the replacement’s durable attempt ID and capture after they finish.
 
 - The screen-settlement implementation at `c7ad33727` passed all 185 selected parking, Codex, supervision and lost-screen tests in run `ba615278-18a9-46e7-88ba-e34aceddd074`. Review requested a test that holds the replacement's own park request while the stale reader finishes. It also identified a separate pre-existing live-output path that selects a hub by task after a replacement attaches. That ordering was traced by inspection. [Issue #1624](https://github.com/Quartio-Studio/yulius/issues/1624)

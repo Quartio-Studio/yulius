@@ -14,9 +14,11 @@ Capture the redacted terminal in the attempt directory at the parking decision, 
 
 For native Codex resume, keep the rollout ID on the attempt. If its lineage write was interrupted, restore that ID before launching. A historical lineage entry can identify a run only if it was observed during that attempt. A missing identity leaves the task parked and the sender gets an error.
 
+Parked admission waits outside the launch lock for observers using the old terminal to finish. The wait uses the configured stop escalation bound. Exit and loss observers serialize saving the final screen and recording the outcome. They recheck the attempt under that lock and save the grid before making the terminal state visible.
+
 ## Alternatives
 
-Waiting for all run finalization would make an owner’s message wait for a successor’s PR lookup. Instead, parked admission waits outside the launch lock for observers using the old terminal to finish. The wait uses the configured stop escalation bound. Only the observer that records the attempt’s terminal outcome may save its final screen.
+Waiting for all run finalization would make an owner’s message wait for a successor’s PR lookup. Publishing the attempt outcome before the final screen would leave the previous turn’s screen visible after a restart in between.
 
 Filtering shutdown text cannot recover a cleared TUI. Changing the process termination signal couples the display to each CLI's shutdown behavior. Injecting a new user message after Stop introduces a race with owner input and other wakeups.
 
