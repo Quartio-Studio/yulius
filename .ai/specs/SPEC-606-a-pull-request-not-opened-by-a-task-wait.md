@@ -1,6 +1,6 @@
 ---
 yulius-task: 5975c9fc-b3d6-49b9-aaa3-9126e2d851ad
-status: in-progress
+status: done
 ---
 
 # SPEC-606 — First CI run for a pull request opened outside Yulius
@@ -26,8 +26,8 @@ In the checked-out revision before this change, the periodic loop defaulted to 6
 - [x] Account for the opening-to-queue delay
 - [x] Discover outside PR heads within one minute
 - [x] Prove queue timing, deduplication and request cost
-- [ ] Prevent CI admission after sandbox removal
-- [ ] Approve the verified change for delivery to dev
+- [x] Prevent CI admission after sandbox removal
+- [x] Approve the verified change for delivery to dev
 
 ## Acceptance criteria
 
@@ -42,7 +42,7 @@ Use the real HTTP router, Git clone, CI store and fake GitHub. Assert the queued
 
 ## Decisions
 
-A signed push supplies the missing trigger and repository identity without charging a PR-list read or changing the poll interval. A Git pull ref alone cannot prove the base branch or distinguish a fork. Existing App owners enable delivery under their App registration and provision the matching server secret. The signed opening establishes the PR state at event time. A close or retarget after opening is reconciled by the next fresh inventory. A delivery older than a minute falls back to the inventory. At most 16 deliveries hold a slot from before the first body read through scheduling and status publication. A slow body has three seconds to finish. The sandbox scheduling lock protects local decisions. Status writes proceed after its release. Both admission paths share a window of 30 open PRs per sandbox. An admitted PR retains its place until inventory observes its closure or ineligibility. Inventory fills vacancies from the other eligible PRs. Persist the ordered admitted PR numbers independently of run history, since different PRs can share a SHA. A restart restores all occupied places without another GitHub read. On upgrade, existing active PR runs seed the first window. The HTTP response waits up to three seconds for an immediate error. A slower worker continues after acknowledgement. [ADR-0441](../../docs/decisions/0441-github-pr-openings-trigger-exact-head-ci.md)
+A signed PR opening event supplies the missing trigger and repository identity without charging a PR-list read or changing the poll interval. A Git pull ref alone cannot prove the base branch or distinguish a fork. Existing App owners enable delivery under their App registration and provision the matching server secret. The signed opening establishes the PR state at event time. A close or retarget after opening is reconciled by the next fresh inventory. A delivery older than a minute falls back to the inventory. At most 16 deliveries hold a slot from before the first body read through scheduling and status publication. A slow body has three seconds to finish. The sandbox scheduling lock protects local decisions. Status writes proceed after its release. Both admission paths share a window of 30 open PRs per sandbox. An admitted PR retains its place until inventory observes its closure or ineligibility. Inventory fills vacancies from the other eligible PRs. Persist the ordered admitted PR numbers independently of run history, since different PRs can share a SHA. A restart restores all occupied places without another GitHub read. On upgrade, existing active PR runs seed the first window. The HTTP response waits up to three seconds for an immediate error. A slower worker continues after acknowledgement. [ADR-0441](../../docs/decisions/0441-github-pr-openings-trigger-exact-head-ci.md)
 
 ## Evidence
 
@@ -57,3 +57,5 @@ A signed push supplies the missing trigger and repository identity without charg
 - After moving publication outside the scheduling lock, the held-status fixture queued the PR while the POST was outstanding (1.67 seconds including setup). After sharing admission between inventory and openings, PR 31 waited through a reordered inventory and entered unchanged after a closure. After moving the permit before body extraction, the saturated route returned 429, all 16 readers timed out with 408 and a subsequent valid opening received 202. All five webhook tests passed together. The incident is tracked in [Yulius issue 1647](https://github.com/Quartio-Studio/yulius/issues/1647).
 - Review round two identified lost PR membership after restart when 30 PRs shared a SHA. Recreating the app against the same store reproduced immediate admission of PR 31 on the previous head. Persisting all 30 PR numbers kept it out until a place opened; the restart added zero PR discovery calls. The populated database upgrade test failed with a missing admission column before the migration, then passed with both active PRs retained in queue order. All 16 scheduler and store regressions passed together. The manifest test passed separately. Scoped Clippy passed and the project security command reported Vidoc disabled.
 - The removal regression completes an admin’s sandbox deletion after Git discovery and before durable CI writes. Before the guard, both a new PR and an already admitted PR created one run and sent one pending status after deletion. The new PR also claimed a place. The guarded SQLite writes use the sandbox’s removal state within the statement or transaction that mutates CI.
+- The guarded removal test passed in 2.38 seconds including both fixtures. Both deliveries returned 202 with zero new runs or status writes, and the stored admission list retained its previous membership. All 17 scheduler and store checks passed on the revised code. The GitHub manifest conversion test also passed.
+- Independent review approved product head `80ffa15e74dd8754df22c2966a796b92ff95e226`. Yulius records the PR-head CI verdict, landed revision and staging request in task 590’s delivery evidence.
