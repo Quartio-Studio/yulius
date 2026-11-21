@@ -43,7 +43,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Keep verified unfinished parked rows out of Done in the browser
 - [x] Reconcile parked lifecycle changes and refresh the sidebar independently of Git
 - [x] Show current parked progress and owner notices in the terminal
-- [ ] Publish verified parked task detail to the terminal
+- [x] Publish verified parked task detail to the terminal
 - [ ] Reconcile missed parks, resumes and archives discovered by terminal detail
 - [ ] Publish verified parked task detail to Task Info
 - [ ] Keep failed integration candidates with their original owner
@@ -72,6 +72,16 @@ Capture a separate screen at the park decision because exiting can clear the ent
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
 ## Evidence
+
+- Independent review approved the existing-row delivery at `53bd0b02d`. Seven reviewer-run Chromium regressions verified terminal/sidebar agreement, retention of successful detail across failed resync and both reply orders of an unavailable watch with a merged overview. Repeating the four closure/owner cases with server-equivalent owner fields kept the PR closed and preserved the decision. Detail-only prompts, run history and account email stayed out of the shared row. Eight author-run regressions passed on the split implementation. The earlier frozen complete browser suite at `7ca1b7e56` passed 1,248 tests with one optional skip. Repository contracts, formatting and spec validation passed. The mutation command had no changed Rust targets. Vidoc was disabled.
+
+- Review of `5c830fdcd` reproduced a failed watched list followed by a Git overview that reported the PR merged. Reversing only the replies changed the parked group. The Chromium regression exercises both orders with and without an outstanding human decision. The overview now reconciles a closure on an unverified row. After the third review, private discovery of a park from a still-running list row moved to the planned lifecycle delivery. This delivery publishes only into existing parked rows and reads their current verification for terminal grouping. The missed-park cases remain at `5c830fdcd` for that lifecycle step.
+
+- At `55dcf25ba`, a healthy watched list returned the same fields while an earlier failing Git overview was pending. The terminal showed Needs you and the sidebar showed Done after the Git reply. The regression reproduces both groups and the chip in one store. The terminal now considers that newer matching verification even when the list had no changed fields to publish.
+
+- On the dev base the mounted terminal showed PR #520 failing after the detail verified recovery, and showed Done for merged #520 after a successful detail found open #521 during a failed resync. The initial publication change passed 81 parked, progress and attention cases and 25 Done cases. Review of `7ca1b7e56` reproduced an inherited open PR surviving a confirmed closure in both the detail and watched-list reply orders. A failed watch also restored the older failing chip as the group reason. The Chromium regressions check the actual group and PR identity, retaining a concurrent human decision and the visible Git chip. The store now keeps the verifier’s answer separately from its temporary open-PR fallback.
+
+- PR #1552 landed on dev at `71ee007e9`. Yulius CI run `6b56f233-daf0-4290-84f9-a5250a12eb8b` passed quality, both Rust shards and browser e2e on PR head `3f7f153a4`. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe704d71f9/delivery/evidence/71ee007e98464f0b9156846fc76fad4bcc3daf8c)
 
 - Independent review approved `cfaf7ee89` and ran all four mounted Chromium regressions. The parked terminal showed Step 7/7 on completion, retained Step 2/7 while another step finished (including a case-only edit), and cleared the resolved notice before a later failing check. Repository contracts and formatting passed. This browser change has no Rust mutation targets. Vidoc was disabled.
 

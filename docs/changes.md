@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- Opening a parked terminal updates its sidebar row with the verified plan, PR and owner decision. A delayed read preserves a newer observation of the same PR closing (SPEC-558).
+
 - A parked terminal shows the completed step count when the sidebar observes the last step finish. A later CI failure no longer displays an owner action that was already resolved (SPEC-558).
 
 - Parked rows in the sidebar follow CI reruns while Git is loading. Overlapping task lists reconcile resumes, archives, Undo and permanent removals (SPEC-558).
