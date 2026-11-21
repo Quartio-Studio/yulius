@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- A running PR owner receives a failed ordinary check once, even when another PR scheduled the run at the same commit. Train notices follow current membership, and advice waits while the owner has a pending decision or Yulius restores its merge request (SPEC-558).
+
 - A running task whose first PR watch occurs during a live merge queue decision still hears about the resulting merge once. Check-ins wait for the queue (SPEC-558).
 - On Linux in legacy mode, established opaque HTTP/1.1 CONNECT tunnels retain the agent’s original TCP peers and queued bytes across an orderly server restart. Multiplexed HTTP/2 sessions to the proxy reconnect. Intercepted connections reconnect through the host-bound secret policy. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
 
