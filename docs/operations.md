@@ -189,8 +189,8 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # The parked terminal updates its step count and clears resolved owner notices when the list refreshes.
 # A terminal that discovers a missed park updates the active task list with the verified work.
 # Opening a parked terminal also corrects a missed resume in the sidebar.
-# If the browser received Closed and missed Archived, opening the terminal also removes the
-# archived task from the active list. A later list or detail read can show that Undo restored it.
+# Undo restores a resting task to Tasks. An open terminal can discover the restoration through
+# task detail or a refreshed list. A newer removal takes precedence.
 # Opening the parked terminal also refreshes its sidebar row. An unavailable refresh keeps a known
 # open PR under Needs you until verification succeeds. The Git chip shows the last overview.
 # Use task_get for the current parked wait reason or tasks_list with scope needs_you

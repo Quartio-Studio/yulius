@@ -46,7 +46,8 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Publish verified parked task detail to the terminal
 - [x] Publish a missed park discovered by terminal detail
 - [x] Publish terminal-discovered resumes to the active task list
-- [ ] Reconcile terminal-discovered archives and later Undo
+- [ ] Restore resting tasks when terminal detail or the active list discovers Undo
+- [ ] Publish terminal-discovered archive removal after Closed
 - [ ] Publish verified parked task detail to Task Info
 - [ ] Keep failed integration candidates with their original owner
 - [ ] Deliver bounded Codex goal continuation to dev
@@ -75,13 +76,15 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- The combined archive and Undo review found that an empty list could remove the mounted row before its Undo read started. The original store left all three restored resting tasks absent. The correction published each verified unarchived task and honored deletion or a newer empty list. Restoration is delivered first. The archive-removal prototype, including its mounted two-event regression, is retained for the following step.
+
 - At `40db6a8bb`, an active list between an archive read and an Undo read could still remove the restored row. The expanded Chromium regression schedules all six reply orders for a Closed, Stopped or Failed task and discards an obsolete archive response as the mounted terminal does. Nine of 18 schedules lost the row before the fix. The newer detail now publishes a resting task’s archive flag directly, so the list and terminal agree even when the older detail is discarded. All 13 focused Chromium tests passed.
 
 - The full Chromium run `01a1fbf6-23d3-7082-91c1-507ebb85541c` on the earlier head `3c574cf45` reported a teardown timeout in the existing persistent-startup-interruptions test. That test and its startup fixture were unchanged in this delivery. [Issue #1556](https://github.com/Quartio-Studio/yulius/issues/1556)
 
 - At `3c574cf45`, two detail reads began on a Closed task. The older one observed Archive and the newer one observed Undo, but the active row remained absent in both reply orders. In the mounted terminal, releasing Archive then Undo left the title “Held archive”. The store now retains the newer public summary for the lifetime of an older overlapping request. The expanded ordering test and mounted regression both passed after the correction.
 
-- On the merged #1555 code, nine of ten controlled archive/Undo cases failed. The regression for Closed followed by a missed Archived event checks both reply orders of an outstanding active list. Additional coverage starts the list after terminal detail and lets it omit the task first. The initial prototype skipped the terminal notification in that order. The store now accepts a compatible archive observation to explain the omission while preserving the newer list’s membership.
+- On the merged #1555 code, nine of ten controlled archive/Undo cases failed. The regression for Closed followed by a missed Archived event checks both reply orders of an outstanding active list. Additional coverage starts the list after terminal detail and lets it omit the task first. The initial prototype skipped the terminal notification in that order. The combined prototype accepted a compatible archive observation to explain the omission while preserving the newer list’s membership. Archive publication remains the following delivery.
 
 - PR #1555 delivered terminal-discovered resumes at dev `8617cb771`. Run `8882bbdb-055d-49be-b630-fb2ce29c6318` passed quality, both Rust shards and browser e2e on `5290d06f5`. The reviewed product commit passed 1,269 local Chromium tests with one optional skip. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe704d71f9/delivery/evidence/8617cb771643dc76175ec8ddcf020b6026baf24c)
 
