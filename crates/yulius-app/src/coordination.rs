@@ -275,10 +275,14 @@ impl App {
         let rows = self
             .list_briefs(&tasks, limit, filtered, caller.task.is_none())
             .await?;
-        match &caller.task {
-            Some(own) => Ok(json!({"you": self.task_brief(own).await?, "tasks": rows})),
-            None => Ok(json!({"tasks": rows})),
+        let mut listing = json!({"tasks": rows});
+        if let Some(own) = &caller.task {
+            listing["you"] = self.task_brief(own).await?;
         }
+        if let Some(wait) = self.github_wait() {
+            listing["github_wait"] = json!(wait);
+        }
+        Ok(listing)
     }
 
     /// Apply the owner's limit after the Needs you filter. Only time spent on

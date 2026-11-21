@@ -85,7 +85,7 @@ fn derived_wait_reason(facts: &AttentionFacts) -> Option<&'static str> {
                 Some("The parked task is waiting for its pull request checks.")
             }
             Some(PullSignal::Errored) => {
-                Some("The parked task's pull request could not be verified.")
+                Some("CI could not complete the checks for the parked task's pull request.")
             }
             Some(PullSignal::Behind) => {
                 Some("The parked task's pull request needs to be updated with its base branch.")
@@ -494,8 +494,8 @@ impl App {
                 ),
                 Some(PullSignal::Errored) => (
                     "errored",
-                    "The parked task's pull request could not be verified.",
-                    "Open the task and resume it or rerun CI.",
+                    "CI could not complete the checks for the parked task's pull request.",
+                    "Read the CI run and rerun its checks.",
                 ),
                 _ => (
                     "resume",

@@ -65,14 +65,15 @@ impl ParkedStatus {
 
 /// PR facts the Git overview supplied for a single task. A closed, unmerged PR
 /// has a number and no attention signal.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct ObservedPull {
+    pub(crate) head: Option<Arc<str>>,
     pub(crate) number: u64,
     pub(crate) signal: Option<PullSignal>,
 }
 
 impl ObservedPull {
-    pub(crate) fn open(self) -> bool {
+    pub(crate) fn open(&self) -> bool {
         self.signal
             .is_some_and(|signal| signal != PullSignal::Merged)
     }
@@ -98,10 +99,12 @@ struct Overview {
 
 impl Overview {
     fn reading(&self, task: &TaskId, prior: Option<ObservedPull>) -> Option<ObservedPull> {
-        let read = *self.rows.get(task)?;
+        let read = self.rows.get(task)?.clone();
         if !self.complete
             && let Some(open) = prior.filter(|pr| pr.open())
-            && read.is_none_or(|pr| !pr.open() && pr.number != open.number)
+            && read
+                .as_ref()
+                .is_none_or(|pr| !pr.open() && pr.number != open.number)
         {
             return Some(open);
         }
@@ -113,6 +116,7 @@ impl Overview {
 enum PullObservation {
     Sandbox(Overview),
     Branch(TaskId, ObservedPull),
+    Verified(TaskId, Option<ObservedPull>),
 }
 
 #[derive(Debug)]
@@ -155,13 +159,19 @@ impl ReadOrder {
                             .keys()
                             .filter_map(|task| {
                                 overview
-                                    .reading(task, prior.get(task).copied())
+                                    .reading(task, prior.get(task).cloned())
                                     .map(|pr| (task.clone(), pr))
                             })
                             .collect();
                     }
+                    PullObservation::Verified(task, Some(pr)) => {
+                        prior.insert(task.clone(), pr.clone());
+                    }
+                    PullObservation::Verified(task, None) => {
+                        prior.remove(task);
+                    }
                     PullObservation::Branch(task, pr) => {
-                        let pr = pr.after_branch_read(prior.get(task).copied());
+                        let pr = pr.clone().after_branch_read(prior.get(task).cloned());
                         prior.insert(task.clone(), pr);
                     }
                 }
@@ -173,7 +183,7 @@ impl ReadOrder {
         let mut known = self
             .committed
             .get(task)
-            .copied()
+            .cloned()
             .map(Some)
             .or(self.sandbox_read.then_some(None));
         for read in self.slots.iter().filter_map(|slot| slot.published.as_ref()) {
@@ -182,9 +192,12 @@ impl ReadOrder {
                     known = Some(overview.reading(task, known.flatten()))
                 }
                 PullObservation::Branch(id, pr) if id == task => {
-                    known = Some(Some(pr.after_branch_read(known.flatten())));
+                    known = Some(Some(pr.clone().after_branch_read(known.flatten())));
                 }
-                PullObservation::Branch(_, _) => {}
+                PullObservation::Verified(id, pr) if id == task => {
+                    known = Some(pr.clone());
+                }
+                PullObservation::Branch(_, _) | PullObservation::Verified(_, _) => {}
             }
         }
         known
@@ -208,6 +221,7 @@ impl OverviewRead {
 
     pub(crate) fn record_branch(self, task: &TaskId, merged: u64, replacement: Option<u64>) {
         let pr = ObservedPull {
+            head: None,
             number: replacement.unwrap_or(merged),
             signal: Some(if replacement.is_some() {
                 PullSignal::InReview
@@ -216,6 +230,10 @@ impl OverviewRead {
             }),
         };
         self.publish(PullObservation::Branch(task.clone(), pr));
+    }
+
+    pub(crate) fn verified(self, task: &TaskId, pr: Option<ObservedPull>) {
+        self.publish(PullObservation::Verified(task.clone(), pr));
     }
 
     fn publish(mut self, observation: PullObservation) {
@@ -295,6 +313,7 @@ impl ObservedPulls {
         cache.lock().ok()?.current(task)
     }
 
+    #[cfg(test)]
     fn get(&self, sandbox: &SandboxId, task: &TaskId) -> Option<Option<PullSignal>> {
         self.known_pull(sandbox, task)
             .map(|pr| pr.and_then(|pr| pr.signal))
@@ -474,6 +493,11 @@ impl App {
         let mut observed = self.known_parked_pull(task, None);
         let mut status = ParkedStatus::new(task);
         let mut discovery = None;
+        let mut publication = self
+            .observed_pulls
+            .begin_branch(&task.sandbox_id, &task.id)
+            .ok();
+        let mut verified = false;
         let check = async {
             let record = self.deps.store.delivery(&task.id).await?;
             observed = self.known_parked_pull(task, record.as_ref());
@@ -490,13 +514,10 @@ impl App {
                 .filter(|r| crate::delivery::past_merge(&r.stage))
                 .and_then(|r| r.pr_number)
             {
-                let read = match self.observed_pulls.begin_branch(&task.sandbox_id, &task.id) {
-                    Ok(read) => Some(read),
-                    Err(crate::error::AppError::Capacity(_)) => None,
-                    Err(err) => return Err(err),
-                };
                 discovery = Some(crate::delivery::FollowupDiscovery::new(
-                    read, merged, deadline,
+                    publication.take(),
+                    merged,
+                    deadline,
                 ));
             }
             let prs = self
@@ -531,6 +552,10 @@ impl App {
                 false
             };
             if !status.facts.parked_has_local_work_or_request() {
+                verified = !status.followup_unverified
+                    && !observed.unavailable
+                    && (current
+                        || (observed.pr.is_some_and(|pr| pr.open) && observed.signal.is_some()));
                 status.facts.pull = if current {
                     observed.pr.map(|pr| {
                         if pr.open {
@@ -539,21 +564,47 @@ impl App {
                             PullSignal::Merged
                         }
                     })
+                } else if observed.unavailable || status.followup_unverified {
+                    status.followup_unverified = true;
+                    self.last_pull_signal(task, &observed)
                 } else {
-                    Some(observed.signal.unwrap_or(PullSignal::Errored))
+                    Some(
+                        observed
+                            .signal
+                            .filter(|s| *s != PullSignal::Merged)
+                            .unwrap_or(PullSignal::InReview),
+                    )
                 };
             }
             Ok::<_, crate::error::AppError>(())
         };
-        if !matches!(tokio::time::timeout_at(deadline, check).await, Ok(Ok(()))) {
-            status.facts.pull = Some(PullSignal::Errored);
+        match tokio::time::timeout_at(deadline, check).await {
+            Ok(Ok(())) => {}
+            Ok(Err(crate::error::AppError::Internal(_))) => {
+                status.followup_unverified = true;
+                status.facts.pull = Some(PullSignal::InReview);
+            }
+            Err(_) | Ok(Err(_)) => {
+                status.followup_unverified = true;
+                status.facts.pull = self.last_pull_signal(task, &observed);
+            }
         }
         crate::race::reached(
             crate::race::Point::ParkedStatusRead,
             std::path::Path::new(task.id.as_str()),
         );
+        let confirmed = verified.then_some(status.facts.pull).flatten();
         if let Some(mut discovery) = discovery {
-            discovery.publish(&task.id, observed.pr);
+            discovery.publish(&task.id, &observed, confirmed);
+        } else if let Some(read) = publication.filter(|_| verified) {
+            read.verified(
+                &task.id,
+                observed.pr.map(|pr| ObservedPull {
+                    head: observed.head.clone(),
+                    number: pr.number,
+                    signal: confirmed,
+                }),
+            );
         }
         status.pr = observed.pr;
         status
@@ -589,15 +640,9 @@ impl App {
         // The pull request, the plan and the goal matter only after a finished turn: with no step
         // open and no unfinished goal, an idle agent answered (SPEC-429).
         let (pull, plan_open, spec_unfinished) = if finished {
-            let mut pull = match self.observed_pulls.get(&task.sandbox_id, &task.id) {
-                Some(observed) => observed,
-                // Not read since the server started: a merge recorded earlier is still known.
-                None => store
-                    .delivery(&task.id)
-                    .await?
-                    .filter(|record| crate::delivery::past_merge(&record.stage))
-                    .map(|_| PullSignal::Merged),
-            };
+            let record = store.delivery(&task.id).await?;
+            let observed = self.known_parked_pull(task, record.as_ref());
+            let mut pull = self.last_pull_signal(task, &observed);
             // A newer Yulius CI run already queued or running supersedes a stale failing
             // pull-request observation on a live task (SPEC-578).
             if live && pull == Some(PullSignal::Failing) && self.pr_ci_progressing(task).await {
@@ -789,19 +834,22 @@ mod overview_tests {
         let task = TaskId::parse("task").map_err(crate::error::AppError::internal)?;
         let rows = |pull| HashMap::from([(task.clone(), pull)]);
         let red = Some(ObservedPull {
+            head: None,
             number: 2,
             signal: Some(PullSignal::Failing),
         });
         let landed = Some(ObservedPull {
+            head: None,
             number: 1,
             signal: Some(PullSignal::Merged),
         });
         for (complete, later, expected) in [
             (false, None, Some(PullSignal::Failing)),
-            (false, landed, Some(PullSignal::Failing)),
+            (false, landed.clone(), Some(PullSignal::Failing)),
             (
                 false,
                 Some(ObservedPull {
+                    head: None,
                     number: 2,
                     signal: None,
                 }),
@@ -814,11 +862,11 @@ mod overview_tests {
                 let earlier = cache.begin(&sandbox)?;
                 let newer = cache.begin(&sandbox)?;
                 if reverse {
-                    newer.record(complete, rows(later));
-                    earlier.record(true, rows(red));
+                    newer.record(complete, rows(later.clone()));
+                    earlier.record(true, rows(red.clone()));
                 } else {
-                    earlier.record(true, rows(red));
-                    newer.record(complete, rows(later));
+                    earlier.record(true, rows(red.clone()));
+                    newer.record(complete, rows(later.clone()));
                 }
                 assert_eq!(cache.get(&sandbox, &task), Some(expected));
                 cache.begin(&sandbox)?.record(true, HashMap::new());
@@ -827,7 +875,7 @@ mod overview_tests {
 
         let older = cache.begin(&sandbox)?;
         cache.begin(&sandbox)?.record(true, HashMap::new());
-        older.record(false, rows(red));
+        older.record(false, rows(red.clone()));
         assert_eq!(cache.get(&sandbox, &task), Some(None));
         Ok(())
     }
@@ -848,10 +896,11 @@ mod overview_tests {
         drop(older);
         assert!(cache.known_pull(&sandbox, &other).is_none());
         let red = Some(ObservedPull {
+            head: None,
             number: 2,
             signal: Some(PullSignal::Failing),
         });
-        let rows = HashMap::from([(task.clone(), red), (other.clone(), red)]);
+        let rows = HashMap::from([(task.clone(), red.clone()), (other.clone(), red)]);
         cache.begin(&sandbox)?.record(true, rows);
         cache
             .begin_branch(&sandbox, &task)?
@@ -905,13 +954,14 @@ mod overview_tests {
         let task = TaskId::parse("task").map_err(crate::error::AppError::internal)?;
         let old = cache.begin(&sandbox)?;
         let red = Some(ObservedPull {
+            head: None,
             number: 2,
             signal: Some(PullSignal::Failing),
         });
         for _ in 1..OVERVIEW_WINDOW {
             cache
                 .begin(&sandbox)?
-                .record(false, HashMap::from([(task.clone(), red)]));
+                .record(false, HashMap::from([(task.clone(), red.clone())]));
         }
         assert!(matches!(
             cache.begin(&sandbox),

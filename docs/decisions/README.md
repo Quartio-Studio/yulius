@@ -494,6 +494,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0443 -->
 <!-- ADR 0444 -->
 <!-- ADR 0445 -->
+- [0446](0446-keep-github-availability-separate-from-task-state.md): Keep GitHub availability separate from task state.
 <!-- ADR 0446 -->
 <!-- ADR 0447 -->
 <!-- ADR 0448 -->

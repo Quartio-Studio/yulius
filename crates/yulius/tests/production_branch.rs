@@ -325,3 +325,32 @@ async fn the_adapter_reads_branch_heads_from_github() -> TestResult {
     assert_eq!(prefix, None);
     Ok(())
 }
+
+#[tokio::test]
+async fn only_an_installation_token_reports_the_instances_github_wait() -> TestResult {
+    let world = world().await?;
+    let installed = world
+        .adapter
+        .installation_token(&world.app, world.installation)
+        .await?;
+    world.fake.inject_fault(
+        FakeFault::new("GET", "/repos/acme/app/pulls", 429, 2).header("retry-after", "904"),
+    );
+    assert!(
+        world
+            .adapter
+            .list_pulls(&world.admin, "acme", "app", None)
+            .await
+            .is_err()
+    );
+    assert!(world.adapter.rate_limit_reset().is_none());
+    assert!(
+        world
+            .adapter
+            .list_pulls(&installed, "acme", "app", None)
+            .await
+            .is_err()
+    );
+    assert!(world.adapter.rate_limit_reset().is_some());
+    Ok(())
+}

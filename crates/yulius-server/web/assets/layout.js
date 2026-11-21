@@ -426,6 +426,13 @@ function statusSection(key, iconName, title, summary, body, openByDefault) {
     h('div', { class: 'status-fold-body' }, body)), key, openByDefault);
 }
 
+export function githubWaitText(reset) {
+  if (!Number.isFinite(reset) || reset <= Date.now()) return '';
+  const when = new Date(reset);
+  if (!Number.isFinite(when.getTime())) return '';
+  return `GitHub rate limit reached. Merges, CI status updates and the staging queue are waiting until ${when.toISOString().slice(11, 19)} UTC.`;
+}
+
 /**
  * Render GET /api/status (`StatusView`: vm, sessions, sandboxes, accounts, contained) so it reads
  * in seconds: one health line, machine tiles, then sandboxes and accounts as collapsible lists.
@@ -464,6 +471,7 @@ export function renderStatus(data) {
   if (placed !== REVIEW_MODEL) health = { tone: 'warn', icon: 'clock', text: fallbackLine(REVIEW_MODEL, placed) };
   if (troubled.length) health = { tone: 'warn', icon: 'warn', text: `${troubled.length} ${troubled.length === 1 ? 'subscription needs' : 'subscriptions need'} attention` };
 
+  const githubWait = githubWaitText(data.github_reset_at_ms);
   const facts = [
     h('span', { class: 'status-fact', title: 'Time since the machine started' }, icon('clock', { size: 13 }), Number.isFinite(vm.uptime_s) ? `Up ${duration(vm.uptime_s * 1000)}` : 'Uptime unknown'),
     load ? h('span', { class: 'status-fact', title: 'Load average over 1, 5 and 15 minutes' }, icon('pulse', { size: 13 }), `Load ${load.join(' · ')}`) : null,
@@ -484,7 +492,8 @@ export function renderStatus(data) {
   const accountSummary = [`${ready} ready`, limited ? `${limited} at the limit` : null, troubled.length ? `${troubled.length} need attention` : null].filter(Boolean);
 
   return [
-    h('div', { class: ['status-health', `health-${health.tone}`] }, icon(health.icon, { size: 16 }), h('span', null, health.text)),
+    githubWait ? h('div', { class: 'github-wait', role: 'status' }, githubWait) : null,
+    githubWait && health.tone === 'ok' ? null : h('div', { class: ['status-health', `health-${health.tone}`] }, icon(health.icon, { size: 16 }), h('span', null, health.text)),
     h('div', { class: 'status-section' },
       h('h2', null, 'Machine'),
       h('div', { class: 'stat-tiles' },

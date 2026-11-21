@@ -5,6 +5,8 @@ Cezar and Open Mercato Cloud. It runs native Claude Code sessions, one per task,
 contained sandboxes on a single Linux VM, and enforces engineering discipline around them.
 Yulius develops itself with Yulius. Its pull requests get independent results for check, lint, macOS, docs and dependencies. The merged revision runs both Rust test partitions from one build and runs the browser suite. [Decision 0438](decisions/0438-quality-passes-have-own-jobs-and-test-partitions-share-a-build.md)
 
+Finished tasks keep their last observed pull request state while GitHub is unavailable. The instance shows when merges, CI status updates and staging can use GitHub again. [SPEC-608](../.ai/specs/SPEC-608-a-github-rate-limit-must-not-show-finish.md)
+
 It also runs native Codex CLI sessions on Codex (OpenAI) subscriptions, chosen per task or
 automation. GPT-6.2 Astra is the default model and inherits extra high effort. Other Codex models
 inherit high effort. A task's explicit effort takes precedence.
