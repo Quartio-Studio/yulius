@@ -53,6 +53,7 @@ use yulius_domain::delivery::{DeliveryStage, MergeMethod};
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::task::{Activity, TaskStatus};
 use yulius_domain::time::Timestamp;
+use yulius_domain::vault::redact::{PlainMatcher, redact_text};
 
 use crate::agent_wait::{ArmedMerge, ArmedNow, Deciding, QUEUE_BASE_GUIDANCE, QueueNote, Verdict};
 use crate::auth::AuthContext;
@@ -166,7 +167,7 @@ struct Train {
     /// The run passed and the members are being merged.
     #[serde(default)]
     merging: bool,
-    /// Since when a passed train waits (for GitHub, a busy member or a run at a pushed head).
+    /// Since when a train waits for GitHub, a busy member or a run at a pushed head.
     #[serde(default)]
     waiting_since: Option<i64>,
     /// When it was formed (ms; 0 when unknown).
@@ -292,12 +293,18 @@ pub(crate) struct FailedSingleton {
 }
 
 /// Fold redacted CI text to a bounded line that can be typed into the owner's terminal.
-fn diagnostic_excerpt(text: &str, limit: usize) -> String {
-    text.split_whitespace()
+fn diagnostic_excerpt(text: &str, limit: usize, matcher: &PlainMatcher) -> String {
+    let normalized: String = text
+        .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
         .chars()
         .filter(|c| !c.is_control())
+        .collect();
+    // Formatting can join fragments into a secret. Check the complete line before clipping it.
+    redact_text(matcher, &normalized)
+        .0
+        .chars()
         .take(limit)
         .collect()
 }
@@ -558,6 +565,7 @@ impl App {
     /// Ends `train` for `reason`: its run is cancelled while it is still going, and every
     /// member goes back to the one-by-one flow.
     async fn dissolve(&self, sandbox: &SandboxRecord, train: &Train, reason: &str) {
+        crate::race::reached(crate::race::Point::TrainDissolving, Path::new(&train.run));
         let _ = self
             .ci_cancel(
                 &train.run,
@@ -772,17 +780,33 @@ impl App {
         let text = self
             .singleton_failure_text(sandbox, member, &integration, &train.run)
             .await;
-        if !self
+        match self
             .singleton_inputs_match(sandbox, &task, member, &integration, &train.base)
             .await
         {
-            self.dissolve(
-                sandbox,
-                &train,
-                "its tested head or base cannot be confirmed",
-            )
-            .await;
-            return None;
+            Some(true) => train.waiting_since = None,
+            Some(false) => {
+                self.dissolve(sandbox, &train, "its tested head or base changed")
+                    .await;
+                return None;
+            }
+            None => {
+                let now = self.now().0;
+                let since = *train.waiting_since.get_or_insert(now);
+                if now.saturating_sub(since) <= WAIT_LIMIT_MS {
+                    return Some(train);
+                }
+                // Free the queue on a sustained outage. This arm can proceed one by one
+                // without re-forming the same failed train and resetting its wait budget.
+                state.held_back.push((member.task.clone(), member.armed_at));
+                self.dissolve(
+                    sandbox,
+                    &train,
+                    "its tested head or base stayed unavailable",
+                )
+                .await;
+                return None;
+            }
         }
         let own = self
             .ci_gate_for_pull(sandbox, member.pr, &member.head)
@@ -811,10 +835,11 @@ impl App {
             .await;
             return None;
         }
-        self.dissolve(sandbox, &train, "its CI run failed").await;
-        let deciding = self.take_armed(&task)?;
-        let verdict =
-            if deciding.merge.armed_at == member.armed_at && deciding.merge.head == member.head {
+        // Consume the arm at the final CI observation, before dissolution does I/O.
+        if let Some(deciding) = self.take_armed(&task) {
+            let verdict = if deciding.merge.armed_at == member.armed_at
+                && deciding.merge.head == member.head
+            {
                 Verdict::FailedSingleton(
                     text,
                     FailedSingleton {
@@ -827,7 +852,9 @@ impl App {
             } else {
                 Verdict::Keep(deciding.merge.clone())
             };
-        self.finish_armed(&task, &deciding, verdict).await;
+            self.finish_armed(&task, &deciding, verdict).await;
+        }
+        self.dissolve(sandbox, &train, "its CI run failed").await;
         None
     }
 
@@ -859,23 +886,26 @@ impl App {
         let kept = job.failures.as_deref().unwrap_or_default();
         // The scanner keeps the test header before its output. The label already names
         // the test; reserve the excerpt for the diagnostic even when its name is long.
-        let retained = self.redact_for_sandbox(&sandbox.id, kept).await;
+        let Ok(matcher) = self.agent_secret_matcher(&sandbox.id).await else {
+            return text;
+        };
+        let retained = redact_text(&matcher, kept).0;
         let body = retained
             .split_once('\n')
             .map_or(retained.as_str(), |(_, body)| body);
-        let label = self.redact_for_sandbox(&sandbox.id, &label).await;
+        let label = redact_text(&matcher, &label).0;
         text.push(' ');
-        text.push_str(&diagnostic_excerpt(&label, 128));
-        let excerpt = diagnostic_excerpt(body, 383);
+        text.push_str(&diagnostic_excerpt(&label, 128, &matcher));
+        let excerpt = diagnostic_excerpt(body, 383, &matcher);
         if !excerpt.is_empty() {
             text.push(' ');
             text.push_str(&excerpt);
         }
-        text
+        redact_text(&matcher, &text).0
     }
 
     /// Before dropping an arm, confirm the PR still has the inputs the singleton tested.
-    /// An unavailable or changed input leaves the arm for the ordinary queue pass to decide.
+    /// A changed input invalidates the attribution. An unavailable read leaves it undecided.
     async fn singleton_inputs_match(
         &self,
         sandbox: &SandboxRecord,
@@ -883,7 +913,7 @@ impl App {
         member: &Member,
         integration: &str,
         base: &str,
-    ) -> bool {
+    ) -> Option<bool> {
         let confirm = async {
             let token = self.dlv_installation_token(sandbox).await.ok()?;
             let pull = self
@@ -892,23 +922,23 @@ impl App {
                 .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, member.pr)
                 .await
                 .ok()?;
-            let delivery = self.deps.store.delivery(task).await.ok()??;
-            Some(
-                delivery.stage == DeliveryStage::PrOpen
-                    && delivery.pr_number == Some(member.pr)
-                    && pull.number == member.pr
-                    && pull.state == "open"
-                    && !pull.merged
-                    && !pull.from_fork
-                    && pull.base == integration
-                    && pull.head_sha == member.head
-                    && pull.base_sha == base,
-            )
+            let delivery = self.deps.store.delivery(task).await.ok()?;
+            let current = delivery.is_some_and(|record| {
+                record.stage == DeliveryStage::PrOpen && record.pr_number == Some(member.pr)
+            }) && pull.number == member.pr
+                && pull.state == "open"
+                && !pull.merged
+                && !pull.from_fork
+                && pull.base == integration;
+            if current && (pull.head_sha.is_empty() || pull.base_sha.is_empty()) {
+                return None;
+            }
+            Some(current && pull.head_sha == member.head && pull.base_sha == base)
         };
-        matches!(
-            tokio::time::timeout(Duration::from_secs(5), confirm).await,
-            Ok(Some(true))
-        )
+        tokio::time::timeout(Duration::from_secs(5), confirm)
+            .await
+            .ok()
+            .flatten()
     }
 
     /// Ends the armed merge of `suspect`, the member a red train's bisection left out, once the

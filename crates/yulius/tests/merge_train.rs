@@ -1617,7 +1617,19 @@ async fn a_singleton_wait_deadline_survives_repeated_reads_and_reports_the_teste
     reused_singleton(SingletonChange::RerunExpired).await
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_singleton_decides_the_arm_before_recording_its_dissolution() -> TestResult {
+    reused_singleton(SingletonChange::Bookkeeping).await
+}
+
+#[tokio::test]
+async fn a_singleton_with_unavailable_inputs_releases_its_place_after_the_limit() -> TestResult {
+    reused_singleton(SingletonChange::Unavailable).await
+}
+
 enum SingletonChange {
+    Unavailable,
+    Bookkeeping,
     RerunExpired,
     PeerFailed,
     RerunStarted,
@@ -1653,7 +1665,7 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
     .await?;
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
     let failure = format!(
-        "FAIL [0.292s] (1/1) search latency{}\n  stderr ───\n    thread panicked at search.rs\n    search took 292.1 ms, limit 200 ms ({secret})\u{0007}\n    {} beyond-limit",
+        "FAIL [0.292s] (1/1) search latency{}\n  stderr ───\n    thread panicked at search.rs\n    search took 292.1 ms, limit 200 ms ({secret}), synthetic-\u{0007}candidate-secret\n    {} beyond-limit",
         "s".repeat(600),
         "x".repeat(512)
     );
@@ -1709,6 +1721,85 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
             .await?
     );
     app.merge_armed(&f.sandbox).await;
+    if matches!(change, SingletonChange::Unavailable) {
+        let arm = saved_armed(app, 1)?.ok_or("arm")?;
+        // A partially published hosted observation is also unavailable.
+        let remote = f.h.github.remote.lock().map_err(|_| "remote")?.take();
+        {
+            let mut pulls = f.h.github.pulls.lock().map_err(|_| "pull")?;
+            pulls[0].base_sha.clear();
+        }
+        app.merge_armed(&f.sandbox).await;
+        let partial: Value = serde_json::from_str(&f.trains_file(app))?;
+        assert_eq!(
+            partial[f.sandbox.as_str()]["train"]["run"],
+            "prior-train",
+            "{partial}"
+        );
+        *f.h.github.remote.lock().map_err(|_| "remote")? = remote;
+        *f.h.github
+            .merged_on_direct_read
+            .lock()
+            .map_err(|_| "read")? = Some(1);
+        f.h.github.fail_merged_reads.store(true, Ordering::SeqCst);
+        app.merge_armed(&f.sandbox).await;
+        let waiting: Value = serde_json::from_str(&f.trains_file(app))?;
+        assert_eq!(
+            waiting[f.sandbox.as_str()]["train"]["run"],
+            "prior-train",
+            "{waiting}"
+        );
+        f.h.clock
+            .0
+            .fetch_add(yulius_app::merge_train::WAIT_LIMIT_MS + 1, Ordering::SeqCst);
+        app.merge_armed(&f.sandbox).await;
+        let released: Value = serde_json::from_str(&f.trains_file(app))?;
+        assert!(
+            released[f.sandbox.as_str()]["train"].is_null(),
+            "{released}"
+        );
+        assert_eq!(
+            released[f.sandbox.as_str()]["held_back"],
+            json!([["t1", arm.1]]),
+            "{released}"
+        );
+        assert_eq!(saved_armed(app, 1)?, Some(arm));
+        return Ok(());
+    }
+    if matches!(change, SingletonChange::Bookkeeping) {
+        let (at, go) = support::hold_point(yulius_app::race::Point::TrainDissolving, "prior-train");
+        let pass = {
+            let app = Arc::clone(app);
+            let sandbox = f.sandbox.clone();
+            tokio::spawn(async move { app.merge_armed(&sandbox).await })
+        };
+        support::point_reached(at).await?;
+        let (mut rerun, job) = crate::pr_watch::run(
+            &f.sandbox,
+            "later-rerun",
+            &head,
+            RunState::Running,
+            None,
+            app.now().0 + 1,
+        );
+        rerun.reference = CiRef::PullRequest(1);
+        app.deps.store.insert_ci_run(&rerun, &[job]).await?;
+        let view = f.wait(1, &worktree).await?;
+        go.send(())?;
+        pass.await?;
+        assert_eq!(view["checks"], "running", "{view}");
+        assert_eq!(
+            view["merge_armed"], false,
+            "decision before bookkeeping: {view}"
+        );
+        assert!(
+            view["merge_outcome"]
+                .as_str()
+                .is_some_and(|text| text.contains("prior-train")),
+            "{view}"
+        );
+        return Ok(());
+    }
     if matches!(
         change,
         SingletonChange::Ordinary
@@ -1817,8 +1908,20 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
                 f.h.clock
                     .0
                     .fetch_add(yulius_app::merge_train::WAIT_LIMIT_MS, Ordering::SeqCst);
+                // Verification goes offline at the original deadline. Keep this
+                // candidate's wait budget when the same hosted PR answers again.
+                *f.h.github
+                    .merged_on_direct_read
+                    .lock()
+                    .map_err(|_| "read")? = Some(1);
+                f.h.github.fail_merged_reads.store(true, Ordering::SeqCst);
                 app.merge_armed(&f.sandbox).await;
                 assert_eq!(f.wait(1, &worktree).await?["merge_armed"], true);
+                f.h.github.fail_merged_reads.store(false, Ordering::SeqCst);
+                *f.h.github
+                    .merged_on_direct_read
+                    .lock()
+                    .map_err(|_| "read")? = None;
                 f.h.clock.0.fetch_add(1, Ordering::SeqCst);
                 app.merge_armed(&f.sandbox).await;
                 let state = f.wait(1, &worktree).await?;
@@ -1873,7 +1976,9 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
                 git(&worktree, &["commit", "--allow-empty", "-qm", "later head"])?;
                 git(&worktree, &["push", "-q", "origin", "HEAD"])?;
             }
-            SingletonChange::None
+            SingletonChange::Unavailable
+            | SingletonChange::Bookkeeping
+            | SingletonChange::None
             | SingletonChange::Ordinary
             | SingletonChange::BaseDuringRead
             | SingletonChange::PeerFailed
