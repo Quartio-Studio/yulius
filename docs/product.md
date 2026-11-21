@@ -10,6 +10,8 @@ automation. GPT-6.2 Astra is the default model and inherits extra high effort. O
 inherit high effort. A task's explicit effort takes precedence.
 [SPEC-561](../.ai/specs/SPEC-561-default-astra-6-2-to-xhigh-for-new-work.md)
 
+Continue resumes a stopped Codex task in its saved conversation. Reopening a closed Codex conversation shows Waiting until its next turn. [SPEC-590](../.ai/specs/SPEC-590-look-bro-the-taks-says-it-working-but-th.md)
+
 Tasks created by the CLI or either Superagent default to Codex when harness and model are omitted.
 A task created with a `gpt-*` model and no explicit agent selects Codex.
 A task keeps its agent for life, and a Codex task moves only between Codex subscriptions. On ChatGPT Pro 500,
