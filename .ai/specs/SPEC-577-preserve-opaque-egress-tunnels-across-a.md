@@ -646,3 +646,15 @@ matched relay and proxy restoration has its own review and CI.
   exchanged fresh request and response bytes on the original TLS session and HTTP/2 stream.
   Six service wiring cases, ten relay handoff cases and 940 domain, sandbox and egress
   tests passed. Two environment-dependent sandbox tests were skipped. Scoped Clippy passed.
+- A second independent review of `077006a7c` found that startup discarded a distinct
+  enrolled socket when its addresses had been reused. The synthetic two-place fixture
+  failed with InvalidData. Startup now checks the original relay cookie and admission
+  order. The fixture reserves both distinct sockets, rejects the replay, and verifies
+  both restored cookies.
+- The same review found a cancellation race before the first restart. When eviction
+  closed the checkpoint sender, the proxy could finish its transfer with a success
+  result and leave the idle relay waiting for Unix input. The bounded fixture failed
+  in 2 seconds on that path. An abandoned checkpoint reply reproduced the same failure
+  on each copy after the sender-close fix. Both transfers now propagate cancellation
+  when either side of the checkpoint is gone. The fixtures observe EOF with the external
+  write halves open and verify that the relay place can be admitted again.

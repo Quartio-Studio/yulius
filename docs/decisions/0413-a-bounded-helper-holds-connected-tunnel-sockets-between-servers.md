@@ -67,10 +67,11 @@ live internal endpoints and records the kernel cookie of the relay socket. Each 
 relay can hold one duplicate descriptor for this check, bounded by its ordinary admission
 limit. Enrollment releases the duplicate. The successor verifies the recorded cookie against
 the actual descriptor and checks the surviving holder's identity. Duplicate records for one
-enrolled socket are discarded. The replacement reserves each accepted relay's original place
-in admission order before it accepts new connections. Eviction or administrative
-cancellation releases both restored copies, even when the external peers keep their write
-halves open. A FIN leaves the opposite direction available for a final reply. When one
+enrolled socket are discarded. The replacement reserves distinct relay sockets in original
+admission order, including sockets whose internal TCP addresses were reused. Eviction,
+an abandoned checkpoint or administrative cancellation releases both enrolled copies, even
+when the external peers keep their write halves open. A FIN leaves the opposite direction
+available for a final reply. When one
 enrolled copy has finished both write halves, it retains its descriptors and admission
 place until the matching copy drains or the connection is cancelled or expires. Thus a
 restart can still transfer application bytes queued on the last active copy.

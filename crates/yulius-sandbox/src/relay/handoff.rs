@@ -156,7 +156,7 @@ impl Flow {
         let (expires, reply) = tokio::select! {
             biased;
             ()=lifetime => return Err(io::ErrorKind::TimedOut.into()),
-            request=request => match request { Ok(request)=>request,Err(_)=>return Ok(()) },
+            request=request => request.map_err(|_| io::ErrorKind::BrokenPipe)?,
             result=async {
                 self.copy.transfer(&mut client, &mut self.upstream).await?;
                 drain.finish().await;
@@ -173,16 +173,17 @@ impl Flow {
         serde_json::to_writer(&mut state, &owner)?;
         state.push(b'\n');
         self.copy.encode(&mut state)?;
-        let _ = reply.send(Pair {
-            sockets: [
-                client.inner.into_std()?.into(),
-                self.upstream.into_std()?.into(),
-            ],
-            state,
-            expires: Some(expires),
-            established: self.established,
-        });
-        Ok(())
+        reply
+            .send(Pair {
+                sockets: [
+                    client.inner.into_std()?.into(),
+                    self.upstream.into_std()?.into(),
+                ],
+                state,
+                expires: Some(expires),
+                established: self.established,
+            })
+            .map_err(|_| io::ErrorKind::BrokenPipe.into())
     }
 }
 
@@ -247,7 +248,7 @@ pub(super) async fn transfer(
 
 struct Saved {
     flow: Flow,
-    link: TcpLink,
+    cookie: u64,
     expires: u64,
     owner: Owner,
 }
@@ -273,6 +274,7 @@ impl Saved {
             return Err(invalid());
         }
         let copy = CopyState::decode(copy_state)?;
+        let cookie = TcpLink::relay_cookie(&pair.sockets[1])?;
         let [left, right] = pair.sockets;
         let left = std::os::unix::net::UnixStream::from(left);
         let right = std::net::TcpStream::from(right);
@@ -287,7 +289,7 @@ impl Saved {
         };
         Ok(Self {
             flow,
-            link,
+            cookie,
             expires,
             owner,
         })
@@ -337,16 +339,13 @@ impl Outbound {
             }
             let (end, evicted) = oneshot::channel();
             let (capture, request) = oneshot::channel();
-            let Ok(cookie) = TcpLink::relay_cookie(&saved.flow.upstream) else {
-                continue;
-            };
             let control = Control {
                 enrollment: Some(Enrollment {
-                    cookie,
+                    cookie: saved.cookie,
                     available: None,
                 }),
                 _end: end,
-                capture: Some((saved.link, capture)),
+                capture: Some((saved.flow.link, capture)),
             };
             if let Ok(admitted) = slots
                 .connections
@@ -548,7 +547,7 @@ impl OutboundRelays {
             || startup
                 .saved
                 .iter()
-                .any(|(s, _)| s.owner.order == saved.owner.order || s.link == link)
+                .any(|(s, _)| s.owner.order == saved.owner.order || s.cookie == saved.cookie)
         {
             return Err(invalid());
         }

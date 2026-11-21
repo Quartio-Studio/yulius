@@ -93,7 +93,7 @@ impl Tunnel {
                 Ok(())
             } => return result,
             () = tokio::time::sleep(timeout) => return Err(io::ErrorKind::TimedOut.into()),
-            reply = request => match reply { Ok(reply) => reply, Err(_) => return Ok(()) },
+            reply = request => reply.map_err(|_| io::ErrorKind::BrokenPipe)?,
         };
         let owner = Ownership {
             link: self.link,
@@ -115,8 +115,9 @@ impl Tunnel {
             ],
             state,
         };
-        let _ = reply.send(pair);
-        Ok(())
+        reply
+            .send(pair)
+            .map_err(|_| io::ErrorKind::BrokenPipe.into())
     }
 }
 
@@ -322,6 +323,104 @@ impl EgressProxy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn an_evicted_new_tunnel_releases_its_idle_relay_in_either_poll_order() -> io::Result<()>
+    {
+        use crate::proxy::{Connections, Slots};
+        use tokio::io::AsyncReadExt as _;
+        use tokio::net::{TcpListener, UnixStream};
+
+        for (capture_polled, abandoned_reply) in [(false, false), (true, false), (true, true)] {
+            let slots = Arc::new(Slots {
+                table: std::sync::Mutex::new(Connections::with_owners(1, 1, 0).into()),
+                health: Default::default(),
+                share: 1,
+                total: 1,
+                pause: None,
+            });
+            let (end, ended) = oneshot::channel();
+            let admitted = slots
+                .admit("s1", "run", false, end)
+                .ok_or_else(invalid)?
+                .0
+                .map_err(io::Error::other)?;
+            let slot = Slot {
+                slots: Arc::clone(&slots),
+                id: admitted.id,
+                activity: admitted.activity,
+                sandbox: "s1".into(),
+            };
+            let request = register(&slot).ok_or_else(invalid)?;
+            let listener = TcpListener::bind("127.0.0.1:0").await?;
+            let mut internal = TcpStream::connect(listener.local_addr()?).await?;
+            let (client, _) = listener.accept().await?;
+            let upstream = TcpStream::connect(listener.local_addr()?).await?;
+            let (mut origin, _) = listener.accept().await?;
+            let (mut unix, mut agent) = UnixStream::pair()?;
+            let (relay, proxy) = CopyCancellation::pair();
+            let copying = tokio::spawn(async move {
+                relay
+                    .run_copy(async {
+                        CopyState::default()
+                            .transfer(&mut unix, &mut internal)
+                            .await
+                    })
+                    .await
+            });
+            let tunnel = Tunnel {
+                link: TcpLink::at_proxy(&client).ok(),
+                relay_cookie: None,
+                client,
+                upstream,
+                copy: CopyState::default(),
+                established: None,
+                run: "run".into(),
+                expires: monotonic_ms() + 5000,
+            };
+            let drain = proxy.drain();
+            let serving = proxy.run_copy(tunnel.transfer(slot, request, drain));
+            // Removing the control closes both the eviction and checkpoint channels.
+            {
+                let mut admissions = slots.table.lock().unwrap_or_else(PoisonError::into_inner);
+                if abandoned_reply {
+                    let (reply, receiver) = oneshot::channel();
+                    drop(receiver);
+                    let (_, control) = admissions
+                        .connections
+                        .controls_mut()
+                        .next()
+                        .ok_or_else(invalid)?;
+                    control
+                        .capture
+                        .take()
+                        .ok_or_else(invalid)?
+                        .send(reply)
+                        .map_err(|_| invalid())?;
+                }
+                assert!(admissions.connections.close(admitted.id));
+            }
+            if capture_polled {
+                let _ = serving.await;
+            } else {
+                let _ = ended.await;
+                drop(serving);
+            }
+            // Both external write halves remain open. Ordinary FIN cannot end the relay copy.
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(2), origin.read(&mut [0])).await??,
+                0
+            );
+            tokio::time::timeout(Duration::from_secs(2), copying)
+                .await?
+                .map_err(io::Error::other)??;
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(2), agent.read(&mut [0])).await??,
+                0
+            );
+        }
+        Ok(())
+    }
 
     // HTTP/1 stops parsing at the end of the CONNECT headers. A read that straddles that
     // boundary must leave no more private bytes in Hyper than one copy direction can retain.

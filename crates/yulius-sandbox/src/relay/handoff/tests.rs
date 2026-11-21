@@ -56,6 +56,43 @@ async fn record(
 }
 
 #[tokio::test]
+async fn losing_the_checkpoint_request_or_reply_ends_the_enrolled_relay() -> io::Result<()> {
+    let holder = holder()?;
+    for requested in [false, true] {
+        let now = monotonic_ms();
+        let end = now + 5_000;
+        let (pair, link, mut client, _internal_peer) = record(&holder, 1, now, end).await?;
+        let saved = Saved::decode(pair, &holder, link)?;
+        let places = Places::new(1, IDLE_FLOOR);
+        let (place, _end, _) = places.admit().ok_or_else(invalid)?;
+        let (send, request) = oneshot::channel();
+        if requested {
+            let (reply, abandoned) = oneshot::channel();
+            drop(abandoned);
+            send.send((end, reply)).map_err(|_| invalid())?;
+        } else {
+            drop(send);
+        }
+        let (relay, proxy) = CopyCancellation::pair();
+        let drain = relay.drain();
+        let _ = relay
+            .run_copy(saved.flow.run(place, &holder, Some(end), request, drain))
+            .await;
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            proxy.run_copy(std::future::pending()),
+        )
+        .await??;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), client.read(&mut [0])).await??,
+            0
+        );
+        assert!(places.admit().is_some());
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn startup_reserves_the_old_places_in_order_and_retains_idle_activity() -> io::Result<()> {
     tokio::time::timeout(Duration::from_secs(5), async {
         let holder = holder()?;
@@ -75,13 +112,16 @@ async fn startup_reserves_the_old_places_in_order_and_retains_idle_activity() ->
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .relays
-            .insert(holder.sandbox.clone(), outbound);
+            .insert(holder.sandbox.clone(), Arc::clone(&outbound));
         let now = monotonic_ms();
         let expires = now + 5_000;
         let (newer, new_link, _new_client, _new_peer) = record(&holder, 17, now, expires).await?;
         let old_activity = now.saturating_sub(1);
         let (older, old_link, _old_client, _old_peer) =
             record(&holder, 3, old_activity, expires).await?;
+        let new_cookie = TcpLink::relay_cookie(&newer.sockets[1])?;
+        let old_cookie = TcpLink::relay_cookie(&older.sockets[1])?;
+        assert_ne!(new_cookie, old_cookie);
         // A replay of either the original internal socket or its admission order cannot
         // reserve another place. Retain the original relay while the duplicate is dropped.
         let mut replay = Pair {
@@ -129,6 +169,19 @@ async fn startup_reserves_the_old_places_in_order_and_retains_idle_activity() ->
         );
         assert_eq!(duplicate_client.read(&mut [0]).await?, 0);
 
+        // Model two already-validated records whose address pairs coincide. Their
+        // original TCP sockets and admission orders still identify separate copies.
+        {
+            let mut startup = outbound
+                .startup
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let (reserved, _) = startup
+                .as_mut()
+                .and_then(|s| s.saved.first_mut())
+                .ok_or_else(invalid)?;
+            reserved.flow.link = old_link;
+        }
         hub.restore(
             &holder.sandbox,
             old_link,
@@ -162,6 +215,8 @@ async fn startup_reserves_the_old_places_in_order_and_retains_idle_activity() ->
             .map_err(|_| io::Error::other("lost a place"))?;
         assert_eq!(oldest.place.activity.last(), old_activity);
         assert_eq!(active.place.activity.last(), now);
+        assert_eq!(TcpLink::relay_cookie(&oldest.flow.upstream)?, old_cookie);
+        assert_eq!(TcpLink::relay_cookie(&active.flow.upstream)?, new_cookie);
         assert_eq!(oldest.expires, expires);
         // Advance the admission table's clock to the exact floor, even on a newly booted host.
         let admit_at = |time| {
@@ -663,18 +718,22 @@ async fn one_completed_copy_waits_for_its_original_peer_or_its_cancellation() ->
     assert!(available.enroll().is_none());
     // Taking a checkpoint releases this task's guard without cancelling its peer.
     proxy.run_copy(async { Ok(()) }).await?;
-    let error = unclaimed
+    let result = unclaimed
         .run_copy(async { Err(io::ErrorKind::ConnectionReset.into()) })
-        .await
-        .expect_err("the remaining copy must report its socket error");
-    assert_eq!(error.kind(), io::ErrorKind::ConnectionReset);
+        .await;
+    assert_eq!(
+        result.err().map(|e| e.kind()),
+        Some(io::ErrorKind::ConnectionReset)
+    );
 
     let (relay, proxy) = CopyCancellation::pair();
-    let error = relay
+    let result = relay
         .run_copy(async { Err(io::ErrorKind::TimedOut.into()) })
-        .await
-        .expect_err("the original absolute deadline must end the transfer");
-    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        .await;
+    assert_eq!(
+        result.err().map(|e| e.kind()),
+        Some(io::ErrorKind::TimedOut)
+    );
     tokio::time::timeout(
         Duration::from_secs(2),
         proxy.run_copy(std::future::pending()),
@@ -693,7 +752,7 @@ async fn enrollment_uses_the_live_socket_when_a_table_entry_has_stale_addresses(
         let second = TcpStream::connect(listener.local_addr()?).await?;
         let (second_peer, _) = listener.accept().await?;
         let link = TcpLink::at_proxy(&second_peer)?;
-        let places = Places::new(2, IDLE_FLOOR);
+        let places = Places::new(3, IDLE_FLOOR);
         let relays = registered_table(&places)?;
         let install = |socket: &TcpStream| -> io::Result<_> {
             let (place, evicted, _) = places.admit().ok_or_else(invalid)?;
@@ -715,6 +774,9 @@ async fn enrollment_uses_the_live_socket_when_a_table_entry_has_stale_addresses(
         let _stale = install(&first)?;
         assert!(relays.enroll("fixture", &second_peer).is_none());
         let _live = install(&second)?;
+        let duplicate = install(&second)?;
+        assert!(relays.enroll("fixture", &second_peer).is_none());
+        drop(duplicate);
         let (id, _owner) = relays.enroll("fixture", &second_peer).ok_or_else(invalid)?;
         assert_eq!(id, TcpLink::relay_cookie(&second)?);
         Ok(())
