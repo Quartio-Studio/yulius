@@ -923,7 +923,7 @@ async fn a_singleton_configuration_refusal_tells_the_owner_what_the_parser_rejec
         .as_str()
         .ok_or("the owner's refusal")?;
     assert!(
-        outcome.contains("yulius.toml") && outcome.contains(reason),
+        outcome.contains("`yulius.toml` exited 1") && outcome.contains(reason),
         "{outcome}; expected {reason}"
     );
     Ok(())
@@ -1684,7 +1684,13 @@ async fn a_reused_failure_cannot_drop_a_later_arm_of_the_same_head_after_restart
     reused_singleton(SingletonChange::Rearmed).await
 }
 
+#[tokio::test]
+async fn a_reused_failure_cannot_blame_the_tasks_replacement_pr_at_the_same_head() -> TestResult {
+    reused_singleton(SingletonChange::ReplacementPr).await
+}
+
 enum SingletonChange {
+    ReplacementPr,
     Rearmed,
     Pruned,
     JobRead,
@@ -2146,7 +2152,28 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
         match change {
             SingletonChange::Base => f.advance_dev("new-base.txt")?,
             SingletonChange::Retarget => {
-                f.h.github.pulls.lock().map_err(|_| "pulls")?[0].base = "main".into()
+                // A different integration branch can point at exactly the tested base.
+                git(
+                    &f.origin,
+                    &["update-ref", "refs/heads/other-integration", &base],
+                )?;
+                f.h.github.pulls.lock().map_err(|_| "pulls")?[0].base = "other-integration".into();
+            }
+            SingletonChange::ReplacementPr => {
+                let task = TaskId::parse("t1")?;
+                let mut delivery = app
+                    .deps
+                    .store
+                    .delivery(&task)
+                    .await?
+                    .ok_or("open delivery")?;
+                delivery.pr_number = Some(2);
+                assert!(
+                    app.deps
+                        .store
+                        .transition_delivery(&delivery.stage, &delivery)
+                        .await?
+                );
             }
             SingletonChange::Head => {
                 git(&worktree, &["commit", "--allow-empty", "-qm", "later head"])?;
