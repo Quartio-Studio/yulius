@@ -2448,6 +2448,18 @@ async fn goal_stop_counts_consecutive_attempts_on_unresolved_work() -> TestResul
 #[tokio::test]
 async fn goal_stop_budget_survives_submission_of_its_own_continuation() -> TestResult {
     let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify dev").await?;
+    // Previously accepted viewer input belongs to that prompt. The next submit
+    // carries an automatic continuation after one attempt has been consumed.
+    f.h.app.record_typing(&f.task, &UserId::parse("u1")?);
+    let entered = call(
+        &f.h.internal,
+        Method::POST,
+        "/hooks/codex/UserPromptSubmit",
+        Some(json!({"prompt":"Verify dev"})),
+        &agent(),
+    )
+    .await?;
+    assert_eq!(entered.status, 200);
     let reason = stop_of(&f, Agent::Codex).await?["reason"].clone();
     let response = call(
         &f.h.internal,
