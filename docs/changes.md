@@ -7,6 +7,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-21
 
 - Task lists retain observed pull request state during a GitHub outage. The Status panel and task lists report when the GitHub App’s request budget resets. [SPEC-608](../.ai/specs/SPEC-608-a-github-rate-limit-must-not-show-finish.md)
+- A signed GitHub PR opening queues CI for its exact head without a discovery API read. Existing Apps can enable the webhook in their registration. [SPEC-606](../.ai/specs/SPEC-606-a-pull-request-not-opened-by-a-task-wait.md)
+- Antigravity conversations reopened without a prompt show Waiting and can release their session slots while the Gemini announcement is visible. The composer regression checks the inherited model and effort of a task drawn to Antigravity. [SPEC-604](../.ai/specs/SPEC-604-an-idle-antigravity-session-under-the-ge.md)
 - `scripts/cargo --scratch-target` supports Clippy and nextest alongside built-in commands. Eligible builds reuse the sandbox compiler cache, and the command removes the private disk target after its workers stop. [SPEC-600](../.ai/specs/SPEC-600-mutation-testing-sized-to-the-change-wit.md)
 - Codex reviewers now contribute their reviewed head, timestamps, answering model and verdict
   to task delivery and Pipeline review numbers. [SPEC-605](../.ai/specs/SPEC-605-record-the-review-rounds-of-codex-tasks.md)

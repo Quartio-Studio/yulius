@@ -7,6 +7,8 @@ Yulius develops itself with Yulius. Its pull requests get independent results fo
 
 Finished tasks keep their last observed pull request state while GitHub is unavailable. The instance shows when merges, CI status updates and staging can use GitHub again. [SPEC-608](../.ai/specs/SPEC-608-a-github-rate-limit-must-not-show-finish.md)
 
+A GitHub App subscribed to PR openings triggers CI for hand-opened pull requests as soon as GitHub delivers the event and a place is available within the sandbox’s 30 open PRs. [Decision 0441](decisions/0441-github-pr-openings-trigger-exact-head-ci.md)
+
 It also runs native Codex CLI sessions on Codex (OpenAI) subscriptions, chosen per task or
 automation. GPT-6.2 Astra is the default model. Every Codex model inherits High effort.
 A task's explicit effort takes precedence, including Extra high and Max on GPT-6.2 Astra and Sol.
