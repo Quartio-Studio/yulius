@@ -34,7 +34,8 @@ cargo = os.environ.get("CARGO") or shutil.which("cargo") or "cargo"
 if (sys.platform != "linux" or not os.environ.get("YULIUS_SANDBOX")
         or not args or args[0] not in {"build", "check", "clippy", "doc", "nextest", "run", "test"}
         or "RUSTC_WRAPPER" in os.environ or os.environ.get("CARGO_INCREMENTAL", "0") != "0"
-        or (args[0] == "run" and sys.stdin.isatty())):
+        or sys.stdin.isatty()
+        or any("--jobserver-" in os.environ.get(name, "") for name in ("CARGO_MAKEFLAGS", "MAKEFLAGS", "MFLAGS"))):
     plain(cargo)
 
 import fcntl

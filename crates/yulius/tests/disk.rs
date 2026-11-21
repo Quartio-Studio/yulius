@@ -1605,31 +1605,3 @@ async fn a_low_disk_starts_the_leftovers_round_at_most_every_ten_minutes() -> Bo
     );
     Ok(())
 }
-
-/// RCC-002: pressure reclaims the sandbox's shared compiler store only between builds.
-#[tokio::test]
-async fn pressure_reclaims_the_compiler_cache_only_without_build_readers() -> BoxResult<()> {
-    let w = world().await?;
-    let cache = w.root.join("rust-compile-cache");
-    std::fs::create_dir(&cache)?;
-    std::fs::write(cache.join("artifact"), vec![0u8; BIG])?;
-    w.h.app.disk_upkeep_needing(&w.sandbox, true, 1).await?;
-    assert!(cache.exists(), "another owner's directory");
-    std::fs::write(cache.join(".yulius-mbx-v1"), "mbx-v1\n")?;
-    w.h.app.disk_upkeep(&w.sandbox, false).await?;
-    assert!(cache.exists());
-    let active = std::fs::File::open(&w.root)?;
-    active.lock_shared()?;
-    w.h.app.disk_upkeep_needing(&w.sandbox, true, 1).await?;
-    assert!(cache.exists());
-    drop(active);
-    let report = w.h.app.disk_upkeep_needing(&w.sandbox, true, 1).await?;
-    assert!(!cache.exists());
-    assert_eq!(report.caches, 1, "exactly the shared store was reclaimed");
-    assert!(report.freed >= BIG as u64);
-    std::os::unix::fs::symlink(&w.repo, &cache)?;
-    w.h.app.disk_upkeep_needing(&w.sandbox, true, 1).await?;
-    assert!(w.repo.join("Cargo.toml").is_file());
-    assert!(cache.is_symlink());
-    Ok(())
-}

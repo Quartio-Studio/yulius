@@ -171,6 +171,59 @@ class CompileCache(unittest.TestCase):
         self.assertEqual(failed_build.returncode, 37, failed_build.stderr)
         self.assertEqual(self.record.read_text().splitlines(), ["build", "build", "build"])
 
+    def caller_fixture(self, cargo_source):
+        home = self.sandbox / "home"
+        home.mkdir()
+        self.cargo.write_text("#!/usr/bin/env python3\nimport os,sys\n" + cargo_source)
+        mbx = self.task / ".tools/bin/mbx"
+        mbx.write_text('#!/bin/sh\nexec "$CARGO" "$@"\n')
+        mbx.chmod(0o755)
+        env = dict(os.environ, HOME=str(home), CARGO=str(self.cargo), YULIUS_SANDBOX="project")
+        for name in ("RUSTC_WRAPPER", "CARGO_INCREMENTAL", "MAKEFLAGS", "MFLAGS", "CARGO_MAKEFLAGS"):
+            env.pop(name, None)
+        return env
+
+    def test_a_make_jobserver_token_reaches_cargo(self):
+        env = self.caller_fixture("print(os.read(int(os.environ['TOKEN_FD']),1).decode())")
+        read, write = os.pipe()
+        try:
+            os.write(write, b"X")
+            env.update(CARGO_MAKEFLAGS=f"-j --jobserver-auth={read},{write}", TOKEN_FD=str(read))
+            result = subprocess.run([self.task / "scripts/cargo", "build"], env=env,
+                                    pass_fds=(read, write), capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "X")
+        finally:
+            os.close(read)
+            os.close(write)
+
+    def test_a_foreground_test_reads_its_controlling_terminal(self):
+        import pty
+        import select
+        import signal
+        import time
+        env = self.caller_fixture("print('ready',flush=True);print('received '+input(),flush=True)")
+        pid, terminal = pty.fork()
+        if pid == 0:
+            os.execve(self.task / "scripts/cargo", ["cargo", "test", "--", "--nocapture"], env)
+        try:
+            received = b""
+            for expected in (b"ready", b"received X"):
+                deadline = time.monotonic() + 4
+                while expected not in received:
+                    self.assertTrue(select.select([terminal], [], [], max(0, deadline - time.monotonic()))[0],
+                                    f"command stopped before {expected!r}")
+                    received += os.read(terminal, 4096)
+                if expected == b"ready":
+                    os.write(terminal, b"X\n")
+        finally:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            os.waitpid(pid, 0)
+            os.close(terminal)
+
     def build_fixture(self, tree, target, *, plain=False, incremental=None, package=None):
         home = self.sandbox / ("ci/home" if tree == self.lane else "home")
         home.mkdir(parents=True, exist_ok=True)
