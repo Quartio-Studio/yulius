@@ -1,6 +1,6 @@
 ---
 yulius-task: 35adb14d-65fe-4a9f-b9fa-370d776d4139
-status: in-progress
+status: done
 ---
 
 # SPEC-577. Preserve established opaque CONNECT tunnels during a server update
@@ -63,7 +63,7 @@ new request after the old sockets reach EOF. The issue requires the original con
 - [x] Restore matched proxy and relay pairs on the delivered holder lifecycle
 - [x] Bind the original relay at CONNECT and retain final bytes until both copies drain
 - [x] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -702,3 +702,15 @@ matched relay and proxy restoration has its own review and CI.
   Substituting a synthetic 404 confirmed the gap. The strengthened test rejected
   that status and a synthetic empty 200 response. All eight repetitions then passed
   with HTTP 200 and the exact repository `api.js` returned by the static server.
+
+### Delivery
+
+- [PR #1575](https://github.com/Quartio-Studio/yulius/pull/1575) merged into `dev`
+  at `737746a8f`. The independently approved head `de9be383b` passed quality, both Rust
+  test shards and Chromium. Chromium ran with retries disabled and reported 1,297 passed
+  and one optional agent test skipped. The Vidoc scan was disabled.
+  [PR verification](https://yulius.quartio.ai/api/tasks/35adb14d-65fe-4a9f-b9fa-370d776d4139/delivery/evidence/737746a8f44c3cab81962e84fee790fb567208a6?run_id=f0de7c8a-8cf6-47c5-b80d-fcc20b8a2daa)
+- The `dev` run reused the passing results for the identical Git tree. The real-server
+  fixtures used synthetic peers, a surviving holder and SIGSTOP/SIGCONT. Production cgroup
+  freezing, nested holder creation and a live model provider were outside those checks.
+  [Dev verification](https://yulius.quartio.ai/api/tasks/35adb14d-65fe-4a9f-b9fa-370d776d4139/delivery/evidence/737746a8f44c3cab81962e84fee790fb567208a6?run_id=a03d23d5-8dac-4b25-91d7-65ba9fb0560a)
