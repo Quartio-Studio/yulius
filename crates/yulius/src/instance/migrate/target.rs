@@ -1469,7 +1469,7 @@ fn proxy(host: &mut dyn Host, changed: bool, https: Option<&str>, l: &mut Lines)
             }
             Https::NoCertificate(why) => format!(
                 "port 443 takes connections but Caddy has no certificate for {name} yet ({why}); \
-                 it gets one once {name} leads to this host"
+                 it is still obtaining one, or gets it once {name} leads to this host"
             ),
             Https::Refused(why) => {
                 return l.failed(

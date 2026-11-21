@@ -1,6 +1,6 @@
 ---
 yulius-task: 9cf72682-e015-4edc-bb21-428e3493be18
-status: in-progress
+status: done
 ---
 
 # SPEC-592 Instance move: Caddy takes the carried configuration and answers HTTPS
@@ -65,8 +65,8 @@ after the start (`after()` in `migrate.rs`, MIG-039) stays as it is.
 - [x] Proxy step reloads Caddy and checks HTTPS on 443 on the new host
 - [x] The old host passes the public host name; flow tests updated
 - [x] ADR, docs/operations.md and docs/changes.md updated
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Evidence recorded and the spec finished for green-CI delivery
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Evidence recorded and the spec finished for green-CI delivery
 
 ## Acceptance criteria
 
@@ -92,7 +92,8 @@ Fake-host unit tests in `crates/yulius/src/instance/migrate/tests/target.rs` scr
 line's outcome and detail; they are written first and fail against the old `proxy()`. The
 flow tests (`tests/flow.rs`) assert the request the old host sends, and that an `http://`
 public URL asks nothing on port 443. No real Caddy runs in the tests; the reviewer probed the
-exact curl command against a real Caddy 2.11.9 for the exit codes the step reads.
+step's curl command, with the port moved from 443 to 18443, against a real Caddy 2.11.9 for the
+exit codes the step reads.
 
 ## Decisions
 
@@ -104,3 +105,35 @@ exact curl command against a real Caddy 2.11.9 for the exit codes the step reads
   before the cutover the public name may lead to the old host, and the new host's loopback
   is what the carried site must answer on. A missing certificate is not a failure at this
   point (CKS-003); the post-start HTTPS wait still reports it.
+
+## Evidence
+
+- Test-first: at `0c953e6ff` the five new fake-host proxy tests failed against the old `proxy()`.
+  The clearest failure is `a_running_caddy_is_reloaded_although_the_files_did_not_change`: no
+  reload ran on unchanged files. After round 1, the eight rewritten or new tests failed against
+  the round-1 code before `1c95e1cdb`. These were the restart, missing-curl and failed-restart
+  cases, and the flow test with an `http://` URL.
+- `cargo nextest run -p yulius --lib -E 'test(/migrate::/)'`: 185 passed, 500 skipped, on
+  `cd5246a4e`. `cargo clippy -p yulius --all-targets` was clean, and `scripts/dev quick` passed.
+- Mutations: removing the old host's `https://` filter fails
+  `an_http_public_url_asks_no_port_443`. Removing the `Unasked` arm fails
+  `a_missing_curl_fails_saying_so`.
+- Real Caddy probes (by the reviewer; Caddy 2.11.9, curl 8.18, port 18443 instead of 443, the
+  sandbox's `https_proxy` set):
+  - A default `:80`-only Caddy gives curl exit 7.
+  - A site without a certificate gives exit 35.
+  - `tls internal` with the upstream down answers exit 0 with `502`.
+  - Without `--noproxy`, the same call failed with `CONNECT tunnel failed, response 403`.
+  - The round-1 reviewer also reproduced the pre-existing defect: a reload left Caddy without
+    the drop-in's `YULIUS_PROXY_SECRET`, and only a restart gave it the secret. That defect is
+    fixed here by restarting.
+- Independent review: round 1 requested changes (three majors, four minors, four nits), all
+  answered in `1c95e1cdb` and `d671e95c1`. Round 2 approved `cd5246a4e` with two nits: the
+  certificate wording and this Test plan's claim about the probe. Both are fixed after the
+  approval.
+- Yulius CI: the round-1 head `0f17e0496` passed its run. The merged head's run is in the
+  task's delivery evidence.
+- Security scan: `yulius security-scan` printed "Security scan disabled" (Vidoc is off for
+  this project). It did not run and is not a pass.
+- Not tested: a real move between two hosts with a public CA. The certificate is still proven
+  only by the HTTPS wait after the start (MIG-039).
