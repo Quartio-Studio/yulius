@@ -124,9 +124,11 @@ pub fn ended_label(status: TaskStatus) -> &'static str {
     }
 }
 
-/// What the agent asked a person (`needs_you`, SPEC-134).
+/// What the agent or Yulius asked a person (`needs_you`, SPEC-134, SPEC-578).
 #[derive(Debug, Clone, Copy)]
 pub struct AskedOf<'a> {
+    /// What happened (optional; shown before the action when given).
+    pub happened: Option<&'a str>,
     /// What to do, or decide.
     pub action: &'a str,
     /// What is wrong because of it.
@@ -228,6 +230,9 @@ impl TaskNotice<'_> {
         if let Some(asked) = self.asked
             && self.kind == NoticeKind::NeedsYou
         {
+            if let Some(happened) = asked.happened.filter(|h| !h.trim().is_empty()) {
+                lines.push(format!("What happened: {}", plain(happened)));
+            }
             let verb = if asked.decision { "Decide" } else { "To do" };
             lines.push(format!("{verb}: {}", plain(asked.action)));
             if let Some(problem) = asked.problem.filter(|p| !p.trim().is_empty()) {
@@ -566,6 +571,7 @@ mod tests {
             number: 12,
             title: "Fix  the\ncheckout",
             asked: Some(AskedOf {
+                happened: None,
                 action: "Add the `STRIPE` key",
                 problem: Some("Payments fail"),
                 decision: false,
@@ -580,6 +586,7 @@ mod tests {
         assert_eq!(notice.headline(), "Needs you · #12 Fix the checkout (Shop)");
         let decide = TaskNotice {
             asked: Some(AskedOf {
+                happened: None,
                 action: "Pick a plan",
                 problem: None,
                 decision: true,
@@ -737,6 +744,7 @@ mod tests {
             number: 4,
             title: "Build",
             asked: Some(AskedOf {
+                happened: None,
                 action: "Restart Docker",
                 problem: None,
                 decision: false,

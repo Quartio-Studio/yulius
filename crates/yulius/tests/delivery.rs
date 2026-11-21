@@ -4822,7 +4822,7 @@ async fn parked_mcp_uses_the_visible_plan_when_browser_verification_times_out() 
     assert_eq!(row["steps"]["total"], 2);
     assert_eq!(
         row["wait_reason"],
-        "The agent stopped with unfinished steps in its plan."
+        "The task is parked with unfinished steps in its plan (1 open, next: \"Step 1\")."
     );
     Ok(())
 }

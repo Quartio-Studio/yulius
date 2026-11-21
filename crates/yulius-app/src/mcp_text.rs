@@ -970,6 +970,24 @@ fn waits_why(task: &Value) -> Vec<String> {
         if let Some(reason) = text(task, "wait_reason") {
             parts.push(reason.to_owned());
         }
+        if task.get("needs_you").and_then(Value::as_object).is_none()
+            && task.get("attention").and_then(Value::as_object).is_none()
+            && let Some(notice) = task.get("needs_you_notice").and_then(Value::as_object)
+        {
+            let notice_val = Value::Object(notice.clone());
+            if text(task, "wait_reason").is_none()
+                && let Some(happened) = text(&notice_val, "happened")
+            {
+                parts.push(happened.to_owned());
+            }
+            if let Some(action) = text(&notice_val, "action") {
+                let mut part = format!("To do: {action}");
+                if let Some(link) = text(&notice_val, "link") {
+                    part.push_str(&format!(" (where: {link})"));
+                }
+                parts.push(part);
+            }
+        }
     }
     if let Some(asked) = task.get("needs_you").filter(|v| v.is_object()) {
         let verb = if asked.get("decision").and_then(Value::as_bool) == Some(true) {
@@ -1094,6 +1112,30 @@ fn task_get(value: &Value) -> Option<String> {
         push_line(&mut out, "Steps:");
         for (index, step) in steps.iter().enumerate() {
             step_line(&mut out, ordinal_of(step, index), step);
+        }
+    }
+    if let Some(history) = value
+        .get("wait_history")
+        .and_then(Value::as_array)
+        .filter(|h| !h.is_empty())
+    {
+        push_line(&mut out, "Wait history:");
+        for entry in history {
+            let at = text(entry, "at").unwrap_or("?");
+            let source = text(entry, "source").unwrap_or("system");
+            let happened = text(entry, "happened").unwrap_or("");
+            let action = text(entry, "action").unwrap_or("");
+            let mut line = format!("- [{at}] ({source}) {happened}");
+            if !action.is_empty() {
+                line.push_str(&format!(" To do: {action}"));
+            }
+            if let Some(link) = text(entry, "link") {
+                line.push_str(&format!(" ({link})"));
+            }
+            if let Some(resolved) = text(entry, "resolved_at") {
+                line.push_str(&format!(" [resolved {resolved}]"));
+            }
+            push_line(&mut out, &line);
         }
     }
     if let Some(prompt) = text(value, "prompt") {

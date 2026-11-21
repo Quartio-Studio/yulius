@@ -79,6 +79,7 @@ mod merge_train;
 mod metrics_recount;
 mod migration;
 mod model_fallback;
+mod needs_you_messages;
 mod notes;
 mod parking;
 mod playground;
