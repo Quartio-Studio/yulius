@@ -47,7 +47,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Publish a missed park discovered by terminal detail
 - [x] Publish terminal-discovered resumes to the active task list
 - [x] Restore resting tasks when terminal detail or the active list discovers Undo
-- [ ] Publish terminal-discovered archive removal after Closed
+- [x] Publish terminal-discovered archive removal after Closed
 - [ ] Publish verified parked task detail to Task Info
 - [ ] Keep failed integration candidates with their original owner
 - [ ] Deliver bounded Codex goal continuation to dev
@@ -75,6 +75,10 @@ Capture a separate screen at the park decision because exiting can clear the ent
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
 ## Evidence
+
+- Independent review approved `dc0bda31c` for terminal-discovered archive removal. The author passed 19 focused Chromium tests. The reviewer passed 26 archive and Undo cases and verified that notifications included the public account ID and excluded the account email, runs, wait history and model. Repository contracts, formatting and spec validation passed. No Rust mutation targets changed. Vidoc was disabled.
+
+- Full local Chromium run `01a1fc04-648d-7454-8283-863a0de167bb` on the earlier head `e3ce34f7a` timed out waiting to click Take control in the ownership-refusal fixture. Its captured screen showed Request control. A controlled detail refresh on dev `4706dbda6` reproduced that change of button between the server-side policy update and the click. [Issue #1558](https://github.com/Quartio-Studio/yulius/issues/1558)
 
 - Review of `e3ce34f7a` reproduced a Parked terminal missing both Closed and Archived, followed by the active list omitting its row before either detail read started. The mounted archive-and-Undo test stayed on “Opened parked detail”. The store test emitted no archive notice and left the restored row absent. A pending read now retains the mounted task’s identity even after omission. Both mounted starting states passed, and the store regression verified one archive notification, a genuine restoration, and precedence of deletion or a newer empty list.
 
