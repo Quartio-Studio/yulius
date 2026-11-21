@@ -173,6 +173,9 @@ pub struct RemovalOptions {
     /// Require a directory where an expanded operand ends with a slash.
     #[arg(long)]
     pub preserve_trailing_slash: bool,
+    /// Refuse the entire retry if an expanded operand could be an rm option.
+    #[arg(long)]
+    pub reject_option_operands: bool,
 }
 
 /// Runs `yulius remove <paths>` with its original defaults.
@@ -237,6 +240,17 @@ impl RemovalOptions {
         if paths.is_empty() {
             let _ = writeln!(out, "usage: yulius remove <path>…");
             return 2;
+        }
+        if self.reject_option_operands
+            && paths
+                .iter()
+                .any(|path| matches!(path.as_os_str().as_encoded_bytes(), [b'-', _, ..]))
+        {
+            let _ = writeln!(
+                out,
+                "yulius remove: an expanded operand could be an rm option. No paths were removed."
+            );
+            return 1;
         }
         let outcomes: Vec<(&PathBuf, Outcome)> = paths
             .iter()
@@ -745,6 +759,41 @@ mod tests {
     }
 
     #[test]
+    fn retry_rejects_an_expanded_option_before_touching_other_operands() -> TestResult {
+        let dir = worktree()?;
+        let root = std::fs::canonicalize(dir.path())?;
+        for name in ["--help", "-f", "--", "-"] {
+            std::fs::write(root.join(name), "marker")?;
+        }
+        let apply = |paths: &[&str], options: RemovalOptions| {
+            let paths: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+            let mut out = Vec::new();
+            options.remove(
+                &mut out,
+                &paths,
+                &root,
+                Some(&root),
+                &parse_mountinfo(HOST),
+                &git_tracked,
+            )
+        };
+        let guarded = RemovalOptions {
+            reject_option_operands: true,
+            ..RemovalOptions::default()
+        };
+        for name in ["--help", "-f", "--"] {
+            assert_eq!(apply(&["scratch.txt", name], guarded), 1);
+            assert!(root.join("scratch.txt").is_file());
+            assert!(root.join(name).is_file());
+        }
+        assert_eq!(apply(&["-"], guarded), 0);
+        assert!(!root.join("-").exists());
+        assert_eq!(apply(&["--help"], RemovalOptions::default()), 0);
+        assert!(!root.join("--help").exists());
+        Ok(())
+    }
+
+    #[test]
     fn retry_keeps_a_nondirectory_operand_with_a_trailing_slash() -> TestResult {
         let dir = worktree()?;
         let root = std::fs::canonicalize(dir.path())?;
@@ -756,6 +805,7 @@ mod tests {
                 file_only,
                 require_existing,
                 preserve_trailing_slash: true,
+                ..RemovalOptions::default()
             };
             let mut out = Vec::new();
             let code = options.remove(

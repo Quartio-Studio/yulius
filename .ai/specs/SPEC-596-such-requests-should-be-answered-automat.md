@@ -17,7 +17,7 @@ Task #586 shows a background reviewer resetting two scratch directories in a loo
 
 - **CLR-001** Answer a contained Claude Bash permission request for ordinary variable-path or root-level scratch removal locally and immediately, including removals inside a reviewer loop or conditional. Give the agent an in-place retry that preserves control flow, quotes each operand and requires nonempty variables. The agent continues its turn.
 - **CLR-002** Apply this policy only when Claude requests permission. Ordinary commands, other tools and uncontained runs keep their existing permission handling. Treat malformed or oversized events as unrecognized.
-- **CLR-003** The agent executes the retry in its run. The existing cleanup tool can remove a whole scratch directory and refuses shared paths. Preserve non-recursive removal by using a file-only operation for those requests. An expanded operand ending in a slash requires a directory. A trailing slash on a regular file preserves the file with the original forced or unforced status. A directory symlink used this way is refused. An unrelated action embedded in the original Bash command receives no automatic approval.
+- **CLR-003** The agent executes the retry in its run. The existing cleanup tool can remove a whole scratch directory and refuses shared paths. Preserve non-recursive removal by using a file-only operation for those requests. An expanded operand ending in a slash requires a directory. A trailing slash on a regular file preserves the file with the original forced or unforced status. A directory symlink used this way is refused. Without an explicit option terminator, an operand that expands to an option stops the entire retry before removal. Root-level operands retain their trailing slashes. A removal with a command-local redirection falls through to the existing handler so Bash keeps its prerequisites and effects. An unrelated action embedded in the original Bash command receives no automatic approval.
 
 ## Plan
 
@@ -26,6 +26,9 @@ Task #586 shows a background reviewer resetting two scratch directories in a loo
 - [x] Verify scratch cleanup and other permission decisions
 - [x] Preserve conditions and file-only semantics for equivalent removals
 - [x] Preserve directory requirements on expanded cleanup paths
+- [x] Refuse ambiguous expanded options before removing any operand
+- [ ] Recognize root-level scratch directories with trailing slashes
+- [ ] Preserve command-local redirections during cleanup decisions
 - [ ] Independent review approves the verified change for delivery
 
 ## Acceptance criteria
@@ -57,3 +60,4 @@ Use Claude's structured PermissionRequest event. Its decision belongs to the pen
 
 - The second review found that trimming a trailing slash could unlink a regular file. Before the correction, both forced and unforced retries removed the disposable marker. Tests now cover expanded operands ending in one or several slashes, regular files, dangling links, links to files, directory symlinks and actual directories. The original helper's default trailing-slash test still covers its existing callers.
 - After the trailing-slash correction, all 51 hook and launch tests and all 13 removal tests passed.
+- The third review found that a variable expanding to `--help` could remove that filename and another operand. A binary fixture reproduced both deletions on the prior head while the original rm kept both markers. The checked retry now verifies all expanded arguments first. Original explicit option termination still permits that filename.

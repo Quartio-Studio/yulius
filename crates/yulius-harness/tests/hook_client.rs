@@ -1191,7 +1191,7 @@ cd $S/r3m && n=$(grep -n '^  phase=installed$' scripts/cd/remote.sh | sed -n 2p 
 sed -i "${n}s/.* /   : # mutated/" scripts/cd/remote.sh && sed -n "$((n-2)),$((n+1))p" scripts/cd/remote.sh
 python3 -m unittest scripts/test_cd.py 2>&1 | grep -E "^(FAIL|Ran|OK)"
 cd $S/probe && python3 r2.py $S/r3p/scripts 2>&1 | tail -n 8"#,
-            r#"yulius remove --preserve-trailing-slash -- "${S:?}/${d:?}""#,
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands -- "${S:?}/${d:?}""#,
         ),
         (
             r#"rm -fr -- "${scratch}/${copy}""#,
@@ -1199,63 +1199,63 @@ cd $S/probe && python3 r2.py $S/r3p/scripts 2>&1 | tail -n 8"#,
         ),
         (
             r#"rm -rf "$scratch""#,
-            r#"yulius remove --preserve-trailing-slash -- "${scratch:?}""#,
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands -- "${scratch:?}""#,
         ),
         (
             r#"rm -rf "$TMPDIR/scratch""#,
-            r#"yulius remove --preserve-trailing-slash -- "${TMPDIR:?}/scratch""#,
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands -- "${TMPDIR:?}/scratch""#,
         ),
         (
             r#"rm "$scratch/""#,
-            r#"yulius remove --preserve-trailing-slash --file-only --require-existing -- "${scratch:?}/""#,
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands --file-only --require-existing -- "${scratch:?}/""#,
         ),
         (
             "rm -rf $S/leaf",
-            r#"yulius remove --preserve-trailing-slash -- "${S:?}/leaf""#,
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands -- "${S:?}/leaf""#,
         ),
         (
             "rm -rf $S/$d another-path",
-            r#"yulius remove --preserve-trailing-slash -- "${S:?}/${d:?}" "another-path""#,
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands -- "${S:?}/${d:?}" "another-path""#,
         ),
         (
             "if test -d scratch; then rm -rf $S/$d; fi",
-            r#"yulius remove --preserve-trailing-slash -- "${S:?}/${d:?}""#,
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands -- "${S:?}/${d:?}""#,
         ),
         (
             r#"test -f marker && rm -f "$S/$d""#,
-            r#"yulius remove --preserve-trailing-slash --file-only -- "${S:?}/${d:?}""#,
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands --file-only -- "${S:?}/${d:?}""#,
         ),
         (
             "rm -f /task.log /probe.log",
-            r#"yulius remove --preserve-trailing-slash --file-only -- "/task.log" "/probe.log""#,
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands --file-only -- "/task.log" "/probe.log""#,
         ),
         (
             "rm /task.log",
-            r#"yulius remove --preserve-trailing-slash --file-only --require-existing -- "/task.log""#,
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands --file-only --require-existing -- "/task.log""#,
         ),
         (
             "rm -r /scratch",
-            r#"yulius remove --preserve-trailing-slash --require-existing -- "/scratch""#,
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands --require-existing -- "/scratch""#,
         ),
         (
             "while test -e ready; do rm --recursive --force /artifact; done",
-            r#"yulius remove --preserve-trailing-slash -- "/artifact""#,
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands -- "/artifact""#,
         ),
         (
             "until test -e ready; do rm -R -f /artifact; done",
-            r#"yulius remove --preserve-trailing-slash -- "/artifact""#,
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands -- "/artifact""#,
         ),
         (
             "case x in x) (rm -f /artifact);; esac",
-            r#"yulius remove --preserve-trailing-slash --file-only -- "/artifact""#,
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands --file-only -- "/artifact""#,
         ),
         (
             "true || { rm -f /artifact; }",
-            r#"yulius remove --preserve-trailing-slash --file-only -- "/artifact""#,
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands --file-only -- "/artifact""#,
         ),
         (
             "if false; then true; else rm -f /artifact | cat; fi",
-            r#"yulius remove --preserve-trailing-slash --file-only -- "/artifact""#,
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands --file-only -- "/artifact""#,
         ),
         (
             "rm -rf -- -name /artifact",
@@ -1263,7 +1263,7 @@ cd $S/probe && python3 r2.py $S/r3p/scripts 2>&1 | tail -n 8"#,
         ),
         (
             r#"rm -rf "${S}/some space""#,
-            r#"yulius remove --preserve-trailing-slash -- "${S:?}/some space""#,
+            r#"yulius remove --preserve-trailing-slash --reject-option-operands -- "${S:?}/some space""#,
         ),
     ] {
         let mut event = request(command);

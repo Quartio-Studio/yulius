@@ -143,6 +143,9 @@ fn cleanup_in_pipe(cmd: &DefaultPipeableCommand) -> Option<String> {
         }
     }
     let mut retry = String::from("yulius remove --preserve-trailing-slash");
+    if !end_options {
+        retry.push_str(" --reject-option-operands");
+    }
     if !recursive {
         retry.push_str(" --file-only");
     }
