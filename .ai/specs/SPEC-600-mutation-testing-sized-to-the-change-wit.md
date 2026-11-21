@@ -1,6 +1,6 @@
 ---
 yulius-task: ba2b5b3f-2b04-4241-8917-82815c6f57af
-status: in-progress
+status: done
 ---
 
 # SPEC-600 Disk build scratch and by-hand mutation checks
@@ -30,8 +30,8 @@ On 2026-11-21 the owner measured 105 minutes waiting for mutation tests in 22 Co
 - [x] Reclaim attempt scratch after forced host termination
 - [x] Deliver the by-hand mutation policy and bootstrap
 - [x] Deliver disk build scratch, the tmpfs cap and on-request campaign cleanup
-- [ ] Deliver disposable targets for built-in Cargo commands
-- [ ] Deliver external Cargo commands and cache reuse, then request staging
+- [x] Deliver disposable targets for built-in Cargo commands
+- [x] Deliver external Cargo commands and cache reuse, then request staging
 
 ## Acceptance criteria
 
@@ -142,3 +142,19 @@ Review of c075a55cf found three configurations that Cargo accepted and the launc
 Review of b53f50467 found that Cargo run starts passing arguments to the program at its first positional argument even without an explicit separator. Appending internal settings at the end let an offline build create an external intermediate directory and passed four internal arguments to the binary. The launcher now inserts the settings directly after the last user configuration. The fixture observed exactly the two requested program arguments and an empty scratch parent. For program arguments named --target-dir or --config, it checks the diagnostic for ambiguous syntax and the exact argument list when using Cargo's separator. Restoring the former insertion point by hand reproduced the external write.
 
 The third built-in launcher review found that a lone dash is also a Cargo run positional. An offline run on e3729cc0d wrote intermediates outside scratch when the program's implicit arguments began with a dash followed by --config. The fix recognizes the dash as a positional and diagnoses ambiguous arguments before Cargo starts. An explicit separator passed the three requested arguments unchanged, left the external directory absent, and removed scratch. Undoing the dash check by hand reproduced the external write.
+
+
+PR #1643 merged at 72834601b after Yulius CI run 2d7db5ed-bea2-4c9e-979a-27c0f4ab24c5 passed on the reviewed head 6e1103ecb. [Delivery evidence](https://yulius.quartio.ai/api/tasks/ba2b5b3f-2b04-4241-8917-82815c6f57af/delivery/evidence/72834601b267c08401f6f3fe43fcb0167d878e85)
+
+On that merged implementation the external command fixture rejected both Clippy and nextest, two disposable library builds produced no compiler-cache hits, and the cancellation fixture observed that its backend had bypassed the sandbox store. The final launcher calls the named external executable using Cargo's plugin convention. Both real tools processed their offline fixture with and without mbx despite workspace and environment aliases and a conflicting build directory. Nextest reported one passing test. Neither tool wrote to the external path, and the scratch parent emptied each time. Two fresh disposable library builds reused the actual mbx store on the second invocation. Cancellation tests verify that the cache lease stays out of Cargo, workers exit even across a process group, and the private target is gone on return.
+
+Three by-hand reversals tested the final dispatch paths. Sending the external commands through Cargo alias expansion made nextest fail and let the Clippy alias write outside scratch, with and without the cache. Bypassing mbx removed the second disposable build's cache hit. Ignoring the dispatch receipt ran a failing Cargo command twice. Restoring those lines passed all three checks. A cache startup failure fell back to one direct execution, preserved its exit code 37 and left scratch empty.
+
+Review of befc825c6 reproduced a real cached cargo run exiting 101 when its executable opened an inherited input descriptor. The cache launcher was closing every descriptor except its lease. It now makes the lease inheritable for the mbx spawn and preserves caller-supplied descriptors. The executing Cargo child still closes the lease. The real program read its input and the cancellation fixture verified the backend had no lease.
+
+During a concurrent local suite run an existing offline cargo run fixture exceeded its 15-second command deadline. The suite took 658 seconds and returned an error. The output recorded the timeout without identifying which child was delayed. That fixture now uses the same 120-second ceiling as the other real compilation fixture.
+
+A second review finding left the sandbox's shared lease held during a plain scratch build after cache startup failed or upkeep had removed the ownership stamp. In both cases the backend's exclusive nonblocking lock failed with EAGAIN. The cache attempt now closes its lease before invoking any direct fallback. Removing the close by hand reproduced both failures. Closing caller descriptors by hand restored ENOENT in the inherited-input regression. The cancellation fixture previously used an eight-second watchdog for a supervisor with up to twelve seconds of shutdown waits. Its twenty-second watchdog checks exit 143 as well as worker termination, target cleanup and lock release.
+
+
+The final independent review approved b9c15e428 on dev base 13a632c40. All 49 launcher and compiler-cache tests passed locally in 38.756 seconds and in the independent review. Repository contracts and formatting passed. Vidoc was disabled. Yulius records the final exact-head CI, merged revision and single post-merge staging request in the task delivery record.
