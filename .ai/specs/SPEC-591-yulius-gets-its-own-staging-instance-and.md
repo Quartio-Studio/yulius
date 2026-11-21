@@ -201,3 +201,37 @@ was verified there.
   that does not serve HTTPS.
 - **No `[local]` table in this change:** Yulius's tasks already run the server locally through
   the e2e harness on their ports. A `[local]` deployment is not part of this request.
+
+## Evidence
+
+Slice 1 (the CD scripts and `[cd.dev]`):
+
+- Test-first: before the scripts existed, `python3 -m unittest scripts/test_cd.py` failed with
+  24 errors. With them, all 27 pass (about 22 s). They cover:
+  - refusals and the rollback's dry run;
+  - the pin;
+  - deploy, redeploy and undo on a fake root with real SQLite;
+  - each failing verify check, named by its message;
+  - rollback across a schema change and without one, and the drill's step forward;
+  - upload from the cache, and the build's commit check.
+  The test caught one real bug on the way: the `/internal/version` parser failed on JSON with a
+  space after the colon.
+- `the_repositorys_own_cd_is_defined` failed against the old `yulius.toml` (panicked at line
+  1897) and passes with the new `[cd.dev]`. `scripts/dev quick` passed; `skills::tests`: 22
+  passed. `scripts/test_decision_slots.py`, run with discover as the gate does: 8 passed.
+- Real build: `scripts/cd/build.sh 2f4d57f1b142ef00a28c1ccc0d24783c6687bdd8` in the sandbox's
+  Docker took 7 min 33 s cold (cargo 6 min 6 s). The binary is 86 MB and its `yulius version`
+  names the commit.
+- By hand against the staging VM, with the committed scripts of 2f4d57f1b, the key from
+  `secret_copy_to_env` and the pinned host key:
+  - **Deploy:** uploaded by SHA-256 4d6177e4…366c and kept 3fc0e5976 with its store (schema 82).
+    It started 2f4d57f1b, which reported its commit.
+  - **Verify (deploy):** `/internal/version` named the commit, `/healthz` answered 200 over HTTPS,
+    and the contained doctor passed. The store showed schema 82 from 82, 83 tables, no lost
+    rows. The Docker smoke test said "sandboxes get Docker on this host". It took 24 s.
+  - **Drill:** rollback to 3fc0e5976, verify, forward to 2f4d57f1b, verify, rollback to
+    3fc0e5976 again, verify: each exit 0. The live store was kept each time (same schema 82).
+    Staging runs 3fc0e5976 again for the first CD deploy.
+  - The schema-change branch of the rollback and the undo of a release that does not start were
+    exercised on the fake root only: no migration lies between 3fc0e5976 and this branch.
+- Vidoc: turned off for this project in Yulius (disabled, not passed).
