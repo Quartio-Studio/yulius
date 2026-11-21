@@ -27,8 +27,8 @@ Task #586 shows a background reviewer resetting two scratch directories in a loo
 - [x] Preserve conditions and file-only semantics for equivalent removals
 - [x] Preserve directory requirements on expanded cleanup paths
 - [x] Refuse ambiguous expanded options before removing any operand
-- [ ] Recognize root-level scratch directories with trailing slashes
-- [ ] Preserve command-local redirections during cleanup decisions
+- [x] Recognize root-level scratch directories with trailing slashes
+- [x] Preserve command-local redirections during cleanup decisions
 - [ ] Independent review approves the verified change for delivery
 
 ## Acceptance criteria
@@ -61,3 +61,4 @@ Use Claude's structured PermissionRequest event. Its decision belongs to the pen
 - The second review found that trimming a trailing slash could unlink a regular file. Before the correction, both forced and unforced retries removed the disposable marker. Tests now cover expanded operands ending in one or several slashes, regular files, dangling links, links to files, directory symlinks and actual directories. The original helper's default trailing-slash test still covers its existing callers.
 - After the trailing-slash correction, all 51 hook and launch tests and all 13 removal tests passed.
 - The third review found that a variable expanding to `--help` could remove that filename and another operand. A binary fixture reproduced both deletions on the prior head while the original rm kept both markers. The checked retry now verifies all expanded arguments first. Original explicit option termination still permits that filename.
+- The third review also reproduced a prompt for a root-level directory ending in a slash, and a retry that dropped a required input redirect. Both new hook regressions failed on the old implementation. The hook recognizes root-level paths with trailing slashes and preserves their spelling. A redirect or environment assignment attached to the removal goes to the normal permission handler.

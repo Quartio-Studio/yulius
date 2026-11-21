@@ -103,13 +103,19 @@ fn cleanup_in_pipe(cmd: &DefaultPipeableCommand) -> Option<String> {
         }
         PipeableCommand::FunctionDef(_, _) => return None,
     };
+    // A replacement made only of the command and its operands would lose these effects.
+    if !simple.redirects_or_env_vars.is_empty() {
+        return None;
+    }
     let mut words = simple
         .redirects_or_cmd_words
         .iter()
-        .filter_map(|item| match item {
+        .map(|item| match item {
             RedirectOrCmdWord::CmdWord(word) => Some(word),
             RedirectOrCmdWord::Redirect(_) => None,
         })
+        .collect::<Option<Vec<_>>>()?
+        .into_iter()
         .peekable();
     if !matches!(literal(words.next()?)?, "rm" | "/bin/rm" | "/usr/bin/rm") {
         return None;
@@ -162,7 +168,7 @@ fn cleanup_in_pipe(cmd: &DefaultPipeableCommand) -> Option<String> {
         relevant |= has_variable
             || path
                 .strip_prefix('/')
-                .is_some_and(|rest| !rest.contains('/'));
+                .is_some_and(|rest| !rest.trim_matches('/').contains('/'));
         retry.push_str(" \"");
         retry.push_str(&path);
         retry.push('"');
