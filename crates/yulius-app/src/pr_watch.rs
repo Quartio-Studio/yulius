@@ -25,7 +25,7 @@ use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::ids::TaskId;
 use yulius_domain::task::TaskStatus;
 
-use crate::agent_wait::QueueNote;
+use crate::agent_wait::{ArmedNow, QueueNote};
 use crate::ci::{CiJobRecord, CiRunRecord};
 use crate::context::App;
 use crate::delivery::{delivery_profile, past_merge};
@@ -986,10 +986,14 @@ impl App {
     ) -> Option<PrFacts> {
         // The slot before the delivery: a merge decided in between then reads as merged, never
         // as "no merge armed" on an open pull request (review minor 8).
-        let (armed, outcome) = self.armed_view(&task.id);
-        // Also before a restarted server put the armed merges back: never "no merge is armed"
-        // for one that is (SPEC-487, review round 2).
-        let armed = armed || self.merge_is_armed(&task.id);
+        let read_arm = || match self.armed_now(&task.id) {
+            // Restoration can know a task may be armed before it can read the saved activation.
+            ArmedNow::None if self.merge_is_armed(&task.id) => ArmedNow::Deciding,
+            state => state,
+        };
+        let activation = read_arm();
+        let armed = activation != ArmedNow::None;
+        let (_, outcome) = self.armed_view(&task.id);
         let record = self.deps.store.delivery(&task.id).await.ok()??;
         let pr = record.pr_number?;
         let sandbox = self.deps.store.sandbox(&task.sandbox_id).await.ok()??;
@@ -1029,15 +1033,9 @@ impl App {
         if record.stage != DeliveryStage::PrOpen {
             return None;
         }
-        if armed
-            && !matches!(
-                self.armed_now(&task.id),
-                crate::agent_wait::ArmedNow::Armed(_)
-            )
-        {
-            // Record the open PR even when its saved arm is unreadable or the queue
-            // is deciding it. A merge before the next pass still belongs to this owner.
-            return Some(PrFacts {
+        // A deferred pass remembers the open PR and leaves its existing stall clock alone.
+        let observed_only = || {
+            Some(PrFacts {
                 pr,
                 now_ms,
                 progress: if told.pr == pr {
@@ -1046,7 +1044,10 @@ impl App {
                     String::new()
                 },
                 ..PrFacts::default()
-            });
+            })
+        };
+        if activation == ArmedNow::Deciding || read_arm() != activation {
+            return observed_only();
         }
         let integration = delivery_profile(&sandbox).integration_branch;
         if !runs.contains_key(sandbox.id.as_str()) {
@@ -1244,6 +1245,13 @@ impl App {
             .load(Ordering::SeqCst)
             .max(runtime.spawned_ms.load(Ordering::SeqCst));
         let check_ins = !runtime.goal_achieved.load(Ordering::SeqCst) && !needs_you;
+        crate::race::reached(
+            crate::race::Point::LivePrFactsRead,
+            std::path::Path::new(task.id.as_str()),
+        );
+        if read_arm() != activation {
+            return observed_only();
+        }
         Some(PrFacts {
             now_ms,
             pr,

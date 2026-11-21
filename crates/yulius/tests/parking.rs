@@ -39,6 +39,21 @@ async fn app_with_pulls(
     slots: u32,
     park_after_ms: u64,
 ) -> Result<(Arc<App>, Arc<crate::support::FakeGitHub>), Error> {
+    app_with_pulls_and_clock(
+        data,
+        slots,
+        park_after_ms,
+        Arc::new(yulius::wiring::clock::SystemClock),
+    )
+    .await
+}
+
+async fn app_with_pulls_and_clock(
+    data: &Path,
+    slots: u32,
+    park_after_ms: u64,
+    clock: Arc<dyn yulius_app::ports::Clock>,
+) -> Result<(Arc<App>, Arc<crate::support::FakeGitHub>), Error> {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let agent = FakeAgentOptions {
         answers_first_message: true,
@@ -50,11 +65,7 @@ async fn app_with_pulls(
         data,
         &fake,
         agent,
-        (
-            0,
-            Arc::new(ScriptedUsage::default()),
-            Arc::new(yulius::wiring::clock::SystemClock),
-        ),
+        (0, Arc::new(ScriptedUsage::default()), clock),
         None,
         |config| {
             config.max_live_sessions = slots;
@@ -3020,32 +3031,46 @@ fn a_cold_parked_summary_reads_historical_spec_and_goal_evidence() -> TestResult
 
 #[test]
 fn a_first_pr_watch_during_arm_restoration_remembers_the_merge() -> TestResult {
-    first_watch_during_queue_decision(false, None)
+    first_watch_during_queue_decision(QueueWatch::Restoring, None)
 }
 
 #[test]
 fn a_first_pr_watch_during_an_active_queue_decision_remembers_the_merge() -> TestResult {
-    first_watch_during_queue_decision(true, None)
+    first_watch_during_queue_decision(QueueWatch::Taken, None)
 }
 
 #[test]
 fn a_queue_retry_keeps_the_already_observed_prs_stall_deadline() -> TestResult {
-    first_watch_during_queue_decision(true, Some(1481))
+    first_watch_during_queue_decision(QueueWatch::Taken, Some(1481))
 }
 
 #[test]
 fn a_first_deferred_watch_of_a_replacement_pr_clears_the_previous_stall() -> TestResult {
-    first_watch_during_queue_decision(true, Some(1480))
+    first_watch_during_queue_decision(QueueWatch::Taken, Some(1480))
 }
 
-fn first_watch_during_queue_decision(active: bool, previously_seen: Option<u64>) -> TestResult {
+#[test]
+fn a_free_pr_watch_overtaken_by_a_queue_decision_remembers_the_merge() -> TestResult {
+    first_watch_during_queue_decision(QueueWatch::TakenDuringRead, None)
+}
+
+enum QueueWatch {
+    Restoring,
+    Taken,
+    TakenDuringRead,
+}
+
+fn first_watch_during_queue_decision(case: QueueWatch, previously_seen: Option<u64>) -> TestResult {
     use yulius_app::delivery::DeliveryRecord;
     use yulius_app::pr_watch::WatchBounds;
     use yulius_domain::delivery::DeliveryStage;
 
     let (_dir, data) = data_dir()?;
     runtime()?.block_on(async {
-        let (app, github) = app_with_pulls(&data, 8, 1).await?;
+        const PRIOR_OBSERVATION: i64 = 1_800_000_000_000;
+        const NEXT_OBSERVATION: i64 = PRIOR_OBSERVATION + 17_000;
+        let clock = Arc::new(crate::support::TestClock(PRIOR_OBSERVATION.into()));
+        let (app, github) = app_with_pulls_and_clock(&data, 8, 1, clock.clone()).await?;
         let (id, caller) = answered(&app, &data).await?;
         open_pull_at(&app, &github, &id, 1481, "head").await?;
         let open = DeliveryRecord {
@@ -3065,7 +3090,31 @@ fn first_watch_during_queue_decision(active: bool, previously_seen: Option<u64>)
         };
         let arms = data.join(yulius_app::agent_wait::ARMED_MERGES_FILE);
         let notices = data.join(yulius_app::pr_watch::PR_NOTICES_FILE);
-        if active {
+        if matches!(case, QueueWatch::TakenDuringRead) {
+            let (read, release_read) = pause_watch_or_queue(Point::LivePrFactsRead, &id);
+            let (taken, release_queue) = pause_watch_or_queue(Point::FreeArmTaken, &id);
+            let watcher = Arc::clone(&app);
+            let pass = tokio::spawn(async move { watcher.watch_prs(&due).await });
+            tokio::time::timeout(Duration::from_secs(10), read.notified()).await?;
+            std::fs::write(
+                &arms,
+                serde_json::to_vec(
+                    &json!([{"task":id.as_str(),"head":"head","summary":"reviewed","armed_at":30}]),
+                )?,
+            )?;
+            app.restore_armed_merges().await;
+            let queue = Arc::clone(&app);
+            let decision = tokio::spawn(async move { queue.merge_armed(&caller.sandbox).await });
+            tokio::time::timeout(Duration::from_secs(10), taken.notified()).await?;
+            release_read.notify_one();
+            let news = pass.await?;
+            release_queue.notify_one();
+            decision.await?;
+            assert!(
+                news.is_empty(),
+                "stale free-arm news during the decision: {news:?}"
+            );
+        } else if matches!(case, QueueWatch::Taken) {
             std::fs::write(
                 &arms,
                 serde_json::to_vec(
@@ -3110,6 +3159,9 @@ fn first_watch_during_queue_decision(active: bool, previously_seen: Option<u64>)
             } else {
                 None
             };
+            clock
+                .0
+                .store(NEXT_OBSERVATION, std::sync::atomic::Ordering::SeqCst);
             let watch = Arc::clone(&app);
             let handle = tokio::runtime::Handle::current();
             let seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -3132,10 +3184,8 @@ fn first_watch_during_queue_decision(active: bool, previously_seen: Option<u64>)
                 } else {
                     assert_eq!(current["pr"], 1481);
                     assert_eq!(current["progress"], "");
-                    assert!(
-                        current["progress_ms"].as_i64().ok_or("new PR clock")?
-                            >= prior["progress_ms"].as_i64().ok_or("previous PR clock")?
-                    );
+                    assert_eq!(prior["progress_ms"], PRIOR_OBSERVATION);
+                    assert_eq!(current["progress_ms"], NEXT_OBSERVATION);
                     assert!(app.pr_stalled(&id).is_none());
                 }
             }
@@ -3187,4 +3237,29 @@ fn first_watch_during_queue_decision(active: bool, previously_seen: Option<u64>)
         assert!(repeat.is_empty(), "{repeat:?}");
         Ok(())
     })
+}
+
+fn pause_watch_or_queue(
+    point: Point,
+    id: &TaskId,
+) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let signal = Arc::clone(&entered);
+    let gate = Arc::clone(&release);
+    let handle = tokio::runtime::Handle::current();
+    yulius_app::race::on(point, Path::new(id.as_str()), move || {
+        signal.notify_one();
+        let released = tokio::task::block_in_place(|| {
+            handle.block_on(tokio::time::timeout(
+                Duration::from_secs(15),
+                gate.notified(),
+            ))
+        });
+        assert!(
+            released.is_ok(),
+            "test did not release the watcher or queue"
+        );
+    });
+    (entered, release)
 }

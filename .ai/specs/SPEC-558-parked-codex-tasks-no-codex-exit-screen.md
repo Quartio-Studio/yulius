@@ -99,6 +99,8 @@ When the watcher sees an open PR during an unresolved arm decision, it supplies 
 
 ## Evidence
 
+- On `e90df3599`, a first watch that started with no merge armed told the owner to call delivery_merge after the queue had taken the newly restored arm. The fixture interrupts both the watch and the real queue at their decision points. A second fixture uses distinct controlled clock readings to verify the exact timestamp for a replacement PR.
+
 - On the dev baseline `e8759b018`, both first-watch cases sent an immediate check-in. Review of `e19864e43` found that deferring an already observed PR discarded its progress fingerprint. The retry regression reproduced a disappearing stall and a reset deadline with the same arm and CI run. The replacement-PR control verifies that its new clock and progress belong to the new PR.
 
 - On the reviewed queue prototype `1b2442c29`, both new regressions reproduced a lost merge. The first watch ran while arm restoration was incomplete or while the queue held the arm for a decision. It typed nothing and forgot the open PR. The regressions require one notice at the original task when the delivery record advances to merged between passes. The broader ordinary-CI and train-status changes remain in the next plan item.
