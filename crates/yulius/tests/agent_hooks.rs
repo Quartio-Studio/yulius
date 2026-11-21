@@ -3992,8 +3992,7 @@ async fn followup_discovery_keeps_blocker_identity_during_an_outage() -> TestRes
     verify_followup_outage(false, true, Some(1492)).await
 }
 
-#[tokio::test]
-async fn a_parked_merge_survives_stalled_final_discovery_after_direct_closure() -> TestResult {
+async fn parked_followup_with_stalled_final_list(merged: bool) -> TestResult {
     let (f, owner) = parked_with_recorded_merge().await?;
     let mut config = f.h.app.config.clone();
     config.parked_pr_read_ms = 750;
@@ -4026,10 +4025,11 @@ async fn a_parked_merge_survives_stalled_final_discovery_after_direct_closure() 
             f.h.github.pull_read_entered.notified(),
         )
         .await?;
-        *f.h.github
-            .merged_on_direct_read
-            .lock()
-            .map_err(|_| "direct merge")? = Some(1492);
+        {
+            let mut pulls = f.h.github.pulls.lock().map_err(|_| "pulls")?;
+            pulls[0].state = "closed".into();
+            pulls[0].merged = merged;
+        }
         *f.h.github
             .pull_read_hold
             .lock()
@@ -4047,10 +4047,25 @@ async fn a_parked_merge_survives_stalled_final_discovery_after_direct_closure() 
     let (status, held) = tokio::join!(app.tool_task_get(&caller, &args), after_listing);
     held?;
     let status = status?;
-    assert_eq!(status["shows"], "done", "{status}");
-    assert_eq!(status["parked_pr"], json!({"number":1491,"open":false}));
-    assert_eq!(app.tool_task_get(&caller, &args).await?["shows"], "done");
+    if merged {
+        assert_eq!(status["shows"], "done", "{status}");
+        assert_eq!(status["parked_pr"], json!({"number":1491,"open":false}));
+        assert_eq!(app.tool_task_get(&caller, &args).await?["shows"], "done");
+    } else {
+        assert_eq!(status["shows"], "needs_you", "{status}");
+        assert_eq!(status["parked_pr"], json!({"number":1492,"open":false}));
+    }
     Ok(())
+}
+
+#[tokio::test]
+async fn a_parked_merge_survives_stalled_final_discovery_after_direct_closure() -> TestResult {
+    parked_followup_with_stalled_final_list(true).await
+}
+
+#[tokio::test]
+async fn a_parked_followup_closed_without_merge_still_requires_verification() -> TestResult {
+    parked_followup_with_stalled_final_list(false).await
 }
 
 #[tokio::test]

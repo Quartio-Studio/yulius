@@ -1,6 +1,6 @@
 ---
 yulius-task: 00b9c0be-4d9a-4556-9bed-c4d81b3e11e6
-status: in-progress
+status: done
 ---
 
 # SPEC-585 Keep a completed delivery out of Needs you
@@ -24,8 +24,8 @@ The screenshot shows parked Quartio-v2 task #335, PR #1491, 11 completed steps a
 - [x] Trace the parked pull request warning
 - [x] Reproduce the incorrect task status in a regression test
 - [x] Restore the correct status across parked task reads
-- [ ] Verify and independently review the fix
-- [ ] Merge the reviewed fix into dev
+- [x] Verify and independently review the fix
+- [x] Merge the reviewed fix into dev
 
 ## Acceptance criteria
 
@@ -58,3 +58,14 @@ Both final regressions passed. The independent reviewer approved `b157074693274f
 With the configured test harness selected, all 177 scoped tests passed on the integrated code with one nextest worker. Five pre-existing timing tests exceeded their fixtures’ deadlines when the parallel run shared CPUs with mutation builds ([issue #1591](https://github.com/Quartio-Studio/yulius/issues/1591)).
 
 Changed-line mutation testing exposed missing coverage of an old verified PR identity absent from the final open list. Applying the generated membership mutation made the added test return PR 4 instead of PR 3. Restoring the reviewed condition made it pass alongside all five overview tests.
+
+The full changed-line mutation campaign ran on the immutable `41198e18` checkout. The review repair ran separately against that head. Both unmutated baselines passed.
+
+```text
+mutants: 96 listed, 28 caught, 2 missed, 0 timed out, 66 unviable, 0 not reached (bound 30 min, took 1136 s)
+mutants: 19 listed, 8 caught, 0 missed, 0 timed out, 11 unviable, 0 not reached (bound 30 min, took 897 s)
+```
+
+Both surviving mutations were reapplied. The added assertions failed with each generated change: the cache returned an absent PR identity, or hid a completed branch result behind an earlier overview. One repair mutant was initially caught by an unrelated watcher timeout. A dedicated regression now detects that mutant mistakenly treating an unmerged closure as a verified merge during a stalled final list.
+
+On the restored product code, the final run passed 178 parking and dependency tests, six cache and publication tests, and scoped Clippy with warnings denied. The task delivery record supplies the green PR head, squash commit and verification link for the final plan item.

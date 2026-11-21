@@ -835,6 +835,7 @@ mod overview_tests {
         cache
             .begin_branch(&sandbox, &task)?
             .record_branch(&task, 1, Some(2));
+        assert_eq!(cache.get(&sandbox, &task), Some(Some(PullSignal::InReview)));
         assert!(cache.known_pull(&sandbox, &other).is_none());
         drop(older);
         assert!(cache.known_pull(&sandbox, &other).is_none());
