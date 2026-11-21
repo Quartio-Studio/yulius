@@ -734,6 +734,12 @@ impl App {
         let mut effective = *facts;
         effective.browser_request |= why.contains_key("needs_you");
         effective.held_prompt |= why.contains_key("held_prompt");
+        if effective.group() == TaskGroup::Working
+            && !effective.paused
+            && let Some(state) = effective.staging_wait
+        {
+            why.insert("staging_wait".into(), json!(state.task_wait_label()));
+        }
         let notice = self
             .resolve_needs_you_notice_with_pr(task, &effective, pr_hint)
             .await;

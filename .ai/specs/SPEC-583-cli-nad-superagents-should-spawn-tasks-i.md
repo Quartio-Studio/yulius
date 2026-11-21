@@ -5,6 +5,8 @@ status: done
 
 # SPEC-583 — CLI and Superagent tasks inherit the Codex launch defaults
 
+[SPEC-607](SPEC-607-codex-tasks-run-at-high-effort-unless-th.md) supersedes the inherited effort used in this release.
+
 ## Goal
 
 A person can run `yulius task create` or ask either Superagent to start a task and get GPT-6.2 Astra at extra high effort, with Ultrafast on eligible subscriptions.

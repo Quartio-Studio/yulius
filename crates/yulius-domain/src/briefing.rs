@@ -804,7 +804,9 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
             // SPEC-575 MFS-004: the merge-first target changes through its queue.
             Some(env) => format!(
                 "Merge-first {}: once your whole delivery merged, `cd_deploy` it once; Yulius \
-                 runs the full gate on that revision, then deploys it",
+                 runs the full gate on that revision, then deploys it. End the turn once the \
+                 request is recorded. If your final step requires the verdict, keep it in progress; \
+                 Yulius wakes the task with the outcome",
                 code(&format!("[cd.{env}]"), 60)
             ),
             None => "Merges deploy nothing: `cd_deploy`/`cd_rollback` dev only if asked".to_owned(),

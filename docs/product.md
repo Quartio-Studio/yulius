@@ -6,9 +6,9 @@ contained sandboxes on a single Linux VM, and enforces engineering discipline ar
 Yulius develops itself with Yulius. Its pull requests get independent results for check, lint, macOS, docs and dependencies. The merged revision runs both Rust test partitions from one build and runs the browser suite. [Decision 0438](decisions/0438-quality-passes-have-own-jobs-and-test-partitions-share-a-build.md)
 
 It also runs native Codex CLI sessions on Codex (OpenAI) subscriptions, chosen per task or
-automation. GPT-6.2 Astra is the default model and inherits extra high effort. Other Codex models
-inherit high effort. A task's explicit effort takes precedence.
-[SPEC-561](../.ai/specs/SPEC-561-default-astra-6-2-to-xhigh-for-new-work.md)
+automation. GPT-6.2 Astra is the default model. Every Codex model inherits High effort.
+A task's explicit effort takes precedence, including Extra high and Max on GPT-6.2 Astra and Sol.
+[SPEC-607](../.ai/specs/SPEC-607-codex-tasks-run-at-high-effort-unless-th.md)
 
 Continue resumes a stopped Codex task in its saved conversation. Reopening a closed Codex conversation shows Waiting until its next turn. [SPEC-590](../.ai/specs/SPEC-590-look-bro-the-taks-says-it-working-but-th.md)
 
@@ -599,7 +599,8 @@ watching, steering and unblocking.
     - Pull requests merge on the quick checks. The full suite (`after_merge` jobs) runs once on
       the merged revision.
     - A task asks for staging with `cd_deploy` once its delivery merged. Yulius deploys and
-      verifies that tested revision in revision order, once per task.
+      verifies that tested revision in revision order, once per task. The task shows the full-suite
+      or staging wait and resumes on the outcome, including a failed gate.
     - A failing candidate leaves staging on its last verified release and tells the task.
     - A person can deploy the revision staging verified while the next dev revision is being checked. [ADR-0425](decisions/0425-pin-a-production-deploy-to-verified-dev.md)
   - Each task tests locally first with the project's `[local]` deployment inside its own sandbox.

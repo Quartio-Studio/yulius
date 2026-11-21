@@ -6,12 +6,14 @@ import platform
 import signal
 import stat
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 import shutil
 import tarfile
 import tempfile
 
+from build_subreaper import UnreapedBuild, enable_build_subreaper, reap_adopted_workers
 from home_lock import exclusive
 
 
@@ -52,6 +54,81 @@ def open_store(cache, checkout):
             return stat.S_ISREG(os.fstat(owner.fileno()).st_mode) and owner.read(len(contents) + 1) == contents
     finally:
         os.close(directory)
+
+
+def run_disposable(command, env):
+    """Keep Cargo in the shell job. Release the target only after its workers exit."""
+    subreaper = sys.platform == "linux"
+    if subreaper:
+        enable_build_subreaper()
+    else:
+        from build_groups import group_snapshot
+        prior_processes = set().union(*group_snapshot().values())
+
+    requested = None
+
+    def cancel(signum, _frame):
+        nonlocal requested
+        if requested is None:
+            requested = signum
+
+    signals = (signal.SIGHUP, signal.SIGINT, signal.SIGQUIT, signal.SIGTERM)
+    previous = {sig: signal.signal(sig, cancel) for sig in signals}
+    saved_mask = None
+    origin_pid = None
+    try:
+        if requested is not None:
+            return -requested
+        # Inherit the caller's process group and inheritable jobserver descriptors.
+        # The shell delivers stop, continue and terminal ownership to the whole job.
+        child = subprocess.Popen(command, env=env, close_fds=False)
+        try:
+            # Block only in the parent, after spawn. On hosts with sigtimedwait
+            # the kernel identifies terminal-generated signals by sender PID 0.
+            if hasattr(signal, "sigtimedwait"):
+                saved_mask = signal.pthread_sigmask(signal.SIG_BLOCK, signals)
+            while requested is None and child.poll() is None:
+                if saved_mask is not None:
+                    event = signal.sigtimedwait(signals, 0.1)
+                    if event is not None:
+                        requested = event.si_signo
+                        origin_pid = event.si_pid
+                else:
+                    try:
+                        child.wait(timeout=0.1)
+                    except subprocess.TimeoutExpired:
+                        continue
+            if requested is not None and child.poll() is None:
+                # A signal from another process can target the PID or the
+                # whole job. Let a handler already running in Cargo finish.
+                try:
+                    child.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    if origin_pid != 0:
+                        child.send_signal(requested)
+                        try:
+                            child.wait(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            pass
+                    if child.poll() is None:
+                        child.kill()
+                        child.wait(timeout=3)
+            if subreaper:
+                reap_adopted_workers()
+            else:
+                # Check identities in a single final observation. A worker can
+                # change groups or sessions between two independent snapshots.
+                current = set().union(*group_snapshot(require_known=True).values())
+                if current - prior_processes:
+                    raise UnreapedBuild("new processes may still own the build target")
+        except (OSError, ValueError, subprocess.SubprocessError, RuntimeError) as error:
+            raise UnreapedBuild(f"cannot confirm build worker shutdown: {error}") from error
+        return -requested if requested is not None else child.returncode
+    finally:
+        if saved_mask is not None:
+            signal.pthread_sigmask(signal.SIG_SETMASK, saved_mask)
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
 
 
 def run_session(command, env, lease):
