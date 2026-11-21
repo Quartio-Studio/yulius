@@ -7,7 +7,7 @@ status: in-progress
 
 ## Goal
 
-A person can set aside the new-task prompt shown in task #578, including its images, write another, and return to either before starting a task.
+A person can set aside the new-task prompt shown in task #578, including its images, write another, and return to either before starting a task. Fixes #1602.
 
 ## Context
 
@@ -23,8 +23,8 @@ The composer in [SPEC-026](SPEC-026-if-i-type-something-here-and-i-change-ta.md)
 
 - [x] Reproduce the single-draft behavior in the new-task composer
 - [x] Cover independent drafts and legacy recovery in the browser
-- [ ] Let people create, switch and remove individual task drafts
-- [ ] Verify the composer and deliver the reviewed fix to dev
+- [x] Let people create, switch and remove individual task drafts
+- [ ] Verify the composer and obtain independent approval for delivery
 
 ## Acceptance criteria
 
@@ -46,3 +46,5 @@ Extend the existing browser draft storage with separate keys for additional draf
 - On the baseline, the same user and sandbox returned the identical draft object. The three-draft and held-upload browser regressions failed looking for the New draft button.
 - A simulated storage event reproduced a stale inactive draft in the picker. The browser regression failed to find the updated name before inactive drafts began following other tabs' storage events.
 - The held-upload test caught the upload status covering New draft above the prompt. Draft controls sit below the composer so a pending upload leaves them reachable.
+- Independent review reproduced an untouched open editor restoring a draft discarded in another tab. The two-tab regression failed with the original storage key present after a held upload and a switch. Remote removal now retires the open editor and its pending upload. An unmount flushes only dirty drafts.
+- `scripts/dev quick` passed. Vidoc was disabled by the project. `scripts/dev mutants` reported no changed Rust code to mutate.

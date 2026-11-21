@@ -95,7 +95,7 @@ export function newDraft(draft) {
 /** Records a change of the draft: stored shortly after, or at once with `now`. */
 export function saveDraft(draft, { now = false } = {}) {
   const { key } = draft;
-  if (drafts.get(key) !== draft) return;
+  if (drafts.get(key) !== draft || (now && !timers.has(key))) return;
   clearTimeout(timers.get(key));
   timers.delete(key);
   if (now) store(key);
@@ -103,7 +103,7 @@ export function saveDraft(draft, { now = false } = {}) {
 }
 
 /**
- * Calls `callback` whenever this draft gains an attachment or a thumbnail
+ * Calls `callback` whenever this draft gains an attachment or a thumbnail, or another tab removes it
  * (an upload can end after the composer that started it is gone). Returns the unsubscribe.
  */
 export function onDraftChange({ key }, callback) {
@@ -116,8 +116,8 @@ export function onDraftChange({ key }, callback) {
   };
 }
 
-function changed(key) {
-  for (const callback of [...(listeners.get(key) || [])]) callback();
+function changed(key, removed = false) {
+  for (const callback of [...(listeners.get(key) || [])]) callback(removed);
 }
 
 /**
@@ -186,10 +186,14 @@ function forgetInMemory() {
 window.addEventListener('storage', (event) => {
   if (event.key === FORGOTTEN_KEY) { forgetInMemory(); return; }
   const draft = drafts.get(event.key);
-  // An open editor owns its edits. Inactive drafts follow other tabs' saves and removals.
-  if (!draft || listeners.has(event.key) || draft.starting) return;
-  if (event.newValue === null) retire(draft);
-  else if (!timers.has(event.key)) Object.assign(draft, restore(event.key));
+  if (!draft) return;
+  if (event.newValue === null) {
+    // A confirmed discard or successful start also retires open editors and their uploads.
+    retire(draft);
+    changed(event.key, true);
+  } else if (!listeners.has(event.key) && !draft.starting && !timers.has(event.key)) {
+    Object.assign(draft, restore(event.key));
+  }
 });
 
 /** Stores every pending draft now (the page is hidden or goes away). */

@@ -1534,7 +1534,8 @@ export function mountComposer(ctx, sandbox, draft) {
    * The draft changed elsewhere: the tray shows the files it gained (in every undo step: they came
    * with no edit of this prompt).
    */
-  function draftChanged() {
+  function draftChanged(removed) {
+    if (removed) { refreshRoute(); return; }
     learn();
     if (!arriving) prompt.adopt(draft.attached);
     prompt.refresh(); // numbers, or a thumbnail came
