@@ -27,9 +27,9 @@ On November 21 the operator measured about 195 seconds compiling and 151 seconds
 - [x] Verify concurrent reuse, path correctness and recovery
 - [x] Measure fresh-worktree test and quality builds and document the choice
 - [x] Approve the cache implementation for delivery
-- [x] Integrate idle compiler stores with instance disk upkeep
+- [x] Build and test the idle-store upkeep candidate
 - [x] Record the observed CI lane reuse and before/after run times
-- [x] Verify idle-store recovery and reconcile CI measurements with the verified dev runs
+- [x] Verify candidate idle-store recovery and reconcile the shipped launcher CI measurements
 - [ ] Restore task admission after compiler-store eviction with multiply linked files
 - [ ] Verify the completed quota and disk-upkeep integration for delivery
 
