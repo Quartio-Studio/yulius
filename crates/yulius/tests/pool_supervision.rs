@@ -730,6 +730,88 @@ fn a_goal_continuation_delivered_by_a_move_counts_once() -> TestResult {
     Ok(())
 }
 
+/// Moving an already-working goal through the owner's Switch action carries its turn.
+#[test]
+fn a_goal_continuation_budget_survives_a_public_subscription_switch() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build(&data, &fake, Arc::new(ScriptedUsage::default()))?;
+        let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
+        let id = legacy_goal_hold(&app, &sandbox, &user).await?;
+        app.resume_round().await;
+        wait_for("the run", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("FAKE-AGENT READY")
+        })
+        .await?;
+        app.deps
+            .store
+            .set_activity(&id, Some(yulius_domain::task::Activity::Working), app.now())
+            .await?;
+        app.deps
+            .store
+            .update_task(
+                &id,
+                &yulius_app::ports::store::TaskFieldUpdate {
+                    gate_blocks: Some(2),
+                    ..Default::default()
+                },
+                app.now(),
+            )
+            .await?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        app.switch_task(
+            &ctx,
+            id.as_str(),
+            &yulius_contracts::api::tasks::ContinueTask {
+                account_id: Some("b-second".into()),
+                ..Default::default()
+            },
+        )
+        .await?;
+        let moved = app.deps.store.live_attempt(&id).await?.ok_or("moved run")?;
+        let prompt = "Continue the task exactly where you left off.";
+        let launch = std::fs::read_to_string(Path::new(&moved.run_dir).join("fake-launch.txt"))?;
+        assert!(launch.contains(prompt), "{launch}");
+        // Only this synthetic attempt's hook credential, as in the parking fixtures.
+        let token = "test-moved-goal-submit";
+        rusqlite::Connection::open(data.join("yulius.db"))?.execute(
+            "UPDATE attempts SET token_hash = ?1 WHERE id = ?2",
+            rusqlite::params![
+                app.deps.crypto.sha256_hex(token.as_bytes()),
+                moved.id.as_str()
+            ],
+        )?;
+        let submit = |prompt: &str| yulius_contracts::hooks::HookInput {
+            prompt: Some(prompt.into()),
+            ..Default::default()
+        };
+        app.hook_event(token, "claude", "UserPromptSubmit", &submit(prompt), None)
+            .await?;
+        assert_eq!(task(&app, &id).await?.gate_blocks, 2);
+        app.record_typing(&id, &user);
+        app.hook_event(
+            token,
+            "claude",
+            "UserPromptSubmit",
+            &submit("Check the corrected build"),
+            None,
+        )
+        .await?;
+        assert_eq!(task(&app, &id).await?.gate_blocks, 0);
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// AC-ROT-11: every subscription exhausted → new tasks wait before starting (no process); a
 /// subscription added later resumes them oldest first, one stagger apart, on it.
 #[test]

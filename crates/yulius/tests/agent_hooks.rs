@@ -2302,6 +2302,48 @@ async fn goal_stop_rechecks_the_remaining_step_after_a_slow_observation() -> Tes
 }
 
 #[tokio::test]
+async fn goal_stop_reads_the_plan_while_a_watcher_publishes_its_spec_sync() -> TestResult {
+    use std::time::Duration;
+    use yulius_app::ports::browser::BrowserPort;
+
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Build checkout").await?;
+    std::fs::create_dir_all(f.worktree.join("docs/specs"))?;
+    std::fs::write(
+        f.worktree.join("docs/specs/checkout.md"),
+        "---\nyulius-task: t-main\nstatus: in-progress\n---\n# Checkout\n\n## Goal\n\nVerify checkout.\n\n## Context\n\nFixture.\n\n## Requirements\n\n- Verify.\n\n## Plan\n\n- [x] Build checkout\n- [ ] Verify dev\n\n## Acceptance criteria\n\nCheckout verified.\n\n## Test plan\n\nRun tests.\n\n## Decisions\n\nUse fixtures.\n",
+    )?;
+    let browser = Arc::new(crate::delivery::HeldBrowserLookup::default());
+    let (entered, release) = browser.hold_publication_lookup(&f.task);
+    browser.running(&f.sandbox).await;
+    let mut deps = f.h.app.deps.clone();
+    deps.browser = browser;
+    let app = yulius_app::context::App::new(f.h.app.config.clone(), deps);
+    let task = app.deps.store.task(&f.task).await?.ok_or("task")?;
+    let watcher = app.clone();
+    let syncing = tokio::spawn(async move { watcher.sync_steps_from_spec(&task).await });
+    tokio::time::timeout(Duration::from_secs(5), entered.notified()).await?;
+    let stop = tokio::time::timeout(
+        Duration::from_secs(4),
+        app.hook_event(TOKEN, "codex", "Stop", &Default::default(), None),
+    )
+    .await;
+    release.notify_one();
+    assert!(syncing.await??);
+    let yulius_app::hooks::HookReply::Output(reply) = stop?? else {
+        return Err("held".into());
+    };
+    let reply = serde_json::to_value(reply)?;
+    assert_eq!(reply["decision"], "block");
+    assert!(
+        reply["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("Verify dev")),
+        "{reply}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn goal_stop_restores_working_when_the_turn_was_last_seen_waiting() -> TestResult {
     let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify dev").await?;
     f.h.app
