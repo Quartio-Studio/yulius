@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- Contained Claude tasks and reviewers now receive a checked retry for variable-path and root-level scratch removals. The retry preserves the script’s conditions and file-only deletions. They can finish cleanup without waiting for a person to reply. [SPEC-596](../.ai/specs/SPEC-596-such-requests-should-be-answered-automat.md)
+
 - Yulius's own Rust builds reuse compiled artifacts in a bounded local disk cache across task worktrees and CI lanes. [SPEC-595](../.ai/specs/SPEC-595-share-compiled-rust-across-worktrees-and.md)
 - Continue now gives a stopped Codex task its next turn in the saved conversation. A Codex conversation reopened at an empty prompt shows Waiting. [SPEC-590](../.ai/specs/SPEC-590-look-bro-the-taks-says-it-working-but-th.md)
 - A sandbox browser whose profile came from another host now starts. Chrome's stale `Singleton*` lock files from the old host are removed before Chrome and its display start. A lock held by a running process here is kept, and a failed start names that process. Before this, after the 2026-11-21 move, the display restarted every 30 s. [SPEC-593](../.ai/specs/SPEC-593-sandbox-browser-never-starts-on-a-moved.md)
