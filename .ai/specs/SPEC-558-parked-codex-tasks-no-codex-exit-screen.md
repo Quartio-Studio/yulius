@@ -113,9 +113,12 @@ The live watcher resolves ordinary CI for the owner at the armed head and reads 
 
 The final parking check compares the owner’s saved singleton decision with the verified PR head and integration base. A change to the saved merge decision during hosted verification defers the pass. A changed base or published repair retires the old failure for this decision.
 
-The SQLite query returning a parked task includes the latest attempt ID in the same snapshot. Admission checks that ID under the launch lock after caller preflight. A message can wait while another turn resumes and parks, so task status alone cannot identify the session the sender observed. Only a matching parked attempt can restore Codex lineage or accept the prompt.
+The SQLite query returning a parked task includes the latest attempt ID in the same snapshot. Admission checks that ID under the launch lock after caller preflight. A message can wait while another turn resumes and parks, so task status alone cannot identify the session the sender observed. Only a matching parked attempt can restore Codex lineage or accept the prompt. Bulk messages, Telegram replies and remote restarts carry the attempt from their first task lookup through dispatch. They check the caller’s current access before acting.
 
 ## Evidence
+
+- On `fb5da81b0`, three dispatch regressions failed in run `7bcd2287-0ac3-4d53-8ef4-1e594e4eb4ef`. Bulk reported the replacement target as resumed, Telegram acknowledged the stale reply with “Sent to #1”, and remote restart moved the replacement to Waiting for capacity. The tests use two recorded attempts, an outstanding decision on the second and an exhausted test subscription.
+- The earlier identity suite passed all 201 scoped tests. Its first mutation campaign stopped during the unmutated baseline when the real-PTY admission regression timed out. No mutants were tested in that run. The regression now drives one accepted park at a time, observes its terminal exit and reports an early message refusal directly.
 
 - Parked attempt identity and final-screen ownership have separate delivery steps. The identity change retains the existing supervisor exit path. The combined prototype at `89fdfcecb` incorrectly recorded a confirmed clean host exit as lost when its optional model value could not be decoded. The exit ownership step preserves that outcome alongside both delayed-reader regressions.
 

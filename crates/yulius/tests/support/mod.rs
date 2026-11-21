@@ -2127,6 +2127,85 @@ pub async fn seed_live_attempt_at(
     Ok(())
 }
 
+/// Arrange a newer parked attempt and a fresh question after a caller has selected its targets.
+pub async fn replace_park_on_dispatch(
+    h: &Harness,
+    dispatched: &yulius_domain::ids::TaskId,
+    task: &yulius_app::model::TaskRecord,
+) -> TestResult {
+    use yulius_app::ports::store::{AttemptUpdate, TaskStore};
+    use yulius_app::ports::store_ext::NeedsYouStore;
+    use yulius_domain::task::AttemptState;
+    let target = &task.id;
+    let tree = h
+        .app
+        .config
+        .data_dir
+        .join("sandboxes")
+        .join(task.sandbox_id.as_str())
+        .join("worktrees")
+        .join(target.as_str());
+    std::fs::create_dir_all(&tree)?;
+    repos::git(&tree, &["init", "--quiet"])?;
+    seed_live_attempt(h, target.as_str(), "first parked attempt").await?;
+    let mut run = h
+        .store
+        .live_attempt(target)
+        .await?
+        .ok_or("parked fixture run")?;
+    let now = h.app.now();
+    h.store
+        .transition_attempt(
+            &run.id,
+            AttemptState::Killed,
+            &AttemptUpdate {
+                ended_at: Some(now),
+                exit_code: Some(0),
+                exit_reason: Some("parked".into()),
+                ..Default::default()
+            },
+        )
+        .await?;
+    run.id = yulius_domain::ids::AttemptId::parse("later-parked-run")?;
+    run.seq = 2;
+    run.state = AttemptState::Killed;
+    run.exit_code = Some(0);
+    run.exit_reason = Some("parked".into());
+    run.ended_at = Some(now);
+    run.token_hash = "later-parked-token".into();
+    let store = h.store.clone();
+    let handle = tokio::runtime::Handle::current();
+    yulius_app::race::on(
+        yulius_app::race::Point::SelectedTaskDispatched,
+        std::path::Path::new(dispatched.as_str()),
+        move || {
+            tokio::task::block_in_place(|| {
+                handle.block_on(async {
+                    store
+                        .insert_attempt(&run)
+                        .await
+                        .expect("replacement parked run");
+                    let question = yulius_app::needs_you::NeedsYouRecord {
+                        action: "Decide the replacement turn".into(),
+                        happened: None,
+                        problem: None,
+                        decision: true,
+                        link: None,
+                        at: now.0,
+                        cause: None,
+                        named: Default::default(),
+                    };
+                    store
+                        .set_task_needs_you(&run.task_id, Some(&question), now)
+                        .await
+                        .expect("replacement question");
+                })
+            });
+        },
+    );
+    Ok(())
+}
+
 /// Calls an MCP tool with a task token; returns the `tools/call` result object, with the tool's
 /// record as `structuredContent` (SPEC-086 TOL-005): what an agent reads is its text.
 pub async fn mcp_tool(

@@ -269,7 +269,7 @@ impl App {
         caller: &ProjectCaller,
         args: &Value,
     ) -> AppResult<Value> {
-        self.task_message_as(caller, args, None).await
+        self.task_message_as(caller, args, None, None).await
     }
 
     /// [`App::tool_task_message`], an answer naming the request it answers (`asked_at_ms`, as
@@ -280,6 +280,7 @@ impl App {
         caller: &ProjectCaller,
         args: &Value,
         asked_at_ms: Option<i64>,
+        selected: Option<&TaskRecord>,
     ) -> AppResult<Value> {
         let ctx = self.manage_context(caller).await?;
         let task = self.agent_task_ref(caller, args).await?;
@@ -296,7 +297,7 @@ impl App {
                 .get("text")
                 .and_then(Value::as_str)
                 .ok_or_else(|| AppError::Invalid("missing string argument `text`".into()))?;
-            self.answer_observed_question(&ctx, &task, text, asked_at_ms)
+            self.answer_observed_question(&ctx, &task, text, asked_at_ms, selected)
                 .await?;
             // Audited as a message too, with the channel it came through (TMS-005).
             let named = json!({
@@ -337,6 +338,9 @@ impl App {
         // words from an agent holding the owner's personal secrets or MCP servers (SPEC-245,
         // SPEC-332).
         self.require_control(&ctx, &task).await?;
+        if let Some(selected) = selected {
+            task.check_selected_park(selected)?;
+        }
         let text = args
             .get("text")
             .and_then(Value::as_str)
@@ -490,7 +494,7 @@ impl App {
         // A disabled account has no access to any project, so this refuses it too.
         let id = TaskId::parse(id).map_err(|_| AppError::NotFound)?;
         let task = self.deps.store.task(&id).await?.ok_or(AppError::NotFound)?;
-        self.answer_observed_question(ctx, &task, text, asked_at_ms)
+        self.answer_observed_question(ctx, &task, text, asked_at_ms, None)
             .await
     }
 
@@ -500,6 +504,7 @@ impl App {
         observed: &TaskRecord,
         text: &str,
         asked_at_ms: Option<i64>,
+        selected: Option<&TaskRecord>,
     ) -> AppResult<TaskSummary> {
         self.require_task(ctx, observed, TaskAction::Answer).await?;
         // The access check may have waited on GitHub: what the task does now is read after it
@@ -510,11 +515,9 @@ impl App {
             .task(&observed.id)
             .await?
             .ok_or(AppError::NotFound)?;
-        if observed.status == TaskStatus::Parked
-            && (task.status != TaskStatus::Parked
-                || task.parked_attempt_id != observed.parked_attempt_id)
-        {
-            return Err(AppError::Conflict("the task changed while you were answering; read the current question and try again".into()));
+        task.check_selected_park(observed)?;
+        if let Some(selected) = selected {
+            task.check_selected_park(selected)?;
         }
         let text = clean_message(text);
         if text.is_empty() {

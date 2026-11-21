@@ -333,7 +333,7 @@ fn replaced_parked_message(checkpoint: Point) -> TestResult {
         let (prepared, submit) = pause_watch_or_queue(checkpoint, &id);
         let first = app.clone();
         let first_caller = caller.clone();
-        let first = tokio::spawn(async move {
+        let mut first = tokio::spawn(async move {
             first
                 .tool_task_message(
                     &first_caller,
@@ -341,7 +341,11 @@ fn replaced_parked_message(checkpoint: Point) -> TestResult {
                 )
                 .await
         });
-        tokio::time::timeout(Duration::from_secs(15), prepared.notified()).await?;
+        tokio::select! {
+            result = &mut first => return Err(format!("message finished before {checkpoint:?}: {result:?}").into()),
+            reached = tokio::time::timeout(Duration::from_secs(30), prepared.notified()) =>
+                reached.map_err(|_| format!("message did not reach {checkpoint:?}"))?,
+        }
         let accepted = app
             .tool_task_message(&caller, &json!({"number": 1, "text": "Intervening turn"}))
             .await?;
@@ -382,15 +386,22 @@ fn replaced_parked_message(checkpoint: Point) -> TestResult {
 
 async fn park_through_terminal_exit(app: &Arc<App>, id: &TaskId) -> TestResult {
     let mut frames = app.runtime(id).hub.watch();
-    parked(app, id).await?;
-    tokio::time::timeout(Duration::from_secs(15), async {
+    // Issue one successful park request, then observe its completion. Looking for the final
+    // status by running more parking passes could overlap this run's exit reader.
+    wait_for("the parking request", Duration::from_secs(30), || async {
+        app.park_idle_sessions_now().await == 1
+    })
+    .await?;
+    tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if matches!(frames.recv().await?, yulius_app::hub::HubFrame::Exit { .. }) {
                 return Ok::<_, tokio::sync::broadcast::error::RecvError>(());
             }
         }
     })
-    .await??;
+    .await
+    .map_err(|_| "the accepted park did not publish its terminal exit")??;
+    assert_eq!(status_of(app, id).await.0, Some(TaskStatus::Parked));
     Ok(())
 }
 

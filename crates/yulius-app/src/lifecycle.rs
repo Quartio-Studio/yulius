@@ -654,6 +654,17 @@ impl App {
         prompt: Option<&str>,
     ) -> AppResult<TaskSummary> {
         let task = self.load_task(ctx, id, Action::Work).await?;
+        self.continue_loaded_task(ctx, task, req, prompt).await
+    }
+
+    /// Continue the task returned by the caller's work access check.
+    pub(crate) async fn continue_loaded_task(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        task: TaskRecord,
+        req: &ContinueTask,
+        prompt: Option<&str>,
+    ) -> AppResult<TaskSummary> {
         // A parked task resumes in its session (SPEC-512 PRK-005): with nothing typed, its
         // request stays until the person writes; with a prompt, it wakes with that prompt and
         // ends any open `needs_you` request (SPEC-553 PRK-102).

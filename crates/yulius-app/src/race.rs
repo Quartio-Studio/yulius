@@ -10,6 +10,8 @@ use std::path::Path;
 /// Where the server pauses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Point {
+    /// A bulk message, Telegram reply or remote restart is about to dispatch a selected task.
+    SelectedTaskDispatched,
     /// An owner's message selected its parked task before caller preflight.
     ParkedMessageSelected,
     /// A parked resume prepared to start before acquiring the launch lock.

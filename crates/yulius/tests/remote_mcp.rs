@@ -774,6 +774,84 @@ async fn a_bulk_call_whose_client_went_away_still_reaches_every_task() -> TestRe
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_bulk_message_keeps_the_second_targets_selected_park() -> TestResult {
+    use yulius_domain::task::TaskStatus;
+    let w = World::new("org").await?;
+    support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    let (_, _, alice) = person(&w, "alice").await?;
+    w.grant("alice", "acme/shop", "admin");
+    let first =
+        support::seed_task(&w.h, "t-first", "s1", "u-alice", TaskStatus::Queued, None).await?;
+    let target =
+        support::seed_task(&w.h, "t-park", "s1", "u-alice", TaskStatus::Parked, None).await?;
+    support::replace_park_on_dispatch(&w.h, &first.id, &target).await?;
+    let (error, said, bulk) = remote(
+        &w,
+        &alice,
+        "tasks_bulk",
+        json!({
+            "project": "acme/shop", "do": "message", "numbers": [first.number, target.number],
+            "text": "Message for the original targets"
+        }),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    assert_eq!(bulk["done"].as_array().map(Vec::len), Some(1), "{bulk}");
+    assert_eq!(bulk["done"][0]["number"], first.number);
+    assert_eq!(bulk["refused"][0]["number"], target.number);
+    assert!(
+        text(&bulk["refused"][0]["why"]).contains("changed"),
+        "{bulk}"
+    );
+    assert_replacement_parked(&w, &target.id).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_remote_restart_keeps_the_selected_park() -> TestResult {
+    let w = World::new("org").await?;
+    support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    let (_, _, alice) = person(&w, "alice").await?;
+    w.grant("alice", "acme/shop", "admin");
+    let target = support::seed_task(
+        &w.h,
+        "t-park",
+        "s1",
+        "u-alice",
+        yulius_domain::task::TaskStatus::Parked,
+        None,
+    )
+    .await?;
+    support::replace_park_on_dispatch(&w.h, &target.id, &target).await?;
+    let (error, said, _) = remote(
+        &w,
+        &alice,
+        "task_restart",
+        json!({"project":"acme/shop","number":target.number}),
+    )
+    .await?;
+    assert!(error && said.contains("changed"), "{said}");
+    assert_replacement_parked(&w, &target.id).await
+}
+
+async fn assert_replacement_parked(w: &World, target: &yulius_domain::ids::TaskId) -> TestResult {
+    use yulius_app::ports::store_ext::NeedsYouStore;
+    assert_eq!(
+        w.h.store.task(target).await?.ok_or("target")?.status,
+        yulius_domain::task::TaskStatus::Parked
+    );
+    assert_eq!(w.h.store.attempts(target).await?.len(), 2);
+    assert_eq!(
+        w.h.store
+            .task_needs_you(target)
+            .await?
+            .ok_or("replacement question")?
+            .action,
+        "Decide the replacement turn"
+    );
+    Ok(())
+}
+
 /// RMT-022, RMT-023: tasks are restarted, paused and followed, and CI and CD are read and run,
 /// through the functions of the web UI for the person.
 #[tokio::test]
