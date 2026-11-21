@@ -480,7 +480,6 @@ impl App {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct ViewerPrompt {
     keys: crate::cockpit::KeyState,
-    last_key_ms: i64,
     length: usize,
     // Position of the first nonblank character, so erasing the last text makes Enter empty.
     first_text: Option<usize>,
@@ -501,10 +500,9 @@ impl ViewerPrompt {
         }
     }
 
-    pub(crate) fn read(&mut self, frame: &[u8], now: i64) -> ViewerEnter {
-        use crate::cockpit::{BoxEdit, read_box_edits, settled};
-        self.keys = settled(self.keys, self.last_key_ms, now);
-        self.last_key_ms = now;
+    pub(crate) fn read(&mut self, frame: &[u8]) -> ViewerEnter {
+        use crate::cockpit::{BoxEdit, read_box_edits};
+        // This state belongs to a live run. A pause between its bytes leaves the PTY unchanged.
         // Clients may frame a submitted line as CRLF. A LF inside a paste is text.
         let mut enter = ViewerEnter::None;
         let observe = |edit| match edit {
@@ -681,12 +679,12 @@ mod tests {
             b"cancel\x03\r",
             b"clear\x15\r",
         ] {
-            assert!(input.read(frame, 1) != ViewerEnter::Submitted);
+            assert!(input.read(frame) != ViewerEnter::Submitted);
         }
-        assert!(input.read(b"v", 1) == ViewerEnter::None);
-        assert!(input.read(b"\n", 2) == ViewerEnter::Submitted);
-        assert!(input.read(b"verify\r\n", 3) == ViewerEnter::Submitted);
-        assert!(input.read(b"\x1b[200~verify\x1b[201~\r", 4) == ViewerEnter::Submitted);
+        assert!(input.read(b"v") == ViewerEnter::None);
+        assert!(input.read(b"\n") == ViewerEnter::Submitted);
+        assert!(input.read(b"verify\r\n") == ViewerEnter::Submitted);
+        assert!(input.read(b"\x1b[200~verify\x1b[201~\r") == ViewerEnter::Submitted);
         for frame in [
             b"line one\\".as_slice(),
             b"\r",
@@ -695,9 +693,28 @@ mod tests {
             b"part\r",
             b"end\x1b[201~",
         ] {
-            assert!(input.read(frame, 5) == ViewerEnter::None);
+            assert!(input.read(frame) == ViewerEnter::None);
         }
-        assert!(input.read(b"\r", 6) == ViewerEnter::Submitted);
+        assert!(input.read(b"\r") == ViewerEnter::Submitted);
+    }
+
+    /// The terminal transport may divide a paste between any two bytes.
+    #[test]
+    fn submits_prompt_recognizes_paste_markers_across_frames() {
+        let pasted = b"\x1b[200~line one\r\x1b[20xline two\x1b[201~";
+        for width in 1..=pasted.len() {
+            let mut prompt = ViewerPrompt::default();
+            for frame in pasted.chunks(width) {
+                assert!(
+                    prompt.read(frame) == ViewerEnter::None,
+                    "frame size {width}"
+                );
+            }
+            assert!(
+                prompt.read(b"\r") == ViewerEnter::Submitted,
+                "frame size {width}"
+            );
+        }
     }
 
     #[test]

@@ -154,6 +154,8 @@ pub(crate) enum BoxKeys {
 pub(crate) struct KeyState {
     pub(crate) in_paste: bool,
     pub(crate) after_backslash: bool,
+    // Bytes already seen of the expected six-byte paste delimiter.
+    marker_prefix: usize,
 }
 
 /// How long without a keystroke ends a paste whose end marker never came (a reconnect mid-paste;
@@ -161,7 +163,7 @@ pub(crate) struct KeyState {
 pub(crate) const PASTE_STALE_MS: i64 = 5_000;
 
 /// The reader's state for a frame that comes `now_ms`, the last one having come `last_key_ms`.
-pub(crate) fn settled(state: KeyState, last_key_ms: i64, now_ms: i64) -> KeyState {
+fn settled(state: KeyState, last_key_ms: i64, now_ms: i64) -> KeyState {
     if now_ms.saturating_sub(last_key_ms) > PASTE_STALE_MS {
         KeyState::default()
     } else {
@@ -198,16 +200,38 @@ pub(crate) fn read_box_edits(
     let in_paste = &mut state.in_paste;
     let after_backslash = &mut state.after_backslash;
     let mut i = 0;
+    let prefix = std::mem::take(&mut state.marker_prefix);
+    if prefix > 0 {
+        let marker = if *in_paste { END } else { START };
+        let remaining = &marker[prefix..];
+        if data.starts_with(remaining) {
+            *in_paste = !*in_paste;
+            *after_backslash = false;
+            typed = *in_paste;
+            i = remaining.len();
+        } else if remaining.starts_with(data) {
+            state.marker_prefix = prefix + data.len();
+            return BoxKeys::Neither;
+        } else if *in_paste {
+            // A partial closing escape that turned out to be literal paste text.
+            for &byte in &marker[..prefix] {
+                edit(BoxEdit::Text(byte));
+            }
+            typed = true;
+            *after_backslash = false;
+        }
+    }
     while i < data.len() {
         let rest = &data[i..];
-        if rest.starts_with(START) {
-            *in_paste = true;
-            typed = true;
-            i += START.len();
-        } else if rest.starts_with(END) {
-            *in_paste = false;
+        let marker = if *in_paste { END } else { START };
+        if rest.starts_with(marker) {
+            *in_paste = !*in_paste;
+            typed |= *in_paste;
             *after_backslash = false;
-            i += END.len();
+            i += marker.len();
+        } else if marker.starts_with(rest) {
+            state.marker_prefix = rest.len();
+            break;
         } else if *in_paste {
             edit(BoxEdit::Text(data[i]));
             typed = true;
@@ -1436,7 +1460,7 @@ mod tests {
         // R2: a paste whose end never came is over after a pause without keys.
         let open = KeyState {
             in_paste: true,
-            after_backslash: false,
+            ..KeyState::default()
         };
         assert_eq!(settled(open, 1_000, 1_000 + PASTE_STALE_MS), open);
         assert_eq!(

@@ -265,7 +265,7 @@ impl App {
             .viewer_prompt
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let enter = prompt.read(data, at);
+        let enter = prompt.read(data);
         let empty = enter == crate::terminal::ViewerEnter::Empty && !self.persons_draft_holds(task);
         let seq =
             self.record_viewer_key(task, at, enter == crate::terminal::ViewerEnter::Submitted);

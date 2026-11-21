@@ -904,11 +904,11 @@ fn a_goal_continuation_budget_survives_a_public_subscription_switch() -> TestRes
     let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
     let (_dir, data) = temp()?;
     let rt = runtime()?;
-    rt.block_on(async {
+    rt.block_on(Box::pin(async {
         let app = build(&data, &fake, Arc::new(ScriptedUsage::default()))?;
         let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
         let id = legacy_goal_hold(&app, &sandbox, &user).await?;
-        app.resume_round().await;
+        Box::pin(app.resume_round()).await;
         wait_for("the run", Duration::from_secs(30), || async {
             screen(&app, &id).contains("FAKE-AGENT READY")
         })
@@ -934,14 +934,14 @@ fn a_goal_continuation_budget_survives_a_public_subscription_switch() -> TestRes
             session_hash: None,
             token: None,
         };
-        app.switch_task(
+        Box::pin(app.switch_task(
             &ctx,
             id.as_str(),
             &yulius_contracts::api::tasks::ContinueTask {
                 account_id: Some("b-second".into()),
                 ..Default::default()
             },
-        )
+        ))
         .await?;
         let moved = app.deps.store.live_attempt(&id).await?.ok_or("moved run")?;
         let prompt = "Continue the task exactly where you left off.";
@@ -1000,19 +1000,19 @@ fn a_goal_continuation_budget_survives_a_public_subscription_switch() -> TestRes
             "automatic native goal restoration"
         );
         let terminal = app.terminal_open(&ctx, id.as_str(), None).await?;
-        app.terminal_input(&ctx, &terminal, b"draft", false).await?;
+        Box::pin(app.terminal_input(&ctx, &terminal, b"draft", false)).await?;
         app.hook_event(token, "claude", "UserPromptSubmit", &submit(&command), None)
             .await?;
         assert!(app.has_draft(&id));
         assert_eq!(task(&app, &id).await?.gate_blocks, 2);
-        app.terminal_input(&ctx, &terminal, b"\r", false).await?;
+        Box::pin(app.terminal_input(&ctx, &terminal, b"\r", false)).await?;
         app.hook_event(token, "claude", "UserPromptSubmit", &submit(prompt), None)
             .await?;
         assert_eq!(task(&app, &id).await?.gate_blocks, 0);
         Box::pin(check_held_owner_prompt(&app, &id, &ctx, token)).await?;
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
-    })?;
+    }))?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
