@@ -108,7 +108,7 @@ pub(crate) async fn start_hosted(
     configure: impl FnOnce(&mut AppConfig),
 ) -> Result<(Arc<App>, u16), BoxError> {
     let (app, port, _) =
-        start_hosted_with_github(data, fake, agent, settings, host, configure).await?;
+        start_hosted_with_github(data, fake, agent, settings, host, None, configure).await?;
     Ok((app, port))
 }
 
@@ -119,6 +119,7 @@ pub(crate) async fn start_hosted_with_github(
     agent: FakeAgentOptions,
     (port, probe, clock): (u16, Arc<ScriptedUsage>, Arc<dyn yulius_app::ports::Clock>),
     host: Option<Arc<dyn yulius_app::ports::session::SessionHost>>,
+    browser: Option<Arc<dyn yulius_app::ports::browser::BrowserPort>>,
     configure: impl FnOnce(&mut AppConfig),
 ) -> Result<(Arc<App>, u16, Arc<support::FakeGitHub>), BoxError> {
     let socket = tokio::net::TcpSocket::new_v4()?;
@@ -146,7 +147,7 @@ pub(crate) async fn start_hosted_with_github(
         }),
         git: Arc::new(crate::support::confined_git()),
         system: Arc::new(support::FixedSystem),
-        browser: Arc::new(yulius::wiring::browser::UnavailableBrowser),
+        browser: browser.unwrap_or_else(|| Arc::new(yulius::wiring::browser::UnavailableBrowser)),
         usage: probe,
     };
     let app = App::new(config, deps);

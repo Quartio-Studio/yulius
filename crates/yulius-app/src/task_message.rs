@@ -150,8 +150,8 @@ pub(crate) enum Typed<'a> {
     /// submit it sits in the session's prompt box, and a restart would lose it (SPEC-468
     /// CCF-011).
     Prompt,
-    /// The PR watcher reevaluates unheard news on its next pass if the writer is busy.
-    PrNotice(&'a AttemptId),
+    /// A machine notification is reconsidered on its next pass when the observed writer is busy.
+    Notice(&'a AttemptId),
     /// A command Claude Code runs itself (`/mcp reconnect yulius`): no prompt is submitted,
     /// so nothing of it waits anywhere.
     Command,
@@ -735,7 +735,7 @@ impl App {
             .await
     }
 
-    /// An armed notice verifies its owner after draft lookup. It defers if the draft lock
+    /// A machine notification verifies its recipient and decision after draft lookup. It defers if the draft lock
     /// is busy, so neither a hosted read under the lock nor a later wait can stale that decision.
     pub(crate) async fn type_into_session_if(
         &self,
@@ -786,12 +786,12 @@ impl App {
             && !admit.await
         {
             return Err(AppError::Conflict(
-                "the armed PR notice is no longer due".into(),
+                "the notification is no longer due".into(),
             ));
         }
         let mut mark = if attempt.is_some() && guarded {
             Some(runtime.draft_mark.try_lock().map_err(|_| {
-                AppError::Conflict("the prompt box changed during PR notice verification".into())
+                AppError::Conflict("the prompt box changed during notification verification".into())
             })?)
         } else if attempt.is_some() {
             Some(runtime.draft_mark.lock().await)
@@ -924,15 +924,15 @@ impl App {
         // (Claude Code runs the prompt hook some 30 ms after the Enter below, also while a
         // turn runs). A command submits nothing, and a text that could not be typed is nowhere.
         let before = runtime.message_typed_ms.load(Ordering::SeqCst);
-        if matches!(what, Typed::Prompt | Typed::PrNotice(_)) {
+        if matches!(what, Typed::Prompt | Typed::Notice(_)) {
             runtime
                 .message_typed_ms
                 .store(self.now().0, Ordering::SeqCst);
         }
         let pasted = match what {
-            Typed::PrNotice(attempt) => {
+            Typed::Notice(attempt) => {
                 runtime
-                    .write_pr_notice(attempt, self.now(), SessionInput::Paste(paste))
+                    .write_notice(attempt, self.now(), SessionInput::Paste(paste))
                     .await
             }
             Typed::Prompt | Typed::Command => {
@@ -944,7 +944,7 @@ impl App {
             runtime.message_typed_ms.store(before, Ordering::SeqCst);
             return Err(err);
         }
-        if matches!(what, Typed::PrNotice(_)) {
+        if matches!(what, Typed::Notice(_)) {
             crate::race::reached(
                 crate::race::Point::PrNoticePasted,
                 Path::new(task.id.as_str()),
@@ -969,9 +969,9 @@ impl App {
         }
         // The text is in the prompt box but not sent: said, so a retry does not send it twice.
         let submitted = match what {
-            Typed::PrNotice(attempt) => {
+            Typed::Notice(attempt) => {
                 runtime
-                    .write_pr_notice(attempt, self.now(), SessionInput::Submit)
+                    .write_notice(attempt, self.now(), SessionInput::Submit)
                     .await
             }
             Typed::Prompt | Typed::Command => {
