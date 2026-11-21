@@ -1625,6 +1625,7 @@ async fn pressure_reclaims_the_compiler_cache_only_without_build_readers() -> Bo
     drop(active);
     let report = w.h.app.disk_upkeep_needing(&w.sandbox, true, 1).await?;
     assert!(!cache.exists());
+    assert_eq!(report.caches, 1, "exactly the shared store was reclaimed");
     assert!(report.freed >= BIG as u64);
     std::os::unix::fs::symlink(&w.repo, &cache)?;
     w.h.app.disk_upkeep_needing(&w.sandbox, true, 1).await?;

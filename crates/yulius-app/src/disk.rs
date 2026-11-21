@@ -164,7 +164,7 @@ fn prune_compile_cache(root: &Path, limit: u64) -> std::io::Result<u64> {
     if !cfg!(target_os = "linux") || !real_dir_from(root, &cache) {
         return Ok(0);
     }
-    let flags = nix::fcntl::OFlag::O_DIRECTORY | nix::fcntl::OFlag::O_NOFOLLOW;
+    let flags = nix::fcntl::OFlag::O_DIRECTORY.union(nix::fcntl::OFlag::O_NOFOLLOW);
     let lease = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(flags.bits())
@@ -810,6 +810,11 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn upkeep_reclaims_an_over_budget_compiler_store_even_on_a_healthy_disk() -> TestResult {
+        assert_eq!(
+            COMPILE_CACHE_LIMIT,
+            20_u64 << 30,
+            "the documented idle-store budget"
+        );
         let root = tempfile::tempdir()?;
         let cache = root.path().join("rust-compile-cache");
         std::fs::create_dir(&cache)?;
@@ -818,6 +823,25 @@ mod tests {
         assert_eq!(prune_compile_cache(root.path(), bytes)?, 0);
         assert_eq!(prune_compile_cache(root.path(), bytes - 1)?, bytes);
         assert!(!cache.exists());
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn compiler_upkeep_refuses_linked_roots_and_skips_linked_stores() -> TestResult {
+        let parent = tempfile::tempdir()?;
+        let root = parent.path().join("sandbox");
+        let link = parent.path().join("linked-sandbox");
+        let cache = root.join("rust-compile-cache");
+        std::fs::create_dir_all(&cache)?;
+        std::fs::write(cache.join(".yulius-mbx-v1"), "mbx-v1\n")?;
+        std::os::unix::fs::symlink(&root, &link)?;
+        assert!(prune_compile_cache(&link, COMPILE_CACHE_LIMIT).is_err());
+        let original = root.join("original");
+        std::fs::rename(&cache, &original)?;
+        std::os::unix::fs::symlink(&original, &cache)?;
+        assert_eq!(prune_compile_cache(&root, 0)?, 0);
+        assert!(original.join(".yulius-mbx-v1").is_file());
         Ok(())
     }
 
