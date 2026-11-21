@@ -100,4 +100,6 @@ A third staging review confirmed the earlier fixes and identified a receipt loop
 
 The merged load-test revision passed the full dev gate, including both Rust shards and e2e (run `953c3dd5-b1e6-4262-8185-f8156b86c7ff`). [PR #1630 verification](https://yulius.quartio.ai/api/tasks/4014aca0-70ee-4ff0-aae0-9347694f1f02/delivery/evidence/612f787b38fdfa3492cd5e0c4ecd87b23449d6fa)
 
-With the terminal receipt changes removed, the repeated failed-gate and no-run gate regressions both failed. The second fixture drove the queue with CI unavailable and repeated the same request after restoring CI.
+With the terminal receipt changes removed, the repeated failed-gate and no-run gate regressions both failed. The second fixture drove the queue with CI unavailable and repeated the same request after restoring CI. Both passed with the receipt fixes restored, along with all 35 staging cases.
+
+The multi-task fixture deployed revision B, then repeated A’s verified request. Before the fix its receipt said staging still served A. Successful receipts now report what the recorded deployment verified or included and name the available run IDs.

@@ -484,6 +484,14 @@ async fn a_lost_deploy_is_retried_and_concurrent_tasks_deploy_in_revision_order(
     assert_eq!(three.state, StagingState::Verified, "{three:?}");
     assert!(two.state.is_success(), "{two:?}");
     assert_eq!(serving(&f)?, r3);
+    let previous = staging_answer(&f, "t1").await?;
+    assert_eq!(previous["staging"]["revision"], r1);
+    let text = previous["text"].as_str().ok_or("verified receipt")?;
+    assert!(
+        text.contains("Staging deployed and verified your revision")
+            && !text.contains("Staging serves your tested revision"),
+        "the receipt for r1 is historical while staging serves r3: {text}"
+    );
     let revisions = deployed(&f).await?;
     let after: Vec<&String> = revisions.iter().filter(|sha| **sha != r1).collect();
     assert!(
@@ -502,6 +510,13 @@ async fn a_lost_deploy_is_retried_and_concurrent_tasks_deploy_in_revision_order(
     let inside = ask(&f, "t4").await?;
     assert_eq!(inside["state"], "included", "{inside}");
     assert_eq!(inside["cd_run_id"], json!(three.cd_run_id), "{inside}");
+    let included = staging_answer(&f, "t4").await?;
+    let text = included["text"].as_str().ok_or("included receipt")?;
+    assert!(
+        text.contains("included your revision")
+            && text.contains(three.cd_run_id.as_deref().ok_or("containing run")?),
+        "{text}"
+    );
     settle(&f).await?;
     assert_eq!(deployed(&f).await?, revisions, "nothing deployed twice");
     // One successful staging deployment per task.
