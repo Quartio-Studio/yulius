@@ -271,8 +271,9 @@ fn blame_holder(error: BrowserError, holder: Option<u32>) -> BrowserError {
 }
 
 /// Creates the profile (mode 0700) and removes Chrome's locks no running browser holds
-/// (SPEC-593); returns the pid of a running process of this host whose lock was kept.
-async fn prepare_profile(profile_dir: &Path) -> Result<Option<u32>, BrowserError> {
+/// (SPEC-593); returns this host's name and the pid of a running process of it whose lock was
+/// kept.
+async fn prepare_profile(profile_dir: &Path) -> Result<Option<(Vec<u8>, u32)>, BrowserError> {
     use std::os::unix::fs::PermissionsExt;
     tokio::fs::create_dir_all(profile_dir)
         .await
@@ -280,12 +281,11 @@ async fn prepare_profile(profile_dir: &Path) -> Result<Option<u32>, BrowserError
     tokio::fs::set_permissions(profile_dir, std::fs::Permissions::from_mode(0o700))
         .await
         .map_err(BrowserError::Profile)?;
-    crate::profile::clear_stale_locks(
-        profile_dir,
-        &crate::profile::host_name()?,
-        crate::profile::process_running,
-    )
-    .await
+    let host = crate::profile::host_name()?;
+    let held =
+        crate::profile::clear_stale_locks(profile_dir, &host, crate::profile::process_running)
+            .await?;
+    Ok(held.map(|pid| (host, pid)))
 }
 
 impl BrowserManager {
@@ -411,14 +411,7 @@ impl BrowserManager {
     ) -> Result<Arc<BrowserInstance>, BrowserError> {
         let exe = resolve_executable(&self.config.chromium_exe)?;
         let held = prepare_profile(profile_dir).await?;
-        match (self.start(state, sandbox, profile_dir, &exe).await, held) {
-            (Err(error), Some(pid)) => {
-                let host = crate::profile::host_name()?;
-                let still = crate::profile::still_held(profile_dir, &host, pid).await;
-                Err(blame_holder(error, still.then_some(pid)))
-            }
-            (started, _) => started,
-        }
+        self.start(state, sandbox, profile_dir, &exe, held).await
     }
 
     async fn start(
@@ -427,6 +420,7 @@ impl BrowserManager {
         sandbox: &SandboxId,
         profile_dir: &Path,
         exe: &Path,
+        held: Option<(Vec<u8>, u32)>,
     ) -> Result<Arc<BrowserInstance>, BrowserError> {
         // Its way out first: a browser that cannot have it is not started (ADR-0321). A start
         // that fails below drops the lease, which closes it.
@@ -459,7 +453,15 @@ impl BrowserManager {
             process: Some(Arc::clone(&process)),
         };
         let cdp = CdpClient::over_pipe(pipe.from_child, pipe.to_child, self.config.cdp);
-        wait_until_ready(&cdp, &process, self.config.startup_timeout).await?;
+        if let Err(error) = wait_until_ready(&cdp, &process, self.config.startup_timeout).await {
+            let holder = match held {
+                Some((host, pid)) if crate::profile::still_held(profile_dir, &host, pid).await => {
+                    Some(pid)
+                }
+                _ => None,
+            };
+            return Err(blame_holder(error, holder));
+        }
         let display_name = display.as_deref().map(VirtualDisplay::name);
         let secrets = lock(&self.secrets)
             .entry(sandbox.clone())

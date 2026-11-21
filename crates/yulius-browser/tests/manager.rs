@@ -808,6 +808,22 @@ async fn replacement_cleanup_holds_the_slot_and_saved_tabs_until_the_display_sto
     Ok(())
 }
 
+/// The output of a fake run expected to end by itself; one that does not is killed and fails.
+async fn bounded(
+    mut child: std::process::Child,
+) -> Result<std::process::Output, Box<dyn std::error::Error>> {
+    let deadline = Instant::now() + WAIT;
+    while child.try_wait()?.is_none() {
+        if Instant::now() >= deadline {
+            child.kill()?;
+            child.wait()?;
+            return Err("the fake did not end by itself".into());
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    Ok(child.wait_with_output()?)
+}
+
 /// The host name Chrome writes into its `SingletonLock` (`<host>-<pid>`).
 fn host_name() -> Result<String, Box<dyn std::error::Error>> {
     Ok(nix::unistd::gethostname()?
@@ -924,7 +940,7 @@ async fn the_fake_chromium_honours_profile_locks_like_chrome() -> TestResult {
             .spawn()
     };
     link(&profile, "SingletonLock", "old-host-4242")?;
-    let refused = run(&["--headless=new"])?.wait_with_output()?;
+    let refused = bounded(run(&["--headless=new"])?).await?;
     assert_eq!(refused.status.code(), Some(21));
     assert!(String::from_utf8_lossy(&refused.stderr).contains("another computer (old-host)"));
     let mut dialog = run(&[])?;
@@ -950,7 +966,8 @@ async fn the_fake_chromium_honours_profile_locks_like_chrome() -> TestResult {
     let lock = format!("{}-{}", host_name()?, browser.id());
     link(&profile, "SingletonLock", &lock)?;
     std::fs::write(profile.join(FAKE_LOCK_OWNER_FILE), browser.id().to_string())?;
-    let handed = run(&[])?.wait_with_output();
+    let handed = bounded(run(&[])?).await;
+    let handed_recorded = profile.join(FAKE_PID_FILE).exists();
     // Not a browser: the same running pid without the owner record is taken over.
     std::fs::remove_file(profile.join(FAKE_LOCK_OWNER_FILE))?;
     let mut taking = run(&[])?;
@@ -971,6 +988,7 @@ async fn the_fake_chromium_honours_profile_locks_like_chrome() -> TestResult {
     let handed = handed?;
     assert_eq!(handed.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&handed.stderr).contains("existing browser session"));
+    assert!(!handed_recorded, "a start that hands over records nothing");
     assert_eq!(lock_now, format!("{}-{took}", host_name()?));
     Ok(())
 }
@@ -1037,5 +1055,56 @@ async fn a_stale_lock_that_cannot_be_removed_fails_before_the_display_starts() -
     }
     assert_eq!(display.lifecycle(), (0, 0), "no display was started");
     assert_eq!(fake.connections(), 0, "Chrome was not started");
+    Ok(())
+}
+
+/// SPEC-593 SPL-003 (review round 2): a failure that is not Chrome giving up on the holder is
+/// never blamed on it: a display server that exits early beside a held lock, and a Chrome that
+/// took over a lock of a running process that is no browser and then never answered.
+#[tokio::test]
+async fn a_start_that_failed_for_another_reason_does_not_name_the_lock_holder() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let mut holder = std::process::Command::new("sleep").arg("600").spawn()?;
+    let lock = format!("{}-{}", host_name()?, holder.id());
+    let xvfb = dir.path().join("failing-xvfb");
+    std::fs::write(
+        &xvfb,
+        "#!/bin/sh\necho 'fake-xvfb: cannot open display' >&2\nexit 1\n",
+    )?;
+    std::fs::set_permissions(&xvfb, std::os::unix::fs::PermissionsExt::from_mode(0o755))?;
+    let mut display = yulius_browser::DisplayConfig::new(dir.path().join("displays"));
+    display.xvfb = xvfb;
+    display.ffmpeg = "/bin/true".into();
+    let hanging = write_fake_chromium(dir.path(), "hanging", FakeChromium::NeverReady)?;
+    let mut settings = config(hanging.clone(), dir.path());
+    settings.display = yulius_browser::DisplayMode::Virtual(display);
+    let on_display = BrowserManager::new(settings);
+    let sandbox = SandboxId::parse("no-display")?;
+    let profile = on_display.default_profile_dir(&sandbox);
+    std::fs::create_dir_all(&profile)?;
+    link(&profile, "SingletonLock", &lock)?;
+    let display_failed = on_display.ensure(&sandbox, &profile).await;
+
+    let mut settings = config(hanging, dir.path());
+    settings.startup_timeout = Duration::from_secs(1);
+    settings.stop.graceful = Duration::ZERO;
+    let headless = BrowserManager::new(settings);
+    let other = SandboxId::parse("taken-over")?;
+    let taken = headless.default_profile_dir(&other);
+    std::fs::create_dir_all(&taken)?;
+    link(&taken, "SingletonLock", &lock)?;
+    let timed_out = headless.ensure(&other, &taken).await;
+    holder.kill()?;
+    holder.wait()?;
+    match display_failed {
+        Err(BrowserError::ExitedEarly { stderr, .. }) => {
+            assert!(stderr.contains("fake-xvfb"), "{stderr}");
+        }
+        other => return Err(format!("expected the display's own failure, got {other:?}").into()),
+    }
+    match timed_out {
+        Err(BrowserError::StartupTimeout { .. }) => {}
+        other => return Err(format!("expected a startup timeout, got {other:?}").into()),
+    }
     Ok(())
 }
