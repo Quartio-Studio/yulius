@@ -2116,7 +2116,7 @@ run for these reads per application. Each keeps its permit until Git returns.
 
 Task lists share one 750 ms PR verification budget. Each batch of up to eight parked rows receives a share of the remaining time. Home verifies parked rows across all visible projects before it counts live rows. A slow local Git read for a running task cannot spend the parked rows’ lookup time. The HTTP response uses the plan read by the verifier for both progress and detailed steps. [ADR-0412](decisions/0412-share-parked-pr-read-time-across-task-lists.md)
 
-The browser watches the bounded task list alongside the Git overview. A CI rerun updates the parked task in its sidebar, terminal and Task Info even when Git is slow. The list reader confirms overlapping parked lifecycle changes once. [ADR-0417](decisions/0417-refresh-parked-task-status-alongside-the-git-overview.md)
+The browser watches the bounded task list alongside the Git overview. A CI rerun updates the parked task in the sidebar even when Git is slow. The list reader confirms overlapping parked lifecycle changes once. [ADR-0417](decisions/0417-refresh-parked-task-status-alongside-the-git-overview.md)
 
 When browser list requests overlap, the newest successful snapshot supplies the task list. A failed cold task page recovers when an overlapping request supplies the list. [ADR-0418](decisions/0418-keep-the-newest-successful-task-list.md)
 

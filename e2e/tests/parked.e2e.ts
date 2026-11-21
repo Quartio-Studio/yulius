@@ -665,28 +665,24 @@ test('parked status refreshes while the Git overview is held or incomplete', asy
   expect(groups).toEqual([[true, false], [false, false], [true, false], [false, false], [true, false], [false, false]]);
 });
 
-for (const [page, route, selector] of [['terminal', 't', '.strip-status'], ['Task Info', 'tasks', '.gt-state']]) {
-  test(`the parked ${page} page and sidebar follow the PR rerun together`, async ({ app, browser, screen }) => {
-    await app.open(mock(`/s/studio/${route}/13`, '&ambient=0&pullgap=0'));
-    await touchTask(browser, 'sb_studio', 13, { status: 'parked', activity: 'done', parked_needs_you: false, parked_pr: { number: 520, open: true } });
-    const status = browser.locator(selector);
-    await expect(status).toHaveText(/Done.*parked/);
-    await browser.evaluate(() => {
-      (window as unknown as { __yuliusMock: { holdGitReads: boolean } }).__yuliusMock.holdGitReads = true;
-    });
-    for (const fails of [true, false]) {
-      await browser.evaluate((red) => {
-        type Mock = { tasks: { id: string; parked_needs_you?: boolean }[]; changePull(sandbox: string, number: number, changes: object): void };
-        const db = (window as unknown as { __yuliusMock: Mock }).__yuliusMock;
-        // The summary changes on the server. The only event is the PR watch.
-        db.tasks.find((t) => t.id === 'tsk_studio_13')!.parked_needs_you = red;
-        db.changePull('sb_studio', 520, { checks: red ? 'failure' : 'success' });
-      }, fails);
-      await expect(screen.getByRole('region', fails ? 'Needs you' : 'Done').getByRole('link', /Improve the code/)).toBeVisible();
-      await expect(status).toHaveText(fails ? /Your turn.*parked|checks failing.*parked/ : /Done.*parked/);
-    }
+test('the sidebar follows parked PR reruns while the Git overview is held', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&ambient=0&pullgap=0'));
+  await touchTask(browser, 'sb_studio', 13, { status: 'parked', activity: 'done', parked_needs_you: false, parked_pr: { number: 520, open: true } });
+  await expect(screen.getByRole('region', 'Done').getByRole('link', /Improve the code/)).toBeVisible();
+  await browser.evaluate(() => {
+    (window as unknown as { __yuliusMock: { holdGitReads: boolean } }).__yuliusMock.holdGitReads = true;
   });
-}
+  for (const fails of [true, false]) {
+    await browser.evaluate((red) => {
+      type Mock = { tasks: { id: string; parked_needs_you?: boolean }[]; changePull(sandbox: string, number: number, changes: object): void };
+      const db = (window as unknown as { __yuliusMock: Mock }).__yuliusMock;
+      // The summary changes on the server. The only event is the PR watch.
+      db.tasks.find((t) => t.id === 'tsk_studio_13')!.parked_needs_you = red;
+      db.changePull('sb_studio', 520, { checks: red ? 'failure' : 'success' });
+    }, fails);
+    await expect(screen.getByRole('region', fails ? 'Needs you' : 'Done').getByRole('link', /Improve the code/)).toBeVisible();
+  }
+});
 
 test('a held parked summary leaves Git rows readable and refreshes a newly parked task', async ({ app, browser }) => {
   await app.open(mock('/s/studio'));
@@ -730,38 +726,6 @@ test('a held parked summary leaves Git rows readable and refreshes a newly parke
     return { whileHeld, summaryReads, needs: refreshed.parked_needs_you ?? null, steps: refreshed.steps ?? null };
   });
   expect(result).toEqual({ whileHeld: { summaryReads: 2, gitVisible: true }, summaryReads: 3, needs: true, steps: { total: 7, done: 5 } });
-});
-
-test('an older Task Info detail cannot undo a verified parked rerun', async ({ app, browser }) => {
-  await app.open(mock('/s/studio/tasks/13', '&ambient=0&pullgap=0'));
-  const state = browser.locator('.gt-state');
-  await expect(state).toBeVisible();
-  type Fixture = {
-    __release: () => void;
-    __yuliusMock: {
-      detailReads?: Record<string, number>; holdDetail?: Promise<void>; heldDetailAnswered?: boolean;
-      holdGitReads: boolean; tasks: { id: string; parked_needs_you?: boolean }[];
-      changePull(sid: string, pr: number, changes: object): void;
-    };
-  };
-  await expect.poll(() => browser.evaluate(() => Boolean((window as unknown as Fixture).__yuliusMock.detailReads?.tsk_studio_13))).toBe(true);
-  await browser.evaluate(() => {
-    const w = window as unknown as Fixture;
-    w.__yuliusMock.holdDetail = new Promise<void>(resolve => { w.__release = resolve; });
-  });
-  await touchTask(browser, 'sb_studio', 13, { status: 'parked', activity: 'done', parked_needs_you: false, parked_pr: { number: 520, open: true } });
-  await expect(state).toHaveText(/Done.*parked/);
-  await expect.poll(() => browser.evaluate(() => !(window as unknown as Fixture).__yuliusMock.holdDetail)).toBe(true);
-  await browser.evaluate(() => {
-    const db = (window as unknown as Fixture).__yuliusMock;
-    db.holdGitReads = true;
-    db.tasks.find(t => t.id === 'tsk_studio_13')!.parked_needs_you = true;
-    db.changePull('sb_studio', 520, { checks: 'failure' });
-  });
-  await expect(state).toHaveText(/Your turn.*parked/);
-  await browser.evaluate(() => (window as unknown as Fixture).__release());
-  await expect.poll(() => browser.evaluate(() => Boolean((window as unknown as Fixture).__yuliusMock.heldDetailAnswered))).toBe(true);
-  await expect(state).toHaveText(/Your turn.*parked/);
 });
 
 test('failed parked verification accounts for open replacement PRs in either response order', async ({ app, browser }) => {
@@ -862,25 +826,6 @@ test('parked reads keep their three-second gap while Git is held', async ({ app,
   });
   expect(starts).toEqual([50_000, 53_000, 56_000]);
 });
-
-for (const [route, selector] of [['tasks', '.gt-state'], ['t', '.strip-status']]) {
-  test(`a later unverified parked event clears old facts on the ${route} page`, async ({ app, browser, screen }) => {
-    await app.open(mock(`/s/studio/${route}/13`, '&ambient=0&pullgap=0'));
-    await browser.evaluate(() => {
-      const db = (window as unknown as { __yuliusMock: { changePull(sid: string, n: number, changes: object): void } }).__yuliusMock;
-      db.changePull('sb_studio', 520, { checks: 'failure' });
-    });
-    await expect(browser.locator(selector)).toHaveText(/checks failing/);
-    await touchTask(browser, 'sb_studio', 13, { status: 'parked', activity: 'done', parked_needs_you: false, parked_pr: { number: 520, open: false } });
-    await expect(browser.locator(selector)).toHaveText(/Done.*parked/);
-    await browser.evaluate(() => {
-      const db = (window as unknown as { __yuliusMock: { touchTask(sid: string, n: number, changes: object): void } }).__yuliusMock;
-      db.touchTask('sb_studio', 13, { parked_needs_you: undefined, parked_pr: undefined, title: 'Latest parked title' });
-    });
-    await expect(screen.getByRole('region', 'Needs you').getByRole('link', /Latest parked title/)).toBeVisible();
-    await expect(browser.locator(selector)).toHaveText(/checks failing.*parked/);
-  });
-}
 
 test('a replacement list tells parked task views about changed rows once', async ({ app, browser }) => {
   await app.open(mock('/s/studio'));
@@ -1163,116 +1108,4 @@ test('a task-list confirmation keeps a live sibling update received during its s
     return [store.findTask('p').status, store.findTask('r').title, calls];
   });
   expect(result).toEqual(['running', 'After', 3]);
-});
-
-test('the parked terminal uses its fresh detail when a step reopens in the same second', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio', '&ambient=0'));
-  type Task = { id: string; stepsList: { status: string }[]; parked_needs_you?: boolean };
-  type Fixture = { __yuliusMock: { tasks: Task[]; touchTask(sid: string, number: number, changes: object): void } };
-  await browser.evaluate(() => {
-    const db = (window as unknown as Fixture).__yuliusMock;
-    const task = db.tasks.find(t => t.id === 'tsk_studio_13')!;
-    db.touchTask('sb_studio', 13, {
-      status: 'parked', activity: 'done', stepsList: task.stepsList.map(step => ({ ...step, status: 'done' })),
-      parked_needs_you: false, parked_pr: { number: 520, open: true },
-    });
-  });
-  await expect(screen.getByRole('region', 'Done').getByRole('link', /Improve the code/)).toBeVisible();
-  await browser.evaluate(() => {
-    const task = (window as unknown as Fixture).__yuliusMock.tasks.find(t => t.id === 'tsk_studio_13')!;
-    task.stepsList[task.stepsList.length - 1].status = 'pending';
-    task.parked_needs_you = true;
-    location.hash = '/s/studio/t/13';
-  });
-  await expect(browser.locator('.step-count')).toHaveText('Step 6/7');
-  await expect(browser.locator('.strip-status')).toHaveText(/Your turn.*parked/);
-});
-
-for (const [route, selector] of [['t', '.strip-status'], ['tasks', '.gt-state']]) {
-  for (const initial of [false, true]) {
-    test(`a parked ${route} detail follows a rerun back to the original ${initial ? 'Needs you' : 'Done'} group`, async ({ app, browser, screen }) => {
-      await app.open(mock('/s/studio', '&ambient=0&pullgap=0&pullclock=manual'));
-      type Task = { id: string; title: string; stepsList: { status: string }[]; parked_needs_you?: boolean };
-      type Fixture = { __yuliusMock: { tasks: Task[]; holdGitReads: boolean; changePull(s: string, n: number, fields: object): void; touchTask(s: string, n: number, fields: object): void } };
-      await browser.evaluate((needs) => {
-        const db = (window as unknown as Fixture).__yuliusMock;
-        const task = db.tasks.find(t => t.id === 'tsk_studio_13')!;
-        db.touchTask('sb_studio', 13, {
-          status: 'parked', activity: 'done', stepsList: task.stepsList.map(step => ({ ...step, status: 'done' })),
-          parked_needs_you: needs, parked_pr: { number: 520, open: true },
-        });
-      }, initial);
-      const region = screen.getByRole('region', initial ? 'Needs you' : 'Done');
-      await expect(region.getByRole('link', /Improve the code/)).toBeVisible();
-      await browser.evaluate(({ needs, route }) => {
-        const db = (window as unknown as Fixture).__yuliusMock;
-        db.holdGitReads = true;
-        db.tasks.find(t => t.id === 'tsk_studio_13')!.parked_needs_you = !needs;
-        location.hash = `/s/studio/${route}/13`;
-      }, { needs: initial, route });
-      const strip = browser.locator(selector);
-      await expect(strip).toHaveText(initial ? /Done.*parked/ : /Your turn.*parked/);
-      await browser.evaluate((needs) => {
-        const db = (window as unknown as Fixture).__yuliusMock;
-        db.tasks.find(t => t.id === 'tsk_studio_13')!.parked_needs_you = needs;
-        db.tasks.find(t => t.id === 'tsk_studio_12')!.title = 'New list arrived';
-        db.changePull('sb_studio', 520, { checks: needs ? 'failure' : 'success' });
-      }, initial);
-      await expect(browser.locator('.task-row').getByText('New list arrived')).toBeVisible();
-      await expect(region.getByRole('link', /Improve the code/)).toBeVisible();
-      await expect(strip).toHaveText(initial ? /Your turn.*parked|checks failing.*parked/ : /Done.*parked/);
-    });
-  }
-}
-
-test('Task Info clears a stale PR identity when the new parked detail omits it', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio', '&ambient=0&pullgap=0'));
-  type Task = { id: string; title: string; stepsList: { status: string }[]; parked_needs_you?: boolean; parked_pr?: object };
-  type Fixture = { __yuliusMock: { tasks: Task[]; changePull(s: string, n: number, fields: object): void; touchTask(s: string, n: number, fields: object): void } };
-  await browser.evaluate(() => {
-    const db = (window as unknown as Fixture).__yuliusMock;
-    const task = db.tasks.find(t => t.id === 'tsk_studio_13')!;
-    db.touchTask('sb_studio', 13, {
-      status: 'parked', activity: 'done', stepsList: task.stepsList.map(step => ({ ...step, status: 'done' })),
-      parked_needs_you: true, parked_pr: { number: 520, open: true },
-    });
-    db.changePull('sb_studio', 520, { checks: 'failure' });
-  });
-  await expect(screen.getByRole('region', 'Needs you').getByRole('link', /checks failing.*Improve the code/)).toBeVisible();
-  await browser.evaluate(() => {
-    const task = (window as unknown as Fixture).__yuliusMock.tasks.find(t => t.id === 'tsk_studio_13')!;
-    task.parked_needs_you = false;
-    delete task.parked_pr;
-    task.title = 'Detail read completed';
-    location.hash = '/s/studio/tasks/13';
-  });
-  await expect(screen.getByRole('heading', { level: 1 })).toHaveText(/Detail read completed/);
-  await expect(browser.locator('.gt-state')).toHaveText(/PR #520.*checks failing.*parked/);
-});
-
-test('an older healthy detail cannot clear an unchanged Needs you after a newer parked watch fails', async ({ app, browser }) => {
-  await app.open(mock('/s/studio'));
-  const facts = await browser.evaluate(async () => {
-    const url = '/assets/store.js';
-    const { createStore } = await import(url);
-    const task = { id: 'p', sandbox_id: 's', status: 'parked', parked_pr: { number: 42, open: true }, parked_needs_you: true };
-    let reads = 0;
-    const store = createStore({ get: async (path: string) => {
-      if (path.endsWith('/git')) return { tasks: [] };
-      if (++reads > 1) throw new Error('verification unavailable');
-      return [task];
-    } });
-    await store.loadTasks('s');
-    const older = store.beginParkedDetail();
-    const stop = store.watchPulls('s');
-    await new Promise<void>(resolve => {
-      const channel = new MessageChannel();
-      channel.port1.onmessage = () => { channel.port1.close(); channel.port2.close(); resolve(); };
-      channel.port2.postMessage(null);
-    });
-    const accepted = older({ ...task, parked_needs_you: false });
-    stop();
-    return [accepted.parked_needs_you, store.findTask('p').parked_needs_you];
-  });
-  expect(facts).toEqual([true, true]);
 });

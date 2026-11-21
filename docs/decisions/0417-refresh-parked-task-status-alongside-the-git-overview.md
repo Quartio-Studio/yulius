@@ -6,13 +6,11 @@ Accepted for [SPEC-558](../../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exi
 
 ## Context
 
-Rerunning CI changes whether a parked task belongs under Done without changing its delivery stage. A Git overview may be slow, unavailable or missing the task’s PR. A sidebar or terminal left open across the rerun needs the same verified group as a newly opened task list.
+Rerunning CI changes whether a parked task belongs under Done without changing its delivery stage. A Git overview may be slow, unavailable or missing the task’s PR. A sidebar left open across the rerun needs the same verified group as a newly opened task list.
 
 ## Decision
 
 Use the existing sandbox PR watch to refresh the bounded task-list endpoint whenever the browser has parked rows. Each source can finish and notify its views independently. Each source applies the watch’s three-second gap to announcements and allows one request in flight per sandbox. A change announced during a read schedules one follow-up. The watch and navigation share the newest successful task list. A parked lifecycle change during a list read can trigger one confirmation. This distinguishes an archive from a same-second Undo. Events during confirmation take precedence and a permanent deletion suppresses delayed replies while the read is outstanding. Lifecycle events that omit the checks result keep a known open PR under Needs you and request verification through the same watch.
-
-A fresh parked detail publishes its verified group, plan and PR identity to the shared task row. The terminal and Task Info apply that detail only while their read is current. This lets a later list show recovery even when it repeats the value cached before the page opened.
 
 Use the server’s verified group for the identified PR. Preserve a person’s outstanding decision, local work and a failing PR with a different identity. If the summary is unavailable and the browser knows an open PR, keep the task under Needs you until verification succeeds. The same rule applies when the overview first discovers an open replacement after the summary has failed.
 
@@ -22,4 +20,4 @@ Waiting for the Git overview would leave stale groups on screen while the reques
 
 ## Consequences
 
-One sandbox list request serves the sidebar and open task views for each refresh. A view can show the verified group before the overview can supply a detailed checks label. Reading either source only changes the display.
+One sandbox list request refreshes the sidebar and notifies subscribers when a parked row changes. A view can show the verified group before the overview can supply a detailed checks label. Reading either source only changes the display.
