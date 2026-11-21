@@ -258,6 +258,7 @@ pub struct TaskRuntime {
     /// DRF-009). The guard orders a key's timestamp and file write with the submit hook's
     /// check and file removal (SPEC-537).
     pub(crate) draft_mark: tokio::sync::Mutex<DraftMark>,
+    pub(crate) viewer_prompt: Mutex<crate::terminal::ViewerPrompt>,
     /// Sequence of the last viewer input in this run. Before the first, only the durable
     /// mark identifies a possible draft, and a prompt may predate it (DRF-009).
     pub(crate) typed_seq: AtomicU64,
@@ -632,6 +633,10 @@ impl TaskRuntime {
         self.box_emptied_ms.store(now_ms, Ordering::SeqCst);
         // Its folder is new: no draft is marked there (SPEC-480 DRF-009).
         *mark = DraftMark::default();
+        *self
+            .viewer_prompt
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Default::default();
         self.typed_seq.store(0, Ordering::SeqCst);
         self.emptied_seq.store(0, Ordering::SeqCst);
         self.sent_past_draft.store(false, Ordering::SeqCst);
@@ -719,6 +724,7 @@ impl TaskRuntime {
             box_emptied_ms: AtomicI64::new(0),
             draft_told_ms: AtomicI64::new(0),
             draft_mark: tokio::sync::Mutex::default(),
+            viewer_prompt: Mutex::default(),
             typed_seq: AtomicU64::new(0),
             sent_past_draft: AtomicBool::new(false),
             emptied_seq: AtomicU64::new(0),
@@ -6162,6 +6168,13 @@ impl App {
                     runtime.typed_at_ms.fetch_max(drafted, Ordering::SeqCst);
                     mark.written = true;
                     mark.recovered_at = Some(self.now().0);
+                    if runtime.typed_seq.load(Ordering::SeqCst) == 0 {
+                        runtime
+                            .viewer_prompt
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .restored();
+                    }
                 }
             }
             if let Some(task) = store.task(&attempt.task_id).await? {

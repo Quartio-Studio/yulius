@@ -248,6 +248,11 @@ impl App {
     /// Records that `user` typed into `task`'s terminal now (a prompt submitted soon after is
     /// theirs, TSK-013).
     pub fn record_typing(&self, task: &TaskId, user: &UserId) {
+        self.runtime(task)
+            .viewer_prompt
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .restored();
         self.record_terminal_frame(task, user, &[]);
     }
 
@@ -256,9 +261,20 @@ impl App {
     pub fn record_terminal_frame(&self, task: &TaskId, user: &UserId, data: &[u8]) -> u64 {
         let runtime = self.runtime(task);
         let at = self.now().0;
-        let seq = self.record_viewer_key(task, at, crate::terminal::submits_prompt(data));
+        let mut prompt = runtime
+            .viewer_prompt
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let enter = prompt.read(data, at);
+        let empty = enter == crate::terminal::ViewerEnter::Empty && !self.persons_draft_holds(task);
+        let seq =
+            self.record_viewer_key(task, at, enter == crate::terminal::ViewerEnter::Submitted);
         runtime.typed_at_ms.store(at, Ordering::SeqCst);
         runtime.typed_seq.fetch_max(seq, Ordering::SeqCst);
+        if empty {
+            runtime.box_emptied_ms.fetch_max(at, Ordering::SeqCst);
+            runtime.emptied_seq.fetch_max(seq, Ordering::SeqCst);
+        }
         if let Ok(mut who) = runtime.typed_by.lock() {
             *who = Some(user.clone());
         }

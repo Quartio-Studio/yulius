@@ -245,11 +245,17 @@ impl App {
             // A prompt submitted soon after is this person's (TSK-013).
             let mut mark = attach.runtime.draft_mark.lock().await;
             mark.recovered_at = None;
-            recorded_typing = Some(self.record_terminal_frame(&attach.task_id, &ctx.user.id, data));
+            let before = *attach
+                .runtime
+                .viewer_prompt
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let sequence = self.record_terminal_frame(&attach.task_id, &ctx.user.id, data);
+            recorded_typing = Some((sequence, before));
             // What they type may stay in the prompt box, unsent: the run's folder keeps that
             // for a restarted server (SPEC-480 DRF-009). Before the key is passed on, so the
             // prompt it may submit removes the mark after it was written.
-            if !mark.written {
+            if !mark.written && self.persons_draft_holds(&attach.task_id) {
                 let typed = attach.runtime.typed_at_ms.load(Ordering::SeqCst);
                 mark.written = self.mark_draft(&attach.task_id, typed).await;
             }
@@ -260,8 +266,18 @@ impl App {
                 // If the live run exited between the check above and `send_input`, restore the
                 // prior `typed_at_ms` so we neither leave a ghost draft mark nor wipe an existing
                 // human draft on a transient write/scroll error.
-                if let Some(seq) = recorded_typing {
+                if let Some((seq, before)) = recorded_typing {
                     self.retract_viewer_submit(&attach.task_id, seq);
+                    {
+                        let mut prompt = attach
+                            .runtime
+                            .viewer_prompt
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if attach.runtime.typed_seq.load(Ordering::SeqCst) == seq {
+                            *prompt = before;
+                        }
+                    }
                     if !attach.runtime.has_live_run().await {
                         attach
                             .runtime
@@ -459,17 +475,73 @@ impl App {
     }
 }
 
-/// Enter forwarded from the viewer, including a pasted command submitted in the same
-/// frame. A bracketed paste ending at its closing escape is still a draft.
-pub(crate) fn submits_prompt(data: &[u8]) -> bool {
-    let Some(text) = data
-        .strip_suffix(b"\r\n")
-        .or_else(|| data.strip_suffix(b"\r"))
-        .or_else(|| data.strip_suffix(b"\n"))
-    else {
-        return false;
-    };
-    !text.starts_with(b"\x1b") || text.ends_with(b"\x1b[201~")
+/// Tracks whether a viewer entered substantive text before submitting. Only
+/// lengths and parser state are kept. A callback acknowledges the Enter separately.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ViewerPrompt {
+    keys: crate::cockpit::KeyState,
+    last_key_ms: i64,
+    length: usize,
+    // Position of the first nonblank character, so erasing the last text makes Enter empty.
+    first_text: Option<usize>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ViewerEnter {
+    None,
+    Empty,
+    Submitted,
+}
+
+impl ViewerPrompt {
+    pub(crate) fn restored(&mut self) {
+        if self.first_text.is_none() {
+            self.length = self.length.saturating_add(1);
+            self.first_text = Some(self.length);
+        }
+    }
+
+    pub(crate) fn read(&mut self, frame: &[u8], now: i64) -> ViewerEnter {
+        use crate::cockpit::{BoxEdit, read_box_edits, settled};
+        self.keys = settled(self.keys, self.last_key_ms, now);
+        self.last_key_ms = now;
+        // Clients may frame a submitted line as CRLF. A LF inside a paste is text.
+        let mut enter = ViewerEnter::None;
+        let observe = |edit| match edit {
+            BoxEdit::Text(byte) if byte & 0xc0 != 0x80 => {
+                self.length = self.length.saturating_add(1);
+                if !byte.is_ascii_whitespace() {
+                    self.first_text.get_or_insert(self.length);
+                }
+            }
+            BoxEdit::Text(_) => {}
+            BoxEdit::Backspace => {
+                self.length = self.length.saturating_sub(1);
+                if self.first_text.is_some_and(|first| first > self.length) {
+                    self.first_text = None;
+                }
+            }
+            BoxEdit::Send | BoxEdit::Clear => {
+                if matches!(edit, BoxEdit::Send) && enter != ViewerEnter::Submitted {
+                    enter = if self.first_text.is_some() {
+                        ViewerEnter::Submitted
+                    } else {
+                        ViewerEnter::Empty
+                    };
+                }
+                self.length = 0;
+                self.first_text = None;
+            }
+        };
+        // A plain LF frame is used as Enter by some terminal clients.
+        let keys = if frame == b"\n" && !self.keys.in_paste {
+            b"\r"
+        } else {
+            frame
+        };
+        read_box_edits(keys, &mut self.keys, observe);
+        enter
+    }
 }
 
 /// Whether a viewer's input frame is a person typing (SPEC-068 TYP-001): it holds a keystroke
@@ -597,26 +669,35 @@ fn parked_input_wake(data: &[u8], scroll: bool) -> Option<Option<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_typing, parked_input_wake, submits_prompt};
+    use super::{ViewerEnter, ViewerPrompt, is_typing, parked_input_wake};
 
     #[test]
-    fn submits_prompt_requires_an_enter_outside_a_paste() {
-        for key in [
+    fn submits_prompt_requires_an_enter_after_content_outside_a_paste() {
+        let mut input = ViewerPrompt::default();
+        for frame in [
             b"\r".as_slice(),
-            b"\n",
-            b"verify\r\n",
-            b"\x1b[200~verify\x1b[201~\r",
+            b"   \r",
+            b"v\x7f\r",
+            b"cancel\x03\r",
+            b"clear\x15\r",
         ] {
-            assert!(submits_prompt(key));
+            assert!(input.read(frame, 1) != ViewerEnter::Submitted);
         }
-        for draft in [
-            b"v".as_slice(),
+        assert!(input.read(b"v", 1) == ViewerEnter::None);
+        assert!(input.read(b"\n", 2) == ViewerEnter::Submitted);
+        assert!(input.read(b"verify\r\n", 3) == ViewerEnter::Submitted);
+        assert!(input.read(b"\x1b[200~verify\x1b[201~\r", 4) == ViewerEnter::Submitted);
+        for frame in [
+            b"line one\\".as_slice(),
+            b"\r",
             b"\x1b\r",
-            b"\x1b[200~verify\r\x1b[201~",
-            b"\x1b[200~verify\r",
+            b"\x1b[200~paste",
+            b"part\r",
+            b"end\x1b[201~",
         ] {
-            assert!(!submits_prompt(draft));
+            assert!(input.read(frame, 5) == ViewerEnter::None);
         }
+        assert!(input.read(b"\r", 6) == ViewerEnter::Submitted);
     }
 
     #[test]

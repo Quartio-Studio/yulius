@@ -447,6 +447,11 @@ impl App {
         );
         if from_box && blocked {
             if let Some((_, keys, true)) = submitted {
+                runtime
+                    .viewer_prompt
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .restored();
                 self.consume_viewer_submits(&ctx.task.id, keys);
             }
             // What was submitted is back in the box: nothing was sent past a draft.

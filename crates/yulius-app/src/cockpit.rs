@@ -161,7 +161,7 @@ pub(crate) struct KeyState {
 pub(crate) const PASTE_STALE_MS: i64 = 5_000;
 
 /// The reader's state for a frame that comes `now_ms`, the last one having come `last_key_ms`.
-fn settled(state: KeyState, last_key_ms: i64, now_ms: i64) -> KeyState {
+pub(crate) fn settled(state: KeyState, last_key_ms: i64, now_ms: i64) -> KeyState {
     if now_ms.saturating_sub(last_key_ms) > PASTE_STALE_MS {
         KeyState::default()
     } else {
@@ -169,11 +169,29 @@ fn settled(state: KeyState, last_key_ms: i64, now_ms: i64) -> KeyState {
     }
 }
 
+/// An edit the prompt box receives, after escape sequences and paste delimiters
+/// have been interpreted. The observer need not retain the input itself.
+#[derive(Clone, Copy)]
+pub(crate) enum BoxEdit {
+    Text(u8),
+    Backspace,
+    Clear,
+    Send,
+}
+
 /// Reads one frame of a person's keys. A bracketed paste's line breaks are text, also across
 /// frames. Enter sends, unless it follows a backslash or comes with Alt (Claude Code's line
 /// breaks); Ctrl-C clears the box. Escape sequences (arrows, function keys), Tab and other
 /// control keys type nothing. Shift-Enter reaches the terminal as a plain Enter and reads as one.
 pub(crate) fn read_box_keys(data: &[u8], state: &mut KeyState) -> BoxKeys {
+    read_box_edits(data, state, |_| {})
+}
+
+pub(crate) fn read_box_edits(
+    data: &[u8],
+    state: &mut KeyState,
+    mut edit: impl FnMut(BoxEdit),
+) -> BoxKeys {
     const START: &[u8] = b"\x1b[200~";
     const END: &[u8] = b"\x1b[201~";
     let (mut typed, mut emptied) = (false, false);
@@ -191,6 +209,7 @@ pub(crate) fn read_box_keys(data: &[u8], state: &mut KeyState) -> BoxKeys {
             *after_backslash = false;
             i += END.len();
         } else if *in_paste {
+            edit(BoxEdit::Text(data[i]));
             typed = true;
             *after_backslash = data[i] == b'\\';
             i += 1;
@@ -198,6 +217,7 @@ pub(crate) fn read_box_keys(data: &[u8], state: &mut KeyState) -> BoxKeys {
             let backslash_before = std::mem::take(after_backslash);
             match data[i] {
                 0x1b if data.get(i + 1) == Some(&b'\r') => {
+                    edit(BoxEdit::Text(b'\n'));
                     typed = true;
                     i += 2;
                 }
@@ -212,14 +232,30 @@ pub(crate) fn read_box_keys(data: &[u8], state: &mut KeyState) -> BoxKeys {
                     i += 1;
                 }
                 b'\r' if backslash_before => {
+                    edit(BoxEdit::Backspace);
+                    edit(BoxEdit::Text(b'\n'));
                     typed = true;
                     i += 1;
                 }
                 b'\r' | 0x03 => {
+                    edit(if data[i] == b'\r' {
+                        BoxEdit::Send
+                    } else {
+                        BoxEdit::Clear
+                    });
                     (typed, emptied) = (false, true);
                     i += 1;
                 }
+                0x08 | 0x7f => {
+                    edit(BoxEdit::Backspace);
+                    i += 1;
+                }
+                0x15 => {
+                    edit(BoxEdit::Clear);
+                    i += 1;
+                }
                 byte if byte >= 0x20 && byte != 0x7f => {
+                    edit(BoxEdit::Text(byte));
                     typed = true;
                     *after_backslash = byte == b'\\';
                     i += 1;
