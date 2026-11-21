@@ -112,6 +112,12 @@ class CompileCache(unittest.TestCase):
         self.assertTrue((Path(targets[0]) / "keep").is_file())
 
     def test_portable_supervisor_keeps_target_for_worker_in_another_session(self):
+        self.check_portable_worker(False)
+
+    def test_portable_worker_changing_session_during_shutdown_retains_its_target(self):
+        self.check_portable_worker(True)
+
+    def check_portable_worker(self, move_during_check):
         import signal
         env = self.caller_fixture("""
 from pathlib import Path
@@ -119,9 +125,14 @@ reader, writer = os.pipe()
 pid = os.fork()
 if pid == 0:
     os.close(reader)
-    os.setsid()
+    if not os.environ.get('MOVE'):
+        os.setsid()
     os.closerange(0, 3)
     os.write(writer, b'1')
+    if os.environ.get('MOVE'):
+        with open(os.environ['MOVE'], 'rb') as gate: gate.read(1)
+        os.setsid()
+        with open(os.environ['ACK'], 'wb') as ack: ack.write(b'1')
     import signal
     signal.pause()
     os._exit(0)
@@ -138,6 +149,21 @@ Path(os.environ['CARGO_TARGET_DIR'], 'keep').touch()
         adapter.write_text(code.replace(selection, 'subreaper = False'))
         parent = self.sandbox / "scratch"
         env.update(YULIUS_BUILD_SCRATCH=str(parent), RECORD=str(self.record), RUSTC_WRAPPER="fixture")
+        if move_during_check:
+            for name in ("MOVE", "ACK"):
+                env[name] = str(self.sandbox / name)
+                os.mkfifo(env[name])
+            groups = self.task / "scripts/build_groups.py"
+            with groups.open("a") as source:
+                source.write("""
+observe = group_snapshot
+def group_snapshot(*args, **kwargs):
+    snapshot = observe(*args, **kwargs)
+    if Path(os.environ['RECORD']).exists():
+        with open(os.environ['MOVE'], 'wb') as move: move.write(b'1')
+        with open(os.environ['ACK'], 'rb') as ack: ack.read(1)
+    return snapshot
+""")
         try:
             result = subprocess.run([self.task / "scripts/cargo", "--scratch-target", "check"],
                                     env=env, start_new_session=True, capture_output=True, text=True, timeout=10)
@@ -329,6 +355,75 @@ Path(os.environ['CARGO_TARGET_DIR'], 'keep').touch()
             os.close(read)
             os.close(write)
 
+    def test_one_terminal_interrupt_reaches_the_build_handler_once(self):
+        self.check_single_interrupt(terminal_signal=True)
+
+    def test_interrupt_sent_to_launcher_reaches_cargo(self):
+        self.check_single_interrupt(terminal_signal=False)
+
+    def check_single_interrupt(self, terminal_signal):
+        import pty
+        import select
+        import signal
+        import time
+        env = self.caller_fixture("""
+import signal, time
+from pathlib import Path
+def finish(signum, frame):
+    record = Path(os.environ['RECORD'])
+    if record.exists():
+        record.write_text('interrupted twice')
+        sys.exit(99)
+    record.write_text('handling')
+    deadline = time.monotonic() + 5
+    while not Path(os.environ['ACK']).exists() and time.monotonic() < deadline: time.sleep(.005)
+    record.write_text('finished')
+    sys.exit(130)
+signal.signal(signal.SIGINT, finish)
+print('ready', flush=True)
+signal.pause()
+""")
+        env.update(RECORD=str(self.record), ACK=str(self.sandbox / "handler-release"))
+        # Let the handler finish once the supervisor has made its decision about
+        # forwarding. This orders both signal deliveries without scheduler timing.
+        with (self.task / "scripts/compile_cache.py").open("a") as source:
+            source.write("""
+original_wait = subprocess.Popen.wait
+def wait_after_forwarding(self, timeout=None):
+    if timeout == 3:
+        Path(os.environ['ACK']).touch()
+    return original_wait(self, timeout=timeout)
+subprocess.Popen.wait = wait_after_forwarding
+""")
+        pid, terminal = pty.fork()
+        if pid == 0:
+            os.execve(self.task / "scripts/cargo", ["cargo", "--scratch-target", "run"], env)
+        try:
+            self.assertTrue(select.select([terminal], [], [], 5)[0])
+            self.assertIn(b'ready', os.read(terminal, 4096))
+            if terminal_signal:
+                os.kill(pid, signal.SIGSTOP)
+                os.waitpid(pid, os.WUNTRACED)
+                os.write(terminal, b'\x03')
+                deadline = time.monotonic() + 3
+                while not self.record.exists():
+                    self.assertLess(time.monotonic(), deadline, "Cargo missed the terminal interrupt")
+                    time.sleep(.005)
+                os.kill(pid, signal.SIGCONT)
+            else:
+                os.kill(pid, signal.SIGINT)
+            with os.fdopen(os.pidfd_open(pid), "rb") as launcher:
+                self.assertTrue(select.select([launcher], [], [], 8)[0])
+            self.assertEqual(self.record.read_text(), 'finished')
+        finally:
+            try:
+                os.kill(pid, signal.SIGCONT)
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            os.waitpid(pid, 0)
+            os.close(terminal)
+
     def test_a_foreground_test_reads_its_controlling_terminal(self):
         self.check_foreground_terminal(redirect_stdin=False)
 
@@ -479,6 +574,12 @@ print('received '+input(), flush=True)
                 if start_background:
                     os.write(terminal, b"fg\n")
                     read_until(b"scripts/cargo --scratch-target run")
+                    # Bash prints the job before completing tcsetpgrp. Ctrl-Z
+                    # must reach the actual foreground job, not the shell.
+                    deadline = time.monotonic() + 4
+                    while os.tcgetpgrp(terminal) != job:
+                        self.assertLess(time.monotonic(), deadline, "fg did not transfer the terminal")
+                        time.sleep(.005)
                 os.write(terminal, b"\x1a")
                 read_until(b"Stopped")
                 stat_file = Path("/proc") / backend_file.read_text() / "stat"

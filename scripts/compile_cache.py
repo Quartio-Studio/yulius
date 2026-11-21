@@ -56,31 +56,6 @@ def open_store(cache, checkout):
         os.close(directory)
 
 
-def process_rows(columns, timeout):
-    with tempfile.TemporaryFile() as listing:
-        subprocess.run(["/bin/ps", "-A", "-o", columns], stdout=listing, check=True, timeout=timeout)
-        if listing.tell() > 16 * 1024 * 1024:
-            raise UnreapedBuild("process listing exceeded 16 MiB")
-        listing.seek(0)
-        for row in listing:
-            yield row.split()
-
-
-def session_members(session):
-    """Live PIDs in a terminal session on systems without Linux subreapers."""
-    try:
-        members = set()
-        for pid, state in process_rows("pid=,stat=", 2):
-            try:
-                if not state.startswith(b"Z") and os.getsid(int(pid)) == session:
-                    members.add(int(pid))
-            except ProcessLookupError:
-                pass
-        return members
-    except (OSError, ValueError, subprocess.SubprocessError) as error:
-        raise UnreapedBuild(f"cannot observe build session {session}: {error}") from error
-
-
 def run_disposable(command, env):
     """Keep Cargo in the shell job. Release the target only after its workers exit."""
     subreaper = sys.platform == "linux"
@@ -88,8 +63,7 @@ def run_disposable(command, env):
         enable_build_subreaper()
     else:
         from build_groups import group_snapshot
-        previous_groups = group_snapshot()
-        previous_members = session_members(os.getsid(0))
+        prior_processes = set().union(*group_snapshot().values())
 
     requested = None
 
@@ -100,6 +74,8 @@ def run_disposable(command, env):
 
     signals = (signal.SIGHUP, signal.SIGINT, signal.SIGQUIT, signal.SIGTERM)
     previous = {sig: signal.signal(sig, cancel) for sig in signals}
+    saved_mask = None
+    origin_pid = None
     try:
         if requested is not None:
             return -requested
@@ -107,31 +83,53 @@ def run_disposable(command, env):
         # The shell delivers stop, continue and terminal ownership to the whole job.
         child = subprocess.Popen(command, env=env, close_fds=False)
         try:
-            while requested is None:
-                try:
-                    child.wait(timeout=0.1)
-                    break
-                except subprocess.TimeoutExpired:
-                    continue
+            # Block only in the parent, after spawn. On hosts with sigtimedwait
+            # the kernel identifies terminal-generated signals by sender PID 0.
+            if hasattr(signal, "sigtimedwait"):
+                saved_mask = signal.pthread_sigmask(signal.SIG_BLOCK, signals)
+            while requested is None and child.poll() is None:
+                if saved_mask is not None:
+                    event = signal.sigtimedwait(signals, 0.1)
+                    if event is not None:
+                        requested = event.si_signo
+                        origin_pid = event.si_pid
+                else:
+                    try:
+                        child.wait(timeout=0.1)
+                    except subprocess.TimeoutExpired:
+                        continue
             if requested is not None and child.poll() is None:
-                child.send_signal(requested)
+                # Terminal signals reach the inherited foreground job directly.
+                # With unknown provenance give its handler the same grace before
+                # escalating. An explicit signal to the launcher reaches Cargo.
+                if origin_pid or (origin_pid is None and requested == signal.SIGTERM):
+                    child.send_signal(requested)
                 try:
                     child.wait(timeout=3)
                 except subprocess.TimeoutExpired:
-                    child.kill()
-                    child.wait(timeout=3)
+                    if origin_pid is None and requested != signal.SIGTERM:
+                        child.terminate()
+                        try:
+                            child.wait(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            pass
+                    if child.poll() is None:
+                        child.kill()
+                        child.wait(timeout=3)
             if subreaper:
                 reap_adopted_workers()
             else:
-                current = group_snapshot()
-                if (session_members(os.getsid(0)) - previous_members
-                        or any(set(members).isdisjoint(previous_groups.get(group, ()))
-                               for group, members in current.items())):
+                # Check identities in a single final observation. A worker can
+                # change groups or sessions between two independent snapshots.
+                current = set().union(*group_snapshot(require_known=True).values())
+                if current - prior_processes:
                     raise UnreapedBuild("new processes may still own the build target")
         except (OSError, ValueError, subprocess.SubprocessError, RuntimeError) as error:
             raise UnreapedBuild(f"cannot confirm build worker shutdown: {error}") from error
         return -requested if requested is not None else child.returncode
     finally:
+        if saved_mask is not None:
+            signal.pthread_sigmask(signal.SIG_SETMASK, saved_mask)
         for sig, handler in previous.items():
             signal.signal(sig, handler)
 
