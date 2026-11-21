@@ -30,7 +30,8 @@ On 2026-11-21 the owner measured 105 minutes waiting for mutation tests in 22 Co
 - [x] Reclaim attempt scratch after forced host termination
 - [x] Deliver the by-hand mutation policy and bootstrap
 - [x] Deliver disk build scratch, the tmpfs cap and on-request campaign cleanup
-- [ ] Deliver disposable Cargo targets and request staging
+- [ ] Deliver disposable targets through direct Cargo
+- [ ] Reuse the compiler cache for eligible disposable builds and request staging
 
 ## Acceptance criteria
 
@@ -48,7 +49,7 @@ ADR-0439 replaces the delivery default of ADR-0347 with the owner's by-hand rule
 
 ## Evidence
 
-Delivery is split into three pull requests. The first carries the by-hand policy and bootstrap. The second carries the session limit and disk-backed campaign scratch. The third carries the disposable Cargo target launcher. Runtime observations below were collected on the implementation branch. The task requests staging once after all three merge.
+Delivery is split into four pull requests. The first carries the by-hand policy and bootstrap. The second carries the session limit and disk-backed campaign scratch. The third carries the direct disposable Cargo target launcher. The fourth enables eligible compiler-cache builds to use disposable targets. Runtime observations below were collected on the implementation branch. The task requests staging once after all four merge.
 
 The original containment argument tests failed when required to show a size on /tmp. All 46 process-host unit tests passed after the mount change. The ownership test passed for both agent and CI launches. A disposable Linux container reported exactly 1,073,741,824 bytes and returned ENOSPC to a 1,073,741,825-byte allocation. Nested bubblewrap was denied by this session, so the live contained-agent test skipped its mount assertions.
 
@@ -125,3 +126,5 @@ By-hand removal of the cross-session group check reproduced the portable launche
 Review of 4ed93a46c found three runtime failures and a missing cache-upkeep regression. A real offline Cargo clean removed the target and wrapper cleanup returned 1. An inherited build.build-dir and explicit target overrides sent artifacts outside the temporary directory. A real PTY stopped Cargo on Ctrl-Z while its wrapper kept the shell waiting. The new offline regressions cover both output directories, CLI and configuration overrides, and application arguments after --. The PTY test observes the wrapper stop, continues it, sends interactive input and verifies the final status and cleanup. By-hand reversal reproduced all three runtime failures. All 34 launcher and compiler-cache tests passed after restoration, including the unchanged interrupted-upkeep contract restored from dev. Native macOS terminal stop/continue remains unverified.
 
 Review of 1bba19c82 confirmed all four previous corrections and found that an interactive shell starting Cargo in the background stayed blocked on fg after the child tried to read. A real Bash PTY regression now waits for the background job to stop, brings it forward, supplies input and checks its exit and scratch cleanup. It failed because Bash never reported the job stopped. Undoing the background controlling-terminal open reproduced the same failure. After restoration the background and foreground job-control regressions passed.
+
+The direct Cargo delivery keeps the shell’s original job and process group for both the launcher and Cargo. On the previous head, Bash reported that a foregrounded background job had stopped while the backend was still sleeping. Giving the backend its own group again by hand reproduced the same failure. With group inheritance, Bash stopped both processes, resumed them, passed terminal input to Cargo and observed successful cleanup. The same fixture exercised a foreground launch and a background terminal reader. Direct Cargo owns the disposable target in this delivery. Cache dispatch for eligible disposable builds is the remaining delivery before the staging request.

@@ -101,7 +101,7 @@ class CompileCache(unittest.TestCase):
                                   "(target / 'keep').write_text('build')")
         env.update(RECORD=str(self.record), YULIUS_BUILD_SCRATCH=str(root))
         with (self.task / "scripts/compile_cache.py").open("a") as fixture:
-            fixture.write("\ndef stop_build_group(group, requested=None):\n"
+            fixture.write("\ndef reap_adopted_workers():\n"
                           "    raise UnreapedBuild('process observation unavailable')\n")
         result = subprocess.run([self.task / "scripts/cargo", "--scratch-target", "build"],
                                 env=env, capture_output=True, text=True, timeout=5, start_new_session=True)
@@ -133,7 +133,7 @@ Path(os.environ['CARGO_TARGET_DIR'], 'keep').touch()
         # Exercise the non-subreaper supervisor with real POSIX process groups on Linux.
         adapter = self.task / "scripts/compile_cache.py"
         code = adapter.read_text()
-        selection = 'subreaper = disposable and sys.platform == "linux"'
+        selection = 'subreaper = sys.platform == "linux"'
         self.assertIn(selection, code)
         adapter.write_text(code.replace(selection, 'subreaper = False'))
         parent = self.sandbox / "scratch"
@@ -250,15 +250,6 @@ Path(os.environ['CARGO_TARGET_DIR'], 'keep').touch()
         self.assertEqual((cache / ".yulius-mbx-v1").read_bytes(), b"mbx-v1\n")
 
     def test_terminating_the_launcher_stops_its_descendants_and_keeps_the_lease_private(self):
-        self.check_cached_cancellation(scratch=False)
-
-    def test_cancelling_a_cached_disposable_target_reaps_its_backend(self):
-        self.check_cached_cancellation(scratch=True)
-
-    def test_cancelled_cached_build_reaps_a_separate_test_group(self):
-        self.check_cached_cancellation(scratch=True, separate_group=True)
-
-    def check_cached_cancellation(self, scratch, separate_group=False):
         import fcntl
         import select
         import signal
@@ -271,34 +262,24 @@ Path(os.environ['CARGO_TARGET_DIR'], 'keep').touch()
             listener.listen()
             listener.settimeout(5)
             self.cargo.write_text("#!/usr/bin/env python3\nimport os,signal,socket,sys\n"
-                                  + ("if os.fork(): signal.pause(); sys.exit(1)\nos.setpgid(0,0)\n"
-                                     if separate_group else "")
-                                  + "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                                  "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
                                   "s=socket.socket(socket.AF_UNIX);s.connect(sys.argv[2])\n"
-                                  "s.sendall((str(os.getpid())+chr(10)+repr([os.readlink('/proc/self/fd/'+x) for x in os.listdir('/proc/self/fd') "
-                                  "if os.path.exists('/proc/self/fd/'+x)])).encode());signal.pause()")
+                                  "s.sendall(repr([os.readlink('/proc/self/fd/'+x) for x in os.listdir('/proc/self/fd') "
+                                  "if os.path.exists('/proc/self/fd/'+x)]).encode());signal.pause()")
             mbx = self.task / ".tools/bin/mbx"
-            mbx.write_text('#!/bin/sh\n' + ('exec ' if scratch else '') + '"$CARGO" "$@"\n')
+            mbx.write_text('#!/bin/sh\n"$CARGO" "$@"\n')
             mbx.chmod(0o755)
             env = self.cargo_env(home, self.cargo)
-            target_root = self.sandbox / "scratch"
-            env["YULIUS_BUILD_SCRATCH"] = str(target_root)
-            flag = ["--scratch-target"] if scratch else []
-            backend = None
-            proc = subprocess.Popen([self.task / "scripts/cargo", *flag, "run", ready], env=env,
+            proc = subprocess.Popen([self.task / "scripts/cargo", "run", ready], env=env,
                                     stdin=subprocess.DEVNULL, start_new_session=True)
             try:
                 conn, _ = listener.accept()
                 with conn:
-                    pid, descriptors = conn.recv(4096).decode().split("\n", 1)
-                    backend = int(pid)
+                    descriptors = conn.recv(4096).decode()
                     proc.terminate()
                     proc.wait(timeout=8)
                     self.assertTrue(select.select([conn], [], [], 1)[0], "Cargo child survived cancellation")
                     self.assertEqual(conn.recv(1), b"")
-                    backend = None
-                    if scratch:
-                        self.assertEqual(list(target_root.iterdir()), [])
                     self.assertNotIn(str(self.sandbox) + "'", descriptors)
                     lease = os.open(self.sandbox, os.O_RDONLY | os.O_DIRECTORY)
                     try:
@@ -306,11 +287,6 @@ Path(os.environ['CARGO_TARGET_DIR'], 'keep').touch()
                     finally:
                         os.close(lease)
             finally:
-                if backend is not None:
-                    try:
-                        os.kill(backend, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
                 try:
                     os.killpg(proc.pid, signal.SIGKILL)
                 except ProcessLookupError:
@@ -399,7 +375,7 @@ signal.pause()
 """)
         if unconfirmed:
             with (self.task / "scripts/compile_cache.py").open("a") as fixture:
-                fixture.write("\ndef stop_build_group(group, requested=None):\n"
+                fixture.write("\ndef reap_adopted_workers():\n"
                               "    raise UnreapedBuild('process observation unavailable')\n")
         env.update(READY=str(ready), YULIUS_BUILD_SCRATCH=str(root))
         with socket.socket(socket.AF_UNIX) as listener:
@@ -448,11 +424,28 @@ signal.pause()
                     os.close(terminal)
 
     def test_shell_can_foreground_a_disposable_build_started_in_background(self):
+        self.check_shell_job(read_immediately=True)
+
+    def test_ctrl_z_stops_a_running_background_build_brought_forward(self):
+        self.check_shell_job(read_immediately=False)
+
+    def check_shell_job(self, read_immediately, start_background=True):
         import pty
         import select
         import signal
         import time
-        env = self.caller_fixture("print('reader ready',flush=True); print('received '+input(),flush=True)")
+        gate = self.sandbox / "input.fifo"
+        os.mkfifo(gate)
+        env = self.caller_fixture(f"""
+from pathlib import Path
+Path(os.environ['BACKEND']).write_text(str(os.getpid()))
+print('reader ready', flush=True)
+if not {read_immediately!r}:
+    with open(os.environ['GATE'], 'rb') as fifo: fifo.read(1)
+print('received '+input(), flush=True)
+""")
+        backend_file = self.sandbox / "backend"
+        env.update(BACKEND=str(backend_file), GATE=str(gate))
         shell = shutil.which("bash")
         env.update(YULIUS_BUILD_SCRATCH=str(self.sandbox / "scratch"), PS1="shell> ", PROMPT_COMMAND="")
         pid, terminal = pty.fork()
@@ -472,15 +465,30 @@ signal.pause()
         job = None
         try:
             read_until(b"shell> ")
-            os.write(terminal, b"scripts/cargo --scratch-target run &\n")
+            os.write(terminal, b"scripts/cargo --scratch-target run" + (b" &\n" if start_background else b"\n"))
             output = read_until(b"reader ready")
             import re
-            job = int(re.search(rb"\[1\] (\d+)", output).group(1))
-            # Bash waits for its job leader to stop, as it does before offering fg.
-            os.write(terminal, b"wait %1; jobs\n")
-            read_until(b"Stopped")
+            if start_background:
+                job = int(re.search(rb"\[1\] (\d+)", output).group(1))
+            else:
+                job = os.getpgid(int(backend_file.read_text()))
+            if read_immediately:
+                os.write(terminal, b"wait %1; jobs\n")
+                read_until(b"Stopped")
+            else:
+                if start_background:
+                    os.write(terminal, b"fg\n")
+                    read_until(b"scripts/cargo --scratch-target run")
+                os.write(terminal, b"\x1a")
+                read_until(b"Stopped")
+                stat_file = Path("/proc") / backend_file.read_text() / "stat"
+                self.assertEqual(stat_file.read_text().rsplit(")", 1)[1].split()[0], "T",
+                                 "Cargo kept running while Bash reported its job suspended")
             os.write(terminal, b"fg\n")
             read_until(b"scripts/cargo --scratch-target run")
+            if not read_immediately:
+                with gate.open("wb") as fifo:
+                    fifo.write(b"1")
             os.write(terminal, b"X\n")
             read_until(b"received X")
             os.write(terminal, b"exit 0\n")
@@ -502,45 +510,7 @@ signal.pause()
             os.close(terminal)
 
     def test_terminal_suspends_and_resumes_the_disposable_build(self):
-        import pty
-        import select
-        import signal
-        import time
-        env = self.caller_fixture("print('ready',flush=True); print('received '+input(),flush=True)")
-        target_root = self.sandbox / "scratch"
-        env["YULIUS_BUILD_SCRATCH"] = str(target_root)
-        pid, terminal = pty.fork()
-        if pid == 0:
-            os.execve(self.task / "scripts/cargo", ["cargo", "--scratch-target", "run"], env)
-        reaped = False
-        try:
-            self.assertTrue(select.select([terminal], [], [], 5)[0])
-            self.assertIn(b"ready", os.read(terminal, 4096))
-            os.write(terminal, b'\x1a')
-            deadline = time.monotonic() + 3
-            while True:
-                child, status = os.waitpid(pid, os.WUNTRACED | os.WNOHANG)
-                if child:
-                    self.assertTrue(os.WIFSTOPPED(status), status)
-                    break
-                self.assertLess(time.monotonic(), deadline, "wrapper never suspended with Cargo")
-                time.sleep(0.01)
-            os.kill(pid, signal.SIGCONT)
-            os.write(terminal, b"X\n")
-            received = b""
-            while b"received X" not in received:
-                self.assertTrue(select.select([terminal], [], [], 5)[0])
-                received += os.read(terminal, 4096)
-            _, status = os.waitpid(pid, 0)
-            reaped = True
-            self.assertEqual(os.waitstatus_to_exitcode(status), 0)
-            self.assertFalse(list(target_root.iterdir()))
-        finally:
-            if not reaped:
-                os.kill(pid, signal.SIGCONT)
-                os.kill(pid, signal.SIGTERM)
-                os.waitpid(pid, 0)
-            os.close(terminal)
+        self.check_shell_job(read_immediately=False, start_background=False)
 
     def check_foreground_terminal(self, redirect_stdin, scratch=False):
         import pty

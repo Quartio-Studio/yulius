@@ -12,7 +12,6 @@ from pathlib import Path
 import shutil
 import tarfile
 import tempfile
-import time
 
 from build_subreaper import UnreapedBuild, enable_build_subreaper, reap_adopted_workers
 from home_lock import exclusive
@@ -57,12 +56,9 @@ def open_store(cache, checkout):
         os.close(directory)
 
 
-def process_rows(columns, timeout, *, threads=False):
-    args = ["/bin/ps", "-A"]
-    if threads and sys.platform == "linux":
-        args.append("-L")  # A zombie leader can have other live threads.
+def process_rows(columns, timeout):
     with tempfile.TemporaryFile() as listing:
-        subprocess.run([*args, "-o", columns], stdout=listing, check=True, timeout=timeout)
+        subprocess.run(["/bin/ps", "-A", "-o", columns], stdout=listing, check=True, timeout=timeout)
         if listing.tell() > 16 * 1024 * 1024:
             raise UnreapedBuild("process listing exceeded 16 MiB")
         listing.seek(0)
@@ -85,78 +81,62 @@ def session_members(session):
         raise UnreapedBuild(f"cannot observe build session {session}: {error}") from error
 
 
-def stop_build_group(group, requested=None):
-    """The leader is still waitable, so the kernel cannot recycle its group ID."""
-    def send(sig):
+def run_disposable(command, env):
+    """Keep Cargo in the shell job. Release the target only after its workers exit."""
+    subreaper = sys.platform == "linux"
+    if subreaper:
+        enable_build_subreaper()
+    else:
+        from build_groups import group_snapshot
+        previous_groups = group_snapshot()
+        previous_members = session_members(os.getsid(0))
+
+    requested = None
+
+    def cancel(signum, _frame):
+        nonlocal requested
+        if requested is None:
+            requested = signum
+
+    signals = (signal.SIGHUP, signal.SIGINT, signal.SIGQUIT, signal.SIGTERM)
+    previous = {sig: signal.signal(sig, cancel) for sig in signals}
+    try:
+        if requested is not None:
+            return -requested
+        # Inherit the caller's process group and inheritable jobserver descriptors.
+        # The shell delivers stop, continue and terminal ownership to the whole job.
+        child = subprocess.Popen(command, env=env, close_fds=False)
         try:
-            os.killpg(group, sig)
-        except ProcessLookupError:
-            pass
-
-    def stopped_within(seconds, *, force):
-        deadline = time.monotonic() + seconds
-        while time.monotonic() < deadline:
-            if force:
-                send(signal.SIGKILL)
-            try:
-                rows = process_rows("pgid=,stat=", max(0.01, deadline - time.monotonic()), threads=True)
-                if not any(int(pgid) == group and not state.startswith(b"Z") for pgid, state in rows):
-                    return True
-            except (OSError, ValueError, subprocess.SubprocessError) as error:
-                raise UnreapedBuild(f"cannot verify build group {group}: {error}") from error
-            time.sleep(0.05)
-        return False
-
-    if requested is not None:
-        send(requested)
-        try:
-            if stopped_within(3, force=False):
-                return
-        except UnreapedBuild:
-            pass  # Still escalate if process observation failed during graceful shutdown.
-    if not stopped_within(3, force=True):
-        raise UnreapedBuild(f"build group {group} still has live workers after SIGKILL")
-
-
-def observe_build_exit(pid, suspend=None):
-    """Observe exit while the unreaped leader still pins the process group."""
-    if hasattr(os, "waitid"):
-        events = os.WEXITED | os.WNOWAIT
-        if suspend is not None:
-            events |= os.WSTOPPED
-        while True:
-            event = os.waitid(os.P_PID, pid, events)
-            if event.si_code != os.CLD_STOPPED:
-                return
-            os.waitid(os.P_PID, pid, os.WSTOPPED | os.WNOHANG)
-            suspend()
-    # Python 3.11 and 3.12 on macOS expose kqueue but not waitid.
-    import select
-    with select.kqueue() as events:
-        exit_event = select.kevent(pid, filter=select.KQ_FILTER_PROC,
-                                   flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
-                                   fflags=select.KQ_NOTE_EXIT)
-        try:
-            changes = [exit_event]
-            while True:
-                observed = events.control(changes, 1, 0.2 if suspend else None)
-                changes = []
-                if observed:
-                    event, = observed
-                    if event.flags & select.KQ_EV_ERROR and event.data != errno.ESRCH:
-                        raise OSError(event.data, os.strerror(event.data))
-                    return
-                # kqueue reports process exit, but Darwin's EVFILT_PROC has
-                # no stop event. The waitable child pins this PID across ps.
-                state = subprocess.run(["/bin/ps", "-p", str(pid), "-o", "stat="],
-                                       capture_output=True, timeout=1)
-                if state.stdout.strip().startswith(b"T"):
-                    suspend()
-        except ProcessLookupError:
-            pass  # The child had already exited before registration.
+            while requested is None:
+                try:
+                    child.wait(timeout=0.1)
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+            if requested is not None and child.poll() is None:
+                child.send_signal(requested)
+                try:
+                    child.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    child.wait(timeout=3)
+            if subreaper:
+                reap_adopted_workers()
+            else:
+                current = group_snapshot()
+                if (session_members(os.getsid(0)) - previous_members
+                        or any(set(members).isdisjoint(previous_groups.get(group, ()))
+                               for group, members in current.items())):
+                    raise UnreapedBuild("new processes may still own the build target")
+        except (OSError, ValueError, subprocess.SubprocessError, RuntimeError) as error:
+            raise UnreapedBuild(f"cannot confirm build worker shutdown: {error}") from error
+        return -requested if requested is not None else child.returncode
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
 
 
-def run_session(command, env, lease=None, *, disposable=False):
+def run_session(command, env, lease):
     """Forward cancellation to the whole Cargo command, escalating any surviving descendants."""
     child = None
     requested = None
@@ -170,122 +150,30 @@ def run_session(command, env, lease=None, *, disposable=False):
         if child is not None:
             raise Cancelled
 
-    subreaper = disposable and sys.platform == "linux"
-    previous_members = None
-    previous_groups = None
-    if subreaper:
-        enable_build_subreaper()
-    elif disposable:
-        from build_groups import group_snapshot
-        previous_groups = group_snapshot()
-        previous_members = session_members(os.getsid(0))
-
-    def reap():
-        status = child.wait()
-        try:
-            if subreaper:
-                reap_adopted_workers()
-            elif previous_groups is not None:
-                after = group_snapshot()
-                if (session_members(os.getsid(0)) - previous_members
-                        or any(set(members).isdisjoint(previous_groups.get(group, ()))
-                               for group, members in after.items())):
-                    raise UnreapedBuild("new processes may still own the build target")
-        except (OSError, ValueError, subprocess.SubprocessError, RuntimeError) as error:
-            raise UnreapedBuild(f"cannot confirm build worker shutdown: {error}") from error
-        return status
-
-    terminal = None
-    if disposable:
-        try:
-            terminal = os.open("/dev/tty", os.O_RDONLY | os.O_NOCTTY)
-        except OSError as error:
-            if error.errno not in (errno.ENXIO, errno.ENODEV, errno.ENOTTY):
-                raise
-
-    def foreground(group):
-        # The supervisor is in the background when restoring its foreground group.
-        previous_ttou = signal.signal(signal.SIGTTOU, signal.SIG_IGN)
-        try:
-            os.tcsetpgrp(terminal, group)
-        finally:
-            signal.signal(signal.SIGTTOU, previous_ttou)
-
-    def suspend():
-        # Let the shell see its job stop. On fg it returns the terminal to
-        # our group before continuing us. A bg resume must leave it there.
-        owner = os.tcgetpgrp(terminal)
-        if owner != os.getpgrp():
-            if owner == child.pid:
-                foreground(os.getpgrp())
-            os.kill(os.getpid(), signal.SIGSTOP)
-        if os.tcgetpgrp(terminal) == os.getpgrp():
-            foreground(child.pid)
-        try:
-            os.killpg(child.pid, signal.SIGCONT)
-        except ProcessLookupError:
-            pass
-
     signals = (signal.SIGHUP, signal.SIGINT, signal.SIGQUIT, signal.SIGTERM)
     previous = {sig: signal.signal(sig, cancel) for sig in signals}
     try:
-        # Direct Cargo inherits exactly the descriptors its caller left inheritable,
-        # including a Make jobserver. Only the private lease crosses into mbx.
-        child = subprocess.Popen(command, env=env, close_fds=lease is not None,
-                                 pass_fds=() if lease is None else (lease,), process_group=0)
-        if terminal is not None and os.tcgetpgrp(terminal) == os.getpgrp():
-            try:
-                foreground(child.pid)
-                # A fast reader may have received SIGTTIN before the handoff.
-                os.killpg(child.pid, signal.SIGCONT)
-            except ProcessLookupError:
-                pass
+        child = subprocess.Popen(command, env=env, pass_fds=(lease,), process_group=0)
         if requested is not None:
             raise Cancelled
-        # Terminal Ctrl-C goes straight to the foreground group. Cargo may
-        # report a signal or translate it to an ordinary exit code.
-        observe_build_exit(child.pid, suspend if terminal is not None else None)
-        if disposable:
-            stop_build_group(child.pid)
-        # The last group operation precedes reaping. A delayed cancellation must
-        # never signal a process group whose leader PID the kernel can reuse.
-        for sig in signals:
-            signal.signal(sig, signal.SIG_IGN)
-        return reap()
+        return child.wait()
     except Cancelled:
         for sig in signals:
             signal.signal(sig, signal.SIG_IGN)
-        stop_build_group(child.pid, requested)
-        reap()
-        return -requested
-    except UnreapedBuild:
-        raise
-    except BaseException:
-        if child is not None and child.returncode is None:
-            for sig in signals:
-                signal.signal(sig, signal.SIG_IGN)
-            stop_build_group(child.pid)
-            reap()
-        raise
-    finally:
-        pending = sys.exception()
         try:
-            if terminal is not None:
-                try:
-                    if child is not None and os.tcgetpgrp(terminal) == child.pid:
-                        foreground(os.getpgrp())
-                finally:
-                    os.close(terminal)
-        except OSError as error:
-            # A hung-up terminal no longer has a foreground group to restore.
-            # Even unexpected restoration errors must preserve an uncertain shutdown.
-            if error.errno not in (errno.ENOTTY, errno.EIO):
-                if pending is None:
-                    raise
-                pending.add_note(f"cannot restore terminal: {error}")
-        finally:
-            for sig, handler in previous.items():
-                signal.signal(sig, handler)
+            os.killpg(child.pid, requested)
+            child.wait(timeout=3)
+        except (ProcessLookupError, subprocess.TimeoutExpired):
+            pass
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        child.wait()
+        return -requested
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
 
 
 def sandbox_for(checkout, home):

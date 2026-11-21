@@ -6,7 +6,7 @@ import shutil
 import sys
 import tempfile
 
-from compile_cache import UnreapedBuild, foreground_terminal, installed, open_store, run_session, sandbox_for
+from compile_cache import UnreapedBuild, foreground_terminal, installed, open_store, run_disposable, run_session, sandbox_for
 
 root = Path(__file__).resolve().parent.parent
 args = sys.argv[1:]
@@ -43,14 +43,12 @@ if scratch_target:
     validate_scratch_args(args)
 
 
-def run_build(command, env, lease=None):
-    if not scratch_target:
-        return run_session(command, env, lease)
+def run_build(command, env):
     parent = Path(env.get("YULIUS_BUILD_SCRATCH", root / "target"))
     parent.mkdir(exist_ok=True, parents=True)
     build = tempfile.mkdtemp(prefix="cargo-", dir=parent)
     try:
-        result = run_session(command, dict(env, CARGO_TARGET_DIR=build, CARGO_BUILD_BUILD_DIR=build, CARGO_BUILD_TARGET_DIR=build), lease, disposable=True)
+        result = run_disposable(command, dict(env, CARGO_TARGET_DIR=build, CARGO_BUILD_BUILD_DIR=build, CARGO_BUILD_TARGET_DIR=build))
     except UnreapedBuild as error:
         # The containing session can reclaim this target once its processes end.
         raise UnreapedBuild(f"{error}; retained build target {build}") from error
@@ -106,6 +104,9 @@ if Path(cargo).resolve() == launcher:
             break
     else:
         sys.exit("The project Cargo launcher needs a Cargo executable on PATH")
+if scratch_target:
+    plain(cargo)
+
 # Yulius CI keeps the runner's session for cancellation and redirects all three streams.
 unattended_ci = (os.environ.get("YULIUS_CI") == "1" and os.environ.get("YULIUS_CI_RUN")
                  and not any(os.isatty(fd) for fd in (0, 1, 2)))
@@ -145,12 +146,7 @@ try:
                    MBX_RESTORE_HARDLINK="0", MBX_SCHEDULER="0", MBX_BUILD_SCRIPT_EXECUTION="0",
                    MBX_CC="0", MBX_SHARE_WORKSPACE_ROOT="0", MBX_SHARE_OUT_DIR="0",
                    MBX_LEARNED_INCREMENTAL="0", MBX_DISPLAY="plain", MBX_SUMMARY="full")
-        try:
-            status = run_build([mbx, *args], env, lease)
-        except OSError as error:
-            if marker.exists():
-                raise RuntimeError(f"dispatched Cargo command failed: {error}") from error
-            raise
+        status = run_session([mbx, *args], env, lease)
         bypasses = sum(1 for _ in Path(scratch).glob("bypass.*"))
         if bypasses:
             print(f"yulius[cache]: {bypasses} compiler invocations bypassed for unknown or procedural-macro inputs",
