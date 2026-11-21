@@ -1892,16 +1892,23 @@ mod tests {
         let raw = include_str!("../../../../yulius.toml");
         let cd = parse_yulius_toml_cd(raw)?;
         assert!(cd.is_defined());
-        assert_eq!(cd.state("dev", CdStage::Dev), CdState::Empty);
-        // SPEC-579 (Infra bootstrap revision 1): no shared staging target, so `[cd.dev]` is not
-        // merge-first, its `about` says so, and every CI job stays on pull requests.
+        // SPEC-591: `[cd.dev]` deploys Yulius to its staging VM with scripts/cd (ADR-0430),
+        // with a rollback and the migrations line, and the key it needs.
+        assert_eq!(cd.state("dev", CdStage::Dev), CdState::Ready);
         let dev = cd.target("dev").ok_or("dev")?;
-        assert!(!dev.merge_first);
-        let dev_about = dev.about.as_deref().unwrap_or_default();
+        assert_eq!(dev.deploy.as_deref(), Some("scripts/cd/deploy.sh dev"));
+        assert_eq!(dev.verify.as_deref(), Some("scripts/cd/verify.sh dev"));
+        assert_eq!(dev.rollback.as_deref(), Some("scripts/cd/rollback.sh dev"));
         assert!(
-            dev_about.contains("no shared target: the full suite gates each pull request"),
-            "{dev_about}"
+            dev.migrations
+                .as_deref()
+                .is_some_and(|m| m.contains("store"))
         );
+        assert_eq!(dev.secrets, ["STAGING_VM_SSH_KEY"]);
+        let dev_about = dev.about.as_deref().unwrap_or_default();
+        assert!(dev_about.contains("staging VM"), "{dev_about}");
+        // Not merge-first yet: every CI job stays on pull requests until the next slice.
+        assert!(!dev.merge_first);
         assert_eq!(cd.merge_first(), None);
         let config = parse_yulius_toml(raw)?;
         let jobs = crate::ci::project_jobs(config.commands.gate.as_deref(), &config.ci)?;
