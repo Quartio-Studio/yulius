@@ -395,14 +395,23 @@ fn a_stopped_codex_id_without_a_rollout_moves_with_its_original_request() -> Tes
 
 #[test]
 fn an_overtaken_codex_move_preserves_the_replacement_native_resume() -> TestResult {
-    restart_before_rollout(CapacityRestart::CancelledMove)
+    restart_before_rollout(CapacityRestart::CancelledMove {
+        already_running: false,
+    })
+}
+
+#[test]
+fn an_overtaken_codex_move_reports_cancellation_after_the_replacement_runs() -> TestResult {
+    restart_before_rollout(CapacityRestart::CancelledMove {
+        already_running: true,
+    })
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CapacityRestart {
     Automatic,
     Move,
-    CancelledMove,
+    CancelledMove { already_running: bool },
 }
 
 fn restart_before_rollout(restart: CapacityRestart) -> TestResult {
@@ -488,7 +497,7 @@ fn restart_before_rollout(restart: CapacityRestart) -> TestResult {
         std::fs::rename(saved, rollout)?;
         let replacement =
             add_codex_account(&app, "replacement", &codex_auth("2026-11-01T10:00:00Z")).await?;
-        if restart == CapacityRestart::CancelledMove {
+        if let CapacityRestart::CancelledMove { already_running } = restart {
             let (prepared, release) =
                 support::hold_point(yulius_app::race::Point::SwitchPrepared, id.as_str());
             let moving = {
@@ -538,6 +547,10 @@ fn restart_before_rollout(restart: CapacityRestart) -> TestResult {
                     app.now(),
                 )
                 .await?;
+            if already_running {
+                let _ = app.resume_round().await;
+                assert_eq!(task(&app, &id).await?.status, TaskStatus::Running);
+            }
             release.send(())?;
             let moved = tokio::time::timeout(Duration::from_secs(60), moving).await??;
             assert!(matches!(
@@ -551,12 +564,14 @@ fn restart_before_rollout(restart: CapacityRestart) -> TestResult {
                     .iter()
                     .any(|switch| switch.reason == "manual" && switch.outcome == "cancelled")
             );
-            assert_eq!(
-                store.open_pause(&id).await?,
-                Some(next),
-                "the cancelled Move consumed the replacement"
-            );
-            let _ = app.resume_round().await;
+            if !already_running {
+                assert_eq!(
+                    store.open_pause(&id).await?,
+                    Some(next),
+                    "the cancelled Move consumed the replacement"
+                );
+                let _ = app.resume_round().await;
+            }
             let run = store.live_attempt(&id).await?.ok_or("new continuation")?;
             assert_eq!(run.provider_session_id.as_deref(), Some(session.as_str()));
             return support::stop_tasks(&app, &[&id]).await;
@@ -667,12 +682,22 @@ fn moving_idle_working_and_held_codex_turns_selects_their_own_prompts() -> TestR
         app.pause_task(
             &id,
             yulius_app::model::PauseKind::Turn,
-            Some(original),
+            Some(original.clone()),
             None,
         )
         .await?;
         let held = move_to(&alternate).await?;
         assert!(held.contains("This task needs a spec"), "{held}");
+        let prompt = "The operator's held follow-up";
+        app.pause_task(
+            &id,
+            yulius_app::model::PauseKind::Prompt,
+            Some(alternate.clone()),
+            Some(prompt.to_owned()),
+        )
+        .await?;
+        let submitted = move_to(&original).await?;
+        assert!(submitted.contains(prompt), "{submitted}");
         support::stop_tasks(&app, &[&id]).await
     })
 }
