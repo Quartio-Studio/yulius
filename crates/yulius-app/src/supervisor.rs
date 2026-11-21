@@ -2401,7 +2401,11 @@ impl App {
                 StartCondition::Parked(_, notice) => notice,
                 _ => None,
             };
-            let decision = notice.and_then(|notice| notice.decision().map(|pair| (notice, pair)));
+            let decision = notice.and_then(|notice| {
+                notice
+                    .decision(self.config.ci.enabled)
+                    .map(|claim| (notice, claim))
+            });
             let settled = if matches!(condition, StartCondition::Parked(..)) {
                 self.wait_for_terminal_cleanup(task_id, true).await?;
                 crate::race::reached(
@@ -2616,7 +2620,7 @@ impl App {
                 };
                 self.publish_task(&task.id).await;
                 Some(LaunchAdmission::Owner(admitted))
-            } else if let Some((notice, (pr, span))) = decision {
+            } else if let Some((notice, claim)) = decision {
                 let Some(placed) = self.choose_account(&task, None).await? else {
                     return Ok(false);
                 };
@@ -2627,10 +2631,14 @@ impl App {
                 if !self.parked_notice_current(&task, notice).await {
                     return Ok(false);
                 }
+                crate::race::reached(
+                    crate::race::Point::ParkedCandidateClaimReady,
+                    Path::new(task.id.as_str()),
+                );
                 let Some(admitted) = self
                     .deps
                     .store
-                    .claim_parked_candidate(&task, pr, span, &placed.account.id, self.now())
+                    .claim_parked_candidate(&task, claim, &placed.account.id, self.now())
                     .await?
                 else {
                     return Ok(false);
@@ -3347,6 +3355,15 @@ impl App {
         // Removed since it was chosen (SPEC-447 MOV-003): the removal looked for runs on it before
         // this one was recorded, so this launch never starts on it and chooses again.
         if store.account(&account.id).await?.is_none() {
+            if candidate_wake {
+                if store
+                    .settle_unspawned_candidate(&task.id, &attempt_id, parked_activity, self.now())
+                    .await?
+                {
+                    self.publish_task(&task.id).await;
+                }
+                return Ok(false);
+            }
             let update = AttemptUpdate {
                 ended_at: Some(self.now()),
                 exit_reason: Some("account_removed".into()),
@@ -3355,21 +3372,6 @@ impl App {
             store
                 .transition_attempt(&attempt_id, AttemptState::Exited, &update)
                 .await?;
-            if candidate_wake {
-                if store
-                    .transition_task(
-                        &task.id,
-                        Some(TaskStatus::Starting),
-                        TaskStatus::Parked,
-                        parked_activity,
-                        self.now(),
-                    )
-                    .await?
-                {
-                    self.publish_task(&task.id).await;
-                }
-                return Ok(false);
-            }
             return Box::pin(self.launch_attempt(&task, relaunch, None, rest, pause_outcome, None))
                 .await;
         }

@@ -178,13 +178,25 @@ pub(crate) struct ParkedNotice {
     source: Option<QueueNoticeSource>,
 }
 
+/// Persisted facts a parked candidate start compares in its launch transaction.
+pub struct ParkedCandidateClaim {
+    /// The owner's pull request.
+    pub pr: u64,
+    /// The most recent completed merge wait at observation.
+    pub decision: crate::stages::SpanRecord,
+    /// When CI is enabled, the verified head and its ordinary run (possibly absent).
+    pub ordinary: Option<(String, Option<CiRunRecord>)>,
+}
+
 impl ParkedNotice {
-    pub(crate) fn decision(&self) -> Option<(u64, &crate::stages::SpanRecord)> {
-        self.source
-            .as_ref()?
-            .decision
-            .as_ref()
-            .map(|(span, _)| (self.pr, span))
+    pub(crate) fn decision(&self, ci_enabled: bool) -> Option<ParkedCandidateClaim> {
+        let source = self.source.as_ref()?;
+        let (span, _) = source.decision.as_ref()?;
+        Some(ParkedCandidateClaim {
+            pr: self.pr,
+            decision: span.clone(),
+            ordinary: ci_enabled.then(|| (source.head.clone(), source.ordinary.clone())),
+        })
     }
 }
 
@@ -2217,15 +2229,8 @@ impl App {
         {
             return false;
         }
-        if let Some(source) = &notice.source {
-            let Ok(sandbox) = self.dlv_sandbox_of(task).await else {
-                return false;
-            };
-            if !matches!(self.ordinary_pull_run(&sandbox, notice.pr, &source.head).await, Ok(current) if current == source.ordinary)
-            {
-                return false;
-            }
-        } else if !notice.merged
+        if notice.source.is_none()
+            && !notice.merged
             && !matches!(self.recorded_candidate(task, notice.pr).await, Ok(None))
         {
             return false;

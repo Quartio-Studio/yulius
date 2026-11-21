@@ -485,8 +485,7 @@ impl TaskStore for SqliteStore {
     async fn claim_parked_candidate(
         &self,
         selected: &TaskRecord,
-        pr: u64,
-        span: &yulius_app::stages::SpanRecord,
+        claim: yulius_app::pr_watch::ParkedCandidateClaim,
         account: &AccountId,
         at: Timestamp,
     ) -> AppResult<Option<yulius_app::capacity::ContinuationAdmission>> {
@@ -494,7 +493,7 @@ impl TaskStore for SqliteStore {
         let id = selected.id.to_string();
         let attempt = selected.resume_attempt_id.clone();
         let branch = selected.branch.clone();
-        let span = span.clone();
+        let sandbox = selected.sandbox_id.clone();
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
             let eligible: bool = tx.query_row(
@@ -505,10 +504,16 @@ impl TaskStore for SqliteStore {
                  AND (SELECT id FROM attempts WHERE task_id = t.id ORDER BY seq DESC LIMIT 1) = ?4
                  AND NOT EXISTS (SELECT 1 FROM capacity_pauses WHERE task_id = t.id AND ended_at IS NULL)
                  AND NOT EXISTS (SELECT 1 FROM prompt_holds WHERE task_id = t.id AND state = 'pending'))",
-                params![id, to_i64(pr), branch, attempt.as_ref().map(AttemptId::as_str)], |row| row.get(0)
+                params![id, to_i64(claim.pr), branch, attempt.as_ref().map(AttemptId::as_str)], |row| row.get(0)
             ).map_err(db)?;
-            if !eligible || crate::spans::latest_merge_wait(&tx, &id)?.as_ref() != Some(&span) {
+            if !eligible || crate::spans::latest_merge_wait(&tx, &id)?.as_ref() != Some(&claim.decision) {
                 return Ok(None);
+            }
+            if let Some((head, observed)) = &claim.ordinary {
+                let runs = crate::ci::runs_for_exact_head(&tx, sandbox.as_str(), head)?;
+                if yulius_app::ci::run_for_pull_head(&runs, claim.pr) != observed.as_ref() {
+                    return Ok(None);
+                }
             }
             let current = tx.query_row(
                 &format!("SELECT {TASK_COLS}, {RESUME_ATTEMPT} FROM tasks WHERE id = ?1"),
@@ -527,6 +532,55 @@ impl TaskStore for SqliteStore {
             tx.commit().map_err(db)?;
             Ok(started.then_some(placement))
         }).await
+    }
+
+    async fn settle_unspawned_candidate(
+        &self,
+        task: &TaskId,
+        attempt: &AttemptId,
+        activity: Option<Activity>,
+        at: Timestamp,
+    ) -> AppResult<bool> {
+        let task = task.to_string();
+        let attempt = attempt.to_string();
+        self.call(move |c| {
+            let tx = c.transaction().map_err(db)?;
+            let ended = tx
+                .execute(
+                    "UPDATE attempts SET state='exited', ended_at=?3, exit_reason='account_removed'
+                 WHERE task_id=?1 AND id=?2 AND state='spawning'",
+                    params![task, attempt, at.0],
+                )
+                .map_err(db)?;
+            if ended == 0 {
+                return Ok(false);
+            }
+            let latest: String = tx
+                .query_row(
+                    "SELECT id FROM attempts WHERE task_id=?1 ORDER BY seq DESC LIMIT 1",
+                    [&task],
+                    |r| r.get(0),
+                )
+                .map_err(db)?;
+            let parked = latest == attempt
+                && transition(
+                    &tx,
+                    &task,
+                    Some(TaskStatus::Starting),
+                    TaskStatus::Parked,
+                    activity,
+                    at,
+                    None,
+                )?;
+            tx.commit().map_err(db)?;
+            #[cfg(feature = "test-support")]
+            yulius_app::race::reached(
+                yulius_app::race::Point::TerminalOutcomeRecorded,
+                std::path::Path::new(&attempt),
+            );
+            Ok(parked)
+        })
+        .await
     }
 
     async fn queue_task(

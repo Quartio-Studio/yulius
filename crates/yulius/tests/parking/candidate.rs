@@ -961,6 +961,8 @@ fn a_candidate_whose_subscription_disappears_before_spawn_keeps_its_park() -> Te
         let acc = yulius_domain::ids::AccountId::parse("a-only")?;
         let original_account = app.deps.store.account(&acc).await?.ok_or("subscription")?;
         let removal_db = path.clone();
+        let (observed, mut status_at_exit) = tokio::sync::oneshot::channel();
+        let owner_id = task.id.clone();
         yulius_app::race::on(
             super::Point::RunRecorded,
             Path::new(task.id.as_str()),
@@ -968,9 +970,38 @@ fn a_candidate_whose_subscription_disappears_before_spawn_keeps_its_park() -> Te
                 let deleted = rusqlite::Connection::open(&removal_db)
                     .and_then(|db| db.execute("DELETE FROM accounts WHERE id='a-only'", []));
                 assert!(matches!(deleted, Ok(1)));
+                let registered = (|| -> TestResult {
+                    let db = rusqlite::Connection::open(&removal_db)?;
+                    let id: String = db.query_row(
+                        "SELECT id FROM attempts WHERE task_id=?1 ORDER BY seq DESC LIMIT 1",
+                        [owner_id.as_str()],
+                        |r| r.get(0),
+                    )?;
+                    yulius_app::race::on(
+                        super::Point::TerminalOutcomeRecorded,
+                        Path::new(&id),
+                        move || {
+                            let status = rusqlite::Connection::open(&removal_db).and_then(|db| {
+                                db.query_row(
+                                    "SELECT status FROM tasks WHERE id=?1",
+                                    [owner_id.as_str()],
+                                    |r| r.get::<_, String>(0),
+                                )
+                            });
+                            let _ = observed.send(status);
+                        },
+                    );
+                    Ok(())
+                })();
+                assert!(registered.is_ok(), "{registered:?}");
             },
         );
         assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
+        assert_eq!(
+            status_at_exit.try_recv()??,
+            "parked",
+            "a restart immediately after the terminal outcome must find the park"
+        );
         assert_eq!(
             super::status_of(app, &task.id).await.0,
             Some(yulius_domain::task::TaskStatus::Parked)
@@ -1127,6 +1158,41 @@ fn with_parked_candidate_owner(
     rt.block_on(Box::pin(verify))?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
+}
+
+#[test]
+fn an_ordinary_rerun_arriving_at_the_parked_claim_keeps_the_candidate_unheard() -> TestResult {
+    with_parked_candidate_owner(async |_, app, remote, task| {
+        let head = remote.pulls.lock().map_err(|_| "pulls")?[0]
+            .head_sha
+            .clone();
+        let (ready, release) =
+            super::pause_watch_or_queue(super::Point::ParkedCandidateClaimReady, &task.id);
+        let watcher = app.clone();
+        let pass = tokio::spawn(async move { watcher.watch_prs(&WatchBounds::default()).await });
+        tokio::time::timeout(Duration::from_secs(20), ready.notified()).await?;
+        let (mut run, job) = crate::pr_watch::run(
+            &task.sandbox_id,
+            "ordinary-claim-rerun",
+            &head,
+            RunState::Running,
+            None,
+            app.now().0,
+        );
+        run.reference = CiRef::PullRequest(1481);
+        app.deps.store.insert_ci_run(&run, &[job]).await?;
+        release.notify_one();
+        let notices = pass.await?;
+        assert!(
+            notices.is_empty(),
+            "candidate overtook ordinary rerun: {notices:?}"
+        );
+        assert_eq!(
+            super::status_of(app, &task.id).await.0,
+            Some(yulius_domain::task::TaskStatus::Parked)
+        );
+        Ok(())
+    })
 }
 
 #[test]

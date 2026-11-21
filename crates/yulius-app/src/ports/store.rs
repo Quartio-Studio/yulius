@@ -382,11 +382,19 @@ pub trait TaskStore: Send + Sync {
     async fn claim_parked_candidate(
         &self,
         selected: &TaskRecord,
-        pr: u64,
-        span: &crate::stages::SpanRecord,
+        claim: crate::pr_watch::ParkedCandidateClaim,
         account: &AccountId,
         at: Timestamp,
     ) -> AppResult<Option<crate::capacity::ContinuationAdmission>>;
+    /// Ends an unspawned candidate resume and restores its park together. A newer
+    /// task state (including a person's Stop) is preserved when settling the attempt.
+    async fn settle_unspawned_candidate(
+        &self,
+        task: &TaskId,
+        attempt: &AttemptId,
+        activity: Option<Activity>,
+        at: Timestamp,
+    ) -> AppResult<bool>;
     /// Queues the task `id`, which must read `expected`, and keeps how it is to start, in one
     /// step (SPEC-483 QST-001): [`Self::transition_task`] to `queued` and the start. `false`,
     /// and nothing changed, when the task no longer reads `expected`.
