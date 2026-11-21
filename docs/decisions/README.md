@@ -458,6 +458,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0424 -->
 <!-- ADR 0425 -->
 <!-- ADR 0426 -->
+- [0427](0427-task-authorization-covers-independent-re-review.md): A task's delivery authorization covers independent re-review of its in-scope corrections through approval.
 <!-- ADR 0427 -->
 <!-- ADR 0428 -->
 <!-- ADR 0429 -->

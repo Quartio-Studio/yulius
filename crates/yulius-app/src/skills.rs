@@ -1068,7 +1068,6 @@ mod tests {
                 .to_lowercase();
             for stated in [
                 "own code",
-                "re-review until approval",
                 "after 3 rounds",
                 "pre-existing",
                 "flaky test",
@@ -1078,6 +1077,11 @@ mod tests {
             ] {
                 assert!(text.contains(stated), "{rel} does not say {stated:?}");
             }
+            assert!(
+                text.contains("re-review until approval under the task's existing authorization")
+                    || text.contains("re-review until approval without asking the user"),
+                "{rel} does not authorize independent re-review through approval"
+            );
             assert!(
                 [
                     "never becomes a follow-up issue",
@@ -1095,10 +1099,10 @@ mod tests {
                 "follow-ups, bugs you find",
                 "at most 3 rounds.",
                 "up to 3 rounds",
-                "or ask a person",
-                "or asks a person",
-                "or stop and ask",
-                "or stops and asks",
+                "split the change or ask a person",
+                "splits the change or asks a person",
+                "split the change, or stop and ask a person",
+                "splits the change, or stops and asks a person",
             ] {
                 assert!(!text.contains(gone), "{rel} still says {gone:?}");
             }

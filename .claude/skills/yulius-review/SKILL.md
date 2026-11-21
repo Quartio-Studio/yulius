@@ -37,9 +37,9 @@ task authorization.
 
 An own-code finding is fixed in the same PR, test-first, and never becomes a
 follow-up issue: a test that cannot fail, a weak or missing assertion, a race or a
-missing regression test included. The round limit does not excuse it; the author
-keeps fixing, splits the change or asks a person. Only a pre-existing bug, a flaky
-test the change did not cause, or a cosmetic nit left at the round limit becomes
+missing regression test included. Re-review until approval under the task's existing
+authorization. Split unwieldy work within scope. Only a pre-existing bug, a flaky
+test the change did not cause, or a cosmetic nit left after 3 rounds becomes
 an issue, saying why it is outside the change ("present on dev before this change",
 with the evidence). The PR answers every finding; deferring an own-code finding
 makes your verdict request changes (`docs/engineering/workflow.md`, Review output).

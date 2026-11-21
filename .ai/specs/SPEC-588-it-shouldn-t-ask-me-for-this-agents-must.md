@@ -9,6 +9,8 @@ status: in-progress
 
 An agent fixes findings and obtains the independent approval needed for delivery without asking the task owner to authorize another review round.
 
+Fixes #1593.
+
 ## Context
 
 Task #570 twice raised a Needs You request for another independent review after its third round. The task already authorized delivery into dev on green CI. Both versions of the generated Git briefing offered round-count escalation, and the delivery and review skills capped re-review at three rounds. The briefing tests required the escalation wording. [Issue #1593](https://github.com/Quartio-Studio/yulius/issues/1593)
@@ -22,10 +24,10 @@ Task #570 twice raised a Needs You request for another independent review after 
 ## Plan
 
 - [x] Trace the review authorization prompt to the instructions that produced it
-- [ ] Cover continued review in task briefings and bundled guidance
-- [ ] Align review instructions with the task’s existing authorization
+- [x] Cover continued review in task briefings and bundled guidance
+- [x] Align review instructions with the task’s existing authorization
 - [ ] Independently review the fix and resolve findings
-- [ ] Merge the reviewed change on green Yulius CI
+- [ ] Record the reviewed fix and verification evidence for green-CI delivery
 
 ## Acceptance criteria
 
@@ -39,4 +41,10 @@ Exercise the generated briefings for all three harnesses and both project modes.
 
 ## Decisions
 
-Keep the existing independent reviewer and merge gate. Three rounds may prompt the author to split work and may leave eligible cosmetic nits to file. The count grants no new reason to interrupt the owner.
+Keep the existing independent reviewer and merge gate. Three rounds may prompt the author to split work and may leave eligible cosmetic nits to file. The count grants no new reason to interrupt the owner. [ADR-0427](../../docs/decisions/0427-task-authorization-covers-independent-re-review.md)
+
+## Evidence
+
+- On the test-first commit `be6f1faa7`, nextest ran both regression tests against the previous instructions. Both failed. The connected briefing invited `needs_you` after three rounds, and the bundled delivery skill capped re-review.
+- The corrected briefings, skills and built-in workflows passed all 58 scoped nextest cases. These cover all three harnesses in connected projects and playgrounds, the briefing size limit, the own-code finding rules and the independent review instructions.
+- APM regenerated the repository skills. `apm audit` scanned 16 files and found no drift. The tests exercise the instructions delivered to agents. They use no live provider account.

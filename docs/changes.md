@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- Agents now fix findings and obtain independent re-review through approval without asking the task owner to authorize another round. [SPEC-588](../.ai/specs/SPEC-588-it-shouldn-t-ask-me-for-this-agents-must.md)
+
 - CLI and Superagent task creation now defaults to GPT-6.2 Astra at extra high effort, with Ultrafast on ChatGPT Pro 500. [SPEC-583](../.ai/specs/SPEC-583-cli-nad-superagents-should-spawn-tasks-i.md)
 
 - Clearing the Codex prompt lets waiting PR news through after one quiet minute and clears the held-message warning. [SPEC-581](../.ai/specs/SPEC-581-i-keep-getting-this-even-is-nothing-is-t.md)

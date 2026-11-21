@@ -1377,6 +1377,8 @@ sequenceDiagram
 
 ## The review's rounds and models
 
+The task briefing directs the author to fix findings and obtain independent re-review under the existing delivery authorization, including after the third round. [ADR-0427](decisions/0427-task-authorization-covers-independent-re-review.md)
+
 The independent code review runs as one of two agents Yulius defines at every task launch
 (`--agents`, `harness::launch::reviewer_agents`), out of the agent's reach:
 `yulius-reviewer` on `claude-fable-5-2` and `yulius-reviewer-opus` on `claude-opus-5-5`, both at
