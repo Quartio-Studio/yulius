@@ -1762,9 +1762,9 @@ impl App {
         }
         for target in plan.queue {
             if matches!(&target.reference, CiRef::Branch(branch) if branch == &profile.integration_branch)
-                && runs
-                    .iter()
-                    .any(|r| r.state.is_active() && matches!(r.reference, CiRef::Candidate(_)))
+                && self.deps.store.active_ci_runs().await?.iter().any(|r| {
+                    r.sandbox_id == sandbox.id && matches!(r.reference, CiRef::Candidate(_))
+                })
             {
                 // A non-supersedable full candidate is already using the integration gate.
                 // The next inventory picks up the current branch head after its verdict.

@@ -735,6 +735,37 @@ impl App {
             .await
     }
 
+    pub(crate) fn check_session_input_ready(
+        &self,
+        task: &TaskRecord,
+        runtime: &TaskRuntime,
+    ) -> AppResult<()> {
+        // Before Claude Code's session starts, typed input is lost or left unsubmitted, and a
+        // trust dialog only a person answers (SPEC-117 ONE-005) may show or be about to: a paste
+        // and an Enter would answer it with its default. Without a SessionStart (a CLI without
+        // the hook; a reattached run's is read from its marker), the run is taken as started
+        // half the goal-ready timeout after its spawn, as the goal typist does
+        // (`wait_input_ready`).
+        if !runtime.session_started.load(Ordering::SeqCst) {
+            if trust_prompt_shown(&runtime.hub.screen_text()) {
+                return Err(AppError::Conflict(format!(
+                    "task #{} waits for a person to answer Claude Code's folder-trust question \
+                     in its terminal; tell the person, then try again",
+                    task.number
+                )));
+            }
+            let ready_ms = i64::try_from(self.config.goal_ready_ms / 2).unwrap_or(i64::MAX);
+            let spawned = runtime.spawned_ms.load(Ordering::SeqCst);
+            if self.now().0.saturating_sub(spawned) < ready_ms {
+                return Err(AppError::Conflict(format!(
+                    "task #{} is still starting its session: try again in a minute",
+                    task.number
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// A machine notification verifies its recipient and decision after draft lookup. It defers if the draft lock
     /// is busy, so neither a hosted read under the lock nor a later wait can stale that decision.
     pub(crate) async fn type_into_session_if(
@@ -817,29 +848,7 @@ impl App {
                 task.number
             )));
         }
-        // Before Claude Code's session starts, typed input is lost or left unsubmitted, and a
-        // trust dialog only a person answers (SPEC-117 ONE-005) may show or be about to: a paste
-        // and an Enter would answer it with its default. Without a SessionStart (a CLI without
-        // the hook; a reattached run's is read from its marker), the run is taken as started
-        // half the goal-ready timeout after its spawn, as the goal typist does
-        // (`wait_input_ready`).
-        if !runtime.session_started.load(Ordering::SeqCst) {
-            if trust_prompt_shown(&runtime.hub.screen_text()) {
-                return Err(AppError::Conflict(format!(
-                    "task #{} waits for a person to answer Claude Code's folder-trust question \
-                     in its terminal; tell the person, then try again",
-                    task.number
-                )));
-            }
-            let ready_ms = i64::try_from(self.config.goal_ready_ms / 2).unwrap_or(i64::MAX);
-            let spawned = runtime.spawned_ms.load(Ordering::SeqCst);
-            if self.now().0.saturating_sub(spawned) < ready_ms {
-                return Err(AppError::Conflict(format!(
-                    "task #{} is still starting its session: try again in a minute",
-                    task.number
-                )));
-            }
-        }
+        self.check_session_input_ready(task, &runtime)?;
         let typed = runtime.typed_at_ms.load(Ordering::SeqCst);
         let emptied = runtime.empty_time_for_typing();
         let held = yulius_domain::intake::box_held(self.now().0, typed, emptied);

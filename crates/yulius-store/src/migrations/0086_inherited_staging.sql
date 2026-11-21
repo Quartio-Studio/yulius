@@ -83,17 +83,16 @@ WHERE t.status = 'running' AND t.archived_at IS NULL AND (
     EXISTS (SELECT 1 FROM steps s WHERE s.task_id = t.id AND s.status NOT IN ('done', 'skipped'))
     OR d.stage = 'pr_open'
     OR (COALESCE(d.stage, 'none') = 'none' AND NOT EXISTS (
-        SELECT 1 FROM task_merges m WHERE m.task_id = t.id))
+        SELECT 1 FROM task_merges m WHERE m.task_id = t.id)
+        AND (COALESCE(t.activity, 'working') = 'working'
+             OR (t.activity = 'waiting' AND (t.mode = 'goal' OR t.spec_status IN ('draft','approved','in-progress')))))
 );
 CREATE VIEW gate_workers AS
 SELECT n.* FROM machine_notice_tasks n JOIN tasks t ON t.id = n.id
 JOIN attempts a ON a.task_id = t.id AND a.state = 'live'
 WHERE COALESCE(t.activity, '') != 'needs_attention' AND t.needs_you IS NULL
 AND (t.paused_attempt IS NULL OR t.paused_attempt != a.id)
-AND NOT EXISTS (SELECT 1 FROM prompt_holds h WHERE h.task_id = t.id AND h.state = 'pending')
-AND (COALESCE(t.activity, 'working') = 'working' OR EXISTS (
-    SELECT 1 FROM steps s WHERE s.task_id = t.id AND s.status NOT IN ('done','skipped'))
-    OR EXISTS (SELECT 1 FROM delivery d WHERE d.task_id = t.id AND d.stage = 'pr_open'));
+AND NOT EXISTS (SELECT 1 FROM prompt_holds h WHERE h.task_id = t.id AND h.state = 'pending');
 
 -- One repair owner per project while the integration branch is red. Delivery receipts
 -- expire with the assignment. This bounds them by the number of workers in the project.

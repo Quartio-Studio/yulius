@@ -15,11 +15,11 @@ On 21 November task #588 received a fix-forward instruction for a test already f
 
 ## Requirements
 
-- GF-001 Compare full integration and candidate verdicts along first-parent history. Identify each test at its first failing revision since it last passed. Report the introducing revision and task separately from the repair assignment. Keep unknown failures actionable.
+- GF-001 Compare full integration and candidate verdicts along first-parent history. Identify each test at its first failing revision since it last passed. Report the introducing revision and task separately from the repair assignment. Keep an unknown job failure actionable while later runs skip or cancel that job.
 - GF-002 Record the inherited test, originating revision and task on the later request. The staging queue owns that wait until a verified descendant serves it, the request is replaced or the target disappears. Restart and repeated ticks preserve the outcome. The inherited request never directs its task to fix the test.
 - GF-003 Reuse the revision's integration or candidate verdict. Admit outstanding candidate suites in first-parent order, one at a time. A candidate runs once and is compared because any merge can both repair an open failure and introduce a new one.
-- GF-004 Tell each running project task with work left about open failures. Keep one repair assignment until that worker leaves. A worker has an active turn, open steps or an open delivery and a live attempt. Exclude paused and held workers. Choose the lowest project task number among eligible workers when a new assignment is needed. Notify the others who owns the repair. Persist delivery to avoid repeating the instruction at every merge, restart or tick.
-- GF-005 With no worker available, show project people the failing tests, original revision and merge task in project CI and Status. Offer writers both a rerun and a new task. Resolve the notice on a passing rerun or a containing fix.
+- GF-004 Tell each running project task with work left about open failures. Keep one repair assignment until that worker leaves. A worker has a live attempt and an active turn, unfinished steps, an open delivery or outstanding goal or spec work before merge. Exclude paused and held workers. Choose the lowest project task number among eligible workers when a new assignment is needed. Tell the assignee first and notify peers once its session received the assignment. Persist delivery to avoid repeating the instruction at every merge, restart or tick.
+- GF-005 With no worker available, show project people the failing tests, original revision and merge task in project CI and Status. Offer writers a rerun of the latest affected revision and a new task. Resolve the notice on a passing rerun or a containing fix.
 - GF-006 Only a person resumes a parked or closed task. A running task with all steps complete and a merged delivery receives no machine prompt. Keep all staging verdicts on its delivery, page and lists. Explicit unfinished steps still receive actionable news in a running session.
 
 ## Plan
@@ -27,9 +27,9 @@ On 21 November task #588 received a fix-forward instruction for a test already f
 - [x] Specify failure ownership and candidate scheduling
 - [x] Attribute new and inherited test failures in integration order
 - [x] Serve inherited requests with the verified fix
-- [ ] Keep finished and parked tasks quiet on automatic outcomes
-- [ ] Assign the repair to one working task and inform its peers
-- [ ] Show people the rerun and start-task actions when no worker remains
+- [x] Keep finished and parked tasks quiet on automatic outcomes
+- [x] Assign the repair to one working task and inform its peers
+- [x] Show people the rerun and start-task actions when no worker remains
 - [ ] Verify the incident regressions and review the delivery
 
 ## Acceptance criteria
@@ -52,3 +52,6 @@ Running each candidate once in order preserves evidence of mixed failures and ac
 - Before the change, the integration fixture failed on the first receipt. Its message named only the job `full` even though CI retained the test `delivery::gate`. The closed-owner fixture failed because the project returned no notice.
 - The Chromium notice test failed on the missing test name in the CI page. With the notice in both views, it passed and followed the Status link to the existing rerun action.
 - The staging fixture records a single open failure through three more deliveries, introduces a distinct failure on a fifth, and checks each inherited receipt after a passing descendant deploys.
+- Against the first reviewed head, all six review regressions failed. An answered source received a second handoff, an explicitly unfinished verifier lost its inherited wait, and a held worker prevented the available workers receiving the right assignments. The rerun linked the introducing commit instead of its red descendant, an interrupted job disappeared, and a candidate below 201 later CI admissions allowed a concurrent suite.
+- The full Chromium suite passed 1,325 tests with one configured skip. It exercised the failing test, first merge and both actions on project CI and Status. The catalog primitive passed APM audit. Vidoc was disabled for this project.
+- The same six regressions passed with the fixes. The rerun fixture submits the action through HTTP, verifies the tested SHA and clears the notice on a passing result. The terminal fixture verifies that a drafted worker receives no repair instruction.

@@ -295,6 +295,7 @@ async fn inherited_gate_receipts_preserve_the_origin_and_leave_finished_tasks_qu
     gate(&f, &fix, RunState::Passed).await?;
     ask(&f, "fix").await?;
     settle(&f).await?;
+    f.h.app.tell_staging_outcomes().await;
     for id in inherited {
         let receipt = request(&f, &id).await?;
         assert_eq!(receipt.state, StagingState::Included);
@@ -378,22 +379,32 @@ async fn a_later_candidate_waits_for_the_older_full_gate() -> TestResult {
 async fn a_passed_rerun_clears_a_missing_owners_notice_and_resets_test_ownership() -> TestResult {
     let f = fixture(&staging_toml()).await?;
     let orphan = f.push("dev", &[("old", Some("old"))])?;
-    let run = named_gate(&f, &orphan, &["delivery::gate"]).await?;
+    named_gate(&f, &orphan, &["delivery::gate"]).await?;
+    let descendant = f.push("dev", &[("later", Some("later"))])?;
+    let run = named_gate(&f, &descendant, &["delivery::gate"]).await?;
     let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
     crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
     let notices = f.get("/api/status").await?["sandboxes"][0]["gate_notices"].clone();
+    assert_eq!(notices[0]["revision"], orphan);
     assert_eq!(notices[0]["run_id"], run);
-    let mut rerun = f.h.store.ci_run(&run).await?.ok_or("original run")?;
-    rerun.id = "passing-rerun".into();
-    rerun.state = RunState::Queued;
-    f.h.store.insert_ci_run(&rerun, &[]).await?;
+    let rerun = support::call(
+        &f.h.router,
+        axum::http::Method::POST,
+        &format!("/api/sandboxes/s1/ci/runs/{run}/rerun"),
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(rerun.status, axum::http::StatusCode::OK, "{}", rerun.body);
+    assert_eq!(rerun.body["sha"], descendant);
+    let rerun_id = rerun.body["id"].as_str().ok_or("rerun id")?;
     assert_eq!(
         f.get("/api/status").await?["sandboxes"][0]["gate_notices"],
         notices
     );
     f.h.store
         .transition_ci_run(
-            &rerun.id,
+            rerun_id,
             &[RunState::Queued],
             RunState::Passed,
             &Default::default(),
@@ -414,6 +425,67 @@ async fn a_passed_rerun_clears_a_missing_owners_notice_and_resets_test_ownership
         row.note
             .as_deref()
             .is_some_and(|note| note.contains("new failures: delivery::gate"))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_inherited_verification_step_waits_and_receives_its_inclusion() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    let first = f.push("dev", &[("first", Some("first"))])?;
+    named_gate(&f, &first, &["delivery::gate"]).await?;
+    agent(&f, "verify").await?;
+    let later = land(&f, "verify", "later").await?;
+    named_gate(&f, &later, &["delivery::gate"]).await?;
+    let task = TaskId::parse("verify")?;
+    crate::pr_watch::leave_verification_step(&f.h.app, &task).await?;
+    ask(&f, "verify").await?;
+    settle(&f).await?;
+    assert_eq!(
+        f.h.store.task_staging_wait(&task).await?,
+        Some(StagingState::Inherited)
+    );
+    agent(&f, "fix").await?;
+    let fix = land(&f, "fix", "fix").await?;
+    gate(&f, &fix, RunState::Passed).await?;
+    ask(&f, "fix").await?;
+    settle(&f).await?;
+    assert!(
+        f.h.store
+            .untold_staging_requests()
+            .await?
+            .iter()
+            .any(|r| r.task_id.as_ref() == Some(&task) && r.state == StagingState::Included)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_partial_later_gate_keeps_the_unknown_job_and_offers_its_current_run() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    let first = f.push("dev", &[("first", Some("first"))])?;
+    gate(&f, &first, RunState::Error).await?;
+    let later = f.push("dev", &[("later", Some("later"))])?;
+    let run = named_gate(&f, &later, &["ui::fresh"]).await?;
+    f.h.store.execute_for_tests(&format!("UPDATE ci_jobs SET state='cancelled',reason='stopped early: job quick failed',failures=NULL WHERE id='{run}-full';
+        UPDATE ci_jobs SET state='failed',failures='---- ui::fresh stdout ----' WHERE id='{run}-quick'")).await?;
+    crate::cd::git(
+        &f.h.app.config.data_dir.join("sandboxes/s1/repo"),
+        &["fetch", "-q", "origin"],
+    )?;
+    let status = f.get("/api/status").await?;
+    let notices = status["sandboxes"][0]["gate_notices"]
+        .as_array()
+        .ok_or("notices")?;
+    assert!(
+        notices
+            .iter()
+            .any(|n| n["test"] == "full" && n["revision"] == first && n["run_id"] == run)
+    );
+    assert!(
+        notices
+            .iter()
+            .any(|n| n["test"] == "ui::fresh" && n["revision"] == later && n["run_id"] == run)
     );
     Ok(())
 }
@@ -1890,10 +1962,18 @@ async fn a_candidate_run_survives_the_branch_moving_on_and_decides() -> TestResu
     let id = asked["id"].as_str().ok_or("id")?.to_owned();
     let s = sandbox(&f).await?;
     f.h.app.staging_advance(&s, "staging").await?;
+    // More recent PR runs can fill CI's bounded planning history while this suite runs.
+    f.h.store.execute_for_tests("WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i < 201)
+        INSERT INTO ci_runs(id,sandbox_id,reference,sha,source,state,requested_by,queued_at)
+        SELECT 'pr-noise-'||i,'s1','pr/'||i,'unrelated-'||i,'yulius_toml','passed','yulius',(SELECT MAX(queued_at) FROM ci_runs)+i FROM n").await?;
     // CI's round at the same commit adds no branch run of it, and dev moving on keeps it.
     f.h.app.ci_sync_sandbox(&s).await?;
-    f.push("dev", &[("later.txt", Some("later"))])?;
+    let later = f.push("dev", &[("later.txt", Some("later"))])?;
     f.h.app.ci_sync_sandbox(&s).await?;
+    assert!(
+        f.h.store.ci_runs_for_sha(&s.id, &later).await?.is_empty(),
+        "the active suite still owns the gate outside the planning window"
+    );
     let at_r1 = f.h.store.ci_runs_for_sha(&s.id, &r1).await?;
     assert_eq!(
         at_r1
@@ -2428,7 +2508,12 @@ async fn the_final_step_waits_for_staging_until_its_answer_is_delivered() -> Tes
         .execute_for_tests("UPDATE tasks SET status = 'parked' WHERE id = 't1'")
         .await?;
     let parked = summary().await?;
-    assert!(parked["needs_you_notice"].is_null(), "{parked}");
+    assert!(
+        parked["needs_you_notice"]["action"]
+            .as_str()
+            .is_some_and(|action| action.contains("resume")),
+        "{parked}"
+    );
     assert!(parked["staging_wait"].is_null());
     f.h.store
         .execute_for_tests("UPDATE tasks SET status = 'running' WHERE id = 't1'")

@@ -2,12 +2,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use crate::task_message::{Sender, Typed};
 use serde::{Deserialize, Serialize};
 use yulius_contracts::api::ci::GateNotice;
 use yulius_domain::ci::RunState;
+use yulius_domain::harness::Harness;
 use yulius_domain::ids::TaskId;
 
 use crate::context::App;
@@ -67,7 +69,7 @@ struct Origin {
 #[derive(Default)]
 pub(super) struct GateFailures {
     tests: BTreeMap<String, (Origin, BTreeSet<String>)>,
-    unknown: Vec<(String, Origin)>,
+    unknown: BTreeMap<String, Origin>,
     latest_run: Option<String>,
     /// An earlier full suite still has to finish before attribution is final.
     pub waiting: bool,
@@ -106,7 +108,7 @@ impl GateFailures {
             jobs.retain(|job| !complete.contains(job));
             !jobs.is_empty()
         });
-        self.unknown.clear();
+        self.unknown.retain(|job, _| !complete.contains(job));
         let mut observed = false;
         for job in verdict.jobs.into_iter().filter(|job| !job.passed) {
             observed = true;
@@ -118,12 +120,15 @@ impl GateFailures {
                 jobs.insert(job.name.clone());
             }
             if job.unknown {
-                self.unknown.push((job.name, origin.clone()));
+                self.unknown
+                    .entry(job.name)
+                    .or_insert_with(|| origin.clone());
             }
         }
         if !observed {
             self.unknown
-                .push((verdict.state.as_str().to_owned(), origin));
+                .entry(verdict.state.as_str().to_owned())
+                .or_insert(origin);
         }
     }
 
@@ -173,7 +178,7 @@ impl GateFailures {
             .map(|(test, (origin, _))| (test, origin))
             .chain(self.unknown)
             .filter_map(|(test, origin)| {
-                let run_id = origin.run.or_else(|| self.latest_run.clone())?;
+                let run_id = self.latest_run.clone().or(origin.run)?;
                 Some(GateNotice {
                     revision: origin.sha,
                     merge_task: origin.owner,
@@ -259,15 +264,55 @@ impl App {
             .notices())
     }
 
+    async fn available_gate_workers(&self, sandbox: &SandboxRecord) -> AppResult<Vec<TaskId>> {
+        let candidates = self.deps.store.gate_workers(&sandbox.id).await?;
+        if candidates.is_empty() {
+            return Ok(candidates);
+        }
+        let held = tokio::time::timeout(
+            super::staging::TASK_VIEW_BUDGET,
+            self.browser_tab_requests(&sandbox.id),
+        )
+        .await
+        .map_err(|_| {
+            AppError::Conflict("reading repair workers' browser requests timed out".into())
+        })?;
+        let mut available = Vec::new();
+        for id in candidates {
+            if held.contains(id.as_str()) || self.parking(&id) {
+                continue;
+            }
+            let Some(runtime) = self.existing_runtime(&id) else {
+                continue;
+            };
+            if runtime.screen_withheld() || runtime.typing_opening.load(Ordering::SeqCst) {
+                continue;
+            }
+            let Some(task) = self.deps.store.task(&id).await? else {
+                continue;
+            };
+            if self.check_session_input_ready(&task, &runtime).is_ok()
+                && !self.is_paused(&task).await
+                && (self.box_held(&id).is_none() || self.held_draft_box_cleared(&task))
+                && !(task.harness == Harness::ClaudeCode && runtime.hub.shows_draft())
+            {
+                available.push(id);
+            }
+        }
+        Ok(available)
+    }
+
     /// Unresolved failures visible to people when the project has no repair worker.
     pub(crate) async fn project_gate_notices(
         &self,
         sandbox: &SandboxRecord,
     ) -> AppResult<Vec<GateNotice>> {
-        if self.deps.store.has_gate_workers(&sandbox.id).await? {
-            return Ok(Vec::new());
+        let failures = self.integration_failures(sandbox).await?;
+        if failures.is_empty() || self.available_gate_workers(sandbox).await?.is_empty() {
+            Ok(failures)
+        } else {
+            Ok(Vec::new())
         }
-        self.integration_failures(sandbox).await
     }
 
     /// Tell the project's workers who repairs the integration branch. A held terminal or
@@ -292,23 +337,19 @@ impl App {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        let recipients = store.reconcile_gate_repair(&sandbox.id, &detail).await?;
+        let available = if failures.is_empty() {
+            Vec::new()
+        } else {
+            self.available_gate_workers(sandbox).await?
+        };
+        let recipients = store
+            .reconcile_gate_repair(&sandbox.id, &detail, &available)
+            .await?;
         if recipients.is_empty() || self.update_holds_starts() {
             return Ok(0);
         }
-        let Ok(held) = tokio::time::timeout(
-            super::staging::TASK_VIEW_BUDGET,
-            self.browser_tab_requests(&sandbox.id),
-        )
-        .await
-        else {
-            return Ok(0);
-        };
         let mut told = 0;
         for recipient in recipients {
-            if held.contains(recipient.task.as_str()) {
-                continue;
-            }
             let Some(task) = store.task(&recipient.task).await? else {
                 continue;
             };
@@ -334,7 +375,13 @@ impl App {
                 crate::task_message::clean_message(&message)
             );
             let admit = async {
-                !self.update_holds_starts()
+                tokio::time::timeout(
+                    super::staging::TASK_VIEW_BUDGET,
+                    self.browser_tab_requests(&sandbox.id),
+                )
+                .await
+                .is_ok_and(|held| !held.contains(task.id.as_str()))
+                    && !self.update_holds_starts()
                     && !self.is_paused(&task).await
                     && store
                         .gate_repair_due(&recipient, &detail, false)

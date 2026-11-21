@@ -508,13 +508,14 @@ pub trait CiStore: Send + Sync {
     ) -> AppResult<Vec<crate::ci::GateVerdict>>;
     /// Whether this running task still accepts machine-generated input.
     async fn accepts_machine_notice(&self, task: &TaskId) -> AppResult<bool>;
-    /// Whether the project has a running worker available for a repair.
-    async fn has_gate_workers(&self, sandbox: &SandboxId) -> AppResult<bool>;
+    /// Running project workers whose persisted work and hold state allow an assignment.
+    async fn gate_workers(&self, sandbox: &SandboxId) -> AppResult<Vec<TaskId>>;
     /// Select or retain the project's repair owner and return workers yet to hear the assignment.
     async fn reconcile_gate_repair(
         &self,
         sandbox: &SandboxId,
         detail: &str,
+        available: &[TaskId],
     ) -> AppResult<Vec<crate::ci::RepairRecipient>>;
     /// Confirm the recipient and assignment immediately before typing, or acknowledge delivery.
     async fn gate_repair_due(

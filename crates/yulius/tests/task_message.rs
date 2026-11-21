@@ -682,7 +682,7 @@ async fn app_behind(data: &Path, behind_ms: i64) -> Result<(Arc<App>, Arc<Shifte
 
 /// A writer's terminal on `id` for the person `caller` acts for: what they type goes the way a
 /// viewer's keys go.
-async fn terminal(
+pub(crate) async fn terminal(
     app: &Arc<App>,
     caller: &ProjectCaller,
     id: &TaskId,

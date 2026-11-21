@@ -3517,7 +3517,7 @@ fn a_red_integration_branch_is_assigned_to_one_worker_and_announced_to_the_other
             .await?
             .ok_or("project")?;
         let mut ids = Vec::new();
-        for prompt in ["Repair worker", "Other worker"] {
+        for prompt in ["Held worker", "Repair worker", "Other worker"] {
             let id = new_task(&app, &project.id, &caller.user, prompt, TaskMode::Prompt).await?;
             wait_for("worker ready", Duration::from_secs(30), || async {
                 status_of(&app, &id).await.1 == Some(Activity::Waiting)
@@ -3558,18 +3558,22 @@ fn a_red_integration_branch_is_assigned_to_one_worker_and_announced_to_the_other
             Some("---- delivery::gate stdout ----\nassertion failed\n"),
         )
         .await?;
+        let (owner, terminal) = crate::task_message::terminal(&app, &caller, &ids[0]).await?;
+        app.terminal_input(&owner, &terminal, b"keep my draft", false)
+            .await?;
         let messages = || async { app.tell_gate_repairs(&project).await };
         assert_eq!(messages().await?, 2);
         wait_for(
             "workers saw their assignments",
             Duration::from_secs(30),
             || async {
-                screen(&app, &ids[0]).contains("You own this repair")
-                    && screen(&app, &ids[1]).contains("Task #2 owns this repair")
+                screen(&app, &ids[1]).contains("You own this repair")
+                    && screen(&app, &ids[2]).contains("Task #3 owns this repair")
             },
         )
         .await?;
-        for worker in &ids {
+        assert!(!screen(&app, &ids[0]).contains("You own this repair"));
+        for worker in &ids[1..] {
             let shown = screen(&app, worker);
             assert!(
                 shown.contains("delivery::gate")
@@ -3585,29 +3589,29 @@ fn a_red_integration_branch_is_assigned_to_one_worker_and_announced_to_the_other
         );
         assert!(!screen(&app, &finished).contains("integration gate failed"));
         assert_eq!(app.deps.store.attempts(&finished).await?.len(), 1);
-        assert!(
-            app.deps
-                .store
-                .transition_delivery(
-                    &DeliveryStage::None,
-                    &DeliveryRecord {
-                        task_id: ids[0].clone(),
-                        ..merged
-                    }
-                )
-                .await?
-        );
         app.deps
             .store
-            .replace_steps(&ids[0], &[], "person", app.now())
+            .replace_steps(&ids[1], &[], "person", app.now())
+            .await?;
+        app.deps
+            .store
+            .set_activity(&ids[1], Some(Activity::Done), app.now())
             .await?;
         assert_eq!(messages().await?, 1);
         wait_for(
             "remaining worker took over",
             Duration::from_secs(30),
-            || async { screen(&app, &ids[1]).contains("You own this repair") },
+            || async { screen(&app, &ids[2]).contains("You own this repair") },
         )
         .await?;
+        let (_, last_terminal) = crate::task_message::terminal(&app, &caller, &ids[2]).await?;
+        app.terminal_input(&owner, &last_terminal, b"another draft", false)
+            .await?;
+        assert_eq!(messages().await?, 0);
+        assert_eq!(
+            app.status(&owner).await?.sandboxes[0].gate_notices[0].test,
+            "delivery::gate"
+        );
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -3631,6 +3635,7 @@ fn a_staging_outcome_reaches_its_task_once() -> TestResult {
             None, Some(browser.clone()), |config| { config.max_live_sessions = 8; },
         ).await?;
         let (id, caller) = answered(&app, &data).await?;
+        crate::pr_watch::leave_verification_step(&app, &id).await?;
         let task = TaskStore::task(app.deps.store.as_ref(), &id)
             .await?
             .ok_or("task")?;
@@ -3803,6 +3808,7 @@ fn a_handed_off_tasks_outcome_reaches_its_source() -> TestResult {
     rt.block_on(async {
         let app = app(&data, 8, 0).await?;
         let (id, _) = answered(&app, &data).await?;
+        crate::pr_watch::leave_verification_step(&app, &id).await?;
         let source = TaskStore::task(app.deps.store.as_ref(), &id)
             .await?
             .ok_or("source")?;
@@ -3893,6 +3899,28 @@ fn a_handed_off_tasks_outcome_reaches_its_source() -> TestResult {
             app.deps.store.untold_handoffs().await?.is_empty(),
             "told once"
         );
+        app.deps
+            .store
+            .replace_steps(&id, &[], "person", app.now())
+            .await?;
+        app.deps
+            .store
+            .set_activity(&id, Some(Activity::Waiting), app.now())
+            .await?;
+        let mut late = app.deps.store.handoff("ho_1").await?.ok_or("handoff")?;
+        let mut late_target = target.clone();
+        late_target.id = TaskId::parse("t-api-late")?;
+        late_target.number = 2;
+        late_target.title = "Late finished handoff".into();
+        late_target.status = TaskStatus::Closed;
+        app.deps.store.insert_task(&late_target).await?;
+        late.target_task = Some(late_target.id);
+        late.id = "ho_finished".to_owned();
+        late.args = r#"{"sandbox":"api","title":"Late finished handoff","prompt":"P"}"#.into();
+        app.deps.store.insert_handoff(&late).await?;
+        assert_eq!(app.tell_handoff_outcomes().await, 0);
+        assert!(!screen(&app, &id).contains("/api #2"));
+        assert!(app.deps.store.untold_handoffs().await?.is_empty());
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

@@ -247,7 +247,7 @@ impl StagingStore for SqliteStore {
                      ci_run_id = COALESCE(?4, ci_run_id), \
                      cd_run_id = CASE WHEN ?9 THEN NULL ELSE COALESCE(?5, cd_run_id) END, \
                      attempts = COALESCE(?6, attempts), note = COALESCE(?7, note), \
-                     told = (?3 = 'inherited' OR ?2 = 'inherited'), updated_at = MAX(updated_at + 1, ?8) \
+                     told = 0, updated_at = MAX(updated_at + 1, ?8) \
                  WHERE id = ?1 AND state = ?2",
                 params![
                     id,

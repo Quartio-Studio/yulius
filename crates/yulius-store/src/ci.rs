@@ -262,15 +262,16 @@ impl CiStore for SqliteStore {
         .await
     }
 
-    async fn has_gate_workers(&self, sandbox: &SandboxId) -> AppResult<bool> {
+    async fn gate_workers(&self, sandbox: &SandboxId) -> AppResult<Vec<TaskId>> {
         let sandbox = sandbox.to_string();
         self.call(move |c| {
-            c.query_row(
-                "SELECT EXISTS(SELECT 1 FROM gate_workers WHERE sandbox_id = ?1)",
-                [sandbox],
-                |row| row.get(0),
-            )
-            .map_err(db)
+            let mut stmt = c
+                .prepare("SELECT id FROM gate_workers WHERE sandbox_id = ?1 ORDER BY number")
+                .map_err(db)?;
+            stmt.query_map([sandbox], |r| r.get::<_, String>(0))
+                .map_err(db)?
+                .map(|id| TaskId::parse(&id.map_err(db)?).map_err(AppError::internal))
+                .collect()
         })
         .await
     }
@@ -279,7 +280,11 @@ impl CiStore for SqliteStore {
         &self,
         sandbox: &SandboxId,
         detail: &str,
+        available: &[TaskId],
     ) -> AppResult<Vec<RepairRecipient>> {
+        let available =
+            serde_json::to_string(&available.iter().map(TaskId::as_str).collect::<Vec<_>>())
+                .map_err(AppError::internal)?;
         let (sandbox, detail) = (sandbox.clone(), detail.to_owned());
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
@@ -287,8 +292,8 @@ impl CiStore for SqliteStore {
             // Keep the incumbent if eligible. Replacing the row also expires its delivery receipts.
             let owner: Option<(String, u32)> = tx.query_row(
                 "SELECT w.id, w.number FROM gate_workers w LEFT JOIN gate_repairs r ON r.sandbox_id = w.sandbox_id
-                 WHERE w.sandbox_id = ?1 ORDER BY (w.id IS r.owner_id) DESC, w.number LIMIT 1",
-                [sid], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(db)?;
+                 WHERE w.sandbox_id = ?1 AND w.id IN (SELECT value FROM json_each(?2)) ORDER BY (w.id IS r.owner_id) DESC, w.number LIMIT 1",
+                params![sid, available], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(db)?;
             let mut recipients = Vec::new();
             if let Some((owner, number)) = owner.filter(|_| !detail.is_empty()) {
                 tx.execute("DELETE FROM gate_repairs WHERE sandbox_id = ?1 AND (detail != ?2 OR owner_id != ?3)",
@@ -296,10 +301,10 @@ impl CiStore for SqliteStore {
                 tx.execute("INSERT OR IGNORE INTO gate_repairs(sandbox_id, detail, owner_id) VALUES (?1, ?2, ?3)",
                     params![sid, detail, owner]).map_err(db)?;
                 tx.execute("DELETE FROM gate_repair_told WHERE sandbox_id = ?1 AND task_id NOT IN (SELECT id FROM gate_workers WHERE sandbox_id = ?1)", [sid]).map_err(db)?;
-                let mut stmt = tx.prepare("SELECT id FROM gate_workers w WHERE sandbox_id = ?1
+                let mut stmt = tx.prepare("SELECT id FROM gate_workers w WHERE sandbox_id = ?1 AND id IN (SELECT value FROM json_each(?3))
                     AND NOT EXISTS (SELECT 1 FROM gate_repair_told t WHERE t.task_id = w.id AND t.sandbox_id = ?1)
                     ORDER BY (id = ?2) DESC, number").map_err(db)?;
-                for id in stmt.query_map(params![sid, owner], |row| row.get::<_, String>(0)).map_err(db)? {
+                for id in stmt.query_map(params![sid, owner, available], |row| row.get::<_, String>(0)).map_err(db)? {
                     let id = id.map_err(db)?;
                     recipients.push(RepairRecipient {
                         task: TaskId::parse(&id).map_err(AppError::internal)?,
@@ -329,6 +334,7 @@ impl CiStore for SqliteStore {
         self.call(move |c| {
             let select = "SELECT w.sandbox_id, w.id FROM gate_workers w JOIN gate_repairs r ON r.sandbox_id = w.sandbox_id
                 JOIN gate_workers owner ON owner.id = r.owner_id WHERE w.id = ?1 AND owner.number = ?2 AND r.detail = ?3
+                AND (w.id = r.owner_id OR EXISTS (SELECT 1 FROM gate_repair_told a WHERE a.sandbox_id = r.sandbox_id AND a.task_id = r.owner_id))
                 AND NOT EXISTS (SELECT 1 FROM gate_repair_told t WHERE t.task_id = w.id AND t.sandbox_id = w.sandbox_id)";
             let args = params![task, number, detail];
             if acknowledge {
