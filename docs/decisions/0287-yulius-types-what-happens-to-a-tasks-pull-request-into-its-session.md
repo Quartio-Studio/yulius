@@ -40,6 +40,8 @@ Use the queue’s owner-preferred ordinary CI result at the armed head. A shared
   on its limit; with a merge armed it ends on its head's failure.
 - The PreToolUse guard refuses `gh pr merge` and `gh api …/pulls/N/merge`.
 
+The parking supervisor uses the latest singleton decision for the original owner. A changed decision during verification leaves the owner live for the next pass. See SPEC-558.
+
 ## Alternatives
 
 - **Fix `yulius wait` only**: the agent must still start it, and Claude Code's paused check-ins and

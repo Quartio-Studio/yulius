@@ -150,9 +150,70 @@ impl ParkedPullRead {
 
 #[derive(Default)]
 pub(crate) struct ParkingPrs {
+    pub(crate) followup_unverified: bool,
     checkout: Option<String>,
     watched: Option<u64>,
-    pulls: Vec<(u64, String)>,
+    pulls: Vec<GhPull>,
+}
+
+/// A display read publishes one ordered observation of a merged task's branch. Its
+/// direct PR checks refine the list, including when a later check hits the deadline.
+pub(crate) struct FollowupDiscovery {
+    read: Option<crate::sandboxes::OverviewRead>,
+    merged: u64,
+    deadline: tokio::time::Instant,
+    open: Option<Vec<u64>>,
+}
+
+impl FollowupDiscovery {
+    pub(crate) fn new(
+        read: Option<crate::sandboxes::OverviewRead>,
+        merged: u64,
+        deadline: tokio::time::Instant,
+    ) -> Self {
+        Self {
+            read,
+            merged,
+            deadline,
+            open: None,
+        }
+    }
+
+    async fn lookup<T>(&self, read: impl std::future::Future<Output = AppResult<T>>) -> Option<T> {
+        self.read.as_ref()?;
+        // Reserve time for the local task and delivery recheck after an inconclusive list.
+        let remaining = self
+            .deadline
+            .saturating_duration_since(tokio::time::Instant::now());
+        tokio::time::timeout_at(self.deadline - remaining / 4, read)
+            .await
+            .ok()?
+            .ok()
+    }
+
+    fn listed(&mut self, pulls: &[GhPull], closed: &std::collections::BTreeSet<u64>) {
+        self.open = Some(
+            pulls
+                .iter()
+                .map(|pr| pr.number)
+                .filter(|n| !closed.contains(n))
+                .collect(),
+        );
+    }
+
+    pub(crate) fn publish(
+        &mut self,
+        task: &TaskId,
+        verified: Option<yulius_contracts::api::tasks::ParkedPr>,
+    ) {
+        if let (Some(read), Some(open)) = (self.read.take(), self.open.take()) {
+            let replacement = verified
+                .filter(|pr| pr.open && open.contains(&pr.number))
+                .map(|pr| pr.number)
+                .or_else(|| open.last().copied());
+            read.record_branch(task, self.merged, replacement);
+        }
+    }
 }
 
 /// The persisted delivery stage of one task.
@@ -3963,9 +4024,42 @@ impl App {
         &self,
         task: &TaskRecord,
         facts: &ParkingPrs,
+        before: Option<&crate::stages::SpanRecord>,
     ) -> AppResult<bool> {
-        Ok(self.parking_checkout_matches(task, facts).await?
-            && self.parking_ci_blocker(task, facts).await?.is_none())
+        if !self.parking_checkout_matches(task, facts).await?
+            || self.parking_ci_blocker(task, facts).await?.is_some()
+        {
+            return Ok(false);
+        }
+        let wait = self.deps.store.latest_merge_wait(&task.id).await?;
+        if wait.as_ref() != before {
+            return Ok(false);
+        }
+        if facts.pulls.is_empty() {
+            return Ok(true);
+        }
+        let (_, mut outcome) = self.armed_view(&task.id);
+        let Some((_, decision)) = crate::pr_watch::candidate_from_wait(wait, &mut outcome)? else {
+            return Ok(true);
+        };
+        let Some(pull) = facts
+            .pulls
+            .iter()
+            .find(|pull| pull.number == decision.singleton.pr)
+        else {
+            return Ok(true);
+        };
+        if pull.merged || pull.from_fork {
+            return Ok(true);
+        }
+        if pull.head.is_empty() || pull.head_sha.is_empty() || pull.base.is_empty() {
+            return Ok(false);
+        }
+        let sandbox = self.dlv_sandbox_of(task).await?;
+        let same_owner = task.branch.as_deref() == Some(&pull.head)
+            && pull.base == delivery_profile(&sandbox).integration_branch
+            && pull.head_sha == decision.head;
+        Ok(!same_owner || (!pull.base_sha.is_empty() && pull.base_sha != decision.singleton.base))
     }
 
     async fn parking_checkout_matches(
@@ -3985,12 +4079,12 @@ impl App {
         task: &TaskRecord,
         facts: &ParkingPrs,
     ) -> AppResult<Option<(u64, PullSignal)>> {
-        for (number, head) in &facts.pulls {
+        for pull in &facts.pulls {
             if let Some(signal) = self
-                .parking_ci_signal(task, *number, head, facts.watched)
+                .parking_ci_signal(task, pull.number, &pull.head_sha, facts.watched)
                 .await?
             {
-                return Ok(Some((*number, signal)));
+                return Ok(Some((pull.number, signal)));
             }
         }
         Ok(None)
@@ -4185,7 +4279,7 @@ impl App {
         purpose: PrVerification,
     ) -> AppResult<Option<ParkingPrs>> {
         let mut observed = ParkedPullRead::recorded(record);
-        self.verify_task_prs(task, record, purpose, &mut observed)
+        self.verify_task_prs(task, record, purpose, &mut observed, None)
             .await
     }
 
@@ -4245,6 +4339,7 @@ impl App {
         record: Option<&DeliveryRecord>,
         purpose: PrVerification,
         observed: &mut ParkedPullRead,
+        mut discovery: Option<&mut FollowupDiscovery>,
     ) -> AppResult<Option<ParkingPrs>> {
         let tracked = record
             .filter(|r| r.stage == DeliveryStage::PrOpen)
@@ -4263,20 +4358,14 @@ impl App {
         if sandbox.is_playground() || !self.github_configured().await? {
             return Ok((observed.pr.is_none_or(|pr| !pr.open)).then(ParkingPrs::default));
         }
-        let token = self.dlv_installation_token(&sandbox).await?;
-        let branch_pulls = || async {
+        let branch_pulls = async |token: &Secret| {
             let Some(branch) = task.branch.as_deref() else {
                 return Ok(Vec::new());
             };
             let mut pulls = self
                 .deps
                 .github
-                .list_pulls(
-                    &token,
-                    &sandbox.repo_owner,
-                    &sandbox.repo_name,
-                    Some(branch),
-                )
+                .list_pulls(token, &sandbox.repo_owner, &sandbox.repo_name, Some(branch))
                 .await?;
             pulls.retain(|pull| {
                 !pull.from_fork
@@ -4290,7 +4379,30 @@ impl App {
         // Branch-scoped discovery also finds PRs omitted by a partial sandbox overview
         // and new PRs opened externally while an older recorded delivery is being reconciled.
         let watched = tracked.filter(|_| purpose.watches_pending(self.config.ci.enabled));
-        let branch = branch_pulls().await?;
+        let discover = async {
+            let token = self.dlv_installation_token(&sandbox).await?;
+            let branch = branch_pulls(&token).await?;
+            Ok::<_, AppError>((token, branch))
+        };
+        let inconclusive = |observed: &mut ParkedPullRead| {
+            *observed = self.known_parked_pull(task, record);
+            observed.pr.filter(|pr| !pr.open).map(|_| ParkingPrs {
+                followup_unverified: true,
+                ..ParkingPrs::default()
+            })
+        };
+        let (token, branch) = if let Some(read) = discovery.as_ref() {
+            let Some(found) = read.lookup(discover).await else {
+                return Ok(inconclusive(observed));
+            };
+            found
+        } else {
+            discover.await?
+        };
+        let mut closed = std::collections::BTreeSet::new();
+        if let Some(read) = discovery.as_mut() {
+            read.listed(&branch, &closed);
+        }
         *observed = ParkedPullRead::recorded(record);
         observed.note_open_branch(&branch);
         if branch.len() > MAX_PULLS {
@@ -4304,7 +4416,6 @@ impl App {
         let checkout = self.verification_checkout(task, purpose).await?;
         let mut pulls = Vec::new();
         let mut verified = true;
-        let mut closed = std::collections::BTreeSet::new();
         for number in numbers {
             let checks = if purpose == PrVerification::WatchPending && watched != Some(number) {
                 PrVerification::Settled
@@ -4319,8 +4430,11 @@ impl App {
                 .is_some_and(|pr| !pr.open && pr.number == number)
             {
                 closed.insert(number);
+                if let Some(read) = discovery.as_mut() {
+                    read.listed(&branch, &closed);
+                }
             }
-            let Some(pull) = pull else {
+            let Some(pull) = pull.filter(|pull| pull.number == number) else {
                 verified = false;
                 break;
             };
@@ -4342,17 +4456,33 @@ impl App {
                 verified = false;
                 break;
             }
-            pulls.push((number, pull.head_sha));
+            pulls.push(pull);
         }
         if !verified && purpose != PrVerification::Display {
             return Ok(None);
         }
         let mut facts = ParkingPrs {
+            followup_unverified: false,
             checkout,
             pulls,
             watched,
         };
-        let current = branch_pulls().await?;
+        let current = if let Some(read) = discovery
+            .as_mut()
+            .filter(|_| verified && closed.len() == branch.len())
+        {
+            let Some(current) = read.lookup(branch_pulls(&token)).await else {
+                // Publish the directly confirmed merges before consulting concurrent observations.
+                read.publish(&task.id, observed.pr);
+                return Ok(inconclusive(observed));
+            };
+            current
+        } else {
+            branch_pulls(&token).await?
+        };
+        if let Some(read) = discovery {
+            read.listed(&current, &closed);
+        }
         if purpose != PrVerification::Display {
             return Ok((current == branch).then_some(facts));
         }
@@ -4382,7 +4512,7 @@ impl App {
                 // failure on a still-current, directly verified head takes priority.
                 facts
                     .pulls
-                    .retain(|(number, sha)| survives(*number, Some(sha)));
+                    .retain(|pull| survives(pull.number, Some(&pull.head_sha)));
                 if let Some((number, signal)) = self.parking_ci_blocker(task, &facts).await? {
                     observed.signal = Some(signal);
                     observed.pr =
@@ -4412,9 +4542,9 @@ impl App {
         }
         // A branch list can lag a direct get_pull confirmation of a merge.
         // Among successful reads only a PR confirmed open can replace it.
-        if verified && let Some((number, _)) = facts.pulls.last() {
+        if verified && let Some(pull) = facts.pulls.last() {
             observed.pr = Some(yulius_contracts::api::tasks::ParkedPr {
-                number: *number,
+                number: pull.number,
                 open: true,
             });
         }
@@ -4576,7 +4706,8 @@ impl App {
         // Checks and local conflict detection can take long enough for another push.
         let current = read().await?;
         observed.note_closed(&current);
-        let same_open_head = same_open_pull(&pull, &current);
+        let same_open_head = same_open_pull(&pull, &current)
+            && (purpose == PrVerification::Display || pull.base_sha == current.base_sha);
         if same_open_head && mergeable != Some(true) {
             let own = self
                 .parking_ci_signal(task, number, &current.head_sha, None)
@@ -6662,6 +6793,31 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn branch_publication_discards_verified_ids_absent_from_the_final_open_list() -> AppResult<()> {
+        let cache = crate::sandboxes::ObservedPulls::default();
+        let sandbox = SandboxId::parse("sandbox").map_err(AppError::internal)?;
+        let task = TaskId::parse("task").map_err(AppError::internal)?;
+        let mut discovery =
+            FollowupDiscovery::new(Some(cache.begin(&sandbox)?), 1, tokio::time::Instant::now());
+        discovery.open = Some(vec![2, 3]);
+        discovery.publish(
+            &task,
+            Some(yulius_contracts::api::tasks::ParkedPr {
+                number: 4,
+                open: true,
+            }),
+        );
+        assert_eq!(
+            cache
+                .known_pull(&sandbox, &task)
+                .flatten()
+                .map(|pr| pr.number),
+            Some(3)
+        );
+        Ok(())
+    }
 
     #[test]
     fn only_live_ci_can_wake_a_parked_task_after_pending_checks() {

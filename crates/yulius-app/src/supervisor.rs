@@ -4756,6 +4756,7 @@ impl App {
             return Ok(false);
         };
         let delivery = self.deps.store.delivery(task_id).await?;
+        let before = self.deps.store.latest_merge_wait(task_id).await?;
         // Neither a slow PR read nor the fresh process probe should hold up another launch.
         // Probe last so background work started during the PR read keeps its session.
         let Some(prs) = self
@@ -4809,7 +4810,9 @@ impl App {
         };
         if crate::sandboxes::plan_open(&self.deps.store.steps(task_id).await?)
             || self.read_spec_unfinished(task_id).await?
-            || !self.parking_prs_still_current(&task, &prs).await?
+            || !self
+                .parking_prs_still_current(&task, &prs, before.as_ref())
+                .await?
             || runtime.goal_unfinished.load(Ordering::SeqCst)
         {
             return Ok(false);

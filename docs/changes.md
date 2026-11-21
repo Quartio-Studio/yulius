@@ -8,6 +8,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - Goal tasks continue unfinished plan and spec work, including verification after merge, without asking their owner to type “continue”. [SPEC-589](../.ai/specs/SPEC-589-it-shouldnt-ask-for-things-like-that-fix.md)
 
+- Finished parked tasks with a recorded merge stay under Done when GitHub cannot check for a follow-up PR. Existing false waits resolve on refresh, and known open replacements still show their checks. [SPEC-585](../.ai/specs/SPEC-585-i-got-this-everywhere-fix.md)
+- Parking keeps the original PR owner live when its recorded integration candidate failed on the current head and base, or the queue decision changes during verification (SPEC-558).
 - Agents now fix findings and obtain independent re-review through approval without asking the task owner to authorize another round. [SPEC-588](../.ai/specs/SPEC-588-it-shouldn-t-ask-me-for-this-agents-must.md)
 - The sandbox Browser panel now offers **Copy to my clipboard** after a webpage’s Copy button writes text on the virtual display. Accepting transfers the text to your device. [SPEC-584](../.ai/specs/SPEC-584-in-browser-i-clicked-copy-button-but-not.md)
 - New tasks in the browser default to Codex. Settings and the composer remember explicit model choices, including Random. [SPEC-587](../.ai/specs/SPEC-587-codex-should-be-default-for-example-bart.md)
