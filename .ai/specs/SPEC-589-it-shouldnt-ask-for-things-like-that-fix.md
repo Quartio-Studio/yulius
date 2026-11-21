@@ -27,7 +27,8 @@ Earlier user requests establish the ownership rule. Task #534 concerned automate
 
 - [x] Trace the reported handoff against earlier continuation requests
 - [x] Reproduce the incorrect handoff in regression tests
-- [ ] Route unfinished work to its automatic continuation owner
+- [x] Route unfinished work to its automatic continuation owner
+- [ ] Preserve goal continuation through capacity recovery and a busy browser
 - [ ] Verify the fix and obtain independent approval
 
 ## Acceptance criteria

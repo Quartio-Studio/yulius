@@ -2213,6 +2213,190 @@ async fn goal_stop_after_an_antigravity_model_error_ends_the_turn() -> TestResul
 }
 
 #[tokio::test]
+async fn goal_stop_counts_consecutive_attempts_on_unresolved_work() -> TestResult {
+    for replace in [false, true] {
+        let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Build checkout").await?;
+        let ctx = f.h.app.agent_context(TOKEN).await?;
+        f.h.app.tool_steps_set(&ctx, &json!({"steps":[{"title":"Build checkout","status":"in_progress"},{"title":"Verify dev"}]})).await?;
+        for _ in 0..yulius_app::hooks::MAX_GATE_BLOCKS {
+            assert_eq!(stop_of(&f, Agent::Codex).await?["decision"], "block");
+        }
+        if replace {
+            f.h.app.tool_steps_set(&ctx, &json!({"steps":[{"title":"Build checkout","status":"done"},{"title":"Verify dev","status":"in_progress"}]})).await?;
+        } else {
+            f.h.app
+                .tool_step_update(&ctx, &json!({"ordinal":1,"status":"done"}))
+                .await?;
+        }
+        let reply = stop_of(&f, Agent::Codex).await?;
+        assert_eq!(reply["decision"], "block", "replace={replace}");
+        assert!(
+            reply["reason"]
+                .as_str()
+                .is_some_and(|s| s.contains("Verify dev"))
+        );
+        assert_eq!(
+            f.h.app
+                .deps
+                .store
+                .task(&f.task)
+                .await?
+                .ok_or("task")?
+                .gate_blocks,
+            1
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_budget_survives_submission_of_its_own_continuation() -> TestResult {
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify dev").await?;
+    let reason = stop_of(&f, Agent::Codex).await?["reason"].clone();
+    let response = call(
+        &f.h.internal,
+        Method::POST,
+        "/hooks/codex/UserPromptSubmit",
+        Some(json!({"prompt":reason})),
+        &agent(),
+    )
+    .await?;
+    assert_eq!(response.status, 200);
+    assert_eq!(
+        f.h.app
+            .deps
+            .store
+            .task(&f.task)
+            .await?
+            .ok_or("task")?
+            .gate_blocks,
+        1
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_explains_exhaustion_before_a_proactive_switch() -> TestResult {
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify dev").await?;
+    for _ in 0..yulius_app::hooks::MAX_GATE_BLOCKS {
+        assert_eq!(stop_of(&f, Agent::Codex).await?["decision"], "block");
+    }
+    let store = &f.h.app.deps.store;
+    let current = yulius_domain::ids::AccountId::parse("acc-1")?;
+    let mut room = store.account(&current).await?.ok_or("account")?;
+    room.id = yulius_domain::ids::AccountId::parse("acc-room")?;
+    store.insert_account(&room).await?;
+    let usage = json!({"primary": {"used_percent":98.0, "window_minutes":300,
+        "resets_at":f.h.app.now().plus_millis(3_600_000).0}})
+    .to_string();
+    store
+        .set_account_state(&current, room.status, Some(&usage), None, f.h.app.now())
+        .await?;
+    let response = stop_of(&f, Agent::Codex).await?;
+    assert!(response["decision"].is_null());
+    let brief = task_brief(&f).await?;
+    let problem = brief["attention"]["problem"]
+        .as_str()
+        .ok_or("retry explanation")?;
+    assert!(
+        problem.contains("3") && problem.contains("Verify dev"),
+        "{problem}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_keeps_a_worker_permission_visible_until_answered() -> TestResult {
+    let f = task_with_open_step(Agent::ClaudeCode, TaskMode::Goal, "Verify checkout").await?;
+    let question = "Allow the worker to access the staging account?";
+    hook(
+        &f,
+        "Notification",
+        json!({"notification_type":"worker_permission_prompt", "message":question}),
+    )
+    .await?;
+    assert!(stop_of(&f, Agent::ClaudeCode).await?["decision"].is_null());
+    let brief = task_brief(&f).await?;
+    assert_eq!(brief["activity"], "needs_attention");
+    assert_eq!(brief["attention"]["kind"], "terminal");
+    assert!(
+        brief["attention"]["problem"]
+            .as_str()
+            .is_some_and(|text| text.contains(question))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_explains_an_explicitly_blocked_plan_and_spends_no_retry() -> TestResult {
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify checkout").await?;
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    let note = "The staging account is awaiting access from its administrator.";
+    f.h.app
+        .tool_step_update(&ctx, &json!({"ordinal":1, "status":"blocked", "note":note}))
+        .await?;
+    assert!(stop_of(&f, Agent::Codex).await?["decision"].is_null());
+    let brief = task_brief(&f).await?;
+    assert_eq!(brief["needs_you_notice"]["problem"], note);
+    assert!(
+        !brief["needs_you_notice"]["action"]
+            .as_str()
+            .ok_or("action")?
+            .contains("tell the agent to continue")
+    );
+    assert_eq!(
+        f.h.app
+            .deps
+            .store
+            .task(&f.task)
+            .await?
+            .ok_or("task")?
+            .gate_blocks,
+        0
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_answers_within_the_hook_deadline_while_browser_startup_is_held() -> TestResult {
+    use axum::extract::connect_info::MockConnectInfo;
+    use std::time::Duration;
+    use yulius_app::ports::browser::BrowserPort;
+
+    for hold_first in [true, false] {
+        let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify checkout").await?;
+        let browser = Arc::new(crate::delivery::HeldBrowserLookup::default());
+        let (_entered, _release) = browser.hold_second_lookup();
+        if hold_first {
+            browser.running(&f.sandbox).await;
+        }
+        let mut deps = f.h.app.deps.clone();
+        deps.browser = browser;
+        let app = yulius_app::context::App::new(f.h.app.config.clone(), deps);
+        let internal = yulius_server::internal_router(app).layer(MockConnectInfo(
+            std::net::SocketAddr::from(([127, 0, 0, 1], 5002)),
+        ));
+        let response = tokio::time::timeout(
+            Duration::from_secs(4),
+            call(
+                &internal,
+                Method::POST,
+                "/hooks/codex/Stop",
+                Some(json!({})),
+                &agent(),
+            ),
+        )
+        .await??;
+        assert_eq!(response.status, 200);
+        assert_eq!(
+            response.body["decision"], "block",
+            "held first={hold_first}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn goal_stop_preserves_a_request_for_an_external_permission() -> TestResult {
     let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Check the build").await?;
     let action = "Grant the build account access to staging";

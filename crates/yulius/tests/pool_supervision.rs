@@ -562,6 +562,43 @@ fn one_exhausted_subscription_pauses_at_the_boundary_and_resumes_in_place() -> T
     Ok(())
 }
 
+/// A gate prompt carried to another process spends one of the goal's bounded attempts.
+#[test]
+fn a_goal_continuation_delivered_by_a_move_counts_once() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build(&data, &fake, Arc::new(ScriptedUsage::default()))?;
+        let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
+        let id = app.create_task_internal(NewTask {
+            sandbox, created_by: user, prompt: "Verify dev".into(), harness: Harness::ClaudeCode,
+            title: Some("Verification".into()), workflow_id: None, steps: Vec::new(),
+            model: None, effort: None, origin: TaskOrigin::Ui, automation_run: None, start: true,
+            mode: yulius_app::model::TaskMode::Goal, supertask: false,
+        }).await?.id;
+        wait_for("the run", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("FAKE-AGENT READY")
+        }).await?;
+        app.deps.store.update_task(&id, &yulius_app::ports::store::TaskFieldUpdate {
+            gate_blocks: Some(1),
+            ..Default::default()
+        }, app.now()).await?;
+        let prompt = "Continue the authorized goal. The next unfinished step is \"Verify dev\". Record the evidence and update the step when its work is complete.";
+        app.switch_task_now(&id, Some(AccountId::parse("b-second")?), "Capacity", Some(prompt.to_owned())).await?;
+        let second = app.deps.store.live_attempt(&id).await?.ok_or("resumed run")?;
+        wait_for("the resumed launch", Duration::from_secs(30), || async {
+            std::fs::read_to_string(Path::new(&second.run_dir).join("fake-launch.txt"))
+                .is_ok_and(|launch| launch.contains("Verify dev"))
+        }).await?;
+        assert_eq!(task(&app, &id).await?.gate_blocks, 2);
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// AC-ROT-11: every subscription exhausted → new tasks wait before starting (no process); a
 /// subscription added later resumes them oldest first, one stagger apart, on it.
 #[test]
