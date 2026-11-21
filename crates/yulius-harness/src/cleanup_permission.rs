@@ -222,6 +222,9 @@ fn checked_path(node: Node<'_>, source: &str) -> Option<(String, bool)> {
                 return None;
             }
             let name = &source[name.byte_range()];
+            if !crate::launch::shell_identifier(name) {
+                return None;
+            }
             if text != format!("${name}") && text != format!("${{{name}}}") {
                 return None;
             }
