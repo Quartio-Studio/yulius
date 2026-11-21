@@ -27,7 +27,8 @@
 # Only yulius.service is stopped and started: agent sessions live in yulius-sandboxes.service. A
 # switch ignores a lost connection (HUP, PIPE) and runs to its end; any other exit between the
 # stop and the end of the switch starts the server again with a binary and store that belong
-# together. Everything is in functions and runs from the last line, so sh has read the whole
+# together, or, when the previous store cannot be put back, leaves it stopped (restore by hand).
+# Everything is in functions and runs from the last line, so sh has read the whole
 # script from its standard input before any command could read from it.
 set -eu
 
@@ -43,6 +44,9 @@ start_wait="${YULIUS_CD_START_WAIT:-120}"
 lock_wait="${YULIUS_CD_LOCK_WAIT:-600}"
 # Scratch space for store copies: beside the releases (a disk), never /tmp (often RAM).
 scratch="$releases/.scratch"
+# Left when a put back failed: the server stays stopped until a person restored the store by hand
+# and removed it. Every switch and verify refuses meanwhile, also the rollback Yulius would start.
+held="$releases/HELD"
 
 say() { echo "vm: $*" || true; }
 die() {
@@ -217,17 +221,20 @@ snapshot() {
 }
 
 # restore <release>: the store <release> left, back in the data directory (the server stopped).
+# Each step's failure is returned, never left to errexit: callers test it, where sh ignores -e.
 restore() {
   src="$releases/$1/store"
-  [ -f "$src/yulius.db" ] || die "no store of release $1 is kept in $src"
-  owner="$(stat -c %U:%G "$store")"
-  rm -f "$store/yulius.db" "$store/yulius.db-wal" "$store/yulius.db-shm"
-  cp "$src/yulius.db" "$store/yulius.db"
-  if [ -f "$src/yulius.db-wal" ]; then cp "$src/yulius.db-wal" "$store/yulius.db-wal"; fi
+  [ -f "$src/yulius.db" ] || {
+    echo "vm: no store of release $1 is kept in $src" >&2 || true
+    return 1
+  }
+  owner="$(stat -c %U:%G "$store")" || return 1
+  rm -f "$store/yulius.db" "$store/yulius.db-wal" "$store/yulius.db-shm" || return 1
+  cp "$src/yulius.db" "$store/yulius.db" || return 1
+  if [ -f "$src/yulius.db-wal" ]; then cp "$src/yulius.db-wal" "$store/yulius.db-wal" || return 1; fi
   for f in "$store/yulius.db" "$store/yulius.db-wal"; do
     [ -f "$f" ] || continue
-    chown "$owner" "$f"
-    chmod 0600 "$f"
+    chown "$owner" "$f" && chmod 0600 "$f" || return 1
   done
 }
 
@@ -269,13 +276,34 @@ recover() {
     installed)
       echo "vm: interrupted: putting back release $prev and its store" >&2 || true
       systemctl stop "$service" </dev/null || true
-      install_bin "$prev" || true
-      restore "$prev" || true
-      systemctl start "$service" </dev/null || true
+      if put_back "$prev"; then
+        systemctl start "$service" </dev/null || true
+      else
+        hold "$prev"
+        echo "vm: putting back release $prev failed: $service stays stopped; restore by hand from $releases/$prev (docs/operations.md, \"Yulius's own staging VM\")" >&2 || true
+      fi
       ;;
   esac
   exit "$rc"
 }
+
+# hold <release>: a put back of <release> failed. Recorded for every later step, and announced as
+# a rollback barrier, so Yulius does not start a rollback of staging by itself.
+hold() {
+  printf '%s release %s or its store could not be put back; %s is stopped\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$service" >"$held" || true
+  echo "::yulius-rollback-barrier staging is held: the store of release $1 could not be put back; a person restores it by hand" || true
+}
+
+refuse_while_held() {
+  [ ! -f "$held" ] ||
+    die "staging is held ($(head -c 300 "$held" 2>/dev/null || true)): restore the store by hand from $releases (docs/operations.md, \"Yulius's own staging VM\"), then remove $held"
+}
+
+# put_back <release>: its binary and the store it left back in place; fails, changing nothing
+# more, when either cannot be (the server must then stay stopped: it would start on another
+# store, or create an empty one).
+put_back() { (install_bin "$1" && restore "$1"); }
 
 stop_server() {
   say "stopping $service (agent sessions keep running in yulius-sandboxes.service)"
@@ -297,8 +325,11 @@ switch() {
   fi
   say "release $1 did not report its commit within ${start_wait}s: putting back release $prev and its store"
   systemctl stop "$service" </dev/null || true
-  install_bin "$prev"
-  restore "$prev"
+  if ! put_back "$prev"; then
+    phase=done
+    hold "$prev"
+    die "release $1 did not report its commit, and putting back release $prev failed: $service stays stopped; restore by hand from $releases/$prev (docs/operations.md, \"Yulius's own staging VM\")"
+  fi
   phase=done
   systemctl start "$service" </dev/null || true
   wait_for "$prev" ||
@@ -476,6 +507,20 @@ verify() {
   say "release $current verified"
 }
 
+# valid_deletes <list>: every comma-separated item is <schema>:<table>.
+valid_deletes() {
+  case "$1" in '' | ,* | *, | *,,*) return 1 ;; esac
+  rest="$1,"
+  while [ -n "$rest" ]; do
+    pair="${rest%%,*}"
+    rest="${rest#*,}"
+    at="${pair%%:*}"
+    table="${pair#*:}"
+    case "$at" in '' | *[!0-9]*) return 1 ;; esac
+    case "$table" in '' | [!a-z_]* | *[!a-z0-9_]*) return 1 ;; esac
+  done
+}
+
 # lock: one CD step at a time on this VM (a run by hand beside a CD run waits up to 10 minutes).
 lock() {
   mkdir -p -m 0700 "$releases"
@@ -504,14 +549,14 @@ main() {
       tables=-
       if [ "$command" = activate ]; then
         tables="${3:-}"
-        case "$tables" in - | [0-9]*:[a-z]*) ;; *) die "not a list of <schema>:<table>: $tables" ;; esac
-        case "$tables" in -) ;; *[!a-z0-9_:,]*) die "not a list of <schema>:<table>: $tables" ;; esac
+        [ "$tables" = - ] || valid_deletes "$tables" || die "not a list of <schema>:<table>: $tables"
       fi
       # A lost connection does not stop a switch half way.
       trap '' HUP PIPE
       trap recover EXIT
       trap 'exit 130' INT TERM
       lock
+      refuse_while_held
       if [ "$command" = activate ]; then activate "$release" "$tables"; else rollback "$release"; fi
       ;;
     verify)
@@ -519,6 +564,7 @@ main() {
       case "${3:-}" in - | [0-9] | [0-9][0-9] | [0-9][0-9][0-9] | [0-9][0-9][0-9][0-9]) ;; *) die "not a schema: ${3:-}" ;; esac
       case "${4:-}" in 0 | 1) ;; *) die "not 0 or 1: ${4:-}" ;; esac
       lock
+      refuse_while_held
       verify "$release" "$3" "$4"
       ;;
     *) die "unknown command: $command" ;;
