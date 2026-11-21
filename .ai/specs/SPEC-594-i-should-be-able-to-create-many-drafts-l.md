@@ -26,6 +26,7 @@ The composer in [SPEC-026](SPEC-026-if-i-type-something-here-and-i-change-ta.md)
 - [x] Let people create, switch and remove individual task drafts
 - [x] Preserve edits when reopening pending and shared drafts
 - [x] Verify the composer and obtain independent approval for delivery
+- [x] Verify the four CI failures with bounded test fixtures
 
 ## Acceptance criteria
 
@@ -36,6 +37,8 @@ The composer in [SPEC-026](SPEC-026-if-i-type-something-here-and-i-change-ta.md)
 ## Test plan
 
 Exercise the real composer in Chromium against the mock API in `drafts.e2e.ts`. Use held uploads and failed creation for recovery. Run the existing composer and web suite, quick repository checks, security command, independent review and Yulius CI.
+
+Run the Rust delivery approval cases, the two real-Git merge-train cases and the parked-owner stall case named by CI run `7a94e552-efe3-49a9-875c-07b467d03a2e`. Keep the CI test deadlines and each behavior assertion.
 
 ## Decisions
 
@@ -53,3 +56,5 @@ Extend the existing browser draft storage with separate keys for additional draf
 - Round three reproduced an editable draft during held creation and stale text after leaving an untouched editor. The success, failed-start and cross-tab regressions all failed at the reviewed head. The pending state now belongs to the draft across remounts. An untouched editor adopts a deferred remote save on release, preserving live files and later local edits.
 - Independent review approved `91c18a861ffdd7b76b9e8437b738e1a2b4736597` after running all 25 Chromium tests in `drafts.e2e.ts`. All passed, including legacy restore, three simultaneous drafts, inline image recovery, asynchronous submission and two-tab retirement and editing.
 - `git diff --check`, `scripts/dev quick` and `spec_check` passed. The previous full local web runs were interrupted. The full suite runs again at the approved implementation, and task #578's delivery record tracks the exact-head Yulius CI verdict.
+- Yulius CI run `7a94e552-efe3-49a9-875c-07b467d03a2e` at `dc3dd3f04` failed four Rust integration tests in shard 1. The approval test exceeded 120 seconds and two real-Git merge-train tests exhausted their 100-second fixture deadlines. The parking test expected a later stall notice while the PTY agent could still be answering the first diagnosis. All four passed in a serial run of the original test binary. [Issue #1606](https://github.com/Quartio-Studio/yulius/issues/1606) · [Issue #1610](https://github.com/Quartio-Studio/yulius/issues/1610)
+- After merging current `dev`, `cargo nextest run --profile ci` passed all nine focused Rust cases without retries. The six approval cases took 4.4–9.5 seconds each. The isolated bisection and arm-order cases took 17.2 and 23.8 seconds. With the first diagnosis answered, the stall check delivered its single status notice in the parking case. `scripts/dev quick` passed.
