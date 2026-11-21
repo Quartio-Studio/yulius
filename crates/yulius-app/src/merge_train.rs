@@ -270,6 +270,18 @@ fn short(sha: &str) -> &str {
     sha.get(..9).unwrap_or(sha)
 }
 
+/// The watch uses this original verdict as its durable identity, including after a restart.
+pub(crate) fn singleton_failure(pr: u64, head: &str, integration: &str, run: &str) -> String {
+    format!(
+        "The merge you armed was dropped: pull request #{pr} passed its own run at {}, but \
+         merged into the current `{integration}` it fails (merge candidate run {run}). Read \
+         why with `ci_status`, merge `origin/{integration}` into your branch, fix it \
+         test-first, commit, then {}.",
+        short(head),
+        yulius_domain::review::KEEP_APPROVAL
+    )
+}
+
 /// What `yulius wait` says about `task`'s place in `train`.
 fn note_of(train: &Train, task: &str) -> Option<QueueNote> {
     let prs = numbers(&train.members);
@@ -729,15 +741,11 @@ impl App {
         };
         let integration = delivery_profile(sandbox).integration_branch;
         let verdict = if deciding.merge.armed_at == member.armed_at {
-            Verdict::Decided(format!(
-                "The merge you armed was dropped: pull request #{} passed its own run at {}, but \
-                 merged into the current `{integration}` it fails (merge candidate run {}). Read \
-                 why with `ci_status`, merge `origin/{integration}` into your branch, fix it \
-                 test-first, commit, then {}.",
+            Verdict::Decided(singleton_failure(
                 member.pr,
-                short(&member.head),
-                train.run,
-                yulius_domain::review::KEEP_APPROVAL
+                &member.head,
+                &integration,
+                &train.run,
             ))
         } else {
             Verdict::Keep(deciding.merge.clone())

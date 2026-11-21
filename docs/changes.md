@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- The PR watcher recovers a failed singleton merge candidate after restart and reports its failing job to the live owner, including when unrelated CI runs have filled the recent history (SPEC-558).
+
 - Task Info updates the sidebar when it verifies a parked task. Its header and Now tile follow the latest verified status while the PR chip shows the last Git overview (SPEC-558).
 
 - A task leaves the active task list when its terminal discovers an archive, including when the browser received Closed but missed the subsequent Archived update (SPEC-558).

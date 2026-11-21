@@ -50,6 +50,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Publish terminal-discovered archive removal after Closed
 - [x] Publish verified parked task detail to Task Info
 - [ ] Keep failed integration candidates with their original owner
+- [ ] Verify candidate status before parking, showing Done or resuming a parked owner
 - [ ] Deliver bounded Codex goal continuation to dev
 - [ ] Recover screens from tasks parked before the upgrade
 
@@ -75,6 +76,10 @@ Capture a separate screen at the park decision because exiting can clear the ent
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
 ## Evidence
+
+- At dev `437188043` the cold #331 fixture reattached the existing attempt, with all four steps complete, ordinary CI green and a failed singleton train in SQLite. Its only message said the ordinary head passed and no merge was armed. It omitted the candidate run, shard and latency failure.
+
+- PR #1560 delivered verified Task Info status on head `ac8af8742`. Yulius CI run `fc3e4030-9f6f-446f-b038-c7eca700cb93` passed quality, both Rust shards and E2E. Security was disabled. [Delivery evidence for the landed dev tree](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/437188043065d1d781952d07f889ab67536c7c34)
 
 - Independent review approved Task Info publication at `8d71ce520`. All 16 author-run mounted Chromium cases and all 13 reviewer-run cases passed. The resolved owner instruction stayed cleared after a failing PR rerun. With overlapping reads, the running task’s Plan reached 7/7 and the parked header displayed the second title. Quick checks and spec validation passed. No changed Rust lines were eligible for mutation. Vidoc was disabled.
 

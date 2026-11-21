@@ -172,6 +172,8 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # An open plan step, unfinished spec or unfinished goal keeps the agent live, including while it asks its owner.
 # A failing ordinary PR run, unreadable check or unpublished repair keeps its author live.
 # The PR watcher delivers actionable failures once and waits for a pending human decision.
+# After a restart, a live owner can receive its failed singleton candidate’s run ID and job even
+# when ordinary head CI is green. Use ci_status with that run ID to read the integration failure.
 # A partial Git overview keeps a known failing PR under Needs you. A complete lookup
 # can clear it. Refreshing this display sends no message to the parked task.
 # A successor waiting for Done (after_task or #N done) stays chained while its parked predecessor
