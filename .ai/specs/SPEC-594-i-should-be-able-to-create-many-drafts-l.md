@@ -27,6 +27,7 @@ The composer in [SPEC-026](SPEC-026-if-i-type-something-here-and-i-change-ta.md)
 - [x] Preserve edits when reopening pending and shared drafts
 - [x] Verify the composer and obtain independent approval for delivery
 - [x] Verify the four CI failures with bounded test fixtures
+- [x] Obtain independent approval of the CI follow-up
 
 ## Acceptance criteria
 
@@ -59,3 +60,4 @@ Extend the existing browser draft storage with separate keys for additional draf
 - Yulius CI run `7a94e552-efe3-49a9-875c-07b467d03a2e` at `dc3dd3f04` failed four Rust integration tests in shard 1. The approval test exceeded 120 seconds and two real-Git merge-train tests exhausted their 100-second fixture deadlines. The parking test expected a later stall notice while the PTY agent could still be answering the first diagnosis. All four passed in a serial run of the original test binary. [Issue #1606](https://github.com/Quartio-Studio/yulius/issues/1606) · [Issue #1610](https://github.com/Quartio-Studio/yulius/issues/1610)
 - After merging current `dev`, `cargo nextest run --profile ci` passed all nine focused Rust cases without retries. The six approval cases took 4.4–9.5 seconds each. The isolated bisection and arm-order cases took 17.2 and 23.8 seconds. With the first diagnosis answered, the stall check delivered its single status notice in the parking case. `scripts/dev quick` passed.
 - `scripts/dev mutants --base e98ddccc5` reported “No mutant in the Rust lines changed against e98ddccc5.” The Rust follow-up touched integration tests only. `scripts/dev security` reported the project's Vidoc scan disabled.
+- Independent review approved `9696823d39dde240a5fea91862c20ae7c30bbd30` with no findings. The reviewer compared the composer and its tests with the earlier approval, inspected all four CI fixes, and reran the parking test successfully in 1.79 seconds.
