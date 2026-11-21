@@ -467,6 +467,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0429 -->
 <!-- ADR 0430 -->
 <!-- ADR 0431 -->
+- [0432](0432-a-browser-start-clears-chrome-profile-locks-no-live-process-holds.md) clears a browser profile's Chrome locks that no live process holds before Chrome starts.
 <!-- ADR 0432 -->
 <!-- ADR 0433 -->
 <!-- ADR 0434 -->
