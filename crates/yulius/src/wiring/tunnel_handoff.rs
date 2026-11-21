@@ -390,6 +390,8 @@ mod tests {
             let dir = tempfile::tempdir()?;
             let args = Fixture::try_parse_from([
                 "fixture",
+                "--ci",
+                "off",
                 "--data",
                 dir.path().to_str().ok_or("fixture directory")?,
             ])?

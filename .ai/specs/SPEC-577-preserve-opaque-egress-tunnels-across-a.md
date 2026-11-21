@@ -680,3 +680,9 @@ matched relay and proxy restoration has its own review and CI.
 - The final review corrections (`scripts/dev mutants --base 077006a7c`) reached all
   eight mutations in nine minutes. Seven were caught and one was unviable. None were
   missed or timed out.
+- PR #1575 run `dc901963-b755-425f-b61d-fab252fce2f6` on `746436fdf` reported
+  the two restored-connection cleanup fixtures failing during argument parsing.
+  The runner sets `YULIUS_CI=1`; the server's CI argument accepts `on` or `off`.
+  Setting the same environment locally reproduced both failures. With the fixture
+  passing `--ci off` explicitly, all six service-wiring cases passed under nextest
+  with `YULIUS_CI=1`, including the original socket-closure and admission assertions.
