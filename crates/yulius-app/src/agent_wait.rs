@@ -1750,9 +1750,20 @@ pub(crate) fn merged_text(
     next: bool,
     ahead: &str,
 ) -> String {
-    use yulius_domain::ci::{GateResult, RunState};
     let commits = merge_commits(Some(integration), landed, head);
-    let at = format!("Pull request #{number} is merged{commits}");
+    let receipt = format!("Pull request #{number} is merged{commits}");
+    merge_receipt_with_checks(&receipt, integration, gate, next, ahead)
+}
+
+/// Add the verdict for the accepted PR head and the remaining work to a merge receipt.
+pub(crate) fn merge_receipt_with_checks(
+    at: &str,
+    integration: &str,
+    gate: yulius_domain::ci::GateResult,
+    next: bool,
+    ahead: &str,
+) -> String {
+    use yulius_domain::ci::{GateResult, RunState};
     let ahead = ahead.trim();
     let finish = after_merge(
         ahead,

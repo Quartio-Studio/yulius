@@ -1777,6 +1777,39 @@ async fn retrying_a_restored_arm_does_not_import_an_unrelated_stale_arm_file_ent
 }
 
 #[tokio::test]
+async fn the_person_http_merge_keeps_its_receipt_when_the_closed_pr_read_fails() -> TestResult {
+    let f = fixture().await?;
+    let tree = f.task(1, &[("owner.txt", "change")]).await?;
+    let head = git(&tree, &["rev-parse", "HEAD"])?;
+    f.arm(1, &tree).await?;
+    f.record_passed(&f.h.app, 1, &head).await?;
+    f.h.github.fail_merged_reads.store(true, Ordering::SeqCst);
+    let response = call(
+        &f.h.router,
+        Method::POST,
+        "/api/tasks/t1/delivery/merge",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+    let landed = git(&f.origin, &["rev-parse", f.integration])?;
+    let wait = f.h.app.agent_wait_state("tok-t1", Some(&head)).await?;
+    assert_eq!(wait.merge_outcome_head.as_deref(), Some(head.as_str()));
+    let receipt = wait.merge_outcome.ok_or("accepted merge receipt")?;
+    assert!(
+        receipt.contains(&format!(" at {} from PR head {}", &landed[..9], &head[..9])),
+        "{receipt}"
+    );
+    assert!(receipt.contains("own Yulius CI run passed"), "{receipt}");
+    assert!(
+        !receipt.contains("into `dev`"),
+        "unconfirmed landing branch: {receipt}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn the_person_http_merge_reconciles_the_replacement_singleton_arm() -> TestResult {
     use yulius_domain::stages::SubjectKind;
 

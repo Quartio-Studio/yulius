@@ -4943,7 +4943,17 @@ impl App {
             .await
             .map_err(MergeFailure::into_error)?;
         if self.merge_is_armed(&task.id) {
-            let note = self.merged_note(&task, &sandbox, merged.number, true).await;
+            let steps = self.deps.store.steps(&task.id).await.unwrap_or_default();
+            let gate = self
+                .ci_gate_for_pull(&sandbox, merged.number, &merged.head)
+                .await;
+            let note = crate::agent_wait::merge_receipt_with_checks(
+                &merged.receipt,
+                &delivery_profile(&sandbox).integration_branch,
+                gate,
+                true,
+                &steps_ahead_note(&steps),
+            );
             self.settle_armed(&task, Some((&merged.head, note))).await;
         }
         Ok(merged.view)
