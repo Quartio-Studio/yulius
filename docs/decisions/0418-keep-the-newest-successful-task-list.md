@@ -10,7 +10,7 @@ Initial navigation and stream resynchronization can both request a project’s f
 
 ## Decision
 
-Keep the newest successful list by request start order. A superseded response uses the newer published list. When one overlapping request fails, a successful snapshot remains usable. If the direct task page showed an initial list error, reopen that route when its project’s list arrives. An isolated refresh failure still reports the error.
+Keep the newest successful list by request start order. A superseded response uses the newer published list. When one overlapping request fails, a successful snapshot remains usable. If the direct task page showed an initial list error, reopen that route when its project’s list arrives. Recovery starts one archive lookup if the active task is missing. Before using its reply, check the active list again. A subsequent full list containing the missing task can also reopen the page. An isolated refresh failure still reports the error.
 
 ## Alternatives
 
