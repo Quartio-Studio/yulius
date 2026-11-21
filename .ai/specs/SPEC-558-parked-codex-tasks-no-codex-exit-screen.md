@@ -44,7 +44,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Reconcile parked lifecycle changes and refresh the sidebar independently of Git
 - [x] Show current parked progress and owner notices in the terminal
 - [x] Publish verified parked task detail to the terminal
-- [ ] Publish a missed park discovered by terminal detail
+- [x] Publish a missed park discovered by terminal detail
 - [ ] Reconcile terminal-discovered resumes, archives and later Undo
 - [ ] Publish verified parked task detail to Task Info
 - [ ] Keep failed integration candidates with their original owner
@@ -73,6 +73,8 @@ Capture a separate screen at the park decision because exiting can clear the ent
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
 ## Evidence
+
+- Independent review approved `ec67a9270` for terminal discovery of a missed park. The reviewer independently passed all 11 new Chromium regressions and four existing list-confirmation tests. The author passed 14 focused Chromium cases on the approved head. Repository contracts, formatting and spec validation passed. No Rust mutation targets changed, and project Vidoc scanning was disabled. The earlier combined checkpoint `61e81ef4c` passed the complete local Chromium suite with 1,263 passes and one optional skip.
 
 - At `84b230ebe`, a Closed/archived event invalidated a terminal detail while an older active list was outstanding. With the list replying first, detail restored an obsolete parked owner request. With detail replying first, the list restored the old active row. The Chromium regression also exercises local archive and a genuine Undo. The list now retains an archive as a membership change through confirmation and the terminal drops a detail invalidated by that archive.
 
