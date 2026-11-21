@@ -1361,6 +1361,14 @@ mod tests {
         let free = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
         let port = free.local_addr()?.port();
         drop(free);
+        assert_eq!(
+            TcpListener::bind((Ipv4Addr::LOCALHOST, port))
+                .await
+                .err()
+                .map(|error| error.kind()),
+            Some(io::ErrorKind::AddrInUse),
+            "another listener must not claim the forward's port during setup"
+        );
         let server = ServerProcess::start(out_sock.clone(), port)?;
         // Idle at once: the test's leftovers are idle for as long as the floor.
         let forward = forward_within(

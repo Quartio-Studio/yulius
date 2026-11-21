@@ -1,6 +1,6 @@
 ---
 yulius-task: 053eac70-0fdb-46ba-8e1f-c23a5c21bf23
-status: done
+status: in-progress
 ---
 
 # SPEC-581 — Deliver waiting messages to an empty Codex prompt
@@ -28,6 +28,7 @@ Task #565 shows a held-message warning alongside terminal output. The screenshot
 - [x] Correct the draft signal and verify queued delivery
 - [x] Protect recalled images and recognize the Ultra prompt
 - [x] Obtain independent approval for delivery to dev
+- [ ] Keep the relay fixture port reserved throughout merge-train testing
 
 ## Acceptance criteria
 
@@ -54,3 +55,5 @@ With synthetic credentials and a loopback model endpoint, Codex 0.170.0 displaye
 At `112a82697`, 73 focused nextest cases passed across task messages, the terminal hub, Claude and Codex input readers, restored drafts and the resize tracker. The PR-watch test observed the notice as its own prompt, removal of the recovery mark, settlement of the warning and zero repeat deliveries. Targeted Clippy with all targets and features and warnings denied passed. Independent round two approved this head and separately ran the Codex composer, resize and PR-watch regressions. `scripts/dev quick` passed. `scripts/dev security` reported Vidoc disabled for the project.
 
 `scripts/dev mutants` caught all 31 changed-line mutants on the approved head. The run finished in 611 seconds with no misses, timeouts or untested mutants. The recalled-image case was verified against the pinned renderer and terminal replay. The live CLI image check used a locally pasted PNG.
+
+The PR head passed Yulius CI. Merge-train run `235dc68c-1bf0-4277-a98a-6449c7a7ab12` failed in the sandbox relay restart test with `AddrInUse`. The fixture dropped its listener and rebound the port after starting its server. A competing bind in that interval reproduced the error. Issue #1572 records the same gap in another caller of the limited forward.
