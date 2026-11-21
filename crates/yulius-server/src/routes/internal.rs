@@ -8,7 +8,9 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use yulius_app::hooks::HookReply;
-use yulius_contracts::hooks::{HookInput, SENT_AT_HEADER, StatusLineInput, events};
+use yulius_contracts::hooks::{
+    HookInput, INVOCATION_HEADER, SENT_AT_HEADER, StatusLineInput, events,
+};
 
 use crate::AppState;
 use crate::auth::bearer;
@@ -41,7 +43,12 @@ pub async fn hook(
             Err(err) => bare_status(&err).into_response(),
         };
     }
-    let input: HookInput = serde_json::from_slice(&body).unwrap_or_default();
+    let mut input: HookInput = serde_json::from_slice(&body).unwrap_or_default();
+    input.invocation = headers
+        .get(INVOCATION_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| v.len() == 32 && v.bytes().all(|b| b.is_ascii_hexdigit()))
+        .and_then(|v| u128::from_str_radix(v, 16).ok());
     // When the client sent it (SPEC-346 LPH-001); an older client says nothing.
     let sent_ms = headers
         .get(SENT_AT_HEADER)

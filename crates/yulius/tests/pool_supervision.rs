@@ -854,6 +854,7 @@ async fn check_held_owner_prompt(
             "UserPromptSubmit",
             &yulius_contracts::hooks::HookInput {
                 prompt: Some(fresh.into()),
+                invocation: Some(19),
                 ..Default::default()
             },
             None

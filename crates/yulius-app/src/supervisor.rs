@@ -178,6 +178,23 @@ pub(crate) struct DraftMark {
     pub(crate) submit: (i64, u64, bool),
 }
 
+/// Bounded run-local evidence for directly issued instructions and submit retries.
+#[derive(Default)]
+struct PromptReceipts {
+    issued: VecDeque<IssuedPrompt>,
+    invocations: VecDeque<SubmitInvocation>,
+}
+
+struct SubmitInvocation {
+    id: u128,
+    held_owner: Option<(i64, u64)>,
+}
+
+struct IssuedPrompt {
+    digest: [u8; 32],
+    pending: u16,
+}
+
 /// Runtime state of one task with a hub that outlives individual runs.
 pub struct TaskRuntime {
     /// Terminal fan-out.
@@ -260,7 +277,7 @@ pub struct TaskRuntime {
     pub(crate) draft_mark: tokio::sync::Mutex<DraftMark>,
     pub(crate) viewer_prompt: Mutex<crate::terminal::ViewerPrompt>,
     /// Fingerprints of recent instructions Yulius emitted to this session.
-    issued_prompts: Mutex<VecDeque<[u8; 32]>>,
+    prompt_receipts: Mutex<PromptReceipts>,
     /// Sequence of the last viewer input in this run. Before the first, only the durable
     /// mark identifies a possible draft, and a prompt may predate it (DRF-009).
     pub(crate) typed_seq: AtomicU64,
@@ -727,7 +744,7 @@ impl TaskRuntime {
             draft_told_ms: AtomicI64::new(0),
             draft_mark: tokio::sync::Mutex::default(),
             viewer_prompt: Mutex::default(),
-            issued_prompts: Mutex::default(),
+            prompt_receipts: Mutex::default(),
             typed_seq: AtomicU64::new(0),
             sent_past_draft: AtomicBool::new(false),
             emptied_seq: AtomicU64::new(0),
@@ -1611,17 +1628,21 @@ impl App {
         use sha2::Digest;
         let digest = sha2::Sha256::digest(text).into();
         let runtime = self.runtime(task);
-        let mut prompts = runtime
-            .issued_prompts
+        let mut receipts = runtime
+            .prompt_receipts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // Reissuing the same instruction should not evict other replayable sends.
+        let issued = &mut receipts.issued;
         const LIMIT: usize = 16;
-        prompts.retain(|entry| *entry != digest);
-        if prompts.len() == LIMIT {
-            prompts.pop_front();
+        let pending = issued
+            .iter()
+            .position(|p| p.digest == digest)
+            .and_then(|index| issued.remove(index))
+            .map_or(1, |p| p.pending.saturating_add(1));
+        if issued.len() == LIMIT {
+            issued.pop_front();
         }
-        prompts.push_back(digest);
+        issued.push_back(IssuedPrompt { digest, pending });
     }
 
     pub(crate) fn record_viewer_key(
@@ -1676,6 +1697,7 @@ impl App {
         sent: i64,
         sequence: u64,
         prompt: &[u8],
+        invocation: Option<u128>,
     ) -> Option<(i64, u64)> {
         use crate::terminal::ViewerEnter;
         use sha2::Digest;
@@ -1691,25 +1713,65 @@ impl App {
                 && key.time <= sent
                 && sent.saturating_sub(key.time) <= yulius_domain::intake::TYPED_WINDOW_MS
         });
+        let mut receipts = runtime
+            .prompt_receipts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(id) = invocation {
+            // A replay cannot acknowledge another owner's Enter, even if the words match.
+            if let Some(previous) = receipts
+                .invocations
+                .iter_mut()
+                .find(|request| request.id == id)
+            {
+                return previous.held_owner.take();
+            }
+            const LIMIT: usize = 128;
+            if receipts.invocations.len() == LIMIT {
+                receipts.invocations.pop_front();
+            }
+            receipts.invocations.push_back(SubmitInvocation {
+                id,
+                held_owner: None,
+            });
+        }
         if let Some(owner) = eligible
             .clone()
             .find(|key| key.enter == ViewerEnter::Submitted(digest))
         {
             return Some((owner.time, owner.sequence));
         }
-        // Receipt of a callback cannot prove its response reached the provider. Keep
-        // the run's source evidence so retries remain automatic across a later Enter.
-        if runtime
-            .issued_prompts
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains(&digest)
+        // A distinct invocation may carry an edited copy of an already acknowledged
+        // machine instruction. Older clients lack an identity, so their repeats keep
+        // the original attribution unless the viewer directly entered the same text.
+        if let Some(issued) = receipts
+            .issued
+            .iter_mut()
+            .find(|issued| issued.digest == digest && (invocation.is_none() || issued.pending > 0))
         {
+            issued.pending = issued.pending.saturating_sub(1);
             return None;
         }
         // The provider may edit or normalize what the viewer entered. Once an
         // automatic send is excluded, its accepted callback confirms the pending Enter.
         eligible.next().map(|key| (key.time, key.sequence))
+    }
+
+    /// The release of a held submit acknowledges the original Enter, even if
+    /// another invocation was processed while the subscription was unavailable.
+    pub(crate) fn keep_held_owner(&self, task: &TaskId, id: u128, owner: (i64, u64)) {
+        let runtime = self.runtime(task);
+        let mut receipts = runtime
+            .prompt_receipts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(request) = receipts
+            .invocations
+            .iter_mut()
+            .find(|request| request.id == id)
+        {
+            request.held_owner = Some(owner);
+        }
     }
 
     pub(crate) fn consume_viewer_submits(&self, task: &TaskId, through: u64) {
@@ -2516,11 +2578,11 @@ impl App {
             }
         };
         if task.mode == TaskMode::Goal {
-            self.runtime(&task.id)
-                .issued_prompts
+            *self
+                .runtime(&task.id)
+                .prompt_receipts
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clear();
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = PromptReceipts::default();
             let (SessionMode::New { prompt, .. } | SessionMode::Resume { prompt, .. }) = &mode;
             if let Some(prompt) = prompt {
                 self.note_issued_prompt(&task.id, prompt.as_bytes());

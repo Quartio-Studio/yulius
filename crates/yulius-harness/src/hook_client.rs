@@ -18,7 +18,7 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use yulius_contracts::hooks::SENT_AT_HEADER;
+use yulius_contracts::hooks::{INVOCATION_HEADER, SENT_AT_HEADER, events};
 use yulius_domain::agent_endpoint::{AgentEndpoint, EndpointError};
 
 /// Maximum hook payload read from stdin.
@@ -188,6 +188,7 @@ pub(crate) fn forward(
         target: &target,
         path: &path,
         body: &body,
+        invocation: (event == events::USER_PROMPT_SUBMIT).then(uuid::Uuid::new_v4),
         timeout,
     };
     let started = Instant::now();
@@ -224,6 +225,7 @@ pub(crate) fn post_internal(
         target: &target,
         path,
         body,
+        invocation: None,
         timeout,
     };
     match ask(&request)? {
@@ -237,6 +239,7 @@ struct Request<'a> {
     target: &'a AgentEndpoint,
     path: &'a str,
     body: &'a [u8],
+    invocation: Option<uuid::Uuid>,
     timeout: Duration,
 }
 
@@ -279,6 +282,7 @@ fn exchange(addr: &SocketAddr, request: &Request<'_>) -> Result<Answer, HookErro
         target,
         path,
         body,
+        invocation,
         timeout,
     } = *request;
     let token = &target.token;
@@ -289,10 +293,13 @@ fn exchange(addr: &SocketAddr, request: &Request<'_>) -> Result<Answer, HookErro
     let sent_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis());
+    let invocation_header = invocation.map_or_else(String::new, |id| {
+        format!("{INVOCATION_HEADER}: {}\r\n", id.simple())
+    });
     let head = format!(
         "POST {}{path} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {token}\r\n\
          Content-Type: application/json\r\nContent-Length: {}\r\n{SENT_AT_HEADER}: {sent_ms}\r\n\
-         Connection: close\r\n\r\n",
+         {invocation_header}Connection: close\r\n\r\n",
         target.base_path,
         target.host_header,
         body.len()

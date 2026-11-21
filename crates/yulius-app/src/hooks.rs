@@ -421,14 +421,20 @@ impl App {
         };
         let from_box = box_text && origin == SubmitOrigin::Unmarked;
         let sent_again = runtime.prompt_held.load(Ordering::SeqCst);
+        let invocation = if ctx.task.mode == TaskMode::Goal {
+            input.invocation
+        } else {
+            None
+        };
         let submitted = if from_box {
             let mut mark = runtime.draft_mark.lock().await;
-            if !sent_again {
+            if invocation.is_some() || !sent_again {
                 let enter = self.viewer_submit_at(
                     &ctx.task.id,
                     sent,
                     sequence,
                     input.prompt.as_deref().unwrap_or_default().as_bytes(),
+                    invocation,
                 );
                 // Enter empties the owner's draft at that key, even if more text is
                 // already in the PTY when the provider sends or retries its callback.
@@ -450,6 +456,9 @@ impl App {
         // request). At a 4xx it ends its hold and the prompt goes on; that is read as held
         // here too, which errs toward a draft, as after a hold the CLI gave up.
         let held = matches!(reply, Ok(HookReply::Hold { .. })) || (sent_again && reply.is_err());
+        if held && let (Some(id), Some((at, sequence, true))) = (invocation, submitted) {
+            self.keep_held_owner(&ctx.task.id, id, (at, sequence));
+        }
         // The box is taken as emptied once the prompt goes on, not while it is held: a prompt
         // Yulius blocks in the end (its scope check held it, TSK-013) never reaches the agent,
         // and Claude Code puts its text back into the box, so that submit emptied nothing.
