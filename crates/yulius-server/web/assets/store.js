@@ -174,7 +174,8 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
         map.set(task.id, needsVerification && task.status === 'parked' ? awaitingVerification(task) : task);
       }
       for (const [id, task] of read.changes) {
-        if (!watching && !confirming && !read.parked.has(id) && map.get(id)?.status !== 'parked') continue;
+        const listed = map.get(id);
+        if (!watching && !confirming && !read.parked.has(id) && listed && listed.status !== 'parked') continue;
         if (task.archived) map.delete(id);
         else if (unverified.has(task)) map.set(id, awaitingVerification(task, map.get(id)));
         else map.set(id, task);

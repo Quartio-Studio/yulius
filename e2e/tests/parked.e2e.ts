@@ -1259,3 +1259,42 @@ test('replaying a parked rename preserves a replacement PR discovered while the 
   });
   expect(result).toEqual([['Renamed', true, 8], ['Renamed', true, 8], 3]);
 });
+
+test('an Undo received during archive confirmation survives a competing empty list in both orders', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const results = await browser.evaluate(async () => {
+    const url = '/assets/store.js';
+    const { createStore } = await import(url);
+    const seen = [];
+    for (const finish of [[3, 4], [4, 3]]) {
+      let row = { sandbox_id: 's', id: 'p', status: 'parked', archived: false };
+      const release: (() => void)[] = [];
+      let started!: () => void;
+      const confirm = new Promise<void>(resolve => { started = resolve; });
+      let calls = 0;
+      const store = createStore({ get: async () => {
+        const snapshot = row.archived ? [] : [row];
+        const n = ++calls;
+        if (n === 3) started();
+        if (n > 1 && n <= 4) await new Promise<void>(resolve => { release[n] = resolve; });
+        return snapshot;
+      } });
+      await store.loadTasks('s');
+      const first = store.loadTasks('s');
+      row = { ...row, status: 'closed', archived: true };
+      store.upsertTask(row);
+      release[2]();
+      await confirm;
+      const competing = store.loadTasks('s');
+      row = { ...row, archived: false };
+      store.upsertTask(row);
+      for (const n of finish) {
+        release[n]();
+        await (n === 3 ? first : competing);
+      }
+      seen.push(store.findTask('p')?.status ?? null);
+    }
+    return seen;
+  });
+  expect(results).toEqual(['closed', 'closed']);
+});
