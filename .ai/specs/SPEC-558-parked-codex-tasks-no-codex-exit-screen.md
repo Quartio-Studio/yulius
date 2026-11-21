@@ -43,7 +43,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Keep verified unfinished parked rows out of Done in the browser
 - [x] Reconcile parked lifecycle changes and refresh the sidebar independently of Git
 - [x] Show current parked progress and owner notices in the terminal
-- [ ] Publish verified parked task detail to the terminal
+- [x] Publish verified parked task detail to the terminal
 - [ ] Reconcile missed parks, resumes and archives discovered by terminal detail
 - [ ] Publish verified parked task detail to Task Info
 - [ ] Keep failed integration candidates with their original owner
@@ -72,6 +72,8 @@ Capture a separate screen at the park decision because exiting can clear the ent
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
 ## Evidence
+
+- Independent review approved the existing-row delivery at `53bd0b02d`. Seven reviewer-run Chromium regressions verified terminal/sidebar agreement, retention of successful detail across failed resync and both reply orders of an unavailable watch with a merged overview. Repeating the four closure/owner cases with server-equivalent owner fields kept the PR closed and preserved the decision. Detail-only prompts, run history and account email stayed out of the shared row. Eight author-run regressions passed on the split implementation. The earlier frozen complete browser suite at `7ca1b7e56` passed 1,248 tests with one optional skip. Repository contracts, formatting and spec validation passed. The mutation command had no changed Rust targets. Vidoc was disabled.
 
 - Review of `5c830fdcd` reproduced a failed watched list followed by a Git overview that reported the PR merged. Reversing only the replies changed the parked group. The Chromium regression exercises both orders with and without an outstanding human decision. The overview now reconciles a closure on an unverified row. After the third review, private discovery of a park from a still-running list row moved to the planned lifecycle delivery. This delivery publishes only into existing parked rows and reads their current verification for terminal grouping. The missed-park cases remain at `5c830fdcd` for that lifecycle step.
 
