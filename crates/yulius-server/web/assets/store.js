@@ -175,7 +175,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       if (watchFailure > snapshotOrder) failedWatchOrder.set(map, watchFailure);
       for (const task of Array.isArray(list) ? list : []) {
         if (task.archived) continue;
-        map.set(task.id, orderedListRow(task, current?.get(task.id), snapshotOrder, failureOrder));
+        map.set(task.id, orderedListRow(task, current?.get(task.id), snapshotOrder, failureOrder, read.parked.has(task.id)));
       }
       for (const [id, task] of read.changes) {
         const listed = map.get(id);
@@ -261,14 +261,14 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     };
   }
 
-  function orderedListRow(listed, prior, snapshotOrder, failureOrder) {
+  function orderedListRow(listed, prior, snapshotOrder, failureOrder, crossedPark) {
     // A detail or lifecycle event that started later supplies the parked state.
     // The list can still carry a new title or discover an open PR.
     const priorOrder = rowOrder.get(prior) ?? 0;
-    const keepPrior = priorOrder > snapshotOrder && (prior.status === 'parked' || listed.status === 'parked');
+    const keepPrior = priorOrder > snapshotOrder && (crossedPark || prior.status === 'parked' || listed.status === 'parked');
     const order = keepPrior ? priorOrder : snapshotOrder;
     let row = listed;
-    if (keepPrior) row = prior.status === listed.status ? { ...listed, ...parkedFacts(prior) } : { ...prior };
+    if (keepPrior) row = prior.status === 'parked' && listed.status === 'parked' ? { ...listed, ...parkedFacts(prior) } : { ...prior };
     const fallbackOrder = Math.max(failureOrder, unverified.get(prior) ?? 0);
     if (row.status === 'parked' && fallbackOrder >= order) {
       row = awaitingVerification(row, keepPrior ? listed : prior, fallbackOrder);
@@ -304,6 +304,13 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       // the later failure's conservative group for a task that is still parked.
       if (detail.status === 'parked' && (fallbackOrder > order || typeof detail.parked_needs_you !== 'boolean')) {
         updated = awaitingVerification(updated, row, Math.max(order, fallbackOrder));
+      }
+      if (row.status === 'parked' && updated.status !== 'parked') {
+        // An older list may have seen a partially resumed task waiting for capacity.
+        // Remember the transition even when its eventual reply also looks live.
+        for (const read of activeLists) {
+          if (read.sandboxId === detail.sandbox_id && read.order < order) read.parked.add(row.id);
+        }
       }
       rowOrder.set(updated, order);
       map.set(row.id, updated);

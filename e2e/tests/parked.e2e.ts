@@ -1954,3 +1954,33 @@ test('an older parked update stays conservative after the watch and list confirm
   });
   expect(states).toEqual([true, true, 'Renamed before the watch', 4]);
 });
+
+test('a held capacity snapshot cannot reverse a later detail that saw the parked session running', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const parked = { id: 'p', sandbox_id: 's', status: 'parked', activity: 'done', background_shells: 0 };
+    const results = [];
+    for (const staleStatus of ['waiting_capacity', 'running']) {
+      const gate = Promise.withResolvers<void>();
+      let reads = 0;
+      const store = createStore({ get: async () => {
+        if (++reads === 1) return [parked];
+        await gate.promise;
+        return [{ ...parked, status: staleStatus, activity: 'waiting' }];
+      } });
+      await store.loadTasks('s');
+      const held = store.loadTasks('s', true);
+      const seenStatus: string[] = [];
+      store.on('task', (row: { status: string }) => seenStatus.push(row.status));
+      store.beginParkedDetail()({ ...parked, status: 'running', activity: 'working', background_shells: 1 });
+      gate.resolve();
+      await held;
+      const row = store.findTask('p');
+      results.push([row.status, row.activity, row.background_shells, seenStatus, reads]);
+    }
+    return results;
+  });
+  expect(seen).toEqual([['running', 'working', 1, ['running'], 2], ['running', 'working', 1, ['running'], 2]]);
+});
