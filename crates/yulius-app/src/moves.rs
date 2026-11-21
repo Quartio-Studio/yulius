@@ -160,9 +160,6 @@ impl Left {
     }
 }
 
-/// Relaunch instruction for a move that interrupts an already-working turn.
-pub(crate) const RESUME_WORKING_TURN: &str = "Continue the task exactly where you left off.";
-
 impl App {
     /// Moves a running or waiting task to `account`, or to the pool's choice when `None`, in the
     /// same session (MOV-001, MOV-003): past the limit for a turn a limit cut (SPEC-034), the first
@@ -194,7 +191,7 @@ impl App {
             Some(pause) if pause.kind == PauseKind::Prompt => pause.continuation,
             Some(pause) if pause.kind == PauseKind::Turn => self.stop_continuation(&task).await,
             _ if task.status == TaskStatus::Running && task.activity == Some(Activity::Working) => {
-                Some(RESUME_WORKING_TURN.into())
+                Some("Continue the task exactly where you left off.".into())
             }
             _ => None,
         };

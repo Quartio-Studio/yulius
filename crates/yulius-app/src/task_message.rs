@@ -946,6 +946,26 @@ impl App {
                 err.public_message()
             ))
         })?;
+        // The task's owner can send the new instruction through a tool as well as by
+        // typing in its terminal. A failed send, a command and a machine wake spend
+        // none of the goal's restored budget.
+        if task.mode == crate::model::TaskMode::Goal
+            && what == Typed::Prompt
+            && matches!(from, Sender::Person | Sender::OwnerPastDraft)
+        {
+            let update = crate::ports::store::TaskFieldUpdate {
+                gate_blocks: Some(0),
+                ..Default::default()
+            };
+            if let Err(err) = self
+                .deps
+                .store
+                .update_task(&task.id, &update, self.now())
+                .await
+            {
+                tracing::warn!(task = %task.id, error = %err, "could not reset the goal attempts after an owner message");
+            }
+        }
         if let (Some(attempt), Some(mark)) = (&released, &mut mark) {
             runtime.box_emptied_ms.fetch_max(typed, Ordering::SeqCst);
             runtime

@@ -393,7 +393,7 @@ impl App {
     ) -> AppResult<HookReply> {
         if event != events::USER_PROMPT_SUBMIT {
             return self
-                .answer_event(ctx, event, input, sent, SubmitOrigin::Unmarked)
+                .answer_event(ctx, event, input, sent, SubmitOrigin::Unmarked, false)
                 .await;
         }
         // A prompt submitted from the session's prompt box empties it: what was typed before
@@ -421,7 +421,17 @@ impl App {
         } else {
             None
         };
-        let reply = self.answer_event(ctx, event, input, sent, origin).await;
+        // A key observed after Enter belongs to the next prompt. Yulius's own launch
+        // instructions and restored native goals have no viewer keys in this prompt.
+        let viewer_input = submitted.is_some_and(|(at, seq)| {
+            let typed = runtime.typed_at_ms.load(Ordering::SeqCst);
+            typed > runtime.empty_time_for_typing()
+                && typed <= at
+                && runtime.typed_seq.load(Ordering::SeqCst) <= seq
+        });
+        let reply = self
+            .answer_event(ctx, event, input, sent, origin, viewer_input)
+            .await;
         // A prompt that is held stays held through an answer that fails: the hook client, once
         // it holds, asks again after a 5xx or a lost connection (it fails open at a first
         // request). At a 4xx it ends its hold and the prompt goes on; that is read as held
@@ -501,6 +511,7 @@ impl App {
         input: &HookInput,
         sent: i64,
         origin: SubmitOrigin,
+        viewer_input: bool,
     ) -> AppResult<HookReply> {
         // This run reports its turn boundaries through hooks: the Stop hook decides switches
         // and pauses, not the transcript.
@@ -543,7 +554,10 @@ impl App {
             events::SESSION_START => Ok(HookReply::Output(
                 self.hook_session_start(ctx, input).await?,
             )),
-            events::USER_PROMPT_SUBMIT => self.hook_prompt_submit(ctx, input, sent, origin).await,
+            events::USER_PROMPT_SUBMIT => {
+                self.hook_prompt_submit(ctx, input, sent, origin, viewer_input)
+                    .await
+            }
             events::PRE_INVOCATION if ctx.attempt.harness == Harness::Antigravity => {
                 self.antigravity_work(&ctx.task.id, sent).await?;
                 Ok(HookReply::Output(HookOutput::default()))
@@ -946,6 +960,7 @@ impl App {
         input: &HookInput,
         sent: i64,
         origin: SubmitOrigin,
+        viewer_input: bool,
     ) -> AppResult<HookReply> {
         let typed = origin == SubmitOrigin::Unmarked
             && crate::finish::is_typed_prompt(input.prompt.as_deref());
@@ -1034,13 +1049,7 @@ impl App {
         }
         // As it is now: a Stop of the turn before may have settled it since it was read.
         let task = store.task(&ctx.task.id).await?.ok_or(AppError::NotFound)?;
-        if task.gate_blocks != 0
-            && !(task.mode == TaskMode::Goal
-                && input.prompt.as_deref().is_some_and(|prompt| {
-                    prompt.starts_with(GOAL_CONTINUATION)
-                        || prompt == crate::moves::RESUME_WORKING_TURN
-                }))
-        {
+        if task.gate_blocks != 0 && (task.mode == TaskMode::Prompt || viewer_input) {
             let update = TaskFieldUpdate {
                 gate_blocks: Some(0),
                 ..TaskFieldUpdate::default()
@@ -1163,6 +1172,13 @@ impl App {
 
     /// What a session resumed on another subscription should do after a held turn.
     pub(crate) async fn stop_continuation(&self, task: &TaskRecord) -> Option<String> {
+        if task.mode == TaskMode::Prompt {
+            return if task.gate_blocks < MAX_GATE_BLOCKS {
+                self.spec_gate(task).await.ok().flatten()
+            } else {
+                None
+            };
+        }
         let gate = self.stop_gate(task, false).await.ok()?;
         let runtime = self.runtime(&task.id);
         let _work = runtime.steps_lock.lock().await;
@@ -1264,6 +1280,13 @@ impl App {
             );
         }
 
+        // Prompt-mode spec discipline is known before the rotation and transcript
+        // checks. Its capacity and licensing decisions retain their existing order.
+        let prompt_gate = if task.mode == TaskMode::Prompt && !failed {
+            Some(self.stop_gate(task, reported_background).await?)
+        } else {
+            None
+        };
         // The turn boundary: stay, move to another subscription, or pause (ROT-003, ROT-010).
         self.runtime(&task.id)
             .proactive_switch
@@ -1354,6 +1377,8 @@ impl App {
         };
         let gate = if failed {
             StopGate::Handoff
+        } else if let Some(gate) = prompt_gate {
+            gate
         } else {
             self.stop_gate(task, reported_background).await?
         };
@@ -1395,49 +1420,27 @@ impl App {
         } else {
             gate
         };
+        let clears_budget = task.mode == TaskMode::Prompt
+            || (matches!(gate, StopGate::Pass) && !self.goal_is_open(&task.id));
         let can_nudge =
             matches!(gate, StopGate::Pass) || (declared && matches!(gate, StopGate::Continue(_)));
         let mut reason = match gate {
             StopGate::Continue(reason) => Some(reason),
             StopGate::Pass | StopGate::Handoff | StopGate::Declared => None,
         };
-        if let Some(reason) = &reason
+        if task.mode == TaskMode::Goal
+            && let Some(reason) = &reason
             && task.gate_blocks >= MAX_GATE_BLOCKS
         {
             if move_reviewer.is_some() {
                 runtime.reviewer_move.store(true, Ordering::SeqCst);
             }
-            let (stopped, action) = if let Some(work) = reason.strip_prefix(GOAL_CONTINUATION) {
-                (
-                    format!(
-                        "could not finish after {MAX_GATE_BLOCKS} automatic attempts. {}",
-                        work.chars().take(300).collect::<String>()
-                    ),
-                    "Review the last attempt in the task terminal to identify what blocked completion.",
-                )
-            } else {
-                (
-                    format!(
-                        "stopped {MAX_GATE_BLOCKS} times without fixing: {}",
-                        reason.chars().take(300).collect::<String>()
-                    ),
-                    "Tell it how to go on, in the terminal.",
-                )
-            };
-            // Said by the task itself, for whoever opens it later (SPEC-472), and in its
-            // terminal for the viewers there now.
-            self.flag_attention(
-                &task.id,
-                crate::attention::AttentionRecord::yulius(&format!("The agent {stopped}"), action),
-            )
-            .await?;
-            self.runtime(&task.id)
-                .hub
-                .notice(format!("Yulius: the agent {stopped}"));
-            return Ok(HookReply::Output(HookOutput::default()));
+            return self.exhausted_stop(task, reason).await;
         }
 
-        let continuation = reason.as_ref();
+        let continuation = reason
+            .as_ref()
+            .filter(|_| task.gate_blocks < MAX_GATE_BLOCKS);
         let gate_continues = continuation.is_some();
         let continues = gate_continues || (task.follows_goal() && !failed);
         if let Some(account) = move_reviewer {
@@ -1511,7 +1514,10 @@ impl App {
                 return Ok(self.hold_for(&task.id));
             }
             (Decision::Wait { .. }, _) if continues => {
-                self.pause_task(&task.id, PauseKind::Turn, current, continuation.cloned())
+                let carried = continuation
+                    .filter(|_| task.mode == TaskMode::Goal)
+                    .cloned();
+                self.pause_task(&task.id, PauseKind::Turn, current, carried)
                     .await?;
                 return Ok(self.hold_for(&task.id));
             }
@@ -1535,7 +1541,8 @@ impl App {
             }
         }
         let Some(reason) = reason else {
-            if task.gate_blocks != 0 {
+            drop(_work);
+            if clears_budget && task.gate_blocks != 0 {
                 let update = TaskFieldUpdate {
                     gate_blocks: Some(0),
                     ..TaskFieldUpdate::default()
@@ -1592,6 +1599,9 @@ impl App {
             return Ok(HookReply::Output(HookOutput::default()));
         };
 
+        if task.gate_blocks >= MAX_GATE_BLOCKS {
+            return self.exhausted_stop(task, &reason).await;
+        }
         let update = TaskFieldUpdate {
             gate_blocks: Some(task.gate_blocks + 1),
             ..TaskFieldUpdate::default()
@@ -1617,6 +1627,38 @@ impl App {
             self.publish_task(&task.id).await;
         }
         Ok(HookReply::Output(HookOutput::block(reason)))
+    }
+
+    /// A repeated gate reason survives as the explanation shown to the task owner.
+    async fn exhausted_stop(&self, task: &TaskRecord, reason: &str) -> AppResult<HookReply> {
+        let (stopped, action) = if let Some(work) = reason.strip_prefix(GOAL_CONTINUATION) {
+            (
+                format!(
+                    "could not finish after {MAX_GATE_BLOCKS} automatic attempts. {}",
+                    work.chars().take(300).collect::<String>()
+                ),
+                "Review the last attempt in the task terminal to identify what blocked completion.",
+            )
+        } else {
+            (
+                format!(
+                    "stopped {MAX_GATE_BLOCKS} times without fixing: {}",
+                    reason.chars().take(300).collect::<String>()
+                ),
+                "Tell it how to go on, in the terminal.",
+            )
+        };
+        // Said by the task itself, for whoever opens it later (SPEC-472), and in its
+        // terminal for the viewers there now.
+        self.flag_attention(
+            &task.id,
+            crate::attention::AttentionRecord::yulius(&format!("The agent {stopped}"), action),
+        )
+        .await?;
+        self.runtime(&task.id)
+            .hub
+            .notice(format!("Yulius: the agent {stopped}"));
+        Ok(HookReply::Output(HookOutput::default()))
     }
 
     /// A turn of a run without hooks ended (seen in its transcript): run a pending proactive

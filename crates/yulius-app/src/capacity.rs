@@ -986,8 +986,9 @@ impl App {
         if let Ok(next) = task.status.apply(TaskEvent::CapacityReturned) {
             let activity = match pause.kind {
                 PauseKind::Turn
-                    if pause.continuation.is_none()
-                        && self.stop_continuation(task).await.is_none() =>
+                    if task.mode == crate::model::TaskMode::Prompt
+                        || (pause.continuation.is_none()
+                            && self.stop_continuation(task).await.is_none()) =>
                 {
                     Activity::Waiting
                 }
