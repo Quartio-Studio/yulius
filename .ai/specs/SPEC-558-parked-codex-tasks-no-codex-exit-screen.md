@@ -48,7 +48,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Publish terminal-discovered resumes to the active task list
 - [x] Restore resting tasks when terminal detail or the active list discovers Undo
 - [x] Publish terminal-discovered archive removal after Closed
-- [ ] Publish verified parked task detail to Task Info
+- [x] Publish verified parked task detail to Task Info
 - [ ] Keep failed integration candidates with their original owner
 - [ ] Deliver bounded Codex goal continuation to dev
 - [ ] Recover screens from tasks parked before the upgrade
@@ -75,6 +75,8 @@ Capture a separate screen at the park decision because exiting can clear the ent
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
 ## Evidence
+
+- Independent review approved Task Info publication at `8d71ce520`. All 16 author-run mounted Chromium cases and all 13 reviewer-run cases passed. The resolved owner instruction stayed cleared after a failing PR rerun. With overlapping reads, the running task’s Plan reached 7/7 and the parked header displayed the second title. Quick checks and spec validation passed. No changed Rust lines were eligible for mutation. Vidoc was disabled.
 
 - On `cb3c16082`, Task Info redisplayed a resolved owner instruction when a later PR failure put the task back under Needs you. The mounted regression passed after the page accepted the complete watched summary. On `5ed4cd05e`, two held step reads answering in start order left a running task’s Plan at 0/7 after all seven step rows completed. On a parked task the header retained the first answer’s title. Both regressions exercise the page through its step events.
 
