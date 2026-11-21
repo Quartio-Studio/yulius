@@ -536,7 +536,7 @@ export function mountTaskView(ctx, sandbox, task) {
     if (pressed) { attentionStale = true; return; }
     attentionStale = false;
     const pr = ctx.store.pullsOf(current.sandbox_id).get(current.id);
-    const info = taskInfo(current, ctx.store.state.actionRequests, pr);
+    const info = taskInfo(current, ctx.store.state.actionRequests, ctx.store.pullForStatus(current));
     // Failed checks already have their PR action in the strip.
     const waitingForReply = current.status === 'running' && current.activity === 'waiting' && info.group === 'needs' && !info.pr;
     const parkedWaiting = current.status === 'parked' && current.activity === 'waiting' && info.group === 'needs';
@@ -1000,7 +1000,7 @@ export function mountTaskView(ctx, sandbox, task) {
     renderQueue();
     const steps = current.steps || { done: 0, total: 0, current: null };
     // The session's state as the sidebar says it (pull request, browser request, usage limit).
-    const info = taskInfo(current, ctx.store.state.actionRequests, ctx.store.pullsOf(current.sandbox_id).get(current.id));
+    const info = taskInfo(current, ctx.store.state.actionRequests, ctx.store.pullForStatus(current));
     const total = steps.total || 0;
     const done = steps.done || 0;
     let n = total ? Math.min(total, done + (steps.current ? 1 : 0)) : 0;
@@ -1126,13 +1126,16 @@ export function mountTaskView(ctx, sandbox, task) {
   async function loadDetail() {
     const read = ++detailRead;
     const heardBefore = changesHeard;
+    const publishParked = ctx.store.beginParkedDetail();
     try {
       const fresh = await ctx.api.get(`/api/tasks/${enc(current.id)}`, { signal: reads.signal });
       if (!alive || read < appliedRead) return; // the view was left, or a newer answer was applied
       appliedRead = read;
       detail = fresh;
       if (detail && detail.id === current.id) {
-        if (read === detailRead && changesHeard === heardBefore) current = { ...current, ...pickSummary(detail) };
+        const unchanged = read === detailRead && changesHeard === heardBefore;
+        const summary = unchanged ? { ...current, ...pickSummary(detail) } : current;
+        current = publishParked(detail, summary);
         heldKey = '';
         renderStrip();
         // The end banner may name the limit the last run met (SPEC-268), known only from here.
@@ -1183,7 +1186,7 @@ export function mountTaskView(ctx, sandbox, task) {
       const previousStatus = current.status;
       const previousUpdate = current.updated_at;
       const previousOwner = owner();
-      current = { ...current, ...next, needs_you_notice: next.needs_you_notice };
+      current = { ...current, ...next, needs_you_notice: next.needs_you_notice, parked_needs_you: next.parked_needs_you, parked_pr: next.parked_pr };
       // Whether the task started is the detail's: a status with a run means it has, and any status
       // change reads the detail again (a start that found no capacity has not). A message someone
       // else queued changes the request: read it again too.

@@ -133,8 +133,11 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   // snapshot even when the other request fails.
   let nextListRead = 0;
   const listOrder = new WeakMap();
-  const parkedRowOrder = new WeakMap();
+  const failedWatchOrder = new WeakMap();
+  const rowOrder = new WeakMap();
+  const verifiedOrder = new WeakMap();
   const overviewOrder = new WeakMap();
+  const prOrder = new WeakMap();
 
   // Events have second-resolution timestamps. Confirm a lifecycle change seen
   // during an explicit list read once, then preserve any changes during confirmation.
@@ -168,20 +171,27 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       const current = state.tasks.get(sandboxId);
       if (listOrder.get(current) > snapshotOrder) return current;
       const missedChange = pullWatch.get(sandboxId)?.changeBeforeParkedRows > snapshotOrder;
-      const needsVerification = missedChange || read.failedWatchOrder > snapshotOrder;
+      const watchFailure = Math.max(read.failedWatchOrder, failedWatchOrder.get(current) ?? 0);
+      const failureOrder = Math.max(watchFailure, pullWatch.get(sandboxId)?.changeBeforeParkedRows ?? 0);
       const map = new Map();
+      if (watchFailure > snapshotOrder) failedWatchOrder.set(map, watchFailure);
       for (const task of Array.isArray(list) ? list : []) {
         if (task.archived) continue;
-        unverified.delete(task);
-        if (task.status === 'parked' && task.parked_needs_you === false) parkedRowOrder.set(task, snapshotOrder);
-        map.set(task.id, needsVerification && task.status === 'parked' ? awaitingVerification(task) : task);
+        map.set(task.id, orderedListRow(task, current?.get(task.id), snapshotOrder, failureOrder));
       }
       for (const [id, task] of read.changes) {
         const listed = map.get(id);
         if (!watching && !confirming && !read.parked.has(id) && listed && listed.status !== 'parked') continue;
-        if (task.archived) map.delete(id);
-        else if (unverified.has(task)) map.set(id, awaitingVerification(task, map.get(id)));
-        else map.set(id, task);
+        if (task.archived) {
+          map.delete(id);
+          continue;
+        }
+        const prior = current?.get(id);
+        // A detail can supersede an event after the list saved it for replay.
+        const latest = rowOrder.get(prior) > Math.max(snapshotOrder, rowOrder.get(task) ?? 0) ? prior : task;
+        const fallbackOrder = Math.max(failureOrder, unverified.get(latest) ?? 0);
+        const uncertain = latest.status === 'parked' && fallbackOrder >= rowOrder.get(latest);
+        map.set(id, uncertain ? awaitingVerification(latest, listed ?? prior, fallbackOrder) : latest);
       }
       for (const id of read.deleted) map.delete(id);
       state.taskErrors.delete(sandboxId);
@@ -192,7 +202,15 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
         for (const task of map.values()) {
           const prior = current.get(task.id);
           if (task.status !== 'parked' && prior?.status !== 'parked') continue;
-          if (JSON.stringify(task) !== JSON.stringify(prior)) { emit('task', task); changed = true; }
+          if (!prior || JSON.stringify(task) !== JSON.stringify(prior) || pullForStatus(task) !== pullForStatus(prior)) {
+            emit('task', task);
+            changed = true;
+          }
+          // Only the open task view subscribes to its step list. The watched
+          // summary can learn that its plan changed even if no step event arrived.
+          if (prior?.status === 'parked' && task.status === 'parked' && task.steps &&
+              (task.steps.done !== prior.steps?.done || task.steps.total !== prior.steps?.total ||
+               (task.steps.current ?? null) !== (prior.steps?.current ?? null))) emit('steps', task.id);
         }
       }
       emit('tasks', sandboxId);
@@ -205,13 +223,16 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       const current = state.tasks.get(sandboxId);
       if (listOrder.get(current) > order) return current;
       if (watching) {
+        // The failed read covered the sandbox, including tasks whose park
+        // this tab has yet to discover through an outstanding detail.
+        if (current) failedWatchOrder.set(current, Math.max(order, failedWatchOrder.get(current) ?? 0));
         for (const older of activeLists) {
           if (older.sandboxId === sandboxId && older.order < order) older.failedWatchOrder = Math.max(older.failedWatchOrder, order);
         }
         let changed = false;
         for (const [id, task] of current || []) {
-          if (task.status !== 'parked' || read.changes.has(id)) continue;
-          const updated = awaitingVerification(task);
+          if (task.status !== 'parked' || read.changes.has(id) || Math.max(rowOrder.get(task) ?? 0, unverified.get(task) ?? 0) > order) continue;
+          const updated = awaitingVerification(task, undefined, order);
           if (updated !== task) {
             current.set(id, updated);
             emit('task', updated);
@@ -231,10 +252,108 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     }
   }
 
-  function knownOpenPr(prior, sandboxId, id) {
-    const pr = state.pulls.get(sandboxId)?.get(id);
-    if (pr?.state === 'open') return { number: pr.number, open: true };
-    return prior?.parked_pr?.open ? prior.parked_pr : null;
+  // Parked status comes from the same verifier in the list and on the detail route.
+  // Keep detail-only data (runs, transcripts, etc.) out of the shared task list.
+  function parkedFacts(task) {
+    return {
+      status: task.status, archived: task.archived, activity: task.activity, steps: task.steps, spec_unfinished: task.spec_unfinished,
+      goal_unfinished: task.goal_unfinished, held_prompt: task.held_prompt,
+      needs_you: task.needs_you, needs_you_notice: task.needs_you_notice,
+      parked_needs_you: task.parked_needs_you, parked_pr: task.parked_pr,
+    };
+  }
+
+  function orderedListRow(listed, prior, snapshotOrder, failureOrder) {
+    // A detail or lifecycle event that started later supplies the parked state.
+    // The list can still carry a new title or discover an open PR.
+    if (listed.parked_pr) prOrder.set(listed.parked_pr, snapshotOrder);
+    if (typeof listed.parked_needs_you === 'boolean') verifiedOrder.set(listed, snapshotOrder);
+    const priorOrder = rowOrder.get(prior) ?? 0;
+    const keepPrior = priorOrder > snapshotOrder && prior?.status === 'parked' && listed.status === 'parked';
+    const order = keepPrior ? priorOrder : snapshotOrder;
+    let row = listed;
+    if (keepPrior) {
+      row = { ...listed, ...parkedFacts(prior) };
+      verifiedOrder.set(row, verifiedOrder.get(prior) ?? 0);
+    }
+    const fallbackOrder = Math.max(failureOrder, unverified.get(prior) ?? 0);
+    if (row.status === 'parked' && fallbackOrder >= order) {
+      row = awaitingVerification(row, keepPrior ? listed : prior, fallbackOrder);
+    } else {
+      unverified.delete(row);
+    }
+    rowOrder.set(row, order);
+    verifiedOrder.set(row, Math.max(verifiedOrder.get(prior) ?? 0, typeof listed.parked_needs_you === 'boolean' ? snapshotOrder : 0));
+    return row;
+  }
+
+  function publishParkedRow(map, row, updated) {
+    if (updated !== row) {
+      map.set(row.id, updated);
+      if (JSON.stringify(updated) !== JSON.stringify(row) || pullForStatus(updated) !== pullForStatus(row)) {
+        emit('task', updated);
+        emit('tasks', row.sandbox_id);
+        scheduleCountsRefresh();
+      }
+    }
+    return updated;
+  }
+
+  function parkedView(view, row) {
+    const summary = { ...view, ...parkedFacts(row) };
+    // The terminal may discover the park before a list row does. Its private
+    // view needs the order of that verification when comparing with a Git chip.
+    rowOrder.set(summary, rowOrder.get(row) ?? 0);
+    if (unverified.has(row)) unverified.set(summary, unverified.get(row));
+    return summary;
+  }
+
+  function beginParkedDetail() {
+    const order = ++nextListRead;
+    return (detail, view = {}) => {
+      const map = state.tasks.get(detail.sandbox_id);
+      const row = map?.get(detail.id);
+      if (detail.status !== 'parked') return view;
+      if (detail.parked_pr) prOrder.set(detail.parked_pr, order);
+      if (typeof detail.parked_needs_you === 'boolean') verifiedOrder.set(detail, order);
+      if (rowOrder.get(row) > order) {
+        // Preserve the newer event's work and decisions. An older detail may
+        // still identify the open PR that an unverified update could not name.
+        if (row.status === 'parked' && unverified.has(row) && (verifiedOrder.get(row) ?? 0) < order) {
+          return parkedView(view, publishParkedRow(map, row, awaitingVerification(row, detail)));
+        }
+        return parkedView(view, row);
+      }
+      let updated = { ...row, ...parkedFacts(detail), id: detail.id, sandbox_id: detail.sandbox_id };
+      const hintOrder = pullWatch.get(detail.sandbox_id)?.changeBeforeParkedRows ?? 0;
+      verifiedOrder.set(updated, verifiedOrder.get(detail) ?? verifiedOrder.get(row) ?? 0);
+      const fallbackOrder = Math.max(hintOrder, unverified.get(row) ?? 0, failedWatchOrder.get(map) ?? 0);
+      if (fallbackOrder > order || typeof detail.parked_needs_you !== 'boolean') {
+        updated = awaitingVerification(updated, row, Math.max(order, fallbackOrder));
+      }
+      // Publish verified work into an existing parked row. The list and lifecycle
+      // events own membership; the terminal can already display its fresh detail.
+      rowOrder.set(updated, order);
+      verifiedOrder.set(updated, typeof detail.parked_needs_you === 'boolean' ? order : verifiedOrder.get(row) ?? 0);
+      if (row?.status === 'parked' && !detail.archived) publishParkedRow(map, row, updated);
+      return parkedView(view, updated);
+    };
+  }
+
+  function knownOpenPr(task, snapshot) {
+    // An unverified group may inherit its PR from a different read. Compare
+    // the PR observations themselves, independently of grouping and chip text.
+    const candidates = [task.parked_pr, snapshot?.parked_pr].filter(Boolean);
+    const overview = state.pulls.get(task.sandbox_id);
+    const git = overview?.get(task.id);
+    if (git && ['open', 'closed', 'merged'].includes(git.state)) {
+      const pr = { number: git.number, open: git.state === 'open' };
+      prOrder.set(pr, overviewOrder.get(overview) ?? 0);
+      candidates.push(pr);
+    }
+    candidates.sort((a, b) => (prOrder.get(b) ?? 0) - (prOrder.get(a) ?? 0));
+    // A newer closure rules out an older observation of the same open PR.
+    return candidates.find((pr, i) => pr.open && !candidates.slice(0, i).some(newer => newer.number === pr.number));
   }
 
   function upsertTask(task) {
@@ -244,7 +363,11 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     const pending = [...activeLists].filter(read => read.sandboxId === task.sandbox_id);
     if (pending.some(read => read.deleted.has(task.id))) return;
     const recheck = task.status === 'parked' && !task.archived && typeof task.parked_needs_you !== 'boolean';
-    if (recheck) task = awaitingVerification(task, prior);
+    const order = ++nextListRead;
+    if (task.parked_pr) prOrder.set(task.parked_pr, order);
+    if (recheck) task = awaitingVerification(task, prior, order);
+    rowOrder.set(task, order);
+    verifiedOrder.set(task, recheck ? verifiedOrder.get(prior) ?? 0 : order);
     for (const read of pending) {
       if (task.status === 'parked' || prior?.status === 'parked') read.parked.add(task.id);
       read.changes.set(task.id, task);
@@ -380,7 +503,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   const sources = [refreshParkedGroups, loadGitOverview];
   const inFlight = new Map(sources.map(source => [source, new Map()]));
   // A failed read may need a conservative display when Git later discovers an open PR.
-  const unverified = new WeakSet();
+  const unverified = new WeakMap();
   const pollPaused = () => document.hidden || navigator.onLine === false;
   // The overview takes seconds (GitHub and Git for every task), so this browser keeps what the
   // last read said, per user, and a page load shows it at once until its own read replaces it
@@ -406,8 +529,11 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   function pullForStatus(task) {
     const pulls = pullsOf(task.sandbox_id);
     const pr = pulls.get(task.id);
+    // Mounted views add detail-only fields to a copy of the list row.
+    const row = rowOrder.has(task) ? task : state.tasks.get(task.sandbox_id)?.get(task.id);
     if (pr?.state === 'open' && task.parked_needs_you === false && task.parked_pr?.number === pr.number &&
-        parkedRowOrder.get(task) > (overviewOrder.get(pulls) ?? 0) &&
+        row?.parked_needs_you === false && row.parked_pr?.number === pr.number && !unverified.has(row) &&
+        rowOrder.get(row) > (overviewOrder.get(pulls) ?? 0) &&
         (pr.conflicts || !['success', 'none'].includes(pr.checks))) return null;
     return pr;
   }
@@ -431,17 +557,25 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     if (hasParkedRows(state.tasks.get(sandboxId))) await loadTasks(sandboxId, true);
   }
 
-  function awaitingVerification(task, snapshot) {
-    const prior = task.parked_pr?.open ? task : snapshot ?? task;
-    const pr = knownOpenPr(prior, task.sandbox_id, task.id);
+  function awaitingVerification(task, snapshot, order = unverified.get(task) ?? 0) {
+    const pr = knownOpenPr(task, snapshot);
     const alreadyWaiting = task.parked_needs_you && task.parked_pr?.open && task.parked_pr.number === pr?.number;
+    if (alreadyWaiting) prOrder.set(task.parked_pr, prOrder.get(pr) ?? 0);
     let updated = task;
     if (pr && !alreadyWaiting) updated = { ...task, parked_needs_you: true, parked_pr: pr };
-    else if (snapshot?.parked_needs_you === true && task.parked_needs_you !== true) {
+    else if (snapshot?.parked_needs_you === true && task.parked_needs_you !== true &&
+        (verifiedOrder.get(task) ?? 0) <= Math.max(verifiedOrder.get(snapshot) ?? 0, unverified.get(snapshot) ?? 0)) {
       // Verification can time out before discovering which PR blocks Done.
       updated = { ...task, parked_needs_you: true };
     }
-    unverified.add(updated);
+    if (!pr && !updated.parked_pr && snapshot?.parked_pr?.open === false) {
+      updated = { ...updated, parked_pr: snapshot.parked_pr };
+    }
+    if (updated !== task) {
+      if (rowOrder.has(task)) rowOrder.set(updated, rowOrder.get(task));
+    }
+    verifiedOrder.set(updated, Math.max(verifiedOrder.get(task) ?? 0, verifiedOrder.get(snapshot) ?? 0));
+    unverified.set(updated, order);
     return updated;
   }
 
@@ -579,6 +713,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     upsertSandbox,
     removeSandbox,
     loadTasks,
+    beginParkedDetail,
     upsertTask,
     removeTask,
     tasksOf,

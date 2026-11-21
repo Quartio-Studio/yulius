@@ -73,6 +73,8 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- PR #1552 landed on dev at `71ee007e9`. Yulius CI run `6b56f233-daf0-4290-84f9-a5250a12eb8b` passed quality, both Rust shards and browser e2e on PR head `3f7f153a4`. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe704d71f9/delivery/evidence/71ee007e98464f0b9156846fc76fad4bcc3daf8c)
+
 - Independent review approved `cfaf7ee89` and ran all four mounted Chromium regressions. The parked terminal showed Step 7/7 on completion, retained Step 2/7 while another step finished (including a case-only edit), and cleared the resolved notice before a later failing check. Repository contracts and formatting passed. This browser change has no Rust mutation targets. Vidoc was disabled.
 
 - On dev the parked terminal kept Step 2/7 after the sidebar observed all seven steps complete. A subsequent CI failure also displayed an already resolved owner notice. Both Chromium cases passed after correction. Review at `f937f0efc` reproduced the reverse case: finishing step seven while step two was active incorrectly displayed Step 7/7. Its regression observed the new six-of-seven count before checking the ordinal. Review of the first correction reproduced that reversal after a case-only title edit. The terminal now compares the active title using the same lowercase comparison as the domain’s step identity rule.
