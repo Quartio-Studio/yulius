@@ -132,22 +132,37 @@ pub(super) fn codex_shown_empty(screen: &vt100::Screen) -> bool {
 }
 
 /// Codex 0.170.0's rate-limit model picker uses a list with no input cursor.
-/// Its proposed model varies, and a short terminal may omit the lower rows.
+/// The title and question wrap at small widths. A short terminal can show
+/// the beginning of the title and the focused switch row before the full question.
 pub(super) fn codex_rate_limit_picker_shown(screen: &vt100::Screen) -> bool {
+    const TITLE: &str = "Approaching rate limits";
+    const SWITCH: &str = "› 1. Switch to";
     if !screen.hide_cursor() {
         return false;
     }
     let (_, cols) = screen.size();
-    let mut heading = false;
+    let mut remaining = TITLE;
     for row in screen.rows(0, cols) {
         let row = row.trim();
         if row.is_empty() {
             continue;
         }
-        if heading && (row.starts_with("Switch to ") || row.starts_with("› 1. Switch to ")) {
+        if remaining.is_empty() && (row == "Switch" || row.starts_with("Switch to")) {
             return true;
         }
-        heading = row == "Approaching rate limits";
+        if remaining != TITLE {
+            let row = row.trim_end_matches('…');
+            if row.starts_with(SWITCH) || (row.starts_with("› 1. S") && SWITCH.starts_with(row)) {
+                return true;
+            }
+            if row.starts_with("[…") {
+                continue;
+            }
+        }
+        remaining = remaining
+            .strip_prefix(row)
+            .or_else(|| TITLE.strip_prefix(row))
+            .map_or(TITLE, str::trim_start);
     }
     false
 }

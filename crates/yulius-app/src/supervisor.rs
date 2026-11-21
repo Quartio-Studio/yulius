@@ -165,10 +165,55 @@ pub(crate) enum PrNoticeInput<'a> {
 
 struct ActiveRun {
     attempt_id: AttemptId,
-    harness: Harness,
-    /// The picker blocked an Enter. The preceding paste may still be in the composer.
-    codex_submit_held: bool,
+    codex_submit_hold: Option<CodexSubmitHold>,
     writer: Box<dyn RunWriter>,
+}
+
+/// A picker blocked Enter after a paste. The run directory preserves the hold
+/// when Yulius reattaches to the same Codex process after restarting.
+struct CodexSubmitHold {
+    marker: PathBuf,
+    held: bool,
+}
+
+impl CodexSubmitHold {
+    fn load(run_dir: &str) -> Self {
+        let marker = Path::new(run_dir).join("codex-submit-held");
+        let held = marker.try_exists().unwrap_or(true);
+        Self { marker, held }
+    }
+
+    fn hold(&mut self) {
+        use std::os::unix::fs::OpenOptionsExt as _;
+
+        if self.held {
+            return;
+        }
+        self.held = true;
+        let created = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&self.marker);
+        if let Err(err) = created
+            && err.kind() != std::io::ErrorKind::AlreadyExists
+        {
+            tracing::warn!(marker = %self.marker.display(), error = %err, "could not record the withheld Codex submit");
+        }
+    }
+
+    fn release(&mut self) -> AppResult<()> {
+        if let Err(err) = std::fs::remove_file(&self.marker)
+            && err.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(marker = %self.marker.display(), error = %err, "could not clear the withheld Codex submit");
+            return Err(AppError::Conflict(
+                "the empty Codex composer was seen, but its paste hold could not be cleared".into(),
+            ));
+        }
+        self.held = false;
+        Ok(())
+    }
 }
 
 /// The durable draft mark and the prompt submission whose hook may be retried.
@@ -584,7 +629,7 @@ impl TaskRuntime {
         now: Timestamp,
         bytes: &[u8],
     ) -> AppResult<()> {
-        if run.harness == Harness::Codex {
+        if let Some(hold) = &mut run.codex_submit_hold {
             if self.screen_withheld()
                 || !self
                     .screen_of
@@ -596,14 +641,16 @@ impl TaskRuntime {
                 ));
             }
             if self.hub.codex_rate_limit_picker_shown() {
-                run.codex_submit_held |= bytes == b"\r";
+                if bytes == b"\r" {
+                    hold.hold();
+                }
                 return Err(AppError::Conflict(
                     "Codex's rate-limit model picker is open. Choose Keep current model \
                      or dismiss the picker in the terminal."
                         .into(),
                 ));
             }
-            if run.codex_submit_held {
+            if hold.held {
                 if !self.hub.prompt_box_shown_empty(Harness::Codex) {
                     return Err(AppError::Conflict(
                         "Codex may still have text pasted before the model picker opened. \
@@ -611,7 +658,7 @@ impl TaskRuntime {
                             .into(),
                     ));
                 }
-                run.codex_submit_held = false;
+                hold.release()?;
             }
         }
         self.last_input_ms.store(now.0, Ordering::SeqCst);
@@ -4403,10 +4450,10 @@ impl App {
         // The run takes input before anything of it shows: a viewer who sees the agent's screen
         // can type into it (F 2026-10-13: input right after the banner was refused as "not
         // running" on a fast machine).
+        let codex = attempt.harness == Harness::Codex;
         *runtime.run.lock().await = Some(ActiveRun {
             attempt_id: attempt.id.clone(),
-            harness: attempt.harness,
-            codex_submit_held: false,
+            codex_submit_hold: codex.then(|| CodexSubmitHold::load(&attempt.run_dir)),
             writer: attached.writer,
         });
         crate::race::reached(crate::race::Point::RunAttached, Path::new(task_id.as_str()));
@@ -4456,7 +4503,6 @@ impl App {
         let app = self.clone();
         let tid = task_id.clone();
         let aid = attempt.id.clone();
-        let harness = attempt.harness;
         let token = *host_token;
         let mut reader = attached.reader;
         tokio::spawn(async move {
@@ -4512,13 +4558,14 @@ impl App {
                                         .await;
                                     let rt = app.runtime(&tid);
                                     let mut run = rt.run.lock().await;
-                                    let codex_submit_held = run.as_ref().is_some_and(|run| {
-                                        run.attempt_id == aid && run.codex_submit_held
-                                    });
+                                    let codex_submit_hold = run
+                                        .as_mut()
+                                        .filter(|run| run.attempt_id == aid)
+                                        .and_then(|run| run.codex_submit_hold.take())
+                                        .or_else(|| codex.then(|| CodexSubmitHold::load(&run_dir)));
                                     *run = Some(ActiveRun {
                                         attempt_id: aid.clone(),
-                                        harness,
-                                        codex_submit_held,
+                                        codex_submit_hold,
                                         writer: again.writer,
                                     });
                                     rt.hub.restore(
