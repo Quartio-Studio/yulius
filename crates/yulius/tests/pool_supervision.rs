@@ -795,15 +795,89 @@ fn a_goal_continuation_budget_survives_a_public_subscription_switch() -> TestRes
         app.hook_event(token, "claude", "UserPromptSubmit", &submit(prompt), None)
             .await?;
         assert_eq!(task(&app, &id).await?.gate_blocks, 2);
-        app.record_typing(&id, &user);
-        app.hook_event(
-            token,
-            "claude",
-            "UserPromptSubmit",
-            &submit("Check the corrected build"),
-            None,
+        // The resumed session finishes its opening turn before Yulius types its native goal.
+        app.hook_event(token, "claude", "Stop", &Default::default(), None)
+            .await?;
+        app.hook_event(token, "claude", "SessionStart", &Default::default(), None)
+            .await?;
+        let transcript = app.deps.harness.claude_transcript(
+            &data.join("sandboxes").join(sandbox.as_str()).join("home"),
+            Path::new(&task(&app, &id).await?.worktree_path.ok_or("worktree")?),
+            moved.provider_session_id.as_deref().ok_or("session")?,
+        );
+        let restored = || {
+            std::fs::read_to_string(&transcript)
+                .ok()?
+                .lines()
+                .rev()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .find_map(|record| {
+                    record["attachment"]["condition"]
+                        .as_str()
+                        .map(|condition| format!("/goal {condition}"))
+                })
+        };
+        wait_for(
+            "the restored native goal",
+            Duration::from_secs(30),
+            || async { screen(&app, &id).contains("GOAL SET") && restored().is_some() },
         )
         .await?;
+        let command = restored().ok_or("goal command")?;
+        app.hook_event(token, "claude", "UserPromptSubmit", &submit(&command), None)
+            .await?;
+        assert_eq!(
+            task(&app, &id).await?.gate_blocks,
+            2,
+            "automatic native goal restoration"
+        );
+        app.record_typing(&id, &user);
+        app.hook_event(token, "claude", "UserPromptSubmit", &submit(prompt), None)
+            .await?;
+        assert_eq!(task(&app, &id).await?.gate_blocks, 0);
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+#[test]
+fn a_goal_continuation_budget_resets_when_an_owners_message_is_delivered() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build(&data, &fake, Arc::new(ScriptedUsage::default()))?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let id = legacy_goal_hold(&app, &sandbox, &user).await?;
+        app.resume_round().await;
+        wait_for("the run", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("FAKE-AGENT READY")
+        })
+        .await?;
+        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
+        let token = "test-owner-message";
+        rusqlite::Connection::open(data.join("yulius.db"))?.execute(
+            "UPDATE attempts SET token_hash = ?1 WHERE id = ?2",
+            rusqlite::params![
+                app.deps.crypto.sha256_hex(token.as_bytes()),
+                attempt.id.as_str()
+            ],
+        )?;
+        app.hook_event(token, "claude", "SessionStart", &Default::default(), None)
+            .await?;
+        assert_eq!(task(&app, &id).await?.gate_blocks, 1);
+        let caller = crate::task_message::superagent(&sandbox, &user, "admin");
+        let sent = app
+            .tool_task_message(
+                &caller,
+                &serde_json::json!({
+                    "task_id": id.as_str(), "text": "Verify the corrected revision"
+                }),
+            )
+            .await?;
+        assert_eq!(sent["delivered"], "sent");
         assert_eq!(task(&app, &id).await?.gate_blocks, 0);
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())

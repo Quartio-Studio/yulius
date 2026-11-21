@@ -31,6 +31,7 @@ Earlier user requests establish the ownership rule. Task #534 concerned automate
 - [x] Preserve goal continuation through capacity recovery and a busy browser
 - [x] Track completed background work and concurrent plan progress at Stop
 - [ ] Preserve the in-flight turn during spec publication and a requested subscription switch
+- [ ] Distinguish owner input from native goal restoration and preserve prompt-mode rotation
 - [ ] Verify the fix and obtain independent approval
 
 ## Acceptance criteria
@@ -66,3 +67,4 @@ Make the continuation decision where the agent can act on it, at the shared Stop
 - The 24 scoped continuation and recovery tests passed at `5b824a5e8`, including queued starts for new and existing provider sessions. A third independent review identified a spec watcher that could retain the plan lock during publication and an already-working turn whose public subscription switch reset its budget.
 - Third review finding 1. A separate spec watcher blocked in its browser lookup kept the goal Stop from answering within four seconds on `5b824a5e8`. The watcher now publishes after releasing the plan lock. Its regression requires Stop to name the newly recorded step while the watcher is still held.
 - Third review finding 2. The public Switch action's real replacement subprocess received the normal interrupted-turn prompt. Its submit hook reset two consumed attempts to zero on `5b824a5e8`. Move and submit now share that instruction. The test checks two attempts survive the move and a subsequent new owner prompt restores the budget.
+- The first frozen review-fix mutation run reported `76 listed, 27 caught, 8 missed, 0 timed out, 38 unviable, 3 not reached` at its 30-minute bound. The eight survivors exposed missing assertions about session lineage, in-place release activity, fresh owner submissions and browser tab ownership. The new fixtures check each state, including a live browser action on another task. The 14 Chromium tests for attention and owner wait history passed.

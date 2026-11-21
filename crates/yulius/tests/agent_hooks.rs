@@ -2449,12 +2449,7 @@ async fn goal_stop_budget_survives_submission_of_its_own_continuation() -> TestR
     Ok(())
 }
 
-#[tokio::test]
-async fn goal_stop_explains_exhaustion_before_a_proactive_switch() -> TestResult {
-    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify dev").await?;
-    for _ in 0..yulius_app::hooks::MAX_GATE_BLOCKS {
-        assert_eq!(stop_of(&f, Agent::Codex).await?["decision"], "block");
-    }
+async fn make_a_subscription_switch_due(f: &Fixture) -> TestResult {
     let store = &f.h.app.deps.store;
     let current = yulius_domain::ids::AccountId::parse("acc-1")?;
     let mut room = store.account(&current).await?.ok_or("account")?;
@@ -2466,6 +2461,35 @@ async fn goal_stop_explains_exhaustion_before_a_proactive_switch() -> TestResult
     store
         .set_account_state(&current, room.status, Some(&usage), None, f.h.app.now())
         .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn prompt_stop_preserves_a_subscription_move_when_its_spec_gate_is_exhausted() -> TestResult {
+    let f = fixture().await?;
+    std::fs::write(f.worktree.join("api.rs"), "fn main() {}\n")?;
+    for _ in 0..yulius_app::hooks::MAX_GATE_BLOCKS {
+        assert_eq!(stop_of(&f, Agent::ClaudeCode).await?["decision"], "block");
+    }
+    make_a_subscription_switch_due(&f).await?;
+    let reply =
+        f.h.app
+            .hook_event(TOKEN, "claude", "Stop", &Default::default(), None)
+            .await?;
+    assert!(
+        matches!(reply, yulius_app::hooks::HookReply::Hold { .. }),
+        "prompt-mode move"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_stop_explains_exhaustion_before_a_proactive_switch() -> TestResult {
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Verify dev").await?;
+    for _ in 0..yulius_app::hooks::MAX_GATE_BLOCKS {
+        assert_eq!(stop_of(&f, Agent::Codex).await?["decision"], "block");
+    }
+    make_a_subscription_switch_due(&f).await?;
     let response = stop_of(&f, Agent::Codex).await?;
     assert!(response["decision"].is_null());
     let brief = task_brief(&f).await?;
