@@ -37,7 +37,8 @@ Earlier user requests establish the ownership rule. Task #534 concerned automate
 - [x] Protect goal attempts while owners draft and workers complete steps
 - [x] Verify the fix and obtain independent approval
 - [x] Integrate and verify the updated Codex resume and capacity behavior
-- [ ] Keep delivery and merge-train verification within the worker stack
+- [x] Keep delivery and merge-train verification within the worker stack
+- [ ] Preserve queued goal launch choices and the current Codex capacity pause
 
 ## Acceptance criteria
 
@@ -105,3 +106,4 @@ Make the continuation decision where the agent can act on it, at the shared Stop
 - Dev advanced to `7383920f0` with SPEC-590 while PR #1616 was in CI. The conflict resolution passes the goal continuation’s origin through Codex’s guarded capacity launch. It keeps the explicit fresh-start pause and idle state of a bare Codex resume alongside the goal retry budget and submit history.
 - Yulius CI on `b045c9cee` reported stack overflows across delivery, merge trains and remote MCP. Two failures reproduced in isolation at that head. The stack traces showed the task-local spec-publication future nested inside delivery and merge arbitration. The shared publication function now accepts pinned work and returns a heap-pinned future, keeping both out of its callers’ stack frames.
 - After resolving the conflicts with dev, 111 Codex restart, capacity, supervisor and goal continuation tests passed. The repository quick gate and Clippy with warnings denied passed for the conflict resolution and the subsequent bounded-stack fix.
+- All 174 all-feature delivery, merge-train, remote MCP and goal controls passed at `3178f2cb9`. Independent review found no further stack issue. It found an integration defect in the process-free goal launch choice and the pause identity used by Codex Switch.
