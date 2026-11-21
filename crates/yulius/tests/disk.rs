@@ -1654,9 +1654,18 @@ async fn compiler_upkeep_preserves_an_unmarked_replacement() -> BoxResult<()> {
     let name = cache.clone();
     let moved = w.root.join("previous-store");
     yulius_app::race::on(yulius_app::race::Point::CachePrune, &cache, move || {
-        std::fs::rename(&name, moved).expect("swap out the inspected store");
-        std::fs::create_dir(&name).expect("install an unowned directory");
-        std::fs::write(name.join("keep"), b"unrelated").expect("write replacement contents");
+        assert!(
+            std::fs::rename(&name, moved).is_ok(),
+            "swap out the inspected store"
+        );
+        assert!(
+            std::fs::create_dir(&name).is_ok(),
+            "install an unowned directory"
+        );
+        assert!(
+            std::fs::write(name.join("keep"), b"unrelated").is_ok(),
+            "write replacement contents"
+        );
     });
     w.h.app.disk_upkeep_needing(&w.sandbox, true, 1).await?;
     assert_eq!(std::fs::read(cache.join("keep"))?, b"unrelated");

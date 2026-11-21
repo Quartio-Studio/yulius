@@ -939,7 +939,10 @@ mod tests {
         assert_eq!(std::fs::read(&pending)?, b"other");
         std::fs::write(&ready, b"mbx-v1\n")?;
         let result = prune_compile_cache(root.path(), 0, |dir| {
-            std::fs::write(&ready, b"other").expect("replace stamp during measurement");
+            assert!(
+                std::fs::write(&ready, b"other").is_ok(),
+                "replace stamp during measurement"
+            );
             single_link_allocation(dir)
         });
         assert!(result.is_err());

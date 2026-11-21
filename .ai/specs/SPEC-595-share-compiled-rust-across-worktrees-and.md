@@ -27,9 +27,9 @@ On November 21 the operator measured about 195 seconds compiling and 151 seconds
 - [x] Verify concurrent reuse, path correctness and recovery
 - [x] Measure fresh-worktree test and quality builds and document the choice
 - [x] Approve the cache implementation for delivery
-- [ ] Integrate idle compiler stores with instance disk upkeep
+- [x] Integrate idle compiler stores with instance disk upkeep
 - [x] Record the observed CI lane reuse and before/after run times
-- [ ] Verify the disk upkeep and CI evidence delivery on dev
+- [ ] Verify idle-store recovery and reconcile CI measurements with the verified dev runs
 
 ## Acceptance criteria
 
@@ -104,3 +104,5 @@ Independent review of the first upkeep head `8237d0b5d` found three failures in 
 Review of `226f660fa` found that a checkout from PR #1617 still recognized the ready stamp during interrupted removal. It also showed that counting a removed artifact's blocks as freed could stop pressure relief when another directory retained a hard link. Upkeep now moves the ownership stamp to its pending name and syncs the store before removing entries. The existing PR #1617 launcher uses ordinary Cargo until upkeep restores the ready name. Store size counts each inode once. Reclamation credit excludes multiply linked files, including links that might all be inside the store.
 
 Both Rust regressions failed on `226f660fa`. The interrupted cache still exposed its ready stamp. Upkeep credited 262,144 bytes for an artifact whose other hard link remained readable. The launcher and release suite passed all 21 tests with the launcher from PR #1617, including plain Cargo during eviction and cache reuse after the ready stamp returned. `scripts/dev quick` passed. Two attempts to run mutation testing stopped before testing any mutant because an unrelated session-socket fixture exceeded its path limit. The second attempt used a short symlink, which the fixture resolved back to its long target.
+
+At `c7a697cd5`, all nine focused Rust tests passed across `yulius`, `yulius-app` and `yulius-sandbox`, including the two regressions above. The interruption test recovered on a healthy disk. The allocation test also cleared a store reporting zero freed artifact blocks and skipped the subsequent empty round. The release suite exercised the unchanged PR #1617 launcher. Vidoc reported disabled. The task’s delivery verification record supplies the exact landed SHA, CI run and individual job verdicts after the upkeep pull request merges.
