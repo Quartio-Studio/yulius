@@ -202,6 +202,11 @@ fn continuing_a_stopped_codex_task_submits_one_turn_when_its_slot_opens() -> Tes
         })
         .await?;
         support::stop_tasks(&app, &[&id]).await?;
+        // SessionStart recorded the attempt ID before an outage cut off the lineage write.
+        rusqlite::Connection::open(data.join("yulius.db"))?.execute(
+            "DELETE FROM provider_sessions WHERE task_id = ?1",
+            [id.as_str()],
+        )?;
         let blocker = new_codex_task(&app, &sandbox, &user, "Occupy the slot").await?;
         wait_for("the occupied slot", Duration::from_secs(30), || {
             screen_contains(&app, &blocker, "ECHO: Occupy the slot")
@@ -328,6 +333,135 @@ fn retrying_a_failed_codex_restart_resumes_the_same_conversation() -> TestResult
             screen_contains(&app, &id, "ECHO: Continue")
         }).await?;
         let run = app.deps.store.live_attempt(&id).await?.ok_or("retried run")?;
+        assert_eq!(run.provider_session_id.as_deref(), Some(session.as_str()));
+        support::stop_tasks(&app, &[&id]).await
+    })
+}
+
+#[test]
+fn moving_a_codex_restart_waiting_for_capacity_keeps_its_continuation() -> TestResult {
+    let (_dir, data) = temp()?;
+    runtime()?.block_on(async {
+        let (app, _, user, id, session) = restart_fixture(&data).await?;
+        let ctx = admin_ctx(&app, &user).await?;
+        support::stop_tasks(&app, &[&id]).await?;
+        let account = AccountId::parse("a-codex")?;
+        let usage = yulius_domain::usage::AccountUsage {
+            limit_reached: true,
+            limit_resets_at: Some(Timestamp(4_000_000_000_000)),
+            ..Default::default()
+        };
+        app.deps
+            .store
+            .set_account_state(
+                &account,
+                AccountStatus::Limited,
+                Some(&yulius_app::usage_json::to_json(&usage)),
+                None,
+                app.now(),
+            )
+            .await?;
+        let waiting = app
+            .continue_task(&ctx, id.as_str(), &Default::default())
+            .await?;
+        assert_eq!(waiting.status, "waiting_capacity");
+        let replacement =
+            add_codex_account(&app, "replacement", &codex_auth("2026-11-01T10:00:00Z")).await?;
+        let moved = app
+            .switch_task(
+                &ctx,
+                id.as_str(),
+                &yulius_contracts::api::tasks::ContinueTask {
+                    account_id: Some(replacement.to_string()),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        assert_eq!(moved.status, "running");
+        let run = app.deps.store.live_attempt(&id).await?.ok_or("moved run")?;
+        assert_eq!(run.account_id, Some(replacement));
+        assert_eq!(run.provider_session_id.as_deref(), Some(session.as_str()));
+        let launch = std::fs::read_to_string(Path::new(&run.run_dir).join("fake-launch.txt"))?;
+        assert!(
+            launch.contains("prompt: Some("),
+            "move dropped the capacity continuation"
+        );
+        wait_for("the moved continuation", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "ECHO: Continue")
+        })
+        .await?;
+        support::stop_tasks(&app, &[&id]).await
+    })
+}
+
+#[test]
+fn a_stopped_codex_task_with_only_stale_lineage_cannot_resume_the_wrong_session() -> TestResult {
+    let (_dir, data) = temp()?;
+    runtime()?.block_on(async {
+        let (app, sandbox, user, id, session) = restart_fixture(&data).await?;
+        let ctx = admin_ctx(&app, &user).await?;
+        support::stop_tasks(&app, &[&id]).await?;
+        let db = rusqlite::Connection::open(data.join("yulius.db"))?;
+        let set_id = "UPDATE attempts SET provider_session_id = ?1 WHERE task_id = ?2";
+        db.execute(set_id, rusqlite::params![None::<String>, id.as_str()])?;
+        for stale_time in [0, i64::MAX] {
+            db.execute(
+                "UPDATE provider_sessions SET session_id = 'old-session', first_seen = 0,
+                 last_seen = ?1 WHERE task_id = ?2",
+                rusqlite::params![stale_time, id.as_str()],
+            )?;
+            let refused = app
+                .continue_task(&ctx, id.as_str(), &Default::default())
+                .await;
+            assert!(
+                refused.is_err(),
+                "Continue resumed stale history at {stale_time}"
+            );
+            assert!(matches!(
+                task(&app, &id).await?.status,
+                TaskStatus::Stopped(_)
+            ));
+        }
+        // A different task already owns the attempt's recorded ID. Repair may not claim it.
+        let other = new_codex_task(&app, &sandbox, &user, "Another conversation").await?;
+        wait_for("the other rollout", Duration::from_secs(30), || async {
+            app.deps
+                .store
+                .provider_sessions(&other)
+                .await
+                .is_ok_and(|rows| !rows.is_empty())
+        })
+        .await?;
+        let other_session = app
+            .deps
+            .store
+            .provider_sessions(&other)
+            .await?
+            .pop()
+            .ok_or("other session")?
+            .session_id;
+        support::stop_tasks(&app, &[&other]).await?;
+        db.execute(set_id, [other_session.as_str(), id.as_str()])?;
+        let refused = app
+            .continue_task(&ctx, id.as_str(), &Default::default())
+            .await;
+        assert!(
+            refused.is_err(),
+            "Continue accepted an ID owned by another task"
+        );
+        db.execute(
+            "UPDATE provider_sessions SET last_seen = 0 WHERE task_id = ?1",
+            [id.as_str()],
+        )?;
+        db.execute(set_id, [session.as_str(), id.as_str()])?;
+        app.continue_task(&ctx, id.as_str(), &Default::default())
+            .await?;
+        let run = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("recovered run")?;
         assert_eq!(run.provider_session_id.as_deref(), Some(session.as_str()));
         support::stop_tasks(&app, &[&id]).await
     })

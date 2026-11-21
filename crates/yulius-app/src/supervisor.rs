@@ -4845,6 +4845,57 @@ impl App {
         })
     }
 
+    /// Confirms which Codex conversation a native resume will open. SessionStart may have
+    /// saved the attempt's ID before an outage interrupted the lineage write.
+    pub(crate) async fn codex_resume_available(&self, task: &TaskRecord) -> AppResult<bool> {
+        let store = &self.deps.store;
+        let missing = || {
+            AppError::Conflict(format!(
+                "This {} Codex task has no recorded rollout to resume.",
+                task.status.as_str()
+            ))
+        };
+        let run = store.attempts(&task.id).await?.pop();
+        let sessions = store.provider_sessions(&task.id).await?;
+        let latest = sessions
+            .last()
+            .filter(|entry| entry.harness == Harness::Codex);
+        let Some(run) = run else {
+            // A person can continue an imported conversation before its first native run.
+            return match (task.status, sessions.last()) {
+                (TaskStatus::Parked, _) => Err(missing()),
+                (_, None) => Ok(false),
+                (_, Some(entry)) if entry.harness == Harness::Codex => Ok(true),
+                _ => Err(missing()),
+            };
+        };
+        if run.harness != Harness::Codex {
+            return Err(missing());
+        }
+        if let Some(id) = run.provider_session_id {
+            if latest.is_none_or(|entry| entry.session_id != id) {
+                self.record_lineage(task, Harness::Codex, &id, "native")
+                    .await?;
+                // The store preserves another task's claim on a rollout.
+                if !store
+                    .provider_sessions(&task.id)
+                    .await?
+                    .last()
+                    .is_some_and(|entry| entry.harness == Harness::Codex && entry.session_id == id)
+                {
+                    return Err(missing());
+                }
+            }
+        } else if sessions.is_empty() && task.status != TaskStatus::Parked {
+            return Ok(false);
+        } else if latest.is_none_or(|entry| {
+            entry.last_seen < run.started_at || run.ended_at.is_none_or(|end| entry.last_seen > end)
+        }) {
+            return Err(missing());
+        }
+        Ok(true)
+    }
+
     /// Resumes a parked task in its own session (SPEC-512 PRK-005), with `prompt` as the turn it
     /// opens with, or with nothing typed: a prompt-mode session that gets nothing reads as it
     /// did, idle, from its launch on ([`IdleRest`]). At the session limit it waits in the queue
@@ -4867,48 +4918,7 @@ impl App {
             return Ok(false);
         }
         if task.harness == Harness::Codex {
-            // Do not fall back to a fresh session if an old attempt has no lineage.
-            // SessionStart stores the attempt id before it records lineage, so a
-            // restart between those writes can recover from the parked attempt.
-            let store = &self.deps.store;
-            let missing = || {
-                AppError::Conflict(
-                    "This parked Codex task has no recorded rollout to resume.".into(),
-                )
-            };
-            let run = store
-                .attempts(task_id)
-                .await?
-                .pop()
-                .filter(|run| run.harness == Harness::Codex)
-                .ok_or_else(missing)?;
-            let sessions = store.provider_sessions(task_id).await?;
-            let latest = sessions
-                .last()
-                .filter(|entry| entry.harness == Harness::Codex);
-            if let Some(id) = run.provider_session_id {
-                if latest.is_none_or(|entry| entry.session_id != id) {
-                    self.record_lineage(&task, Harness::Codex, &id, "native")
-                        .await?;
-                    // The store preserves another task's claim on a rollout. Confirm
-                    // that the launch will actually read this attempt's identity.
-                    if !store
-                        .provider_sessions(task_id)
-                        .await?
-                        .last()
-                        .is_some_and(|entry| {
-                            entry.harness == Harness::Codex && entry.session_id == id
-                        })
-                    {
-                        return Err(missing());
-                    }
-                }
-            } else if latest.is_none_or(|entry| {
-                entry.last_seen < run.started_at
-                    || run.ended_at.is_none_or(|end| entry.last_seen > end)
-            }) {
-                return Err(missing());
-            }
+            self.codex_resume_available(&task).await?;
         }
         let goal_unfinished = self.goal_unfinished_of(&task).await;
         let rest = task

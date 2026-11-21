@@ -19,7 +19,7 @@ The page's Continue action and the Superagent's `task_restart` share `continue_t
 
 ## Requirements
 
-- CCR-001. Continue on a stopped Codex task with a saved conversation submits one continuation in that conversation. A retry after a failed start follows the same rule. A task without a saved conversation starts with its original request.
+- CCR-001. Continue on a stopped Codex task with a saved conversation submits one continuation in that conversation. A retry after a failed start follows the same rule. A task without a saved conversation starts with its original request. A recorded attempt ID recovers a missing history index entry. Conflicting or stale history must be resolved before resuming.
 - CCR-002. A native Codex resume that opens without a turn shows idle activity. A new prompt starts work, and a recorded interruption returns the live task to Waiting. Opening a closed conversation allows the person to supply the next prompt.
 - CCR-003. The existing session queue and capacity pause retain the continuation until the requested start can run. A person stopping an agent authorizes no automatic restart.
 
@@ -35,7 +35,7 @@ The page's Continue action and the Superagent's `task_restart` share `continue_t
 
 - AC-1. Stop a task with a known Codex session, then Continue. The resumed agent processes a continuation in the same session with no further operator input.
 - AC-2. Close and reopen a Codex conversation. It reports Waiting until work begins. A stopped task with no rollout starts with the full request.
-- AC-3. A restart queued for a session slot retains the continuation and submits it once.
+- AC-3. A restart queued for a session slot retains the continuation and submits it once. Moving a restart that waits for subscription capacity carries the saved prompt to the chosen account.
 
 ## Test plan
 
@@ -50,3 +50,7 @@ Use the ended task's state to distinguish the requested restart of stopped work 
 On dev at `86eb47202`, the stopped-task regression found an empty queued resume. Reopening a closed conversation returned `working`. The task stopped before its first launch received its full request. [Issue #1601](https://github.com/Quartio-Studio/yulius/issues/1601)
 
 The corrected supervisor passed all 132 Codex and parking integration tests in nextest run `dd248435-1a69-42a0-8672-7dab0545ab96`. The new cases verified one continuation in the original rollout after a queued restart, the original request after a pre-launch stop, recovery from a failed launch, and Waiting → Working → Waiting across input and interruption. The PTYs and application are real. The Codex process and account are fixtures.
+
+Independent review of `19c85e1e7` found two recovery paths requiring changes. Against that head, three regression cases failed. A missing index entry lost the continuation, stale history reopened the wrong session and moving a capacity-paused restart dropped the prompt. The correction shares the parked task’s session identity check and forwards the saved start-pause continuation on a move.
+
+After both corrections, the 159 Codex, parking, subscription move and native harness checks passed in nextest run `090c7c24-3bbb-493c-8320-65ced95d22e2`. They include recovery from the missing index write and refusal of an unrelated rollout. Repository quick checks passed. Vidoc was disabled for this project.

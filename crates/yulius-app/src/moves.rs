@@ -188,7 +188,9 @@ impl App {
         }
         let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
         let prompt = match pause {
-            Some(pause) if pause.kind == PauseKind::Prompt => pause.continuation,
+            Some(pause) if matches!(pause.kind, PauseKind::Prompt | PauseKind::Start) => {
+                pause.continuation
+            }
             Some(pause) if pause.kind == PauseKind::Turn => self.stop_continuation(&task).await,
             _ if task.status == TaskStatus::Running && task.activity == Some(Activity::Working) => {
                 Some(CONTINUE_TASK_PROMPT.into())

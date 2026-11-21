@@ -738,12 +738,9 @@ impl App {
         // with this request. Without a saved session, the launch uses the original request.
         let prompt = match (task.harness, task.status) {
             (Harness::Codex, TaskStatus::Stopped(_) | TaskStatus::Failed(_)) => self
-                .deps
-                .store
-                .provider_sessions(&task.id)
+                .codex_resume_available(&task)
                 .await?
-                .last()
-                .map(|_| CONTINUE_TASK_PROMPT.to_owned()),
+                .then(|| CONTINUE_TASK_PROMPT.to_owned()),
             _ => None,
         };
         // A person continues it: whatever its agent asked a person before is past (SPEC-134).
