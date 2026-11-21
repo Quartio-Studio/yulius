@@ -57,7 +57,7 @@ use yulius_domain::vault::redact::{PlainMatcher, redact_text};
 
 use crate::agent_wait::{ArmedMerge, ArmedNow, Deciding, QUEUE_BASE_GUIDANCE, QueueNote, Verdict};
 use crate::auth::AuthContext;
-use crate::ci::{CiJobRecord, CiRunRecord, PullHead, run_for_pull_head};
+use crate::ci::{CiJobRecord, CiRunRecord};
 use crate::context::App;
 use crate::delivery::{MergeFailure, delivery_profile, past_merge};
 use crate::model::{SandboxRecord, TaskRecord};
@@ -1087,15 +1087,8 @@ impl App {
                 ));
             }
             // A failed read cannot establish that the owner's earlier running check ended.
-            let runs = self
-                .deps
-                .store
-                .ci_runs_for_pull_head(&sandbox.id, PullHead::Exact(head))
-                .await
-                .ok()?;
-            Some(SingletonObservation::Current(
-                run_for_pull_head(&runs, pr).cloned().map(Box::new),
-            ))
+            let ordinary = self.ordinary_pull_run(sandbox, pr, head).await.ok()?;
+            Some(SingletonObservation::Current(ordinary.map(Box::new)))
         };
         tokio::time::timeout(Duration::from_secs(5), confirm)
             .await

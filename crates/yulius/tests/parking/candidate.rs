@@ -104,7 +104,37 @@ fn a_new_ordinary_run_after_a_singleton_deadline_gets_its_own_wait() -> TestResu
     cold_candidate_case(ColdCandidate::NewerRunAfterExpiry)
 }
 
+#[test]
+fn a_held_ordinary_failure_tells_the_owner_to_fix_it_once() -> TestResult {
+    cold_candidate_case(ColdCandidate::HeldOrdinaryFailure)
+}
+
+#[test]
+fn a_held_ordinary_failure_already_heard_cannot_send_hands_off() -> TestResult {
+    cold_candidate_case(ColdCandidate::HeardOrdinaryFailure)
+}
+
+#[test]
+fn a_free_arm_taken_during_the_read_cannot_deliver_a_due_check_in() -> TestResult {
+    cold_candidate_case(ColdCandidate::FreeArmTaken)
+}
+
+#[test]
+fn a_held_ordinary_failure_shared_at_the_armed_head_reaches_this_owner() -> TestResult {
+    cold_candidate_case(ColdCandidate::SharedOrdinaryFailure)
+}
+
+#[test]
+fn a_held_ordinary_failure_arriving_during_candidate_verification_is_told_once() -> TestResult {
+    cold_candidate_case(ColdCandidate::OrdinaryFailsDuringRead)
+}
+
 enum ColdCandidate {
+    OrdinaryFailsDuringRead,
+    SharedOrdinaryFailure,
+    HeldOrdinaryFailure,
+    HeardOrdinaryFailure,
+    FreeArmTaken,
     OlderOrdinaryFailure,
     ReplacedOrdinaryError,
     OrdinaryDropAfterRearm,
@@ -248,6 +278,9 @@ async fn seed_candidate(
     green.started_at = Some(yulius_domain::time::Timestamp(11));
     green.ended_at = Some(yulius_domain::time::Timestamp(12));
     green.reference = CiRef::PullRequest(1481);
+    if matches!(case, ColdCandidate::SharedOrdinaryFailure) {
+        green.sha = "previous-head".into();
+    }
     app.deps.store.insert_ci_run(&green, &[job]).await?;
     let failures = concat!(
         "FAIL [0.292s] (1/1) search latency\n",
@@ -353,7 +386,9 @@ async fn seed_candidate(
     .await?;
     let later_runs = if matches!(
         case,
-        ColdCandidate::UnrelatedRuns | ColdCandidate::OlderOrdinaryFailure
+        ColdCandidate::UnrelatedRuns
+            | ColdCandidate::OlderOrdinaryFailure
+            | ColdCandidate::SharedOrdinaryFailure
     ) {
         101
     } else {
@@ -412,6 +447,103 @@ async fn check_after_restart(
         .store
         .set_task_needs_you(id, None, cold.now())
         .await?;
+    if matches!(
+        case,
+        ColdCandidate::FreeArmTaken
+            | ColdCandidate::HeldOrdinaryFailure
+            | ColdCandidate::HeardOrdinaryFailure
+            | ColdCandidate::SharedOrdinaryFailure
+            | ColdCandidate::OrdinaryFailsDuringRead
+    ) {
+        std::fs::write(
+            data.join(yulius_app::agent_wait::ARMED_MERGES_FILE),
+            serde_json::to_vec(
+                &json!([{"task":id.as_str(),"head":head,"summary":"reviewed","armed_at":30}]),
+            )?,
+        )?;
+        cold.restore_armed_merges().await;
+        let sandbox = cold.deps.store.task(id).await?.ok_or("owner")?.sandbox_id;
+        if matches!(case, ColdCandidate::FreeArmTaken) {
+            let (observed, finish_read) = hold_at(super::Point::LivePrFactsRead, id);
+            let (deciding, finish_decision) = hold_at(super::Point::FreeArmTaken, id);
+            let watch = Arc::clone(&cold);
+            let watcher = tokio::spawn(async move {
+                watch
+                    .watch_prs(&WatchBounds {
+                        check_in_after_ms: 0,
+                        stall_quiet_ms: 0,
+                        stall_after_ms: 0,
+                    })
+                    .await
+            });
+            tokio::time::timeout(Duration::from_secs(10), observed.notified()).await?;
+            let queue = Arc::clone(&cold);
+            let pass = tokio::spawn(async move { queue.merge_armed(&sandbox).await });
+            tokio::time::timeout(Duration::from_secs(10), deciding.notified()).await?;
+            finish_read.notify_one();
+            let news = watcher.await?;
+            finish_decision.notify_one();
+            pass.await?;
+            cold.stop_task_now(id).await?;
+            assert!(news.is_empty(), "stale free-arm check-in: {news:?}");
+            return Ok(());
+        }
+        let heard = matches!(case, ColdCandidate::HeardOrdinaryFailure);
+        let (mut red, job) =
+            crate::pr_watch::run(&sandbox, "ordinary-red", head, RunState::Failed, None, 31);
+        red.reference =
+            CiRef::PullRequest(if matches!(case, ColdCandidate::SharedOrdinaryFailure) {
+                99
+            } else {
+                1481
+            });
+        let during = matches!(case, ColdCandidate::OrdinaryFailsDuringRead);
+        if during {
+            let app = Arc::clone(&cold);
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                super::Point::LivePrFactsRead,
+                Path::new(id.as_str()),
+                move || {
+                    let result = tokio::task::block_in_place(|| {
+                        handle.block_on(app.deps.store.insert_ci_run(&red, &[job]))
+                    });
+                    assert!(result.is_ok(), "ordinary CI update: {result:?}");
+                },
+            );
+        } else {
+            cold.deps.store.insert_ci_run(&red, &[job]).await?;
+        }
+        if heard {
+            let news = cold.watch_prs(&bounds).await;
+            assert_eq!(news.len(), 1, "{news:?}");
+            assert!(news[0].1.contains("ordinary-red"), "{news:?}");
+        }
+        let train = json!({sandbox.as_str(): {"train":{"run":"candidate-red","commit":"merge","base":"base","base_tree":"tree","members":[{"task":id.as_str(),"pr":1481,"head":head,"armed_at":30,"tree":"candidate-tree"}]}}});
+        std::fs::write(
+            data.join(yulius_app::merge_train::MERGE_TRAINS_FILE),
+            serde_json::to_vec(&train)?,
+        )?;
+        if during {
+            let stale = cold.watch_prs(&bounds).await;
+            assert!(
+                stale.is_empty(),
+                "candidate check-in overtaken by ordinary CI: {stale:?}"
+            );
+        }
+        let news = cold.watch_prs(&bounds).await;
+        let repeated = cold.watch_prs(&bounds).await;
+        cold.stop_task_now(id).await?;
+        assert_eq!(news.len(), usize::from(!heard), "{news:?}");
+        if !heard {
+            assert!(
+                news[0].1.contains("ordinary-red") && !news[0].1.contains("Do not re-arm"),
+                "{news:?}"
+            );
+        }
+        assert!(repeated.is_empty(), "{repeated:?}");
+        return Ok(());
+    }
     if matches!(case, ColdCandidate::MovedHead) {
         set_pull_head(&remote, 1481, "replacement")?;
         let obsolete = cold.watch_prs(&bounds).await;
@@ -738,4 +870,26 @@ async fn check_after_restart(
     assert!(repeated.is_empty(), "{repeated:?}");
     assert_eq!(attempts.len(), 1);
     Ok(())
+}
+
+fn hold_at(
+    point: super::Point,
+    id: &TaskId,
+) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let signal = entered.clone();
+    let gate = release.clone();
+    let handle = tokio::runtime::Handle::current();
+    yulius_app::race::on(point, Path::new(id.as_str()), move || {
+        signal.notify_one();
+        let released = tokio::task::block_in_place(|| {
+            handle.block_on(tokio::time::timeout(
+                Duration::from_secs(15),
+                gate.notified(),
+            ))
+        });
+        assert!(released.is_ok(), "test did not release the decision");
+    });
+    (entered, release)
 }

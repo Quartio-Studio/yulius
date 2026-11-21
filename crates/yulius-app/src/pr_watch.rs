@@ -25,7 +25,7 @@ use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::ids::TaskId;
 use yulius_domain::task::TaskStatus;
 
-use crate::agent_wait::QueueNote;
+use crate::agent_wait::{ArmedNow, QueueNote};
 use crate::ci::{CiJobRecord, CiRunRecord};
 use crate::context::App;
 use crate::delivery::{delivery_profile, past_merge};
@@ -990,6 +990,7 @@ impl App {
     ) -> Option<PrFacts> {
         // The slot before the delivery: a merge decided in between then reads as merged, never
         // as "no merge armed" on an open pull request (review minor 8).
+        let activation = self.armed_now(&task.id);
         let (armed, outcome) = self.armed_view(&task.id);
         // Also before a restarted server put the armed merges back: never "no merge is armed"
         // for one that is (SPEC-487, review round 2).
@@ -1035,12 +1036,7 @@ impl App {
         }
         // During restoration or a queue decision an arm can be known without a
         // verified activation. Even a due check-in must wait for that decision.
-        if armed
-            && !matches!(
-                self.armed_now(&task.id),
-                crate::agent_wait::ArmedNow::Armed(_)
-            )
-        {
+        if armed && !matches!(activation, ArmedNow::Armed(_)) {
             return None;
         }
         let integration = delivery_profile(&sandbox).integration_branch;
@@ -1093,13 +1089,6 @@ impl App {
                 .find(|run| run.reference == CiRef::PullRequest(pr))
                 .cloned();
         }
-        if let Some(run) = own.as_ref()
-            && run.state == RunState::Failed
-            && self.run_superseded_by_pushed_head(task, &run.sha).await
-        {
-            own = None;
-        }
-        let own = own.as_ref();
         let train = self.watched_train(task, pr);
         let holding = train.as_ref().and_then(|train| train.candidate.as_ref());
         let candidate = match holding {
@@ -1113,6 +1102,25 @@ impl App {
             None => None,
         };
         let candidate = candidate.as_ref();
+        // A failed ordinary run takes this member out of the train. Check the same
+        // run as the queue even if another PR tested the commit or the recent list rolled over.
+        let red_candidate_head = match (&activation, candidate) {
+            (ArmedNow::Armed(arm), Some(run)) if run.state == RunState::Failed => Some(&arm.head),
+            _ => None,
+        };
+        if let Some(head) = red_candidate_head {
+            own = self.ordinary_pull_run(&sandbox, pr, head).await.ok()?;
+        }
+        if let Some(run) = own.as_ref()
+            && run.state == RunState::Failed
+            && self.run_superseded_by_pushed_head(task, &run.sha).await
+        {
+            if red_candidate_head.is_some() {
+                return None;
+            }
+            own = None;
+        }
+        let own = own.as_ref();
         let hold = if train.is_some() {
             Hold::Held
         } else {
@@ -1145,6 +1153,7 @@ impl App {
         }
         if let (Some(run), Some((_, members))) = (candidate, holding)
             && run.state == RunState::Failed
+            && !own.is_some_and(|run| run.state == RunState::Failed)
             && !told_key("candidate", &run.id)
         {
             let jobs = self
@@ -1284,7 +1293,22 @@ impl App {
             )
             .await?;
         }
-        if self.merge_is_armed(&task.id) != armed
+        crate::race::reached(
+            crate::race::Point::LivePrFactsRead,
+            std::path::Path::new(task.id.as_str()),
+        );
+        if let Some(head) = red_candidate_head
+            && self
+                .ordinary_pull_run(&sandbox, pr, head)
+                .await
+                .ok()?
+                .as_ref()
+                != own
+        {
+            return None;
+        }
+        if self.armed_now(&task.id) != activation
+            || self.merge_is_armed(&task.id) != armed
             || (armed && self.watched_train(task, pr) != train)
         {
             return None;

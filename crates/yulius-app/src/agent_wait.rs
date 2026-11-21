@@ -978,6 +978,10 @@ impl App {
             let Some(deciding) = lock_slot(&runtime).take() else {
                 continue;
             };
+            crate::race::reached(
+                crate::race::Point::FreeArmTaken,
+                std::path::Path::new(task.id.as_str()),
+            );
             let verdict = self.merge_armed_task(&task, deciding.merge.clone()).await;
             let decided = matches!(verdict, Verdict::Decided(_));
             {
