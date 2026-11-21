@@ -3086,22 +3086,25 @@ async fn browser_handoff_allows_inline_answer_clears_without_viewers_and_emits_o
         assert!(f.h.store.task_needs_you(&task_id).await?.is_some());
 
         // Close `tab2` with zero viewer sockets attached: the sandbox watcher must clear DB state.
+        let mut close_events = f.h.app.events.subscribe();
         browser
             .apply_viewer(yulius_contracts::browser::ViewerClientMsg::Close {
                 tab_id: tab2.clone(),
             })
             .await?;
-        let deadline = tokio::time::Instant::now() + WAIT;
-        loop {
-            if f.h.store.task_needs_you(&task_id).await?.is_none() {
-                break;
+        tokio::time::timeout(WAIT, async {
+            loop {
+                let env = close_events.recv().await?;
+                if matches!(env.event, yulius_contracts::events::UiEvent::BrowserActionCleared {
+                    tab_id, task_id: Some(id), ..
+                } if tab_id == tab2.as_str() && id == task_id.as_str())
+                {
+                    return Ok::<_, tokio::sync::broadcast::error::RecvError>(());
+                }
             }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "zero-viewer tab close must clear persisted browser needs_you"
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        })
+        .await??;
+        assert!(f.h.store.task_needs_you(&task_id).await?.is_none());
         assert!(f.h.store.stored_task_attention(&task_id).await?.is_none());
 
         // Finding #3 (N viewers): connect TWO viewer WebSockets, request action on `tab1`, clear

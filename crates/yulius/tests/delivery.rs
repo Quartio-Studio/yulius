@@ -4698,16 +4698,36 @@ async fn answer_with_a_successor(f: &Fixture) -> BoxResult<(TaskId, TaskId)> {
 /// Chromium startup can hold the final lookup for outstanding browser decisions.
 #[derive(Default)]
 pub(super) struct HeldBrowserLookup {
+    publication_reader: Option<Arc<std::sync::Mutex<Option<tokio::task::Id>>>>,
     calls: std::sync::atomic::AtomicUsize,
     entered: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
 }
 
 impl HeldBrowserLookup {
-    pub(super) fn hold_second_lookup(
+    pub(super) fn for_publication() -> Self {
+        Self {
+            publication_reader: Some(Arc::default()),
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn hold_publication_lookup(
         &self,
+        task: &TaskId,
     ) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
-        self.calls.store(0, std::sync::atomic::Ordering::SeqCst);
+        if let Some(reader) = self.publication_reader.clone() {
+            yulius_app::race::on(
+                yulius_app::race::Point::ArmedNoticePublicationRead,
+                Path::new(task.as_str()),
+                move || {
+                    *reader
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some(tokio::task::id());
+                },
+            );
+        }
         (self.entered.clone(), self.release.clone())
     }
 }
@@ -4737,7 +4757,15 @@ impl BrowserPort for HeldBrowserLookup {
     }
 
     async fn running(&self, _: &SandboxId) -> Option<Arc<dyn BrowserSession>> {
-        if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+        let hold = match &self.publication_reader {
+            Some(reader) => reader
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take_if(|watcher| Some(*watcher) == tokio::task::try_id())
+                .is_some(),
+            None => self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1,
+        };
+        if hold {
             self.entered.notify_one();
             self.release.notified().await;
         }

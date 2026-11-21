@@ -167,7 +167,7 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
     rt.block_on(async {
         let id = &id;
         let (cold, remote) = app_with_pulls(&data, 8, 1).await?;
-        let browser = Arc::new(crate::delivery::HeldBrowserLookup::default());
+        let browser = Arc::new(crate::delivery::HeldBrowserLookup::for_publication());
         let cold = if matches!(case, OwnerCase::BrowserRestart) {
             let mut deps = cold.deps.clone();
             deps.browser = browser.clone();
@@ -483,9 +483,19 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
         ) {
             let (entered, release) = match case {
                 OwnerCase::ExternalRepair(point) => super::pause_watch_or_queue(point, id),
-                OwnerCase::BrowserRestart => browser.hold_second_lookup(),
+                OwnerCase::BrowserRestart => browser.hold_publication_lookup(id),
                 _ => super::pause_watch_or_queue(super::Point::LivePrFactsRead, id),
             };
+            if matches!(case, OwnerCase::BrowserRestart) {
+                use futures::FutureExt;
+                let sandbox = cold.deps.store.task(id).await?.ok_or("owner")?.sandbox_id;
+                for _ in 0..2 {
+                    assert!(
+                        cold.deps.browser.running(&sandbox).now_or_never().is_some(),
+                        "unrelated browser reads must not consume the owner's publication gate"
+                    );
+                }
+            }
             let watcher = Arc::clone(&cold);
             let pass = tokio::spawn(async move { watcher.watch_prs(&bounds).await });
             tokio::time::timeout(Duration::from_secs(10), entered.notified()).await?;

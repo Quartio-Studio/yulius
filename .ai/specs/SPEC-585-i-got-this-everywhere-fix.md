@@ -26,6 +26,7 @@ The screenshot shows parked Quartio-v2 task #335, PR #1491, 11 completed steps a
 - [x] Restore the correct status across parked task reads
 - [x] Verify and independently review the fix
 - [x] Merge the reviewed fix into dev
+- [x] Resolve browser synchronization failures from the full CI run
 
 ## Acceptance criteria
 
@@ -69,3 +70,5 @@ mutants: 19 listed, 8 caught, 0 missed, 0 timed out, 11 unviable, 0 not reached 
 Both surviving mutations were reapplied. The added assertions failed with each generated change: the cache returned an absent PR identity, or hid a completed branch result behind an earlier overview. One repair mutant was initially caught by an unrelated watcher timeout. A dedicated regression now detects that mutant mistakenly treating an unmerged closure as a verified merge during a stalled final list.
 
 On the restored product code, the final run passed 178 parking and dependency tests, six cache and publication tests, and scoped Clippy with warnings denied. The task delivery record supplies the green PR head, squash commit and verification link for the final plan item.
+
+Yulius CI run `9936922b-a607-485f-b6db-f0b3e2ece268` exposed two test races. The browser handoff fixture now waits for the matching action-cleared event before asserting both persisted records are empty. A deterministic unrelated browser read reproduced the restart fixture consuming its gate before publication. It now holds the reader that reached the PR publication check. All four affected tests and scoped Clippy passed.
