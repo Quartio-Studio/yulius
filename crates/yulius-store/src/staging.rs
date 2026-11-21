@@ -168,6 +168,22 @@ impl StagingStore for SqliteStore {
         .await
     }
 
+    async fn staging_verified(
+        &self,
+        sandbox: &SandboxId,
+        environment: &str,
+        revision: &str,
+    ) -> AppResult<bool> {
+        let (sandbox, env, sha) = (
+            sandbox.to_string(),
+            environment.to_owned(),
+            revision.to_owned(),
+        );
+        self.call(move |c| c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM staging_requests WHERE sandbox_id = ?1 AND environment = ?2 AND revision = ?3 AND state = 'verified')",
+            params![sandbox, env, sha], |row| row.get(0)).map_err(db)).await
+    }
+
     async fn recent_staging_requests(
         &self,
         sandbox: &SandboxId,

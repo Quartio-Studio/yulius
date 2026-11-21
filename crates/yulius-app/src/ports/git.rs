@@ -399,6 +399,10 @@ pub trait GitPort: Send + Sync {
         let _ = (worktree, base, since, head);
         unsupported("comparing trees")
     }
+    /// A bounded batch of the commits immediately preceding the head on its first-parent chain.
+    async fn preceding_commits(&self, _repo: &Path, _head: &str) -> AppResult<Vec<String>> {
+        unsupported("reading first-parent history")
+    }
     /// The place of `sha` on `head`'s first-parent history (its count of first-parent commits,
     /// itself included), or `None` when that walk does not pass it (SPEC-575 MFS-006).
     async fn first_parent_position(

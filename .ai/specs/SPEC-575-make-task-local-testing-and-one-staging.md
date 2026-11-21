@@ -109,7 +109,7 @@ What exists today (map of 2026-11-20, `dev` at f80f42cad):
     merge-first deploy script is idempotent by contract.
   - A request whose run passed before the crash is marked `verified` from the run.
   - A second request in the same tick creates no second row or run.
-- **MFS-009 Production from verified staging.**
+- **MFS-009 Production from verified staging.** The production CD head-equality rule below is superseded by [SPEC-586](SPEC-586-we-should-be-able-to-deploy-on-prod-last.md).
   - With a merge-first environment, every promotion (a person's production deploy, the Delivery
     page's Promote, the profile's automatic one) is refused until the integration head is the
     revision that environment serves, verified, with the tables read through the CD mirror.

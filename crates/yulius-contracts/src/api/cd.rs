@@ -59,7 +59,7 @@ pub struct CdEnvironment {
     pub verify: Option<String>,
     /// Production promotes the integration branch first.
     pub promote: bool,
-    /// With `promote`: the integration head a deploy now would promote (as last fetched).
+    /// With `promote`, the integration revision available for release at the last fetch.
     #[serde(default)]
     pub promotes_from: Option<String>,
     /// Secrets the commands get.
@@ -266,7 +266,7 @@ pub struct CdDeploy {
     #[serde(default)]
     pub confirm: Option<String>,
     /// The commit the person was shown (at least 7 hex digits): the one it deploys, or with a
-    /// promotion the integration commit it promotes. Refused (409) when the branch moved since.
+    /// promotion the integration commit it promotes. Refused (409) when the selected revision changed.
     #[serde(default)]
     pub expect: Option<String>,
     /// Production: how long the person kept the confirmation open, in milliseconds, as the page

@@ -439,6 +439,32 @@ impl GitHubClient {
         }
     }
 
+    /// Creates a new branch at an exact SHA. An existing ref is never updated.
+    ///
+    /// # Errors
+    /// Input validation, a GitHub refusal (including an existing ref), or transport failure.
+    pub async fn create_branch_ref(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        sha: &str,
+    ) -> Result<(), GitHubError> {
+        repo_args(owner, repo)?;
+        validate::branch(branch)?;
+        validate::sha(sha)?;
+        let url = self.api_url(&["repos", owner, repo, "git", "refs"])?;
+        let call = Call::new(Method::POST, url, Some(token.expose()))
+            .json(serde_json::json!({"ref": format!("refs/heads/{branch}"), "sha": sha}));
+        let reply = self.send_any(&call).await?;
+        if reply.is_success() {
+            Ok(())
+        } else {
+            Err(self.error_for(&reply, &call))
+        }
+    }
+
     /// Moves `branch` to `to_sha` only as a fast-forward (`force: false`).
     ///
     /// # Errors

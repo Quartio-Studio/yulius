@@ -963,8 +963,8 @@ Cleanup request = {"items": [{"kind", "name"}] (empty: every safe item), "force"
 A project's CD (SPEC-134, SPEC-257, ADR-0109/0110/0195) is its environments in `yulius.toml`, read
 only from protected branches: `[cd.dev]` and `[cd.prod]` by default and up to 16 in all. Each has a
 stage, which carries its rules: a dev-stage environment is read at the integration branch head, a
-production-stage one at the commit it deploys (the integration head when that head's table
-promotes, else the production head). A name other than `dev` and `prod` (1-32 lowercase letters,
+production-stage one at the commit it deploys (the selected integration revision when the
+integration head’s table promotes, else the production head). A name other than `dev` and `prod` (1-32 lowercase letters,
 digits and `-`, starting with a letter) states its `stage`; its stage is the integration head's,
 else a production-stage table at the production head.
 
@@ -1030,9 +1030,13 @@ The merge-first environment changes only through its staging queue (ADR-0411):
 - The deploy scripts of a merge-first target must be idempotent: a run lost to a restart is
   retried, up to three attempts.
 - A failed deploy that announced a rollback barrier is not restored; its request says so.
-- With a merge-first target, every promotion (a production deploy's, `POST …/delivery/promote`,
-  the profile's automatic one) is refused (409) until staging serves the integration head,
-  verified; the automatic promotion then runs once the staging queue verified it.
+- For a promoting production deployment, `GET …/cd` reports the release SHA in
+  `promotes_from`. Pass it as `expect` to `POST …/cd/{env}/deploy`. A changed candidate
+  returns 409. Merge-first staging supplies its verified revision. During a newer ordinary
+  dev deployment, rollback drill or integration branch CI run, CD can release the preceding
+  verified revision. [ADR-0425](decisions/0425-pin-a-production-deploy-to-verified-dev.md)
+- With a merge-first target, `POST …/delivery/promote` and the profile's automatic promotion
+  wait until staging has verified the integration head.
 - For every project, `POST …/delivery/promote` and the automatic promotion read the integration
   head and its `[cd.*]` tables through the verified CD mirror first, and answer 409 when they
   cannot be read: a fetch failure, or an invalid `yulius.toml` at the head.
@@ -1072,7 +1076,7 @@ CdOverview = {"slug", "environments": [CdEnvironment (dev stage, then prod stage
 CdEnvironment = {"name": "dev|prod|<name>", "label": "dev|production|<name>", "stage": "dev|prod",
                  "state": "not_defined|empty|ready",
                  "branch", "head", "problem": "yulius.toml line 3: …"|null, "about", "deploy", "verify",
-                 "promote", "promotes_from": "<integration head>"|null,
+                 "promote", "promotes_from": "<selected integration revision>"|null,
                  "secrets": [{"name", "state": "ready|not_allowed|missing|production|agents_use"}],
                  "states": [{"name", "version": <newest>|null (missing), "held_by": "<env> run <id>"|null}],
                  "deployed": "<sha of the last passed run>"|null, "last_run": CdRun|null,
@@ -1143,6 +1147,8 @@ the sandbox's agent secrets (an id that held one is ignored). `drill` must name 
 production-stage deploy whose table has a `deploy` is refused (`conflict`, audited
 `cd.refused`) until the table has `rollback` and the newest drill of its `drill` environment passed
 at a commit with the tree being deployed (with `promote`: the integration commit promoted).
+While a different dev commit is drilling, the latest completed drill can supply that proof if it
+passed for the confirmed tree. [ADR-0425](decisions/0425-pin-a-production-deploy-to-verified-dev.md)
 A person's production deploy refused only for that (the newest drill is missing or ran at another
 tree, none runs, the drill environment has `deploy` and `rollback` at the integration head, whose
 tree is the one production deploys, and its newest deploy is of another commit) deploys the drill
