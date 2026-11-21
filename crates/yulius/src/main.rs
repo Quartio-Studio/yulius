@@ -313,6 +313,14 @@ enum Command {
     },
     /// Print build information.
     Version,
+    /// Apply this release's migrations to a copy of a store file and print its schema, from the
+    /// one it had (staging's deploy measures a migration with it, SPEC-591).
+    #[command(name = "store-migrate", hide = true)]
+    StoreMigrate {
+        /// The store file (a copy): it must exist.
+        #[arg(long)]
+        db: PathBuf,
+    },
     /// Root helper: build or install the commit the server requested (yulius-update.service).
     #[command(name = "update-helper", hide = true)]
     UpdateHelper(Box<yulius::update_helper::HelperArgs>),
@@ -963,6 +971,16 @@ fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
+        Command::StoreMigrate { db } => match yulius_store::migrate_file(&db) {
+            Ok((from, to)) => {
+                println!("schema {to} (from {from})");
+                ExitCode::SUCCESS
+            }
+            Err(err) => {
+                eprintln!("yulius store-migrate: {}: {err}", db.display());
+                ExitCode::FAILURE
+            }
+        },
         Command::UpdateHelper(args) => yulius::update_helper::main(&args),
         Command::MigrateHelper(args) => yulius::migrate_helper::main(&args),
         Command::Serve(args) => run_async(yulius::serve::serve(*args)),
