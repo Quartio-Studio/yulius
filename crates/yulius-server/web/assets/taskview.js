@@ -25,7 +25,7 @@ import { BRAND } from './brand.js';
 import { antigravityConnected, claudeConnected, codexConnected, connectAccountStep } from './claude.js';
 import { aName, agentOfHarness } from './agents.js';
 import { isPhone } from './theme.js';
-import { draftFor, newDraft, otherDrafts, selectDraft, saveDraft, clearDraft, attachToDraft, onDraftChange } from './drafts.js';
+import { draftFor, newDraft, otherDrafts, selectDraft, saveDraft, setDraftStarting, clearDraft, attachToDraft, onDraftChange } from './drafts.js';
 import { handoffsPanel } from './handoffs.js';
 
 const STEP_MARK = { done: '✓', in_progress: '▸', pending: '·', skipped: '–', blocked: '✕' };
@@ -1534,8 +1534,9 @@ export function mountComposer(ctx, sandbox, draft) {
    * The draft changed elsewhere: the tray shows the files it gained (in every undo step: they came
    * with no edit of this prompt).
    */
-  function draftChanged(removed) {
-    if (removed) { refreshRoute(); return; }
+  function draftChanged(kind) {
+    if (kind === 'retired') { refreshRoute(); return; }
+    if (kind === 'starting') { renderBanner(); return; }
     learn();
     if (!arriving) prompt.adopt(draft.attached);
     prompt.refresh(); // numbers, or a thumbnail came
@@ -1784,8 +1785,11 @@ export function mountComposer(ctx, sandbox, draft) {
       items.push(connectAccountStep(me, 'Tasks start once one is usable.', findModel(picks.model)?.provider.harness));
     }
     setChildren(banner, items);
-    startButton.disabled = !write;
+    startButton.disabled = !write || draft.starting;
+    startButton.classList.toggle('busy', draft.starting);
     prompt.disabled = !write;
+    prompt.readOnly = draft.starting;
+    for (const control of [modeChip, workflowChip, afterChip, modelChip, effortChip]) control.disabled = draft.starting;
     startButton.title = !write ? 'Requires write access' : `${startAction()} (${SUBMIT_KEYS})`;
     // Onboarding landed while the page was open: the task box is ready for typing, unless the
     // person is busy elsewhere on the page.
@@ -1967,10 +1971,7 @@ export function mountComposer(ctx, sandbox, draft) {
   let showTimer = 0;
   const autoStage = () => (mode === AUTO || workflowId === AUTO ? 'Choosing mode and workflow…' : prepare ? 'Preparing the task…' : 'Starting the task…');
   function working(text) {
-    draft.starting = true;
-    startButton.disabled = true;
-    startButton.classList.add('busy');
-    prompt.readOnly = true;
+    setDraftStarting(draft, true);
     if (status) { status.stage(text); return; }
     status = intakeStatus(text);
     clearTimeout(showTimer);
@@ -1981,11 +1982,9 @@ export function mountComposer(ctx, sandbox, draft) {
     }, 150);
   }
   function idle() {
-    draft.starting = false;
+    setDraftStarting(draft, false);
     clearTimeout(showTimer);
     box.classList.remove('thinking');
-    prompt.readOnly = false;
-    startButton.classList.remove('busy');
     if (status && intakeSlot.contains(status.el)) setChildren(intakeSlot, null);
     status = null;
     renderBanner();

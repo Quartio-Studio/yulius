@@ -100,6 +100,7 @@ export function newDraft(draft) {
 export function saveDraft(draft, { now = false } = {}) {
   const { key } = draft;
   if (drafts.get(key) !== draft || (now && !timers.has(key))) return;
+  draft.remoteChange = false;
   clearTimeout(timers.get(key));
   timers.delete(key);
   if (now) store(key);
@@ -110,18 +111,29 @@ export function saveDraft(draft, { now = false } = {}) {
  * Calls `callback` whenever this draft gains an attachment or a thumbnail, or another tab removes it
  * (an upload can end after the composer that started it is gone). Returns the unsubscribe.
  */
-export function onDraftChange({ key }, callback) {
+export function onDraftChange(draft, callback) {
+  const { key } = draft;
   if (!listeners.has(key)) listeners.set(key, new Set());
   const set = listeners.get(key);
   set.add(callback);
   return () => {
     set.delete(callback);
-    if (!set.size) listeners.delete(key);
+    if (!set.size) {
+      listeners.delete(key);
+      reconcile(draft);
+    }
   };
 }
 
-function changed(key, removed = false) {
-  for (const callback of [...(listeners.get(key) || [])]) callback(removed);
+function changed(key, kind = 'attachments') {
+  for (const callback of [...(listeners.get(key) || [])]) callback(kind);
+}
+
+export function setDraftStarting(draft, starting) {
+  if (drafts.get(draft.key) !== draft || draft.starting === starting) return;
+  draft.starting = starting;
+  changed(draft.key, 'starting');
+  if (!starting) reconcile(draft);
 }
 
 /**
@@ -199,17 +211,32 @@ function retiredElsewhere(key) {
   const draft = drafts.get(key);
   if (!draft) return;
   retire(draft);
-  changed(key, true);
+  changed(key, 'retired');
 }
 if (retirements) retirements.onmessage = (event) => retiredElsewhere(event.data);
+
+// A remote save waits while this tab is editing or submitting. A later local save wins.
+function reconcile(draft) {
+  if (!draft.remoteChange || draft.starting || listeners.has(draft.key) || drafts.get(draft.key) !== draft) return;
+  draft.remoteChange = false;
+  const stored = restore(draft.key);
+  // Keep the live File and thumbnail work for attachments which still belong to the draft.
+  const live = new Map(draft.attached.map((item) => [item.path, item]));
+  if (stored.attached) stored.attached = stored.attached.map((item) => {
+    const previous = live.get(item.path);
+    return previous?.at === item.at ? Object.assign(previous, item) : item;
+  });
+  Object.assign(draft, emptyDraft(), stored);
+}
 
 window.addEventListener('storage', (event) => {
   if (event.key === FORGOTTEN_KEY) { forgetInMemory(); return; }
   if (event.key === RETIRED_KEY) { if (event.newValue) retiredElsewhere(event.newValue); return; }
   const draft = drafts.get(event.key);
   // Clearing the prompt also removes its storage entry. Its editor and held uploads stay live.
-  if (draft && !listeners.has(event.key) && !draft.starting && !timers.has(event.key)) {
-    Object.assign(draft, emptyDraft(), restore(event.key));
+  if (draft && !draft.memoryOnly && !timers.has(event.key)) {
+    draft.remoteChange = true;
+    reconcile(draft);
   }
 });
 
@@ -224,10 +251,11 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 function store(key) {
   const draft = drafts.get(key);
   if (!draft) return;
+  draft.memoryOnly = false;
   try {
     // Nothing typed or attached: nothing to keep.
     if (!draft.text.trim() && !draft.attached.length) { window.localStorage.removeItem(key); return; }
-  } catch { return; }
+  } catch { draft.memoryOnly = true; return; }
   const shape = (withThumbs) => {
     let thumbs = 0; // the first MAX_THUMBS images keep theirs
     return JSON.stringify({
@@ -248,7 +276,7 @@ function store(key) {
     window.localStorage.setItem(key, shape(true));
   } catch {
     // Full (or unavailable): without thumbnails, else in memory only.
-    try { window.localStorage.setItem(key, shape(false)); } catch { /* memory only */ }
+    try { window.localStorage.setItem(key, shape(false)); } catch { draft.memoryOnly = true; }
   }
 }
 

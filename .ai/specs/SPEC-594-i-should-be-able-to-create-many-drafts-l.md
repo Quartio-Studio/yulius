@@ -16,14 +16,15 @@ The composer in [SPEC-026](SPEC-026-if-i-type-something-here-and-i-change-ta.md)
 ## Requirements
 
 - **MDR-001** The new-task composer lets a writer create a fresh draft and choose an unfinished draft by its prompt or attachment name. Creating and switching drafts launches no task.
-- **MDR-002** Each draft keeps its text, inline files, tray and existing per-draft task choices across switches, navigation and reload. The selected draft reopens in that tab. A draft saved by an older browser version remains editable. Model and effort follow the existing browser preferences.
-- **MDR-003** Successful task creation and confirmed discard remove just the chosen draft. A failed start keeps it. A pending upload belongs to its original draft, including after a switch, and cannot restore a discarded draft. Sign-out forgets all drafts.
+- **MDR-002** Each draft keeps its text, inline files, tray and existing per-draft task choices across switches, navigation and reload. The selected draft reopens in that tab. Closing an untouched editor adopts newer edits saved in another tab. A draft saved by an older browser version remains editable. Model and effort follow the existing browser preferences.
+- **MDR-003** Successful task creation and confirmed discard remove just the chosen draft. A reopened draft stays read-only while its task starts. A failed start keeps it and releases it for editing. A pending upload belongs to its original draft, including after a switch, and cannot restore a discarded draft. Sign-out forgets all drafts.
 
 ## Plan
 
 - [x] Reproduce the single-draft behavior in the new-task composer
 - [x] Cover independent drafts and legacy recovery in the browser
 - [x] Let people create, switch and remove individual task drafts
+- [x] Preserve edits when reopening pending and shared drafts
 - [ ] Verify the composer and obtain independent approval for delivery
 
 ## Acceptance criteria
@@ -49,3 +50,4 @@ Extend the existing browser draft storage with separate keys for additional draf
 - Independent review reproduced an untouched open editor restoring a draft discarded in another tab. The two-tab regression failed with the original storage key present after a held upload and a switch. Remote removal now retires the open editor and its pending upload. An unmount flushes only dirty drafts.
 - `scripts/dev quick` passed. Vidoc was disabled by the project. `scripts/dev mutants` reported no changed Rust code to mutate.
 - Round two reproduced a held first upload surviving a discard, and a held upload lost when another tab erased the prompt. Discard and successful start now send an explicit cross-tab retirement message, including for an empty draft. Erasing text remains an edit to the same draft. Three two-tab scenarios cover these distinct outcomes.
+- Round three reproduced an editable draft during held creation and stale text after leaving an untouched editor. The success, failed-start and cross-tab regressions all failed at the reviewed head. The pending state now belongs to the draft across remounts. An untouched editor adopts a deferred remote save on release, preserving live files and later local edits.
