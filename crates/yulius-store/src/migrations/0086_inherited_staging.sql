@@ -74,3 +74,36 @@ WHERE state = 'gate_failed' AND told = 0 AND EXISTS (
       AND r.sha = staging_requests.revision AND r.sandbox_id = staging_requests.sandbox_id
       AND r.state IN ('failed', 'error')
 );
+
+-- Machine-generated input is restricted to live work. A newer open PR can follow an
+-- earlier landing from the same task. An explicitly open step keeps a merged task working.
+CREATE VIEW machine_notice_tasks AS
+SELECT t.id, t.sandbox_id, t.number FROM tasks t LEFT JOIN delivery d ON d.task_id = t.id
+WHERE t.status = 'running' AND t.archived_at IS NULL AND (
+    EXISTS (SELECT 1 FROM steps s WHERE s.task_id = t.id AND s.status NOT IN ('done', 'skipped'))
+    OR d.stage = 'pr_open'
+    OR (COALESCE(d.stage, 'none') = 'none' AND NOT EXISTS (
+        SELECT 1 FROM task_merges m WHERE m.task_id = t.id))
+);
+CREATE VIEW gate_workers AS
+SELECT n.* FROM machine_notice_tasks n JOIN tasks t ON t.id = n.id
+JOIN attempts a ON a.task_id = t.id AND a.state = 'live'
+WHERE COALESCE(t.activity, '') != 'needs_attention' AND t.needs_you IS NULL
+AND (t.paused_attempt IS NULL OR t.paused_attempt != a.id)
+AND NOT EXISTS (SELECT 1 FROM prompt_holds h WHERE h.task_id = t.id AND h.state = 'pending')
+AND (COALESCE(t.activity, 'working') = 'working' OR EXISTS (
+    SELECT 1 FROM steps s WHERE s.task_id = t.id AND s.status NOT IN ('done','skipped'))
+    OR EXISTS (SELECT 1 FROM delivery d WHERE d.task_id = t.id AND d.stage = 'pr_open'));
+
+-- One repair owner per project while the integration branch is red. Delivery receipts
+-- expire with the assignment. This bounds them by the number of workers in the project.
+CREATE TABLE gate_repairs (
+    sandbox_id TEXT PRIMARY KEY REFERENCES sandboxes(id) ON DELETE CASCADE,
+    owner_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    detail TEXT NOT NULL
+);
+CREATE TABLE gate_repair_told (
+    sandbox_id TEXT NOT NULL REFERENCES gate_repairs(sandbox_id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    PRIMARY KEY (sandbox_id, task_id)
+);

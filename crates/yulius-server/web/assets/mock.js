@@ -541,6 +541,7 @@ function summary(task) {
     // What the agent asked a person to do (`needs_you`, SPEC-134).
     needs_you: task.needs_you ? { ...task.needs_you } : null,
     ...(task.status === 'parked' && typeof task.parked_needs_you === 'boolean' ? { parked_needs_you: task.parked_needs_you, parked_pr: task.parked_pr } : {}),
+    ...(task.staging_outcome ? { staging_outcome: task.staging_outcome } : {}),
     ...(task.staging_wait ? { staging_wait: task.staging_wait } : {}),
     ...(task.needs_you_notice ? { needs_you_notice: { ...task.needs_you_notice } } : {}),
     // Why it reads needs_attention (SPEC-472): the flag's reason, only while it reads that flag.
@@ -2270,7 +2271,7 @@ function seedCi(params) {
   return {
     sb_studio: {
       gate: studioGate, gate_problem: null, status_access: null, actions_workflows: [],
-      gate_notices: params.get('gate_notice') === '1' ? [{ revision: '7713224a587f', run_id: 'ci_gate', test: 'delivery::gate' }] : [],
+      gate_notices: params.get('gate_notice') === '1' ? [{ revision: '7713224a587f', run_id: 'ci_gate', merge_task: 12, test: 'delivery::gate' }] : [],
       runs: [
         ...(params.get('gate_notice') === '1' ? [ciRun('ci_gate', 'branch/quartio', '7713224a587f', 'failed', 3, { failJob: 'test (2/2)' })] : []),
         ciRun('ci_s4', 'branch/quartio', '9f3c2a1b7e4d', 'running', 1),

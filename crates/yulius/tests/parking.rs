@@ -2859,10 +2859,9 @@ fn a_ci_failure_before_digest_parking_reaches_the_idle_author_once() -> TestResu
 }
 
 /// SPEC-553 PRK-103: an idle task continues to park safely while CI runs on its open PR, does not
-/// wake while CI is still running or while a human `needs_you` decision is open, and resumes
-/// automatically once in its saved session/worktree when an actionable check result arrives.
+/// wake on either a running check or a settled check (SPEC-612).
 #[test]
-fn parked_task_parks_safely_during_ci_and_auto_wakes_on_actionable_check_results() -> TestResult {
+fn parked_task_stays_parked_when_its_pull_request_checks_finish() -> TestResult {
     use yulius_app::ci::{CiJobRecord, CiRunRecord};
     use yulius_app::delivery::DeliveryRecord;
     use yulius_app::pr_watch::WatchBounds;
@@ -2876,9 +2875,6 @@ fn parked_task_parks_safely_during_ci_and_auto_wakes_on_actionable_check_results
     rt.block_on(async {
         let (app, github) = app_with_pulls(&data, 8, 1).await?;
         let (id, caller) = answered(&app, &data).await?;
-        let session_id = app.deps.store.attempts(&id).await?[0]
-            .provider_session_id
-            .clone();
         let open = DeliveryRecord {
             task_id: id.clone(),
             stage: DeliveryStage::PrOpen,
@@ -3058,8 +3054,7 @@ fn parked_task_parks_safely_during_ci_and_auto_wakes_on_actionable_check_results
         );
         assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Parked));
 
-        // CI finishes passed (unarmed green): `watch_prs` resumes the parked session once with
-        // the exact saved `provider_session_id`.
+        // An unarmed green verdict remains visible on the PR. Only its person resumes this task.
         let passed_ci = CiRunRecord {
             id: "run-passed".into(),
             state: RunState::Passed,
@@ -3097,164 +3092,9 @@ fn parked_task_parks_safely_during_ci_and_auto_wakes_on_actionable_check_results
             .insert_ci_run(&passed_ci, &[passed_job])
             .await?;
 
-        let woke = app.watch_prs(&bounds).await;
-        assert!(
-            woke.iter()
-                .any(|(task, text)| task == &id && text.contains("passed its own Yulius CI run")),
-            "expected green wake: {woke:?}"
-        );
-        wait_for(
-            "resumed after green CI",
-            Duration::from_secs(30),
-            || async { status_of(&app, &id).await.0 == Some(TaskStatus::Running) },
-        )
-        .await?;
-        let runs = app.deps.store.attempts(&id).await?;
-        assert_eq!(runs.len(), 2);
-        assert_eq!(runs[1].launch_kind, LaunchKind::Resume);
-        assert_eq!(runs[1].provider_session_id, session_id);
-
-        // Second watch pass does not duplicate the notice.
-        let repeat = app.watch_prs(&bounds).await;
-        assert!(
-            !repeat.iter().any(|(task, _)| task == &id),
-            "no duplicate wake/notice: {repeat:?}"
-        );
-
-        // Park again with an open `needs_you` human decision + a new failed CI run:
-        // human decision boundary MUST prevent auto-wake.
-        wait_for("idle after wake", Duration::from_secs(30), || async {
-            status_of(&app, &id).await.1 == Some(Activity::Waiting)
-        })
-        .await?;
-        let asked = NeedsYouRecord {
-            action: "Approve deploy".into(),
-            happened: None,
-            problem: None,
-            decision: true,
-            link: None,
-            at: 30,
-            cause: None,
-            named: Default::default(),
-        };
-        app.deps
-            .store
-            .set_task_needs_you(&id, Some(&asked), app.now())
-            .await?;
-        parked(&app, &id).await?;
-        let failed_ci = CiRunRecord {
-            id: "run-failed".into(),
-            sha: "2222222222222222222222222222222222222222".into(),
-            state: RunState::Failed,
-            queued_at: Timestamp(30),
-            started_at: Some(Timestamp(31)),
-            ended_at: Some(Timestamp(32)),
-            ..running_ci
-        };
-        set_pull_head(&github, 42, &failed_ci.sha)?;
-        github.set_checks(
-            &failed_ci.sha,
-            yulius_app::ports::github::ChecksState::Failure,
-        );
-        let failed_job = CiJobRecord {
-            id: "job-failed".into(),
-            run_id: "run-failed".into(),
-            ordinal: 0,
-            name: "checks".into(),
-            key: "checks".into(),
-            command: "scripts/dev ci".into(),
-            matrix: None,
-            state: RunState::Failed,
-            reason: None,
-            exit_code: Some(1),
-            output: String::new(),
-            failures: None,
-            started_at: Some(Timestamp(31)),
-            ended_at: Some(Timestamp(32)),
-            need: Need::default(),
-            timeout_minutes: None,
-            exclusive: false,
-            waited_ms: None,
-        };
-        app.deps
-            .store
-            .insert_ci_run(&failed_ci, &[failed_job])
-            .await?;
-        let held = app.watch_prs(&bounds).await;
-        assert!(
-            !held.iter().any(|(task, _)| task == &id),
-            "needs_you prevents auto-wake: {held:?}"
-        );
+        assert!(app.watch_prs(&bounds).await.is_empty());
         assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Parked));
-
-        // Once the human decision is cleared, first simulate no usable account (Relogin):
-        // `watch_prs` MUST keep the task safely `Parked` (never destructively `Failed`), and once
-        // the account is healthy again, wake it cleanly once — and across a restart reading
-        // persisted `pr-notices.json`, never double-wake it.
-        app.deps
-            .store
-            .set_task_needs_you(&id, None, app.now())
-            .await?;
-        let acc = yulius_domain::ids::AccountId::parse("a-only")?;
-        yulius_app::ports::store::AccountStore::set_account_state(
-            app.deps.store.as_ref(),
-            &acc,
-            yulius_app::model::AccountStatus::Relogin,
-            None,
-            Some("needs sign-in"),
-            app.now(),
-        )
-        .await?;
-        let no_acc = app.watch_prs(&bounds).await;
-        assert!(
-            !no_acc.iter().any(|(task, _)| task == &id),
-            "no usable account must not wake parked task: {no_acc:?}"
-        );
-        assert_eq!(
-            status_of(&app, &id).await.0,
-            Some(TaskStatus::Parked),
-            "no usable account must keep task Parked, never Failed"
-        );
-        yulius_app::ports::store::AccountStore::set_account_state(
-            app.deps.store.as_ref(),
-            &acc,
-            yulius_app::model::AccountStatus::Ok,
-            None,
-            None,
-            app.now(),
-        )
-        .await?;
-        let woke_red = app.watch_prs(&bounds).await;
-        assert!(
-            woke_red
-                .iter()
-                .any(|(task, text)| task == &id && text.contains("failed")),
-            "expected failed CI wake once account is usable: {woke_red:?}"
-        );
-        wait_for("idle after red wake", Duration::from_secs(30), || async {
-            status_of(&app, &id).await.1 == Some(Activity::Waiting)
-        })
-        .await?;
-        past_the_grace(&app, &id).await?;
-        assert_eq!(
-            app.park_idle_sessions_now().await,
-            0,
-            "the known red head is still unfinished"
-        );
-        // The agent publishes a repair. The old failed-run notice remains delivered.
-        let repaired = initial_head.as_str();
-        set_pull_head(&github, 42, repaired)?;
-        github.set_checks(repaired, yulius_app::ports::github::ChecksState::Success);
-        parked(&app, &id).await?;
-        // Simulate a server restart on the same data directory (re-reading `pr-notices.json`):
-        // the already-delivered `run-failed` must NOT double-wake the parked task.
-        let restarted = super::parking::app(&data, 8, 1).await?;
-        let after_restart = restarted.watch_prs(&bounds).await;
-        assert!(
-            !after_restart.iter().any(|(task, _)| task == &id),
-            "restart must not double-wake already-delivered CI failure: {after_restart:?}"
-        );
-        assert_eq!(status_of(&restarted, &id).await.0, Some(TaskStatus::Parked));
+        assert_eq!(app.deps.store.attempts(&id).await?.len(), 1);
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -3650,6 +3490,123 @@ fn the_digest_parks_a_quiet_task_that_asks_nobody_and_lists_its_last_message() -
         wait_for("the resumed message", Duration::from_secs(60), || async {
             screen(&app, &id).contains("Go on: answer with an echo")
         })
+        .await?;
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-612: actual terminal recipients of a red integration branch, including reassignment.
+#[test]
+fn a_red_integration_branch_is_assigned_to_one_worker_and_announced_to_the_other() -> TestResult {
+    use yulius_app::delivery::{
+        DeliveryRecord,
+        evidence::{Landing, LandingSource},
+    };
+    use yulius_domain::{ci::RunState, delivery::DeliveryStage};
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 8, 0).await?;
+        let (finished, caller) = answered(&app, &data).await?;
+        let project = app
+            .deps
+            .store
+            .sandbox(&caller.sandbox)
+            .await?
+            .ok_or("project")?;
+        let mut ids = Vec::new();
+        for prompt in ["Repair worker", "Other worker"] {
+            let id = new_task(&app, &project.id, &caller.user, prompt, TaskMode::Prompt).await?;
+            wait_for("worker ready", Duration::from_secs(30), || async {
+                status_of(&app, &id).await.1 == Some(Activity::Waiting)
+            })
+            .await?;
+            crate::pr_watch::leave_verification_step(&app, &id).await?;
+            ids.push(id);
+        }
+        let repo = data
+            .join("sandboxes")
+            .join(project.id.as_str())
+            .join("repo");
+        let sha = crate::cd::git(&repo, &["rev-parse", "HEAD"])?;
+        crate::cd::git(&repo, &["update-ref", "refs/remotes/origin/dev", &sha])?;
+        let landing = Landing {
+            branch: "dev".into(),
+            head: sha.clone(),
+            sha: sha.clone(),
+            source: LandingSource::MergeCommand,
+        };
+        let merged = DeliveryRecord {
+            task_id: finished.clone(),
+            pr_number: Some(1),
+            stage: DeliveryStage::MergedIntegration,
+            updated_at: app.now(),
+        };
+        assert!(
+            app.deps
+                .store
+                .transition_with_landing(&DeliveryStage::None, &merged, None, Some(&landing))
+                .await?
+        );
+        crate::staging::recorded_gate(
+            &app,
+            &project.id,
+            &sha,
+            RunState::Failed,
+            Some("---- delivery::gate stdout ----\nassertion failed\n"),
+        )
+        .await?;
+        let messages = || async { app.tell_gate_repairs(&project).await };
+        assert_eq!(messages().await?, 2);
+        wait_for(
+            "workers saw their assignments",
+            Duration::from_secs(30),
+            || async {
+                screen(&app, &ids[0]).contains("You own this repair")
+                    && screen(&app, &ids[1]).contains("Task #2 owns this repair")
+            },
+        )
+        .await?;
+        for worker in &ids {
+            let shown = screen(&app, worker);
+            assert!(
+                shown.contains("delivery::gate")
+                    && shown.contains(&sha[..12])
+                    && shown.contains("task #1"),
+                "{shown}"
+            );
+        }
+        assert_eq!(
+            messages().await?,
+            0,
+            "a repeated tick cannot duplicate the repair"
+        );
+        assert!(!screen(&app, &finished).contains("integration gate failed"));
+        assert_eq!(app.deps.store.attempts(&finished).await?.len(), 1);
+        assert!(
+            app.deps
+                .store
+                .transition_delivery(
+                    &DeliveryStage::None,
+                    &DeliveryRecord {
+                        task_id: ids[0].clone(),
+                        ..merged
+                    }
+                )
+                .await?
+        );
+        app.deps
+            .store
+            .replace_steps(&ids[0], &[], "person", app.now())
+            .await?;
+        assert_eq!(messages().await?, 1);
+        wait_for(
+            "remaining worker took over",
+            Duration::from_secs(30),
+            || async { screen(&app, &ids[1]).contains("You own this repair") },
+        )
         .await?;
         Ok::<_, Error>(())
     })?;
@@ -4085,6 +4042,7 @@ fn first_watch_during_queue_decision(case: QueueWatch, previously_seen: Option<u
         let clock = Arc::new(crate::support::TestClock(PRIOR_OBSERVATION.into()));
         let (app, github) = app_with_pulls_and_clock(&data, 8, 1, clock.clone(), |_| {}).await?;
         let (id, caller) = answered(&app, &data).await?;
+        crate::pr_watch::leave_verification_step(&app, &id).await?;
         let task = app.deps.store.task(&id).await?.ok_or("owner")?;
         let worktree = Path::new(task.worktree_path.as_deref().ok_or("checkout")?);
         let head = crate::pr_watch::git(worktree, &["rev-parse", "HEAD"])?;

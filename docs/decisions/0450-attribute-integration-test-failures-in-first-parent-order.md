@@ -10,9 +10,11 @@ During the incident on 21 November, the same failed test produced fix-forward in
 
 ## Decision
 
-Compare full gates on the integration branch's first-parent history. Preserve compact job verdicts and test names when CI prunes logs. A failed job whose tests cannot all be identified still needs its current owner. A passed job ends the observed failures for that job. A full pass ends the interval for every test.
+Compare full gates on the integration branch's first-parent history. Preserve compact job verdicts and test names when CI prunes logs. When a failed job has incomplete test evidence, include its name in the repair notice. A passed job ends the observed failures for that job. A full pass ends the interval for every test.
 
-Queue one new candidate suite at a time in branch order and reuse eligible branch runs. Each tested merge can expose an additional failure or supply the fix. An inherited staging receipt records the origin and waits for a verified descendant. The queue completes it without resuming the task. CI and Status show unresolved failures with no available task, with a link to the run.
+Queue one new candidate suite at a time in branch order and reuse eligible branch runs. Each tested merge can expose an additional failure or supply the fix. An inherited staging receipt records the origin and waits for a verified descendant. The queue completes it without resuming the task. Yulius records outcomes on finished deliveries. Its session input boundary checks for a running task with remaining work. Only a person resumes a parked task, including after PR and handoff events. This supersedes the automatic PR wake in ADR-0391 and the automatic staging wake for finished tasks in ADR-0437.
+
+Choose the lowest-numbered available running project task for the red branch. Eligibility excludes tasks waiting for a person, parked tasks, and completed merged deliveries. Retain the assignee while it stays eligible, including when additional failures appear. Persist the assignment and each worker’s receipt together with the failure details so an unchanged inherited test needs no new instruction. Identify the introducing merge separately for every test. When the owner leaves, assign its remaining work to the next eligible task. When nobody is at work, CI and Status show the failures and offer people a rerun or a new task.
 
 ## Alternatives
 

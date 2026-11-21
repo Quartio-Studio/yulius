@@ -95,11 +95,17 @@ impl StagingStore for SqliteStore {
         .await
     }
 
+    async fn latest_task_staging(&self, task: &TaskId) -> AppResult<Option<StagingRequestRecord>> {
+        let task = task.to_string();
+        self.call(move |c| c.query_row(&format!("SELECT {COLUMNS} FROM staging_requests WHERE task_id = ?1 ORDER BY created_at DESC, rowid DESC LIMIT 1"),
+            [task], request_row).optional().map_err(db)).await
+    }
+
     async fn task_staging_wait(&self, task: &TaskId) -> AppResult<Option<StagingState>> {
         let task = task.as_str().to_owned();
         self.call(move |c| {
             c.query_row(
-                "SELECT state FROM staging_requests WHERE task_id = ?1 AND told = 0 \
+                "SELECT state FROM staging_requests WHERE task_id = ?1 AND told = 0 AND EXISTS (SELECT 1 FROM machine_notice_tasks WHERE id = ?1) \
                          ORDER BY created_at DESC, rowid DESC LIMIT 1",
                 [task],
                 |row| {

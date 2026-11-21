@@ -41,7 +41,7 @@ mod findings;
 mod flaky;
 mod gate_history;
 pub use flaky::Noted;
-pub use gate_history::{GateJob, GateVerdict};
+pub use gate_history::{GateJob, GateVerdict, RepairRecipient};
 pub mod hygiene;
 mod opening;
 pub use opening::PullOpening;
@@ -1761,6 +1761,15 @@ impl App {
             }
         }
         for target in plan.queue {
+            if matches!(&target.reference, CiRef::Branch(branch) if branch == &profile.integration_branch)
+                && runs
+                    .iter()
+                    .any(|r| r.state.is_active() && matches!(r.reference, CiRef::Candidate(_)))
+            {
+                // A non-supersedable full candidate is already using the integration gate.
+                // The next inventory picks up the current branch head after its verdict.
+                continue;
+            }
             if let Some((_, gate)) = targets.iter().find(|(t, _)| *t == target) {
                 // A branch commit whose tree a run already passed (a squash merge of an
                 // up-to-date pull request) reuses that result instead of running again: every

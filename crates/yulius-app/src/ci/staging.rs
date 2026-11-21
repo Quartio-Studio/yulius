@@ -15,10 +15,10 @@
 //!    included in it.
 //! 4. **Outcome.**
 //!    - A passed run (deploy and verify) is verified.
-//!    - A failed one is the task's to fix, and staging is restored to its last verified release.
+//!    - A failed deploy is recorded and staging is restored to its last verified release.
 //!    - A person's cancel stands.
 //!    - A run lost to a restart or ended in error is tried again, up to [`MAX_DEPLOY_ATTEMPTS`].
-//!    - The task's session is told the outcome once.
+//!    - The outcome remains on the delivery. A running task with work left also hears it once.
 //!
 //! Every move is a compare-and-set from the state it was decided on
 //! ([`crate::ports::store_ext::StagingStore`]), and the decisions are
@@ -50,7 +50,7 @@ use crate::task_message::{Sender, Typed};
 /// Most requests a queue reads at once (the requests still on their way).
 const MAX_PENDING: usize = 200;
 /// A task view or browser handoff that is busy yields to the staging queue.
-const TASK_VIEW_BUDGET: Duration = Duration::from_millis(750);
+pub(super) const TASK_VIEW_BUDGET: Duration = Duration::from_millis(750);
 /// How a staging deploy's run note starts: the queue knows its own runs by it.
 const DEPLOY_NOTE: &str = "merge-first staging: request";
 /// How a restore's run note starts, before the part's label.
@@ -314,6 +314,16 @@ impl App {
             }
         }
         self.tell_staging_outcomes().await;
+        if let Ok(projects) = self.deps.store.sandboxes().await {
+            for project in projects {
+                if !project.is_playground()
+                    && project.removed_at.is_none()
+                    && let Err(err) = self.tell_gate_repairs(&project).await
+                {
+                    tracing::warn!(sandbox = %project.slug, error = %err, "integration repair notices deferred");
+                }
+            }
+        }
     }
 
     /// One round of a queue (SPEC-575 MFS-003, MFS-006 to MFS-008): verdicts, candidate runs,
@@ -460,7 +470,7 @@ impl App {
                     false,
                 )
                 .await?;
-            match verdicts.into_iter().find(|run| !run.archived) {
+            match verdicts.into_iter().next() {
                 Some(run) => {
                     let verdict = if run.state == RunState::Cancelled {
                         RunState::Error
@@ -527,20 +537,30 @@ impl App {
                             .await?;
                         continue;
                     };
-                    if self.deps.store.active_ci_runs().await?.iter().any(|r| {
-                        r.sandbox_id == sandbox.id && matches!(r.reference, CiRef::Candidate(_))
-                    }) {
+                    // CI inventory holds the same scheduling lock while it takes its snapshot
+                    // and records branch runs. A concurrent inventory cannot double-admit this SHA.
+                    let scheduler = self.ci_sync_lock(&sandbox.id);
+                    let guard = scheduler.schedule.lock().await;
+                    if !self.deps.store.integration_verdicts(&sandbox.id, &integration,
+                        std::slice::from_ref(&request.revision), false).await?.is_empty()
+                        || self.deps.store.active_ci_runs().await?.iter().any(|r| {
+                            r.sandbox_id == sandbox.id && (matches!(r.reference, CiRef::Candidate(_))
+                            || matches!(&r.reference, CiRef::Branch(branch) if branch == &integration))
+                        }) {
                         break;
                     }
                     let run = self
-                        .ci_queue(
+                        .ci_record_placed(
                             sandbox,
                             CiRef::Candidate(request.revision.clone()),
                             &request.revision,
                             &gate,
                             "yulius",
+                            self.now(),
                         )
                         .await?;
+                    drop(guard);
+                    self.ci_publish(&run.id).await;
                     let change = StagingChange {
                         ci_run_id: Some(run.id.clone()),
                         note: Some(format!("the full gate runs on it: run {}", run.id)),
@@ -926,7 +946,7 @@ impl App {
                     "{lead}: your merged revision {} has no staging request. Once your whole \
                  delivery has landed, ask once with cd_deploy {} before ending your turn. Yulius \
                  runs the full suite, then deploys and verifies that revision. If your final step \
-                 requires the outcome, leave it in progress. Yulius wakes this task with the outcome.",
+                 requires the outcome, leave it in progress. A running task with work left receives the outcome.",
                     short(&landing),
                     serde_json::json!({"environment": target.name}),
                 ));
@@ -1148,11 +1168,8 @@ impl App {
         Ok(())
     }
 
-    /// Tells each task its staging request's outcome once (SPEC-575 MFS-007): verified,
-    /// included, a failed gate with its run and jobs, or a failed deploy. Typed into its running
-    /// session, or resuming a parked one; nothing is typed while a person must act in it first,
-    /// it is paused or an update holds starts (tried at the next tick); a task that ended is not
-    /// told.
+    /// Record finished tasks' outcomes silently. Running tasks with work left can also hear
+    /// their own delivery verdict once, subject to the usual terminal and person holds.
     pub async fn tell_staging_outcomes(self: &Arc<Self>) -> usize {
         let Ok(untold) = self.deps.store.untold_staging_requests().await else {
             return 0;
@@ -1181,7 +1198,11 @@ impl App {
                 }
                 Err(_) => continue,
             };
-            if task.status.is_resting() {
+            if task.status.is_resting()
+                || task.status == TaskStatus::Parked
+                || (task.status == TaskStatus::Running
+                    && matches!(store.accepts_machine_notice(task_id).await, Ok(false)))
+            {
                 let _ = store.mark_staging_told(&request).await;
                 continue;
             }
@@ -1189,7 +1210,7 @@ impl App {
                 continue;
             }
             // Check the current recipient, their holds and the exact outcome immediately before
-            // waking a parked task or pasting into the observed live attempt.
+            // pasting into the observed live attempt.
             let still_due = || async {
                 let Ok(Some(current)) = store.task(task_id).await else {
                     return false;
@@ -1203,9 +1224,6 @@ impl App {
                     && matches!(store.staging_request(&request.id).await, Ok(Some(current)) if current == request)
             };
             let delivered = match task.status {
-                TaskStatus::Parked if still_due().await => {
-                    self.resume_parked(&task, Some(text)).await.unwrap_or(false)
-                }
                 TaskStatus::Running => {
                     let Ok(Some(attempt)) = store.live_attempt(task_id).await else {
                         continue;
@@ -1402,9 +1420,9 @@ fn staging_next(request: &StagingRequestRecord) -> String {
         }
         StagingState::GateFailed => match &request.ci_run_id {
             Some(run) => format!(
-                "Staging did not change. Read the run with ci_status {{\"run_id\": \"{run}\"}}, fix it forward on this branch, merge with delivery_merge, then cd_deploy again."
+                "Staging did not change. Read the run with ci_status {{\"run_id\": \"{run}\"}}, then follow the working task assigned the repair."
             ),
-            None => "Staging did not change. There was no CI run for this revision. Restore the gate, fix it forward on a new revision, merge with delivery_merge, then cd_deploy for that landing.".to_owned(),
+            None => "Staging did not change. There was no CI run for this revision. The project needs a working task to restore the gate.".to_owned(),
         },
         StagingState::DeployFailed => format!(
             "Read the run with cd_status {{\"run_id\": \"{}\"}}; fix it forward and merge, or cd_deploy again to retry the same revision.",

@@ -4,10 +4,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Duration;
 
+use crate::task_message::{Sender, Typed};
 use serde::{Deserialize, Serialize};
 use yulius_contracts::api::ci::GateNotice;
 use yulius_domain::ci::RunState;
-use yulius_domain::task::TaskStatus;
+use yulius_domain::ids::TaskId;
 
 use crate::context::App;
 use crate::delivery::delivery_profile;
@@ -37,21 +38,29 @@ pub struct GateVerdict {
     pub sha: String,
     /// Verdict or active state.
     pub state: RunState,
-    /// Merge owner's project task number and current status when still present.
+    /// Merge owner's project task number.
     pub owner: Option<u32>,
-    /// Whether that owner still has a task that can receive an outcome.
-    pub status: Option<TaskStatus>,
     /// Only compact history remains for this run.
     pub archived: bool,
     /// Compact evidence of jobs that ran.
     pub jobs: Vec<GateJob>,
 }
 
+/// A worker yet to receive the current integration repair assignment.
+#[derive(Debug, PartialEq, Eq)]
+pub struct RepairRecipient {
+    /// Running recipient.
+    pub task: TaskId,
+    /// Project number of the assigned worker.
+    pub owner: u32,
+    /// This recipient owns the repair.
+    pub assigned: bool,
+}
+
 #[derive(Clone)]
 struct Origin {
     sha: String,
     owner: Option<u32>,
-    available: bool,
     run: Option<String>,
 }
 
@@ -79,7 +88,6 @@ impl GateFailures {
         let origin = Origin {
             sha: verdict.sha,
             owner: verdict.owner,
-            available: verdict.status.is_some_and(|status| !status.is_resting()),
             run: (!verdict.archived).then_some(verdict.run),
         };
         // A named failure can move between matrix cells. Compare all the job verdicts
@@ -164,11 +172,11 @@ impl GateFailures {
             .into_iter()
             .map(|(test, (origin, _))| (test, origin))
             .chain(self.unknown)
-            .filter(|(_, origin)| !origin.available)
             .filter_map(|(test, origin)| {
                 let run_id = origin.run.or_else(|| self.latest_run.clone())?;
                 Some(GateNotice {
                     revision: origin.sha,
+                    merge_task: origin.owner,
                     run_id,
                     test,
                 })
@@ -211,6 +219,11 @@ impl App {
             }
             let mut failures = GateFailures::default();
             for verdict in history.into_iter().rev() {
+                if settled_only && verdict.state.is_active() {
+                    // A preceding revision has no settled verdict yet. The next tick can
+                    // attribute the newer failures once that revision is known.
+                    break;
+                }
                 failures.observe(verdict);
             }
             Ok(failures)
@@ -220,16 +233,13 @@ impl App {
             .map_err(|_| AppError::Conflict("reading integration gate history timed out".into()))?
     }
 
-    /// Unresolved failures a project reader can act on even without a staging request.
-    pub(crate) async fn project_gate_notices(
-        &self,
-        sandbox: &SandboxRecord,
-    ) -> AppResult<Vec<GateNotice>> {
+    /// Read the integration head independently of whether its task asked for staging.
+    async fn integration_failures(&self, sandbox: &SandboxRecord) -> AppResult<Vec<GateNotice>> {
         let branch = delivery_profile(sandbox).integration_branch;
         if !self
             .deps
             .store
-            .has_unowned_gate_failure(&sandbox.id, &branch)
+            .has_gate_failure(&sandbox.id, &branch)
             .await?
         {
             return Ok(Vec::new());
@@ -247,5 +257,105 @@ impl App {
             .gate_failures_at(sandbox, &repo, &head, true)
             .await?
             .notices())
+    }
+
+    /// Unresolved failures visible to people when the project has no repair worker.
+    pub(crate) async fn project_gate_notices(
+        &self,
+        sandbox: &SandboxRecord,
+    ) -> AppResult<Vec<GateNotice>> {
+        if self.deps.store.has_gate_workers(&sandbox.id).await? {
+            return Ok(Vec::new());
+        }
+        self.integration_failures(sandbox).await
+    }
+
+    /// Tell the project's workers who repairs the integration branch. A held terminal or
+    /// unavailable attempt leaves the assignment due for the next staging tick.
+    ///
+    /// # Errors
+    /// An unreadable project, gate or assignment defers the notice to the next tick.
+    pub async fn tell_gate_repairs(&self, sandbox: &SandboxRecord) -> AppResult<usize> {
+        let store = &self.deps.store;
+        let failures = self.integration_failures(sandbox).await?;
+        let detail = failures
+            .iter()
+            .map(|n| {
+                let origin = n
+                    .merge_task
+                    .map_or_else(|| "untracked merge".into(), |n| format!("task #{n}"));
+                format!(
+                    "{} at {} ({origin})",
+                    n.test,
+                    super::staging::short(&n.revision)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let recipients = store.reconcile_gate_repair(&sandbox.id, &detail).await?;
+        if recipients.is_empty() || self.update_holds_starts() {
+            return Ok(0);
+        }
+        let Ok(held) = tokio::time::timeout(
+            super::staging::TASK_VIEW_BUDGET,
+            self.browser_tab_requests(&sandbox.id),
+        )
+        .await
+        else {
+            return Ok(0);
+        };
+        let mut told = 0;
+        for recipient in recipients {
+            if held.contains(recipient.task.as_str()) {
+                continue;
+            }
+            let Some(task) = store.task(&recipient.task).await? else {
+                continue;
+            };
+            let Some(attempt) = store.live_attempt(&recipient.task).await? else {
+                continue;
+            };
+            let assignment = if recipient.assigned {
+                "You own this repair. Repair the integration branch before delivering your remaining work.".to_owned()
+            } else {
+                format!(
+                    "Task #{} owns this repair. Continue your own work and leave the repair to that task.",
+                    recipient.owner
+                )
+            };
+            let message = self
+                .redact_for_sandbox(
+                    &sandbox.id,
+                    &format!("Yulius: integration gate failed: {detail}. {assignment}"),
+                )
+                .await;
+            let paste = format!(
+                "\x1b[200~{}\x1b[201~",
+                crate::task_message::clean_message(&message)
+            );
+            let admit = async {
+                !self.update_holds_starts()
+                    && !self.is_paused(&task).await
+                    && store
+                        .gate_repair_due(&recipient, &detail, false)
+                        .await
+                        .unwrap_or(false)
+            };
+            if self
+                .type_into_session_if(
+                    &task,
+                    paste.as_bytes(),
+                    Typed::Notice(&attempt.id),
+                    Sender::Yulius,
+                    Some(admit),
+                )
+                .await
+                .is_ok()
+                && store.gate_repair_due(&recipient, &detail, true).await?
+            {
+                told += 1;
+            }
+        }
+        Ok(told)
     }
 }

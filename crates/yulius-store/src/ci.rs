@@ -4,12 +4,12 @@ use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params, params_from_iter};
 use yulius_app::ci::{
     CiJobRecord, CiJobUpdate, CiMinutesRow, CiRunRecord, CiRunUpdate, FiledFinding, GateJob,
-    GateVerdict, PullHead, Quarantined,
+    GateVerdict, PullHead, Quarantined, RepairRecipient,
 };
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::ports::store_ext::CiStore;
 use yulius_domain::ci::{CiRef, GateSource, RunState};
-use yulius_domain::ids::SandboxId;
+use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::resources::{LoadMinute, Need};
 use yulius_domain::time::Timestamp;
 
@@ -215,16 +215,14 @@ impl CiStore for SqliteStore {
                     WHERE (r.reference = 'branch/' || ?2 OR r.reference = 'candidate/' || h.sha)
                       AND (r.state IN ('running','queued','passed','failed','error','skipped')
                            OR (r.state = 'cancelled' AND r.reference = 'candidate/' || h.sha))
-                      AND (?5 = 0 OR r.state NOT IN ('running','queued'))
                       AND NOT EXISTS (SELECT 1 FROM ci_jobs j WHERE j.run_id = r.id AND j.state = 'skipped' AND instr(j.reason, ?4) = 1)
                     UNION ALL SELECT h.key, a.run_id, a.sha, a.state, a.queued_at, a.sequence, a.jobs
                     FROM history h JOIN archived_gate_verdicts a ON a.sandbox_id = ?1 AND a.sha = h.sha
                     WHERE a.reference = 'branch/' || ?2 OR a.reference = 'candidate/' || h.sha
-                 ), ranked AS (SELECT *, row_number() OVER (PARTITION BY sha ORDER BY queued_at DESC, seq DESC) AS newest FROM runs)
-                 SELECT r.id, r.sha, r.state, r.jobs, o.task_number, t.status
+                 ), ranked AS (SELECT *, row_number() OVER (PARTITION BY sha ORDER BY (?5 != 0 AND state IN ('running','queued')), queued_at DESC, seq DESC) AS newest FROM runs)
+                 SELECT r.id, r.sha, r.state, r.jobs, o.task_number
                  FROM ranked r LEFT JOIN gate_merge_owners o ON o.sandbox_id = ?1 AND o.branch = ?2 AND o.sha = r.sha
-                 LEFT JOIN tasks t ON t.sandbox_id = ?1 AND t.number = o.task_number AND t.id IN
-                    (SELECT task_id FROM task_merges WHERE sandbox_id = ?1 AND branch = ?2 AND merged_sha = r.sha) WHERE r.newest = 1 ORDER BY r.key"
+                 WHERE r.newest = 1 ORDER BY r.key"
             ).map_err(db)?;
             let mut rows = stmt.query(params![sandbox, branch, revisions, yulius_domain::ci::AFTER_MERGE_SKIP_REASON, settled_only]).map_err(db)?;
             let mut result = Vec::new();
@@ -245,24 +243,109 @@ impl CiStore for SqliteStore {
                     jobs,
                     archived: archive.is_some(),
                     owner: row.get(4).map_err(db)?,
-                    status: row.get::<_, Option<String>>(5).map_err(db)?.and_then(|s| yulius_domain::task::TaskStatus::parse(&s)),
                 });
             }
             Ok(result)
         }).await
     }
 
-    async fn has_unowned_gate_failure(&self, sandbox: &SandboxId, branch: &str) -> AppResult<bool> {
+    async fn accepts_machine_notice(&self, task: &TaskId) -> AppResult<bool> {
+        let task = task.to_string();
+        self.call(move |c| {
+            c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM machine_notice_tasks WHERE id = ?1)",
+                [task],
+                |row| row.get(0),
+            )
+            .map_err(db)
+        })
+        .await
+    }
+
+    async fn has_gate_workers(&self, sandbox: &SandboxId) -> AppResult<bool> {
+        let sandbox = sandbox.to_string();
+        self.call(move |c| {
+            c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM gate_workers WHERE sandbox_id = ?1)",
+                [sandbox],
+                |row| row.get(0),
+            )
+            .map_err(db)
+        })
+        .await
+    }
+
+    async fn reconcile_gate_repair(
+        &self,
+        sandbox: &SandboxId,
+        detail: &str,
+    ) -> AppResult<Vec<RepairRecipient>> {
+        let (sandbox, detail) = (sandbox.clone(), detail.to_owned());
+        self.call(move |c| {
+            let tx = c.transaction().map_err(db)?;
+            let sid = sandbox.as_str();
+            // Keep the incumbent if eligible. Replacing the row also expires its delivery receipts.
+            let owner: Option<(String, u32)> = tx.query_row(
+                "SELECT w.id, w.number FROM gate_workers w LEFT JOIN gate_repairs r ON r.sandbox_id = w.sandbox_id
+                 WHERE w.sandbox_id = ?1 ORDER BY (w.id IS r.owner_id) DESC, w.number LIMIT 1",
+                [sid], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(db)?;
+            let mut recipients = Vec::new();
+            if let Some((owner, number)) = owner.filter(|_| !detail.is_empty()) {
+                tx.execute("DELETE FROM gate_repairs WHERE sandbox_id = ?1 AND (detail != ?2 OR owner_id != ?3)",
+                    params![sid, detail, owner]).map_err(db)?;
+                tx.execute("INSERT OR IGNORE INTO gate_repairs(sandbox_id, detail, owner_id) VALUES (?1, ?2, ?3)",
+                    params![sid, detail, owner]).map_err(db)?;
+                tx.execute("DELETE FROM gate_repair_told WHERE sandbox_id = ?1 AND task_id NOT IN (SELECT id FROM gate_workers WHERE sandbox_id = ?1)", [sid]).map_err(db)?;
+                let mut stmt = tx.prepare("SELECT id FROM gate_workers w WHERE sandbox_id = ?1
+                    AND NOT EXISTS (SELECT 1 FROM gate_repair_told t WHERE t.task_id = w.id AND t.sandbox_id = ?1)
+                    ORDER BY (id = ?2) DESC, number").map_err(db)?;
+                for id in stmt.query_map(params![sid, owner], |row| row.get::<_, String>(0)).map_err(db)? {
+                    let id = id.map_err(db)?;
+                    recipients.push(RepairRecipient {
+                        task: TaskId::parse(&id).map_err(AppError::internal)?,
+                        assigned: id == owner,
+                        owner: number,
+                    });
+                }
+            } else {
+                tx.execute("DELETE FROM gate_repairs WHERE sandbox_id = ?1", [sid]).map_err(db)?;
+            }
+            tx.commit().map_err(db)?;
+            Ok(recipients)
+        }).await
+    }
+
+    async fn gate_repair_due(
+        &self,
+        recipient: &RepairRecipient,
+        detail: &str,
+        acknowledge: bool,
+    ) -> AppResult<bool> {
+        let (task, number, detail) = (
+            recipient.task.to_string(),
+            recipient.owner,
+            detail.to_owned(),
+        );
+        self.call(move |c| {
+            let select = "SELECT w.sandbox_id, w.id FROM gate_workers w JOIN gate_repairs r ON r.sandbox_id = w.sandbox_id
+                JOIN gate_workers owner ON owner.id = r.owner_id WHERE w.id = ?1 AND owner.number = ?2 AND r.detail = ?3
+                AND NOT EXISTS (SELECT 1 FROM gate_repair_told t WHERE t.task_id = w.id AND t.sandbox_id = w.sandbox_id)";
+            let args = params![task, number, detail];
+            if acknowledge {
+                c.execute(&format!("INSERT INTO gate_repair_told(sandbox_id, task_id) {select}"), args).map(|n| n == 1).map_err(db)
+            } else {
+                c.query_row(&format!("SELECT EXISTS({select})"), args, |row| row.get(0)).map_err(db)
+            }
+        }).await
+    }
+
+    async fn has_gate_failure(&self, sandbox: &SandboxId, branch: &str) -> AppResult<bool> {
         let (sandbox, branch) = (sandbox.to_string(), branch.to_owned());
         self.call(move |c| c.query_row("SELECT EXISTS (
-            SELECT 1 FROM (
-                SELECT sandbox_id, reference, sha FROM ci_runs WHERE sandbox_id = ?1 AND state IN ('failed','error')
-                UNION ALL SELECT sandbox_id, reference, sha FROM archived_gate_verdicts WHERE sandbox_id = ?1 AND state IN ('failed','error')
-            ) r WHERE r.sandbox_id = ?1
-            AND (r.reference = 'branch/' || ?2 OR r.reference = 'candidate/' || r.sha)
-            AND NOT EXISTS (SELECT 1 FROM task_merges m JOIN tasks t ON t.id = m.task_id
-                WHERE m.sandbox_id = r.sandbox_id AND m.merged_sha = r.sha AND m.branch = ?2
-                AND t.status != 'closed' AND t.status NOT LIKE 'stopped_%' AND t.status NOT LIKE 'failed_%'))",
+            SELECT 1 FROM ci_runs WHERE sandbox_id = ?1 AND state IN ('failed','error','cancelled')
+                AND (reference = 'branch/' || ?2 OR reference = 'candidate/' || sha)
+            UNION ALL SELECT 1 FROM archived_gate_verdicts WHERE sandbox_id = ?1 AND state IN ('failed','error','cancelled')
+                AND (reference = 'branch/' || ?2 OR reference = 'candidate/' || sha))",
             params![sandbox, branch], |row| row.get(0)).map_err(db)).await
     }
 

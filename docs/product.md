@@ -613,11 +613,11 @@ watching, steering and unblocking.
     - Pull requests merge on the quick checks. The full suite (`after_merge` jobs) runs once on
       the merged revision.
     - A task asks for staging with `cd_deploy` once its delivery merged. Yulius deploys and
-      verifies that tested revision in revision order, once per task. The task shows the full-suite
-      or staging wait. A newly failing test goes to its introducing task. Later deliveries
+      verifies that tested revision in revision order, once per task. A running task with an unfinished step shows the full-suite
+      or staging wait. Finished tasks keep the outcome on their delivery. Later deliveries
       record inherited failures and complete when staging serves the verified fix.
-    - When the introducing task has ended or disappeared, the project CI page and Status
-      show its failing tests and offer a rerun.
+    - Working tasks hear the failing tests and their introducing merges. One worker takes the repair.
+      With no worker available, the project CI page and Status offer people a rerun or a new task.
     - A person can deploy the revision staging verified while the next dev revision is being checked. [ADR-0425](decisions/0425-pin-a-production-deploy-to-verified-dev.md)
   - Each task tests locally first with the project's `[local]` deployment inside its own sandbox.
   - New projects with such a target are bootstrapped this way, and onboarded ones get one task

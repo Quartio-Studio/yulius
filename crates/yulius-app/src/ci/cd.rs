@@ -2797,7 +2797,7 @@ impl App {
                 && request.state != yulius_domain::staging::StagingState::Inherited
             {
                 format!(
-                    "Staging request {} for revision {} of {}: {}. {}. The request is recorded. End this turn. If your final step requires the verdict, leave it in progress. Yulius wakes the task with the outcome. cd_status shows the run ids.",
+                    "Staging request {} for revision {} of {}: {}. {}. The request is recorded. End this turn. If your final step requires the verdict, leave it in progress. A running task with work left receives the outcome. Finished tasks retain it on their delivery. cd_status shows the run ids.",
                     request.id,
                     short_sha(&request.revision),
                     env_label(&env),

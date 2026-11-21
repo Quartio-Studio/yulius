@@ -506,8 +506,25 @@ pub trait CiStore: Send + Sync {
         revisions: &[String],
         settled_only: bool,
     ) -> AppResult<Vec<crate::ci::GateVerdict>>;
-    /// Whether a failed integration gate has a missing or resting merge owner.
-    async fn has_unowned_gate_failure(&self, sandbox: &SandboxId, branch: &str) -> AppResult<bool>;
+    /// Whether this running task still accepts machine-generated input.
+    async fn accepts_machine_notice(&self, task: &TaskId) -> AppResult<bool>;
+    /// Whether the project has a running worker available for a repair.
+    async fn has_gate_workers(&self, sandbox: &SandboxId) -> AppResult<bool>;
+    /// Select or retain the project's repair owner and return workers yet to hear the assignment.
+    async fn reconcile_gate_repair(
+        &self,
+        sandbox: &SandboxId,
+        detail: &str,
+    ) -> AppResult<Vec<crate::ci::RepairRecipient>>;
+    /// Confirm the recipient and assignment immediately before typing, or acknowledge delivery.
+    async fn gate_repair_due(
+        &self,
+        recipient: &crate::ci::RepairRecipient,
+        detail: &str,
+        acknowledge: bool,
+    ) -> AppResult<bool>;
+    /// Whether a recorded integration failure could require first-parent comparison.
+    async fn has_gate_failure(&self, sandbox: &SandboxId, branch: &str) -> AppResult<bool>;
     /// PRs occupying this sandbox's CI places, in admission order, including shared commits.
     async fn ci_admitted_pulls(&self, sandbox: &SandboxId) -> AppResult<Vec<u64>>;
     /// Atomically replaces that bounded window.
@@ -897,6 +914,20 @@ pub struct StagingRequestRecord {
     pub updated_at: Timestamp,
 }
 
+impl StagingRequestRecord {
+    /// Human-readable receipt shared by task pages, lists and MCP.
+    pub fn outcome_label(&self) -> Option<String> {
+        (!self.state.is_pending() || self.state == yulius_domain::staging::StagingState::Inherited)
+            .then(|| {
+                format!(
+                    "Staging {} · {}",
+                    self.state.as_str().replace('_', " "),
+                    self.note.as_deref().unwrap_or(&self.revision)
+                )
+            })
+    }
+}
+
 /// What a staging request's move also records; `None` keeps the stored value.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StagingChange {
@@ -936,6 +967,8 @@ pub trait StagingStore: Send + Sync {
     async fn insert_staging_request(&self, request: &StagingRequestRecord) -> AppResult<bool>;
     /// One request.
     async fn staging_request(&self, id: &str) -> AppResult<Option<StagingRequestRecord>>;
+    /// Latest request for display, regardless of whether a session heard the outcome.
+    async fn latest_task_staging(&self, task: &TaskId) -> AppResult<Option<StagingRequestRecord>>;
     /// Latest staging request whose result still needs to reach this task.
     async fn task_staging_wait(
         &self,

@@ -3,11 +3,11 @@ yulius-task: 982d8a14-726a-4a9a-854b-0070710fca55
 status: in-progress
 ---
 
-# SPEC-612 A failed integration gate wakes the task that introduced the failure
+# SPEC-612 A failed integration gate is repaired by a task still at work
 
 ## Goal
 
-Give each newly failing test one owner. Keep later deliveries moving once a verified fix reaches staging.
+Keep finished tasks finished. Give the red integration branch one repair owner among the project’s working tasks. Keep later deliveries moving once a verified fix reaches staging.
 
 ## Context
 
@@ -15,25 +15,29 @@ On 21 November task #588 received a fix-forward instruction for a test already f
 
 ## Requirements
 
-- GF-001 Compare full integration and candidate verdicts along first-parent history. Identify each test at its first failing revision since it last passed. Notify a later owner only of new failures. Keep unknown failures actionable.
+- GF-001 Compare full integration and candidate verdicts along first-parent history. Identify each test at its first failing revision since it last passed. Report the introducing revision and task separately from the repair assignment. Keep unknown failures actionable.
 - GF-002 Record the inherited test, originating revision and task on the later request. The staging queue owns that wait until a verified descendant serves it, the request is replaced or the target disappears. Restart and repeated ticks preserve the outcome. The inherited request never directs its task to fix the test.
 - GF-003 Reuse the revision's integration or candidate verdict. Admit outstanding candidate suites in first-parent order, one at a time. A candidate runs once and is compared because any merge can both repair an open failure and introduce a new one.
-- GF-004 Give project readers a notice on the project and in Status for a failed integration revision whose owner has closed or disappeared, including its test and access to the existing run-again action. Resolve the notice on a passing rerun or a containing fix.
+- GF-004 Tell each running project task with work left about open failures. Keep one repair assignment until that worker leaves. A worker has an active turn, open steps or an open delivery and a live attempt. Exclude paused and held workers. Choose the lowest project task number among eligible workers when a new assignment is needed. Notify the others who owns the repair. Persist delivery to avoid repeating the instruction at every merge, restart or tick.
+- GF-005 With no worker available, show project people the failing tests, original revision and merge task in project CI and Status. Offer writers both a rerun and a new task. Resolve the notice on a passing rerun or a containing fix.
+- GF-006 Only a person resumes a parked or closed task. A running task with all steps complete and a merged delivery receives no machine prompt. Keep all staging verdicts on its delivery, page and lists. Explicit unfinished steps still receive actionable news in a running session.
 
 ## Plan
 
 - [x] Specify failure ownership and candidate scheduling
-- [ ] Attribute new and inherited test failures in integration order
-- [ ] Serve inherited requests with the verified fix
-- [ ] Show unowned gate failures and the rerun on project and Status views
+- [x] Attribute new and inherited test failures in integration order
+- [x] Serve inherited requests with the verified fix
+- [ ] Keep finished and parked tasks quiet on automatic outcomes
+- [ ] Assign the repair to one working task and inform its peers
+- [ ] Show people the rerun and start-task actions when no worker remains
 - [ ] Verify the incident regressions and review the delivery
 
 ## Acceptance criteria
 
-- One failing merge followed by three with the same failure leaves only the first task with a fix-forward instruction. Each later receipt names the original task and revision.
-- A later merge that also introduces a second failing test receives a fix-forward for the second test. A passing revision ends the failure interval.
+- One failing merge followed by three with the same failure leaves all finished sessions untouched. One working task receives the repair and its peers receive that owner’s number. Each later receipt names the original task and revision.
+- A later merge that also introduces a second failing test is identified as the origin of the second test. A passing revision ends the failure interval.
 - The verified fix serves the three requests in branch order and each receipt identifies the served revision.
-- A closed or missing task's failure appears to project readers with the failing test and a way to rerun it, including when it has no staging request.
+- When no task is at work, the failure appears to project readers with the originating merge, failing test and actions to rerun or start a task, including without a staging request. A parked task receives neither PR input nor an automatic resume.
 
 ## Test plan
 
@@ -41,7 +45,7 @@ Exercise real staging requests against a temporary Git repository and recorded C
 
 ## Decisions
 
-Running each candidate once in order preserves evidence of mixed failures and accepts a fix from any task. Reuse existing gate and deployment receipts. Only a verified descendant can satisfy an inherited delivery.
+Running each candidate once in order preserves evidence of mixed failures and accepts a fix from any task. Reuse existing gate and deployment receipts. Only a verified descendant can satisfy an inherited delivery. A durable project assignment follows the lowest-numbered eligible worker initially and survives other tasks joining. A person can resume finished work. See ADR-0450.
 
 ## Evidence
 

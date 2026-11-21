@@ -781,6 +781,11 @@ impl App {
         // For a screen-based release, serialize the final decision, paste, Enter and mark
         // cleanup with viewer keys and submit hooks (SPEC-537). A key arriving during
         // the lookup above participates in this decision.
+        if matches!(from, Sender::Yulius | Sender::YuliusLastTry)
+            && !self.deps.store.accepts_machine_notice(&task.id).await?
+        {
+            return Err(AppError::Conflict("the task finished its work".into()));
+        }
         let guarded = admit.is_some();
         if let Some(admit) = admit
             && !admit.await

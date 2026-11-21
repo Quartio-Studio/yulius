@@ -1219,7 +1219,7 @@ export function createSidebar(ctx) {
     row.el.dataset.group = info.group;
     row.el.dataset.tone = info.tone;
     const owner = otherOwner(task, ctx.store.state.me?.user?.login);
-    row.link.title = `Task #${task.number} ${task.title} — ${info.label}${info.detail ? `: ${info.detail}` : ''}${row.pr && !info.label.includes(`PR #${row.pr.number}`) ? ` · PR #${row.pr.number}` : ''}${task.branch ? ` · ${task.branch}` : ''}${task.account_label ? ` · on ${task.account_label}` : ''}${owner ? ` · owned by @${owner}` : ''} · ${row.time.text}`;
+    row.link.title = `Task #${task.number} ${task.title} — ${info.label}${task.staging_outcome ? ` · ${task.staging_outcome}` : ''}${info.detail ? `: ${info.detail}` : ''}${row.pr && !info.label.includes(`PR #${row.pr.number}`) ? ` · PR #${row.pr.number}` : ''}${task.branch ? ` · ${task.branch}` : ''}${task.account_label ? ` · on ${task.account_label}` : ''}${owner ? ` · owned by @${owner}` : ''} · ${row.time.text}`;
     row.owner.hidden = !owner;
     row.owner.textContent = owner ? initials(owner).toUpperCase() : '';
     if (owner) row.owner.title = `@${owner} owns this task`;

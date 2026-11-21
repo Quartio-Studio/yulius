@@ -1863,8 +1863,10 @@ merged revision of `dev`.
   once its full suite passed. The rollback drill follows by itself.
 - **A person cannot deploy the head from the CD page.** A person can still roll staging back
   there.
-- **A red `dev` never reaches staging.** The request ends `gate_failed`, its task fixes forward,
-  and no promotion happens meanwhile.
+- A red `dev` leaves staging on the verified release. A new failure records `gate_failed`.
+  An inherited failure records its original revision and task. One working task owns the repair.
+  If none is working, project CI and Status offer a rerun or a new task. Staging serves the
+  inherited requests when it verifies the fix.
 - **Production is promoted only from what staging verified**, by a person (ADR-0425).
 
 **The update helper stays off there.** `yulius-update.path` is disabled: "Update now" would

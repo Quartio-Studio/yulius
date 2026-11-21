@@ -62,6 +62,16 @@ async fn land(f: &Fixture, task: &str, file: &str) -> BoxResult<String> {
 
 /// The integration branch's CI run at `sha`: the quick checks passed, the full suite `full`.
 async fn gate(f: &Fixture, sha: &str, full: RunState) -> BoxResult<String> {
+    recorded_gate(&f.h.app, &SandboxId::parse("s1")?, sha, full, None).await
+}
+
+pub(crate) async fn recorded_gate(
+    app: &yulius_app::context::App,
+    sandbox: &SandboxId,
+    sha: &str,
+    full: RunState,
+    failures: Option<&str>,
+) -> BoxResult<String> {
     let id = format!("ci-{}", &sha[..12]);
     let state = if full == RunState::Passed {
         RunState::Passed
@@ -70,7 +80,7 @@ async fn gate(f: &Fixture, sha: &str, full: RunState) -> BoxResult<String> {
     };
     let run = CiRunRecord {
         id: id.clone(),
-        sandbox_id: SandboxId::parse("s1")?,
+        sandbox_id: sandbox.clone(),
         reference: CiRef::Branch("dev".into()),
         sha: sha.to_owned(),
         source: GateSource::ProjectConfig,
@@ -80,9 +90,9 @@ async fn gate(f: &Fixture, sha: &str, full: RunState) -> BoxResult<String> {
         status_for: None,
         status_note: None,
         status_attempts: 0,
-        queued_at: f.h.app.now(),
-        started_at: Some(f.h.app.now()),
-        ended_at: Some(f.h.app.now()),
+        queued_at: app.now(),
+        started_at: Some(app.now()),
+        ended_at: Some(app.now()),
     };
     let job = |name: &str, state: RunState| CiJobRecord {
         id: format!("{id}-{name}"),
@@ -104,9 +114,26 @@ async fn gate(f: &Fixture, sha: &str, full: RunState) -> BoxResult<String> {
         exclusive: false,
         waited_ms: None,
     };
-    f.h.store
+    app.deps
+        .store
         .insert_ci_run(&run, &[job("quick", RunState::Passed), job("full", full)])
         .await?;
+    if let Some(failures) = failures {
+        assert!(
+            app.deps
+                .store
+                .transition_ci_job(
+                    &format!("{id}-full"),
+                    &[full],
+                    full,
+                    &yulius_app::ci::CiJobUpdate {
+                        failures: Some(failures.to_owned()),
+                        ..Default::default()
+                    }
+                )
+                .await?
+        );
+    }
     Ok(id)
 }
 
@@ -203,7 +230,8 @@ async fn named_gate(f: &Fixture, revision: &str, tests: &[&str]) -> BoxResult<St
 }
 
 #[tokio::test]
-async fn inherited_gate_failures_leave_only_the_introducing_tasks_a_fix_forward() -> TestResult {
+async fn inherited_gate_receipts_preserve_the_origin_and_leave_finished_tasks_quiet() -> TestResult
+{
     let f = fixture(&staging_toml()).await?;
     let mut inherited = Vec::new();
     let mut origin = String::new();
@@ -254,15 +282,14 @@ async fn inherited_gate_failures_leave_only_the_introducing_tasks_a_fix_forward(
             }
         }
     }
-    let recipients: Vec<_> =
-        f.h.store
-            .untold_staging_requests()
-            .await?
-            .into_iter()
-            .filter_map(|r| r.task_id)
-            .map(|t| t.to_string())
-            .collect();
-    assert_eq!(recipients, ["breaker", "mixed"]);
+    assert_eq!(f.h.app.tell_staging_outcomes().await, 0);
+    assert!(
+        f.h.store.untold_staging_requests().await?.is_empty(),
+        "recorded outcomes of finished tasks must consume no session input"
+    );
+    for id in ["breaker", "later1", "later2", "later3", "mixed"] {
+        assert_eq!(f.h.store.attempts(&TaskId::parse(id)?).await?.len(), 1);
+    }
     agent(&f, "fix").await?;
     let fix = land(&f, "fix", "fix").await?;
     gate(&f, &fix, RunState::Passed).await?;
@@ -290,6 +317,10 @@ async fn a_closed_merge_owners_failed_test_reaches_the_project_without_a_staging
     support::seed_task(&f.h, "closed", "s1", "u-alice", TaskStatus::Closed, None).await?;
     let revision = land(&f, "closed", "closed").await?;
     let run = named_gate(&f, &revision, &["flaky::result"]).await?;
+    agent(&f, "answered").await?;
+    f.h.store
+        .execute_for_tests("UPDATE tasks SET activity='waiting' WHERE id='answered'")
+        .await?;
     let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
     crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
     for view in [
@@ -419,13 +450,13 @@ async fn a_pruned_gate_and_deleted_task_still_identify_the_inherited_test() -> T
     let notices = f.get("/api/status").await?["sandboxes"][0]["gate_notices"].clone();
     assert_eq!(
         notices,
-        json!([{ "test": "delivery::gate", "revision": old, "run_id": live_run }])
+        json!([{ "test": "delivery::gate", "revision": old, "run_id": live_run, "merge_task": number }])
     );
     Ok(())
 }
 
 #[tokio::test]
-async fn two_requests_for_one_failed_landing_only_notify_the_merge_owner() -> TestResult {
+async fn two_requests_for_one_failed_landing_record_the_same_merge_origin() -> TestResult {
     let f = fixture(&staging_toml()).await?;
     agent(&f, "landing").await?;
     agent(&f, "duplicate").await?;
@@ -525,7 +556,7 @@ async fn a_failing_candidate_leaves_staging_on_its_release_and_the_fix_deploys()
     assert_eq!(repeated["staging"]["id"], failing["id"]);
     let text = repeated["text"].as_str().ok_or("receipt text")?;
     assert!(
-        text.contains("fix it forward") && text.contains(&ci2),
+        text.contains("working task assigned the repair") && text.contains(&ci2),
         "{text}"
     );
     assert!(
@@ -645,9 +676,7 @@ async fn a_gate_failure_without_a_run_directs_the_task_to_a_new_landing() -> Tes
     assert_eq!(repeated["staging"]["id"], pending.id);
     let text = repeated["text"].as_str().ok_or("terminal receipt")?;
     assert!(
-        text.contains("no CI run")
-            && text.contains("fix it forward")
-            && text.contains("delivery_merge"),
+        text.contains("no CI run") && text.contains("working task to restore the gate"),
         "{text}"
     );
     assert!(deployed(&f).await?.is_empty());
@@ -2400,7 +2429,10 @@ async fn the_final_step_waits_for_staging_until_its_answer_is_delivered() -> Tes
         .await?;
     let parked = summary().await?;
     assert!(parked["needs_you_notice"].is_null(), "{parked}");
-    assert_eq!(parked["staging_wait"], view["staging_wait"]);
+    assert!(parked["staging_wait"].is_null());
+    f.h.store
+        .execute_for_tests("UPDATE tasks SET status = 'running' WHERE id = 't1'")
+        .await?;
     assert!(
         f.h.store
             .transition_ci_job(
@@ -2455,7 +2487,7 @@ async fn delivery_status_asks_a_merged_task_for_its_staging_request() -> TestRes
             "Staging ([cd.staging], merge-first): your merged revision {short} has no staging \
              request. Once your whole delivery has landed, ask once with cd_deploy {{\"environment\":\"staging\"}} \
              before ending your turn. Yulius runs the full suite, then deploys and verifies that revision. \
-             If your final step requires the outcome, leave it in progress. Yulius wakes this task with the outcome."
+             If your final step requires the outcome, leave it in progress. A running task with work left receives the outcome."
         )),
         "{asks}"
     );
@@ -2469,20 +2501,20 @@ async fn delivery_status_asks_a_merged_task_for_its_staging_request() -> TestRes
     let id = asked["id"].as_str().ok_or("id")?;
     let done = request(&f, id).await?;
     assert_eq!(done.state, StagingState::Verified, "{done:?}");
-    let mut labels = Vec::new();
+    let mut receipts = Vec::new();
     while let Ok(event) = updates.try_recv() {
         if let yulius_contracts::events::UiEvent::TaskUpdated { task } = event.event
             && task.id == "t1"
-            && let Some(label) = task.staging_wait
+            && let Some(receipt) = task.staging_outcome
         {
-            labels.push(label);
+            receipts.push(receipt);
         }
     }
     assert!(
-        labels
+        receipts
             .iter()
-            .any(|label| label == StagingState::Deploying.task_wait_label()),
-        "the task's mounted view must see the deploy start: {labels:?}"
+            .any(|receipt| receipt.contains("Staging verified")),
+        "the finished task view must retain its verified receipt: {receipts:?}"
     );
     let after = delivery_text(&f, "t1").await?;
     assert!(
@@ -2527,9 +2559,7 @@ async fn delivery_status_after_a_failed_gate_names_the_fix() -> TestResult {
         failed.contains(&format!(
             "request {id1} for revision {} is gate_failed, CI run {ci1}",
             &r1[..12]
-        )) && failed.contains(
-            "fix it forward on this branch, merge with delivery_merge, then cd_deploy again"
-        ),
+        )) && failed.contains("working task assigned the repair"),
         "{failed}"
     );
     let r2 = land(&f, "t1", "fix.txt").await?;

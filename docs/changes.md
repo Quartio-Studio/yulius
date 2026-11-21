@@ -6,7 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
-- After a merge, a newly failing test goes to its introducing task. Later staging requests name inherited failures and complete with the verified fix. Project CI and Status show failures whose tasks have closed. [SPEC-612](../.ai/specs/SPEC-612-a-failed-after-merge-gate-wakes-only-the.md)
+- A red integration branch gets one repair owner among the working tasks. Finished tasks retain their outcomes and only people resume parked tasks. Inherited staging requests complete with the verified fix. Project CI and Status offer a rerun or a new task when no worker is available. [SPEC-612](../.ai/specs/SPEC-612-a-failed-after-merge-gate-wakes-only-the.md)
 
 - Codex tasks start with the rate-limit model switch reminder hidden. If an existing session shows it, Yulius holds automated input so a message cannot confirm the switch. [SPEC-603](../.ai/specs/SPEC-603-codex-s-rate-limit-prompt-must-not-switc.md)
 - Claude Code task delivery shows current review rounds. Codex task delivery also keeps the
