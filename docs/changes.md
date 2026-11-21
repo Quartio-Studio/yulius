@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- When terminal detail discovers an archive, the task leaves the active list. A later Undo restores it even if the browser missed an event (SPEC-558).
+
 - Opening a parked terminal now corrects a missed resume in the sidebar, including the active subscription and background work (SPEC-558).
 
 - A terminal that discovers a missed park updates the sidebar, even if an older task list omitted its row (SPEC-558).

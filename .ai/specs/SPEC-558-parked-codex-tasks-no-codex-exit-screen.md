@@ -75,6 +75,10 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- On the merged #1555 code, nine of ten controlled archive/Undo cases failed. The regression for Closed followed by a missed Archived event checks both reply orders of an outstanding active list. Additional coverage starts the list after terminal detail and lets it omit the task first. The initial prototype skipped the terminal notification in that order. The store now accepts a compatible archive observation to explain the omission while preserving the newer list’s membership.
+
+- PR #1555 delivered terminal-discovered resumes at dev `8617cb771`. Run `8882bbdb-055d-49be-b630-fb2ce29c6318` passed quality, both Rust shards and browser e2e on `5290d06f5`. The reviewed product commit passed 1,269 local Chromium tests with one optional skip. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe704d71f9/delivery/evidence/8617cb771643dc76175ec8ddcf020b6026baf24c)
+
 - Independent review approved `725fa0f16` for missed resume publication. All nine changed Chromium tests passed independently. The author passed 13 scoped cases, including the existing subscription-switching test and the new mounted-menu regression. Repository contracts, format checks and spec validation passed. There were no changed Rust mutation targets. Vidoc was disabled. The earlier combined checkpoint at `ebd074bfa` passed the complete local Chromium suite with 1,272 passes and one optional skip.
 
 - At `425dfdb98`, a mounted terminal discovered that the task resumed on Claude #4. A newer capacity summary omitted the subscription ID and cleared its label. The chip then showed “No subscription” while the Run on menu still marked #4 “Waits on it”. A Chromium regression uses the same optional-ID serialization as the server and exercises the mounted menu. Both full-summary updates and subsequent detail reads now clear an omitted ID.
