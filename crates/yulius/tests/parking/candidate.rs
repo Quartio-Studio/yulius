@@ -72,7 +72,19 @@ fn a_pr_left_out_of_the_train_gets_its_own_queue_note_without_the_members_failur
     cold_candidate_case(ColdCandidate::LeftOut)
 }
 
+#[test]
+fn an_ordinary_failure_shared_while_the_train_runs_reaches_its_current_owner() -> TestResult {
+    cold_candidate_case(ColdCandidate::SharedWhileRunning)
+}
+
+#[test]
+fn a_free_queue_note_waits_for_a_person_decision_that_arrives_during_verification() -> TestResult {
+    cold_candidate_case(ColdCandidate::FreeHumanDecision)
+}
+
 enum ColdCandidate {
+    SharedWhileRunning,
+    FreeHumanDecision,
     LeftOut,
     OrdinaryDropAfterRearm,
     UnreadableArm,
@@ -161,7 +173,10 @@ async fn seed_candidate(
     green.started_at = Some(yulius_domain::time::Timestamp(11));
     green.ended_at = Some(yulius_domain::time::Timestamp(12));
     green.reference = CiRef::PullRequest(1481);
-    if matches!(case, ColdCandidate::SharedOrdinaryFailure) {
+    if matches!(
+        case,
+        ColdCandidate::SharedOrdinaryFailure | ColdCandidate::SharedWhileRunning
+    ) {
         green.sha = "previous-head".into();
     }
     app.deps.store.insert_ci_run(&green, &[job]).await?;
@@ -185,7 +200,11 @@ async fn seed_candidate(
         &caller.sandbox,
         "candidate-red",
         &integrated,
-        RunState::Failed,
+        if matches!(case, ColdCandidate::SharedWhileRunning) {
+            RunState::Running
+        } else {
+            RunState::Failed
+        },
         Some(failures),
         20,
     );
@@ -312,6 +331,8 @@ async fn check_after_restart(
         case,
         ColdCandidate::FreeArmTaken
             | ColdCandidate::LeftOut
+            | ColdCandidate::FreeHumanDecision
+            | ColdCandidate::SharedWhileRunning
             | ColdCandidate::FreeArmNote
             | ColdCandidate::HeldOrdinaryFailure
             | ColdCandidate::HeardOrdinaryFailure
@@ -353,10 +374,30 @@ async fn check_after_restart(
             assert!(repeated.is_empty(), "{repeated:?}");
             return Ok(());
         }
-        if matches!(case, ColdCandidate::FreeArmNote) {
+        if matches!(
+            case,
+            ColdCandidate::FreeArmNote | ColdCandidate::FreeHumanDecision
+        ) {
             let pulls = std::mem::take(&mut *remote.pulls.lock().map_err(|_| "pulls")?);
             cold.merge_armed(&sandbox).await;
             *remote.pulls.lock().map_err(|_| "pulls")? = pulls;
+            if matches!(case, ColdCandidate::FreeHumanDecision) {
+                let (entered, release) = hold_at(super::Point::LivePrFactsRead, id);
+                let watcher = Arc::clone(&cold);
+                let pass = tokio::spawn(async move { watcher.watch_prs(&bounds).await });
+                tokio::time::timeout(Duration::from_secs(10), entered.notified()).await?;
+                ask(&cold, id).await?;
+                release.notify_one();
+                let blocked = pass.await?;
+                assert!(
+                    blocked.is_empty(),
+                    "queue note during a person's decision: {blocked:?}"
+                );
+                cold.deps
+                    .store
+                    .set_task_needs_you(id, None, cold.now())
+                    .await?;
+            }
             let news = cold.watch_prs(&bounds).await;
             let repeated = cold.watch_prs(&bounds).await;
             cold.stop_task_now(id).await?;
@@ -397,12 +438,16 @@ async fn check_after_restart(
         let heard = matches!(case, ColdCandidate::HeardOrdinaryFailure);
         let (mut red, job) =
             crate::pr_watch::run(&sandbox, "ordinary-red", head, RunState::Failed, None, 31);
-        red.reference =
-            CiRef::PullRequest(if matches!(case, ColdCandidate::SharedOrdinaryFailure) {
+        red.reference = CiRef::PullRequest(
+            if matches!(
+                case,
+                ColdCandidate::SharedOrdinaryFailure | ColdCandidate::SharedWhileRunning
+            ) {
                 99
             } else {
                 1481
-            });
+            },
+        );
         let during = matches!(case, ColdCandidate::OrdinaryFailsDuringRead);
         if during {
             let app = Arc::clone(&cold);
@@ -458,7 +503,9 @@ async fn check_after_restart(
         assert_eq!(news.len(), usize::from(!heard), "{news:?}");
         if !heard {
             assert!(
-                news[0].1.contains("ordinary-red") && !news[0].1.contains("Do not re-arm"),
+                news[0].1.contains("ordinary-red")
+                    && !news[0].1.contains("Do not re-arm")
+                    && !news[0].1.contains("Hands off"),
                 "{news:?}"
             );
         }
