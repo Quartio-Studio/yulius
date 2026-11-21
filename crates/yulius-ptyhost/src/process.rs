@@ -139,6 +139,11 @@ mod imp {
             && fds[0].revents().contains(PollFlags::IN)
     }
 
+    pub(crate) fn birth_identity(pid: Pid) -> Option<String> {
+        // Kernel start ticks since boot are immutable even when the wall clock changes.
+        stat_fields(pid.as_raw())?.get(19).cloned()
+    }
+
     pub(crate) fn start_time_ms(pid: Pid) -> Option<i64> {
         let fields = stat_fields(pid.as_raw())?;
         let ticks: i64 = fields.get(19)?.parse().ok()?;
@@ -190,6 +195,8 @@ mod imp {
     fn ps(pid: Pid, column: &str) -> Option<String> {
         let output = Command::new("/bin/ps")
             .args(["-o", column, "-p", &pid.as_raw().to_string()])
+            .env("LC_ALL", "C")
+            .env("TZ", "UTC")
             .stdin(Stdio::null())
             .stderr(Stdio::null())
             .output()
@@ -222,6 +229,10 @@ mod imp {
         Some(days * 86_400 + seconds)
     }
 
+    pub(crate) fn birth_identity(pid: Pid) -> Option<String> {
+        ps(pid, "lstart=")
+    }
+
     pub(crate) fn start_time_ms(pid: Pid) -> Option<i64> {
         let elapsed = parse_etime(&ps(pid, "etime=")?)?;
         Some(crate::files::now_ms() - elapsed * 1000)
@@ -231,7 +242,7 @@ mod imp {
     pub(crate) fn kill_session(_sid: Pid, _except: Pid) {}
 }
 
-pub(crate) use imp::{is_zombie, kill_session, start_time_ms};
+pub(crate) use imp::{birth_identity, is_zombie, kill_session, start_time_ms};
 
 #[cfg(test)]
 mod tests {

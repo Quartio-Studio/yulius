@@ -11,14 +11,16 @@ use nix::errno::Errno;
 use nix::fcntl::{OFlag, openat};
 use nix::sys::stat::{Mode, mkdirat};
 use serde::{Deserialize, Serialize};
-use yulius_contracts::ptyhost::StatusRecord;
+use yulius_contracts::ptyhost::{RECORD_VERSION, StatusRecord};
 use yulius_sandbox::build_tree::{BuildTree, OWNER_MARKER};
 
-use crate::files::{atomic_write_at, read_record};
+use crate::files::{RecordError, atomic_write_at, read_record};
 
 const RECEIPT: &str = "build-scratch.json";
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Receipt {
+    version: u32,
+    host_birth: Option<String>,
     path: PathBuf,
     host_pid: u32,
     token_sha256: String,
@@ -35,6 +37,25 @@ impl Receipt {
     pub(crate) fn matches_status(&self, status: &StatusRecord) -> bool {
         self.belongs_to(status.ptyhost_pid, &status.token_sha256)
             && self.boot_id.as_deref() == Some(status.boot_id.as_str())
+    }
+
+    fn host_is_gone(&self) -> bool {
+        let Some(pid) = crate::process::pid(self.host_pid) else {
+            return false;
+        };
+        match nix::unistd::getpgid(Some(pid)) {
+            Err(Errno::ESRCH) => true,
+            Err(_) => false,
+            Ok(group) if group != pid => true,
+            Ok(_) => {
+                crate::process::is_zombie(pid)
+                    || self
+                        .host_birth
+                        .as_ref()
+                        .zip(crate::process::birth_identity(pid))
+                        .is_some_and(|(recorded, current)| *recorded != current)
+            }
+        }
     }
 
     pub(crate) fn open_tree(&self) -> io::Result<Option<BuildTree>> {
@@ -81,7 +102,12 @@ pub(crate) fn recorded(run_dir: &Path) -> bool {
 }
 
 pub(crate) fn read(run_dir: &Path) -> io::Result<Option<Receipt>> {
-    read_record(&run_dir.join(RECEIPT)).map_err(io::Error::other)
+    match read_record::<Receipt>(&run_dir.join(RECEIPT)).map_err(io::Error::other)? {
+        Some(receipt) if receipt.version > RECORD_VERSION => {
+            Err(io::Error::other(RecordError::Version(receipt.version)))
+        }
+        other => Ok(other),
+    }
 }
 
 /// Retain ownership when CI removes its run record after the exit frame.
@@ -129,6 +155,8 @@ pub(crate) fn own(
     let path = dir.keep();
     let guard = Guard {
         receipt: Receipt {
+            version: RECORD_VERSION,
+            host_birth: crate::process::pid(pid).and_then(crate::process::birth_identity),
             path,
             host_pid: pid,
             token_sha256: token.into(),
@@ -174,8 +202,7 @@ pub(crate) fn reclaim_recorded(run_dir: &Path, status: &StatusRecord) -> io::Res
 pub(crate) fn reclaim_unrecorded(run_dir: &Path) -> io::Result<()> {
     if let Some(receipt) = read(run_dir)?
         && let (Some(start_boot), Some(now_boot)) = (&receipt.boot_id, crate::current_boot_id())
-        && (start_boot != &now_boot
-            || !crate::process::pid(receipt.host_pid).is_some_and(crate::process::alive))
+        && (start_boot != &now_boot || receipt.host_is_gone())
     {
         receipt.reclaim()?;
     }
@@ -190,12 +217,17 @@ mod tests {
     #[test]
     fn a_missing_status_keeps_a_starting_host_and_reclaims_scratch_from_a_previous_boot()
     -> io::Result<()> {
+        use std::os::unix::process::CommandExt;
+        let mut host = std::process::Command::new("sleep")
+            .arg("60")
+            .process_group(0)
+            .spawn()?;
         let run = tempfile::tempdir()?;
         let sandbox = tempfile::tempdir()?;
         let guard = own(
             &File::open(run.path())?,
             tempfile::tempdir_in(sandbox.path())?,
-            std::process::id(),
+            host.id(),
             "new-token",
         )?;
         let owned = guard.path();
@@ -214,6 +246,77 @@ mod tests {
         );
         assert!(!owned.exists());
         assert!(recorded(run.path()), "receipt stays with the run metadata");
+        host.kill()?;
+        host.wait()?;
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_reclaims_a_reused_host_pid_and_retains_uncertain_birth() -> io::Result<()> {
+        use std::os::unix::process::CommandExt;
+        let run = tempfile::tempdir()?;
+        let sandbox = tempfile::tempdir()?;
+        let mut host = std::process::Command::new("sleep")
+            .arg("60")
+            .process_group(0)
+            .spawn()?;
+        let guard = own(
+            &File::open(run.path())?,
+            tempfile::tempdir_in(sandbox.path())?,
+            host.id(),
+            "birth",
+        )?;
+        let artifact = guard.payload().join("build");
+        fs::write(&artifact, b"build")?;
+        let mut record: serde_json::Value =
+            serde_json::from_slice(&fs::read(run.path().join(RECEIPT))?)?;
+        let recorded_birth = record["host_birth"].clone();
+        record["host_birth"] = serde_json::Value::Null;
+        atomic_write(run.path(), RECEIPT, &serde_json::to_vec(&record)?, 0o600)?;
+        let _ = crate::inspect_run_dir(run.path());
+        let retained_unknown_birth = artifact.exists();
+        record["host_birth"] = "former host".into();
+        atomic_write(run.path(), RECEIPT, &serde_json::to_vec(&record)?, 0o600)?;
+        let _ = crate::inspect_run_dir(run.path());
+        let reclaimed_reused_pid = !artifact.exists();
+        host.kill()?;
+        host.wait()?;
+        assert!(retained_unknown_birth, "an unknown birth cannot prove exit");
+        assert!(
+            reclaimed_reused_pid,
+            "a reused pid retained the former host's build"
+        );
+        assert!(recorded_birth.is_string());
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_refuses_newer_scratch_receipts_and_writes_the_current_version() -> io::Result<()> {
+        use yulius_contracts::ptyhost::RECORD_VERSION;
+        let run = tempfile::tempdir()?;
+        let sandbox = tempfile::tempdir()?;
+        assert!(read(run.path())?.is_none());
+        let guard = own(
+            &File::open(run.path())?,
+            tempfile::tempdir_in(sandbox.path())?,
+            std::process::id(),
+            "test-token",
+        )?;
+        let artifact = guard.payload().join("build");
+        fs::write(&artifact, b"retained")?;
+        let mut record: serde_json::Value =
+            serde_json::from_slice(&fs::read(run.path().join(RECEIPT))?)?;
+        let written_version = record["version"].as_u64();
+        record["version"] = (RECORD_VERSION + 1).into();
+        record["boot_id"] = "previous boot".into();
+        atomic_write(run.path(), RECEIPT, &serde_json::to_vec(&record)?, 0o600)?;
+        let _ = crate::inspect_run_dir(run.path());
+        assert!(
+            artifact.exists(),
+            "a newer receipt cannot authorize reclamation"
+        );
+        assert!(read(run.path()).is_err());
+        assert_eq!(written_version, Some(u64::from(RECORD_VERSION)));
         Ok(())
     }
 

@@ -447,7 +447,7 @@ token = launch["token_sha256"]
 (build / "payload").mkdir()
 (build / "payload" / "target").write_text("cold build")
 stat = build.stat()
-(control / "build-scratch.json").write_text(json.dumps(dict(path=str(build), host_pid=os.getpid(),
+(control / "build-scratch.json").write_text(json.dumps(dict(version=launch["version"], path=str(build), host_pid=os.getpid(),
     token_sha256=token, device=stat.st_dev, inode=stat.st_ino, boot_id=launch["env"]["FIXTURE_BOOT"])))
 os.kill(os.getpid(), signal.SIGKILL)
 "#,
