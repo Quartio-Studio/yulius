@@ -163,14 +163,17 @@ impl DeliveryStore for SqliteStore {
                 return Ok(false);
             }
             tx.execute(
-                "INSERT INTO delivery (task_id, stage, pr_number, updated_at) VALUES (?1, ?2, ?3, ?4) \
+                "INSERT INTO delivery (task_id, stage, pr_number, updated_at, review_merge_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5) \
                  ON CONFLICT(task_id) DO UPDATE SET stage = excluded.stage, \
-                 pr_number = excluded.pr_number, updated_at = excluded.updated_at",
+                 pr_number = excluded.pr_number, updated_at = excluded.updated_at, \
+                 review_merge_at = COALESCE(excluded.review_merge_at, delivery.review_merge_at)",
                 params![
                     next.task_id.as_str(),
                     next.stage.encode(),
                     next.pr_number.map(to_i64),
-                    next.updated_at.0
+                    next.updated_at.0,
+                    (next.stage == DeliveryStage::MergedIntegration).then_some(next.updated_at.0),
                 ],
             )
             .map_err(db)?;

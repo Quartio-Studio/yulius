@@ -154,8 +154,7 @@ pub struct Delivery {
     /// Check sources of the pull request the GitHub App may not read (see [`ChecksAccess`]).
     #[serde(default)]
     pub checks_access: Option<ChecksAccess>,
-    /// The independent review's rounds of the task's open pull request, oldest first (SPEC-493
-    /// REV-005).
+    /// The current review's rounds, or those of the just-delivered pull request, oldest first.
     #[serde(default)]
     pub review_rounds: Vec<ReviewRoundView>,
     /// Evidence of the current landing (SPEC-562). Absent until its identity is known.
@@ -231,9 +230,9 @@ pub struct ReviewRoundView {
     pub round: u32,
     /// The reviewer agent it runs as.
     pub agent: String,
-    /// The model asked for.
+    /// The model selected at launch.
     pub model: String,
-    /// The model that answered, read from the reviewer's transcript.
+    /// The model that answered, reported by the harness.
     #[serde(default)]
     pub model_answered: Option<String>,
     /// Why that model: `round`, `kept` or `no_fable`.
@@ -248,6 +247,15 @@ pub struct ReviewRoundView {
     pub reported: bool,
     /// A usage limit cut its reviewer off.
     pub cut_off: bool,
+    /// When the reviewer started (RFC 3339).
+    #[serde(default)]
+    pub started_at: String,
+    /// When the reviewer reported (RFC 3339), if a report arrived.
+    #[serde(default)]
+    pub ended_at: Option<String>,
+    /// The pull request these rounds belong to, when known.
+    #[serde(default)]
+    pub pr_number: Option<u64>,
 }
 
 /// A delivery action that applies at the current stage but is refused now.

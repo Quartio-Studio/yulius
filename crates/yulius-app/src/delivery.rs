@@ -2306,7 +2306,7 @@ impl App {
                 );
             }
         }
-        view.review_rounds = self.review_round_views(&task.id).await;
+        view.review_rounds = self.review_round_views(&observed.record).await;
         Ok(view)
     }
 
