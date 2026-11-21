@@ -1,6 +1,6 @@
 ---
 yulius-task: 5b06b876-20e3-4a88-b4c2-2c7c3667ff86
-status: in-progress
+status: done
 ---
 
 # SPEC-595 Shared compilation for Yulius Rust builds
@@ -30,8 +30,8 @@ On November 21 the operator measured about 195 seconds compiling and 151 seconds
 - [x] Build and test the idle-store upkeep candidate
 - [x] Record the observed CI lane reuse and before/after run times
 - [x] Verify candidate idle-store recovery and reconcile the shipped launcher CI measurements
-- [ ] Restore task admission after compiler-store eviction with multiply linked files
-- [ ] Verify the completed quota and disk-upkeep integration for delivery
+- [x] Restore task admission after compiler-store eviction with multiply linked files
+- [x] Verify the completed quota and disk-upkeep integration for delivery
 
 ## Acceptance criteria
 
@@ -95,8 +95,44 @@ The launcher landed in [PR #1617](https://github.com/Quartio-Studio/yulius/pull/
 
 The checkout logs identified `quality@1`, `test.1@1`, `test.2@1` in the PR and `quality`, `test.1`, `test.2` in the train. Each physical job UUID was matched to its run using `ci_status`. Both sets of retained private targets served **0/27 eligible shared-cache requests**. Quality had nine misses. The first shard had four misses and 14 initially unknown keys. The second shard issued no eligible lookup. The PR also recorded 94 mbx bypasses and 290 direct compiler calls, the train 94 and 302. Different source trees, admission waits, persistent Cargo targets and host load affect these wall times. No shared-cache hits contributed to either scheduled run. The isolated clean-target lane replay above establishes reuse when an equivalent compilation is actually requested.
 
+A subsequent full physical merge train for [PR #1618](https://github.com/Quartio-Studio/yulius/pull/1618), run `01163ca6-3baf-4227-947a-e952b0710956` at `ed55e2c17`, passed in 477 s. The scheduler matched job IDs `57f73ae1-c891-4140-a010-69d45b8ddde3`, `9ee50e2e-4513-4158-a582-8421291d3ccb` and `03761ac8-aedf-481a-9884-102613152f38` to quality and the two shards. Their logs identified separate lane checkouts. Counters include all Cargo steps in each job.
+
+| Lane | Execution / wait (s) | Hits | Misses | Initially unknown | mbx bypass | Direct compiler |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `quality@3` | 469 / 7 | 15 | 7 | 5 | 25 | 193 |
+| `test.1@3` | 391 / 67 | 9 | 5 | 14 | 66 | 65 |
+| `test.2@3` | 344 / 67 | 9 | 1 | 0 | 3 | 65 |
+
+These scheduled lanes served **33/65 eligible requests (50.8%)** and **33/482 of all reported compiler invocations (6.8%)**. The logs count hits without identifying which checkout populated each artifact. The separate empty-target replay establishes where its 12 hits came from. Gate wall also depends on source changes, admission and host load.
+
 The sequential test pair at the approved launcher `7fe27a3d6` used another initially empty store, two separate empty targets and 19 workers. Cold took 854.69 s and warm took 593.92 s. Cargo's test build took 337 s and 196 s. Each ran 5,752 tests with 5,751 passing. Stopped-run attention failed cold and loopback port release failed warm. Each command exited before doctests. Warm served 222/248 eligible requests and 222/431 of all reported compiler invocations. These additional elapsed times are failed command observations. [Issue #1611](https://github.com/Quartio-Studio/yulius/issues/1611) and [issue #1620](https://github.com/Quartio-Studio/yulius/issues/1620).
 
-### Pending instance upkeep delivery
+### Instance disk upkeep
 
-The idle-store candidate `8812780fb` passed nine focused Rust tests, all 21 launcher tests and all 34 viable mutations. Final review found an admission problem when the only cached artifact has two hard links inside the store. Clearing both links releases the artifact's blocks, but the conservative freed-byte estimate is zero. Task admission needs a fresh quota reading and one retry. This evidence delivery records the scheduled launcher runs. The following source delivery will include host upkeep and the quota-recovery regression.
+The first mutation campaign listed 25 changes, caught 14, missed seven and found four unviable in 1,185 s. Tests now pin the 20 GiB boundary, count reclaimed stores and cover missing roots and linked paths. The two open-flag mutations ceased to apply when the code expressed the flag union explicitly. The changed-lines campaign caught both listed mutants in 829 s. The targeted replay caught four of the five remaining original mutants. After adding the missing-sandbox case, the remaining guard mutant was caught in a single-mutant run in 53 s. The tests use real filesystem locks and marked disposable stores.
+
+Independent review of the first upkeep head `8237d0b5d` found three failures in eviction. Three regressions failed on that head. A swapped-in unmarked directory lost its sentinel, the interrupted-removal fixture could not keep a reusable store, and 641 names for one 32 MiB inode triggered the 20 GiB limit. The next revision held the stamped directory open for removal and used the sandbox quota walker's hard-link accounting. All three regressions passed on that revision.
+
+Review of `226f660fa` found that a checkout from PR #1617 still recognized the ready stamp during interrupted removal. It also showed that counting a removed artifact's blocks as freed could stop pressure relief when another directory retained a hard link. Upkeep now moves the ownership stamp to its pending name and syncs the store before removing entries. The existing PR #1617 launcher uses ordinary Cargo until upkeep restores the ready name. Store size counts each inode once. Reclamation credit excludes multiply linked files, including links that might all be inside the store.
+
+Both Rust regressions failed on `226f660fa`. The interrupted cache still exposed its ready stamp. Upkeep credited 262,144 bytes for an artifact whose other hard link remained readable. The launcher and release suite passed all 21 tests with the launcher from PR #1617, including plain Cargo during eviction and cache reuse after the ready stamp returned. `scripts/dev quick` passed. Two attempts to run mutation testing stopped before testing any mutant because an unrelated session-socket fixture exceeded its path limit. The second attempt used a short symlink, which the fixture resolved back to its long target.
+
+At `c7a697cd5`, all nine focused Rust tests passed across `yulius`, `yulius-app` and `yulius-sandbox`, including the two regressions above. The interruption test recovered on a healthy disk. The allocation test also cleared a store reporting zero freed artifact blocks and skipped the subsequent empty round. The release suite exercised the unchanged PR #1617 launcher. Vidoc reported disabled. The task’s delivery verification record supplies the exact landed SHA, CI run and individual job verdicts after the upkeep pull request merges.
+
+With a short, disk-backed temporary directory, the full upkeep change at `c7a697cd5` passed its unmutated baseline of 3,386 tests. `scripts/dev mutants --base b00cc76a4 --minutes 45` reported **38 listed, 34 caught, 0 missed, 0 timed out, 4 unviable, 0 not reached** in 743 seconds. The four unviable mutations proposed invalid constructors for the disk report result. After integrating dev `00ff06cbf`, the nine focused tests also passed at `d322a8a7b`. Clippy passed with warnings denied on all targets of the three changed crates. `scripts/dev quick` and `spec_check` passed.
+
+The scheduled evidence landed in [PR #1622](https://github.com/Quartio-Studio/yulius/pull/1622) at dev `a6314e1fa`. Its PR head `443977f21` passed in `7052f856-f4e9-4cdb-8f23-0fbaa62faaa1` through the verified train `aaf4a11f-6bf5-4b8f-b4d2-7cd364b5b876`. Full dev run `77e6c468-4dbe-4c2b-a306-19a9b38168d3` passed both shards and E2E. Revision `dc08c1a` superseded it while quality was running, so the overall dev verdict was cancelled. [Dev verification record](https://yulius.quartio.ai/api/tasks/5b06b876-20e3-4a88-b4c2-2c7c3667ff86/delivery/evidence/a6314e1fa472bbd762c96b03b7b77cae1f2aca9a)
+
+Review of `8812780fb` found that removing the last two hard links to one 256 KiB artifact can release all its blocks even though pressure accounting correctly grants zero bytes. Before the admission fix, quota refresh and retry depended on the byte estimate or worktree deletion. The quota regression exercises task admission with both links in the store and with a surviving link outside it.
+
+The task-admission test first failed because upkeep made zero fresh quota measurements after removing the artifact. After the fix it measured once and retried once. With both links in the cache the task started. With an external link the sandbox stayed over quota and the retry preserved the refusal. Fourteen focused Rust tests passed, including ordinary task and queued CI admission. The 21 launcher tests passed.
+
+A CI dispatcher regression showed two full quota measurements after upkeep cleared a store with zero credited bytes. With an empty round it measured once. The dispatcher now reuses the reading upkeep took after a removal.
+
+Review of `e103a27e4` identified a final interrupted state in which the previous round had cleared the last artifact. Only the pending stamp remained. The admission regression reproduced a restored ready stamp and zero quota refreshes. Finishing that pending eviction now reports completion to quota admission even if the current round has no payload left to remove. A store that was already empty and ready reports no cleanup.
+
+At `b0cd5857e`, all 15 focused Rust tests passed. The pending-only store recovered, the task saw exactly one fresh quota reading and one retry, and a queued CI run measured once after either an empty round or a cache eviction. All 15 tests passed again on `24504e4ea` after integrating dev `14e01f438`. Independent review approved that exact head. The reviewer separately passed the launcher tests for active upkeep and interrupted eviction and verified the 33 scheduled hits against all three job logs.
+
+Clippy passed with warnings denied on all targets of the three affected crates at the reviewed head. Vidoc was disabled for the project.
+
+In a hand check, changing the quota boundary to `>=` removed an artifact at exactly the limit, omitting pending-only eviction completion gave the task zero fresh quota readings, and restoring CI’s second disk scan gave it two readings. Each regression failed on its respective condition. With the reviewed lines restored and dev `cf492c608` integrated, all 16 focused Rust tests and all 21 launcher and release tests passed.

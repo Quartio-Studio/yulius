@@ -164,13 +164,13 @@ impl App {
     /// and says whether it is.
     async fn ci_disk_check(self: &Arc<Self>, sandbox: &SandboxRecord) -> bool {
         let reference = self.sandbox_ref(sandbox);
-        let freed = self
+        let pruned = self
             .disk_upkeep(sandbox, true)
             .await
-            .is_ok_and(|report| report.freed > 0 || report.worktrees > 0);
+            .is_ok_and(|report| report.pruned_anything());
         let usage = match self.isolation.get() {
-            // Upkeep measured again after it freed something.
-            Some(isolation) if freed => isolation.disk(&reference).await,
+            // Upkeep refreshed the quota after removing cached data.
+            Some(isolation) if pruned => isolation.disk(&reference).await,
             Some(isolation) => isolation.measure_disk(&reference).await,
             None => None,
         };

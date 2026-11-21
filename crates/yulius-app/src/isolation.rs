@@ -98,12 +98,12 @@ impl App {
                     .disk(&request)
                     .await
                     .is_some_and(|usage| usage.used > usage.limit);
-                let freed = over
+                let pruned = over
                     && self
                         .disk_upkeep(sandbox, true)
                         .await
-                        .is_ok_and(|report| report.freed > 0 || report.worktrees > 0);
-                if !freed {
+                        .is_ok_and(|report| report.pruned_anything());
+                if !pruned {
                     return Err(AppError::Conflict(
                         self.naming_consumers(sandbox, reason).await,
                     ));
