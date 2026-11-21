@@ -3196,6 +3196,8 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
   verified once (`CdRequest::Restore`, a rollback run).
 - **Told and shown.**
   - `tell_staging_outcomes` types each task's outcome into its session once.
+  - `delivery_status` tells a merged task its request is due, then where it stands
+    (`staging_note`).
   - `cd_status` and the CD page (`CdEnvironment.staging`) list the queue with revisions and run
     ids.
   - Every promotion waits until staging serves the integration head, verified, read through the
