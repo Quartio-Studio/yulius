@@ -245,11 +245,12 @@ impl App {
             // A prompt submitted soon after is this person's (TSK-013).
             let mut mark = attach.runtime.draft_mark.lock().await;
             mark.recovered_at = None;
-            let before = *attach
+            let before = attach
                 .runtime
                 .viewer_prompt
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             let sequence = self.record_terminal_frame(&attach.task_id, &ctx.user.id, data);
             recorded_typing = Some((sequence, before));
             // What they type may stay in the prompt box, unsent: the run's folder keeps that
@@ -477,9 +478,11 @@ impl App {
 
 /// Tracks whether a viewer entered substantive text before submitting. Only
 /// lengths and parser state are kept. A callback acknowledges the Enter separately.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub(crate) struct ViewerPrompt {
     keys: crate::cockpit::KeyState,
+    fingerprint: sha2::Sha256,
+    edited: bool,
     length: usize,
     // Position of the first nonblank character, so erasing the last text makes Enter empty.
     first_text: Option<usize>,
@@ -489,11 +492,20 @@ pub(crate) struct ViewerPrompt {
 pub(crate) enum ViewerEnter {
     None,
     Empty,
-    Submitted,
+    Submitted([u8; 32]),
+    /// The provider editor determines the result of a recall or cursor edit.
+    Edited,
+}
+
+impl ViewerEnter {
+    pub(crate) fn may_submit(self) -> bool {
+        matches!(self, Self::Submitted(_) | Self::Edited)
+    }
 }
 
 impl ViewerPrompt {
     pub(crate) fn restored(&mut self) {
+        self.edited = true;
         if self.first_text.is_none() {
             self.length = self.length.saturating_add(1);
             self.first_text = Some(self.length);
@@ -502,31 +514,47 @@ impl ViewerPrompt {
 
     pub(crate) fn read(&mut self, frame: &[u8]) -> ViewerEnter {
         use crate::cockpit::{BoxEdit, read_box_edits};
+        use sha2::Digest;
         // This state belongs to a live run. A pause between its bytes leaves the PTY unchanged.
         // Clients may frame a submitted line as CRLF. A LF inside a paste is text.
         let mut enter = ViewerEnter::None;
         let observe = |edit| match edit {
-            BoxEdit::Text(byte) if byte & 0xc0 != 0x80 => {
-                self.length = self.length.saturating_add(1);
-                if !byte.is_ascii_whitespace() {
-                    self.first_text.get_or_insert(self.length);
+            BoxEdit::Text(byte) => {
+                self.fingerprint.update([byte]);
+                if byte & 0xc0 != 0x80 {
+                    self.length = self.length.saturating_add(1);
+                    if !byte.is_ascii_whitespace() {
+                        self.first_text.get_or_insert(self.length);
+                    }
                 }
             }
-            BoxEdit::Text(_) => {}
+            BoxEdit::Editor => self.edited = true,
             BoxEdit::Backspace => {
                 self.length = self.length.saturating_sub(1);
                 if self.first_text.is_some_and(|first| first > self.length) {
                     self.first_text = None;
                 }
+                // Even when a character remains, the incremental digest no longer
+                // describes the editor's text. A provider callback confirms it.
+                if self.first_text.is_some() {
+                    self.edited = true;
+                }
+                if self.length == 0 {
+                    self.fingerprint = Default::default();
+                }
             }
             BoxEdit::Send | BoxEdit::Clear => {
-                if matches!(edit, BoxEdit::Send) && enter != ViewerEnter::Submitted {
-                    enter = if self.first_text.is_some() {
-                        ViewerEnter::Submitted
+                if matches!(edit, BoxEdit::Send) && !enter.may_submit() {
+                    enter = if self.edited {
+                        ViewerEnter::Edited
+                    } else if self.first_text.is_some() {
+                        ViewerEnter::Submitted(self.fingerprint.clone().finalize().into())
                     } else {
                         ViewerEnter::Empty
                     };
                 }
+                self.edited = false;
+                self.fingerprint = Default::default();
                 self.length = 0;
                 self.first_text = None;
             }
@@ -679,12 +707,12 @@ mod tests {
             b"cancel\x03\r",
             b"clear\x15\r",
         ] {
-            assert!(input.read(frame) != ViewerEnter::Submitted);
+            assert!(!input.read(frame).may_submit());
         }
         assert!(input.read(b"v") == ViewerEnter::None);
-        assert!(input.read(b"\n") == ViewerEnter::Submitted);
-        assert!(input.read(b"verify\r\n") == ViewerEnter::Submitted);
-        assert!(input.read(b"\x1b[200~verify\x1b[201~\r") == ViewerEnter::Submitted);
+        assert!(input.read(b"\n").may_submit());
+        assert!(input.read(b"verify\r\n").may_submit());
+        assert!(input.read(b"\x1b[200~verify\x1b[201~\r").may_submit());
         for frame in [
             b"line one\\".as_slice(),
             b"\r",
@@ -695,7 +723,7 @@ mod tests {
         ] {
             assert!(input.read(frame) == ViewerEnter::None);
         }
-        assert!(input.read(b"\r") == ViewerEnter::Submitted);
+        assert!(input.read(b"\r").may_submit());
     }
 
     /// The terminal transport may divide a paste between any two bytes.
@@ -710,10 +738,7 @@ mod tests {
                     "frame size {width}"
                 );
             }
-            assert!(
-                prompt.read(b"\r") == ViewerEnter::Submitted,
-                "frame size {width}"
-            );
+            assert!(prompt.read(b"\r").may_submit(), "frame size {width}");
         }
     }
 

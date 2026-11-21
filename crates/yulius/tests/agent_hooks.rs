@@ -3133,6 +3133,7 @@ async fn goal_stop_preserves_a_multiline_draft_after_a_pause_in_typing() -> Test
 #[tokio::test]
 async fn goal_stop_accepts_recalled_and_cursor_edited_owner_work() -> TestResult {
     for (frames, prompt) in [
+        (vec![b"Review checkout\r".as_slice()], "Review checkout"),
         (vec![b"\x1b[A".as_slice(), b"\r"], "Verify dev"),
         (vec![b"x".as_slice(), b"\x1b[D", b"\x7f", b"\r"], "x"),
     ] {

@@ -272,16 +272,16 @@ impl App {
         };
         let _in_flight = crate::finish::StopInFlight::enter(&runtime);
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(750);
+        // Keep one hook future across the nested task-local scopes. Moving the whole
+        // turn through each scope exhausted the worker stack on a resumed goal.
+        let answer = Box::pin(self.answer_hook(&ctx, event, input, sent, sequence));
         let reply = STOP_BROWSER_DEADLINE
             .scope(deadline, async {
-                if ctx.task.mode != TaskMode::Goal {
-                    return self.answer_hook(&ctx, event, input, sent, sequence).await;
+                if ctx.task.mode == TaskMode::Goal {
+                    self.publish_after_updates(&ctx.task, answer).await
+                } else {
+                    answer.await
                 }
-                self.publish_after_updates(
-                    &ctx.task,
-                    self.answer_hook(&ctx, event, input, sent, sequence),
-                )
-                .await
             })
             .await;
         // Only the live run's answers count: a late one of a run a switch ended is not this
@@ -291,6 +291,14 @@ impl App {
             Ok(Some(attempt)) if attempt.id == ctx.attempt.id
         );
         let now = self.now().0;
+        if live
+            && ctx.task.mode == TaskMode::Goal
+            && let Ok(HookReply::Output(output)) = &reply
+            && output.decision.as_deref() == Some(yulius_contracts::hooks::DECISION_BLOCK)
+            && let Some(reason) = &output.reason
+        {
+            self.note_issued_prompt(&ctx.task.id, reason.as_bytes());
+        }
         if reply.is_ok() && live {
             // An answered Stop, whatever Yulius decided. Also kept in the run directory: after a
             // restart, a turn whose Stop was answered is not woken (SPEC-358 MSB-007).
@@ -416,7 +424,12 @@ impl App {
         let submitted = if from_box {
             let mut mark = runtime.draft_mark.lock().await;
             if !sent_again {
-                let enter = self.viewer_submit_at(&ctx.task.id, sent, sequence);
+                let enter = self.viewer_submit_at(
+                    &ctx.task.id,
+                    sent,
+                    sequence,
+                    input.prompt.as_deref().unwrap_or_default().as_bytes(),
+                );
                 // Enter empties the owner's draft at that key, even if more text is
                 // already in the PTY when the provider sends or retries its callback.
                 mark.submit = match enter {
@@ -452,7 +465,7 @@ impl App {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .restored();
-                self.consume_viewer_submits(&ctx.task.id, keys);
+                self.retract_viewer_submit(&ctx.task.id, keys);
             }
             // What was submitted is back in the box: nothing was sent past a draft.
             runtime.sent_past_draft.store(false, Ordering::SeqCst);
@@ -485,7 +498,13 @@ impl App {
                 runtime.typed_at_ms.fetch_max(inherited, Ordering::SeqCst);
                 mark.written = true;
             } else {
-                self.consume_viewer_submits(&ctx.task.id, keys);
+                if ctx.task.mode == TaskMode::Goal {
+                    if owner {
+                        self.retract_viewer_submit(&ctx.task.id, keys);
+                    }
+                } else {
+                    self.consume_viewer_submits(&ctx.task.id, keys);
+                }
                 if emptied >= runtime.box_emptied_ms.fetch_max(emptied, Ordering::SeqCst) {
                     runtime.emptied_seq.fetch_max(keys, Ordering::SeqCst);
                 }

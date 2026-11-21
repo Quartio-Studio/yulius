@@ -177,6 +177,8 @@ fn settled(state: KeyState, last_key_ms: i64, now_ms: i64) -> KeyState {
 pub(crate) enum BoxEdit {
     Text(u8),
     Backspace,
+    /// Completion, navigation or another provider-specific edit.
+    Editor,
     Clear,
     Send,
 }
@@ -246,6 +248,7 @@ pub(crate) fn read_box_edits(
                     i += 2;
                 }
                 0x1b => {
+                    edit(BoxEdit::Editor);
                     i += 1;
                     if matches!(data.get(i), Some(b'[' | b'O')) {
                         i += 1;
@@ -284,7 +287,11 @@ pub(crate) fn read_box_edits(
                     *after_backslash = byte == b'\\';
                     i += 1;
                 }
-                _ => i += 1,
+                b'\n' => i += 1,
+                _ => {
+                    edit(BoxEdit::Editor);
+                    i += 1;
+                }
             }
         }
     }

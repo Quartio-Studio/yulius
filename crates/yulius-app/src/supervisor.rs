@@ -259,6 +259,8 @@ pub struct TaskRuntime {
     /// check and file removal (SPEC-537).
     pub(crate) draft_mark: tokio::sync::Mutex<DraftMark>,
     pub(crate) viewer_prompt: Mutex<crate::terminal::ViewerPrompt>,
+    /// Fingerprints of recent instructions Yulius emitted to this session.
+    issued_prompts: Mutex<VecDeque<[u8; 32]>>,
     /// Sequence of the last viewer input in this run. Before the first, only the durable
     /// mark identifies a possible draft, and a prompt may predate it (DRF-009).
     pub(crate) typed_seq: AtomicU64,
@@ -725,6 +727,7 @@ impl TaskRuntime {
             draft_told_ms: AtomicI64::new(0),
             draft_mark: tokio::sync::Mutex::default(),
             viewer_prompt: Mutex::default(),
+            issued_prompts: Mutex::default(),
             typed_seq: AtomicU64::new(0),
             sent_past_draft: AtomicBool::new(false),
             emptied_seq: AtomicU64::new(0),
@@ -1000,11 +1003,18 @@ const LIVE_WITH_A_RUN: [TaskStatus; 4] = [
     TaskStatus::Running,
 ];
 
+#[derive(Clone, Copy)]
+struct ViewerSubmission {
+    time: i64,
+    sequence: u64,
+    enter: crate::terminal::ViewerEnter,
+}
+
 /// Supervisor-owned per-process state.
 #[derive(Default)]
 pub struct SupervisorState {
-    /// Viewer Enter events awaiting the provider's submit callback. Contains only ordering metadata.
-    viewer_submits: Mutex<HashMap<TaskId, VecDeque<(i64, u64)>>>,
+    /// Viewer Enter events awaiting the provider's submit callback. Contains only timing, order and provenance evidence.
+    viewer_submits: Mutex<HashMap<TaskId, VecDeque<ViewerSubmission>>>,
     input_seq: AtomicU64,
     runtimes: Mutex<HashMap<TaskId, Arc<TaskRuntime>>>,
     /// Shared, so an install on the blocking pool can own its guard (SPEC-507 SKR-005).
@@ -1595,9 +1605,31 @@ impl App {
         self.capacity_changed();
     }
 
-    pub(crate) fn record_viewer_key(&self, task: &TaskId, at: i64, enter: bool) -> u64 {
+    /// A delivery records its actual bytes before the provider can acknowledge it.
+    /// This disambiguates its callback from an owner editing or recalling a prompt.
+    pub(crate) fn note_issued_prompt(&self, task: &TaskId, text: &[u8]) {
+        use sha2::Digest;
+        let digest = sha2::Sha256::digest(text).into();
+        let runtime = self.runtime(task);
+        let mut prompts = runtime
+            .issued_prompts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        const LIMIT: usize = 16;
+        if prompts.len() == LIMIT {
+            prompts.pop_front();
+        }
+        prompts.push_back(digest);
+    }
+
+    pub(crate) fn record_viewer_key(
+        &self,
+        task: &TaskId,
+        at: i64,
+        enter: crate::terminal::ViewerEnter,
+    ) -> u64 {
         let seq = self.supervisor.input_seq.fetch_add(1, Ordering::SeqCst) + 1;
-        if enter {
+        if enter.may_submit() {
             let mut submits = self
                 .supervisor
                 .viewer_submits
@@ -1609,7 +1641,11 @@ impl App {
             if pending.len() == MAX_PENDING_SUBMITS {
                 pending.remove(1);
             }
-            pending.push_back((at, seq));
+            pending.push_back(ViewerSubmission {
+                time: at,
+                sequence: seq,
+                enter,
+            });
         }
         seq
     }
@@ -1625,7 +1661,7 @@ impl App {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(pending) = submits.get_mut(task) {
-            pending.retain(|(_, key)| *key != seq);
+            pending.retain(|key| key.sequence != seq);
             if pending.is_empty() {
                 submits.remove(task);
             }
@@ -1637,17 +1673,41 @@ impl App {
         task: &TaskId,
         sent: i64,
         sequence: u64,
+        prompt: &[u8],
     ) -> Option<(i64, u64)> {
+        use crate::terminal::ViewerEnter;
+        use sha2::Digest;
+        let digest: [u8; 32] = sha2::Sha256::digest(prompt).into();
+        let runtime = self.runtime(task);
         let submits = self
             .supervisor
             .viewer_submits
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        submits.get(task)?.iter().copied().find(|(at, seq)| {
-            *seq <= sequence
-                && *at <= sent
-                && sent.saturating_sub(*at) <= yulius_domain::intake::TYPED_WINDOW_MS
-        })
+        let mut eligible = submits.get(task).into_iter().flatten().filter(|key| {
+            key.sequence <= sequence
+                && key.time <= sent
+                && sent.saturating_sub(key.time) <= yulius_domain::intake::TYPED_WINDOW_MS
+        });
+        if let Some(owner) = eligible
+            .clone()
+            .find(|key| key.enter == ViewerEnter::Submitted(digest))
+        {
+            return Some((owner.time, owner.sequence));
+        }
+        let mut issued = runtime
+            .issued_prompts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(index) = issued.iter().position(|entry| *entry == digest) {
+            issued.remove(index);
+            return None;
+        }
+        // A navigation or completion key lets the provider's editor decide the text.
+        // An accepted prompt confirms that Enter, once an automatic delivery is excluded.
+        eligible
+            .find(|key| key.enter == ViewerEnter::Edited)
+            .map(|key| (key.time, key.sequence))
     }
 
     pub(crate) fn consume_viewer_submits(&self, task: &TaskId, through: u64) {
@@ -1657,7 +1717,7 @@ impl App {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(pending) = keys.get_mut(task) {
-            pending.retain(|(_, seq)| *seq > through);
+            pending.retain(|key| key.sequence > through);
             if pending.is_empty() {
                 keys.remove(task);
             }
@@ -2453,6 +2513,17 @@ impl App {
                 )
             }
         };
+        if task.mode == TaskMode::Goal {
+            self.runtime(&task.id)
+                .issued_prompts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clear();
+            let (SessionMode::New { prompt, .. } | SessionMode::Resume { prompt, .. }) = &mode;
+            if let Some(prompt) = prompt {
+                self.note_issued_prompt(&task.id, prompt.as_bytes());
+            }
+        }
         let goal_in_prompt = sets_goal(&mode);
         // A continued turn opens the run like a first message: the goal is set after its Stop.
         let opens_with_turn = goal_mode
@@ -3488,6 +3559,7 @@ impl App {
             crate::race::reached(crate::race::Point::LineTyped, Path::new(task_id.as_str()));
             // A separate Enter, so the TUI sees typed text first and then a submit.
             tokio::time::sleep(Duration::from_millis(300)).await;
+            app.note_issued_prompt(task_id, command.as_bytes());
             if let Err(err) = app.send_input(task_id, b"\r").await {
                 tracing::warn!(task = %task_id, error = %err, "could not submit the task goal");
                 return false;

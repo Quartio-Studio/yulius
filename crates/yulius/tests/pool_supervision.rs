@@ -1000,7 +1000,7 @@ fn a_goal_continuation_budget_survives_a_public_subscription_switch() -> TestRes
             "automatic native goal restoration"
         );
         let terminal = app.terminal_open(&ctx, id.as_str(), None).await?;
-        Box::pin(app.terminal_input(&ctx, &terminal, b"draft", false)).await?;
+        Box::pin(app.terminal_input(&ctx, &terminal, prompt.as_bytes(), false)).await?;
         app.hook_event(token, "claude", "UserPromptSubmit", &submit(&command), None)
             .await?;
         assert!(app.has_draft(&id));

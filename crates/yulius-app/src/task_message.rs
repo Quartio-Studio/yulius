@@ -918,6 +918,14 @@ impl App {
             );
         }
         tokio::time::sleep(SUBMIT_DELAY).await;
+        if task.mode == crate::model::TaskMode::Goal
+            && matches!(from, Sender::Yulius | Sender::YuliusLastTry)
+            && let Some(text) = paste
+                .strip_prefix(b"\x1b[200~")
+                .and_then(|data| data.strip_suffix(b"\x1b[201~"))
+        {
+            self.note_issued_prompt(&task.id, text);
+        }
         // The submit below carries the owner's draft to the agent with the message: the
         // prompt hook reads this to know the draft ended (also one known from its mark alone,
         // after a restart of the server). Set before the Enter: the hook runs some 30 ms
