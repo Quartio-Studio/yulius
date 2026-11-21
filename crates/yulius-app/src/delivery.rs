@@ -2535,9 +2535,7 @@ impl App {
                 && !direct.from_fork
                 && direct.head == branch
             {
-                self.deps
-                    .store
-                    .forget_reopened_pull(&task.id, direct.number)
+                self.bind_observed_open_pull(&sandbox, &task.id, &direct)
                     .await?;
             }
             // GitHub's list says nothing about mergeability: Yulius's own clone does (DON-001).
@@ -5198,6 +5196,34 @@ impl App {
         }
     }
 
+    // A confirmed branch identity must outlive the process that observed it. The normal
+    // opening transaction also retires a closed-unmerged snapshot and records the base for
+    // landing recovery. Its compare-and-set preserves a competing or already merged delivery.
+    async fn bind_observed_open_pull(
+        &self,
+        sandbox: &SandboxRecord,
+        task: &TaskId,
+        pull: &GhPull,
+    ) -> AppResult<()> {
+        if pull.base == delivery_profile(sandbox).integration_branch {
+            let next = DeliveryRecord {
+                task_id: task.clone(),
+                stage: DeliveryStage::PrOpen,
+                pr_number: Some(pull.number),
+                updated_at: self.now(),
+            };
+            self.dlv_transition_at(
+                &sandbox.id,
+                &DeliveryStage::None,
+                &next,
+                Some(&pull.base),
+                None,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     /// Discover external follow-ups once per repository on the delivery tick. A task read
     /// can then verify a new number without probing each terminal branch for replacements.
     async fn refresh_terminal_branches(&self, sandbox: &SandboxRecord) -> AppResult<()> {
@@ -5273,6 +5299,7 @@ impl App {
                 .filter(|p| !p.from_fork && p.head == branch && is_open(p))
                 .max_by_key(|p| p.number);
             if let Some(new) = newest.filter(|p| p.number > terminal.number) {
+                self.bind_observed_open_pull(sandbox, &task, new).await?;
                 read.record_branch(&task, terminal.number, Some(new.number));
                 continue;
             }
@@ -5306,7 +5333,7 @@ impl App {
                     && pull.head == branch
                     && !(number == terminal.number && terminal.merged)
                 {
-                    store.forget_reopened_pull(&task, number).await?;
+                    self.bind_observed_open_pull(sandbox, &task, &pull).await?;
                     read.record_branch(&task, terminal.number, Some(number));
                 }
             } else {

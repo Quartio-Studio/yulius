@@ -10883,10 +10883,21 @@ async fn reading_a_closed_unmerged_parked_task_spends_no_pull_requests() -> Test
         assert_eq!(f.delivery("t1").await?["stage"], "none");
     }
     assert_eq!(f.h.github.pull_list_count.load(Ordering::SeqCst), 0);
-    // GitHub can reopen either closed number, including an older one on the branch.
+    // Restart before any delivery read can adopt the older reopened number.
     edit_pull(&f, 1, |p| p.state = "open".into());
     f.h.app.reconcile_deliveries().await;
-    assert_eq!(f.delivery("t1").await?["pr"]["number"], 1);
+    let cold = yulius_app::context::App::new(f.h.app.config.clone(), f.h.app.deps.clone());
+    cold.reconcile_deliveries().await;
+    let tracked = f.h.store.delivery(&id).await?.ok_or("reopened delivery")?;
+    assert_eq!(tracked.pr_number, Some(1));
+    assert_eq!(
+        cold.task_delivery(&owner, "t1")
+            .await?
+            .pr
+            .ok_or("open PR")?
+            .number,
+        1
+    );
     edit_pull(&f, 1, |p| p.state = "closed".into());
     f.h.app.reconcile_deliveries().await;
     edit_pull(&f, 2, |p| p.state = "open".into());
@@ -10916,12 +10927,13 @@ async fn a_background_observation_recovers_a_reopened_pr_that_later_merges() -> 
             .await?
             .ok_or("owner")?;
     f.h.app.git_overview(&owner, "s1").await?;
-    assert_eq!(f.delivery("t1").await?["stage"], "pr_open");
+    // The reopened PR merges before anyone opens delivery. A fresh process can reconcile it.
+    let cold = yulius_app::context::App::new(f.h.app.config.clone(), f.h.app.deps.clone());
     edit_pull(&f, 1, |p| {
         p.state = "closed".into();
         p.merged = true;
     });
-    f.h.app.reconcile_deliveries().await;
+    cold.reconcile_deliveries().await;
     let view = f.delivery("t1").await?;
     assert_eq!(view["stage"], "merged_integration");
     assert_eq!(view["pr"]["state"], "merged");

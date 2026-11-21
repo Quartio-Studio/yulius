@@ -115,20 +115,6 @@ impl DeliveryStore for SqliteStore {
         }).await
     }
 
-    async fn forget_reopened_pull(&self, task: &TaskId, number: u64) -> AppResult<()> {
-        let task = task.to_string();
-        self.call(move |c| {
-            c.execute(
-                "DELETE FROM terminal_pulls WHERE task_id=?1 AND pr_number=?2
-                       AND NOT json_extract(snapshot,'$.merged')",
-                params![task, to_i64(number)],
-            )
-            .map_err(db)?;
-            Ok(())
-        })
-        .await
-    }
-
     async fn terminal_pull(
         &self,
         task: &TaskId,
