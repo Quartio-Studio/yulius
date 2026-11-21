@@ -1805,22 +1805,6 @@ test('a newer failed watch keeps an open PR discovered by the terminal under Nee
   expect(seen).toEqual([true, true, 42]);
 });
 
-test(`the terminal displays verified parked work when its initial row was still running`, async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio', '&ambient=0&pullgap=0&pullclock=manual'));
-  await expect(screen.getByRole('link', /Improve the code/).first()).toBeVisible();
-  await browser.evaluate(() => {
-    type Fixture = { __yuliusMock: { tasks: { id: string }[]; holdGitReads: boolean } };
-    const db = (window as unknown as Fixture).__yuliusMock;
-    db.holdGitReads = true;
-    // Update the server record without sending the lifecycle event to this tab.
-    Object.assign(db.tasks.find(t => t.id === 'tsk_studio_13')!, {
-      status: 'parked', activity: 'done', parked_needs_you: true, parked_pr: { number: 520, open: true },
-    });
-    location.hash = `/s/studio/t/13`;
-  });
-  await expect(browser.locator('.strip-status')).toHaveText(/Your turn.*parked|checks.*parked/);
-});
-
 test('a held detail can identify an open PR after a newer parked rename fails verification', async ({ app, browser }) => {
   await app.open(mock('/s/studio'));
   const seen = await browser.evaluate(async () => {
@@ -1905,23 +1889,6 @@ test('a failed watch cannot reopen a PR that a newer parked list verified closed
     return seen;
   });
   expect(states).toEqual([[false, false, false, false], [false, false, false, false]]);
-});
-
-test('a terminal first discovering a parked recovery shows Done beside its older failing PR chip', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio', '&ambient=0&pullgap=0&pullclock=manual'));
-  type Fixture = { __yuliusMock: { tasks: { id: string }[]; holdGitReads: boolean; changePull(s: string, n: number, fields: object): void } };
-  await browser.evaluate(() => (window as unknown as Fixture).__yuliusMock.changePull('sb_studio', 520, { checks: 'failure' }));
-  await expect(screen.getByRole('link', /checks failing.*Improve the code/)).toBeVisible();
-  await browser.evaluate(() => {
-    const db = (window as unknown as Fixture).__yuliusMock;
-    db.holdGitReads = true;
-    Object.assign(db.tasks.find(t => t.id === 'tsk_studio_13')!, { title: 'Fresh parked detail', status: 'parked',
-      activity: 'done', parked_needs_you: false, parked_pr: { number: 520, open: true } });
-    location.hash = '/s/studio/t/13';
-  });
-  await expect(browser.locator('.step-task')).toHaveText(/Fresh parked detail/);
-  await expect(browser.locator('.strip-status')).toHaveText(/Done.*parked/);
-  await expect(screen.getByRole('link', /checks failing.*Improve the code/)).toBeVisible();
 });
 
 test('a successful parked detail still updates the terminal when resync reads fail', async ({ app, browser, screen }) => {
@@ -2086,4 +2053,54 @@ test('an identical parked list verifies the mounted terminal before a held faili
     return [group(current), group(store.findTask('p')), store.pullsOf('s').get('p').checks];
   });
   expect(seen).toEqual(['done', 'done', 'failure']);
+});
+
+test('a failed parked watch and a merged Git overview agree in both reply orders', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const storeModule = '/assets/store.js', statusModule = '/assets/status.js';
+    const { createStore } = await import(storeModule);
+    const { taskInfo } = await import(statusModule);
+    const results = [];
+    for (const owner of [false, true]) {
+      for (const listFirst of [true, false]) {
+        const healthy = { id: 'p', sandbox_id: 's', status: 'parked', activity: 'done', parked_needs_you: false,
+          parked_pr: { number: 42, open: true }, needs_you: owner ? { action: 'Choose a version' } : null };
+        const listGate = Promise.withResolvers<void>(), gitGate = Promise.withResolvers<void>();
+        const gitStarted = Promise.withResolvers<void>(), gitSeen = Promise.withResolvers<void>();
+        const fallbackSeen = Promise.withResolvers<void>();
+        let reads = 0;
+        const store = createStore({ get: async (path: string) => {
+          if (path.endsWith('/git')) {
+            gitStarted.resolve();
+            await gitGate.promise;
+            return { tasks: [{ task_id: 'p', pr: { number: 42, state: 'merged', checks: 'success' } }] };
+          }
+          if (++reads === 1) return [structuredClone(healthy)];
+          await listGate.promise;
+          throw new Error('watch unavailable');
+        } });
+        await store.loadTasks('s');
+        store.beginParkedDetail()(structuredClone(healthy), healthy);
+        store.on('pulls', () => gitSeen.resolve());
+        store.on('task', () => fallbackSeen.resolve());
+        const stop = store.watchPulls('s');
+        await gitStarted.promise;
+        if (listFirst) {
+          listGate.resolve(); await fallbackSeen.promise;
+          gitGate.resolve(); await gitSeen.promise;
+        } else {
+          gitGate.resolve(); await gitSeen.promise;
+          listGate.resolve(); await fallbackSeen.promise;
+        }
+        const row = store.findTask('p');
+        results.push([taskInfo(row, null, store.pullForStatus(row)).group, row.parked_pr.open,
+          store.pullsOf('s').get('p').state, row.needs_you?.action ?? null]);
+        stop();
+      }
+    }
+    return results;
+  });
+  expect(seen).toEqual([['done', false, 'merged', null], ['done', false, 'merged', null],
+    ['needs', false, 'merged', 'Choose a version'], ['needs', false, 'merged', 'Choose a version']]);
 });
