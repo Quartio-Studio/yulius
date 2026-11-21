@@ -53,38 +53,6 @@ class CompileCache(unittest.TestCase):
         return subprocess.run([tree / "scripts/cargo", "build"], cwd=tree, env=env,
                               start_new_session=True, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
 
-    def test_disposable_target_is_removed_after_success_or_failure(self):
-        self.cargo.write_text('#!/bin/sh\necho "$CARGO_TARGET_DIR"\ntouch "$CARGO_TARGET_DIR/artifact"\nexit "$CARGO_RESULT"\n')
-        env = self.cargo_env(self.sandbox / "home", self.cargo)
-        for status, parent in ((0, self.task / "target"), (7, self.sandbox / "run-scratch")):
-            env.pop("YULIUS_BUILD_SCRATCH", None)
-            if status:
-                env["YULIUS_BUILD_SCRATCH"] = str(parent)
-            result = subprocess.run([self.task / "scripts/cargo", "--scratch-target", "check"],
-                                    env=dict(env, CARGO_RESULT=str(status)), capture_output=True, text=True, timeout=10)
-            self.assertEqual(result.returncode, status, result.stderr)
-            target = Path(result.stdout.strip())
-            self.assertEqual(target.parent, parent)
-            self.assertFalse(target.exists())
-
-    def test_unconfirmed_shutdown_retains_its_target_and_runs_cargo_once(self):
-        root = self.sandbox / "scratch"
-        env = self.caller_fixture("from pathlib import Path\n"
-                                  "target = Path(os.environ['CARGO_TARGET_DIR'])\n"
-                                  "with open(os.environ['RECORD'], 'a') as record: print(target, file=record)\n"
-                                  "(target / 'keep').write_text('build')")
-        env.update(RECORD=str(self.record), YULIUS_BUILD_SCRATCH=str(root))
-        with (self.task / "scripts/compile_cache.py").open("a") as fixture:
-            fixture.write("\ndef stop_build_group(group, requested=None):\n"
-                          "    raise UnreapedBuild('process observation unavailable')\n")
-        result = subprocess.run([self.task / "scripts/cargo", "--scratch-target", "build"],
-                                env=env, capture_output=True, text=True, timeout=5, start_new_session=True)
-        self.assertNotEqual(result.returncode, 0)
-        targets = self.record.read_text().splitlines()
-        self.assertEqual(len(targets), 1)
-        self.assertIn("retained build target " + targets[0], result.stderr)
-        self.assertTrue((Path(targets[0]) / "keep").is_file())
-
     def test_worktree_and_ci_lane_share_only_their_sandbox_store(self):
         import_script = ("print(__import__('json').dumps([os.environ['MBX_CACHE_DIR'], os.getcwd()]), flush=True)\n"
                          "os.execv(os.environ['CARGO'], [os.environ['CARGO'], *sys.argv[1:]])")
@@ -158,6 +126,19 @@ class CompileCache(unittest.TestCase):
             result = self.launch(self.task, self.sandbox / "home", "print('unexpected cache')")
             self.assertEqual(result.stdout, "")
 
+    def test_unfinished_eviction_uses_cargo_until_upkeep_finishes(self):
+        home = self.sandbox / "home"
+        cache = self.sandbox / "rust-compile-cache"
+        dispatch = "print('cached', flush=True); os.execv(os.environ['CARGO'], [os.environ['CARGO'], *sys.argv[1:]])"
+        self.assertEqual(self.launch(self.task, home, dispatch).stdout.strip(), "cached")
+        pending = cache / ".yulius-mbx-pruning"
+        ready = cache / ".yulius-mbx-v1"
+        ready.rename(pending)
+        self.assertEqual(self.launch(self.task, home, dispatch).stdout, "")
+        self.assertEqual(self.record.read_text().splitlines(), ["build", "build"])
+        pending.rename(ready)
+        self.assertEqual(self.launch(self.task, home, dispatch).stdout.strip(), "cached")
+
     def test_interrupted_publication_leaves_the_next_launcher_able_to_initialize(self):
         from unittest.mock import patch
         import compile_cache
@@ -170,15 +151,6 @@ class CompileCache(unittest.TestCase):
         self.assertEqual((cache / ".yulius-mbx-v1").read_bytes(), b"mbx-v1\n")
 
     def test_terminating_the_launcher_stops_its_descendants_and_keeps_the_lease_private(self):
-        self.check_cached_cancellation(scratch=False)
-
-    def test_cancelling_a_cached_disposable_target_reaps_its_backend(self):
-        self.check_cached_cancellation(scratch=True)
-
-    def test_cancelled_cached_build_reaps_a_separate_test_group(self):
-        self.check_cached_cancellation(scratch=True, separate_group=True)
-
-    def check_cached_cancellation(self, scratch, separate_group=False):
         import fcntl
         import select
         import signal
@@ -191,34 +163,24 @@ class CompileCache(unittest.TestCase):
             listener.listen()
             listener.settimeout(5)
             self.cargo.write_text("#!/usr/bin/env python3\nimport os,signal,socket,sys\n"
-                                  + ("if os.fork(): signal.pause(); sys.exit(1)\nos.setpgid(0,0)\n"
-                                     if separate_group else "")
-                                  + "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                                  "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
                                   "s=socket.socket(socket.AF_UNIX);s.connect(sys.argv[2])\n"
-                                  "s.sendall((str(os.getpid())+chr(10)+repr([os.readlink('/proc/self/fd/'+x) for x in os.listdir('/proc/self/fd') "
-                                  "if os.path.exists('/proc/self/fd/'+x)])).encode());signal.pause()")
+                                  "s.sendall(repr([os.readlink('/proc/self/fd/'+x) for x in os.listdir('/proc/self/fd') "
+                                  "if os.path.exists('/proc/self/fd/'+x)]).encode());signal.pause()")
             mbx = self.task / ".tools/bin/mbx"
-            mbx.write_text('#!/bin/sh\n' + ('exec ' if scratch else '') + '"$CARGO" "$@"\n')
+            mbx.write_text('#!/bin/sh\n"$CARGO" "$@"\n')
             mbx.chmod(0o755)
             env = self.cargo_env(home, self.cargo)
-            target_root = self.sandbox / "scratch"
-            env["YULIUS_BUILD_SCRATCH"] = str(target_root)
-            flag = ["--scratch-target"] if scratch else []
-            backend = None
-            proc = subprocess.Popen([self.task / "scripts/cargo", *flag, "run", ready], env=env,
+            proc = subprocess.Popen([self.task / "scripts/cargo", "run", ready], env=env,
                                     stdin=subprocess.DEVNULL, start_new_session=True)
             try:
                 conn, _ = listener.accept()
                 with conn:
-                    pid, descriptors = conn.recv(4096).decode().split("\n", 1)
-                    backend = int(pid)
+                    descriptors = conn.recv(4096).decode()
                     proc.terminate()
                     proc.wait(timeout=8)
                     self.assertTrue(select.select([conn], [], [], 1)[0], "Cargo child survived cancellation")
                     self.assertEqual(conn.recv(1), b"")
-                    backend = None
-                    if scratch:
-                        self.assertEqual(list(target_root.iterdir()), [])
                     self.assertNotIn(str(self.sandbox) + "'", descriptors)
                     lease = os.open(self.sandbox, os.O_RDONLY | os.O_DIRECTORY)
                     try:
@@ -226,11 +188,6 @@ class CompileCache(unittest.TestCase):
                     finally:
                         os.close(lease)
             finally:
-                if backend is not None:
-                    try:
-                        os.kill(backend, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
                 try:
                     os.killpg(proc.pid, signal.SIGKILL)
                 except ProcessLookupError:
@@ -261,14 +218,13 @@ class CompileCache(unittest.TestCase):
         env = self.caller_fixture("print(os.read(int(os.environ['TOKEN_FD']),1).decode())")
         read, write = os.pipe()
         try:
-            for flag in ([], ["--scratch-target"]):
-                os.write(write, b"X")
-                env.update(CARGO_MAKEFLAGS=f"-j --jobserver-auth={read},{write}", TOKEN_FD=str(read))
-                result = subprocess.run([self.task / "scripts/cargo", *flag, "build"], env=env,
-                                        start_new_session=True, stdin=subprocess.DEVNULL, pass_fds=(read, write),
-                                        capture_output=True, text=True, timeout=5)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(result.stdout.strip(), "X")
+            os.write(write, b"X")
+            env.update(CARGO_MAKEFLAGS=f"-j --jobserver-auth={read},{write}", TOKEN_FD=str(read))
+            result = subprocess.run([self.task / "scripts/cargo", "build"], env=env,
+                                    start_new_session=True, stdin=subprocess.DEVNULL, pass_fds=(read, write),
+                                    capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "X")
         finally:
             os.close(read)
             os.close(write)
@@ -279,113 +235,19 @@ class CompileCache(unittest.TestCase):
     def test_a_foreground_command_with_redirected_input_can_read_dev_tty(self):
         self.check_foreground_terminal(redirect_stdin=True)
 
-    def test_disposable_target_read_from_tty_and_cleanup_on_term(self):
-        self.check_foreground_terminal(redirect_stdin=False, scratch=True)
-
-    def test_terminal_ctrl_c_reaps_a_resistant_worker_before_releasing_scratch(self):
-        self.check_terminal_interrupt("signal.SIG_DFL")
-
-    def test_a_handled_terminal_interrupt_reaps_workers_before_releasing_scratch(self):
-        self.check_terminal_interrupt("lambda *_: sys.exit(130)")
-
-    def test_terminal_hangup_preserves_the_cargo_exit_status(self):
-        self.check_terminal_interrupt("signal.SIG_DFL", hangup=True)
-
-    def test_hangup_keeps_scratch_when_worker_shutdown_is_unconfirmed(self):
-        self.check_terminal_interrupt("signal.SIG_DFL", hangup=True, unconfirmed=True)
-
-    def test_foreground_interrupt_reaps_a_worker_in_a_separate_test_group(self):
-        self.check_terminal_interrupt("signal.SIG_DFL", separate_group=True)
-
-    def check_terminal_interrupt(self, handler, *, hangup=False, unconfirmed=False, separate_group=False):
-        import pty
-        import select
-        import signal
-        import socket
-        ready = self.sandbox.parent / "worker.sock"
-        root = self.sandbox / "scratch"
-        env = self.caller_fixture(f"""
-import signal, socket
-signal.signal(signal.SIGINT, {handler})
-if os.fork() == 0:
-    if {separate_group!r}: os.setpgid(0, 0)
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
-    signal.signal(signal.SIGHUP, signal.SIG_IGN)
-    with socket.socket(socket.AF_UNIX) as conn:
-        conn.connect(os.environ["READY"])
-        conn.sendall(str(os.getpid()).encode())
-        signal.pause()
-signal.pause()
-""")
-        if unconfirmed:
-            with (self.task / "scripts/compile_cache.py").open("a") as fixture:
-                fixture.write("\ndef stop_build_group(group, requested=None):\n"
-                              "    raise UnreapedBuild('process observation unavailable')\n")
-        env.update(READY=str(ready), YULIUS_BUILD_SCRATCH=str(root))
-        with socket.socket(socket.AF_UNIX) as listener:
-            listener.bind(str(ready))
-            listener.listen()
-            listener.settimeout(6)
-            pid, terminal = pty.fork()
-            if pid == 0:
-                with (self.sandbox / "launcher.stderr").open("w") as errors:
-                    os.dup2(errors.fileno(), 2)
-                os.execve(self.task / "scripts/cargo", ["cargo", "--scratch-target", "build"], env)
-            worker = None
-            reaped = False
-            try:
-                conn, _ = listener.accept()
-                with conn, os.fdopen(os.pidfd_open(pid), "rb", buffering=0) as launcher:
-                    worker = int(conn.recv(32))
-                    if hangup:
-                        os.close(terminal)
-                        terminal = None
-                    else:
-                        os.write(terminal, b"\x03")
-                    self.assertTrue(select.select([launcher], [], [], 8)[0], "launcher missed terminal signal")
-                    _, status = os.waitpid(pid, 0)
-                    reaped = True
-                    if unconfirmed:
-                        self.assertNotEqual(os.waitstatus_to_exitcode(status), 0)
-                        self.assertIn("retained build target", (self.sandbox / "launcher.stderr").read_text())
-                        self.assertEqual(len(list(root.iterdir())), 1)
-                        return
-                    self.assertEqual(os.waitstatus_to_exitcode(status), 129 if hangup else 130)
-                    self.assertTrue(select.select([conn], [], [], 0)[0], "worker survived launcher exit")
-                    self.assertEqual(conn.recv(1), b"")
-                    worker = None
-                    self.assertEqual(list(root.iterdir()), [])
-            finally:
-                if worker is not None:
-                    try:
-                        os.kill(worker, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                if not reaped:
-                    os.kill(pid, signal.SIGKILL)
-                    os.waitpid(pid, 0)
-                if terminal is not None:
-                    os.close(terminal)
-
-    def check_foreground_terminal(self, redirect_stdin, scratch=False):
+    def check_foreground_terminal(self, redirect_stdin):
         import pty
         import select
         import signal
         import time
         read = "open('/dev/tty').readline().strip()" if redirect_stdin else "input()"
-        env = self.caller_fixture(f"print('ready',flush=True);print('received '+{read},flush=True)" + (";input()" if scratch else ""))
-        args = ["cargo", "test", "--", "--nocapture"]
-        if scratch:
-            root = self.sandbox / "scratch"
-            root.mkdir()
-            env.update(YULIUS_BUILD_SCRATCH=str(root))
-            args.insert(1, "--scratch-target")
+        env = self.caller_fixture(f"print('ready',flush=True);print('received '+{read},flush=True)")
         pid, terminal = pty.fork()
         if pid == 0:
             if redirect_stdin:
                 with open(os.devnull, "rb") as empty:
                     os.dup2(empty.fileno(), 0)
-            os.execve(self.task / "scripts/cargo", args, env)
+            os.execve(self.task / "scripts/cargo", ["cargo", "test", "--", "--nocapture"], env)
         try:
             received = b""
             for expected in (b"ready", b"received X"):
@@ -403,9 +265,6 @@ signal.pause()
                 pass
             os.waitpid(pid, 0)
             os.close(terminal)
-
-        if scratch:
-            self.assertEqual(list(root.iterdir()), [], "cancelled foreground build retained its target")
 
     @unittest.skipUnless(shutil.which("script"), "Linux CI terminal required")
     def test_unattended_ci_caches_inside_the_original_runner_session(self):
