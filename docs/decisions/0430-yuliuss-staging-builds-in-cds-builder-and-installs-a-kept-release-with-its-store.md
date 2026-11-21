@@ -57,6 +57,8 @@ Two places could build it:
   - A second deploy of the running release changes nothing.
   - A lost connection does not stop a switch half way (HUP and PIPE are ignored), and any other
     exit after the stop starts the server again with a binary and store that belong together.
+    When the previous store cannot be put back, the server stays stopped and the run says to
+    restore it by hand: started, it would serve another store or create an empty one.
   - The replaced release is in the kept history before anything stops, so pruning never removes
     the release an interrupted switch goes back to. One CD step runs at a time (a lock on the VM).
 - **Verify proves the release.**

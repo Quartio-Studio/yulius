@@ -29,7 +29,8 @@ did not cause or a cosmetic nit left after 3 rounds is
 filed, saying why it is outside the change.
 
 Require a successful `yulius/ci` status on the exact resulting dev SHA. A task's work
-ends there. Promotion (dev → main, a merge commit, never a squash) is a person's, on the CD
+ends there; with a merge-first staging target (Yulius's own `[cd.dev]`, ADR-0436), once its
+staging request (`cd_deploy`, when `delivery_status` says it is due) was answered. Promotion (dev → main, a merge commit, never a squash) is a person's, on the CD
 page (ADR-0110): a task that needs it asks with `needs_you`. Keep both permanent branches. Do not
 claim CI proves a deployed app works.
 
