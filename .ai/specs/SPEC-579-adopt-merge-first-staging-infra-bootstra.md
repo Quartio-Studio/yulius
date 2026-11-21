@@ -1,6 +1,6 @@
 ---
 yulius-task: 7e391e46-4f3d-4996-a717-5d2ba29db67f
-status: in-progress
+status: done
 ---
 
 # SPEC-579: Adopt merge-first staging (Infra bootstrap revision 1)
@@ -69,7 +69,7 @@ Out of scope:
 - [x] Write and validate SPEC-579 for Infra bootstrap revision 1
 - [x] Record no-shared-target posture in yulius.toml and reconcile AGENTS.md
 - [x] Verify config parsing, repository contracts, and update docs/changes.md
-- [ ] Complete independent review in a fresh session and address findings
+- [x] Complete independent review in a fresh session and address findings
 
 ## Acceptance criteria
 
@@ -94,7 +94,8 @@ Out of scope:
   skill drift, and `cargo fmt --check`).
 - Run `PYTHONPATH=scripts python3 -m unittest test_check_repository test_vidoc_scan` (covers
   `AGENTS.md` instruction contracts and `yulius.toml` TOML parsing).
-- Run `rustup run 1.99.0 cargo test --lib -p yulius-domain spec_format` and
+- Run `rustup run 1.99.0 cargo test --lib -p yulius-domain spec_format`,
+  `rustup run 1.99.0 cargo test --lib -p yulius-app skills::tests`, and
   `rustup run 1.99.0 cargo clippy -p yulius-domain --all-targets -- -D warnings`.
 - Note security scan status: Vidoc is turned off for this project in Yulius (reported as disabled,
   never passed).
@@ -118,9 +119,11 @@ Out of scope:
   - Against `origin/dev:yulius.toml`: failed (exit 101, panicked on old `[cd.dev] about`).
   - Against updated `yulius.toml`: 1 passed, 0 failed.
 - `rustup run 1.99.0 cargo test --lib -p yulius-domain spec_format`: 60 passed, 0 failed.
+- `rustup run 1.99.0 cargo test --lib -p yulius-app skills::tests`: 22 passed, 0 failed (verifies `AGENTS.md` instruction contracts).
 - `rustup run 1.99.0 cargo clippy -p yulius-domain --all-targets -- -D warnings`: passed cleanly.
 - `scripts/dev quick`: passed (`Repository contracts passed: 16 crates, 7 skills, local Markdown links, no conflict markers, unique decision numbers, delivery instructions, UI design tokens, one product test binary`; `cargo fmt --all -- --check` clean).
 - `PYTHONPATH=scripts python3 -m unittest test_check_repository test_vidoc_scan`: 135 tests passed (`OK`).
 - `scripts/dev security`: `Security scan disabled: Vidoc is turned off in Yulius, for this project or the whole instance; nothing was scanned.` (disabled, not passed).
 - `spec_check`: `docs: valid: true`, `spec: valid: true`.
+- Independent review (fresh read-only session, Gemini 4 Neon (High)) of exact head `ee0617985917680d81b3d441e850dd097ac67d65`: verdict **approve**; 1 minor own-code doc finding (add `yulius-app` `skills::tests` to `Evidence`), addressed above (0 product lines changed after approval).
 - Full gate (`quality`, `test` shards 1/2 & 2/2, `e2e`, `security` skipped): verified by Yulius CI on the pull request head before merge.
