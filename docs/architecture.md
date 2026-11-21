@@ -3838,7 +3838,10 @@ Capture and deposit have fifteen seconds, concurrent with five seconds to drain 
 responses. The successor restores the original sockets, copy cursors, admission owners, last
 activity and expiry before serving new HTTP requests. Intercepted connections close at restart.
 Fresh connections use the successor's host-bound injection and redaction policy. Continuity
-through a namespace holder also requires its matching outbound relay.
+through a namespace holder also requires its matching outbound relay. The manager registers
+each live holder’s outbound copies in its existing admission table. On orderly shutdown it
+stops new admissions. A capture selects the original internal TCP endpoints and sandbox,
+and returns the connected Unix and TCP sockets with their copy cursors.
 [ADR-0413](decisions/0413-a-bounded-helper-holds-connected-tunnel-sockets-between-servers.md)
 The proxy also counts each connection's run (agent run, CI job, Superagent shell). When nothing was
 idle for 5 minutes, a full sandbox share takes the oldest connection of its busiest other run, and

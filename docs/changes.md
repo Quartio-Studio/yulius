@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- During orderly Linux server shutdown, live sandbox outbound relays stop accepting new connections without reporting a capacity warning. An admitted copy can return its original sockets, pending bytes and write-half state for restart. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
+
 - A running task whose first PR watch occurs during a live merge queue decision still hears about the resulting merge once. Check-ins wait for the queue (SPEC-558).
 - On Linux in legacy mode, established opaque HTTP/1.1 CONNECT tunnels retain the agent’s original TCP peers and queued bytes across an orderly server restart. Multiplexed HTTP/2 sessions to the proxy reconnect. Intercepted connections reconnect through the host-bound secret policy. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
 

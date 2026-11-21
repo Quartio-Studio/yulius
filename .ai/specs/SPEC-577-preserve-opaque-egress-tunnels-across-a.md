@@ -56,8 +56,11 @@ new request after the old sockets reach EOF. The issue requires the original con
 - [x] Preserve original terminal receive queues and isolate connection loss during custody
 - [x] Obtain independent approval for terminal socket custody
 - [x] Obtain independent approval for the proxy restart slice
-- [ ] Hand established opaque connections and matching relay sockets to the restarted server
-- [ ] Verify same-socket continuity, admission limits and intercepted traffic through restart
+- [x] Hand established opaque connections and matching relay sockets to the restarted server
+- [x] Verify same-socket continuity, admission limits and intercepted traffic through restart
+- [x] Quiesce outbound relay admissions without recording a capacity refusal
+- [x] Obtain independent approval for the holder relay lifecycle slice
+- [ ] Restore matched proxy and relay pairs on the delivered holder lifecycle
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
@@ -463,3 +466,140 @@ without adoption support or a remote peer that times out can end a tunnel.
   selected baseline tests. Of 129 mutations, 77 were caught and 52 were unviable.
   None were missed, timed out or unreached. The follow-up on the protocol documentation
   changed no Rust lines.
+- PR #1570 landed at dev squash `49009e859` with the reviewed `f490cb8bd` tree.
+  PR run `899f3cd7-213f-4bbf-9c1c-af4528e50278` and dev run
+  `02535bf9-dbcc-449b-961b-3ef0e68a2452` passed quality, both test shards and e2e.
+  The security scan was disabled.
+  [Dev verification](https://yulius.quartio.ai/api/tasks/35adb14d-65fe-4a9f-b9fa-370d776d4139/delivery/evidence/49009e85931be97c15fdd40873f9ec95b26ce54b?run_id=02535bf9-dbcc-449b-961b-3ef0e68a2452)
+### Holder integration rehearsal and separated deliveries
+
+The following results cover the assembled holder and proxy candidate. The holder relay
+registers and captures original connections in the first delivery. The successor's
+matched relay and proxy restoration has its own review and CI.
+
+- On the direct-only implementation, the real holder's retained client read EOF after
+  the successor became ready. The frozen-client regression failed again with BrokenPipe
+  in 0.38 seconds before integrating the holder change. The destination listener accepts
+  once and closes. A separate regression lost the healthy original tunnel when another
+  destination reset during the gap.
+- The namespace-mode server captures the opaque proxy copy together with its original
+  outbound relay. At adoption it checks the matching internal TCP endpoints, common
+  deadline and live holder record. It restores proxy and relay accounting before new
+  admissions. Two terminal-queue regressions first failed with NotConnected after both
+  FINs. The old internal link recorded while connected identifies the verified terminal
+  socket, which can still hold final application bytes.
+- In an isolated rehearsal the nine Linux `opaque_restart::` tests passed, including all
+  four opt-in namespace cases. Two independent server processes used the production
+  holder forward and manager's out.sock. One test kept the client stopped in the kernel
+  through successor readiness, then delivered the complete ordered 1 MiB reply on its
+  original socket after a partial write in the restart gap. Another lost a destination
+  while its healthy sibling delivered queued and fresh bytes on both original peers.
+  The holder fixtures supply a live process and its actual namespace identities, a
+  synthetic record and subordinate ID maps. Nested holder creation and the systemd
+  cgroup freezer require a host with those facilities. The test uses SIGSTOP/SIGCONT.
+- A separate synthetic TLS origin negotiated HTTP/2 inside an opaque HTTP/1.1 CONNECT
+  through the holder, accepted one TLS session and kept its original request and response
+  stream through the two-server restart. Over the intercepted route, an echoed synthetic
+  credential was redacted in both response headers and body. Only the bound origin received
+  its injected value before and after restart. The unbound origin received the placeholder.
+  The old intercepted stream closed, an invalid token received 407, and a fresh live
+  synthetic attempt reconnected through both host policies.
+- On the task branch based on dev `49009e859`, the nine real Linux restart tests passed
+  in 9.51 seconds, including all four holder cases. The separate eight-case holder
+  matrix and the inner TLS/HTTP/2 transfer passed. The domain, sandbox and egress
+  nextest suites passed 934 tests with two host-dependent cases skipped. The two
+  server-wiring tests passed, including a mixed batch that arrived out of order.
+  Each retained copy had both original internal endpoints and a common deadline.
+  Dropping unmatched records closed their original external peers.
+- Independent holder review at `8637b3b97` passed the nine restart fixtures and
+  reproduced a connection loss after a surviving holder's network helper changed PID.
+  The manager persists that PID during upkeep without replacing the Unix forward.
+  The new native regression uses two fixture-owned helper processes, updates the saved
+  PID before opening CONNECT, and then restarts the server. The original client received
+  EOF on the reviewed server in 0.52 seconds. Restoration now tolerates a changed helper
+  PID while checking the holder's generation, boot and live namespaces. All nine
+  restart tests and 934 domain, sandbox and egress tests passed after the correction.
+- The reviewer also found that the idle-eviction test assumed five minutes of host uptime.
+  An isolated monotonic clock starting one second after boot reproduced the failure at
+  the idle-place assertion. The corrected test drives the restored table to one millisecond
+  before the five-minute floor, then to its boundary. It checks that the active peer stays
+  admitted. All four holder relay tests passed with the young clock.
+- A distinct-binary upgrade in the holder fixture used the same HTTP/1.1 CONNECT and TLS
+  session through both server processes. The HTTP/2 origin accepted once, delivered
+  the gap bytes, accepted more request bytes and sent the final reply. Both binaries
+  supported the namespace handoff format.
+- Second independent review at `0d597e184` passed the nine restart cases, four relay
+  tests and six proxy tests. It identified two copies that could hold separate admission
+  places after explicit cancellation. Two new reduced-limit fixtures reproduced both
+  directions. Dropping the relay manager left an idle proxy place, and evicting a
+  one-place proxy left an idle relay place. Both failures occurred with the external
+  peers' write halves still open. The replacement now links the cancellation of these
+  two tasks. An ordinary FIN or orderly capture still lets the other copy drain.
+- The focused mutation run on the network-helper identity correction listed one mutation.
+  The change could not compile because the restored record has no default. The baseline
+  passed and the run reported zero missed, timed out or unreached.
+- With the two restored host-side copies sharing administrative cancellation, both
+  reduced-limit regressions passed. The nine real restart cases still passed, including
+  terminal replies and capture through another update. One original connection also
+  survived four consecutive restarts, exchanging queued and fresh bytes with each of five
+  distinct server processes. It delivered both final FINs. The synthetic intercepted-host
+  matrix and the distinct-binary TLS/HTTP/2 upgrade passed.
+- Additional fixtures cover duplicate restore records, stale namespaces, changed internal
+  endpoints and a late holder registration during shutdown. A strict namespace startup
+  check exercises the holder forward on an eligible host and requires the documented
+  missing-prerequisite diagnostic on an ineligible host. The disposable namespace suite
+  ran all ten cases, including that positive startup check, in 12.10 seconds. The task
+  host passed the prerequisite diagnostic. Six focused relay tests and four server-wiring
+  tests passed.
+- The third review of the combined holder change approved the earlier corrections and
+  independently passed all ten native restart cases, six relay, four wiring and six
+  egress handoff tests. It found one remaining defect. Two empty stopping relays
+  emitted the 256-place capacity warning and incremented the process-wide drop count
+  from zero to two. A subprocess regression reproduced both the warning and the count.
+  Admission now distinguishes a stopped table from a full table under the same lock.
+  The regression passed with a zero delta and quiet stderr. The live relay capture
+  and the successor's matched restore are separate deliveries.
+- The original integrated candidate listed 109 mutations. The first run caught 62,
+  missed 10 and found 37 unviable. All were reached with zero timeouts. On the corrected
+  candidate, the strict startup test caught the missing-manager substitution. The
+  isolated relay checks caught the other nine substitutions in endpoint verification,
+  holder validation, registration cleanup, stopping and adoption. Across 63 relay
+  mutations this focused run caught 48 and found 13 unviable. Two changes to paired
+  cancellation survived the sandbox-only tests. The service-level cancellation run
+  caught both of them and all 12 mutations on the cancellation change, with zero
+  missed, timed out or unreached.
+
+
+### Holder admission and capture slice
+
+- With a synthetic HTTP response held open and the old public listener closed after
+  SIGTERM, dev `49009e859` accepted a fresh connection on the real holder's `out.sock`.
+  Its peer timed out waiting for EOF. The stopping server now closes the late Unix
+  connection immediately. The same isolated real-server fixture observed quiet stderr.
+- Three holder relay fixtures captured the original Unix and TCP sockets once, preserved
+  the final internal receive queue after both FINs, and exercised replacement and late
+  registration against an empty stopping table. The process-wide capacity count stayed
+  unchanged. The successor's joined relay and proxy restoration has a separate delivery.
+- Independent review of `25118872c` found that two admitted relays could have the
+  same internal addresses after a terminal TCP tuple became reusable. A synthetic two-place
+  table reproduced capture choosing the first entry. Capture now requires a unique match
+  and leaves both controls intact on ambiguity. The reviewer also requested proof that
+  application bytes already read from TCP survive a blocked Unix write. Filling the Unix
+  send queue and observing the TCP receive queue empty made that state deterministic.
+  Substituting an empty copy state in the reviewed code failed the saved-suffix assertion.
+  All five relay cases passed with the real captured state, including the complete ordered
+  reply and FIN on the original client.
+- A fresh reviewer approved `f7897c77c` and passed all five holder capture fixtures,
+  the host prerequisite case and 56 relay tests serially. The committed SIGTERM test
+  failed on dev in 2.91 seconds because the old server admitted a late relay. The six
+  isolated Linux cases passed on the candidate in 8.02 seconds. The broader domain,
+  sandbox and egress suites passed 934 tests with two environment-dependent skips.
+  Scoped Clippy and quick checks passed. Vidoc was disabled.
+- One concurrent review run hit `AddrInUse` in the older forward capacity fixture. The
+  fixture releases an ephemeral listener before binding the same address again on dev
+  `d95fb3f5f`. [Issue #1572](https://github.com/Quartio-Studio/yulius/issues/1572)
+  tracks the separate fixture correction.
+- `scripts/dev mutants` against dev for the holder admission slice reached all
+  69 mutations in 18 minutes. It caught 30 and found 39 unviable. The follow-up
+  against the reviewed head for the unique-link correction reached all six mutations,
+  caught two and found four unviable. Both runs reported zero missed or timed out.

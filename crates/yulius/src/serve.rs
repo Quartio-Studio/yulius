@@ -724,7 +724,17 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
         &app.config.internal_url,
     )
     .into_make_service_with_connect_info::<SocketAddr>();
-    let shutdown = futures::FutureExt::shared(shutdown_signal());
+    #[cfg(target_os = "linux")]
+    let outbound_relays = isolation
+        .as_ref()
+        .map(|manager| Arc::clone(&manager.outbound_relays));
+    let shutdown = futures::FutureExt::shared(async move {
+        shutdown_signal().await;
+        #[cfg(target_os = "linux")]
+        if let Some(relays) = outbound_relays {
+            relays.stop_admissions();
+        }
+    });
     let public_task = axum::serve(public.tap_io(no_delay), public_router)
         .with_graceful_shutdown(shutdown.clone());
     #[cfg(target_os = "linux")]
