@@ -44,6 +44,12 @@ Run the terminal and web suites, the repository quick checks and Yulius CI.
 
 ## Decisions
 
-Use the existing Copy, Paste and Select all menu. Choosing Paste explicitly gives the
-browser permission to request clipboard text. The terminal already receives the session’s
-harness in its state message. The Codex PTY needs only ordinary paste input.
+Use the existing Copy, Paste and Select all menu. Choosing Paste explicitly requests
+clipboard text from the browser. The terminal already receives the session’s
+harness in its state message. The Codex PTY needs only ordinary paste input. [ADR-0421](../../docs/decisions/0421-codex-right-click-opens-the-viewers-clipboard-menu.md)
+
+## Evidence
+
+- An isolated Codex CLI 0.170.0 PTY with a synthetic login and no display printed “clipboard text is unavailable” after an SGR right-button press and release. Sending bracketed text to the same PTY inserted it in the composer.
+- Before the fix, the Chromium regression failed because the Paste menu item was absent. After the fix, the Codex right-click, Claude clipboard and read-only paste cases all passed. The Codex test observed one bracketed multiline paste at the socket and the native shortcut hint after a denied read.
+- A separate Chromium run with clipboard permission wrote a marker through the real Clipboard API. Right-click and Paste placed that marker once in the mock Codex task draft.

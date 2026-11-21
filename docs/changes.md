@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-21
 
+- A plain right-click in a Codex terminal opens the clipboard menu. Paste now uses the viewer’s clipboard, fixing “clipboard text is unavailable” on headless sandboxes. [SPEC-582](../.ai/specs/SPEC-582-fix-clipboard-on-codex.md)
+
 - After a restart, a failed single-PR merge train reports its recorded job failure once to the original task. The watcher checks for repairs, reruns and human decisions before sending it (SPEC-558).
 
 - The staging line in `delivery_status` names the fix's revision as due after a failed request, and carries each request's next step. Reading the merge-first target fetches the clone only when it lacks the verified head. [SPEC-575](../.ai/specs/SPEC-575-make-task-local-testing-and-one-staging.md)
