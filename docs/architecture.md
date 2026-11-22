@@ -2169,7 +2169,7 @@ If the server restarted between writing the attempt’s ID and writing its sessi
 resume path recovers the ID from the parked attempt. If capacity holds a resume, an unreadable
 rollout history leaves its pause and prompt in place for the next capacity round.
 
-The PR watcher can resume a parked owner for a failed single-PR integration candidate. It reuses the live watcher’s saved decision. After preparing the launch, the watcher releases the launch lock to check the published head, integration base and ordinary CI. Under the merge writer, SQLite binds the start to the parked attempt, PR and recorded decision. The transaction also checks ordinary CI for that head, checks for a human request and validates the subscription against the task’s current model. If the launch slot or subscription is busy, the next watch verifies the failure again. If the subscription disappears before spawn, ending the unspawned attempt and restoring the park commit together. A restarted server can retry with the original screen and goal.
+A parked PR owner keeps its recorded integration verdict on its delivery. A person can resume the session with its original conversation, screen and goal, including after an earlier attempt lost its subscription before spawn.
 
 Each parked task read includes the latest attempt ID from the same SQLite snapshot. A resume carries that ID through permission and account checks, including when a bulk operation, Telegram reply or remote restart first resolves the target. Under the launch lock it checks that the same attempt is still parked before restoring Codex lineage, starting a process or queueing its prompt.
 
@@ -2189,12 +2189,8 @@ status so it shows the calm parked banner (distinct from a crash or operator sto
 the exact saved provider session and worktree through `start_run` with `RunStart::Resume` on
 `task_message`, `Resume`, `Reply` (`POST /api/tasks/{tid}/continue` with optional `prompt`), or
 ordinary owner terminal input; bare interrupts/scroll, non-owners, and operator-stopped/crashed
-tasks never auto-wake. `pr_watch` also wakes parked tasks once per actionable PR/CI event (failed
-or errored CI, green unarmed CI, conflict, failed repair publication, or merge with open work),
-never while CI is still running or a human decision (`needs_you`, `NeedsAttention`, held prompt,
-browser request) is open
-([SPEC-553](../.ai/specs/SPEC-553-publish-committed-ci-repairs-to-open-tas.md),
-[decision 0391](decisions/0391-publish-committed-ci-repairs-to-open-task-prs.md)); at the limit the
+tasks never auto-wake. PR and staging outcomes remain on their delivery. Only a person
+resumes a parked task ([ADR-0450](decisions/0450-attribute-integration-test-failures-in-first-parent-order.md)); at the limit the
 resume waits `queued` with its prompt. A queued task's summary carries `queue_reason` (the session
 limit or an update), and `GET /api/capacity` counts working, idle, parked and queued sessions for
 the Capacity card.
@@ -2243,7 +2239,7 @@ tick.
 ```mermaid
 stateDiagram-v2
   running --> parked: idle past the grace period, nothing goes on (session ended)
-  parked --> starting: task_message, Resume/Reply, owner terminal input, or actionable PR/CI wake (same session)
+  parked --> starting: task_message, Resume/Reply, owner terminal input, (same session)
   parked --> queued: resume at the session limit
   parked --> closed: archive or close
   parked --> stopped_cancelled: Stop
@@ -3276,6 +3272,11 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
   `candidate/<sha>` run queued for it, judges it. A run that skipped the full suite judges
   nothing. `dom::plan` counts a candidate run as testing its commit and never supersedes it.
   Inventory includes retained full integration and candidate runs and configuration refusals at the current integration head after unrelated PR runs fill its planning window. An active staging candidate defers admission of a new integration suite.
+- When a test fails, first-parent gate evidence identifies its origin. Candidate runs are queued
+  one at a time. The queue records inherited tests and completes those requests in revision
+  order once a verified deployment contains them. One available worker owns the red branch.
+  Other workers receive the assignee's number. CI and Status offer a rerun or a new task when
+  no worker is available. [ADR-0450](decisions/0450-attribute-integration-test-failures-in-first-parent-order.md)
 - **Pick.**
   - Revisions are ordered by their first-parent position on the verified head
     (`Git::first_parent_position`, in the CD mirror).
@@ -3291,11 +3292,11 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
 - **Failure.** A failed deploy is restored: each part's current kept release is redeployed and
   verified once (`CdRequest::Restore`, a rollback run).
 - **Told and shown.**
-  - An idle task with an untold staging request shows which part of delivery it awaits. The
-    staging queue wakes a running or parked agent when that request is decided. Each stage change
+  - A running task with an unfinished step shows which part of staging it awaits. The queue
+    delivers its verdict to that session. Finished tasks show the receipt on their page and in lists. Each stage change
     updates the task view. If the summary exceeds its budget, sandbox viewers receive a resync.
     [ADR-0437](decisions/0437-the-staging-request-keeps-its-task-waiting-until-the-outcome-is-delivered.md)
-  - `tell_staging_outcomes` types each task's outcome into its session once.
+  - `tell_staging_outcomes` sends delivery outcomes to working sessions once.
   - `delivery_status` tells a merged task its request is due, then where it stands
     (`staging_note`).
   - `cd_status` and the CD page (`CdEnvironment.staging`) list the queue with revisions and run

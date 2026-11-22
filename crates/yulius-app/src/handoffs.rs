@@ -917,7 +917,7 @@ impl App {
     /// HOF-005, from the background tick: tells each created handoff's source task its target's
     /// outcome once the target ended, is Done or merged. Nothing is typed while a person must act
     /// in the source first, it is paused or an update holds starts (tried at the next tick); a
-    /// parked source is resumed with it; a source or target that ended or is gone is not told.
+    /// parked or finished source retains the handoff without session input.
     pub async fn tell_handoff_outcomes(self: &Arc<Self>) -> usize {
         let Ok(untold) = self.deps.store.untold_handoffs().await else {
             return 0;
@@ -953,7 +953,11 @@ impl App {
             } else {
                 continue;
             };
-            if source.status.is_resting() {
+            if source.status.is_resting()
+                || source.status == TaskStatus::Parked
+                || matches!(self.accepts_machine_notice(&source.id).await, Ok(false))
+                    && source.status == TaskStatus::Running
+            {
                 let _ = store.mark_handoff_told(&h.id).await;
                 continue;
             }
@@ -992,10 +996,6 @@ impl App {
             );
             let text = self.redact_for_sandbox(&source.sandbox_id, &text).await;
             let delivered = match source.status {
-                TaskStatus::Parked => self
-                    .resume_parked(&source, Some(text))
-                    .await
-                    .unwrap_or(false),
                 TaskStatus::Running => {
                     let paste = format!(
                         "\x1b[200~{}\x1b[201~",

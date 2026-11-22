@@ -53,7 +53,7 @@ Running each candidate once in order preserves evidence of mixed failures and ac
 
 ## Evidence
 
-The ownership and staging results below were measured on the combined implementation before the delivery split. The first pull request carries the CI inventory changes.
+The ownership and staging regressions first ran on the combined implementation. The inventory delivery landed in PR #1675 at `3309d1e18` after Yulius CI run `bd6bb7cb-0438-4c81-98bb-5339713ff481` passed.
 
 - Before the change, the integration fixture failed on the first receipt. Its message named only the job `full` even though CI retained the test `delivery::gate`. The closed-owner fixture failed because the project returned no notice.
 - The Chromium notice test failed on the missing test name in the CI page. With the notice in both views, it passed and followed the Status link to the existing rerun action.

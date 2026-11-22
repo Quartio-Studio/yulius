@@ -39,7 +39,9 @@ mod environment;
 mod exec;
 mod findings;
 mod flaky;
+mod gate_history;
 pub use flaky::Noted;
+pub use gate_history::{GateJob, GateRead, GateVerdict, RepairRecipient};
 pub mod hygiene;
 mod opening;
 pub use opening::PullOpening;
@@ -282,7 +284,8 @@ pub fn run_for_pull_head(runs: &[CiRunRecord], pr: u64) -> Option<&CiRunRecord> 
 
 /// Test names retained by a cancelled sibling of a failed job (SPEC-566).
 /// The reason is written by the CI runner; other cancellation causes carry no observation.
-pub(crate) fn sibling_failure_names(reason: Option<&str>, kept: &str) -> Vec<String> {
+#[must_use]
+pub fn sibling_failure_names(reason: Option<&str>, kept: &str) -> Vec<String> {
     match reason
         .and_then(|why| why.strip_prefix("stopped early: job "))
         .and_then(|why| why.strip_suffix(" failed"))
@@ -2416,6 +2419,7 @@ impl App {
                 )
             });
         Ok(CiOverview {
+            gate_notices: self.project_gate_notices(&sandbox).await?,
             gate: view.gate.as_ref().map(gate_view),
             gate_problem: view.problem,
             gate_fallback: view.fallback,

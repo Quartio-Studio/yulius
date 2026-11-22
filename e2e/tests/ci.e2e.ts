@@ -450,3 +450,14 @@ test('an invalid yulius.toml on dev runs its last valid gate and says so (SPEC-5
   // Each run judged by it says so.
   await expect(screen.getByText(/judged by the integration branch's last valid yulius\.toml/)).toBeVisible();
 });
+
+test('a project gate notice in CI and Status opens the run that a writer can repeat', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci', '&gate_notice=1'));
+  await expect(screen.getByText(/delivery::gate failed at 7713224a587f.*task #12/)).toBeVisible();
+  await browser.locator('.btn-status').click();
+  const panel = screen.getByRole('dialog', 'Status');
+  await expect(panel.getByText(/delivery::gate failed at 7713224a587f.*task #12/)).toBeVisible();
+  await expect(panel.getByRole('link', 'Start a task')).toHaveAttribute('href', /s\/studio/);
+  await panel.getByRole('link', 'Review and run again').click();
+  await expect(screen.getByRole('region', 'CI run').getByRole('button', /^Run again/)).toBeVisible();
+});

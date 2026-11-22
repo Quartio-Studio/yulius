@@ -163,13 +163,12 @@ With a merge-first staging target (a dev-stage `[cd.<name>]` with `merge_first =
   your sandbox.
 - Once your whole delivery merged (every pull request of the task), ask for staging once (in
   Yulius: `cd_deploy` of that environment).
-- After asking, your task is done: do not keep the session waiting for the staging run, and open no
-  pull request only to record its result (the task's delivery evidence holds it; instance policy of
-  2026-11-21). Yulius tells the task when the gate, the deploy or the verification of its revision
-  fails: only then fix it forward.
-- Yulius runs the full gate on exactly your merged revision, then deploys and verifies it in
-  revision order. A failing gate leaves staging on its last verified release and tells you which
-  check failed: fix it forward with a new pull request, merge it and ask again.
+- After asking, your finished task retains its staging outcome on its delivery. If a finished
+  task receives a typed outcome, answer in one line and change nothing. Only a person reopens its work.
+- A task still at work repairs a red integration branch before it delivers when nobody else has
+  the repair. Yulius names one working task to repair it and tells the other workers who has it.
+  Leave an assigned repair to its owner. If nobody is working, project CI and Status offer a
+  person a rerun or a new task. Staging verifies the fix and serves the inherited requests.
 - Production is promoted only from the revision staging verified.
 
 A merge deploys nothing by itself. CD (deployment) is its own mechanism, like CI: the project's `[cd.dev]`

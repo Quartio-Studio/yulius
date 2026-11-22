@@ -5,6 +5,7 @@
 // `?run=<id>`, the link of the `yulius/ci` commit status (SPEC-238: a view, not a dialog); Run
 // again lives there, not on every card (SPEC-258).
 
+import { gateNotices } from '../gatenotices.js';
 import { enc } from '../api.js';
 import { h, badge, itemCard, emptyState, setChildren, placeholder, toast, errorToast, confirmDialog, pollPaused, icon, bar, drawShape } from '../dom.js';
 import { relLong, dateTime, duration, plural, shortSha } from '../format.js';
@@ -157,7 +158,7 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
   }
 
   function renderOverview(overview) {
-    const parts = [];
+    const parts = gateNotices(sandbox, overview.gate_notices, overview.can_run);
     if (overview.status_access) parts.push(h('div', { class: 'banner banner-info', role: 'status' }, icon('shield', { size: 16 }), h('span', { class: 'banner-text' }, overview.status_access)));
     const workflows = overview.actions_workflows || [];
     if (workflows.length) {

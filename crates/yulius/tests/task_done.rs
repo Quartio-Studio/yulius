@@ -5198,6 +5198,10 @@ fn a_goal_cleared_while_a_retry_is_armed_leaves_the_task_waiting() -> TestResult
         .await?;
         let seen = activities_until(&app, &id, Activity::Waiting, Duration::from_secs(20)).await?;
         assert_eq!(seen.last(), Some(&Some(Activity::Waiting)));
+        assert!(
+            crate::staging::red_gate_needs_people(&app, &sandbox, &user).await?,
+            "a cleared goal leaves the red branch with the project"
+        );
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -7925,7 +7929,7 @@ fn a_hand_over_during_a_launch_restarts_a_run_holding_personal_mcp_servers() -> 
 }
 
 /// SPEC-487 CHN-002 (13 November 2026: #466, #467 and #468 were started "after #465" while it
-/// went from one merged slice to the next): a merged pull request makes a running task Done only
+/// went from one merged slice to the next): a merged slice with explicit work left makes a running task Done only
 /// once the task was told of the merge and the turn that news starts has ended. A task chained
 /// after it waits through all of it: while the news is not typed, and (review round 1, H1) while
 /// it is typed and its turn has not begun. Real hooks: the prompt hook of the news is held at
@@ -7974,6 +7978,7 @@ fn a_chained_task_waits_until_its_predecessor_heard_of_its_merge() -> TestResult
             activity(&app, &id).await == Some(Activity::Waiting)
         })
         .await?;
+        crate::pr_watch::leave_verification_step(&app, &id).await?;
         let open = DeliveryRecord {
             task_id: id.clone(),
             stage: DeliveryStage::PrOpen,
@@ -8001,7 +8006,7 @@ fn a_chained_task_waits_until_its_predecessor_heard_of_its_merge() -> TestResult
         };
         assert_eq!(status().await, Some(TaskStatus::Chained));
 
-        // Merged while its agent is idle with nothing open: what read Done at once.
+        // Merged while the verification step is still open.
         let merged = DeliveryRecord {
             stage: DeliveryStage::MergedIntegration,
             updated_at: app.now(),
@@ -8040,6 +8045,10 @@ fn a_chained_task_waits_until_its_predecessor_heard_of_its_merge() -> TestResult
         assert_eq!(waits().await?, (Some(Activity::Waiting), true));
 
         // That turn runs and ends: Done, and the chain goes on by the turn's end alone.
+        app.deps
+            .store
+            .replace_steps(&id, &[], "person", app.now())
+            .await?;
         let _ = go_on.send(());
         wait_for(
             "the chained task's start",
@@ -8112,6 +8121,7 @@ fn news_typed_while_a_turn_runs_is_due_until_its_own_turn() -> TestResult {
             activity(&app, &id).await == Some(Activity::Waiting)
         })
         .await?;
+        crate::pr_watch::leave_verification_step(&app, &id).await?;
         let open = DeliveryRecord {
             task_id: id.clone(),
             stage: DeliveryStage::PrOpen,
@@ -8179,6 +8189,10 @@ fn news_typed_while_a_turn_runs_is_due_until_its_own_turn() -> TestResult {
         assert!(app.task_summary(&predecessor).await?.yulius_wait);
 
         // The news' turn runs and ends: the chain goes on.
+        app.deps
+            .store
+            .replace_steps(&id, &[], "person", app.now())
+            .await?;
         std::fs::write(&may_turn, b"")?;
         // (That turn's own end may look before its lines were read: the watch's next pass, run
         // here as its 20 s loop would, lets the chain go on.)
@@ -8260,6 +8274,7 @@ fn queued_news_stays_due_while_another_entry_gets_its_turn_first() -> TestResult
             activity(&app, &id).await == Some(Activity::Waiting)
         })
         .await?;
+        crate::pr_watch::leave_verification_step(&app, &id).await?;
         let open = DeliveryRecord {
             task_id: id.clone(),
             stage: DeliveryStage::PrOpen,
@@ -8348,6 +8363,10 @@ fn queued_news_stays_due_while_another_entry_gets_its_turn_first() -> TestResult
 
         // The news' own turn runs and ends: the chain goes on (at the watch's next pass when
         // that turn's own end looked before its lines were read).
+        app.deps
+            .store
+            .replace_steps(&id, &[], "person", app.now())
+            .await?;
         std::fs::write(&may_hand, b"")?;
         wait_for(
             "the chained task's start",

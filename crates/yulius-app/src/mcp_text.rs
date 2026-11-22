@@ -976,6 +976,9 @@ fn waits_why(task: &Value) -> Vec<String> {
     if let Some(stage) = text(task, "staging_wait") {
         parts.push(stage.to_owned());
     }
+    if let Some(stage) = text(task, "staging_outcome") {
+        parts.push(stage.to_owned());
+    }
     if text(task, "shows") == Some("needs_you") {
         parts.push("NEEDS ITS PERSON".to_owned());
         if let Some(reason) = text(task, "wait_reason") {

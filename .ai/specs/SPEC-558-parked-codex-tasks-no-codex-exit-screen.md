@@ -92,7 +92,7 @@ Use the fake Codex executable, its rollout, real PTY shutdown and the applicatio
 
 ## Decisions
 
-An automatic continuation for a parked PR owner verifies the recorded integration decision before launching. A human decision or unavailable capacity leaves the original session parked. The next watcher pass checks the PR again before delivering a prompt.
+SPEC-612 supersedes the automatic continuation delivered by this spec. The parked PR owner retains its recorded integration decision and a person can resume its original session.
 
 Parking and a replacement merge request share the task’s merge writer at admission. If the writer is busy or a merge is armed, the idle pass leaves the session live. Once the park commits, a new merge request checks the committed run and durable task state before it can arm. Stop, close, or loss can settle that same run and release its park marker. Final admission checks the attached attempt while holding the end-intent lock. An exit reader already settling the run takes precedence over an earlier idle observation.
 
