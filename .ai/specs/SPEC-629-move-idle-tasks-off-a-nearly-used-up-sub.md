@@ -96,7 +96,7 @@ What Yulius does today (SPEC-001 ROT-003/004/007/010, SPEC-447, SPEC-611):
 - [x] Place new tasks off subscriptions past a per-harness threshold
 - [x] Decide idle moves in the domain: move, stay, or nothing has room
 - [x] Pin a task to the subscription a person chose
-- [ ] Move idle tasks off a subscription past the threshold every two minutes
+- [x] Move idle tasks off a subscription past the threshold every two minutes
 - [ ] Tell each move and each task that cannot move, once
 - [ ] Document the rebalance in product, operations, architecture and changes
 - [ ] Pass the independent review of the exact head
