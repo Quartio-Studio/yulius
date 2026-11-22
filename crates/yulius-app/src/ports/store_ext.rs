@@ -1009,16 +1009,19 @@ pub trait WatchStore: Send + Sync {
     async fn watch_run_started(&self, id: &str, run_id: &str, at: Timestamp) -> AppResult<bool>;
     /// Records the end of run `run_id`: its state, its end of the watch and its pending posts, in
     /// one transaction; `false` (nothing written) when that run is not the watch's going run.
-    async fn watch_run_ended(&self, id: &str, run_id: &str, end: &WatchRunEnd)
-    -> AppResult<bool>;
+    async fn watch_run_ended(&self, id: &str, run_id: &str, end: &WatchRunEnd) -> AppResult<bool>;
     /// Every pending post, oldest first.
     async fn watch_pending(&self) -> AppResult<Vec<WatchPending>>;
     /// Keeps `pending`, replacing the pending post of its watch and key.
     async fn put_watch_pending(&self, pending: &WatchPending) -> AppResult<()>;
     /// Drops a pending post once it was stored, only while it is the one queued at `queued_at`
     /// (a newer one of the same key stays).
-    async fn drop_watch_pending(&self, watch_id: &str, key: &str, queued_at: Timestamp)
-    -> AppResult<()>;
+    async fn drop_watch_pending(
+        &self,
+        watch_id: &str,
+        key: &str,
+        queued_at: Timestamp,
+    ) -> AppResult<()>;
     /// Counts a post on its watch.
     async fn watch_posted(&self, id: &str, at: Timestamp) -> AppResult<()>;
 }

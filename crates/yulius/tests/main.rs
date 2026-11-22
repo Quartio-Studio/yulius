@@ -147,4 +147,5 @@ mod usage_refresh;
 mod variables;
 mod vidoc_key;
 mod vidoc_switch;
+mod watches;
 mod workflow_limit;

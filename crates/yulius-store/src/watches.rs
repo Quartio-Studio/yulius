@@ -95,7 +95,9 @@ impl WatchStore for SqliteStore {
     async fn all_watches(&self) -> AppResult<Vec<WatchRecord>> {
         self.call(move |c| {
             let mut stmt = c
-                .prepare(&format!("SELECT {COLUMNS} FROM watches ORDER BY sandbox_id, name"))
+                .prepare(&format!(
+                    "SELECT {COLUMNS} FROM watches ORDER BY sandbox_id, name"
+                ))
                 .map_err(db)?;
             let rows = stmt
                 .query_map([], watch_row)
@@ -266,12 +268,7 @@ impl WatchStore for SqliteStore {
         .await
     }
 
-    async fn watch_run_ended(
-        &self,
-        id: &str,
-        run_id: &str,
-        end: &WatchRunEnd,
-    ) -> AppResult<bool> {
+    async fn watch_run_ended(&self, id: &str, run_id: &str, end: &WatchRunEnd) -> AppResult<bool> {
         let (id, run_id, end) = (id.to_owned(), run_id.to_owned(), end.clone());
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
@@ -397,7 +394,11 @@ mod tests {
         Ok(store)
     }
 
-    fn watch(id: &str, sandbox: &str, name: &str) -> Result<WatchRecord, Box<dyn std::error::Error>> {
+    fn watch(
+        id: &str,
+        sandbox: &str,
+        name: &str,
+    ) -> Result<WatchRecord, Box<dyn std::error::Error>> {
         Ok(WatchRecord {
             id: id.into(),
             sandbox_id: SandboxId::parse(sandbox)?,
@@ -455,9 +456,19 @@ mod tests {
     #[tokio::test]
     async fn runs_are_claimed_one_at_a_time_and_ended_by_their_own_id() -> TestResult {
         let store = store().await?;
-        store.insert_watch(&watch("wt_1", "s1", "disk")?, 20).await?;
-        assert!(store.watch_run_started("wt_1", "r1", Timestamp(100)).await?);
-        assert!(!store.watch_run_started("wt_1", "r2", Timestamp(101)).await?);
+        store
+            .insert_watch(&watch("wt_1", "s1", "disk")?, 20)
+            .await?;
+        assert!(
+            store
+                .watch_run_started("wt_1", "r1", Timestamp(100))
+                .await?
+        );
+        assert!(
+            !store
+                .watch_run_started("wt_1", "r2", Timestamp(101))
+                .await?
+        );
         let going = store.watch("wt_1").await?.ok_or("gone")?;
         assert_eq!(going.state.running, Some(("r1".into(), Timestamp(100))));
         assert_eq!(going.state.last_started_at, Some(Timestamp(100)));
@@ -478,7 +489,10 @@ mod tests {
                 queued_at: Timestamp(150),
             }],
         };
-        assert!(!store.watch_run_ended("wt_1", "r2", &end).await?, "not its run");
+        assert!(
+            !store.watch_run_ended("wt_1", "r2", &end).await?,
+            "not its run"
+        );
         assert!(store.watch_pending().await?.is_empty());
         assert!(store.watch_run_ended("wt_1", "r1", &end).await?);
         let ended = store.watch("wt_1").await?.ok_or("gone")?;
@@ -490,18 +504,31 @@ mod tests {
         assert_eq!(store.watch_pending().await?.len(), 1);
 
         assert!(store.set_watch_paused("wt_1", true, Timestamp(160)).await?);
-        assert!(store.set_watch_paused("wt_1", false, Timestamp(170)).await?);
+        assert!(
+            store
+                .set_watch_paused("wt_1", false, Timestamp(170))
+                .await?
+        );
         let resumed = store.watch("wt_1").await?.ok_or("gone")?;
         assert!(!resumed.paused);
-        assert_eq!((resumed.ended_reason, resumed.since), (None, Timestamp(170)));
+        assert_eq!(
+            (resumed.ended_reason, resumed.since),
+            (None, Timestamp(170))
+        );
         assert_eq!(resumed.state.last_started_at, None);
 
         store.watch_posted("wt_1", Timestamp(180)).await?;
         let posted = store.watch("wt_1").await?.ok_or("gone")?;
-        assert_eq!((posted.state.posts, posted.state.last_posted_at), (1, Some(Timestamp(180))));
+        assert_eq!(
+            (posted.state.posts, posted.state.last_posted_at),
+            (1, Some(Timestamp(180)))
+        );
 
         assert!(store.delete_watch("wt_1").await?);
-        assert!(store.watch_pending().await?.is_empty(), "pending posts go with it");
+        assert!(
+            store.watch_pending().await?.is_empty(),
+            "pending posts go with it"
+        );
         assert!(!store.delete_watch("wt_1").await?);
         Ok(())
     }
@@ -510,23 +537,44 @@ mod tests {
     #[tokio::test]
     async fn pending_posts_keep_the_newest_per_key() -> TestResult {
         let store = store().await?;
-        store.insert_watch(&watch("wt_1", "s1", "disk")?, 20).await?;
+        store
+            .insert_watch(&watch("wt_1", "s1", "disk")?, 20)
+            .await?;
         let pending = |key: &str, body: Option<&str>, at: i64| WatchPending {
             watch_id: "wt_1".into(),
             key: key.into(),
             body: body.map(Into::into),
             queued_at: Timestamp(at),
         };
-        store.put_watch_pending(&pending("watch:disk", Some("a"), 1)).await?;
-        store.put_watch_pending(&pending("watch:disk:failing", None, 2)).await?;
-        store.put_watch_pending(&pending("watch:disk", Some("b"), 3)).await?;
+        store
+            .put_watch_pending(&pending("watch:disk", Some("a"), 1))
+            .await?;
+        store
+            .put_watch_pending(&pending("watch:disk:failing", None, 2))
+            .await?;
+        store
+            .put_watch_pending(&pending("watch:disk", Some("b"), 3))
+            .await?;
         let kept = store.watch_pending().await?;
-        assert_eq!(kept, [pending("watch:disk:failing", None, 2), pending("watch:disk", Some("b"), 3)]);
+        assert_eq!(
+            kept,
+            [
+                pending("watch:disk:failing", None, 2),
+                pending("watch:disk", Some("b"), 3)
+            ]
+        );
         // A retry of the older one does not drop the newer.
-        store.drop_watch_pending("wt_1", "watch:disk", Timestamp(1)).await?;
+        store
+            .drop_watch_pending("wt_1", "watch:disk", Timestamp(1))
+            .await?;
         assert_eq!(store.watch_pending().await?.len(), 2);
-        store.drop_watch_pending("wt_1", "watch:disk", Timestamp(3)).await?;
-        assert_eq!(store.watch_pending().await?, [pending("watch:disk:failing", None, 2)]);
+        store
+            .drop_watch_pending("wt_1", "watch:disk", Timestamp(3))
+            .await?;
+        assert_eq!(
+            store.watch_pending().await?,
+            [pending("watch:disk:failing", None, 2)]
+        );
         Ok(())
     }
 }

@@ -134,5 +134,6 @@ pub mod vault;
 pub mod vidoc_key;
 pub mod visibility_tools;
 mod visible_draft;
+pub mod watches;
 pub mod workflows;
 pub mod write_grant;

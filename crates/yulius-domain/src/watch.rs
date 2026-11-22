@@ -257,6 +257,8 @@ pub enum RunEnd {
     Signaled(i32),
     /// It ran past its timeout and was killed.
     TimedOut,
+    /// An output file reached its bound (a write past it was refused or killed the writer).
+    OutputLimit,
     /// It could not be started, or its end was lost (a restart): the reason.
     Failed(String),
 }
@@ -292,17 +294,17 @@ impl RunEnd {
                     short(i64::from(timeout_seconds))
                 ));
             }
+            Self::OutputLimit => {
+                return Some(format!(
+                    "stopped: its output went past {} KiB",
+                    bounds.output_kib
+                ));
+            }
             Self::Failed(reason) => return Some(reason.clone()),
         };
         Some(match signal {
-            SIGXCPU => format!(
-                "stopped: it used its CPU time of {} s",
-                bounds.cpu_seconds
-            ),
-            SIGXFSZ => format!(
-                "stopped: its output went past {} KiB",
-                bounds.output_kib
-            ),
+            SIGXCPU => format!("stopped: it used its CPU time of {} s", bounds.cpu_seconds),
+            SIGXFSZ => format!("stopped: its output went past {} KiB", bounds.output_kib),
             SIGKILL => format!(
                 "killed (signal 9): its CPU time of {} s or its memory of {} MiB ran out, or it \
                  was killed",
@@ -440,7 +442,15 @@ mod tests {
         for good in ["a", "disk-report", "479-merge-queue", &"x".repeat(NAME_MAX)] {
             assert!(WatchName::parse(good).is_ok(), "{good}");
         }
-        for bad in ["", "-x", "Disk", "a b", "a_b", "é", &"x".repeat(NAME_MAX + 1)] {
+        for bad in [
+            "",
+            "-x",
+            "Disk",
+            "a b",
+            "a_b",
+            "é",
+            &"x".repeat(NAME_MAX + 1),
+        ] {
             assert!(WatchName::parse(bad).is_err(), "{bad}");
         }
         assert_eq!(name().report_key(), "watch:disk-report");
@@ -465,8 +475,21 @@ mod tests {
         assert_eq!(WatchSchedule::every("15m"), Ok(WatchSchedule::Every(900)));
         assert_eq!(WatchSchedule::every("1d"), Ok(WatchSchedule::Every(86_400)));
         assert_eq!(WatchSchedule::every("60s"), Ok(WatchSchedule::Every(60)));
-        assert_eq!(WatchSchedule::every("7d"), Ok(WatchSchedule::Every(EVERY_MAX_SECONDS)));
-        for bad in ["", "m", "30s", "8d", "5w", "1.5h", "-5m", "２h", "99999999999999999999d"] {
+        assert_eq!(
+            WatchSchedule::every("7d"),
+            Ok(WatchSchedule::Every(EVERY_MAX_SECONDS))
+        );
+        for bad in [
+            "",
+            "m",
+            "30s",
+            "8d",
+            "5w",
+            "1.5h",
+            "-5m",
+            "２h",
+            "99999999999999999999d",
+        ] {
             assert!(WatchSchedule::every(bad).is_err(), "{bad}");
         }
         assert_eq!(WatchSchedule::Every(900).describe(), "15m");
@@ -510,13 +533,23 @@ mod tests {
     }
 
     fn end(end: RunEnd, output: &str, before: FailureState) -> Outcome {
-        outcome(&name(), &end, (output, "boom"), before, (RunBounds::default(), 300))
+        outcome(
+            &name(),
+            &end,
+            (output, "boom"),
+            before,
+            (RunBounds::default(), 300),
+        )
     }
 
     /// AC-2: exit 0 posts its output, no output posts nothing, exit 3 posts and ends.
     #[test]
     fn exit_codes_post_skip_or_end() {
-        let posted = end(RunEnd::Exited(0), "  up 3%\nmore\n", FailureState::default());
+        let posted = end(
+            RunEnd::Exited(0),
+            "  up 3%\nmore\n",
+            FailureState::default(),
+        );
         assert_eq!(posted.post.as_deref(), Some("up 3%\nmore"));
         assert_eq!(posted.end, None);
         assert_eq!(posted.failure, None);
@@ -529,13 +562,22 @@ mod tests {
         let silent_done = end(RunEnd::Exited(3), "", FailureState::default());
         assert_eq!(silent_done.post, None);
         assert!(silent_done.end.is_some());
-        for failed in [RunEnd::Exited(1), RunEnd::Exited(2), RunEnd::Signaled(15), RunEnd::TimedOut] {
+        for failed in [
+            RunEnd::Exited(1),
+            RunEnd::Exited(2),
+            RunEnd::Signaled(15),
+            RunEnd::TimedOut,
+        ] {
             let out = end(failed.clone(), "partial", FailureState::default());
             assert_eq!(out.post, None, "{failed:?}");
             assert!(out.failure.is_some(), "{failed:?}");
             assert_eq!(out.state.failures, 1);
         }
-        let long = end(RunEnd::Exited(0), &"x".repeat(POSTED_CHARS + 10), FailureState::default());
+        let long = end(
+            RunEnd::Exited(0),
+            &"x".repeat(POSTED_CHARS + 10),
+            FailureState::default(),
+        );
         assert_eq!(long.post.map(|p| p.chars().count()), Some(POSTED_CHARS));
     }
 
@@ -548,12 +590,22 @@ mod tests {
             let out = end(RunEnd::Exited(1), "", state);
             warnings += usize::from(out.warn.is_some());
             if state.failures + 1 == FAILURES_BEFORE_WARNING {
-                assert!(out.warn.as_deref().is_some_and(|w| w.contains("3 runs in a row") && w.contains("boom")));
+                assert!(
+                    out.warn
+                        .as_deref()
+                        .is_some_and(|w| w.contains("3 runs in a row") && w.contains("boom"))
+                );
             }
             state = out.state;
         }
         assert_eq!(warnings, 1);
-        assert_eq!(state, FailureState { failures: 5, warned: true });
+        assert_eq!(
+            state,
+            FailureState {
+                failures: 5,
+                warned: true
+            }
+        );
         let ok = end(RunEnd::Exited(0), "", state);
         assert!(ok.clear_warning);
         assert_eq!(ok.state, FailureState::default());
@@ -563,12 +615,17 @@ mod tests {
     /// AC-6: each bound gives a reason that names it.
     #[test]
     fn failures_name_their_bound() {
-        let bounds = RunBounds { cpu_seconds: 2, memory_kib: 65_536, output_kib: 64 };
+        let bounds = RunBounds {
+            cpu_seconds: 2,
+            memory_kib: 65_536,
+            output_kib: 64,
+        };
         let reason = |e: RunEnd| e.failure(bounds, 10).unwrap_or_default();
         assert!(reason(RunEnd::Signaled(24)).contains("CPU time of 2 s"));
         assert!(reason(RunEnd::Exited(128 + 24)).contains("CPU time"));
         assert!(reason(RunEnd::Signaled(25)).contains("output went past 64 KiB"));
         assert!(reason(RunEnd::Exited(128 + 25)).contains("output"));
+        assert!(reason(RunEnd::OutputLimit).contains("output went past 64 KiB"));
         assert!(reason(RunEnd::Signaled(9)).contains("memory of 64 MiB"));
         assert!(reason(RunEnd::TimedOut).contains("timeout of 10s"));
         assert!(reason(RunEnd::Exited(125)).contains("limits"));
@@ -579,7 +636,10 @@ mod tests {
 
     #[test]
     fn titles_take_the_first_line() {
-        assert_eq!(post_title(&name(), "\n  v2.1 is out \nnotes"), "disk-report: v2.1 is out");
+        assert_eq!(
+            post_title(&name(), "\n  v2.1 is out \nnotes"),
+            "disk-report: v2.1 is out"
+        );
         assert_eq!(cut_tail("abcdef", 4), "…def");
         assert_eq!(cut("abcdef", 4), "abc…");
     }
