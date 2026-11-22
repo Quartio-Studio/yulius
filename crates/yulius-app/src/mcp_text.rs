@@ -1120,9 +1120,11 @@ fn tasks_list(value: &Value) -> Option<String> {
     Some(out)
 }
 
-/// `task_get`: the task's line, its steps as a checklist and its prompt.
+/// `task_get`: the task's line, its owner, delivery, claims and waits (SPEC-625), its steps as
+/// a checklist, its prompt, its screen and what is withheld.
 fn task_get(value: &Value) -> Option<String> {
     let mut out = format!("{}\n", task_line(value)?);
+    peer_lines(&mut out, value);
     if let Some(steps) = value
         .get("steps_list")
         .and_then(Value::as_array)
@@ -1161,7 +1163,70 @@ fn task_get(value: &Value) -> Option<String> {
         push_line(&mut out, "Prompt:");
         push_line(&mut out, prompt.trim_end());
     }
+    if let Some(screen) = value.get("screen").filter(|s| s.is_object()) {
+        let from = text(screen, "from").unwrap_or("none");
+        match text(screen, "text").filter(|t| !t.trim().is_empty()) {
+            Some(shown) => {
+                push_line(&mut out, &format!("Screen ({from}):"));
+                push_line(&mut out, shown.trim_end());
+            }
+            None => push_line(&mut out, &format!("Screen: nothing shown ({from})")),
+        }
+    }
+    if let Some(why) = text(value, "withheld") {
+        push_line(&mut out, &format!("Withheld: {why}"));
+    }
     Some(out)
+}
+
+/// `Owner: @bob · PR #41 (pr_open) · merge armed`, then `Claims: …` and `Waits for: …`, each
+/// when the answer has it (SPEC-625 PSV-001).
+fn peer_lines(out: &mut String, value: &Value) {
+    let mut head = Vec::new();
+    if let Some(owner) = text(value, "owner") {
+        head.push(format!("Owner: @{owner}"));
+    }
+    if let Some(delivery) = value.get("delivery").filter(|d| d.is_object()) {
+        let stage = text(delivery, "stage").unwrap_or("none");
+        head.push(match delivery.get("pr").and_then(Value::as_u64) {
+            Some(pr) => format!("PR #{pr} ({stage})"),
+            None if stage == "none" => "no pull request yet".to_owned(),
+            None => format!("delivery {stage}"),
+        });
+        if delivery.get("merge_armed").and_then(Value::as_bool) == Some(true) {
+            head.push("merge armed".to_owned());
+        }
+    }
+    if !head.is_empty() {
+        push_line(out, &head.join(" · "));
+    }
+    if let Some(claims) = value.get("claims").and_then(Value::as_array) {
+        let shown: Vec<String> = claims
+            .iter()
+            .filter_map(|claim| {
+                let pattern = text(claim, "pattern")?;
+                // The task's own words, quoted as data.
+                Some(match text(claim, "note") {
+                    Some(note) => format!("{pattern} (\"{note}\")"),
+                    None => pattern.to_owned(),
+                })
+            })
+            .collect();
+        push_line(
+            out,
+            &if shown.is_empty() {
+                "Claims: none".to_owned()
+            } else {
+                format!("Claims: {}", shown.join(", "))
+            },
+        );
+    }
+    if let Some(waits) = value.get("waits_for").and_then(Value::as_array) {
+        let waits: Vec<&str> = waits.iter().filter_map(Value::as_str).collect();
+        if !waits.is_empty() {
+            push_line(out, &format!("Waits for: {}", waits.join("; ")));
+        }
+    }
 }
 
 // ---------------------------------------------------------------- sessions
@@ -1998,6 +2063,40 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains(UUID));
+    }
+
+    /// SPEC-625 PSV-001, PSV-004: a neighbour's owner, delivery, claims, waits and screen, and
+    /// what is withheld, in the text an agent reads.
+    #[test]
+    fn a_neighbours_status_reads_as_lines() {
+        let task = json!({
+            "number": 12, "title": "Docs", "status": "running", "activity": "waiting",
+            "owner": "bob", "delivery": {"stage": "pr_open", "pr": 41, "merge_armed": true},
+            "claims": [{"pattern": "docs/x.md", "note": "API docs"}, {"pattern": "src/**", "note": null}],
+            "waits_for": ["its armed merge, which Yulius makes once its checks pass", "its person"],
+            "screen": {"from": "live", "text": "  done.\n> "},
+        });
+        let text = render("task_get", &json!({"number": 12}), &task);
+        assert_eq!(
+            text,
+            "#12 Docs · running (waiting)\n\
+             Owner: @bob · PR #41 (pr_open) · merge armed\n\
+             Claims: docs/x.md (\"API docs\"), src/**\n\
+             Waits for: its armed merge, which Yulius makes once its checks pass; its person\n\
+             Screen (live):\n  done.\n>"
+        );
+        let withheld = json!({
+            "number": 12, "title": "Docs", "status": "running", "owner": "alice",
+            "delivery": {"stage": "none", "pr": null, "merge_armed": false},
+            "claims": [], "waits_for": [], "withheld": "Task #12 reaches @alice's personal secrets.",
+        });
+        assert_eq!(
+            render("task_get", &json!({"number": 12}), &withheld),
+            "#12 Docs · running\n\
+             Owner: @alice · no pull request yet\n\
+             Claims: none\n\
+             Withheld: Task #12 reaches @alice's personal secrets."
+        );
     }
 
     /// TOL-001: text a tool returns (a briefing, a transcript) is printed as written, not escaped.

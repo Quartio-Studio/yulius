@@ -237,11 +237,13 @@ impl App {
         }))
     }
 
-    /// `tasks_list`: previous and parallel tasks of the agent's sandbox (COM-001).
+    /// `tasks_list`: previous and parallel tasks of the agent's sandbox (COM-001), without a
+    /// personal task's free text for a task that does not hold the same secrets (SPEC-625).
     ///
     /// # Errors
-    /// Store failures.
+    /// Store failures; a task's agent whose owner may not view the project.
     pub async fn tool_tasks_list(&self, caller: &ProjectCaller, args: &Value) -> AppResult<Value> {
+        self.require_reader(caller).await?;
         let scope = args.get("scope").and_then(Value::as_str).unwrap_or("all");
         let limit = args
             .get("limit")
@@ -272,9 +274,15 @@ impl App {
         if !filtered || limit == 0 {
             tasks.truncate(limit);
         }
-        let rows = self
+        let mut rows = self
             .list_briefs(&tasks, limit, filtered, caller.task.is_none())
             .await?;
+        // A personal task's free text stays with tasks holding the same secrets (PSV-004).
+        for row in &mut rows {
+            if let Some(task) = tasks.iter().find(|t| row["task_id"] == t.id.as_str()) {
+                self.withhold_from(caller, task, row).await?;
+            }
+        }
         let mut listing = json!({"tasks": rows});
         if let Some(own) = &caller.task {
             listing["you"] = self.task_brief(own).await?;
@@ -370,14 +378,22 @@ impl App {
         Ok(rows)
     }
 
-    /// `task_get`: one task's details including steps and recent messages it sent.
+    /// `task_get`: one task's details including steps and recent messages it sent, and its
+    /// owner, delivery, claims, waits and screen (SPEC-625); for a task's agent, read-only and
+    /// without a personal task's free text (PSV-004).
     ///
     /// # Errors
-    /// `NotFound` outside the agent's sandbox.
+    /// `NotFound` outside the agent's sandbox; a task's agent whose owner may not view it.
     pub async fn tool_task_get(&self, caller: &ProjectCaller, args: &Value) -> AppResult<Value> {
+        self.require_reader(caller).await?;
         let task = self.agent_task_ref(caller, args).await?;
-        self.verified_brief(&task, caller.task.is_none(), true)
-            .await
+        let mut brief = self
+            .verified_brief(&task, caller.task.is_none(), true)
+            .await?;
+        // Its owner, delivery, claims, waits and screen (SPEC-625 PSV-001).
+        self.add_peer_status(&task, &mut brief).await?;
+        self.withhold_from(caller, &task, &mut brief).await?;
+        Ok(brief)
     }
 
     pub(crate) async fn agent_task_ref(

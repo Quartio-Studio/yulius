@@ -80,6 +80,7 @@ pub mod onboarding;
 pub mod outage;
 pub mod parking;
 mod pause;
+mod peer_status;
 pub(crate) mod person_tools;
 pub mod playground;
 pub mod ports;
