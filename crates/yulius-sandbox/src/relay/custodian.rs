@@ -556,7 +556,7 @@ pub async fn deposit(executable: &Path, directory: &Path, pairs: Vec<Pair>) -> i
     let (mut stream, child_socket) = UnixStream::pair()?;
     let stdin = OwnedFd::from(child_socket.into_std()?);
     let mut child = tokio::process::Command::new(executable)
-        // Process lists name Yulius even when the image is /proc/self/exe.
+        // Command lines (`ps -ef`) name Yulius when the image is /proc/self/exe; comm stays `exe`.
         .arg0("yulius")
         .arg("sandbox-host")
         .arg("hold-tunnels")

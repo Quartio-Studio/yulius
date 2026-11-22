@@ -10,7 +10,7 @@ On an orderly Linux restart the departing server hands its established opaque tu
 
 ## Decision
 
-The departing server starts the custodian from `/proc/self/exe`, the image it is running. The custodian is always the depositor's own build. Removing, replacing or rewriting the install path no longer affects the handoff. The library function `custodian::deposit` still takes the executable as a parameter, so tests can supply the built binary. The helper's `argv[0]` is `yulius`, so process lists still name it.
+The departing server starts the custodian from `/proc/self/exe`, the image it is running. The custodian is always the depositor's own build. Removing, replacing or rewriting the install path no longer affects the handoff. The library function `custodian::deposit` still takes the executable as a parameter, so tests can supply the built binary. The helper's `argv[0]` is `yulius`, so command-line views such as `ps -ef` and `pgrep -f` still name it. Its kernel command name is `exe`, which is what `ps -e` and `top` show.
 
 ## Alternatives
 

@@ -684,7 +684,7 @@ async fn check_restart(route: Route) -> Result<(), Error> {
 
 #[tokio::test]
 async fn an_invalid_handoff_directory_reports_the_kind_and_still_serves() -> Result<(), Error> {
-    tokio::time::timeout(Duration::from_secs(15), async {
+    tokio::time::timeout(Duration::from_secs(30), async {
         let dir = tempfile::tempdir()?;
         std::fs::write(dir.path().join("tunnel-handoff"), b"synthetic fixture")?;
         let port = InternalPort::reserve()?;

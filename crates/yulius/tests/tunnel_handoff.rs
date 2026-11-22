@@ -1,6 +1,7 @@
 //! SPEC-577. Exercise the production helper as a separate process.
 use std::io;
 use std::os::fd::{AsFd as _, OwnedFd};
+use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -73,7 +74,7 @@ async fn a_successor_adopts_the_original_unix_and_tcp_peers_once() -> io::Result
     .await?
 }
 
-// The departing server runs the helper from /proc/self/exe; process lists still name Yulius.
+// The departing server runs the helper from /proc/self/exe; its command line still names Yulius.
 #[tokio::test]
 async fn the_waiting_helper_names_itself_yulius_in_process_lists() -> io::Result<()> {
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -95,13 +96,19 @@ async fn the_waiting_helper_names_itself_yulius_in_process_lists() -> io::Result
         .await?;
         let mut helpers = Vec::new();
         for task in std::fs::read_dir("/proc/self/task")? {
-            let children = std::fs::read_to_string(task?.path().join("children"))?;
+            // A runtime thread can exit during the scan.
+            let Ok(children) = std::fs::read_to_string(task?.path().join("children")) else {
+                continue;
+            };
             for pid in children.split_whitespace() {
                 let Ok(line) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
                     continue;
                 };
                 let args: Vec<_> = line.split(|b| *b == 0).collect();
-                if args.contains(&b"hold-tunnels".as_slice()) {
+                // Sibling tests in the same process have helpers of their own directories.
+                if args.contains(&b"hold-tunnels".as_slice())
+                    && args.contains(&dir.path().as_os_str().as_bytes())
+                {
                     helpers.push(String::from_utf8_lossy(args[0]).into_owned());
                 }
             }
