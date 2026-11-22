@@ -521,6 +521,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0455 -->
 - [0456](0456-the-tunnel-custodian-runs-the-departing-servers-own-image.md): The tunnel custodian runs the departing server's own image.
 <!-- ADR 0456 -->
+- [0457](0457-new-tasks-default-to-claude-code-on-opus-5-5.md): New tasks default to Claude Code on Opus 5.5 when nothing is chosen; supersedes 0422 and 0426.
 <!-- ADR 0457 -->
 <!-- ADR 0458 -->
 <!-- ADR 0459 -->

@@ -4,6 +4,8 @@
 
 Accepted for task #567. Amends the direct task creation rule in [ADR-0377](0377-random-draws-uniformly-across-harnesses-with-available-subscriptions.md). [SPEC-583](../../.ai/specs/SPEC-583-cli-nad-superagents-should-spawn-tasks-i.md)
 
+[ADR-0457](0457-new-tasks-default-to-claude-code-on-opus-5-5.md) supersedes this decision: these callers now default to Claude Code on Opus 5.5.
+
 ## Context
 
 The CLI, the sandbox Superagent and the Global Superagent reach the same project task creation tool. An approved cross-sandbox request reaches it in the target project. These callers previously drew a random agent when they omitted both harness and model.

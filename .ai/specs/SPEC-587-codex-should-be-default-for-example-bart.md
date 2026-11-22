@@ -7,6 +7,8 @@ status: done
 
 [SPEC-607](SPEC-607-codex-tasks-run-at-high-effort-unless-th.md) supersedes the inherited effort used in this release.
 
+[SPEC-620](SPEC-620-make-opus-and-claude-default-model.md) supersedes CDF-001 and CDF-003: the browser now starts on Opus 5.5.
+
 ## Goal
 
 Opening Settings or the new-task composer in a browser with no saved choice shows Codex. Starting a task uses the Codex launch defaults.
