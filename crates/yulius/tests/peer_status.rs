@@ -356,6 +356,32 @@ async fn a_personal_tasks_free_text_stays_with_tasks_holding_the_same_secrets() 
         );
     }
 
+    // Claims show their paths but not the personal task's note or step (scopes_list,
+    // scope_claim's overlap, task_create's planned overlap).
+    let (listed, error) = tool(&w, BOB, "scopes_list", json!({})).await?;
+    assert!(!error);
+    assert!(!shows(&listed).contains("PRIVATE"), "{listed}");
+    assert!(shows(&listed).contains("docs/x.md"), "{listed}");
+    let (overlap, error) = tool(&w, BOB, "scope_claim", json!({"pattern": "docs/**"})).await?;
+    assert!(!error, "{overlap}");
+    assert_eq!(
+        overlap["conflicts"][0]["their_pattern"], "docs/x.md",
+        "{overlap}"
+    );
+    assert!(!shows(&overlap).contains("PRIVATE"), "{overlap}");
+    let (planned, error) = tool(
+        &w,
+        AUTOMATION,
+        "task_create",
+        json!({"prompt": "Edit the docs", "paths": ["docs/x.md"]}),
+    )
+    .await?;
+    assert!(!error, "{planned}");
+    assert_eq!(planned["created"], false, "{planned}");
+    assert!(!shows(&planned).contains("PRIVATE"), "{planned}");
+    let (theirs, _) = tool(&w, ALICE_TWO, "scopes_list", json!({})).await?;
+    assert!(shows(&theirs).contains("PRIVATE claim"), "{theirs}");
+
     // Alice's other task holds the same secret: it reads everything.
     let (own, error) = tool(&w, ALICE_TWO, "task_get", json!({"number": number})).await?;
     assert!(!error, "{own}");

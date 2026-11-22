@@ -347,8 +347,7 @@ impl App {
         let paths = crate::scopes::paths_arg(args)?;
         let start_anyway = flag_arg(args, "start_anyway")?;
         if !paths.is_empty() && after_task_id.is_none() && !start_anyway {
-            let own = caller.task.as_ref().map(|t| &t.id);
-            let overlaps = self.planned_overlaps(&caller.sandbox, &paths, own).await?;
+            let overlaps = self.planned_overlaps(caller, &paths).await?;
             if let Some(first) = overlaps.first() {
                 return Ok(json!({
                     "created": false,
