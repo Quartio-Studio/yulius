@@ -29,10 +29,11 @@ Open on dev: steps 50 to 53 of SPEC-558. #540 left prepared patches in its hando
 
 - [x] Write the takeover spec and confirm steps 48 and 49 on dev
 - [x] Recover screens from tasks parked before the upgrade
-- [ ] Review and deliver the pre-upgrade screen recovery
+- [x] Review and deliver the pre-upgrade screen recovery
 - [x] Port bounded Codex goal continuation onto current dev
 - [x] Prove the #325 shape and the retry bound for Codex goals
-- [ ] Review and deliver bounded Codex goal continuation
+- [x] Review and deliver bounded Codex goal continuation
+- [ ] Close the round-2 notes on the Codex goal continuation
 - [ ] Reproduce a dependent task released by an unverified live owner
 - [ ] Hold the live owner's delivery through chain release, start rules and close
 - [ ] Review and deliver live-owner verification for dependents and closes

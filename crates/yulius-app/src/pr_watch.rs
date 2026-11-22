@@ -1189,6 +1189,15 @@ impl App {
         self.pr_news_due_of(task, record.as_ref(), false).await
     }
 
+    /// Whether the watch already pasted run `run`'s failure of pull request `pr` into `task`'s
+    /// session (SPEC-578).
+    pub(crate) fn run_failure_told(&self, task: &TaskId, pr: u64, run: &str) -> bool {
+        self.with_pr_notices(|told| {
+            told.get(task.as_str())
+                .is_some_and(|t| t.pr == pr && t.keys.get("run").map(String::as_str) == Some(run))
+        })
+    }
+
     /// Newest Yulius CI run for pull request `pr` in `sandbox`, if any (SPEC-578).
     pub(crate) async fn latest_pr_ci_run(
         &self,
@@ -1280,11 +1289,7 @@ impl App {
                 Ok(Some(sandbox)) if sandbox.is_playground()
             )
         {
-            return self.with_pr_notices(|told| {
-                told.get(task.id.as_str()).is_none_or(|t| {
-                    t.pr != pr || t.keys.get("run").map(String::as_str) != Some(run.id.as_str())
-                })
-            });
+            return !self.run_failure_told(&task.id, pr, &run.id);
         }
         false
     }

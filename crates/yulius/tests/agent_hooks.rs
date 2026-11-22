@@ -2987,6 +2987,73 @@ async fn codex_goal_stop_ends_once_its_head_moved_past_the_red_run() -> TestResu
     Ok(())
 }
 
+/// A failure the watch has not pasted in is not the gate's to charge, even when the watch's
+/// newest run of the pull request is a passing one on another commit (SPEC-578).
+#[tokio::test]
+async fn codex_goal_stop_leaves_an_untold_failure_uncharged() -> TestResult {
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Finish compatibility").await?;
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    f.h.app
+        .tool_step_update(&ctx, &json!({"ordinal": 1, "status": "done"}))
+        .await?;
+    install_compatibility_pull(&f).await?;
+    let head = crate::pr_watch::git(&f.worktree, &["rev-parse", "HEAD"])?;
+    told_red_run(&f, "an-older-run")?;
+    red_ordinary_run(&f, "untold-red-at-head", head.trim(), 10).await?;
+    super::delivery::insert_ci_attempt(
+        &f.h.store,
+        "newer-green-elsewhere",
+        "0123456789abcdef0123456789abcdef01234567",
+        yulius_domain::ci::CiRef::PullRequest(1461),
+        yulius_domain::ci::RunState::Passed,
+        11,
+        &[],
+    )
+    .await?;
+    let stop = stop_of(&f, Agent::Codex).await?;
+    assert!(stop["decision"].is_null(), "{stop}");
+    let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
+    assert_eq!(task.gate_blocks, 0);
+    Ok(())
+}
+
+/// A pull request merged while red leaves nothing on this branch to repair: a told failure at
+/// the head does not continue the goal or spend an attempt.
+#[tokio::test]
+async fn codex_goal_stop_ends_after_its_red_pr_merged() -> TestResult {
+    use yulius_domain::delivery::DeliveryStage;
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Finish compatibility").await?;
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    f.h.app
+        .tool_step_update(&ctx, &json!({"ordinal": 1, "status": "done"}))
+        .await?;
+    install_compatibility_pull(&f).await?;
+    let head = crate::pr_watch::git(&f.worktree, &["rev-parse", "HEAD"])?;
+    told_red_run(&f, "red-at-head")?;
+    red_ordinary_run(&f, "red-at-head", head.trim(), 10).await?;
+    f.h.app
+        .deps
+        .store
+        .transition_delivery(
+            &DeliveryStage::PrOpen,
+            &yulius_app::delivery::DeliveryRecord {
+                task_id: f.task.clone(),
+                stage: DeliveryStage::MergedIntegration,
+                pr_number: Some(1461),
+                updated_at: f.h.app.now(),
+            },
+        )
+        .await?;
+    let stop = stop_of(&f, Agent::Codex).await?;
+    assert!(
+        !stop["reason"].as_str().is_some_and(|s| s.contains("#1461")),
+        "{stop}"
+    );
+    let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
+    assert_eq!(task.gate_blocks, 0);
+    Ok(())
+}
+
 /// Claude Code's native goal evaluator and Antigravity's own goal end their turns: the red
 /// pull request continues only a Codex goal (SPEC-558 PKR-003).
 #[tokio::test]
@@ -3002,10 +3069,9 @@ async fn a_red_pr_continues_no_other_harnesss_finished_goal() -> TestResult {
         told_red_run(&f, "red-at-head")?;
         red_ordinary_run(&f, "red-at-head", head.trim(), 10).await?;
         let stop = stop_of(&f, agent_kind).await?;
-        assert!(
-            !stop["reason"].as_str().is_some_and(|s| s.contains("#1461")),
-            "{agent_kind:?}: {stop}"
-        );
+        assert!(stop["decision"].is_null(), "{agent_kind:?}: {stop}");
+        let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
+        assert_eq!(task.gate_blocks, 0, "{agent_kind:?}");
     }
     Ok(())
 }

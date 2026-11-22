@@ -1238,19 +1238,32 @@ impl App {
         ) else {
             return StopPull::Settled;
         };
-        let Some(run) = self.latest_pr_ci_run(&task.sandbox_id, pr).await else {
-            return StopPull::Settled;
-        };
-        if run.state != yulius_domain::ci::RunState::Failed {
-            return StopPull::Settled;
-        }
-        match self
+        let Ok(Some(head)) = self
             .deps
             .git
             .resolve_commit(Path::new(worktree), "HEAD")
             .await
-        {
-            Ok(Some(head)) if head.eq_ignore_ascii_case(&run.sha) => StopPull::Failing(pr),
+        else {
+            return StopPull::Settled;
+        };
+        // The newest run of this pull request at this commit, however busy the sandbox is.
+        let Ok(runs) = self
+            .deps
+            .store
+            .ci_runs_for_sha(&task.sandbox_id, &head.to_ascii_lowercase())
+            .await
+        else {
+            return StopPull::Settled;
+        };
+        let reference = yulius_domain::ci::CiRef::PullRequest(pr);
+        match runs.into_iter().find(|run| run.reference == reference) {
+            // Untold, the failure is the watch's to paste in first (SPEC-578).
+            Some(run)
+                if run.state == yulius_domain::ci::RunState::Failed
+                    && self.run_failure_told(&task.id, pr, &run.id) =>
+            {
+                StopPull::Failing(pr)
+            }
             _ => StopPull::Settled,
         }
     }
