@@ -2,9 +2,11 @@
 //! of its neighbours (SPEC-625, ADR-0460).
 //!
 //! Contract:
-//! - `task_get` adds the task's owner, delivery (stage, PR, armed merge), live claims, what it
-//!   waits for in Yulius's own sentences, and its screen's last lines (PSV-001); nothing is
-//!   changed by the read;
+//! - `task_get` adds the task's owner, delivery (stage, PR, armed merge), the claims it holds
+//!   while live or waiting, what it waits for in Yulius's own sentences and its agent's last
+//!   words from its transcript; a person's own callers also get its screen's last lines, which a
+//!   task's agent never does: a prompt Yulius held and a person's draft show there (PSV-001);
+//!   the read changes nothing of the task;
 //! - a task's agent reads only while its owner may view the project (PSV-003);
 //! - a task that reaches its owner's personal secrets or MCP servers shows a task that does not
 //!   hold the same person's only its shape: every free text is withheld (PSV-004).
@@ -23,7 +25,7 @@ use crate::vault::Holder;
 const SCREEN_LINES: usize = 20;
 
 /// A brief's fields that hold words an agent or a person wrote (PSV-004).
-const FREE_TEXT: [&str; 9] = [
+const FREE_TEXT: [&str; 10] = [
     "prompt",
     "steps_list",
     "wait_history",
@@ -33,6 +35,7 @@ const FREE_TEXT: [&str; 9] = [
     "held_prompt",
     "wait_reason",
     "screen",
+    "last_words",
 ];
 
 impl App {
@@ -62,20 +65,29 @@ impl App {
             .await?
             .filter(|sandbox| sandbox.removed_at.is_none())
             .ok_or(AppError::NotFound)?;
-        if !self
+        let login = user.label();
+        let level = self
             .settled_access_level(&user, &sandbox)
-            .await?
-            .allows(Action::View)
-        {
+            .await
+            .map_err(|err| {
+                tracing::info!(error = %err, "a task's owner's access could not be settled");
+                AppError::Forbidden(format!(
+                    "Yulius cannot confirm now that @{login} may view this project (their GitHub \
+                     sign-in or GitHub itself did not answer), so their task reads no task \
+                     status or list until it can"
+                ))
+            })?;
+        if !level.allows(Action::View) {
             return Err(AppError::Forbidden(format!(
-                "@{} can no longer view this project, so their task reads none of its tasks",
-                user.label()
+                "@{login} can no longer view this project, so their task reads no task status or \
+                 list of it"
             )));
         }
         Ok(())
     }
 
-    /// Adds to `task`'s brief its `owner`, `delivery`, `claims`, `waits_for` and `screen`
+    /// Adds to `task`'s brief its `owner`, `delivery`, `claims`, `waits_for` and, unless its
+    /// free text is `withheld`, `last_words`; for a `person`'s own caller also `screen`
     /// (PSV-001).
     ///
     /// # Errors
@@ -84,6 +96,8 @@ impl App {
         &self,
         task: &TaskRecord,
         brief: &mut Value,
+        person: bool,
+        withheld: bool,
     ) -> AppResult<()> {
         let store = &self.deps.store;
         let delivery = store.delivery(&task.id).await?;
@@ -96,7 +110,8 @@ impl App {
             .active_claims(&task.sandbox_id)
             .await?
             .into_iter()
-            .filter(|claim| claim.task_id == task.id)
+            // Nothing releases an ended task's claims: it holds them only while live or waiting.
+            .filter(|claim| claim.task_id == task.id && task.status.holds_claims())
             .map(|claim| json!({"pattern": claim.pattern, "note": claim.note}))
             .collect();
         let requests = self.browser_requests(&task.sandbox_id).await;
@@ -112,7 +127,11 @@ impl App {
         });
         brief["claims"] = json!(claims);
         brief["waits_for"] = json!(waits_for(task.status, brief, merge_armed, yulius_wait));
-        if let Some(sandbox) = store.sandbox(&task.sandbox_id).await? {
+        if withheld {
+            return Ok(());
+        }
+        brief["last_words"] = json!(self.last_agent_words(task).await);
+        if person && let Some(sandbox) = store.sandbox(&task.sandbox_id).await? {
             let screen = self.task_screen_of(&sandbox, task, SCREEN_LINES).await?;
             brief["screen"] = json!({"from": screen["screen_from"], "text": screen["screen"]});
         }
@@ -130,9 +149,21 @@ impl App {
         caller: &ProjectCaller,
         peer: &TaskRecord,
     ) -> AppResult<bool> {
-        let Some(reader) = &caller.task else {
-            return Ok(false);
-        };
+        match &caller.task {
+            Some(reader) => self.withholds_text(reader, peer).await,
+            None => Ok(false),
+        }
+    }
+
+    /// [`App::withholds_from`] for the task `reader` (also the briefing's recent changes).
+    ///
+    /// # Errors
+    /// Store failures.
+    pub(crate) async fn withholds_text(
+        &self,
+        reader: &TaskRecord,
+        peer: &TaskRecord,
+    ) -> AppResult<bool> {
         if reader.id == peer.id || Holder::of_task(reader) == Holder::of_task(peer) {
             return Ok(false);
         }

@@ -390,9 +390,18 @@ impl App {
         let mut brief = self
             .verified_brief(&task, caller.task.is_none(), true)
             .await?;
-        // Its owner, delivery, claims, waits and screen (SPEC-625 PSV-001).
-        self.add_peer_status(&task, &mut brief).await?;
-        self.withhold_from(caller, &task, &mut brief).await?;
+        // Its owner, delivery, claims, waits and last words (SPEC-625 PSV-001); a personal task's
+        // free text stays with tasks holding the same secrets (PSV-004).
+        let withheld = self.withholds_from(caller, &task).await?;
+        self.add_peer_status(&task, &mut brief, caller.task.is_none(), withheld)
+            .await?;
+        if withheld {
+            crate::peer_status::withhold(
+                &mut brief,
+                task.number,
+                &self.login_of(&task.owner).await,
+            );
+        }
         Ok(brief)
     }
 

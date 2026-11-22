@@ -12,10 +12,12 @@ use support::{
     seed_sandbox, seed_task, seed_task_with_prompt, tool_text,
 };
 use yulius_app::delivery::DeliveryRecord;
+use yulius_app::model::{ProviderSessionRecord, ScopeClaimRecord, StepRecord};
 use yulius_app::ports::store::{CoordinationStore as _, TaskStore as _, UserStore as _};
 use yulius_app::ports::store_ext::DeliveryStore as _;
 use yulius_domain::delivery::DeliveryStage;
-use yulius_domain::ids::{TaskId, UserId};
+use yulius_domain::harness::Harness;
+use yulius_domain::ids::{StepId, TaskId, UserId};
 use yulius_domain::task::TaskStatus;
 use yulius_domain::time::Timestamp;
 
@@ -150,10 +152,42 @@ async fn busy(w: &World, id: &str, token: &str, mark: &str) -> TestResult {
     )
     .await?;
     assert!(!error, "{asked}");
-    w.h.app
-        .runtime(&TaskId::parse(id)?)
-        .hub
-        .output(1, format!("{mark} screen line\r\n").as_bytes());
+    // What Claude Code shows of a prompt Yulius held: its words, which reach no agent.
+    w.h.app.runtime(&TaskId::parse(id)?).hub.output(
+        1,
+        format!("{mark} screen line\r\nOriginal prompt: {mark} held words\r\n").as_bytes(),
+    );
+    transcript(w, id, mark).await
+}
+
+/// A transcript of task `id` whose last assistant message says `<mark> summary words`.
+async fn transcript(w: &World, id: &str, mark: &str) -> TestResult {
+    let path = w.h.app.config.data_dir.join(format!("copies/{id}.jsonl"));
+    std::fs::create_dir_all(path.parent().ok_or("parent")?)?;
+    let lines = [
+        json!({"type": "user", "timestamp": "2026-10-02T09:00:00.000Z",
+            "message": {"role": "user", "content": "Do the work"}}),
+        json!({"type": "assistant", "message": {"role": "assistant",
+            "content": [{"type": "text", "text": format!("{mark} summary words")}]}}),
+    ];
+    std::fs::write(
+        &path,
+        lines.iter().map(|l| format!("{l}\n")).collect::<String>(),
+    )?;
+    let task = w.h.store.task(&TaskId::parse(id)?).await?.ok_or("task")?;
+    w.h.store
+        .upsert_provider_session(&ProviderSessionRecord {
+            id: format!("p-{id}"),
+            sandbox_id: task.sandbox_id.clone(),
+            task_id: task.id.clone(),
+            harness: Harness::ClaudeCode,
+            session_id: format!("sess-{id}"),
+            transcript_ref: Some(path.to_string_lossy().into_owned()),
+            origin: "native".into(),
+            first_seen: Timestamp(10),
+            last_seen: Timestamp(20),
+        })
+        .await?;
     Ok(())
 }
 
@@ -194,13 +228,11 @@ async fn a_task_reads_a_neighbours_owner_delivery_claims_waits_and_screen() -> T
             .any(|w| w.as_str().is_some_and(|w| w.contains("person"))),
         "it asked its person: {peer}"
     );
-    assert_eq!(peer["screen"]["from"], "live", "{peer}");
-    assert!(
-        peer["screen"]["text"]
-            .as_str()
-            .is_some_and(|t| t.contains("BOB screen line")),
-        "{peer}"
-    );
+    // A task reads the agent's last words, never the terminal screen: a prompt Yulius held
+    // (and a person's draft) shows there.
+    assert!(peer.get("screen").is_none(), "{peer}");
+    assert!(!peer.to_string().contains("held words"), "{peer}");
+    assert_eq!(peer["last_words"], "BOB summary words", "{peer}");
     assert_eq!(peer["steps_list"][0]["note"], "BOB note", "{peer}");
     assert!(
         peer.get("withheld").is_none(),
@@ -213,11 +245,32 @@ async fn a_task_reads_a_neighbours_owner_delivery_claims_waits_and_screen() -> T
         "PR #41 (pr_open)",
         "Claims: docs/x.md (\"BOB claim\")",
         "Waits for:",
-        "Screen (live):",
-        "BOB screen line",
+        "Last words: BOB summary words",
     ] {
         assert!(text.contains(said), "`{said}` in:\n{text}");
     }
+    assert!(!text.contains("held words"), "{text}");
+    Ok(())
+}
+
+/// SPEC-625 PSV-001: an ended task's claims, which nothing released, are not shown as held.
+#[tokio::test]
+async fn an_ended_tasks_claims_are_not_shown() -> TestResult {
+    let w = world().await?;
+    let ended = seed_task(&w.h, "t9", "s1", "u-bob", TaskStatus::Closed, None).await?;
+    w.h.store
+        .insert_claim(&ScopeClaimRecord {
+            id: "claim-t9".into(),
+            task_id: ended.id.clone(),
+            sandbox_id: ended.sandbox_id.clone(),
+            pattern: "src/**".into(),
+            note: Some("left over".into()),
+            created_at: Timestamp(1),
+        })
+        .await?;
+    let (peer, error) = tool(&w, ALICE, "task_get", json!({"number": ended.number})).await?;
+    assert!(!error, "{peer}");
+    assert_eq!(peer["claims"], json!([]), "{peer}");
     Ok(())
 }
 
@@ -382,6 +435,102 @@ async fn a_personal_tasks_free_text_stays_with_tasks_holding_the_same_secrets() 
     let (theirs, _) = tool(&w, ALICE_TWO, "scopes_list", json!({})).await?;
     assert!(shows(&theirs).contains("PRIVATE claim"), "{theirs}");
 
+    // The transcript: found and read by alice's other task, never by bob's or the automation's.
+    let (found, error) = tool(
+        &w,
+        ALICE_TWO,
+        "sessions_search",
+        json!({"query": "PRIVATE summary"}),
+    )
+    .await?;
+    assert!(!error, "{found}");
+    let doc = found["results"]
+        .as_array()
+        .and_then(|r| r.iter().find(|r| r["task_number"] == number))
+        .and_then(|r| r["id"].as_str())
+        .ok_or_else(|| format!("alice's other task finds t1's transcript: {found}"))?
+        .to_owned();
+    for reader in [BOB, AUTOMATION] {
+        let (found, error) = tool(
+            &w,
+            reader,
+            "sessions_search",
+            json!({"query": "PRIVATE summary"}),
+        )
+        .await?;
+        assert!(!error, "{found}");
+        assert!(
+            !shows(&found["results"]).contains("PRIVATE"),
+            "{reader}: {found}"
+        );
+        let (refused, error) = tool(&w, reader, "session_read", json!({"id": doc})).await?;
+        assert!(error, "{reader}: {refused}");
+        assert!(
+            refused.as_str().is_some_and(|t| t.contains("personal")),
+            "{reader}: {refused}"
+        );
+    }
+
+    // The briefs the tidy tools answer keep the same rule (task_archive on alice's ended task).
+    let ended = seed_task(&w.h, "t8", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    w.h.store
+        .replace_steps(
+            &ended.id,
+            &[StepRecord {
+                id: StepId::parse("step-t8")?,
+                task_id: ended.id.clone(),
+                ordinal: 1,
+                status: "in_progress".into(),
+                title: "PRIVATE ended step".into(),
+                note: Some("PRIVATE ended note".into()),
+                updated_by: None,
+                updated_at: Some(Timestamp(1)),
+                effort: 1,
+            }],
+            "task:test",
+            Timestamp(1),
+        )
+        .await?;
+    for archived in [true, false] {
+        let (answer, error) = tool(
+            &w,
+            BOB,
+            "task_archive",
+            json!({"number": ended.number, "archived": archived}),
+        )
+        .await?;
+        assert!(!error, "{answer}");
+        assert!(!shows(&answer).contains("PRIVATE"), "{answer}");
+    }
+
+    // The briefing's recent changes leave out a closed personal task's request.
+    let mut closed = seed_task(
+        &w.h,
+        "t10-template",
+        "s1",
+        "u-alice",
+        TaskStatus::Closed,
+        None,
+    )
+    .await?;
+    closed.id = TaskId::parse("t10")?;
+    closed.title = "Closed personal work".into();
+    closed.prompt = "PRIVATE closed request".into();
+    closed.closed_at = Some(Timestamp(5));
+    w.h.store.insert_task(&closed).await?;
+    let (context, error) = tool(&w, BOB, "project_context", json!({})).await?;
+    assert!(!error, "{context}");
+    assert!(
+        shows(&context).contains("Closed personal work"),
+        "{context}"
+    );
+    assert!(!shows(&context).contains("PRIVATE"), "{context}");
+    let (context, _) = tool(&w, ALICE_TWO, "project_context", json!({})).await?;
+    assert!(
+        shows(&context).contains("PRIVATE closed request"),
+        "{context}"
+    );
+
     // Alice's other task holds the same secret: it reads everything.
     let (own, error) = tool(&w, ALICE_TWO, "task_get", json!({"number": number})).await?;
     assert!(!error, "{own}");
@@ -391,7 +540,7 @@ async fn a_personal_tasks_free_text_stays_with_tasks_holding_the_same_secrets() 
         "PRIVATE note",
         "PRIVATE claim",
         "PRIVATE ask",
-        "PRIVATE screen line",
+        "PRIVATE summary words",
     ] {
         assert!(shows(&own).contains(said), "`{said}`: {own}");
     }
@@ -472,6 +621,26 @@ async fn reading_a_neighbour_changes_nothing_and_no_steering_tool_is_served() ->
         .and_then(|t| t["description"].as_str())
         .ok_or("task_get")?;
     assert!(described.contains("read-only"), "{described}");
+    assert!(described.contains("only a person"), "{described}");
+    // SPEC-625 AC-6: the server's instructions say to read, not to ask a person to relay.
+    let init = call(
+        &w.h.internal,
+        Method::POST,
+        "/mcp",
+        Some(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18"}})),
+        &Creds {
+            bearer: Some(ALICE.into()),
+            ..Creds::default()
+        },
+    )
+    .await?;
+    let instructions = init.body["result"]["instructions"]
+        .as_str()
+        .ok_or("instructions")?;
+    for said in ["task_get", "read-only", "never ask a person to relay"] {
+        assert!(instructions.contains(said), "`{said}`: {instructions}");
+    }
     assert_eq!(
         w.h.store.task_messages(&id, 50).await?.len(),
         messages_before,

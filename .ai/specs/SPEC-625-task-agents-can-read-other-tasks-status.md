@@ -50,16 +50,24 @@ much chaos"). Task #609.
 
 - **PSV-001** `task_get` answers, for every caller, besides what it answered before:
   `owner` (the owner's login), `delivery` (`stage` as the delivery record's wire name with the
-  environment for `env_done`, `pr` number or null, `merge_armed`), `claims` (the task's live scope
-  claims: pattern and note), `waits_for` (Yulius's own one-line reasons: an armed merge, its
-  checks or delivery news, staging, the queue or supertasks, capacity, a pause, its person) and
-  `screen` (`from`: live, last run, starting or none; `text`: its last 20 non-empty lines,
-  redacted of agent secrets as the page's terminal is). Nothing is written by the read.
+  environment for `env_done`, `pr` number or null, `merge_armed`), `claims` (the scope claims it
+  holds while live or waiting, pattern and note; an ended task holds none, though nothing released
+  them), `waits_for` (Yulius's own one-line reasons: an armed merge, its checks or delivery news,
+  staging, the queue or supertasks, capacity, a pause, its person) and `last_words` (the end of
+  its agent's last message in its transcript, 300 characters, redacted as the transcript is, or
+  null). A person's own callers (the Superagent, the remote MCP) also get `screen` (`from`: live,
+  last run, starting or none; `text`: its last 20 non-empty lines, redacted of agent secrets); a
+  task's agent never does: a prompt Yulius held (SPEC-487 QST-001) and a person's unsent draft
+  (SPEC-480) show on the screen. The read changes nothing of the task (status, plan, owner,
+  messages); Yulius's own wait bookkeeping (`sync_wait_message`) runs as for every brief.
 - **PSV-002** A task's agent reads only tasks of its own project: a task of another project, by
   number or id, is not found, and no list or claim of another project appears.
-- **PSV-003** A task's agent reads what its owner may view: `tasks_list` and `task_get` from a
-  task refuse when its owner is disabled or has lost read access to the project (the rule of
-  SPEC-490: viewing needs read access, owner or not).
+- **PSV-003** A task's agent reads the status of tasks only while its owner may view the
+  project: `tasks_list` and `task_get` from a task refuse when its owner is disabled, has lost
+  read access, or Yulius cannot settle that access now (a cached decision within the staleness
+  bound, else GitHub; fail closed, with a sentence naming the cause). The rule of SPEC-490:
+  viewing needs read access, owner or not. Transcripts and claims (`session_read`,
+  `sessions_search`, `scopes_list`) keep their existing rule.
 - **PSV-004** When the peer reaches its owner's personal agent secrets or personal MCP servers and
   the reading task does not hold that same person's (another owner's task, or an automation's
   task), every text an agent or person wrote that could carry what those reached is withheld from
@@ -67,8 +75,9 @@ much chaos"). Task #609.
   notes, the current step, wait history, the waiting texts (`needs_you`, `needs_you_notice`,
   `attention`, `held_prompt`, `wait_reason`), claim notes, the screen and the transcript; claim
   notes and the current step also from `scopes_list`, `scope_claim`'s overlaps and
-  `task_create`'s planned overlaps. The
-  answer says `withheld` and why. Its number, title, status, `shows`, branch, spec path, step
+  `task_create`'s planned overlaps; the same from the brief `task_stop`, `task_archive` and
+  `task_update` answer, and the request from the briefing's recent changes. `last_words` is
+  withheld too. The answer says `withheld` and why (the `tasks_list` text on the row). Its number, title, status, `shows`, branch, spec path, step
   counts, owner, PR and stage, claim patterns and `waits_for` stay.
 - **PSV-005** No write path: the read view adds no tool and no argument that messages, starts,
   stops or changes a task; a task agent is still not served `task_message` or any person tool.
@@ -86,14 +95,15 @@ much chaos"). Task #609.
 | branch, spec path | always | Public in the repository's branches and pull requests. |
 | step counts (done/total/percent) | always | Numbers only. |
 | step titles and notes, current step | unless PSV-004 | The plan the project's members read on the task page; agent text, so withheld when it could carry personal data. |
-| request (`prompt`, 4000 chars) | unless PSV-004 | The person's request, readable by every member; may name personal matters for a personal task. |
+| request (`prompt`, 4000 chars; its first line in the briefing's recent changes) | unless PSV-004 | The person's request, readable by every member; may name personal matters for a personal task. |
 | `needs_you`, `attention`, `held_prompt`, `wait_reason`, `needs_you_notice`, wait history | unless PSV-004 | What the task page shows every member; free text. |
 | `owner` (login) | always | Shown on every task row; a GitHub login, no email. |
 | `delivery`: stage, PR number, merge armed | always | The pull request is public to the repository's readers; the stage is Yulius's own label. |
-| `claims`: patterns | always | Repository paths, already in `scopes_list`. |
+| `claims`: patterns | while it holds them | Repository paths, already in `scopes_list`; an ended task holds none. |
 | `claims`: notes (also in `scopes_list`, `scope_claim` and `task_create` overlaps, with `their_step`) | unless PSV-004 | Agent text. |
 | `waits_for` | always | Yulius's own fixed sentences; they carry no agent or person text. |
-| `screen` (20 lines) | unless PSV-004 | What the task page's terminal shows members, redacted of agent secrets; withheld when personal tools could have printed personal data. |
+| `last_words` (300 chars) | unless PSV-004 | The end of the agent's last message, which members read in its transcript, redacted of agent secrets. |
+| `screen` (20 lines) | never | The terminal shows a prompt Yulius held and a person's unsent draft, which reach no agent; the Superagent and the remote MCP, a person's own, get it. |
 | transcript (`session_read`, `sessions_search`) | unless PSV-004 | Readable by members today, redacted of agent secrets; never part of `task_get`. |
 | subscription, model, effort | always | As before; account emails are never shown (UI-022). |
 | account email, secrets' values, personal secret names | never | Values never reach agents (placeholders, SPEC-245); emails are administrators' only. |
@@ -114,15 +124,23 @@ much chaos"). Task #609.
 ## Acceptance criteria
 
 - AC-1 Alice's task reads Bob's task of the same project with `task_get` and sees its owner
-  (`bob`), its PR number and stage, its claims, `waits_for` and its screen.
+  (`bob`), its PR number and stage, its claims, `waits_for` and its agent's last words, and
+  nothing of its screen (where a held prompt's words show). An ended task's leftover claims are
+  not shown.
 - AC-2 A task of another project is not found by number or id, and its claims never appear.
 - AC-3 A task whose owner is disabled gets `tasks_list` and `task_get` refused.
-- AC-4 With Bob's personal secret switched on in the project, Alice's task sees none of Bob's
-  task's request, step titles, notes, screen, claim notes or waiting texts in `task_get` and
-  `tasks_list`, and `session_read` of Bob's task is refused; Bob's other task sees them.
-- AC-5 `task_get` on a peer changes nothing (status, updated time, steps, messages, audit), and
+- AC-4 With Alice's personal secret in the project, Bob's task and the automation's task see none
+  of Alice's task's request, step titles, notes, last words, claim notes or waiting texts in
+  `task_get`, `tasks_list`, `scopes_list`, `scope_claim`, `task_create`'s overlap, the briefs of
+  `task_archive` and the briefing's recent changes; `sessions_search` does not find its
+  transcript and `session_read` refuses it by task number and by id. Alice's other task sees
+  all of them.
+- AC-5 `task_get` on a peer changes nothing of it (status, activity, updated time, owner, steps,
+  messages), and
   the task agent's tools still hold no `task_message` and no person tool.
-- AC-6 The skills, catalog and instructions say what PSV-006 says.
+- AC-6 The skills, catalog and instructions say what PSV-006 says; the test pins the MCP
+  instructions ("never ask a person to relay") and the `task_get` description ("read-only",
+  "only a person").
 
 ## Test plan
 
@@ -131,7 +149,8 @@ much chaos"). Task #609.
   personal agent secret; each test fails without the change (new fields absent, private text
   present).
 - `crates/yulius-app/src/mcp_text.rs` unit tests: the text of `task_get` shows the owner, the
-  delivery, claims, `waits_for`, the screen and `withheld`.
+  delivery, claims (a note on one line), `waits_for`, last words, the screen and `withheld`, and
+  a `tasks_list` row says its texts are withheld.
 - `crates/yulius-app/src/peer_status.rs` unit tests: what `withhold` removes and keeps, and that
   `waits_for` holds only Yulius's sentences.
 - The `task_get` description says read-only (AC-5 in `peer_status.rs`); the existing checks keep
@@ -149,6 +168,15 @@ much chaos"). Task #609.
   person's secrets (`Holder::Nobody`), so it never reads a personal task's text, and a person's
   own two tasks read each other in full (both already hold the same secrets).
 - Persons (Superagent, remote MCP) keep their full view: their access rule is unchanged.
+- A task reads a neighbour's last words from its transcript, not its screen (review round 1):
+  Claude Code shows a prompt Yulius held ("Original prompt: …") and a person's draft in the
+  terminal, and neither may reach an agent. The transcript holds neither.
+- The holder rule reads today's configuration (`reaches_owners_personal`): once the owner
+  switches the personal secret or MCP server off, their earlier tasks read in full again. Kept:
+  recording "held personal" per run would need a migration and still not cover the files below.
+- This is not a confidentiality boundary: every task of a sandbox shares its file system
+  (SPEC-245 "Shared surfaces"), including other tasks' transcript folders and worktrees. PSV-004
+  limits what Yulius's tools hand over (ADR-0460, Consequences).
 - Out of scope: removing the existing tidy tools of task agents (`task_stop`, `task_archive`,
   `task_delete`, `task_update`); notifying a task when a neighbour changes (no push, read only).
 

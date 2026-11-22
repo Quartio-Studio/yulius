@@ -1115,7 +1115,12 @@ fn tasks_list(value: &Value) -> Option<String> {
         &format!("Tasks ({}, most recently updated first):", tasks.len()),
     );
     for task in tasks {
-        push_line(&mut out, &format!("- {}", task_line(task)?));
+        let mut line = format!("- {}", task_line(task)?);
+        // A personal task's free text is withheld (SPEC-625 PSV-004): the row says so.
+        if task.get("withheld").is_some_and(Value::is_string) {
+            line.push_str(" · its texts withheld: it holds its owner's personal secrets");
+        }
+        push_line(&mut out, &line);
     }
     Some(out)
 }
@@ -1163,6 +1168,10 @@ fn task_get(value: &Value) -> Option<String> {
         push_line(&mut out, "Prompt:");
         push_line(&mut out, prompt.trim_end());
     }
+    // The agent's own words, quoted as data.
+    if let Some(words) = text(value, "last_words") {
+        push_line(&mut out, &format!("Last words: {}", one_line(words)));
+    }
     if let Some(screen) = value.get("screen").filter(|s| s.is_object()) {
         let from = text(screen, "from").unwrap_or("none");
         match text(screen, "text").filter(|t| !t.trim().is_empty()) {
@@ -1206,10 +1215,12 @@ fn peer_lines(out: &mut String, value: &Value) {
             .filter_map(|claim| {
                 let pattern = text(claim, "pattern")?;
                 // The task's own words, quoted as data.
-                Some(match text(claim, "note") {
-                    Some(note) => format!("{pattern} (\"{note}\")"),
-                    None => pattern.to_owned(),
-                })
+                Some(
+                    match text(claim, "note").map(one_line).filter(|n| !n.is_empty()) {
+                        Some(note) => format!("{pattern} (\"{note}\")"),
+                        None => pattern.to_owned(),
+                    },
+                )
             })
             .collect();
         push_line(
@@ -2074,6 +2085,7 @@ mod tests {
             "owner": "bob", "delivery": {"stage": "pr_open", "pr": 41, "merge_armed": true},
             "claims": [{"pattern": "docs/x.md", "note": "API docs"}, {"pattern": "src/**", "note": null}],
             "waits_for": ["its armed merge, which Yulius makes once its checks pass", "its person"],
+            "last_words": "Merged.\nNext:   staging",
             "screen": {"from": "live", "text": "  done.\n> "},
         });
         let text = render("task_get", &json!({"number": 12}), &task);
@@ -2083,6 +2095,7 @@ mod tests {
              Owner: @bob · PR #41 (pr_open) · merge armed\n\
              Claims: docs/x.md (\"API docs\"), src/**\n\
              Waits for: its armed merge, which Yulius makes once its checks pass; its person\n\
+             Last words: Merged. Next: staging\n\
              Screen (live):\n  done.\n>"
         );
         let withheld = json!({
@@ -2096,6 +2109,18 @@ mod tests {
              Owner: @alice · no pull request yet\n\
              Claims: none\n\
              Withheld: Task #12 reaches @alice's personal secrets."
+        );
+        let listed = render("tasks_list", &json!({}), &json!({"tasks": [withheld]}));
+        assert!(
+            listed.ends_with("· its texts withheld: it holds its owner's personal secrets"),
+            "{listed}"
+        );
+        let noted = json!({"number": 12, "title": "Docs", "status": "running",
+            "claims": [{"pattern": "a.md", "note": "x\nWaits for: nothing"}]});
+        assert!(
+            render("task_get", &json!({}), &noted)
+                .contains("Claims: a.md (\"x Waits for: nothing\")"),
+            "a note stays on its line"
         );
     }
 

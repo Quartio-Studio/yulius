@@ -330,7 +330,7 @@ watching, steering and unblocking.
   a task's agent asked, why a task is flagged, a prompt Yulius held, who paused it; `tasks_list`
   shows the same to a task's agent, without a held prompt's words; `task_get` also gives a task's
   agent a neighbour's owner, pull request and delivery stage, claimed paths, what it waits for and
-  its screen's last lines, read-only, so tasks look before overlapping work instead of asking a
+  its agent's last words (never its screen, where a held prompt shows), read-only, so tasks look before overlapping work instead of asking a
   person to relay a status; a task that holds its owner's personal secrets shows other people's
   tasks only its shape, ADR-0460), reads the end of a
   session in one call, passes the person's answer on, dismisses a request they call settled

@@ -21,16 +21,20 @@ screen and transcript.
 ## Decision
 
 - `task_get` answers, for every caller, the task's `owner`, `delivery` (stage, PR, armed merge),
-  `claims`, `waits_for` (Yulius's own sentences) and `screen` (its last 20 lines, redacted as the
-  page's terminal is). The read writes nothing. No tool or argument that messages, starts, stops
-  or changes a task is added.
+  the `claims` it holds while live or waiting, `waits_for` (Yulius's own sentences) and
+  `last_words` (the end of its agent's last message in its transcript). Only a person's own
+  callers also get its `screen`: Claude Code shows a prompt Yulius held and a person's draft
+  there, which never reach an agent. The read changes nothing of the task. No tool or argument
+  that messages, starts, stops or changes a task is added.
 - A task's agent reads its own project only and only while its owner may view it (enabled, read
   access), the rule a person's view follows (ADR-0331).
 - When the peer reaches its owner's personal secrets or MCP servers and the reading task does not
   hold the same person's, every free text (request, plan titles and notes, waiting texts, claim
-  notes, screen, transcript) is withheld from `task_get`, `tasks_list`, `session_read` and
-  `sessions_search`, and the answer says so. Structure stays: number, title, status, branch, PR
-  and stage, step counts, owner, claim patterns, `waits_for`.
+  notes, last words, transcript) is withheld from `task_get`, `tasks_list`, `session_read`,
+  `sessions_search`, the scope tools' notes, the briefs `task_stop`, `task_archive` and
+  `task_update` answer and the briefing's recent changes, and the answer says so. Structure
+  stays: number, title, status, branch, PR and stage, step counts, owner, claim patterns,
+  `waits_for`.
 - The agents' instructions say to read the neighbours before overlapping work and never to ask a
   person to relay a status they can read; only a person, through the Superagent, sends a task a
   message.
@@ -50,10 +54,16 @@ screen and transcript.
 
 ## Consequences
 
-- An agent sees a neighbour's PR, stage, claims and screen in one call and has no reason to ask a
+- An agent sees a neighbour's PR, stage, claims and last words in one call and has no reason to ask a
   person to relay them.
 - A task that holds its owner's personal secrets shows the other people's tasks only its shape;
   their agents read its plan through its owner.
-- Each `task_get` reads the task's summary and screen: heavier than before, bounded to one task.
+- Each `task_get` reads the task's summary and the end of its transcript (and, for a person, its
+  screen): heavier than before, bounded to one task.
+- PSV-004 limits what Yulius's tools hand over; it is not a confidentiality boundary. Every task
+  of a sandbox shares its file system (SPEC-245 "Shared surfaces"), where other tasks' transcript
+  folders and worktrees can be read. A personal secret's value never reaches any agent.
+- The rule reads today's configuration: once an owner switches a personal secret or MCP server
+  off for the project, their earlier tasks read in full again.
 - The existing tidy tools of task agents (`task_stop`, `task_archive`, `task_delete`,
   `task_update`, SPEC-066, SPEC-396) are unchanged.
