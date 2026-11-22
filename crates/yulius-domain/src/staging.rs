@@ -26,6 +26,8 @@ pub const MAX_DEPLOY_ATTEMPTS: u32 = 3;
 pub enum StagingState {
     /// Waiting for the full gate's verdict on its revision.
     Testing,
+    /// Its failing tests belong to earlier revisions. A verified descendant serves it.
+    Inherited,
     /// Its full gate passed: waiting for its turn on staging.
     Ready,
     /// Its revision is being deployed and verified.
@@ -44,8 +46,9 @@ pub enum StagingState {
 
 impl StagingState {
     /// Every state, in lifecycle order.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Testing,
+        Self::Inherited,
         Self::Ready,
         Self::Deploying,
         Self::Verified,
@@ -60,6 +63,7 @@ impl StagingState {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Testing => "testing",
+            Self::Inherited => "inherited",
             Self::Ready => "ready",
             Self::Deploying => "deploying",
             Self::Verified => "verified",
@@ -81,6 +85,7 @@ impl StagingState {
     pub fn task_wait_label(self) -> &'static str {
         match self {
             Self::Testing => "Waiting for the merged revision’s full suite",
+            Self::Inherited => "Waiting for staging to verify the fix",
             Self::Ready => "Waiting for the staging deployment to start",
             Self::Deploying => "Waiting for staging to deploy and verify",
             Self::Verified
@@ -94,7 +99,10 @@ impl StagingState {
     /// Still on its way to staging.
     #[must_use]
     pub fn is_pending(self) -> bool {
-        matches!(self, Self::Testing | Self::Ready | Self::Deploying)
+        matches!(
+            self,
+            Self::Testing | Self::Inherited | Self::Ready | Self::Deploying
+        )
     }
 
     /// Its revision is on staging, deployed and verified (its own deploy or a later one).
@@ -178,7 +186,12 @@ pub fn admit(revision: &str, own: &[Facts], contained: bool) -> Admission {
         },
         supersede: own
             .iter()
-            .filter(|r| matches!(r.state, StagingState::Testing | StagingState::Ready))
+            .filter(|r| {
+                matches!(
+                    r.state,
+                    StagingState::Testing | StagingState::Inherited | StagingState::Ready
+                )
+            })
             .map(|r| r.id.clone())
             .collect(),
     }
@@ -213,19 +226,29 @@ pub struct Pick {
 pub fn pick(requests: &[Facts], current: Option<u64>) -> Pick {
     let mut out = Pick::default();
     let mut ahead: Vec<&Facts> = Vec::new();
+    let mut included = Vec::new();
+    let mut first_inherited: Option<u64> = None;
     for request in requests {
-        if !matches!(request.state, StagingState::Testing | StagingState::Ready) {
+        if !matches!(
+            request.state,
+            StagingState::Testing | StagingState::Inherited | StagingState::Ready
+        ) {
             continue;
         }
         let Some(position) = request.position else {
             continue;
         };
         if current.is_some_and(|at| position <= at) {
-            out.included.push(request.id.clone());
+            included.push((position, request.id.clone()));
+        } else if request.state == StagingState::Inherited {
+            first_inherited =
+                Some(first_inherited.map_or(position, |earlier| earlier.min(position)));
         } else {
             ahead.push(request);
         }
     }
+    included.sort_by_key(|(position, _)| *position);
+    out.included = included.into_iter().map(|(_, id)| id).collect();
     if requests.iter().any(|r| r.state == StagingState::Deploying) {
         return out;
     }
@@ -235,6 +258,21 @@ pub fn pick(requests: &[Facts], current: Option<u64>) -> Pick {
         .take_while(|r| r.state == StagingState::Ready)
         .copied()
         .collect();
+    // The first passing descendant answers an inherited request even if another green
+    // revision has arrived meanwhile. Include every ready request at that same position.
+    let count = first_inherited
+        .and_then(|at| {
+            ready
+                .iter()
+                .find(|r| r.position.is_some_and(|pos| pos >= at))
+        })
+        .map_or(ready.len(), |fix| {
+            ready
+                .iter()
+                .take_while(|r| r.position <= fix.position)
+                .count()
+        });
+    let ready = &ready[..count];
     if let Some((last, older)) = ready.split_last() {
         // Requests at the deployed revision's own position (two tasks, one landing) are carried.
         let target = ahead
@@ -312,6 +350,7 @@ mod tests {
             pending,
             [
                 StagingState::Testing,
+                StagingState::Inherited,
                 StagingState::Ready,
                 StagingState::Deploying
             ]
@@ -479,6 +518,20 @@ mod tests {
         let mixed = pick(&[b, person], Some(4));
         assert_eq!(mixed.deploy.as_deref(), Some("b"));
         assert_eq!(mixed.carried, ["p"]);
+    }
+
+    #[test]
+    fn the_verified_descendant_serves_inherited_requests_in_revision_order() {
+        let requests = [
+            req("later", "b", "bbb", StagingState::Inherited, 4),
+            req("fix", "c", "ccc", StagingState::Ready, 5),
+            req("first", "a", "aaa", StagingState::Inherited, 3),
+            req("newer", "d", "ddd", StagingState::Ready, 6),
+        ];
+        let before = pick(&requests, Some(2));
+        assert_eq!(before.deploy.as_deref(), Some("fix"));
+        assert!(before.included.is_empty());
+        assert_eq!(pick(&requests, Some(5)).included, ["first", "later", "fix"]);
     }
 
     /// MFS-007, MFS-008: a passed deploy verifies, a failed one stays failed, a lost one is

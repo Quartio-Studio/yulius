@@ -682,7 +682,7 @@ async fn app_behind(data: &Path, behind_ms: i64) -> Result<(Arc<App>, Arc<Shifte
 
 /// A writer's terminal on `id` for the person `caller` acts for: what they type goes the way a
 /// viewer's keys go.
-async fn terminal(
+pub(crate) async fn terminal(
     app: &Arc<App>,
     caller: &ProjectCaller,
     id: &TaskId,
@@ -1169,6 +1169,7 @@ fn a_message_of_yulius_waits_for_a_persons_draft_and_tells_them() -> TestResult 
     rt.block_on(async {
         let (app, clock) = app_behind(&data, 13 * MINUTE).await?;
         let (id, caller) = running(&app, &data).await?;
+        crate::pr_watch::leave_verification_step(&app, &id).await?;
         wait_for("the first turn's end", Duration::from_secs(30), || async {
             activity(&app, &id).await.is_some_and(Activity::is_idle)
         })
@@ -1371,6 +1372,7 @@ fn a_message_of_yulius_is_typed_into_a_box_a_key_left_empty() -> TestResult {
     let rt = runtime()?;
     rt.block_on(async {
         let (app, clock, id, caller) = idle_full_screen(&data, 13 * MINUTE).await?;
+        crate::pr_watch::leave_verification_step(&app, &id).await?;
         let (ctx, attach) = full_screen_terminal(&app, &caller, &id).await?;
         let mut watch = app.runtime(&id).hub.watch();
         let bounds = WatchBounds {
@@ -1416,6 +1418,7 @@ fn a_draft_the_screen_shows_holds_until_it_is_cleared() -> TestResult {
     let rt = runtime()?;
     rt.block_on(async {
         let (app, clock, id, caller) = idle_full_screen(&data, 13 * MINUTE).await?;
+        crate::pr_watch::leave_verification_step(&app, &id).await?;
         let (ctx, attach) = full_screen_terminal(&app, &caller, &id).await?;
         let mut watch = app.runtime(&id).hub.watch();
         let bounds = WatchBounds {
@@ -1498,6 +1501,7 @@ fn a_box_seen_empty_ends_the_hold_its_mark_and_its_flag_without_a_prompt_hook() 
         })
         .await?;
         let (id, caller) = running(&app, &data).await?;
+        crate::pr_watch::leave_verification_step(&app, &id).await?;
         // Without a Stop hook the task never reads idle; the watch asks the transcript whether
         // a turn is open, so its passes are repeated until the first turn has closed.
         wait_for("the empty prompt box", Duration::from_secs(30), || async {
@@ -2505,6 +2509,7 @@ fn the_last_wake_after_an_outage_tells_the_person_of_their_draft() -> TestResult
         let probe = Arc::new(ScriptedUsage::default());
         let (app, port) = start(&data, &fake, fake_agent(), 0, probe).await?;
         let (id, caller) = running(&app, &data).await?;
+        crate::pr_watch::leave_verification_step(&app, &id).await?;
         wait_for("the first turn's end", Duration::from_secs(30), || async {
             activity(&app, &id).await.is_some_and(Activity::is_idle)
         })
@@ -2898,6 +2903,7 @@ fn a_mark_ahead_of_the_clock_is_read_as_typed_now() -> TestResult {
         let probe = Arc::new(ScriptedUsage::default());
         let (app, port) = start(&data, &fake, fake_agent(), 0, probe).await?;
         let (id, caller) = running(&app, &data).await?;
+        crate::pr_watch::leave_verification_step(&app, &id).await?;
         wait_for("the first turn's end", Duration::from_secs(30), || async {
             activity(&app, &id).await.is_some_and(Activity::is_idle)
         })
@@ -3464,6 +3470,7 @@ async fn restored_draft(submit: &str, response: &str) -> TestResult {
     )
     .await?;
     let (id, caller) = running(&app, &data).await?;
+    crate::pr_watch::leave_verification_step(&app, &id).await?;
     let (ctx, attach) = terminal(&app, &caller, &id).await?;
     app.terminal_input(&ctx, &attach, b"my draft\x13", false)
         .await?;

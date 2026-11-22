@@ -169,37 +169,6 @@ struct QueueNoticeSource {
     train: Result<Option<WatchedTrain>, UnverifiedTrain>,
 }
 
-/// The observation admitted for an automatic parked resume. Owner messages take
-/// the normal resume path; only the watcher has a PR decision to revalidate.
-pub(crate) struct ParkedNotice {
-    pr: u64,
-    merged: bool,
-    branch: Option<String>,
-    source: Option<QueueNoticeSource>,
-}
-
-/// Persisted facts a parked candidate start compares in its launch transaction.
-pub struct ParkedCandidateClaim {
-    /// The owner's pull request.
-    pub pr: u64,
-    /// The most recent completed merge wait at observation.
-    pub decision: crate::stages::SpanRecord,
-    /// When CI is enabled, the verified head and its ordinary run (possibly absent).
-    pub ordinary: Option<(String, Option<CiRunRecord>)>,
-}
-
-impl ParkedNotice {
-    pub(crate) fn decision(&self, ci_enabled: bool) -> Option<ParkedCandidateClaim> {
-        let source = self.source.as_ref()?;
-        let (span, _) = source.decision.as_ref()?;
-        Some(ParkedCandidateClaim {
-            pr: self.pr,
-            decision: span.clone(),
-            ordinary: ci_enabled.then(|| (source.head.clone(), source.ordinary.clone())),
-        })
-    }
-}
-
 /// What the watch told one task, as saved.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Told {
@@ -1093,90 +1062,6 @@ impl App {
             }
             kept.insert(task.id.as_str().to_owned(), next);
         }
-        // SPEC-553 PRK-103: parked tasks continue to park safely while CI runs and resume
-        // automatically in their saved session/worktree when an actionable PR/CI result arrives,
-        // never on check-ins, stalls, active CI, human decisions, or stopped/crashed tasks.
-        if !update_holds
-            && let Ok(parked_tasks) = self
-                .deps
-                .store
-                .tasks_with_status(&[TaskStatus::Parked])
-                .await
-        {
-            for task in parked_tasks {
-                if task.archived_at.is_some() || kept.contains_key(task.id.as_str()) {
-                    continue;
-                }
-                let mut told = saved.get(task.id.as_str()).cloned().unwrap_or_default();
-                let paused = !matches!(self.deps.store.open_pause(&task.id).await, Ok(None));
-                let facts = if !paused {
-                    Box::pin(self.pr_facts_parked(&task, &mut told, &mut runs)).await
-                } else {
-                    None
-                };
-                let Some((facts, source)) = facts else {
-                    if told.pr > 0 {
-                        kept.insert(task.id.as_str().to_owned(), told);
-                    }
-                    continue;
-                };
-                let (text, next) = decide(&facts, &told, bounds);
-                let next = match text {
-                    None => next,
-                    Some(text) => {
-                        if let Err(err) = self.ensure_agent_account(task.harness.provider()).await {
-                            tracing::debug!(
-                                task = %task.id,
-                                pr = facts.pr,
-                                error = %err,
-                                "keeping parked task parked while no usable account is available"
-                            );
-                            untold(told, &next)
-                        } else {
-                            let text = crate::task_message::clean_message(&text);
-                            let notice = ParkedNotice {
-                                pr: facts.pr,
-                                merged: facts.events.iter().any(|e| e.kind == "merged"),
-                                branch: task.branch.clone(),
-                                source,
-                            };
-                            match self
-                                .resume_parked_with_notice(&task, Some(text.clone()), Some(&notice))
-                                .await
-                            {
-                                Ok(true) => {
-                                    tracing::info!(
-                                        task = %task.id,
-                                        pr = facts.pr,
-                                        "resumed parked task for its pull request"
-                                    );
-                                    typed.push((task.id.clone(), text));
-                                    next
-                                }
-                                Ok(false) => {
-                                    tracing::debug!(
-                                        task = %task.id,
-                                        pr = facts.pr,
-                                        "parked task changed before pull request wake"
-                                    );
-                                    untold(told, &next)
-                                }
-                                Err(err) => {
-                                    tracing::warn!(
-                                        task = %task.id,
-                                        pr = facts.pr,
-                                        error = %err,
-                                        "could not resume parked task for its pull request"
-                                    );
-                                    untold(told, &next)
-                                }
-                            }
-                        }
-                    }
-                };
-                kept.insert(task.id.as_str().to_owned(), next);
-            }
-        }
         // A task not live this pass (a session switching, a capacity pause) keeps what it was
         // told while it is not resting: its next run is not told it all again.
         for (id, told) in &saved {
@@ -1299,7 +1184,9 @@ impl App {
         record: Option<&crate::delivery::DeliveryRecord>,
         merged_elsewhere: bool,
     ) -> bool {
-        if task.status != TaskStatus::Running {
+        if task.status != TaskStatus::Running
+            || !self.accepts_machine_notice(&task.id).await.unwrap_or(false)
+        {
             return false;
         }
         if self.merge_is_armed(&task.id) {
@@ -1427,7 +1314,7 @@ impl App {
                 told.clear_armed_stall();
             }
             // Merged: said once, to a task the watch saw with it open (PRN-005, PRN-007).
-            if !merge_untold(told, pr) {
+            if !merge_untold(told, pr) || !self.accepts_machine_notice(&task.id).await.ok()? {
                 return None;
             }
             let needs_you = !matches!(self.deps.store.task_needs_you(&task.id).await, Ok(None));
@@ -1584,12 +1471,7 @@ impl App {
                 .as_ref()
                 .filter(|run| run.state == RunState::Failed)
                 .map(|run| run.sha.clone())
-            && if task.status == TaskStatus::Parked {
-                self.maybe_publish_repair_for_parked(task, &failed_sha)
-                    .await
-            } else {
-                self.maybe_publish_repair_for_watch(task, &failed_sha).await
-            }
+            && self.maybe_publish_repair_for_watch(task, &failed_sha).await
         {
             if receipt.is_some() {
                 // The watcher just pushed a repair. Read the new hosted head on the next pass.
@@ -1956,21 +1838,6 @@ impl App {
             .filter(|run| run.sandbox_id == sandbox.id))
     }
 
-    pub(crate) async fn recorded_candidate(
-        &self,
-        task: &TaskRecord,
-        pr: u64,
-    ) -> AppResult<Option<crate::merge_train::SingletonDecision>> {
-        if self.merge_is_armed(&task.id) {
-            return Ok(None);
-        }
-        let (_, mut outcome) = self.armed_view(&task.id);
-        let wait = self.deps.store.latest_merge_wait(&task.id).await?;
-        Ok(candidate_from_wait(wait, &mut outcome)?
-            .map(|(_, decision)| decision)
-            .filter(|decision| decision.singleton.pr == pr))
-    }
-
     /// A second clone can publish a repair without advancing this checkout's tracking ref.
     /// Only a notice ready to type needs a hosted read. Keep outages bounded per notice.
     async fn hosted_owner_pull(
@@ -2000,13 +1867,14 @@ impl App {
         .then_some(pull)
     }
 
-    async fn notice_inputs_current(
+    /// Recheck the recipient after the hosted read, before recording anything as heard.
+    async fn armed_notice_recipient(
         &self,
         task: &TaskRecord,
         sandbox: &SandboxRecord,
         pr: u64,
         source: &QueueNoticeSource,
-    ) -> Option<()> {
+    ) -> Option<NoticeRecipient> {
         let head = &source.head;
         if self.run_superseded_by_pushed_head(task, head).await {
             return None;
@@ -2040,19 +1908,6 @@ impl App {
         if ordinary != source.ordinary || candidate != source.candidate {
             return None;
         }
-        Some(())
-    }
-
-    /// Recheck the recipient after the hosted read, before recording anything as heard.
-    async fn armed_notice_recipient(
-        &self,
-        task: &TaskRecord,
-        sandbox: &SandboxRecord,
-        pr: u64,
-        source: &QueueNoticeSource,
-    ) -> Option<NoticeRecipient> {
-        self.notice_inputs_current(task, sandbox, pr, source)
-            .await?;
         let recipient = self
             .deps
             .store
@@ -2221,324 +2076,6 @@ impl App {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((pr, text.clone()));
         Some(text)
-    }
-
-    /// Hosted reads precede the launch lock and run after CLI provisioning.
-    pub(crate) async fn parked_notice_inputs(
-        &self,
-        task: &TaskRecord,
-        notice: &ParkedNotice,
-    ) -> bool {
-        let Some(source) = &notice.source else {
-            return true;
-        };
-        let Ok(sandbox) = self.dlv_sandbox_of(task).await else {
-            return false;
-        };
-        self.notice_inputs_current(task, &sandbox, notice.pr, source)
-            .await
-            .is_some()
-    }
-
-    /// Re-read durable ownership immediately before queueing or launching the resume.
-    pub(crate) async fn parked_notice_current(
-        &self,
-        task: &TaskRecord,
-        notice: &ParkedNotice,
-    ) -> bool {
-        let store = &self.deps.store;
-        if task.status != TaskStatus::Parked
-            || task.archived_at.is_some()
-            || task.branch != notice.branch
-            || task.activity == Some(yulius_domain::task::Activity::NeedsAttention)
-            || self.update_holds_starts()
-            || self.merge_is_armed(&task.id)
-            || !matches!(store.delivery(&task.id).await, Ok(Some(ref rec)) if rec.pr_number == Some(notice.pr) && if notice.merged { past_merge(&rec.stage) } else { rec.stage == DeliveryStage::PrOpen })
-        {
-            return false;
-        }
-        if notice.source.is_none()
-            && !notice.merged
-            && !matches!(self.recorded_candidate(task, notice.pr).await, Ok(None))
-        {
-            return false;
-        }
-        matches!(store.open_pause(&task.id).await, Ok(None))
-            && matches!(store.pending_hold(&task.id).await, Ok(None))
-            && matches!(store.task_needs_you(&task.id).await, Ok(None))
-            && tokio::select! {
-                biased;
-                request = self.browser_tab_request_for(&task.sandbox_id, &task.id) => request.is_none(),
-                () = std::future::ready(()) => false,
-            }
-    }
-
-    /// What the watch knows of a parked task's pull request for automatic wake (SPEC-553
-    /// PRK-103): only actionable events (failed/errored/unarmed-green CI runs, conflicts, failed
-    /// publication, or untold merges with work remaining), never check-ins, stalls, active CI,
-    /// or tasks waiting on a human decision.
-    async fn pr_facts_parked(
-        &self,
-        task: &TaskRecord,
-        told: &mut Told,
-        runs: &mut BTreeMap<String, Vec<CiRunRecord>>,
-    ) -> Option<(PrFacts, Option<QueueNoticeSource>)> {
-        let record = self.deps.store.delivery(&task.id).await.ok()??;
-        let pr = record.pr_number?;
-        let sandbox = self.deps.store.sandbox(&task.sandbox_id).await.ok()??;
-        if sandbox.is_playground() {
-            return None;
-        }
-        // Preserve actual human-decision and consent boundaries: never auto-wake while a person
-        // must act (`needs_you`, held prompt, browser request, terminal attention).
-        let person_must_act = task.activity == Some(yulius_domain::task::Activity::NeedsAttention)
-            || !matches!(self.deps.store.task_needs_you(&task.id).await, Ok(None))
-            || !matches!(self.deps.store.pending_hold(&task.id).await, Ok(None))
-            || self
-                .browser_tab_requests(&task.sandbox_id)
-                .await
-                .contains(task.id.as_str());
-        if person_must_act {
-            return None;
-        }
-        let now_ms = self.now().0;
-        if past_merge(&record.stage) {
-            if !merge_untold(told, pr) {
-                return None;
-            }
-            let plan_open = self
-                .deps
-                .store
-                .steps(&task.id)
-                .await
-                .ok()
-                .is_some_and(|steps| crate::sandboxes::plan_open(&steps));
-            let spec_open = self.spec_unfinished(&task.id).await;
-            if task.activity == Some(yulius_domain::task::Activity::Done)
-                && !plan_open
-                && !spec_open
-            {
-                return None;
-            }
-            let text = self.merged_note(task, &sandbox, pr, true).await;
-            return Some((
-                PrFacts {
-                    now_ms,
-                    pr,
-                    events: vec![Event {
-                        kind: "merged",
-                        key: pr.to_string(),
-                        text,
-                    }],
-                    progress: told.progress.clone(),
-                    ..PrFacts::default()
-                },
-                None,
-            ));
-        }
-        if record.stage != DeliveryStage::PrOpen {
-            return None;
-        }
-        if self.merge_is_armed(&task.id) {
-            return None;
-        }
-        if let Some(decision) = self.recorded_candidate(task, pr).await.ok()? {
-            // The same queue decision and bounded ordinary rerun wait survive parking.
-            // No preliminary train notice or periodic check-in starts a process.
-            let (mut facts, source) = Box::pin(self.pr_facts(
-                task,
-                told,
-                runs,
-                &self.arm_observation(&task.id),
-                &self.armed_now(&task.id),
-            ))
-            .await?;
-            facts.events.retain(|event| {
-                matches!(event.kind, "run" | "outcome" | "publish" | "conflict")
-                    || (event.kind == "green" && facts.head != decision.head)
-            });
-            facts.has_ci = false;
-            facts.check_ins = false;
-            if source.as_ref().is_none_or(|s| s.decision.is_none()) {
-                facts.events.clear();
-            }
-            return Some((facts, source));
-        }
-        let integration = delivery_profile(&sandbox).integration_branch;
-        if !runs.contains_key(sandbox.id.as_str()) {
-            let read = self
-                .deps
-                .store
-                .ci_runs(&sandbox.id, RUNS_READ)
-                .await
-                .unwrap_or_default();
-            runs.insert(sandbox.id.as_str().to_owned(), read);
-        }
-        let sandbox_runs = runs.get(sandbox.id.as_str()).map_or(&[][..], Vec::as_slice);
-        let mut own = sandbox_runs
-            .iter()
-            .find(|run| run.reference == CiRef::PullRequest(pr))
-            .cloned();
-        if own.is_none() && !told.head.is_empty() {
-            own = self
-                .deps
-                .store
-                .ci_runs_for_sha(&sandbox.id, &told.head)
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .find(|run| run.reference == CiRef::PullRequest(pr));
-        }
-        if let Some(failed_sha) = own
-            .as_ref()
-            .filter(|run| run.state == RunState::Failed)
-            .map(|run| run.sha.clone())
-            && self
-                .maybe_publish_repair_for_parked(task, &failed_sha)
-                .await
-        {
-            let read = self
-                .deps
-                .store
-                .ci_runs(&sandbox.id, RUNS_READ)
-                .await
-                .unwrap_or_default();
-            runs.insert(sandbox.id.as_str().to_owned(), read);
-            let refreshed = runs.get(sandbox.id.as_str()).map_or(&[][..], Vec::as_slice);
-            own = refreshed
-                .iter()
-                .find(|run| run.reference == CiRef::PullRequest(pr))
-                .cloned();
-        }
-        if let Some(run) = own.as_ref()
-            && run.state == RunState::Failed
-            && self.run_superseded_by_pushed_head(task, &run.sha).await
-        {
-            own = None;
-        }
-        let own = own.as_ref();
-        let mut events = Vec::new();
-        let told_key = |kind: &str, key: &str| told.keys.get(kind).is_some_and(|k| k == key);
-        if let Some(run) = own {
-            match run.state {
-                RunState::Failed if !told_key("run", &run.id) => {
-                    let jobs = self
-                        .deps
-                        .store
-                        .ci_jobs(&run.id, true)
-                        .await
-                        .unwrap_or_default();
-                    events.push(Event {
-                        kind: "run",
-                        key: run.id.clone(),
-                        text: red_run_text(run, &jobs),
-                    });
-                }
-                RunState::Error if !told_key("run", &run.id) => events.push(Event {
-                    kind: "run",
-                    key: run.id.clone(),
-                    text: errored_run_text(run),
-                }),
-                _ => {}
-            }
-        }
-        let head = own.map(|run| run.sha.clone());
-        let conflict_head = match &head {
-            Some(head) => Some(head.clone()),
-            None => self.branch_head(task).await,
-        };
-        if let Some((note_head, text)) = self
-            .current_actionable_push_problem(task, conflict_head.as_deref())
-            .await
-        {
-            let key = publish_key(&note_head, &text);
-            if !told_key("publish", &key) {
-                events.push(Event {
-                    kind: "publish",
-                    key,
-                    text,
-                });
-            }
-        }
-        if let Some(head) = &conflict_head
-            && self.conflicts(task, &sandbox, head).await
-        {
-            events.push(Event {
-                kind: "conflict",
-                key: head.clone(),
-                text: conflict_text(head, &integration),
-            });
-        }
-        let green =
-            own.is_some_and(|run| matches!(run.state, RunState::Passed | RunState::Skipped));
-        if let (true, Some(head)) = (green, &head)
-            && let Some((class, text)) = green_said(head, false, Hold::Free, None, &integration)
-        {
-            events.push(Event {
-                kind: "green",
-                key: format!("{head}:{class}"),
-                text,
-            });
-        }
-        let progress = format!(
-            "{}||{}|",
-            own.map_or_else(String::new, |run| format!(
-                "{}:{}",
-                run.id,
-                run.state.as_str()
-            )),
-            record.stage.encode(),
-        );
-        // `idle`, `check_ins`, `working` and `has_ci` stay false so `decide` wakes a parked task
-        // ONLY on real actionable `events`, never on periodic check-ins or stalls.
-        Some((
-            PrFacts {
-                now_ms,
-                pr,
-                events,
-                progress,
-                ci_busy: own.is_some_and(|run| run.state.is_active()),
-                head: own.map(|run| run.sha.clone()).unwrap_or_default(),
-                ..PrFacts::default()
-            },
-            None,
-        ))
-    }
-
-    /// Local check + one-shot repair publication for a parked task on a failing open PR.
-    async fn maybe_publish_repair_for_parked(&self, task: &TaskRecord, failed_sha: &str) -> bool {
-        let Some(worktree) = task.worktree_path.as_deref().map(std::path::Path::new) else {
-            return false;
-        };
-        let Some(head) = self
-            .deps
-            .git
-            .log(worktree, "HEAD", 1)
-            .await
-            .ok()
-            .and_then(|log| log.into_iter().next())
-            .map(|c| c.sha)
-        else {
-            return false;
-        };
-        if head.eq_ignore_ascii_case(failed_sha) || self.has_push_problem_for(&task.id, &head) {
-            return false;
-        }
-        {
-            let runtime = self.runtime(&task.id);
-            let mut checked = runtime
-                .repair_checked_head
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if checked
-                .as_deref()
-                .is_some_and(|h| h.eq_ignore_ascii_case(&head))
-            {
-                return false;
-            }
-            *checked = Some(head.clone());
-        }
-        self.try_publish_open_pr_repair(&task.id, Some(&head)).await
     }
 
     /// Whether `task`'s actionable failed publication still applies to its current unpublished

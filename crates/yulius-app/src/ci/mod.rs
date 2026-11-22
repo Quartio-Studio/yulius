@@ -39,7 +39,9 @@ mod environment;
 mod exec;
 mod findings;
 mod flaky;
+mod gate_history;
 pub use flaky::Noted;
+pub use gate_history::{GateJob, GateRead, GateVerdict, RepairRecipient};
 pub mod hygiene;
 mod opening;
 pub use opening::PullOpening;
@@ -282,7 +284,8 @@ pub fn run_for_pull_head(runs: &[CiRunRecord], pr: u64) -> Option<&CiRunRecord> 
 
 /// Test names retained by a cancelled sibling of a failed job (SPEC-566).
 /// The reason is written by the CI runner; other cancellation causes carry no observation.
-pub(crate) fn sibling_failure_names(reason: Option<&str>, kept: &str) -> Vec<String> {
+#[must_use]
+pub fn sibling_failure_names(reason: Option<&str>, kept: &str) -> Vec<String> {
     match reason
         .and_then(|why| why.strip_prefix("stopped early: job "))
         .and_then(|why| why.strip_suffix(" failed"))
@@ -1764,13 +1767,21 @@ impl App {
         }
         for target in plan.queue {
             if matches!(&target.reference, CiRef::Branch(branch) if branch == &profile.integration_branch)
-                && self.deps.store.active_ci_runs().await?.iter().any(|r| {
-                    r.sandbox_id == sandbox.id && matches!(r.reference, CiRef::Candidate(_))
-                })
             {
-                // A non-supersedable full candidate is already using the integration gate.
-                // The next inventory picks up the current branch head after its verdict.
-                continue;
+                let cancelled = facts.iter().any(|run| {
+                    run.sha == target.sha
+                        && matches!(run.reference, CiRef::Candidate(_))
+                        && run.state == RunState::Cancelled
+                });
+                if cancelled
+                    || self.deps.store.active_ci_runs().await?.iter().any(|r| {
+                        r.sandbox_id == sandbox.id && matches!(r.reference, CiRef::Candidate(_))
+                    })
+                {
+                    // An active candidate owns the slot. A cancelled candidate at this head
+                    // stays stopped until a person asks for a rerun.
+                    continue;
+                }
             }
             if let Some((_, gate)) = targets.iter().find(|(t, _)| *t == target) {
                 // A branch commit whose tree a run already passed (a squash merge of an
@@ -2381,11 +2392,15 @@ impl App {
     }
 
     async fn ci_run_of(&self, sandbox: &SandboxRecord, run_id: &str) -> AppResult<CiRunRecord> {
-        self.deps
-            .store
-            .ci_run(run_id)
+        let store = &self.deps.store;
+        if let Some(run) = store.ci_run(run_id).await? {
+            return (run.sandbox_id == sandbox.id)
+                .then_some(run)
+                .ok_or(AppError::NotFound);
+        }
+        store
+            .archived_gate_run(&sandbox.id, run_id)
             .await?
-            .filter(|run| run.sandbox_id == sandbox.id)
             .ok_or(AppError::NotFound)
     }
 
@@ -2416,6 +2431,7 @@ impl App {
                 )
             });
         Ok(CiOverview {
+            gate_notices: self.project_gate_notices(&sandbox).await?,
             gate: view.gate.as_ref().map(gate_view),
             gate_problem: view.problem,
             gate_fallback: view.fallback,

@@ -10,6 +10,8 @@ chained task starts) and SPEC-085 STT-002 (what "waits for Yulius" means). Amend
 request counts as tested only when it would merge, and a task whose spec does not say `done`
 has work left ("Final states stay as they were" holds for an achieved goal).
 
+[ADR-0450](0450-attribute-integration-test-failures-in-first-parent-order.md) supersedes merge notifications for finished deliveries. A person can continue the task. Its successors can proceed as soon as the completed delivery is recorded.
+
 ## Context
 
 A task is Done when its turn ended, its plan is complete and its pull request is merged, or

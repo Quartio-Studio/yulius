@@ -20,6 +20,32 @@ use crate::pool_supervision::{build_tuned, new_task, runtime, screen, seed, stop
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+pub(crate) async fn leave_verification_step(
+    app: &yulius_app::context::App,
+    task: &TaskId,
+) -> TestResult {
+    app.deps
+        .store
+        .replace_steps(
+            task,
+            &[yulius_app::model::StepRecord {
+                id: yulius_domain::ids::StepId::parse(&format!("verify-{task}"))?,
+                task_id: task.clone(),
+                ordinal: 1,
+                title: "Verify delivery".to_owned(),
+                status: "in_progress".to_owned(),
+                note: None,
+                updated_by: None,
+                updated_at: None,
+                effort: 1,
+            }],
+            "person",
+            app.now(),
+        )
+        .await?;
+    Ok(())
+}
+
 pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, Box<dyn std::error::Error>> {
     let out = Command::new("git")
         .args(args)
@@ -302,6 +328,9 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
             .store
             .transition_delivery(&DeliveryStage::PrOpen, &merged)
             .await?;
+        assert!(app.watch_prs(&bounds).await.is_empty(), "the completed merged task stays quiet");
+        assert!(!screen(&app, &id).contains("Pull request #7 is merged"));
+        leave_verification_step(&app, &id).await?;
         // Not over a prompt that waits for a person either (review round 2).
         let notices = data.join(yulius_app::pr_watch::PR_NOTICES_FILE);
         let before: serde_json::Value = serde_json::from_slice(&std::fs::read(&notices)?)?;

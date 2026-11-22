@@ -541,6 +541,7 @@ function summary(task) {
     // What the agent asked a person to do (`needs_you`, SPEC-134).
     needs_you: task.needs_you ? { ...task.needs_you } : null,
     ...(task.status === 'parked' && typeof task.parked_needs_you === 'boolean' ? { parked_needs_you: task.parked_needs_you, parked_pr: task.parked_pr } : {}),
+    ...(task.staging_outcome ? { staging_outcome: task.staging_outcome } : {}),
     ...(task.staging_wait ? { staging_wait: task.staging_wait } : {}),
     ...(task.needs_you_notice ? { needs_you_notice: { ...task.needs_you_notice } } : {}),
     // Why it reads needs_attention (SPEC-472): the flag's reason, only while it reads that flag.

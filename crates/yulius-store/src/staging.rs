@@ -95,11 +95,17 @@ impl StagingStore for SqliteStore {
         .await
     }
 
+    async fn latest_task_staging(&self, task: &TaskId) -> AppResult<Option<StagingRequestRecord>> {
+        let task = task.to_string();
+        self.call(move |c| c.query_row(&format!("SELECT {COLUMNS} FROM staging_requests WHERE task_id = ?1 ORDER BY created_at DESC, rowid DESC LIMIT 1"),
+            [task], request_row).optional().map_err(db)).await
+    }
+
     async fn task_staging_wait(&self, task: &TaskId) -> AppResult<Option<StagingState>> {
         let task = task.as_str().to_owned();
         self.call(move |c| {
             c.query_row(
-                "SELECT state FROM staging_requests WHERE task_id = ?1 AND told = 0 \
+                "SELECT state FROM staging_requests WHERE task_id = ?1 AND told = 0 AND EXISTS (SELECT 1 FROM machine_notice_tasks WHERE id = ?1 AND NOT needs_goal) \
                          ORDER BY created_at DESC, rowid DESC LIMIT 1",
                 [task],
                 |row| {
@@ -150,7 +156,7 @@ impl StagingStore for SqliteStore {
                 .prepare(&format!(
                     "SELECT {COLUMNS} FROM staging_requests \
                      WHERE sandbox_id = ?1 AND environment = ?2 \
-                       AND state IN ('testing', 'ready', 'deploying') \
+                       AND state IN ('testing', 'inherited', 'ready', 'deploying') \
                      ORDER BY created_at, rowid"
                 ))
                 .map_err(db)?;
@@ -167,7 +173,7 @@ impl StagingStore for SqliteStore {
             let mut statement = c
                 .prepare(
                     "SELECT DISTINCT sandbox_id, environment FROM staging_requests \
-                     WHERE state IN ('testing', 'ready', 'deploying') \
+                     WHERE state IN ('testing', 'inherited', 'ready', 'deploying') \
                         OR (state = 'deploy_failed' AND updated_at >= ?1) ORDER BY sandbox_id",
                 )
                 .map_err(db)?;
