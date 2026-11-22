@@ -13,6 +13,330 @@ use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::ids::{AttemptId, TaskId};
 
 #[test]
+fn final_notice_verification_keeps_the_session_when_the_candidate_applies_again() -> TestResult {
+    use yulius_domain::task::Activity;
+    with_idle_candidate(async |data, app, remote, id, _| {
+        let owner = app.deps.store.task(&id).await?.ok_or("owner")?;
+        app.load_limits([(yulius_domain::limits::Limit::Sessions, 1)].into())
+            .await;
+        app.deps
+            .store
+            .set_activity(&id, Some(Activity::Done), app.now())
+            .await?;
+        let peer = queued_candidate_peer(app, &owner).await?;
+        let queued = app.deps.store.task(&peer).await?.ok_or("queued")?;
+        remote.remote.lock().map_err(|_| "origin")?.take();
+        let base = crate::pr_watch::git(&data.join("origin.git"), &["rev-parse", "dev"])?;
+        remote.pulls.lock().map_err(|_| "pulls")?[0].base_sha = "moved-base".into();
+        let (checking, release) =
+            super::pause_watch_or_queue(super::Point::ArmedNoticePublicationRead, &id);
+        let pass = {
+            let app = app.clone();
+            tokio::spawn(async move { app.watch_prs(&WatchBounds::default()).await })
+        };
+        tokio::time::timeout(Duration::from_secs(10), checking.notified()).await?;
+        remote.pulls.lock().map_err(|_| "pulls")?[0].base_sha = base;
+        release.notify_one();
+        assert!(
+            pass.await?.is_empty(),
+            "the earlier green notice was obsolete"
+        );
+        assert_eq!(
+            app.task_summary(&queued).await?.queue_reason.as_deref(),
+            Some("Waiting for a free session: 1 of 1 in use")
+        );
+        let retry = app.watch_prs(&WatchBounds::default()).await;
+        assert_eq!(retry.len(), 1, "{retry:?}");
+        assert_eq!(retry[0].0, id);
+        assert!(retry[0].1.contains("292.1 ms"));
+        Ok(())
+    })
+}
+
+#[test]
+fn a_candidate_refresh_waits_for_the_launch_to_reserve_its_verified_slot() -> TestResult {
+    use std::sync::atomic::Ordering;
+    use yulius_app::supervisor::RunStart;
+    use yulius_domain::task::Activity;
+    with_idle_candidate(async |data, app, remote, id, _| {
+        let owner = app.deps.store.task(&id).await?.ok_or("owner")?;
+        app.load_limits([(yulius_domain::limits::Limit::Sessions, 1)].into())
+            .await;
+        app.deps
+            .store
+            .set_activity(&id, Some(Activity::Done), app.now())
+            .await?;
+        let peer = queued_candidate_peer(app, &owner).await?;
+        remote.remote.lock().map_err(|_| "origin")?.take();
+        let base = crate::pr_watch::git(&data.join("origin.git"), &["rev-parse", "dev"])?;
+        {
+            let mut pulls = remote.pulls.lock().map_err(|_| "pulls")?;
+            pulls[0].state = "closed".into();
+            pulls[0].base_sha = base;
+        }
+        assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
+        let (cleared, release) =
+            super::pause_watch_or_queue(super::Point::CandidateCapacityCleared, &peer);
+        let launch = {
+            let app = app.clone();
+            let peer = peer.clone();
+            tokio::spawn(async move {
+                app.start_run(&peer, RunStart::Fresh { prompt: None }, None)
+                    .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(10), cleared.notified()).await?;
+        remote.pulls.lock().map_err(|_| "pulls")?[0].state = "open".into();
+        let before = remote.pull_reads.load(Ordering::SeqCst);
+        let pass = tokio::time::timeout(
+            Duration::from_secs(5),
+            app.watch_prs(&WatchBounds::default()),
+        )
+        .await;
+        let during = remote.pull_reads.load(Ordering::SeqCst);
+        release.notify_one();
+        launch.await??;
+        app.stop_task_now(&peer).await?;
+        assert_eq!(
+            during, before,
+            "candidate verification overtook the slot reservation"
+        );
+        assert!(pass?.is_empty());
+        let retry = app.watch_prs(&WatchBounds::default()).await;
+        assert!(remote.pull_reads.load(Ordering::SeqCst) > during);
+        assert_eq!(retry.len(), 1, "{retry:?}");
+        assert_eq!(retry[0].0, id);
+        assert!(
+            retry[0].1.contains("shard 2") && retry[0].1.contains("292.1 ms"),
+            "{retry:?}"
+        );
+        assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
+        Ok(())
+    })
+}
+
+#[test]
+fn a_rearm_on_an_earlier_capacity_row_keeps_a_queued_launch_in_line() -> TestResult {
+    use yulius_domain::task::Activity;
+    with_idle_candidate(async |data, app, remote, id, head| {
+        let _ = pending_owner_merge(app, remote, &id, &head).await?;
+        let owner = app.deps.store.task(&id).await?.ok_or("owner")?;
+        let second = super::new_task(
+            app,
+            &owner.sandbox_id,
+            &owner.owner,
+            "Second capacity owner",
+            yulius_app::model::TaskMode::Prompt,
+        )
+        .await?;
+        super::wait_for("second owner idle", Duration::from_secs(20), || async {
+            super::status_of(app, &second).await.1 == Some(Activity::Waiting)
+        })
+        .await?;
+        app.deps
+            .store
+            .set_activity(&id, Some(Activity::Done), app.now())
+            .await?;
+        app.deps
+            .store
+            .set_activity(&second, Some(Activity::Done), app.now())
+            .await?;
+        app.load_limits([(yulius_domain::limits::Limit::Sessions, 1)].into())
+            .await;
+        let peer = queued_candidate_peer(app, &owner).await?;
+        let file = data.join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+        let arm = replacement_request(&owner)?;
+        yulius_app::race::on(
+            super::Point::CandidateCapacityRead,
+            Path::new(second.as_str()),
+            move || {
+                assert!(std::fs::write(&file, &arm).is_ok());
+            },
+        );
+        app.start_run(
+            &peer,
+            yulius_app::supervisor::RunStart::Fresh { prompt: None },
+            None,
+        )
+        .await?;
+        let state = super::status_of(app, &peer).await.0;
+        let premature = app.deps.store.live_attempt(&peer).await?.is_some();
+        app.stop_task_now(&second).await?;
+        app.stop_task_now(&peer).await?;
+        assert_eq!(
+            (state, premature),
+            (Some(yulius_domain::task::TaskStatus::Queued), false)
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn a_replacement_arm_keeps_the_session_occupied_during_capacity_accounting() -> TestResult {
+    with_idle_candidate(async |data, app, _, id, _| {
+        use yulius_domain::task::Activity;
+        let owner = &app.deps.store.task(&id).await?.ok_or("owner")?;
+        app.load_limits([(yulius_domain::limits::Limit::Sessions, 1)].into())
+            .await;
+        app.deps
+            .store
+            .set_activity(&owner.id, Some(Activity::Done), app.now())
+            .await?;
+        let peer = queued_candidate_peer(app, owner).await?;
+        let queued = app.deps.store.task(&peer).await?.ok_or("queued peer")?;
+        let file = data.join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+        let arm = replacement_request(owner)?;
+        yulius_app::race::on(
+            super::Point::CandidateCapacityRead,
+            Path::new(owner.id.as_str()),
+            move || {
+                assert!(std::fs::write(&file, &arm).is_ok());
+            },
+        );
+        assert_eq!(
+            app.task_summary(&queued).await?.queue_reason.as_deref(),
+            Some("Waiting for a free session: 1 of 1 in use")
+        );
+        Ok(())
+    })
+}
+
+async fn queued_candidate_peer(
+    app: &yulius_app::context::App,
+    task: &yulius_app::model::TaskRecord,
+) -> Result<TaskId, Error> {
+    let mut peer = task.clone();
+    peer.id = TaskId::parse("candidate-peer")?;
+    peer.number = 99;
+    peer.title = "Second task".into();
+    peer.status = yulius_domain::task::TaskStatus::Queued;
+    peer.activity = None;
+    peer.branch = None;
+    peer.worktree_path = None;
+    Ok(app.deps.store.insert_task(&peer).await?.id)
+}
+
+fn replacement_request(owner: &yulius_app::model::TaskRecord) -> Result<Vec<u8>, Error> {
+    let head = crate::pr_watch::git(
+        Path::new(owner.worktree_path.as_deref().ok_or("worktree")?),
+        &["rev-parse", "HEAD"],
+    )?;
+    Ok(serde_json::to_vec(
+        &json!([{"task":owner.id.as_str(),"head":head,"summary":"replacement"}]),
+    )?)
+}
+
+#[test]
+fn the_watch_releases_the_achieved_owners_slot_after_external_pr_closure() -> TestResult {
+    with_idle_candidate(async |data, app, remote, id, _| {
+        use yulius_domain::task::Activity;
+        let task = &app.deps.store.task(&id).await?.ok_or("owner")?;
+        app.load_limits([(yulius_domain::limits::Limit::Sessions, 1)].into())
+            .await;
+        app.deps
+            .store
+            .set_activity(&task.id, Some(Activity::Done), app.now())
+            .await?;
+        let peer = queued_candidate_peer(app, task).await?;
+        let queued = app.deps.store.task(&peer).await?.ok_or("queued peer")?;
+        assert_eq!(
+            app.task_summary(&queued).await?.queue_reason.as_deref(),
+            Some("Waiting for a free session: 1 of 1 in use"),
+        );
+        remote.remote.lock().map_err(|_| "remote")?.take();
+        let head = crate::pr_watch::git(
+            Path::new(task.worktree_path.as_deref().ok_or("tree")?),
+            &["rev-parse", "HEAD"],
+        )?;
+        let base = crate::pr_watch::git(&data.join("origin.git"), &["rev-parse", "dev"])?;
+        {
+            let mut pulls = remote.pulls.lock().map_err(|_| "PR")?;
+            pulls[0].state = "closed".into();
+            pulls[0].base_sha = base;
+        }
+        // A later ordinary run on the old head cannot start the obsolete
+        // integration decision's 15-minute wait when the PR has closed.
+        let (mut rerun, job) = crate::pr_watch::run(
+            &task.sandbox_id,
+            "closed-rerun",
+            &head,
+            RunState::Running,
+            None,
+            app.now().0,
+        );
+        rerun.reference = CiRef::PullRequest(1481);
+        app.deps.store.insert_ci_run(&rerun, &[job]).await?;
+        assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
+        let receipts: serde_json::Value = serde_json::from_slice(&std::fs::read(
+            data.join(yulius_app::pr_watch::PR_NOTICES_FILE),
+        )?)?;
+        assert!(
+            receipts[task.id.as_str()]["singleton_wait"].is_null(),
+            "{receipts}"
+        );
+        assert_eq!(
+            app.task_summary(&queued).await?.queue_reason.as_deref(),
+            Some("Starting: a session is free"),
+        );
+        let closed = remote.pulls.lock().map_err(|_| "PR")?.remove(0);
+        assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
+        assert_eq!(
+            app.task_summary(&queued).await?.queue_reason.as_deref(),
+            Some("Waiting for a free session: 1 of 1 in use"),
+            "an unavailable PR invalidates the earlier observation",
+        );
+        remote.pulls.lock().map_err(|_| "PR")?.push(closed);
+        assert!(app.watch_prs(&WatchBounds::default()).await.is_empty());
+        app.start_run(
+            &peer,
+            yulius_app::supervisor::RunStart::Fresh { prompt: None },
+            None,
+        )
+        .await?;
+        let run = app.deps.store.live_attempt(&peer).await?;
+        app.stop_task_now(&peer).await?;
+        assert!(
+            run.is_some(),
+            "the closed PR still consumed the only session slot"
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn an_unreadable_open_delivery_holds_the_original_owner_slot() -> TestResult {
+    with_idle_candidate(async |data, app, _, id, _| {
+        use yulius_domain::task::Activity;
+        let task = &app.deps.store.task(&id).await?.ok_or("owner")?;
+        app.load_limits([(yulius_domain::limits::Limit::Sessions, 1)].into())
+            .await;
+        app.deps
+            .store
+            .set_activity(&task.id, Some(Activity::Done), app.now())
+            .await?;
+        let peer = queued_candidate_peer(app, task).await?;
+        let queued = app.deps.store.task(&peer).await?.ok_or("queued peer")?;
+        let db = rusqlite::Connection::open(data.join("yulius.db"))?;
+        db.execute(
+            "UPDATE delivery SET stage='unreadable' WHERE task_id=?1",
+            [task.id.as_str()],
+        )?;
+        let unreadable_slot = app.task_summary(&queued).await?.queue_reason;
+        db.execute(
+            "UPDATE delivery SET stage=?1, pr_number=NULL WHERE task_id=?2",
+            rusqlite::params![DeliveryStage::PrOpen.wire_name(), task.id.as_str()],
+        )?;
+        let unidentified_slot = app.task_summary(&queued).await?.queue_reason;
+        let full = Some("Waiting for a free session: 1 of 1 in use");
+        assert_eq!(
+            (unreadable_slot.as_deref(), unidentified_slot.as_deref()),
+            (full, full)
+        );
+        Ok(())
+    })
+}
+
+#[test]
 fn parking_checks_the_saved_candidate_against_the_current_integration_base() -> TestResult {
     park_after_candidate(false)
 }

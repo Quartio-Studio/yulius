@@ -70,7 +70,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Deliver the recorded integration failure once to an already parked owner
 - [x] Hold the original owner’s session slot while its open delivery cannot be verified
 - [x] Unpack CI test shards on disk within the one-GiB temporary-filesystem cap
-- [ ] Restore the reviewed session-capacity slice after the CI repair
+- [x] Restore the reviewed session-capacity slice after the CI repair
 - [ ] Verify live owners when constructing and releasing dependent tasks or closing their sessions
 - [ ] Render verified live integration status in the terminal, sidebar and Task Info
 - [ ] Deliver bounded Codex goal continuation to dev
@@ -94,6 +94,8 @@ The failed-integration-candidate step covers the owner's November 20 observation
 Use the fake Codex executable, its rollout, real PTY shutdown and the application Stop hook. Exercise saved-screen and terminal readers, terminal restoration, step and pull combinations and historical statuses. Run scoped Rust and web tests, repository quick checks, the security command and Yulius CI.
 
 ## Decisions
+
+A live owner with a completed goal and a recorded failed single-PR candidate occupies a session slot until the PR watcher verifies that the hosted PR closed or its candidate inputs changed. Capacity reads stay local. A launch holds the owners’ delivery read guards until it reserves the slot. The watcher retries on its next pass when a launch holds the guard.
 
 SPEC-612 supersedes the automatic continuation delivered by this spec. The parked PR owner retains its recorded integration decision and a person can resume its original session.
 
@@ -129,6 +131,10 @@ The SQLite query returning a parked task includes the latest attempt ID in the s
 
 ## Evidence
 
+- Fresh independent review approved the restored capacity change at `34f3953575115212da39fcc6ed659d51785c35bf`. All 2,593 tests in the main integration binary passed in `faf5bbbf-02ee-4372-bc43-4646bf5abce3`, including the full agent-hook and delivery modules. The candidate fixtures exercised a real PTY and SQLite with simulated GitHub events. Scoped Clippy and repository quick checks passed. Vidoc was disabled.
+- PR #1679 delivered the independent CI repair at `8855f295b` after train run `ef126991-55f1-49dc-95d9-149239145159` passed. Merged-revision CI `3bd678c0-0d1c-4120-8b4b-695bfc6dcd9c` passed both real test shards and e2e under the host limit. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/8855f295bb920bab9e0e632c02b65b2ca0676182)
+- In run `51de5931-74ec-42ba-9793-12dca4f3b115` the queued peer saw a free session for an unreadable open delivery and again for a missing PR number. Restoring the capacity checks held the live owner’s slot in both cases. Run `928d10ec-890d-4db7-b3e5-c2d55719e169` passed all 70 candidate tests, including a reopened PR during reservation, a replacement merge on an earlier owner, verified external closure and a parked task that waits for a person.
+- Hand checks on the saved capacity change. Replacing the guarded final PR read with a raw lookup let a peer see a free session in `5cbff53b-d244-4a9b-8cc4-29c5828892d9`. Removing the guard before the initial refresh let two extra hosted reads overtake reservation in `09b5c791-ca32-4bf6-9014-ba1f3ce4d2ee`. Both guards are present in the restored live watcher.
 - The isolated CI repair precedes delivery of the reviewed session-capacity change preserved at `5f216ef4e`. The user's host report traced the gate failure on both protected branches to the installed 1 GiB run tmpfs at `aabf37091`; the same error ended main run `c51054f9-4e67-440e-abd7-8d0b3ba35e05`.
 - The cold tools-cache test reproduced Cargo’s default temporary target for a registry install. Removing the explicit disk target by hand reproduced it again. The restored bootstrap reclaims the target after an install failure on both the job scratch and the tools-cache fallback.
 

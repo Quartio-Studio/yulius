@@ -44,6 +44,10 @@ pub enum Point {
     ParkedResumeWaitsForReader,
     /// A parked read classified the task, before the response renders its plan. Keyed by task ID.
     ParkedStatusRead,
+    /// Local capacity is about to read the achieved owner’s delivery, keyed by task ID.
+    CandidateCapacityRead,
+    /// The free capacity has been verified, before the launch reserves its slot.
+    CandidateCapacityCleared,
     /// A queued row reads session capacity to explain its wait. Keyed by task ID.
     QueuedRowCapacity,
     /// The capacity worker selected a saved start and has not yet claimed the task.
