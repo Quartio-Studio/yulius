@@ -452,7 +452,10 @@ impl App {
             return false;
         };
         matches!(self.task_group(task, &requested).await, Ok(TaskGroup::Done))
-            && self.live_delivery_settled(task, record.as_ref()).await
+            && self
+                .hold_live_delivery(task, record.as_ref())
+                .await
+                .is_some()
     }
 
     /// A task's sidebar group (`AttentionFacts::group`), so Home's cards and the sandbox tabs
@@ -532,7 +535,20 @@ impl App {
                 let requested = requests
                     .get_or_init(|| self.browser_requests(&task.sandbox_id))
                     .await;
-                self.task_group(task, requested).await?
+                let group = self.task_group(task, requested).await?;
+                if for_start_rule && group == TaskGroup::Done && task.status == TaskStatus::Running
+                {
+                    let settled = match self.deps.store.delivery(&task.id).await {
+                        Ok(record) => self
+                            .hold_live_delivery(task, record.as_ref())
+                            .await
+                            .is_some(),
+                        Err(_) => false,
+                    };
+                    if settled { group } else { TaskGroup::Working }
+                } else {
+                    group
+                }
             };
             groups.push(group);
         }

@@ -993,13 +993,20 @@ impl App {
     ) -> AppResult<TaskSummary> {
         let task = self.load_task_to(ctx, id, TaskAction::Tidy).await?;
         // Done, or answered (SPEC-429 ANS-007): what the sidebar shows under Done.
-        let done = task.status == TaskStatus::Running
-            && (self.task_is_done(&task).await || self.shows_done(&task).await);
-        if archive && done && task.origin == TaskOrigin::Onboarding {
-            // Its run's end decides whether onboarding is over, which the check below reads.
-            self.close_task_and_wait(&task.id).await?;
-        } else if archive && (done || task.status == TaskStatus::Parked) {
-            // A parked task is closed at once: it has no session to end (SPEC-512 PRK-001).
+        if archive && task.status == TaskStatus::Running {
+            let record = self.deps.store.delivery(&task.id).await?;
+            if !(self.task_is_done(&task).await || self.shows_done(&task).await) {
+                return Err(AppError::Conflict(
+                    "stop the task before archiving it".into(),
+                ));
+            }
+            let achieved = Some((&task, record.as_ref()));
+            if task.origin == TaskOrigin::Onboarding {
+                self.close_selected_and_wait(&task.id, achieved).await?;
+            } else {
+                self.close_task_selected(&task.id, achieved).await?;
+            }
+        } else if archive && task.status == TaskStatus::Parked {
             self.close_task_now(&task.id).await?;
         } else if archive && !task.status.is_resting() {
             return Err(AppError::Conflict(
@@ -1071,16 +1078,18 @@ impl App {
         caller_detail: Option<&serde_json::Value>,
     ) -> AppResult<crate::attachment_trash::DeletedAttachments> {
         let mut task = self.load_task_to(ctx, id, TaskAction::Tidy).await?;
-        if task.status == TaskStatus::Running
-            && (self.task_is_done(&task).await || self.shows_done(&task).await)
-        {
-            self.close_task_and_wait(&task.id).await?;
-            task = self
-                .deps
-                .store
-                .task(&task.id)
-                .await?
-                .ok_or(AppError::NotFound)?;
+        if task.status == TaskStatus::Running {
+            let record = self.deps.store.delivery(&task.id).await?;
+            if self.task_is_done(&task).await || self.shows_done(&task).await {
+                self.close_selected_and_wait(&task.id, Some((&task, record.as_ref())))
+                    .await?;
+                task = self
+                    .deps
+                    .store
+                    .task(&task.id)
+                    .await?
+                    .ok_or(AppError::NotFound)?;
+            }
         }
         let starting = matches!(
             task.status,

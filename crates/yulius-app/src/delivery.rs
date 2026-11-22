@@ -5063,7 +5063,10 @@ impl App {
             return false;
         };
         if task.activity == Some(Activity::Done) {
-            return self.live_delivery_settled(task, record.as_ref()).await;
+            return self
+                .hold_live_delivery(task, record.as_ref())
+                .await
+                .is_some();
         }
         if self.pr_news_due_of(task, record.as_ref(), false).await {
             return false;
@@ -5122,30 +5125,43 @@ impl App {
         }
         let done = (running && task.activity == Some(Activity::Done))
             || self.done_by_delivery(task, record.as_ref()).await;
-        done && (!running || self.live_delivery_settled(task, record.as_ref()).await)
+        done && (!running
+            || self
+                .hold_live_delivery(task, record.as_ref())
+                .await
+                .is_some())
     }
 
     /// Recheck the delivery after any hosted read, including a new arm or a decision
     /// written while the ordinary head's checks were being read.
-    pub(crate) async fn live_delivery_settled(
+    pub(crate) async fn hold_live_delivery(
         &self,
         task: &TaskRecord,
         record: Option<&DeliveryRecord>,
-    ) -> bool {
-        let runtime = self.runtime(&task.id);
-        let Ok(_writer) = runtime.arm_writer.try_lock() else {
-            return false;
-        };
+    ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        let writer = self
+            .runtime(&task.id)
+            .arm_writer
+            .clone()
+            .try_lock_owned()
+            .ok()?;
         let store = &self.deps.store;
-        matches!(store.task(&task.id).await, Ok(Some(now)) if
-            now.status == task.status && now.activity == task.activity &&
-            now.archived_at == task.archived_at && now.branch == task.branch && now.worktree_path == task.worktree_path)
-            && matches!(store.delivery(&task.id).await, Ok(current) if current.as_ref() == record)
-            && !self
-                .delivery_candidate_blocks(task, record, false)
-                .await
-                .unwrap_or(true)
-            && !self.delivery_will_wake_task(&task.id).await
+        if self
+            .delivery_candidate_blocks(task, record, false)
+            .await
+            .unwrap_or(true)
+            || self.delivery_will_wake_task(&task.id).await
+            || store.delivery(&task.id).await.ok()?.as_ref() != record
+        {
+            return None;
+        }
+        let now = store.task(&task.id).await.ok()??;
+        (now.status == task.status
+            && now.activity == task.activity
+            && now.archived_at == task.archived_at
+            && now.branch == task.branch
+            && now.worktree_path == task.worktree_path)
+            .then_some(writer)
     }
 
     async fn done_by_delivery(&self, task: &TaskRecord, record: Option<&DeliveryRecord>) -> bool {

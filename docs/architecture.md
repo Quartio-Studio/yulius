@@ -2210,6 +2210,9 @@ single-PR candidate also holds its successor and session slot. The PR watcher an
 successor check can verify that the recorded head or base changed, or that the PR
 closed. Capacity accounting reads that observation locally for up to two watch intervals.
 A restart, a new decision or a failed verification requires another hosted observation.
+A start rule for all outstanding tasks includes an owner that cannot be cleared locally.
+Compound Done rules recheck their live owners under their merge writers before queueing the
+successor. Archive and delete recheck the delivery before claiming a finished session’s close.
 An explicit `#N merged` rule follows the recorded merge.
 
 The individual HTTP task detail verifies both recorded and branch PRs.

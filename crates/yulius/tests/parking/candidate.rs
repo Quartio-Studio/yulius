@@ -13,6 +13,144 @@ use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::ids::{AttemptId, TaskId};
 
 #[test]
+fn after_all_tasks_includes_the_owner_of_the_current_failed_candidate() -> TestResult {
+    with_idle_candidate(async |_, app, _, id, _| {
+        let owner = app.deps.store.task(&id).await?.ok_or("owner")?;
+        app.deps
+            .store
+            .set_activity(&id, Some(yulius_domain::task::Activity::Done), app.now())
+            .await?;
+        let caller = super::superagent(&owner.sandbox_id, &owner.owner, "admin");
+        let created = app.tool_task_create(&caller, &json!({"prompt":"When current tasks finish", "harness":"claude", "after_all_tasks":true})).await?;
+        let rule = created["task"]["start_rule"].as_str().unwrap_or("");
+        assert!(
+            rule.split(" and ")
+                .any(|atom| atom == format!("#{} done", owner.number)),
+            "{created}"
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn archive_keeps_the_owner_when_a_replacement_arm_arrives_at_close() -> TestResult {
+    with_idle_candidate(async |data, app, remote, id, _| {
+        let owner = app.deps.store.task(&id).await?.ok_or("owner")?;
+        app.deps
+            .store
+            .set_activity(&id, Some(yulius_domain::task::Activity::Done), app.now())
+            .await?;
+        remote.remote.lock().map_err(|_| "origin")?.take();
+        remote.pulls.lock().map_err(|_| "PR")?[0].base_sha = "advanced-base".into();
+        let ctx = yulius_app::auth::AuthContext {
+            user: app.deps.store.user(&owner.owner).await?.ok_or("owner")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        let file = data.join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+        let arm = replacement_request(&owner)?;
+        yulius_app::race::on(
+            super::Point::CloseDecided,
+            Path::new(id.as_str()),
+            move || {
+                assert!(std::fs::write(&file, &arm).is_ok());
+            },
+        );
+        let closed = app.archive_task(&ctx, id.as_str(), true).await;
+        assert!(
+            matches!(closed, Err(yulius_app::error::AppError::Conflict(_))),
+            "{closed:?}"
+        );
+        assert!(
+            app.deps
+                .store
+                .task(&id)
+                .await?
+                .ok_or("owner")?
+                .archived_at
+                .is_none()
+        );
+        assert!(app.deps.store.live_attempt(&id).await?.is_some());
+        Ok(())
+    })
+}
+
+#[test]
+fn a_replacement_merge_waits_for_the_reader_settling_a_close() -> TestResult {
+    with_idle_candidate(async |_, app, remote, id, head| {
+        let ctx = pending_owner_merge(app, remote, &id, &head).await?;
+        let (taken, release) = super::pause_watch_or_queue(super::Point::RunEndTaken, &id);
+        app.close_task_now(&id).await?;
+        tokio::time::timeout(Duration::from_secs(15), taken.notified()).await?;
+        let request = app.merge_for_person(&ctx, id.as_str()).await;
+        release.notify_one();
+        assert!(
+            matches!(&request, Err(yulius_app::error::AppError::Conflict(_))),
+            "merge while the reader owns Close: {request:?}"
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn a_compound_done_rule_rechecks_its_first_owner_after_reading_the_second() -> TestResult {
+    use yulius_domain::task::{Activity, TaskStatus};
+    with_idle_candidate(async |data, app, remote, id, _| {
+        let owner = app.deps.store.task(&id).await?.ok_or("owner")?;
+        app.deps
+            .store
+            .set_activity(&id, Some(Activity::Done), app.now())
+            .await?;
+        remote.remote.lock().map_err(|_| "origin")?.take();
+        remote.pulls.lock().map_err(|_| "PR")?[0].base_sha = "advanced-base".into();
+        let mut second = owner.clone();
+        second.id = TaskId::parse("second-rule-owner")?;
+        second.branch = None;
+        second.worktree_path = None;
+        second.activity = Some(Activity::Done);
+        let second = app.deps.store.insert_task(&second).await?;
+        let peer = candidate_peer(app, &owner, TaskStatus::Chained).await?;
+        app.deps
+            .store
+            .insert_chain(&yulius_app::intake::ChainRecord {
+                task_id: peer.clone(),
+                after_task_id: Some(id.clone()),
+                after_number: owner.number,
+                blocked_reason: None,
+                created_at: app.now(),
+                rule: Some(format!(
+                    "#{} done and #{} done",
+                    owner.number, second.number
+                )),
+            })
+            .await?;
+        let file = data.join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+        let arm = replacement_request(&owner)?;
+        yulius_app::race::on(
+            super::Point::RuleOwnerRead,
+            Path::new(second.id.as_str()),
+            move || {
+                assert!(std::fs::write(&file, &arm).is_ok());
+            },
+        );
+        app.advance_rule_chains(&owner.sandbox_id).await;
+        assert_eq!(
+            super::status_of(app, &peer).await.0,
+            Some(TaskStatus::Chained)
+        );
+        std::fs::write(data.join(yulius_app::agent_wait::ARMED_MERGES_FILE), b"[]")?;
+        app.advance_rule_chains(&owner.sandbox_id).await;
+        assert_ne!(
+            super::status_of(app, &peer).await.0,
+            Some(TaskStatus::Chained)
+        );
+        app.stop_task_now(&peer).await?;
+        Ok(())
+    })
+}
+
+#[test]
 fn a_replacement_arm_keeps_the_session_occupied_during_capacity_accounting() -> TestResult {
     with_idle_candidate(async |data, app, _, id, _| {
         use yulius_domain::task::{Activity, TaskStatus};

@@ -92,7 +92,7 @@ Use the fake Codex executable, its rollout, real PTY shutdown and the applicatio
 
 ## Decisions
 
-An achieved live owner with a recorded failed singleton keeps its session slot and its chained successor until the hosted pull request verifies that the decision is obsolete. Capacity reads stay local. A later arm or changed delivery invalidates an in-flight completion check.
+An achieved live owner with a recorded failed singleton keeps its session slot and its chained successor until the hosted pull request verifies that the decision is obsolete. Capacity reads stay local. A later arm or changed delivery invalidates an in-flight completion check. A rule waiting for all tasks includes unverified owners. Compound rules keep the relevant merge writers through successor admission. A close based on Done rechecks its owner under the same writer.
 
 An automatic continuation for a parked PR owner verifies the recorded integration decision before launching. A human decision or unavailable capacity leaves the original session parked. The next watcher pass checks the PR again before delivering a prompt.
 
@@ -127,6 +127,9 @@ The final parking check compares the owner’s saved singleton decision with the
 The SQLite query returning a parked task includes the latest attempt ID in the same snapshot. Admission checks that ID under the launch lock after caller preflight. A message can wait while another turn resumes and parks, so task status alone cannot identify the session the sender observed. Only a matching parked attempt can restore Codex lineage or accept the prompt. Bulk messages, Telegram replies and remote restarts carry the attempt from their first task lookup through dispatch. They check the caller’s current access before acting.
 
 ## Evidence
+
+- On the step 47 baseline, all seven admission regressions failed in run `6512297f-8dc6-4d2f-b64e-21e7ea81aea4`. Capacity reported a free slot and the successor entered Queued. The initial implementation passed all 279 parking, PR watcher and Done tests in `d76f3d5c-04aa-4ae5-adb6-9ac3b3c4d403`. All 293 delivery, hook, intake and limit tests passed in `d76099b6-7384-4ff3-920a-86e6eca26983`.
+- Hand check for the final candidate read. Removing it released the successor and freed the occupied slot in all three targeted tests in `2aa9e50d-eca3-4f95-b76e-94708fd9d7fe`. The guard was restored.
 
 - PR #1670 merged into dev at `20c04fd9f` after head `62c08ec9d` passed Yulius CI run `5494c81f-a93d-4129-adf2-6de7fe6bfe7e`. The integrated hook, delivery and parking run passed 467 of 469 checks. Both remaining failures concern the separately tracked PR lookup timeout. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/20c04fd9f32a75de80c317541b33568fccb5ce6f)
 
