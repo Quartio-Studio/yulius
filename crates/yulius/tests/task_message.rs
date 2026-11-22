@@ -1960,27 +1960,42 @@ fn restarting_the_server_during_a_codex_repaint_restores_the_childs_size() -> Te
     })
 }
 
+/// Makes the idle Codex task eligible for the wake after an outage; returns the outage's
+/// `down_since` and `started`.
+async fn codex_idle_through_an_outage(
+    app: &Arc<App>,
+    id: &TaskId,
+) -> Result<
+    (
+        yulius_domain::time::Timestamp,
+        yulius_domain::time::Timestamp,
+    ),
+    Error,
+> {
+    use yulius_domain::time::Timestamp;
+    // The Stop hook can mark the task idle before the rollout watcher reads
+    // the turn timestamps that make the outage wake eligible.
+    let runtime = app.runtime(id);
+    let round = runtime.transcript_rounds();
+    wait_for("outage turn replay", Duration::from_secs(15), || async {
+        runtime.transcript_rounds() >= round + 2
+    })
+    .await?;
+    let attempt = app.deps.store.live_attempt(id).await?.ok_or("attempt")?;
+    let answered = Path::new(&attempt.run_dir).join(yulius_app::outage::STOP_ANSWERED_FILE);
+    if answered.exists() {
+        std::fs::remove_file(answered)?;
+    }
+    // The last recorded turn closed during this simulated outage.
+    Ok((Timestamp(1), Timestamp(i64::MAX - 1)))
+}
+
 #[test]
 fn a_refused_codex_outage_wake_resumes_on_repaint_without_an_owner_resend() -> TestResult {
-    use yulius_domain::time::Timestamp;
     let (_dir, data) = data_dir()?;
     runtime()?.block_on(async {
         let (app, id, _, _) = codex_with_pr_news(&data).await?;
-        // The Stop hook can mark the task idle before the rollout watcher reads
-        // the turn timestamps that make the outage wake eligible.
-        let runtime = app.runtime(&id);
-        let round = runtime.transcript_rounds();
-        wait_for("outage turn replay", Duration::from_secs(15), || async {
-            runtime.transcript_rounds() >= round + 2
-        })
-        .await?;
-        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("attempt")?;
-        let answered = Path::new(&attempt.run_dir).join(yulius_app::outage::STOP_ANSWERED_FILE);
-        if answered.exists() {
-            std::fs::remove_file(answered)?;
-        }
-        // The last recorded turn closed during this simulated outage.
-        let (down, started) = (Timestamp(1), Timestamp(i64::MAX - 1));
+        let (down, started) = codex_idle_through_an_outage(&app, &id).await?;
         paint_codex(&app, &id, "\x1b[?1049h\x1b[?25l\x1b[H\x1b[J");
         assert!(app.wake_after_outage(down, started, false).await.is_empty());
         assert!(app.deps.store.task_needs_you(&id).await?.is_some());
@@ -2000,6 +2015,31 @@ fn a_refused_codex_outage_wake_resumes_on_repaint_without_an_owner_resend() -> T
         })
         .await?;
         assert!(app.deps.store.task_needs_you(&id).await?.is_none());
+        stop(&app, &id).await
+    })
+}
+
+#[test]
+fn an_outage_wake_leaves_a_private_messages_codex_request_open() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let (app, id, caller, _) = codex_with_pr_news(&data).await?;
+        let (down, started) = codex_idle_through_an_outage(&app, &id).await?;
+        paint_codex(&app, &id, "\x1b[?1049h\x1b[?25l\x1b[H\x1b[J");
+        assert!(send(&app, &caller, &id).await.is_err());
+        let request = app
+            .deps
+            .store
+            .task_needs_you(&id)
+            .await?
+            .ok_or("missing private message request")?;
+        paint_codex(&app, &id, CODEX_EMPTY_COMPOSER);
+        assert!(
+            app.wake_after_outage(down, started, false).await.is_empty(),
+            "the wake is not typed past its owner's open request"
+        );
+        assert_eq!(app.deps.store.task_needs_you(&id).await?, Some(request));
+        assert!(!screen(&app, &id).contains("ECHO: Yulius is back; continue"));
         stop(&app, &id).await
     })
 }

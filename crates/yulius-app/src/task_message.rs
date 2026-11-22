@@ -1115,10 +1115,13 @@ impl App {
         } else {
             "A message could not be submitted to Codex.".into()
         };
-        let action = match (from, what) {
-            (Sender::Yulius, Typed::Notice(_)) => CODEX_NOTICE_ACTION,
-            (Sender::Yulius, _) => CODEX_MESSAGE_ACTION,
-            _ => CODEX_MESSAGE_ACTION,
+        // Each sender's request names who acts on it: a retried PR notice and an automatic
+        // prompt are released by their own next send once the screen is readable
+        // ([`Self::settle_codex_input_hold`]); a person's message waits for them to resend it.
+        let action = match (machine, what) {
+            (true, Typed::Notice(_)) => CODEX_NOTICE_ACTION,
+            (true, Typed::Prompt | Typed::Command) => CODEX_AUTOMATIC_ACTION,
+            (false, _) => CODEX_MESSAGE_ACTION,
         };
         self.ask_for_blocked_input(task, attempt, &happened, problem, action)
             .await
