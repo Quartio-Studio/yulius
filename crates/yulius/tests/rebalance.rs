@@ -84,11 +84,11 @@ async fn idle(app: &App, id: &TaskId) -> TestResult {
     Ok(())
 }
 
-/// The rebalance events sent so far, each with the person it was sent to: (to, from, to
-/// subscription, said, key).
-fn rebalanced(
-    events: &mut broadcast::Receiver<Envelope>,
-) -> Vec<(Option<String>, String, Option<String>, String, String)> {
+/// One rebalance event as sent: (the person it went to, from, to, said, key).
+type Told = (Option<String>, String, Option<String>, String, String);
+
+/// The rebalance events sent so far.
+fn rebalanced(events: &mut broadcast::Receiver<Envelope>) -> Vec<Told> {
     let mut seen = Vec::new();
     while let Ok(envelope) = events.try_recv() {
         if let UiEvent::TaskRebalanced {
