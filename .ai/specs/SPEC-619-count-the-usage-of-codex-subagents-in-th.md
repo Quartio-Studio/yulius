@@ -1,6 +1,6 @@
 ---
 yulius-task: 6b2bcd1a-f537-46c2-8615-8e3444bac1e1
-status: in-progress
+status: done
 ---
 
 # SPEC-619. Count Codex subagents' usage in their task's metrics
@@ -72,7 +72,7 @@ in their session's run (SPEC-087 MET-004).
 - [x] Count child responses in the live watch, agreeing with the recount
 - [x] Store and price the per-model parts of a run
 - [x] Recount recent Codex runs and update the estimate's disclosure and docs
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -113,4 +113,5 @@ them. Each new test fails without its change.
 - Not tested: a nested subagent (depth 2) written by a real Codex; no retained rollout has one, so its `session_id` is not known. Either link (parent or session) admits it.
 - Review round 1 (Fable 5.2) requested changes: the session-only link, a resumed run's live window and the failure paths had no test that fails without them, plus minors. The new tests `a_child_whose_parent_is_not_followed_counts_by_its_session`, `a_modification_time_in_whole_seconds_still_reads_the_file`, `first_lines_are_read_within_their_bound`, `a_child_that_cannot_be_read_fails_the_poll_until_it_can`, `observe::tests::model_parts_are_bounded` and `a_resumed_codex_runs_live_watch_counts_its_own_window_of_subagents` cover them. Removing the session link, the 2-second modification slack and the watch's `since` each failed its test. A first line still being written is read again only once the file grew. Reaching a bound, or the first unreadable subagent rollout, is logged at warn. A run of an unpriced model without parts stays unpriced at zero tokens, as before.
 - After the fixes, the four library crates passed 1,729 tests, and the `yulius` library plus its touched integration files passed 776. `hook_client an_antigravity_turn_ended_by_an_error_is_never_continued`, a test this change did not touch, failed once in an earlier run and then passed in four reruns. It is tracked in [issue 1693](https://github.com/Quartio-Studio/yulius/issues/1693).
+- Review round 2 (same reviewer) approved `5422f8ea6`, with these minors: the 128-byte name cap and the pending-file rules had no test that fails without them, a file that could not be opened waited for its length to change, and CSA-6 claimed logging for the recount too. The fixes after the approval: `incomplete_first_lines_wait_for_the_file_to_grow` and a stronger `model_parts_are_bounded`, which fail when the pending skip, the pending files in the bound, the bound flag or the name cap is removed. A file that cannot be opened is retried at the next listing, and one removed since it was listed is skipped. A bound skips only new files, and CSA-6 is reworded. The `yulius-harness` and `yulius-domain` tests (870) and the `yulius` library tests (692) passed, as did `scripts/dev quick` and clippy.
 - Vidoc is switched off for this project in Yulius: no security scan ran.
