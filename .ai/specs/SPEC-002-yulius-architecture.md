@@ -1070,6 +1070,11 @@ only, F 2026-10-08), GitHub rulesets and Actions (paid), DORA dashboards.
 
 Status: accepted and implemented (issue #141). Requirements VLT-001..009 (SPEC-001 §5.19).
 
+Amended by [ADR-0459](../../docs/decisions/0459-brokered-commands-run-in-the-production-holder-with-a-temporary-key-file.md)
+([SPEC-626](SPEC-626-brokered-commands-a-cli-that-needs-a-key.md)): an agent secret also reaches a
+brokered command's run as a temporary file in the project's production holder, outside every
+agent's sandbox; the agent gets the run's redacted output.
+
 **Request.** "We want to have 2 sections for storing secrets. One section is for team secrets:
 passwords to shared mails, infra etc. The second one is something similar but for agents: API
 keys, also passwords etc. Agent can access them but never see them. … You should probably use some

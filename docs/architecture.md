@@ -3008,6 +3008,28 @@ sequenceDiagram
     X-->>A: placeholder replaced by the value, response redacted
 ```
 
+## Brokered commands
+
+A CLI that needs a key file (a deploy tool, a cloud SDK with a service-account JSON, a signing
+tool) runs outside the agent's sandbox
+([SPEC-626](../.ai/specs/SPEC-626-brokered-commands-a-cli-that-needs-a-key.md),
+[decision 0459](decisions/0459-brokered-commands-run-in-the-production-holder-with-a-temporary-key-file.md),
+`crates/yulius-app/src/commands.rs`, rules in `yulius_domain::commands`). A project's
+administrators define a command next to its secrets (`commands`, migration 0089, one JSON
+definition per row, names unique in the project): its binary on the host's system, the agent
+secret its runs get as a file (the project's, else a global one switched on there, never a
+personal or production one: `App::command_secret`), the tasks that may run it, its approval,
+fixed arguments and env with `{keyfile}`, `{home}` and, in env only, `{secret}`, allowed
+subcommands, flags Yulius owns and a time limit. Agents and the Superagent list them with
+`commands_list`.
+
+```mermaid
+flowchart LR
+  ADM["Administrator (Secrets page, API)"] -->|"define, change, remove (audited command.*)"| DEF[("commands: one JSON definition per project and name")]
+  DEF --> L["commands_list: task agents, the Superagent"]
+  DEF -.->|"secret NAME → project or global agent secret, never personal or production"| V[("vault")]
+```
+
 ## Agent secrets in CI jobs
 
 A CI job runs a pull request's code, so it gets an agent secret only the way an agent does, and
