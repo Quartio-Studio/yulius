@@ -123,11 +123,11 @@ test('an agent secret is a name, a value and a description, readable by its mana
   // secret that has one.
   await screen.getByRole('button', 'Edit RESEND_KEY').click();
   const edit = screen.getByRole('dialog', 'Edit RESEND_KEY');
-  expect(await visibleLabels()).toEqual(['Name', 'Value', 'Description', 'Hosts', 'Only these requests']);
+  expect(await visibleLabels()).toEqual(['Name', 'Value', 'Description', 'Hosts', 'Rules']);
   await edit.getByRole('button', 'Cancel').click();
   await screen.getByRole('button', 'Edit STRIPE_KEY').click();
   const stripe = screen.getByRole('dialog', 'Edit STRIPE_KEY');
-  expect(await visibleLabels()).toEqual(['Name', 'Value', 'Description', 'Hosts', 'Only these requests', 'Added to requests as']);
+  expect(await visibleLabels()).toEqual(['Name', 'Value', 'Description', 'Hosts', 'Rules', 'Added to requests as']);
   await stripe.getByRole('button', 'Cancel').click();
 
   // Its manager reads it back after a two-factor code.

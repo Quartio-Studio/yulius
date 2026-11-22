@@ -2898,14 +2898,18 @@ The proxy passes each request's method in `EgressRequest::method`.
 flowchart TD
   R["request to a bound host<br/>(intercepted HTTP/1.1 or absolute http://)"] --> U{"uses a secret with rules?<br/>placeholder, X-Yulius-Secret,<br/>or its injected header"}
   U -->|no| F["forwarded as before"]
-  U -->|yes| M{"method and path match a rule,<br/>no .. / backslash / encoded dot or NUL,<br/>no method override?"}
+  U -->|yes| M{"method and path (sent and outgoing) match a rule,<br/>no dot segment, backslash, ; # or encoded dot/NUL/%,<br/>no method or path override?"}
   M -->|yes| F
   M -->|"no (another secret's rules allow the header)"| O["that secret's header instead"] --> F
-  M -->|no| X["403 naming request, host, secret and rules;<br/>nothing sent"] --> A["audit vault.agent.refused<br/>once per run, secret, method, path"]
+  M -->|no| X["403 naming request, host, secret and rules;<br/>nothing sent"] --> A["audit vault.agent.refused<br/>once per run, secret, method, path;<br/>20 per run and secret, then one more"]
 ```
 
-The path is matched as the agent sent it (placeholders not replaced, query left out, no decoding),
-so spellings a server could normalise to another resource are refused instead of decoded. Rules
+The path is matched as the agent sent it and as it goes out (another secret's value replaced in,
+which could otherwise add `..`, `?` or `#`), query left out, no decoding, so spellings the proxy's
+own client or a server could normalise to another resource are refused instead of decoded. A
+run's different refusals of a secret are audited up to 20 (`REFUSALS_LISTED`), then once as "not
+listed" (`VaultState::refusals`). Hosts agents ask for a secret with rules wait for a person even
+with `auto_allow` (`vault/requests.rs`): a server of the agent's own would get the value. Rules
 are set in the Secrets page's Edit dialog or with `rules` in the create and edit bodies; an edit
 is a compare-and-set on the rules it read (`vault_update`), and a row whose stored rules no longer
 parse fails to load rather than becoming unlimited. `secrets_list` shows them to agents. gRPC

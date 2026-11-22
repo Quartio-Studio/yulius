@@ -726,7 +726,8 @@ watching, steering and unblocking.
   (SPEC-121, SPEC-216). In Edit, a manager can limit it to certain requests, such as
   `GET /repos/*`: the proxy then puts it only into requests that match, and refuses any other
   request that would use it with a message the agent reads, audited, so a token given for
-  reading cannot write or delete (SPEC-627,
+  reading cannot write or delete while agents cannot learn it: hosts they ask for it wait for a
+  person, and its `.env` copies stay off (SPEC-627,
   [ADR-0458](decisions/0458-an-agent-secret-can-be-limited-to-methods-and-paths.md)). Team secrets belong to the sandbox they were added in, or are team-wide when
   the person picks that; team secrets from before were copied into each sandbox (SPEC-216). Agent
   secrets ("keys and logins agents use without seeing them") are on three tabs (SPEC-245):

@@ -12,13 +12,19 @@ pub const MAX_PATTERN_BYTES: usize = 512;
 /// Longest method name.
 const MAX_METHOD_BYTES: usize = 32;
 
-/// Headers some servers take over the request's method, so a `GET` rule would let a `DELETE`
-/// through: a request that uses a secret with rules may not carry them (MPR-004).
-pub const METHOD_OVERRIDE_HEADERS: &[&str] = &[
+/// Headers some servers take over the request's method or path, so a `GET /repos/*` rule would let
+/// a `DELETE` or another path through: a request that uses a secret with rules may not carry them
+/// (MPR-004).
+pub const OVERRIDE_HEADERS: &[&str] = &[
     "x-http-method-override",
     "x-http-method",
     "x-method-override",
+    "x-original-url",
+    "x-rewrite-url",
 ];
+
+/// The query parameter some frameworks take over the request's method (`?_method=DELETE`).
+const METHOD_PARAMETER: &str = "_method";
 
 /// One allow rule: a request whose method is one of `methods` and whose path matches `path`
 /// (`*` matching any run of characters, `/` included).
@@ -138,20 +144,36 @@ pub fn rules_allow(rules: &[SecretRule], method: &str, path: &str) -> bool {
     rules.is_empty() || rules.iter().any(|r| r.matches(method, path))
 }
 
-/// Why a request path could reach another resource than the one a rule matched once the server
-/// normalises it (`..`, `\`, percent-encoded `.`, `\` or NUL; MPR-004), or `None`.
+/// Why a request path could reach another resource than the one a rule matched once a client or
+/// server normalises it (MPR-004), or `None`: a dot segment (`.` or `..`, which the proxy's own
+/// client resolves), an encoded dot, a backslash, an encoded NUL, `;` (path parameters some
+/// servers drop), an encoded `%` (a server decoding twice) or `#` (a fragment).
 #[must_use]
 pub fn unsafe_path(path: &str) -> Option<&'static str> {
     let lowered = path.to_ascii_lowercase();
-    if lowered.contains("..") || lowered.contains("%2e") {
+    if lowered.contains("..") || lowered.contains("%2e") || path.split('/').any(|s| s == ".") {
         Some("it holds a dot segment or an encoded dot")
     } else if lowered.contains('\\') || lowered.contains("%5c") {
         Some("it holds a backslash")
-    } else if lowered.contains("%00") {
-        Some("it holds an encoded NUL")
+    } else if lowered.contains("%00") || lowered.contains("%25") {
+        Some("it holds an encoded NUL or percent sign")
+    } else if path.contains(';') || path.contains('#') {
+        Some("it holds ; or #")
     } else {
         None
     }
+}
+
+/// Whether a request's query sets `_method`, which some frameworks take over its method.
+#[must_use]
+pub fn overrides_method(path_and_query: &str) -> bool {
+    path_and_query.split_once('?').is_some_and(|(_, query)| {
+        query.split('&').any(|pair| {
+            pair.split_once('=')
+                .map_or(pair, |(name, _)| name)
+                .eq_ignore_ascii_case(METHOD_PARAMETER)
+        })
+    })
 }
 
 /// Whether `text` matches `pattern` whole, `*` matching any run of characters (also none and
@@ -291,13 +313,19 @@ mod tests {
         ] {
             assert!(unsafe_path(bad).is_some(), "{bad}");
         }
+        for bad in ["/v1/./x", "/v1/x/.", "/v1/a;b", "/v1/%252e", "/v1/a#b"] {
+            assert!(unsafe_path(bad).is_some(), "{bad}");
+        }
         for fine in [
             "/v1/a.b/c",
             "/api/v4/projects/group%2Fproject",
-            "/v1/./x",
+            "/v1/.well-known",
             "/",
         ] {
             assert!(unsafe_path(fine).is_none(), "{fine}");
         }
+        assert!(overrides_method("/v1/x?a=1&_METHOD=delete"));
+        assert!(overrides_method("/v1/x?_method"));
+        assert!(!overrides_method("/v1/_method?method=x&q=_method"));
     }
 }

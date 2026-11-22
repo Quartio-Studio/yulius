@@ -1181,10 +1181,13 @@ egress CA, bound read-only into containment). Without credentials of a live run 
 - Method and path rules (SPEC-627, [ADR-0458](../../docs/decisions/0458-an-agent-secret-can-be-limited-to-methods-and-paths.md)):
   a secret with rules (methods and a path pattern, `*` across `/`) is used — its placeholder
   replaced, its `X-Yulius-Secret` honoured, its header injected — only by a request whose method
-  and path (as sent, without the query) match one, and whose path holds no `..`, `\` or encoded
-  `.`, `\` or NUL and which carries no method-override header. A request that would use it
-  otherwise is refused with 403 naming the request, the host, the secret and its rules (nothing
-  is sent), audited `vault.agent.refused` once per run, secret, method and path; of several
+  and path (as sent and as it goes out, without the query) match one, whose path holds no `.` or
+  `..` segment, `\`, `;`, `#` or encoded `.`, `\`, NUL or `%`, and which carries no method or path
+  override (header or `_method` in the query). A request that would use it otherwise is refused
+  with 403 naming the request, the host, the secret and its rules (nothing is sent), audited
+  `vault.agent.refused` once per run, secret, method and path (at most 20 different ones per run
+  and secret, then one "not listed" entry); hosts agents ask for such a secret wait for a person
+  even with `auto_allow`; of several
   secrets injecting one header, those outside their rules are left out first. Rules apply to
   every request the proxy rewrites (HTTP/1.1 inside an intercepted connection, absolute
   `http://` to a bound host); tunnels carry no secret, and gRPC (HTTP/2) to a bound host is not
@@ -2625,7 +2628,7 @@ reach the default), a `wf-quick-task` row is listed as a custom instance workflo
 | R-10 | The MCP server connection test makes the server connect to a user-supplied URL (SSRF). | Mitigated: the host is resolved and the client pinned to the checked addresses; link-local (cloud metadata), unspecified, multicast and broadcast targets are refused for everyone; loopback and private networks only for instance administrators; no redirects; 5 s bound; only tool names or a short error are returned. |
 | R-11 | Concurrent Claude processes in one sandbox share `.claude.json`; a running Claude may rewrite the file between Yulius' trust merge and a new launch. | Merge immediately before spawn; the window is short. Live verification of concurrent launches pending. |
 | R-12 | Closed: Codex releases without `--no-daemon` (by F 2026-10-08; since F 2026-11-16 Codex by the pin). | SPEC-503 CLI-001: only the pinned 0.170.0 release, which has `--no-daemon`, reaches a run (its sha512 in the source). |
-| R-15 | Agent secrets: a manipulated agent can still misuse a credential on its bound hosts, make a bound host echo it transformed, confirm guesses of a weak value through redaction, or read a filled field over raw CDP (R-07, closed by ADR-0191); the end-to-end Claude Code behaviour of the shell prefix and `updatedToolOutput` is read from the 2.1.292 bundle, not exercised live. | Host binding and, where a person set them, method and path rules (SPEC-627, ADR-0458: a read token cannot write), the 8-character minimum, values agents never read (since SPEC-040 a manager's session together with their authenticator can read one: the lockout after 10 wrong codes and the audit bound that), audit of every use; ADR-20 lists the threats. Open: a live smoke with Claude Code. Raw CDP is closed (R-07, ADR-0191). |
+| R-15 | Agent secrets: a manipulated agent can still misuse a credential on its bound hosts, make a bound host echo it transformed, confirm guesses of a weak value through redaction, or read a filled field over raw CDP (R-07, closed by ADR-0191); the end-to-end Claude Code behaviour of the shell prefix and `updatedToolOutput` is read from the 2.1.292 bundle, not exercised live. | Host binding and, where a person set them, method and path rules (SPEC-627, ADR-0458: a read token cannot write while the agent cannot learn it: no agent-bound hosts, no `.env` copy), the 8-character minimum, values agents never read (since SPEC-040 a manager's session together with their authenticator can read one: the lockout after 10 wrong codes and the audit bound that), audit of every use; ADR-20 lists the threats. Open: a live smoke with Claude Code. Raw CDP is closed (R-07, ADR-0191). |
 | R-13 | The server's own Git (worktree creation, commits, status and readiness checks, fetch, delivery pushes) runs outside containment in the sandbox repository and worktrees, whose Git directories agents can write (#54). | Every server-side Git command runs with repository hooks off (`core.hooksPath=/dev/null`), fsmonitor off and `ext::` refused; agents' own Git still runs hooks, so the pre-push guard applies to them. Open (#54 part B): repository-local configuration that runs programs or redirects remotes (filter, diff and merge drivers, credential helpers, URL rewriting) — read-only Git config in containment or a Yulius-owned mirror. |
 
 ## 13. Delivery checkpoints

@@ -68,6 +68,8 @@ pub struct VaultState {
     ca_bundle: OnceLock<Option<String>>,
     /// Uses and redactions already audited (attempt, secret, context).
     audited: Mutex<HashSet<String>>,
+    /// Different refusals audited per run and secret (SPEC-627 MPR-005).
+    refusals: Mutex<HashMap<String, usize>>,
     /// Recently authenticated egress proxy clients.
     clients: runtime::ClientCache,
     /// Proxy credentials of running CI jobs (SPEC-142).

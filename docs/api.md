@@ -2234,10 +2234,14 @@ task; other hooks answer as usual.
 - Egress proxy (SPEC-627): a request that would use a secret with `rules` (its placeholder, its
   name in `X-Yulius-Secret`, or its injected header) outside them is answered `403` with
   `text/plain` "Yulius: METHOD /path to HOST is outside the rules of agent secret NAME (rules),
-  so nothing was sent. …"; so is one whose path holds `..`, `\` or encoded `.`, `\` or NUL, or
-  that carries `X-HTTP-Method-Override`, `X-HTTP-Method` or `X-Method-Override`. Audited
-  `vault.agent.refused` (`NAME → METHOD /path on HOST (outside its rules)`, no query, no value)
-  once per run, secret, method and path.
+  so nothing was sent. …"; so is one whose path (as sent, or with another secret's value replaced
+  in) holds a `.` or `..` segment, `\`, `;`, `#` or encoded `.`, `\`, NUL or `%`, that carries
+  `X-HTTP-Method-Override`, `X-HTTP-Method`, `X-Method-Override`, `X-Original-URL` or
+  `X-Rewrite-URL`, or whose query sets `_method`. Audited `vault.agent.refused`
+  (`NAME → METHOD /path on HOST (outside its rules)`, no query, no value) once per run, secret,
+  method and path, at most 20 different ones per run and secret, then one entry saying further
+  ones are not listed. `secret_request_hosts` for a secret with rules waits for a person even
+  with `auto_allow`.
 - MCP: `secrets_list` (each secret's `rules: [{methods, path}]`), `browser_fill_secret {tab_id, secret, field?: value|password|username|totp,
   selector?}` and `secret_request_hosts {secret, hosts, reason?}` (stores a request a person
   allows, audited `vault.agent.request`, flags the task as needing a person; binds nothing,

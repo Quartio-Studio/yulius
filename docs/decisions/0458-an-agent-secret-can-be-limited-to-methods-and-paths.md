@@ -30,19 +30,25 @@ gRPC-Web over HTTP/1.1 is an ordinary `POST /package.Service/Method`.
   matches any characters, `/` included. Without rules it is sent as before.
 - A request **uses** a secret when it holds its placeholder (header, Basic credentials, path,
   query), names it in `X-Yulius-Secret`, or would get its injected header. A secret with rules is
-  used only by a request whose method is listed by a rule whose pattern matches the path as sent
-  (placeholders not replaced, query left out, no decoding, case-sensitive).
+  used only by a request whose method is listed by a rule whose pattern matches the path both as
+  sent and as it goes out (another secret's value replaced in), the query left out, no decoding,
+  case-sensitive.
 - A request that would use a secret outside its rules is **refused** with 403 and a text naming
   the request, the host, the secret and its rules; nothing is sent. Of several secrets injecting
   one header, those whose rules do not match are left out first, so a read token and a write
   token on one host each go with their own requests; a request matching none is refused. A
   request that uses no secret with rules is forwarded as before.
-- For a secret with rules, a path holding `..`, `\` or an encoded `.`, `\` or NUL, and a request
-  carrying a method-override header (`X-HTTP-Method-Override`, `X-HTTP-Method`,
-  `X-Method-Override`), are refused: the server could read them as a request outside the rules.
-  An encoded `/` is allowed (GitLab's project paths); `*` already crosses `/`.
+- For a secret with rules, a path (as sent or as it goes out) holding a `.` or `..` segment, `\`,
+  `;`, `#` or an encoded `.`, `\`, NUL or `%`, a request carrying a method or path override header
+  (`X-HTTP-Method-Override`, `X-HTTP-Method`, `X-Method-Override`, `X-Original-URL`,
+  `X-Rewrite-URL`) and a query setting `_method` are refused: the proxy's own client or the server
+  could read them as a request outside the rules. An encoded `/` is allowed (GitLab's project
+  paths); `*` already crosses `/`.
 - Each refusal is audited `vault.agent.refused` with the secret, method, path (no query) and
-  host, once per run, secret, method and path, like `vault.agent.use`; never a value.
+  host, once per run, secret, method and path, like `vault.agent.use`, and at most 20 different
+  ones per run and secret before one entry saying further ones are not listed; never a value.
+- Hosts an agent asks for a secret with rules wait for a person, even with `auto_allow`: a
+  server of the agent's own would get the value and the rules would be moot.
 - People who manage a secret set its rules on the Secrets page (Edit) or with the API; an edit is
   a compare-and-set on the rules it read. Rules send the value to no new server, so changing them
   needs no two-factor unlock ([0317](0317-a-guarded-secret-goes-somewhere-new-only-after-two-factor.md)
@@ -61,13 +67,19 @@ gRPC-Web over HTTP/1.1 is an ordinary `POST /package.Service/Method`.
   methods instead.
 - **Rules per host.** A secret is one service's token; a secret that needs different rules per
   host can be two secrets.
-- **Auditing every refused request.** A looping agent would grow the audit log without bound;
-  identical repeats in one run are one entry, as uses are.
+- **Auditing every refused request.** A looping agent would grow the audit log without bound and
+  push every other entry out of the Secrets page's activity list; identical repeats in one run
+  are one entry, as uses are, and different ones are bounded per run and secret.
+- **Only documenting that `auto_allow` makes rules moot.** Leaves the default configuration
+  unprotected; a ruled secret's hosts wait for a person instead.
 
 ## Consequences
 
-- A token for reading can be limited to reading. Rules cannot see request bodies: a GraphQL
-  mutation and a query are both `POST /graphql`, so a read-only token is still the answer there.
+- A token for reading can be limited to reading, against an agent misled by what it reads, while
+  that agent cannot learn the value: its hosts are a person's, and no `.env` copy is allowed
+  (code reading `.env` holds the value itself and can send it anywhere). Rules cannot see request
+  bodies: a GraphQL mutation and a query are both `POST /graphql`, and a `_method` field in a
+  `POST` body is not seen; a read-only token is still the answer there.
 - A secret's rules apply to agent runs, CI jobs and Superagents alike (one policy), and to every
   host it is bound to.
 - HTTP/2 interception, if added, inherits the rules unchanged: they are checked in the policy,

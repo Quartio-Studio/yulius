@@ -1369,7 +1369,7 @@ impl EgressPolicy for App {
         // A secret with rules is used only by a request they allow (SPEC-627 MPR-002): its
         // placeholder, its name in X-Yulius-Secret or its injected header outside them refuses
         // the request, unless another secret's rules allow that header (MPR-003).
-        let check = RuleCheck::of(&request);
+        let check = RuleCheck::of(&request, &path_and_query);
         let mut denied: Vec<&VaultSecretRecord> = Vec::new();
         let named = used.iter().chain(chosen.iter());
         for (record, _) in bound

@@ -359,6 +359,15 @@ async fn paths_and_overrides_that_could_escape_the_rules_are_refused() -> TestRe
         "/v1/x\\..\\admin",
         "/v1/x%5Cadmin",
         "/v1/admin%00/read",
+        // Review round 1: the proxy's own client drops single-dot segments, Java servers read
+        // `;` as path parameters, and a server decoding twice reads `%252e` as a dot.
+        "/v1/./items",
+        "/v1/items/.",
+        "/v1/users;.json",
+        "/v1/%252e%252e/admin",
+        // A method override in the query (`_method`, honoured by some frameworks).
+        "/v1/items?_method=DELETE",
+        "/v1/items?a=1&_METHOD=delete",
     ] {
         let decision =
             w.h.app
@@ -370,6 +379,9 @@ async fn paths_and_overrides_that_could_escape_the_rules_are_refused() -> TestRe
         "x-http-method-override",
         "x-http-method",
         "x-method-override",
+        // Path overrides some rewrite set-ups honour (review round 1).
+        "x-original-url",
+        "x-rewrite-url",
     ] {
         let decision =
             w.h.app
@@ -380,11 +392,17 @@ async fn paths_and_overrides_that_could_escape_the_rules_are_refused() -> TestRe
                 .await;
         refusal(&decision).map_err(|e| format!("{header}: {e}"))?;
     }
-    let slash =
-        w.h.app
-            .egress_apply(&s1, request("GET", "/v1/projects/group%2Fapp", &[read]))
-            .await;
-    assert_eq!(outcome(&slash), Ok(Some(format!("Bearer {READ}"))));
+    for fine in ["/v1/projects/group%2Fapp", "/v1/items?method=x&q=_method"] {
+        let decision =
+            w.h.app
+                .egress_apply(&s1, request("GET", fine, &[read]))
+                .await;
+        assert_eq!(
+            outcome(&decision),
+            Ok(Some(format!("Bearer {READ}"))),
+            "{fine}"
+        );
+    }
     // A secret without rules is not held to them.
     let open =
         w.h.app
@@ -485,5 +503,215 @@ async fn secrets_list_shows_the_rules_to_agents() -> TestResult {
     let how = listed["how_to_use"].to_string();
     assert!(how.contains("rules") && how.contains("403"), "{how}");
     assert!(!listed.to_string().contains(READ));
+    Ok(())
+}
+
+/// Review round 1, finding 1 (MPR-002): another secret's value placed in the path cannot move it
+/// outside the rules once replaced (`..` resolved by the proxy's client, `?` starting a query,
+/// `#` a fragment): the rules hold for the path as sent and as it goes out.
+#[tokio::test]
+async fn a_placeholder_value_cannot_move_the_path_outside_the_rules() -> TestResult {
+    let w = world().await?;
+    add(
+        &w,
+        json!({"name": "COMMENTER", "hosts": [HOST], "injection": "bearer", "value": READ,
+               "rules": [{"methods": ["POST"], "path": "/repos/acme/issues/*/comments"}]}),
+    )
+    .await?;
+    for (name, value) in [
+        ("UP", "../../../../user/keys?"),
+        ("QUERY", "a-value-1?"),
+        ("FRAGMENT", "a-value-2#"),
+    ] {
+        add(&w, json!({"name": name, "hosts": [HOST], "value": value})).await?;
+    }
+    let s1 = client(&w).await?;
+    for name in ["UP", "QUERY", "FRAGMENT"] {
+        let path = format!("/repos/acme/issues/yulius-secret-{name}/comments");
+        let decision = w.h.app.egress_apply(&s1, request("POST", &path, &[])).await;
+        let message = refusal(&decision).map_err(|e| format!("{name}: {e}"))?;
+        assert!(message.contains(&path), "the path as sent: {message}");
+    }
+    // An ordinary value there still goes, with the commenter's header.
+    add(
+        &w,
+        json!({"name": "ISSUE", "hosts": [HOST], "value": "issue-number-42"}),
+    )
+    .await?;
+    let fine =
+        w.h.app
+            .egress_apply(
+                &s1,
+                request(
+                    "POST",
+                    "/repos/acme/issues/yulius-secret-ISSUE/comments",
+                    &[],
+                ),
+            )
+            .await;
+    assert_eq!(outcome(&fine), Ok(Some(format!("Bearer {READ}"))));
+    Ok(())
+}
+
+/// Review round 1, finding 6 (MPR-002, MPR-005): a placeholder inside Basic credentials is a use
+/// too, and a CI job's request outside the rules is refused and audited as `ci:<run>`.
+#[tokio::test]
+async fn basic_credentials_and_ci_jobs_are_held_to_the_rules() -> TestResult {
+    use base64::Engine as _;
+    let w = world().await?;
+    add(
+        &w,
+        json!({"name": "GH_READ", "hosts": [HOST], "value": READ,
+               "rules": [{"methods": ["GET"], "path": "/repos/*"}]}),
+    )
+    .await?;
+    let s1 = client(&w).await?;
+    let basic = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode("bot:yulius-secret-GH_READ")
+    );
+    let post =
+        w.h.app
+            .egress_apply(
+                &s1,
+                request("POST", "/repos/a", &[("authorization", &basic)]),
+            )
+            .await;
+    refusal(&post)?;
+    let get =
+        w.h.app
+            .egress_apply(
+                &s1,
+                request("GET", "/repos/a", &[("authorization", &basic)]),
+            )
+            .await;
+    let expected = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode(format!("bot:{READ}"))
+    );
+    assert_eq!(outcome(&get), Ok(Some(expected)));
+
+    let sandbox = yulius_domain::ids::SandboxId::parse("s1")?;
+    let token =
+        w.h.app
+            .ci_egress_open(&sandbox, "run-7", "job-1", &["GH_READ".to_owned()])
+            .ok_or("ci credential")?;
+    let ci = w.h.app.egress_client(&token).await.ok_or("ci client")?;
+    let read = [("authorization", "Bearer yulius-secret-GH_READ")];
+    let delete =
+        w.h.app
+            .egress_apply(&ci, request("DELETE", "/repos/a", &read))
+            .await;
+    refusal(&delete)?;
+    let refused = activity(&w, "vault.agent.refused").await?;
+    assert!(
+        refused.iter().any(|e| e["actor"] == "ci:run-7"
+            && e["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains("DELETE /repos/a"))),
+        "{refused:?}"
+    );
+    Ok(())
+}
+
+/// Review round 1, finding 3 (MPR-005): a run's distinct refusals of one secret are audited up to
+/// a bound, then once as "further refusals not listed", so varying the path cannot flood the trail.
+#[tokio::test]
+async fn a_runs_distinct_refusals_are_audited_up_to_a_bound() -> TestResult {
+    /// `REFUSALS_LISTED` in `yulius-app` `vault/rules.rs`.
+    const LISTED: usize = 20;
+    let w = world().await?;
+    add(
+        &w,
+        json!({"name": "GH_READ", "hosts": [HOST], "value": READ,
+               "rules": [{"methods": ["GET"], "path": "/repos/*"}]}),
+    )
+    .await?;
+    let s1 = client(&w).await?;
+    let read = [("authorization", "Bearer yulius-secret-GH_READ")];
+    for i in 0..LISTED + 5 {
+        let decision =
+            w.h.app
+                .egress_apply(&s1, request("GET", &format!("/user/{i}"), &read))
+                .await;
+        refusal(&decision)?;
+    }
+    let refused = activity(&w, "vault.agent.refused").await?;
+    assert_eq!(refused.len(), LISTED + 1, "{refused:?}");
+    assert_eq!(
+        refused
+            .iter()
+            .filter(|e| e["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains("further refusals")))
+            .count(),
+        1,
+        "{refused:?}"
+    );
+    Ok(())
+}
+
+/// Review round 1, finding 2 (MPR-009): a secret with rules is not bound to hosts an agent asks
+/// for, even with `auto_allow`: a person allows them, so an agent cannot send it to a server of
+/// its own and learn the value there. A secret without rules still binds them at once.
+#[tokio::test]
+async fn hosts_asked_for_a_secret_with_rules_wait_for_a_person() -> TestResult {
+    let w = world().await?;
+    let ruled = add(
+        &w,
+        json!({"name": "GH_READ", "hosts": [HOST], "value": READ,
+               "rules": [{"methods": ["GET"], "path": "/repos/*"}]}),
+    )
+    .await?;
+    assert_eq!(ruled["auto_allow"], true, "the default");
+    add(&w, json!({"name": "OPEN_TOKEN", "value": OPEN})).await?;
+    for name in ["GH_READ", "OPEN_TOKEN"] {
+        let asked = support::mcp_tool(
+            &w.h,
+            TOKEN,
+            "secret_request_hosts",
+            json!({"secret": name, "hosts": ["collector.example.com"]}),
+        )
+        .await?;
+        assert_ne!(asked["isError"], true, "{name}: {asked}");
+    }
+    let listed = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/agent-secrets",
+        None,
+        &w.writer,
+    )
+    .await?;
+    let secret = |name: &str| {
+        listed
+            .body
+            .as_array()
+            .and_then(|a| a.iter().find(|s| s["name"] == name))
+            .cloned()
+            .unwrap_or_default()
+    };
+    assert_eq!(secret("GH_READ")["hosts"], json!([HOST]));
+    assert_eq!(
+        secret("GH_READ")["requested_hosts"],
+        json!(["collector.example.com"])
+    );
+    assert_eq!(
+        secret("OPEN_TOKEN")["hosts"],
+        json!(["collector.example.com"])
+    );
+    // The collector is bound to OPEN_TOKEN only: GH_READ's placeholder goes there unreplaced.
+    let s1 = client(&w).await?;
+    let mut there = request(
+        "GET",
+        "/repos/x",
+        &[("authorization", "Bearer yulius-secret-GH_READ")],
+    );
+    there.host = "collector.example.com".into();
+    let decision = w.h.app.egress_apply(&s1, there).await;
+    assert_eq!(
+        outcome(&decision),
+        Ok(Some("Bearer yulius-secret-GH_READ".to_owned()))
+    );
     Ok(())
 }

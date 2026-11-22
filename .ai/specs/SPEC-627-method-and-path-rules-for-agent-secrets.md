@@ -70,7 +70,9 @@ like `{"methods": ["GET"], "path": "/v1/*"}`.
 - **MPR-002 When a secret is used.** A request to a bound host uses a secret when it holds that
   secret's placeholder (header value, Basic credentials, path or query), names it in
   `X-Yulius-Secret`, or would get its injected header. A secret with rules is used only by a
-  request whose method is one of a rule's methods and whose path matches that rule's pattern.
+  request whose method is one of a rule's methods and whose path matches that rule's pattern, both
+  as sent and as it goes out (another secret's value replaced into the path cannot move it: review
+  round 1).
 - **MPR-003 Refusal, not a silent drop.** A request that would use a secret outside its rules is
   refused with 403 and a plain-text message the agent reads, naming the secret, the method, the
   path, the host and the secret's rules, saying nothing was sent and that a person who manages the
@@ -81,17 +83,21 @@ like `{"methods": ["GET"], "path": "/v1/*"}`.
   rules is forwarded as before, and a request that uses none at all is forwarded untouched (the
   value is not in it).
 - **MPR-004 Paths that could mean another resource.** A request that would use a secret with rules
-  is refused (MPR-003) when its path holds `..`, `\`, or percent-encoded `.`, `\` or NUL (`%2e`,
-  `%5c`, `%00`, any case), so a matching path cannot be normalised by the server into one outside
-  the rules; and when it carries a method-override header (`X-HTTP-Method-Override`,
-  `X-HTTP-Method`, `X-Method-Override`), which some servers honour over the request method.
-  Encoded slashes (`%2f`) are allowed: APIs such as GitLab's use them in paths, and `*` already
-  matches across `/`.
+  is refused (MPR-003) when its path, as sent or as it goes out, holds a `.` or `..` segment (the
+  proxy's own client resolves them), `\`, `;` (path parameters), `#`, or percent-encoded `.`, `\`,
+  NUL or `%` (`%2e`, `%5c`, `%00`, `%25`, any case), so a matching path cannot be normalised by a
+  client or server into one outside the rules; when it carries a method or path override header
+  (`X-HTTP-Method-Override`, `X-HTTP-Method`, `X-Method-Override`, `X-Original-URL`,
+  `X-Rewrite-URL`); and when its query sets `_method`. Encoded slashes (`%2f`) are allowed: APIs
+  such as GitLab's use them in paths, and `*` already matches across `/`; `//` is allowed too
+  (merging slashes cannot leave a pattern's literal prefix). A `_method` in a request body is not
+  seen: a `POST` rule on a framework that honours it allows what that framework maps it to.
 - **MPR-005 Audit.** Each refusal is audited as `vault.agent.refused` by the client's actor
   (`task:<n>`, `ci:<run>`, `cockpit:<login>`) on the secret, with the secret's name, the method,
   the path (without the query, at most 200 characters) and the host; never a value. The same
-  refusal repeated by the same run (same secret, method and path) is one entry, as uses are, so a
-  looping agent cannot flood the audit log with copies.
+  refusal repeated by the same run (same secret, method and path) is one entry, as uses are, and a
+  run's first 20 different refusals of a secret are listed, then one entry says further ones are
+  not, so a looping agent cannot flood the audit log by varying the path either.
 - **MPR-006 Editing.** `POST /api/sandboxes/{sid}/agent-secrets` and `PATCH /api/agent-secrets/{id}`
   take `rules: [{methods: [..], path}]` (absent: unchanged; `[]`: none); people who manage the
   secret change them, audited in `vault.agent.update` as `rules`. An edit is a compare-and-set on
@@ -103,6 +109,11 @@ like `{"methods": ["GET"], "path": "/v1/*"}`.
   dialog (one rule per line, `GET, HEAD /repos/*`; empty: any request); the Add dialog stays a name,
   a value and a description (SPEC-121), so rules are set after adding, as hosts are. `secrets_list`, for task agents and
   the Superagent, lists each secret's `rules` and says how they work.
+- **MPR-009 What rules can hold** (review round 1). Rules limit what the proxy puts the value
+  into; they hold against a misled agent only while it cannot learn the value. So hosts an agent
+  asks for a secret with rules wait for a person even when `auto_allow` is on (bound at once, a
+  server of the agent's own would receive the value and the rules would be moot), and the Edit
+  dialog, the docs and ADR-0458 say that allowing `.env` copies gives code the value itself.
 - **MPR-008 Unchanged.** A secret without rules is sent exactly as before (placeholders, injection,
   `X-Yulius-Secret`, 409 for ambiguous injection). Opaque tunnels, the browser's proxy and
   `browser_fill_secret` are unchanged: rules are about requests the egress proxy rewrites.
@@ -116,6 +127,7 @@ like `{"methods": ["GET"], "path": "/v1/*"}`.
 - [x] Secrets page shows and edits a secret's rules
 - [x] secrets_list shows rules to agents and the Superagent
 - [x] Docs: SPEC-002, product, architecture, api and changes
+- [ ] Review round 1: substituted path, own host binding, audit bound and more guards
 - [ ] Independent security-minded review approved on the exact head
 
 ## Acceptance criteria
@@ -128,10 +140,15 @@ like `{"methods": ["GET"], "path": "/v1/*"}`.
 - **AC-3** (MPR-003) Injection: a bearer secret with rules is added only to matching requests; with
   a `GET` secret and a `POST` secret injecting the same header, each request gets its own; a
   request matching neither is refused.
-- **AC-4** (MPR-004) Paths with `..`, `%2e`, `\`, `%5c` or `%00` and requests with a
-  method-override header are refused for a secret with rules; `%2f` is not.
+- **AC-4** (MPR-004) Paths with `..`, `.`, `%2e`, `\`, `%5c`, `%00`, `%25` or `;`, requests with
+  an override header and a query setting `_method` are refused for a secret with rules; `%2f` is
+  not; another secret's value that would add `..`, `?` or `#` to the path is refused (MPR-002).
 - **AC-5** (MPR-005) Each refusal writes one `vault.agent.refused` entry with name, method, path and
-  host and no value; a repeat by the same run writes none.
+  host and no value; a repeat by the same run writes none; past 20 different refusals of a secret
+  in a run, one entry says further ones are not listed; a CI job's refusal is audited as
+  `ci:<run>`.
+- **AC-9** (MPR-009) Hosts asked for a secret with rules and `auto_allow` wait for a person; a
+  secret without rules still binds them at once.
 - **AC-6** (MPR-001, MPR-006) The API stores, returns and replaces rules, refuses invalid ones with
   422, and refuses a stale edit (409) instead of writing older rules back.
 - **AC-7** (MPR-007) The Secrets page edits and shows rules; `secrets_list` shows them.
@@ -159,7 +176,9 @@ like `{"methods": ["GET"], "path": "/v1/*"}`.
   service's 401 or 404, not know why, and probably retry or ask a person to "fix the token"; the
   refusal would also be invisible to the people who audit it. A 403 from Yulius names the rule
   that stopped it, is audited, sends nothing anywhere, and is what iTermX's broker does. A request
-  that uses no ruled secret is not refused: a host's public endpoints stay reachable.
+  that uses no ruled secret is not refused: a host's public endpoints stay reachable for a secret
+  agents add by placeholder. A secret with rules and an injected header is used by every request
+  to its host that lacks the header, so all of them are held to its rules; that fails closed.
 - **Rules are per secret, for all its hosts.** A secret is usually one service's token; a rule per
   host would complicate the form for little. A secret that needs different rules per host can be
   two secrets.
@@ -169,8 +188,14 @@ like `{"methods": ["GET"], "path": "/v1/*"}`.
   (case, encoding) refuses, never widens.
 - **Methods are listed, with no wildcard and no default.** iTermX defaults to `GET`; here a rule
   says its methods so the form shows them. A path-only limit lists the methods it allows.
-- **Deduplicated audit** (MPR-005): one entry per run, secret, method and path, like
-  `vault.agent.use`; a different path is a new entry.
+- **Bounded audit** (MPR-005): one entry per run, secret, method and path, like
+  `vault.agent.use`, and at most 20 different ones per run and secret before one "not listed"
+  entry (review round 1: the activity list shows the newest entries of the instance, so a flood
+  would hide every other).
+- **Rules turn agents' own host binding off** (MPR-009, review round 1). The alternative, only
+  documenting that rules are moot under `auto_allow`, leaves the default configuration unprotected;
+  refusing `.env` copies of a secret with rules was not chosen: they are a person's explicit
+  allowance, which the dialog now warns about.
 
 ## Out of scope
 

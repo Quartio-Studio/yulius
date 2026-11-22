@@ -402,7 +402,7 @@ const ACTIONS = {
   'vault.agent.hosts_cleared': 'removed the hosts of production secret',
   'vault.agent.delete': 'deleted agent secret',
   'vault.agent.use': 'used',
-  'vault.agent.refused': 'was refused, outside its rules,',
+  'vault.agent.refused': 'was refused use of',
   'vault.agent.fill': 'typed',
   'vault.agent.redacted': 'had redacted',
   'vault.agent.request': 'asked for hosts of',
@@ -498,9 +498,9 @@ function agentForm(ctx, secret, scope = 'sandbox') {
   // Method and path rules (SPEC-627), set after adding, as hosts are; a production secret goes
   // through no proxy.
   if (secret && !secret.cd_prod) {
-    form.rules = h('textarea', { class: 'textarea mono', rows: 2, 'aria-label': 'Rules', placeholder: 'GET, HEAD /repos/*' });
+    form.rules = h('textarea', { class: 'textarea mono', rows: 2, placeholder: 'GET, HEAD /repos/*' });
     form.rules.value = rulesText(secret.rules || []);
-    parts.push(field('Only these requests', form.rules, 'Optional. One rule per line: methods, then a path where * matches anything (also /). Other requests that would use it are refused. Empty: any request to its hosts.'));
+    parts.push(field('Rules', form.rules, 'Optional: only these requests get it. One rule per line: methods, then a path where * matches anything (also /). Other requests that would use it are refused. Empty: any request to its hosts. Hosts agents ask for then wait for you, and allowing .env copies would give their code the value itself.'));
   }
   if (secret && secret.injection !== 'none') {
     form.injection = h('select', { class: 'select' },
@@ -651,7 +651,7 @@ function agentHosts(ctx, secret, act, changed) {
   if (secret.hosts.length) parts.push(h('div', { class: 'chips' }, secret.hosts.map((name) => iconBadge('globe', name, '', 'Bound host'))));
   else if (!secret.requested_hosts.length) parts.push(h('span', { class: 'muted small' }, secret.auto_allow ? 'Not sent anywhere yet: agents bind its hosts when they need them.' : 'Not sent anywhere yet: agents ask for its hosts and you allow them here.'));
   // Its rules (SPEC-627), beside the hosts they apply to.
-  if (secret.hosts.length && (secret.rules || []).length) parts.push(h('div', { class: 'chips', 'aria-label': 'Rules' }, secret.rules.map((r) => iconBadge('shield', `${r.methods.join(', ')} ${r.path}`, '', 'Only requests matching a rule get it'))));
+  if ((secret.rules || []).length) parts.push(h('div', { class: 'chips', role: 'group', 'aria-label': 'Rules' }, secret.rules.map((r) => iconBadge('shield', `${r.methods.join(', ')} ${r.path}`, '', 'Only requests matching a rule get it'))));
   if (secret.requested_hosts.length) {
     // The answer names the hosts shown here: the server refuses it if an agent asked for more
     // meanwhile, so nothing is allowed unseen (SPEC-121).
