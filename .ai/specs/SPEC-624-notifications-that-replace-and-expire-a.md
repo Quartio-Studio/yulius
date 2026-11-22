@@ -213,3 +213,29 @@ or snoozing; changing who a notice reaches (the event bus rule stays the only ru
 - **Two pull requests in this task.** The core (store, API, channels) comes first, and the
   producers and the bell second. Each pull request then stays one concern of reviewable size, and
   #614 can start on the first.
+
+## Evidence
+
+### First pull request: the notice core (steps 1 to 6)
+
+- `scripts/cargo nextest run -p yulius -E 'binary_id(yulius::main)'` after merging `origin/dev`
+  (with SPEC-622's gate notice UI): 2,613 passed, 24 skipped. The run includes the new
+  `notices::` file (6 tests) and two new Telegram tests.
+- `scripts/cargo nextest run -p yulius-app -p yulius-store -p yulius-domain -p yulius-contracts
+  -p yulius-server`: 1,575 passed. This covers the store tests (replacement, scope, expiry and
+  prune, decision refusal, scope cap, keyed Telegram swap), the migration test
+  `keyed_notices_upgrade_keeps_digests_and_sent_messages` (AC-12), the digest compatibility test
+  (AC-8) and the domain parsing tests (AC-5).
+- `scripts/cargo clippy` on the six touched crates with `-D warnings`: clean. `scripts/dev quick`:
+  the repository contracts and `cargo fmt --check` passed.
+- Mutation by hand:
+  - Without the delete of the replaced notice, `the_same_key_replaces_and_comes_back_unread`
+    failed on the unique index.
+  - With the expiry filter removed from `live_notices`, `an_expired_notice_is_hidden_then_pruned`
+    failed.
+  - With a decision that accepts an expiry, `a_decision_never_expires_and_refuses_an_expiry` and
+    `notices::a_decision_never_expires_silently` failed.
+  - Without the Telegram swap and delete, `a_tasks_newer_state_replaces_its_message` and
+    `a_posted_notice_replaces_its_message_by_key` failed.
+- Security scan: Vidoc is switched off for this project in Yulius, so the scan reports disabled,
+  not passed.
