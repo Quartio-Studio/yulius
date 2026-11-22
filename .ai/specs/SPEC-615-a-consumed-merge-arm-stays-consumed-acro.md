@@ -40,10 +40,10 @@ decision, stamped with the decided activation's `armed_at`.
 
 ## Plan
 
-- [ ] Reproduce the restored stale arm after a refused file clear
-- [ ] Consume a saved activation decided by any final merge wait at startup
-- [ ] Prove a later re-arm keeps its place and an unreadable verdict stays recoverable
-- [ ] Record the decision, architecture note and change entry
+- [x] Reproduce the restored stale arm after a refused file clear
+- [x] Consume a saved activation decided by any final merge wait at startup
+- [x] Prove a later re-arm keeps its place and an unreadable verdict stays recoverable
+- [x] Record the decision, architecture note and change entry
 - [ ] Independent review approves the change
 
 ## Acceptance criteria
