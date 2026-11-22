@@ -343,7 +343,7 @@ pub struct ForkTask {
     /// What the fork should do differently: its first message (at most 64 KiB).
     #[serde(default)]
     pub message: Option<String>,
-    /// Title; "Fork of #N: <title>" when absent.
+    /// Title; `Fork of #N: <title>` when absent.
     #[serde(default)]
     pub title: Option<String>,
     /// Model of the source's harness; the harness default when absent.
