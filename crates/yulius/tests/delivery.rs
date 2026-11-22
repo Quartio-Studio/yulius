@@ -11004,6 +11004,8 @@ async fn parked_primary_with_external_followup()
             number: 2,
             state: "open".into(),
             merged: false,
+            mergeable: Some(true),
+            behind: false,
             merge_commit_sha: None,
             ..pulls[0].clone()
         };
@@ -11069,5 +11071,47 @@ async fn after_all_tasks_includes_a_new_failing_followup_before_discovery() -> T
         created["task"]["start_rule"],
         format!("#{} done", predecessor.number)
     );
+    let successor = TaskId::parse(created["task"]["task_id"].as_str().ok_or("successor id")?)?;
+    f.h.app.reconcile_deliveries().await;
+    assert_eq!(f.h.store.open_followup(&task).await?, Some(2));
+    *f.h.github.omit_listed_pull.lock().map_err(|_| "PR list")? = Some(2);
+    f.h.app.advance_chains(&task).await;
+    assert_eq!(
+        f.h.store.task(&successor).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    f.h.github.set_checks(&head, ChecksState::Success);
+    f.h.app.advance_chains(&task).await;
+    assert_ne!(
+        f.h.store.task(&successor).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_vanished_memory_hint_keeps_the_independently_confirmed_open_pull() -> TestResult {
+    let (f, task, owner, head) = parked_primary_with_external_followup().await?;
+    f.h.github.set_checks(&head, ChecksState::Success);
+    f.h.app.reconcile_deliveries().await;
+    assert_eq!(f.h.store.open_followup(&task).await?, Some(2));
+    {
+        let mut pulls = f.h.github.pulls.lock().map_err(|_| "pull fixture")?;
+        let newer = GhPull {
+            number: 3,
+            behind: true,
+            ..pulls[1].clone()
+        };
+        pulls.push(newer);
+    }
+    let latest = f.h.app.task_detail(&owner, task.as_str()).await?.summary;
+    assert_eq!(latest.parked_pr.as_ref().map(|pr| pr.number), Some(3));
+    assert_eq!(f.h.store.open_followup(&task).await?, Some(2));
+    edit_pull(&f, 3, |pr| pr.state = "closed".into());
+    *f.h.github.omit_listed_pull.lock().map_err(|_| "PR list")? = Some(2);
+    f.h.github.set_checks(&head, ChecksState::Failure);
+    let current = f.h.app.task_detail(&owner, task.as_str()).await?.summary;
+    assert_eq!(current.parked_pr.as_ref().map(|pr| pr.number), Some(2));
+    assert_eq!(current.parked_needs_you, Some(true));
     Ok(())
 }

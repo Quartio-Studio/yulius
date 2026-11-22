@@ -4669,6 +4669,9 @@ impl App {
                 })
             })
             .transpose()?;
+        // A confirmed follow-up belongs to the task even if an overview lists a newer
+        // PR or omits it. Start-rule decisions and parking must check it by number too.
+        let stored_open = self.deps.store.open_followup(&task.id).await?;
         let sandbox = self.dlv_sandbox_of(task).await?;
         // A playground or an instance with no GitHub App can still park an answered task.
         // A known open PR requires verification, even when its installation is unavailable.
@@ -4676,7 +4679,10 @@ impl App {
             .filter(|r| past_merge(&r.stage))
             .and_then(|r| r.pr_number);
         if sandbox.is_playground() || !self.github_configured().await? {
-            return Ok((observed.pr.is_none_or(|pr| !pr.open)).then(ParkingPrs::default));
+            return Ok(
+                (stored_open.is_none() && observed.pr.is_none_or(|pr| !pr.open))
+                    .then(ParkingPrs::default),
+            );
         }
         let branch_pulls = async |token: &Secret| {
             let Some(branch) = task.branch.as_deref() else {
@@ -4727,21 +4733,14 @@ impl App {
         if let Some(read) = discovery.as_mut() {
             read.listed(&branch, &closed);
         }
-        // The numbered PR can be current while a cached or paginated branch list omits it.
-        let known_open = match observed
-            .pr
-            .filter(|pr| purpose == PrVerification::Display && pr.open)
+        if purpose != PrVerification::Display
+            || observed.pr.is_none_or(|pr| {
+                !pr.open
+                    || (Some(pr.number) != tracked
+                        && Some(pr.number) != stored_open
+                        && branch.iter().all(|listed| listed.number != pr.number))
+            })
         {
-            Some(pr)
-                if Some(pr.number) == tracked
-                    || branch.iter().any(|p| p.number == pr.number)
-                    || self.deps.store.open_followup(&task.id).await? == Some(pr.number) =>
-            {
-                Some(pr.number)
-            }
-            _ => None,
-        };
-        if known_open.is_none() {
             *observed = ParkedPullRead::recorded(record);
         }
         observed.note_open_branch(&branch);
@@ -4752,7 +4751,7 @@ impl App {
             .iter()
             .map(|p| p.number)
             .chain(tracked)
-            .chain(known_open)
+            .chain(stored_open)
             .collect();
         if numbers.is_empty() {
             return Ok(Some(ParkingPrs::default()));
@@ -4769,7 +4768,7 @@ impl App {
             // Recorded deliveries may originate on a different branch. An independent
             // follow-up identified only by its number must still belong to this task.
             let source = task.branch.as_deref().filter(|_| {
-                known_open == Some(number)
+                stored_open == Some(number)
                     && tracked != Some(number)
                     && branch.iter().all(|pr| pr.number != number)
             });
@@ -4833,7 +4832,7 @@ impl App {
         };
         if let Some(read) = discovery {
             read.listed(&current, &closed);
-            if let Some(number) = known_open
+            if let Some(number) = stored_open
                 && observed.fresh_head
                 && !observed.unavailable
                 && observed.pr.is_some_and(|pr| pr.open && pr.number == number)
@@ -4860,7 +4859,7 @@ impl App {
                 if let Some(pr) = current.iter().find(|pr| pr.number == number) {
                     unchanged(pr) && head.is_none_or(|sha| sha == pr.head_sha)
                 } else {
-                    (tracked == Some(number) || known_open == Some(number))
+                    (tracked == Some(number) || stored_open == Some(number))
                         && branch.iter().all(|pr| pr.number != number)
                 }
             };

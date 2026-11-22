@@ -37,7 +37,7 @@ The hour ending at the warning and GitHub's quota window also differ. If the rep
 - [x] Attribute hourly requests and reserve capacity for delivery
 - [x] Serve budget evidence in instance status and the Status panel
 - [x] Persist confirmed reopenings across a restart before any display read
-- [ ] Keep fresh prerequisite verification when scheduling after all tasks
+- [x] Keep fresh prerequisite verification when scheduling after all tasks
 - [ ] Verify the behavior, obtain independent review and deliver to dev
 
 ## Acceptance criteria
@@ -75,3 +75,5 @@ For a parked task with a merged primary PR, a directly confirmed open follow-up 
 The reopened-follow-up test passed after the fix, including #2’s failed checks on a cold task list, #1’s preserved merged delivery, and the later independent closure of #2. All 46 HTTP adapter tests passed after integrating SPEC-608. An isolated checkout of dev reproduced the two bounded-read expectation failures tracked in [issue #1666](https://github.com/Quartio-Studio/yulius/issues/1666) and the empty review-round receipt in the gated-merge test at 792913c65. The four task-list race tests passed individually on that dev revision. Task #592 owns the parked Git timeout repair and task #540 owns the review-round repairs.
 
 The final recovery checks cover an open follow-up that disappears from a branch listing, and a primary merge whose SHA arrives after a later follow-up opens and closes. The earlier implementation returned null for the primary’s landing evidence. Reconciliation now selects an incomplete landing independently of the PR shown on the task, within the same bounded scan.
+
+The prerequisite regression created a task with `after_all_tasks` between an external failing follow-up opening and the next reconciliation tick. Its rule included the parked predecessor. The existing request-purpose inheritance already gives this action a fresh read. The cold-display regression now seeds a finished spec in the database and checks that the numbered endpoint was actually read. An expired memory-only listing can clear, while a durably confirmed follow-up survives omission. The full browser suite passed 1,325 tests with one existing skip.
