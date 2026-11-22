@@ -53,13 +53,13 @@ separately. The owner approved this on 22 Nov 2026 after a review of iTermX, who
 
 ## Plan
 
-- [ ] Store task forks (migration 0092): record, read, list a source's forks, keep them past a deleted source
-- [ ] Harness forks a session: Claude Code --fork-session with --session-id, Codex fork, Antigravity refused
-- [ ] Fork use case: same-harness checks, source head commit, transcript snapshot, task with the copied plan
-- [ ] Fork launch: worktree at the source commit, transcript placed for the fork, opening message, own lineage
-- [ ] Fork API, task_fork MCP tool and fork origin and forks in task summaries
-- [ ] Tests that fail without the fork: fixture conversation carried, branch at the source head, source unchanged
-- [ ] Docs for the backend: architecture, api, ADR-0463 and the changes log
+- [x] Store task forks (migration 0092): record, read, list a source's forks, keep them past a deleted source
+- [x] Harness forks a session: Claude Code --fork-session with --session-id, Codex fork, Antigravity refused
+- [x] Fork use case: same-harness checks, source head commit, transcript snapshot, task with the copied plan
+- [x] Fork launch: worktree at the source commit, transcript placed for the fork, opening message, own lineage
+- [x] Fork API, task_fork MCP tool and fork origin and forks in task summaries
+- [x] Tests that fail without the fork: fixture conversation carried, branch at the source head, source unchanged
+- [x] Docs for the backend: architecture, api, ADR-0463 and the changes log
 - [ ] Independent review of the backend pull request
 - [ ] Fork action in the task menu and on the task page, with its dialog
 - [ ] Fork origin and forks shown on both task pages
@@ -111,5 +111,8 @@ separately. The owner approved this on 22 Nov 2026 after a review of iTermX, who
   conversation would race the source's own instance, which the CLI itself warns about.
 - **A table of its own (`task_forks`).** A fork is a link between two tasks, like a chain. A
   column set on `tasks` would change every task literal for an optional fact.
+- **Forking needs to see the source and to work in the project.** The fork changes nothing of
+  the source, and the new task is the forker's own. So it asks for view access to the source
+  (not its owner's control) and work access to the project, as New task does.
 - **Two pull requests.** The backend (store, harness, use case, API, MCP, tests, docs) first,
   then the web UI, each within the size rule.

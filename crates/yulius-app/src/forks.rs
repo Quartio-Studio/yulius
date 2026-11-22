@@ -72,7 +72,11 @@ impl App {
         id: &str,
         req: &ForkTask,
     ) -> AppResult<TaskSummary> {
-        let source = self.load_task(ctx, id, Action::Work).await?;
+        // The source only needs to be seen: nothing of it changes, and the fork is the
+        // forker's, who needs work access to the project (checked by `fork_task_as`).
+        let source = self
+            .load_task_to(ctx, id, yulius_domain::task_access::TaskAction::View)
+            .await?;
         let task = self
             .fork_task_as(&ctx.user, &source, req, TaskOrigin::Ui)
             .await?;

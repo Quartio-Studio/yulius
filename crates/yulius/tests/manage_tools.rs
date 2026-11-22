@@ -1072,3 +1072,40 @@ async fn task_fork_refuses_a_task_without_a_conversation() -> TestResult {
     assert_eq!(listed["isError"], json!(true));
     Ok(())
 }
+
+/// SPEC-628: forking changes nothing of the source, so anyone who may work in the project forks
+/// another person's task (view of the task, work in the project); a reader may not.
+#[tokio::test]
+async fn a_writer_may_fork_another_persons_task_and_a_reader_may_not() -> TestResult {
+    use axum::http::{Method, StatusCode};
+    let h = harness_configured(|c| c.max_live_sessions = 0)?;
+    support::exhausted_subscription(&h).await?;
+    add_sandbox(&h, "s1", "studio", 20000).await?;
+    let alice = user_with_token(&h, "u-alice", "alice", false).await?;
+    let bob = user_with_token(&h, "u-bob", "bob", false).await?;
+    h.github
+        .set_perm("alice", "Quartio-Studio/studio", perms("write"));
+    h.github
+        .set_perm("bob", "Quartio-Studio/studio", perms("read"));
+    seed_task(&h, "t-carol", "s1", "u-bob", TaskStatus::Closed, None).await?;
+    let fork = |creds| {
+        support::call(
+            &h.router,
+            Method::POST,
+            "/api/tasks/t-carol/fork",
+            Some(json!({"message": "Try the other way"})),
+            creds,
+        )
+    };
+    // Past the access checks: refused only because the task has no conversation yet.
+    let written = fork(&alice).await?;
+    assert_eq!(written.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", written.body);
+    assert!(
+        written.body.to_string().contains("no conversation to fork yet"),
+        "{}",
+        written.body
+    );
+    let read = fork(&bob).await?;
+    assert_eq!(read.status, StatusCode::FORBIDDEN, "{}", read.body);
+    Ok(())
+}
