@@ -526,6 +526,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0458 -->
 <!-- ADR 0459 -->
 <!-- ADR 0460 -->
+- [0461](0461-move-idle-tasks-off-a-subscription-past-a-per-harness-threshold.md): a subscription past its harness's rebalance threshold (default 95 %) gets no new task while another has room, and idle, unpinned tasks on it move to the one with the most room; a person's choice pins a task (SPEC-629)
 <!-- ADR 0461 -->
 <!-- ADR 0462 -->
 <!-- ADR 0463 -->
