@@ -239,11 +239,31 @@ async fn resume_in_replacement(
 
 const HELD: &str = "Old run chunk held in transit";
 
-/// AC-1 (TRO-001, TRO-003, TRO-004): a chunk of the first run held between its host and the hub
-/// while that run is lost and a replacement attaches is not drawn on the replacement's screen
-/// nor sent to its viewers once released; the replacement's own output still reaches both.
+/// AC-1 (TRO-001, TRO-004): a chunk of the first run held between its host and the hub while
+/// that run is lost and a replacement attaches is not drawn on the replacement's screen nor sent
+/// to its viewers once released; the replacement's own output still reaches both.
 #[test]
 fn a_held_chunk_of_an_old_run_does_not_reach_its_replacement() -> TestResult {
+    held_event_of_an_old_run(|seq| RunEvent::Output {
+        seq,
+        bytes: format!("\r\n{HELD}\r\n").into_bytes(),
+    })
+}
+
+/// AC-3 (TRO-002): a host snapshot of the first run held the same way does not replace the
+/// replacement's screen once released.
+#[test]
+fn a_held_snapshot_of_an_old_run_does_not_reach_its_replacement() -> TestResult {
+    held_event_of_an_old_run(|seq| RunEvent::Snapshot {
+        seq,
+        bytes: format!("\x1b[H\x1b[2J{HELD}").into_bytes(),
+    })
+}
+
+/// Holds the event `held` makes (it shows [`HELD`]) in the first run's reader while that run is
+/// lost and a replacement attaches, then releases it and checks the replacement's screen and
+/// viewers.
+fn held_event_of_an_old_run(held: fn(u64) -> RunEvent) -> TestResult {
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     let result = rt.block_on(async {
@@ -257,13 +277,7 @@ fn a_held_chunk_of_an_old_run_does_not_reach_its_replacement() -> TestResult {
             .await?
             .ok_or("the first run")?;
         let seq = app.runtime(&id).hub.output_seq() + 1;
-        let held = host.hold(
-            Path::new(&old.run_dir),
-            vec![RunEvent::Output {
-                seq,
-                bytes: format!("\r\n{HELD}\r\n").into_bytes(),
-            }],
-        )?;
+        let held = host.hold(Path::new(&old.run_dir), vec![held(seq)])?;
         tokio::time::timeout(Duration::from_secs(10), held.entered.notified()).await?;
         // The park ends the first run; its reader, held, loses it to the escalation.
         let mut frames = app.runtime(&id).hub.watch();
@@ -288,15 +302,15 @@ fn a_held_chunk_of_an_old_run_does_not_reach_its_replacement() -> TestResult {
         let mut viewer = app.runtime(&id).hub.watch();
         held.release.notify_one();
         tokio::time::timeout(Duration::from_secs(10), held.delivered.notified()).await?;
+        let shown = screen(&app, &id);
         assert!(
-            !screen(&app, &id).contains(HELD),
-            "the old run's chunk was drawn on the replacement's screen:\n{}",
-            screen(&app, &id)
+            !shown.contains(HELD) && shown.contains("Text for the second run only"),
+            "the old run's event changed the replacement's screen:\n{shown}"
         );
         let seen = received(&mut viewer);
         assert!(
             !seen.contains(HELD),
-            "the old run's chunk reached the replacement's viewers: {seen:?}"
+            "the old run's event reached the replacement's viewers: {seen:?}"
         );
 
         app.tool_task_message(
