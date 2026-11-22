@@ -377,7 +377,13 @@ impl App {
         };
         let task = store.insert_task(&record).await?;
         let account = match fork {
-            Some(fork) => Some(self.start_fork(&task, fork).await?),
+            Some(fork) => {
+                crate::race::reached(
+                    crate::race::Point::ForkInserted,
+                    &self.sandbox_dir(&task.sandbox_id),
+                );
+                Some(self.start_fork(&task, fork).await?)
+            }
             None => None,
         }
         .flatten();

@@ -352,7 +352,14 @@ fn forks_that_cannot_continue_are_refused_and_create_nothing() -> TestResult {
         let ctx = ctx(&app, &user).await?;
         let agy = closed_task(&app, &sandbox, &user, Harness::Antigravity).await?;
         let unstarted = closed_task(&app, &sandbox, &user, Harness::ClaudeCode).await?;
-        let count = || async { app.deps.store.tasks(&sandbox, true).await.map(|t| t.len()) };
+        // Every task of the sandbox, archived or not.
+        let count = || async {
+            let store = &app.deps.store;
+            Ok::<_, AppError>(
+                store.tasks(&sandbox, false).await?.len()
+                    + store.tasks(&sandbox, true).await?.len(),
+            )
+        };
         let before = count().await?;
         let refusal = |result: Result<_, AppError>| match result {
             Err(AppError::Invalid(text)) => Ok(text),
@@ -571,6 +578,84 @@ fn a_fork_whose_first_launch_failed_launches_as_a_fork_again() -> TestResult {
             launch.contains("fork: Some(SessionFork { session_id: Some("),
             "{launch}"
         );
+        stop(&app, &fork_id).await?;
+        stop(&app, &source_id).await?;
+        Ok::<_, BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-628 FRK-001 (review round 1): a queue pass between the fork's task and its record starts
+/// nothing: the fork waits where the queue does not start it until its record is written, and
+/// then launches as a fork.
+#[test]
+fn a_queue_pass_before_the_forks_record_starts_nothing() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), agent)?;
+        let (sandbox, user) = seed(&app, &data, &["a1"]).await?;
+        let source_id = new_task(&app, &sandbox, &user, "Parser").await?;
+        ready(&app, &source_id).await?;
+        let source = task(&app, &source_id).await?;
+        let source_session = latest_session(&app, &source_id).await?;
+        let path = transcript(&app, &source, &source_session)?;
+        std::fs::create_dir_all(path.parent().ok_or("folder")?)?;
+        std::fs::write(&path, "{\"type\":\"user\",\"uuid\":\"fixture-user-1\"}\n")?;
+        let (at, reached) = std::sync::mpsc::channel();
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        yulius_app::race::on(
+            yulius_app::race::Point::ForkInserted,
+            &app.config.data_dir.join("sandboxes").join(sandbox.as_str()),
+            move || {
+                let _ = at.send(());
+                let _ = wait.recv_timeout(Duration::from_secs(60));
+            },
+        );
+        let ctx = ctx(&app, &user).await?;
+        let forking = {
+            let (app, id) = (app.clone(), source_id.clone());
+            tokio::spawn(
+                async move { app.fork_task(&ctx, id.as_str(), &ForkTask::default()).await },
+            )
+        };
+        tokio::task::spawn_blocking(move || reached.recv_timeout(Duration::from_secs(60)))
+            .await??;
+        // The task exists, its record does not: the queue starts nothing.
+        let waiting: Vec<TaskRecord> = app
+            .deps
+            .store
+            .tasks(&sandbox, false)
+            .await?
+            .into_iter()
+            .filter(|t| t.id != source_id)
+            .collect();
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(waiting[0].status, TaskStatus::Prepared);
+        app.drain_queue_now().await;
+        assert_eq!(
+            task(&app, &waiting[0].id).await?.status,
+            TaskStatus::Prepared
+        );
+        assert!(app.deps.store.live_attempt(&waiting[0].id).await?.is_none());
+        go.send(())?;
+        let fork_id = TaskId::parse(&forking.await??.id)?;
+        assert_eq!(fork_id, waiting[0].id);
+        ready(&app, &fork_id).await?;
+        let run = app
+            .deps
+            .store
+            .live_attempt(&fork_id)
+            .await?
+            .ok_or("fork run")?;
+        let launch = launch_of(&run)?;
+        assert!(launch.contains("fork: Some(SessionFork"), "{launch}");
         stop(&app, &fork_id).await?;
         stop(&app, &source_id).await?;
         Ok::<_, BoxError>(())
