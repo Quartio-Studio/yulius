@@ -617,19 +617,19 @@ impl App {
                 lock_slot(&runtime).last_armed_at = span.started_at.0;
                 continue;
             }
-            if let (Some(span), Some(receipt)) = (last, receipt) {
-                if receipt.superseded_at.is_none()
-                    && !matches!(
-                        self.deps
-                            .store
-                            .retire_singleton(&task_id, &span, self.now())
-                            .await,
-                        Ok(true)
-                    )
-                {
-                    complete = false;
-                    continue;
-                }
+            // An older singleton decision gives way to this later activation.
+            if let (Some(span), Some(receipt)) = (last, receipt)
+                && receipt.superseded_at.is_none()
+                && !matches!(
+                    self.deps
+                        .store
+                        .retire_singleton(&task_id, &span, self.now())
+                        .await,
+                    Ok(true)
+                )
+            {
+                complete = false;
+                continue;
             }
             let Ok(record) = self.deps.store.task(&task_id).await else {
                 complete = false;

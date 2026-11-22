@@ -6594,7 +6594,10 @@ async fn an_ordinary_verdict_consumes_its_saved_arm_when_the_clear_failed() -> T
     let fresh = yulius_app::context::App::new(t.f.h.app.config.clone(), t.f.h.app.deps.clone());
     fresh.restore_armed_merges().await;
     let state = fresh.agent_wait_state("tok-agent", Some(&t.head)).await?;
-    assert!(!state.merge_armed, "the consumed activation was armed again");
+    assert!(
+        !state.merge_armed,
+        "the consumed activation was armed again"
+    );
     assert_eq!(saved_arms(&path)?, json!([]));
     Ok(())
 }
@@ -6650,8 +6653,7 @@ async fn an_unreadable_verdict_keeps_the_saved_arm_until_it_is_reconciled() -> T
     ] {
         std::fs::write(&path, &saved)?;
         store.execute_for_tests(damage).await?;
-        let fresh =
-            yulius_app::context::App::new(t.f.h.app.config.clone(), t.f.h.app.deps.clone());
+        let fresh = yulius_app::context::App::new(t.f.h.app.config.clone(), t.f.h.app.deps.clone());
         fresh.restore_armed_merges().await;
         assert_eq!(std::fs::read(&path)?, saved, "lost: {damage}");
         let refused = fresh.tool_delivery_merge(&ctx, &args).await;
