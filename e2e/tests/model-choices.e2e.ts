@@ -28,7 +28,8 @@ test('an untouched new task runs Claude Code on Opus 5.5 at the inherited effort
   expect(lastTaskCreate.model).toBe('claude-opus-5-5');
   expect(Object.hasOwn(lastTaskCreate, 'harness')).toBe(false);
   expect(Object.hasOwn(lastTaskCreate, 'effort')).toBe(false);
-  expect(task).toMatchObject({ harness: 'claude', harness_choice: 'chosen', model: 'claude-opus-5-5', effort: 'high' });
+  // The browser names Opus 5.5 itself, so the task records it as chosen, not inherited.
+  expect(task).toMatchObject({ harness: 'claude', harness_choice: 'chosen', model: 'claude-opus-5-5', model_default: false, effort: 'high' });
 });
 
 test('unrecognized and unreadable saved models recover to Opus 5.5, a saved Codex default stays', async ({ app, browser, screen }) => {

@@ -577,8 +577,12 @@ fn the_composer_offers_antigravity_on_its_default_model() -> TestResult {
     assert!(
         mock.contains(&format!(
             "harness === 'antigravity' ? '{DEFAULT_ANTIGRAVITY_MODEL}' : '{DEFAULT_CLAUDE_MODEL}');"
-        )) && DEFAULT_CLAUDE_EFFORT == DEFAULT_ANTIGRAVITY_EFFORT,
+        )),
         "the mock creates a Claude Code task without a model on another default"
+    );
+    assert_eq!(
+        DEFAULT_CLAUDE_EFFORT, DEFAULT_ANTIGRAVITY_EFFORT,
+        "the mock's shared effort is no longer Claude Code's default"
     );
     assert!(
         mock.contains(&format!(
