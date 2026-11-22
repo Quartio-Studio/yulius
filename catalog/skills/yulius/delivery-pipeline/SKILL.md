@@ -163,7 +163,8 @@ With a merge-first staging target (a dev-stage `[cd.<name>]` with `merge_first =
   your sandbox.
 - Once your whole delivery merged (every pull request of the task), ask for staging once (in
   Yulius: `cd_deploy` of that environment).
-- After asking, your finished task retains its staging outcome on its delivery. If a finished
+- After asking, your task is done: do not keep the session waiting for the staging run.
+  Yulius records the staging outcome on your delivery. If a finished
   task receives a typed outcome, answer in one line and change nothing. Only a person reopens its work.
 - A task still at work repairs a red integration branch before it delivers when nobody else has
   the repair. Yulius names one working task to repair it and tells the other workers who has it.
