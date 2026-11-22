@@ -224,21 +224,53 @@ impl FailureScanner {
 /// read: the first line and lines after an empty one, at the margin.
 #[must_use]
 pub fn failed_test_names(kept: &str) -> Vec<String> {
-    let mut names: Vec<String> = Vec::new();
+    failed_test_blocks(kept)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect()
+}
+
+/// Each failing test [`failed_test_names`] reads, in its order, with its kept block: the header
+/// and every line up to the next test's header, a test kept twice (a retry) as both blocks
+/// joined (SPEC-618 FOC-001). Lines before the first header belong to no test.
+///
+/// # Examples
+/// ```
+/// use yulius_domain::ci::failures::failed_test_blocks;
+/// let kept = "FAIL [ 0.1s] (1/2) app a\n  stderr ───\n    tests/x.rs:4: bad\n\n\
+///             FAIL [ 0.2s] (2/2) app b\n  stderr ───\n    other\n";
+/// let blocks = failed_test_blocks(kept);
+/// assert_eq!(blocks[0].0, "app a");
+/// assert!(blocks[0].1.contains("tests/x.rs:4") && !blocks[0].1.contains("other"));
+/// assert!(blocks[1].1.contains("other") && !blocks[1].1.contains("tests/x.rs"));
+/// ```
+#[must_use]
+pub fn failed_test_blocks(kept: &str) -> Vec<(String, String)> {
+    let mut blocks: Vec<(String, String)> = Vec::new();
+    let mut current: Option<usize> = None;
     let mut starts_block = true;
     for line in kept.lines() {
         let header = std::mem::replace(&mut starts_block, line.is_empty());
-        if !header {
-            continue;
+        let name = header
+            .then(|| libtest_header(line).or_else(|| kept_nextest_name(line)))
+            .flatten()
+            .map(str::trim)
+            .filter(|n| !n.is_empty());
+        if let Some(name) = name {
+            current = Some(match blocks.iter().position(|(known, _)| known == name) {
+                Some(at) => at,
+                None => {
+                    blocks.push((name.to_owned(), String::new()));
+                    blocks.len() - 1
+                }
+            });
         }
-        let name = libtest_header(line).or_else(|| kept_nextest_name(line));
-        if let Some(name) = name.map(str::trim).filter(|n| !n.is_empty())
-            && !names.iter().any(|known| known == name)
-        {
-            names.push(name.to_owned());
+        if let Some(block) = current.and_then(|at| blocks.get_mut(at)) {
+            block.1.push_str(line);
+            block.1.push('\n');
         }
     }
-    names
+    blocks
 }
 
 /// How many failing tests' output [`FailureScanner::finish`] counted but did not keep (its
@@ -563,6 +595,42 @@ error: test run failed
             vec!["a retried".to_owned(), "a crashed".to_owned()]
         );
         assert!(failed_test_names("").is_empty());
+    }
+
+    /// SPEC-618 FOC-001: each failing test's block, its header to the next test's header; a
+    /// test kept twice has both blocks, and the lines before the first header belong to none.
+    #[test]
+    fn each_failing_test_has_its_block() {
+        let kept = scan(&[NEXTEST]).unwrap_or_default();
+        let blocks = failed_test_blocks(&kept);
+        let names: Vec<&str> = blocks.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["nt tests::bad2", "nt tests::bad"]);
+        assert!(blocks[0].1.contains("second failure"), "{blocks:?}");
+        assert!(!blocks[0].1.contains("the message"), "{blocks:?}");
+        assert!(blocks[1].1.contains("the message"), "{blocks:?}");
+        assert!(blocks[1].1.contains("some stderr line"), "{blocks:?}");
+        assert!(!blocks[1].1.contains("second failure"), "{blocks:?}");
+        let retried = "noise before\n\nFAIL [ 0.5s] (1/2) a flaky\n  stderr ───\n    first\n\n\
+                       FAIL [ 0.1s] (2/2) a other\n  stderr ───\n    middle\n\n\
+                       TRY 2 FAIL [ 0.5s] (1/2) a flaky\n  stderr ───\n    again\n";
+        let blocks = failed_test_blocks(retried);
+        assert_eq!(blocks.len(), 2, "{blocks:?}");
+        assert_eq!(blocks[0].0, "a flaky");
+        assert!(blocks[0].1.contains("first") && blocks[0].1.contains("again"));
+        assert!(!blocks[0].1.contains("middle") && !blocks[0].1.contains("noise"));
+        assert_eq!(
+            blocks[1],
+            (
+                "a other".to_owned(),
+                "FAIL [ 0.1s] (2/2) a other\n  stderr ───\n    middle\n\n".to_owned()
+            )
+        );
+        let libtest = "---- tests::bad stdout ----\nthread panicked at tests/x.rs:1:1\n\n\
+                       failures:\n    tests::bad\n";
+        let blocks = failed_test_blocks(libtest);
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].1.contains("tests/x.rs"), "{blocks:?}");
+        assert!(failed_test_blocks("").is_empty());
     }
 
     #[test]
