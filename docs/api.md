@@ -1023,8 +1023,9 @@ The merge-first environment changes only through its staging queue (ADR-0411):
   blocked step.
 - A final staging step can stay in progress. While an idle task waits, its summary’s optional
   `staging_wait` describes the full suite, deployment queue, verification or outcome delivery.
-  Yulius delivers actionable outcomes to the running session or resumes a parked one.
-  An inherited request completes silently. CI overview and each visible sandbox in Status
+  Yulius delivers an actionable outcome to a running session with work left, including an
+  explicit verification step awaiting inclusion. Finished and parked tasks keep the outcome
+  on their delivery. Only a person resumes their work. CI overview and each visible sandbox in Status
   include `gate_notices` with the failure’s test, originating revision and run ID.
 - `delivery_status` of a task whose work merged has `staging`: the due request with the
   `cd_deploy` call, or the newest request's state, run ids and next step (MFS-013).

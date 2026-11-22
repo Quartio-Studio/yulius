@@ -492,7 +492,8 @@ impl App {
                     let Some(mut next) = stg::after_verdict(Some(verdict)) else {
                         break;
                     };
-                    let note = if next == StagingState::GateFailed {
+                    let mut note = format!("the full gate passed: run {}", run.run);
+                    if next == StagingState::GateFailed || run.jobs.iter().any(|j| j.skipped) {
                         let history = self
                             .gate_failures_at(
                                 sandbox,
@@ -508,18 +509,24 @@ impl App {
                             Some(id) => self.deps.store.task(id).await?.map(|t| t.number),
                             None => run.owner,
                         };
-                        let (inherited, detail) = history.describe(&run, requester);
-                        if inherited {
-                            next = StagingState::Inherited;
+                        if let Some((inherited, detail)) = history.describe(&run, requester) {
+                            next = if inherited {
+                                StagingState::Inherited
+                            } else {
+                                StagingState::GateFailed
+                            };
+                            let outcome = if run.state == RunState::Passed {
+                                "skipped an unresolved job"
+                            } else {
+                                "failed"
+                            };
+                            note = format!(
+                                "the full gate {outcome} on revision {}: run {} ({detail}); staging did not change",
+                                short(&request.revision),
+                                run.run
+                            );
                         }
-                        format!(
-                            "the full gate failed on revision {}: run {} ({detail}); staging did not change",
-                            short(&request.revision),
-                            run.run
-                        )
-                    } else {
-                        format!("the full gate passed: run {}", run.run)
-                    };
+                    }
                     self.staging_move(
                         request,
                         next,

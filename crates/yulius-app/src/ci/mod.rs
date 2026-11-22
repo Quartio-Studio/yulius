@@ -1767,13 +1767,21 @@ impl App {
         }
         for target in plan.queue {
             if matches!(&target.reference, CiRef::Branch(branch) if branch == &profile.integration_branch)
-                && self.deps.store.active_ci_runs().await?.iter().any(|r| {
-                    r.sandbox_id == sandbox.id && matches!(r.reference, CiRef::Candidate(_))
-                })
             {
-                // A non-supersedable full candidate is already using the integration gate.
-                // The next inventory picks up the current branch head after its verdict.
-                continue;
+                let cancelled = facts.iter().any(|run| {
+                    run.sha == target.sha
+                        && matches!(run.reference, CiRef::Candidate(_))
+                        && run.state == RunState::Cancelled
+                });
+                if cancelled
+                    || self.deps.store.active_ci_runs().await?.iter().any(|r| {
+                        r.sandbox_id == sandbox.id && matches!(r.reference, CiRef::Candidate(_))
+                    })
+                {
+                    // An active candidate owns the slot. A cancelled candidate at this head
+                    // stays stopped until a person asks for a rerun.
+                    continue;
+                }
             }
             if let Some((_, gate)) = targets.iter().find(|(t, _)| *t == target) {
                 // A branch commit whose tree a run already passed (a squash merge of an

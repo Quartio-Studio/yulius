@@ -37,6 +37,9 @@ pub struct GateJob {
     pub passed: bool,
     /// The names CI retained when the job failed.
     pub tests: Vec<String>,
+    /// The gate omitted this job. Its preceding failures remain unresolved.
+    #[serde(default)]
+    pub skipped: bool,
     /// A cancelled sibling only observed part of its suite.
     pub partial: bool,
     /// A failing job whose evidence cannot identify every failure.
@@ -98,6 +101,20 @@ impl GateFailures {
         if !verdict.archived {
             self.latest_run = Some(verdict.run.clone());
         }
+        if verdict.state == RunState::Passed {
+            let skipped: BTreeSet<_> = verdict
+                .jobs
+                .iter()
+                .filter(|j| j.skipped)
+                .map(|j| &j.name)
+                .collect();
+            self.unknown.retain(|job, _| skipped.contains(job));
+            self.tests.retain(|_, (_, jobs)| {
+                jobs.retain(|job| skipped.contains(job));
+                !jobs.is_empty()
+            });
+            return;
+        }
         let origin = Origin {
             sha: verdict.sha,
             owner: verdict.owner,
@@ -109,7 +126,7 @@ impl GateFailures {
         let complete: BTreeSet<_> = verdict
             .jobs
             .iter()
-            .filter(|job| !job.unknown && !job.partial)
+            .filter(|job| !job.unknown && !job.partial && !job.skipped)
             .map(|job| &job.name)
             .collect();
         self.tests.retain(|test, (_, jobs)| {
@@ -118,7 +135,11 @@ impl GateFailures {
         });
         self.unknown.retain(|job, _| !complete.contains(job));
         let mut observed = false;
-        for job in verdict.jobs.into_iter().filter(|job| !job.passed) {
+        for job in verdict
+            .jobs
+            .into_iter()
+            .filter(|job| !job.passed && !job.skipped)
+        {
             observed = true;
             for test in job.tests {
                 let (_, jobs) = self
@@ -140,34 +161,51 @@ impl GateFailures {
         }
     }
 
-    /// Classify only failures actually observed at this revision.
-    pub(super) fn describe(&self, verdict: &GateVerdict, requester: Option<u32>) -> (bool, String) {
+    /// Classify observed failures, or failures still open because a green run skipped their job.
+    pub(super) fn describe(
+        &self,
+        verdict: &GateVerdict,
+        requester: Option<u32>,
+    ) -> Option<(bool, String)> {
         let mut inherited = Vec::new();
         let mut new = Vec::new();
-        for job in &verdict.jobs {
-            for test in &job.tests {
-                match self.tests.get(test) {
-                    Some((origin, _))
-                        if origin.sha != verdict.sha
-                            || (origin.owner.is_some() && origin.owner != requester) =>
-                    {
-                        let owner = origin
-                            .owner
-                            .map_or_else(|| "project".into(), |n| format!("task #{n}"));
-                        inherited.push(format!(
-                            "{test} from {} ({owner})",
-                            super::staging::short(&origin.sha)
-                        ));
-                    }
-                    _ => new.push(test.clone()),
+        let mut classify = |name: &str, origin: Option<&Origin>| {
+            if let Some(origin) = origin
+                .filter(|o| o.sha != verdict.sha || (o.owner.is_some() && o.owner != requester))
+            {
+                let owner = origin
+                    .owner
+                    .map_or_else(|| "project".into(), |n| format!("task #{n}"));
+                inherited.push(format!(
+                    "{name} from {} ({owner})",
+                    super::staging::short(&origin.sha)
+                ));
+            } else {
+                new.push(name.to_owned());
+            }
+        };
+        if verdict.state == RunState::Passed {
+            for (test, (origin, _)) in &self.tests {
+                classify(test, Some(origin));
+            }
+            for (job, origin) in &self.unknown {
+                classify(job, Some(origin));
+            }
+            if new.is_empty() && inherited.is_empty() {
+                return None;
+            }
+        } else {
+            for job in &verdict.jobs {
+                for test in &job.tests {
+                    classify(test, self.tests.get(test).map(|(origin, _)| origin));
+                }
+                if job.unknown {
+                    classify(&job.name, None);
                 }
             }
-            if job.unknown {
-                new.push(job.name.clone());
+            if new.is_empty() && inherited.is_empty() {
+                new.push(verdict.state.as_str().to_owned());
             }
-        }
-        if new.is_empty() && inherited.is_empty() {
-            new.push(verdict.state.as_str().to_owned());
         }
         let only_inherited = new.is_empty();
         let mut parts = Vec::new();
@@ -177,7 +215,7 @@ impl GateFailures {
         if !inherited.is_empty() {
             parts.push(format!("inherited failures: {}", inherited.join(", ")));
         }
-        (only_inherited, parts.join("; "))
+        Some((only_inherited, parts.join("; ")))
     }
 
     fn notices(self) -> Vec<GateNotice> {
@@ -224,7 +262,8 @@ impl App {
                     .await?;
                 let mut passed = false;
                 for verdict in verdicts {
-                    if verdict.state == RunState::Passed {
+                    if verdict.state == RunState::Passed && !verdict.jobs.iter().any(|j| j.skipped)
+                    {
                         passed = true;
                         break;
                     }

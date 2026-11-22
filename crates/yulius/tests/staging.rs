@@ -610,6 +610,119 @@ async fn unsuccessful_reruns_keep_unresolved_jobs_at_the_same_revision_after_ret
 }
 
 #[tokio::test]
+async fn a_green_rerun_that_skips_an_unresolved_job_keeps_the_notice_and_staging_wait() -> TestResult
+{
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "owner").await?;
+    let sha = land(&f, "owner", "broken").await?;
+    let first = gate(&f, &sha, RunState::Error).await?;
+    let project = sandbox(&f).await?;
+    let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
+    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    for id in ["skip-one", "skip-two"] {
+        let (mut run, quick) = crate::pr_watch::run(
+            &project.id,
+            id,
+            &sha,
+            RunState::Passed,
+            None,
+            f.h.app.now().0,
+        );
+        run.reference = CiRef::Branch("dev".into());
+        let mut skipped = quick.clone();
+        skipped.name = "full".into();
+        skipped.key = skipped.name.clone();
+        skipped.id = format!("{id}-skipped");
+        skipped.ordinal = 1;
+        skipped.state = RunState::Skipped;
+        f.h.store.insert_ci_run(&run, &[quick, skipped]).await?;
+    }
+    for prune in [false, true] {
+        if prune {
+            f.h.store.prune_ci_runs(0, f.h.app.now()).await?;
+            assert!(f.h.store.ci_run(&first).await?.is_none());
+            assert!(f.h.store.ci_run("skip-one").await?.is_none());
+        }
+        let notices = f.get("/api/status").await?["sandboxes"][0]["gate_notices"].clone();
+        assert_eq!(notices[0]["test"], "full", "{notices}");
+        assert_eq!(notices[0]["run_id"], "skip-two");
+    }
+    agent(&f, "later").await?;
+    let descendant = land(&f, "later", "later").await?;
+    let later = gate(&f, &descendant, RunState::Passed).await?;
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE ci_jobs SET state='skipped' WHERE id='{later}-full'"
+        ))
+        .await?;
+    let asked = ask(&f, "later").await?;
+    settle(&f).await?;
+    let receipt = request(&f, asked["id"].as_str().ok_or("receipt")?).await?;
+    assert_eq!(receipt.state, StagingState::Inherited, "{receipt:?}");
+    assert!(
+        receipt
+            .note
+            .as_deref()
+            .is_some_and(|n| n.contains("full") && n.contains(&sha[..12]))
+    );
+    agent(&f, "fix").await?;
+    let fix = land(&f, "fix", "fixed").await?;
+    gate(&f, &fix, RunState::Passed).await?;
+    ask(&f, "fix").await?;
+    settle(&f).await?;
+    assert_eq!(
+        request(&f, &receipt.id).await?.state,
+        StagingState::Included
+    );
+    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    assert_eq!(
+        f.get("/api/status").await?["sandboxes"][0]["gate_notices"],
+        json!([])
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn pruning_a_manually_cancelled_candidate_preserves_its_verdict_and_rerun() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "owner").await?;
+    let sha = land(&f, "owner", "merge").await?;
+    let stopped = gate(&f, &sha, RunState::Cancelled).await?;
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE ci_runs SET reference='candidate/' || sha WHERE id='{stopped}'"
+        ))
+        .await?;
+    f.h.store.prune_ci_runs(0, f.h.app.now()).await?;
+    let id = ask(&f, "owner").await?;
+    f.h.app
+        .staging_advance(&sandbox(&f).await?, "staging")
+        .await?;
+    let row = request(&f, id["id"].as_str().ok_or("receipt")?).await?;
+    assert_eq!(row.state, StagingState::GateFailed, "{row:?}");
+    assert_eq!(row.ci_run_id.as_deref(), Some(stopped.as_str()));
+    let project = sandbox(&f).await?;
+    f.h.app.ci_sync_sandbox(&project).await?;
+    assert_eq!(
+        f.h.store.ci_runs_for_sha(&project.id, &sha).await?.len(),
+        1,
+        "inventory must also honor the cancelled suite"
+    );
+    let notes = f.get("/api/status").await?["sandboxes"][0]["gate_notices"].clone();
+    assert_eq!(notes[0]["run_id"], stopped);
+    let rerun = support::call(
+        &f.h.router,
+        axum::http::Method::POST,
+        &format!("/api/sandboxes/s1/ci/runs/{stopped}/rerun"),
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(rerun.body["sha"], sha);
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_pruned_gate_and_deleted_task_still_identify_the_inherited_test() -> TestResult {
     let f = fixture(&staging_toml()).await?;
     support::seed_task(&f.h, "old", "s1", "u-alice", TaskStatus::Closed, None).await?;

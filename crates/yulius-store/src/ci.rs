@@ -160,7 +160,7 @@ fn gate_jobs(c: &rusqlite::Connection, id: &str) -> AppResult<Vec<GateJob>> {
     let mut stmt = c
         .prepare(
             "SELECT name, state, failures, reason FROM ci_jobs WHERE run_id = ?1
-         AND state IN ('passed','failed','error','cancelled') ORDER BY ordinal",
+         AND state IN ('passed','failed','error','cancelled','skipped') ORDER BY ordinal",
         )
         .map_err(db)?;
     let mut rows = stmt.query([id]).map_err(db)?;
@@ -173,7 +173,9 @@ fn gate_jobs(c: &rusqlite::Connection, id: &str) -> AppResult<Vec<GateJob>> {
             .get::<_, Option<String>>(2)
             .map_err(db)?
             .unwrap_or_default();
-        let tests = if partial {
+        let tests = if state == RunState::Skipped {
+            Vec::new()
+        } else if partial {
             let reason: Option<String> = row.get(3).map_err(db)?;
             let names = yulius_app::ci::sibling_failure_names(reason.as_deref(), &kept);
             if names.is_empty() {
@@ -187,12 +189,34 @@ fn gate_jobs(c: &rusqlite::Connection, id: &str) -> AppResult<Vec<GateJob>> {
             name: row.get(0).map_err(db)?,
             passed,
             partial,
+            skipped: state == RunState::Skipped,
             unknown: !passed
+                && state != RunState::Skipped
                 && (state == RunState::Error || tests.is_empty() || omitted_tests(&kept) > 0),
             tests,
         });
     }
     Ok(jobs)
+}
+
+/// Jobs whose recorded failure could survive a green run skipping that job. This
+/// lets ordinary green runs with disabled or unrelated jobs end the first-parent walk.
+fn failed_gate_jobs(
+    c: &rusqlite::Connection,
+    sandbox: &str,
+    branch: &str,
+) -> AppResult<std::collections::HashSet<String>> {
+    let mut stmt = c.prepare("SELECT DISTINCT j.name FROM ci_runs r JOIN ci_jobs j ON j.run_id = r.id
+        WHERE r.sandbox_id = ?1 AND (r.reference = 'branch/' || ?2 OR r.reference = 'candidate/' || r.sha)
+        AND r.state IN ('failed','error') AND j.state IN ('failed','error','cancelled')
+        UNION SELECT json_extract(job.value,'$.name') FROM archived_gate_verdicts a, json_each(a.jobs) job
+        WHERE a.sandbox_id = ?1 AND (a.reference = 'branch/' || ?2 OR a.reference = 'candidate/' || a.sha)
+        AND a.state IN ('failed','error')
+        AND (json_extract(job.value,'$.unknown') OR json_array_length(job.value,'$.tests') > 0)").map_err(db)?;
+    stmt.query_map(params![sandbox, branch], |row| row.get(0))
+        .map_err(db)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(db)
 }
 
 pub(crate) fn runs_for_exact_head(
@@ -238,16 +262,27 @@ impl CiStore for SqliteStore {
             ).map_err(db)?;
             let mut rows = stmt.query(params![sandbox, branch, revisions, yulius_domain::ci::AFTER_MERGE_SKIP_REASON, read == GateRead::SettledHistory, read != GateRead::Latest]).map_err(db)?;
             let mut result = Vec::new();
+            let mut failed_jobs = None;
             while let Some(row) = rows.next().map_err(db)? {
                 let run: String = row.get(0).map_err(db)?;
                 let state = state(&row.get::<_, String>(2).map_err(db)?).map_err(db)?;
                 let archive: Option<String> = row.get(3).map_err(db)?;
-                let jobs = if matches!(state, RunState::Failed | RunState::Error) {
+                let mut jobs = if matches!(state, RunState::Failed | RunState::Error | RunState::Passed) {
                     match archive.as_deref() {
                         Some(archived) => serde_json::from_str(archived).map_err(AppError::internal)?,
                         None => gate_jobs(c, &run)?,
                     }
                 } else { Vec::new() };
+                if state == RunState::Passed {
+                    jobs.retain(|job| job.skipped);
+                    if !jobs.is_empty() {
+                        if failed_jobs.is_none() {
+                            failed_jobs = Some(failed_gate_jobs(c, &sandbox, &branch)?);
+                        }
+                        jobs.retain(|job| failed_jobs.as_ref().is_some_and(|names| names.contains(&job.name)));
+                    }
+                }
+                let complete_pass = state == RunState::Passed && jobs.is_empty();
                 result.push(GateVerdict {
                     run,
                     sha: row.get(1).map_err(db)?,
@@ -256,6 +291,7 @@ impl CiStore for SqliteStore {
                     archived: archive.is_some(),
                     owner: row.get(4).map_err(db)?,
                 });
+                if read != GateRead::Latest && complete_pass { break; }
             }
             Ok(result)
         }).await
@@ -1314,9 +1350,9 @@ impl CiStore for SqliteStore {
                        SELECT id FROM (\
                          SELECT id, ROW_NUMBER() OVER (\
                            PARTITION BY sandbox_id, reference ORDER BY queued_at DESC, rowid DESC) AS v \
-                         FROM ci_runs WHERE state IN ('passed', 'failed', 'error')) WHERE v = 1)";
+                         FROM ci_runs WHERE state IN ('passed', 'failed', 'error') OR (state = 'cancelled' AND reference = 'candidate/' || sha)) WHERE v = 1)";
             let ids = {
-                let mut stmt = tx.prepare(&format!("SELECT id FROM ci_runs {prune} AND sandbox_id IN (SELECT id FROM sandboxes) AND (reference LIKE 'branch/%' OR reference LIKE 'candidate/%') AND state IN ('passed','failed','error') AND NOT EXISTS (SELECT 1 FROM ci_jobs WHERE run_id = ci_runs.id AND state = 'skipped' AND instr(reason, ?3) = 1)")).map_err(db)?;
+                let mut stmt = tx.prepare(&format!("SELECT id FROM ci_runs {prune} AND sandbox_id IN (SELECT id FROM sandboxes) AND (reference LIKE 'branch/%' OR reference LIKE 'candidate/%') AND (state IN ('passed','failed','error') OR (state = 'cancelled' AND reference = 'candidate/' || sha)) AND NOT EXISTS (SELECT 1 FROM ci_jobs WHERE run_id = ci_runs.id AND state = 'skipped' AND instr(reason, ?3) = 1)")).map_err(db)?;
                 stmt.query_map(params![before.0, i64::from(keep), yulius_domain::ci::AFTER_MERGE_SKIP_REASON], |row| row.get::<_, String>(0)).map_err(db)?.collect::<Result<Vec<_>,_>>().map_err(db)?
             };
             for id in ids {
