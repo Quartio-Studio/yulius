@@ -728,17 +728,6 @@ impl App {
                 self.queue_reason_of(task, &held).await.map(Value::String),
             );
         }
-        add(
-            "staging_outcome",
-            self.deps
-                .store
-                .latest_task_staging(&task.id)
-                .await
-                .ok()
-                .flatten()
-                .and_then(|r| r.outcome_label())
-                .map(Value::String),
-        );
         drop(add);
         // Merge any request or held prompt that arrived after `facts` was computed (e.g. after
         // `parked_status`) so `needs_you_notice` and `task_wait_messages` agree with `shows`.

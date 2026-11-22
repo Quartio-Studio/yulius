@@ -223,7 +223,6 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0085_ci_pull_window.sql"),
     // Schema 85 follows the shipped review and CI-window migrations.
     include_str!("migrations/0083_terminal_pulls.sql"),
-    include_str!("migrations/0086_inherited_staging.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -558,7 +557,6 @@ mod tests {
             ),
             (84, include_str!("migrations/0085_ci_pull_window.sql")),
             (85, include_str!("migrations/0083_terminal_pulls.sql")),
-            (86, include_str!("migrations/0086_inherited_staging.sql")),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -567,7 +565,7 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 86, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 85, "a new migration is pinned here too");
     }
 
     #[test]

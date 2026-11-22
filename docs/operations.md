@@ -172,7 +172,9 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # An open plan step, unfinished spec or unfinished goal keeps the agent live, including while it asks its owner.
 # A failing ordinary PR run, unreadable check or unpublished repair keeps its author live.
 # A failed integration candidate keeps the author live while its PR head and tested base match.
-# After parking, the delivery shows the verdict. A person can message or resume the task.
+# If that decision arrives after parking, its failing job reaches the same task as its next prompt.
+# A pending human decision keeps the task parked. When capacity returns, the watcher checks
+# the PR and integration base again before starting the session.
 # A change to the saved merge decision during verification also keeps the session live.
 # A failed single-PR merge candidate names its source run, failing job and a redacted
 # excerpt or its recorded configuration error. The queue verifies the current PR head and integration base.
@@ -1864,10 +1866,8 @@ merged revision of `dev`.
   once its full suite passed. The rollback drill follows by itself.
 - **A person cannot deploy the head from the CD page.** A person can still roll staging back
   there.
-- A red `dev` leaves staging on the verified release. A new failure records `gate_failed`.
-  An inherited failure records its original revision and task. One working task owns the repair.
-  If none is working, the project CI and Status APIs name the tests and the run to retry.
-  Staging serves the inherited requests when it verifies the fix.
+- **A red `dev` never reaches staging.** The request ends `gate_failed`, its task fixes forward,
+  and no promotion happens meanwhile.
 - **Production is promoted only from what staging verified**, by a person (ADR-0425).
 
 **The update helper stays off there.** `yulius-update.path` is disabled: "Update now" would

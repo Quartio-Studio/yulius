@@ -535,35 +535,6 @@ pub trait UpdateStore: Send + Sync {
 /// Yulius-run CI (SPEC-001 DLV-006, SPEC-002 ADR-21, tables `ci_runs` and `ci_jobs`).
 #[async_trait]
 pub trait CiStore: Send + Sync {
-    /// Gate attempts in the supplied revision order, newest admission first within a revision.
-    async fn integration_verdicts(
-        &self,
-        sandbox: &SandboxId,
-        branch: &str,
-        revisions: &[String],
-        read: crate::ci::GateRead,
-    ) -> AppResult<Vec<crate::ci::GateVerdict>>;
-    /// Whether this running task still accepts machine-generated input.
-    async fn accepts_machine_notice(&self, task: &TaskId, unfinished_goal: bool)
-    -> AppResult<bool>;
-    /// Running project workers whose persisted work and hold state allow an assignment.
-    async fn gate_workers(&self, sandbox: &SandboxId) -> AppResult<Vec<TaskId>>;
-    /// Select or retain the project's repair owner and return workers yet to hear the assignment.
-    async fn reconcile_gate_repair(
-        &self,
-        sandbox: &SandboxId,
-        detail: &str,
-        available: &[TaskId],
-    ) -> AppResult<Vec<crate::ci::RepairRecipient>>;
-    /// Confirm the recipient and assignment immediately before typing, or acknowledge delivery.
-    async fn gate_repair_due(
-        &self,
-        recipient: &crate::ci::RepairRecipient,
-        detail: &str,
-        acknowledge: bool,
-    ) -> AppResult<bool>;
-    /// Whether a recorded integration failure could require first-parent comparison.
-    async fn has_gate_failure(&self, sandbox: &SandboxId, branch: &str) -> AppResult<bool>;
     /// PRs occupying this sandbox's CI places, in admission order, including shared commits.
     async fn ci_admitted_pulls(&self, sandbox: &SandboxId) -> AppResult<Vec<u64>>;
     /// Atomically replaces that bounded window.
@@ -576,12 +547,6 @@ pub trait CiStore: Send + Sync {
     ) -> AppResult<()>;
     /// One run.
     async fn ci_run(&self, id: &str) -> AppResult<Option<crate::ci::CiRunRecord>>;
-    /// Retained integration run metadata for reading or retrying its exact revision after log expiry.
-    async fn archived_gate_run(
-        &self,
-        sandbox: &SandboxId,
-        id: &str,
-    ) -> AppResult<Option<crate::ci::CiRunRecord>>;
     /// The jobs of a run in order; outputs only when `with_output`.
     async fn ci_jobs(&self, run: &str, with_output: bool)
     -> AppResult<Vec<crate::ci::CiJobRecord>>;
@@ -961,20 +926,6 @@ pub struct StagingRequestRecord {
     pub updated_at: Timestamp,
 }
 
-impl StagingRequestRecord {
-    /// Human-readable receipt shared by task pages, lists and MCP.
-    pub fn outcome_label(&self) -> Option<String> {
-        (!self.state.is_pending() || self.state == yulius_domain::staging::StagingState::Inherited)
-            .then(|| {
-                format!(
-                    "Staging {} · {}",
-                    self.state.as_str().replace('_', " "),
-                    self.note.as_deref().unwrap_or(&self.revision)
-                )
-            })
-    }
-}
-
 /// What a staging request's move also records; `None` keeps the stored value.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StagingChange {
@@ -1014,8 +965,6 @@ pub trait StagingStore: Send + Sync {
     async fn insert_staging_request(&self, request: &StagingRequestRecord) -> AppResult<bool>;
     /// One request.
     async fn staging_request(&self, id: &str) -> AppResult<Option<StagingRequestRecord>>;
-    /// Latest request for display, regardless of whether a session heard the outcome.
-    async fn latest_task_staging(&self, task: &TaskId) -> AppResult<Option<StagingRequestRecord>>;
     /// Latest staging request whose result still needs to reach this task.
     async fn task_staging_wait(
         &self,

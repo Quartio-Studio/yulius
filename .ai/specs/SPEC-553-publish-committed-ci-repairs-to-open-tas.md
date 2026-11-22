@@ -31,8 +31,6 @@ Fix the full incident observed on `quartio-v2` tasks #322, #323 and #324:
 
 ## Requirements
 
-SPEC-612 supersedes automatic parked-session wakes and finished-task repair instructions. A person resumes a parked task. Working project tasks own integration repairs.
-
 - **PRK-101 (parked web terminal presentation and crash distinction).**
   - `isEndedStatus('parked')` in `termsocket.js` returns `true`, so opening, reloading, or receiving a `state` frame for a `parked` task keeps `exited = { status: 'parked', ... }` and always renders the calm info-tone parked banner (`status.js:37`) with a visible `Resume` action for the owner — clearly distinct from crashes (`stopped_crashed`, `warn`), external kills (`stopped_killed`, `warn`), and operator stops (`stopped_cancelled`, `"You stopped this task."`).
   - `terminal-core.js` stops cursor blinking while `exited` is set so an ended/parked screen never impersonates a live cursor.

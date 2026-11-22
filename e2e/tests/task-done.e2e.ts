@@ -556,7 +556,7 @@ test('a stopped turn shows its staging wait until the outcome arrives', async ({
     });
   });
   const row = ['working', 'Waiting for the merged revision’s full suite', 'needs', 'needs'];
-  expect(rows).toEqual([row, ['needs', 'Parked to free its session · resumes when you write to it', 'needs', 'needs']]);
+  expect(rows).toEqual([row, row]);
 });
 
 test('a mounted task clears the staging wait when the outcome is delivered', async ({ app, browser, screen }) => {
@@ -565,8 +565,8 @@ test('a mounted task clears the staging wait when the outcome is delivered', asy
   const strip = browser.locator('.strip-status');
   await touchStudioTask(browser, 12, { activity: 'waiting', staging_wait: 'Waiting for staging to deploy and verify' });
   await expect(strip).toHaveText(/Waiting for staging to deploy and verify/);
-  await touchStudioTask(browser, 12, { staging_wait: null, staging_outcome: 'Staging gate failed · delivery::gate at 7713224a587f' });
-  await expect(strip).toHaveText(/Your turn.*Staging gate failed.*delivery::gate/);
+  await touchStudioTask(browser, 12, { staging_wait: null });
+  await expect(strip).toHaveText(/Your turn/);
   await expect(screen.getByRole('region', 'Needs you').getByRole('link', /Checkout API/)).toBeVisible();
 });
 

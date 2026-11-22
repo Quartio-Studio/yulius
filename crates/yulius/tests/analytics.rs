@@ -784,7 +784,7 @@ async fn status_shows_vm_capacity_visible_sandboxes_and_role_scoped_accounts() -
     assert_eq!(s["sessions"], json!({"live": 2, "limit": 8, "queued": 1}));
     assert_eq!(
         s["sandboxes"],
-        json!([{"id": "s1", "slug": "studio", "name": "studio", "live_sessions": 1, "gate_notices": []}]),
+        json!([{"id": "s1", "slug": "studio", "name": "studio", "live_sessions": 1}]),
         "only visible sandboxes"
     );
     assert_eq!(s["contained"], false);
@@ -817,8 +817,8 @@ async fn status_shows_vm_capacity_visible_sandboxes_and_role_scoped_accounts() -
     assert_eq!(
         every,
         [
-            json!({"id": "s1", "slug": "studio", "name": "studio", "live_sessions": 1, "gate_notices": []}),
-            json!({"id": "s2", "slug": "product", "name": "product", "live_sessions": 1, "gate_notices": []})
+            json!({"id": "s1", "slug": "studio", "name": "studio", "live_sessions": 1}),
+            json!({"id": "s2", "slug": "product", "name": "product", "live_sessions": 1})
         ],
         "{}",
         owner_view.body

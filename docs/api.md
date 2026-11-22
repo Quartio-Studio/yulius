@@ -894,7 +894,7 @@ get `{cpus}`; a declared table, even an empty one, replaces them (SPEC-268).
 | --- | --- | --- |
 | `GET /api/sandboxes/{sid}/ci` | read | `CiOverview` |
 | `POST /api/sandboxes/{sid}/ci/sync` | write | looks for new heads now; `CiOverview` |
-| `GET /api/sandboxes/{sid}/ci/runs/{rid}` | read | `CiRun` with each retained job's `output`. After job logs expire, an archived full integration gate still returns its run metadata and can be rerun at its original SHA. |
+| `GET /api/sandboxes/{sid}/ci/runs/{rid}` | read | `CiRun` with each job's `output` |
 | `POST /api/sandboxes/{sid}/ci/runs/{rid}/cancel` | write | `CiRun`; `conflict` when it ended |
 | `POST /api/sandboxes/{sid}/ci/runs/{rid}/rerun` | write | the new queued `CiRun`; `conflict` while a run of that commit is active or without CI |
 | `GET /api/sandboxes/{sid}/hygiene` | read | `HygieneReport` (the last scan; scans when none) |
@@ -1013,7 +1013,6 @@ The merge-first environment changes only through its staging queue (ADR-0411):
   `cd_run_id`, `note`.
 - The request moves through these states:
   - `testing`: the full gate on exactly that commit;
-  - `inherited` waits for a verified descendant and names the original failure in `note`;
   - `ready`;
   - `deploying`;
   - `verified`, or `included` in a verified deploy that contains it;
@@ -1023,10 +1022,7 @@ The merge-first environment changes only through its staging queue (ADR-0411):
   blocked step.
 - A final staging step can stay in progress. While an idle task waits, its summary’s optional
   `staging_wait` describes the full suite, deployment queue, verification or outcome delivery.
-  Yulius delivers an actionable outcome to a running session with work left, including an
-  explicit verification step awaiting inclusion. Finished and parked tasks keep the outcome
-  on their delivery. Only a person resumes their work. CI overview and each visible sandbox in Status
-  include `gate_notices` with the failure’s test, originating revision and run ID.
+  Yulius delivers the outcome to the running session or resumes a parked one.
 - `delivery_status` of a task whose work merged has `staging`: the due request with the
   `cd_deploy` call, or the newest request's state, run ids and next step (MFS-013).
 - `GET …/cd` lists the queue as the environment's `staging` (`verified`: the revision it serves,
