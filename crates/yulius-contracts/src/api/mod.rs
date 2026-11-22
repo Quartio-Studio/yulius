@@ -8,6 +8,7 @@ pub mod auth;
 pub mod automations;
 pub mod cd;
 pub mod ci;
+pub mod commands;
 pub mod common;
 pub mod digest;
 pub mod files;
