@@ -582,6 +582,7 @@ blocks; `yulius_browser::policy`, written by `yulius host setup`;
 The private X display watches for a fresh CLIPBOARD owner after a viewer’s primary click. The viewer receives a one-use offer. Accepting it reads the selection and returns plain text on that socket. [ADR-0423](decisions/0423-a-webpage-copy-returns-through-the-clicking-viewers-connection.md)
 A writer can restart this sandbox's browser through the same grant. The manager reaps its process and display, reuses the profile, and installs the address guard before reopening the tabs. [ADR-0404](decisions/0404-restart-one-sandbox-browser-through-its-viewer-grant.md)
 Before each start the manager removes the profile's Chrome lock entries (`SingletonLock`, `SingletonCookie`, `SingletonSocket`) unless a running process of this host holds the lock, so a profile carried from another host starts. This happens before the display starts (`yulius_browser::profile`). [ADR-0432](decisions/0432-a-browser-start-clears-chrome-profile-locks-no-live-process-holds.md)
+A browser slot keeps whatever it could not stop: a browser, a display, or the Xvfb of a display that failed to start and then survived SIGKILL (`StrandedXvfb`, with its cookie). Every later start, restart, idle reap and shutdown stops it again first. While it survives they fail with its error, so the sandbox never gets a second X server. [SPEC-616](../.ai/specs/SPEC-616-keep-ownership-of-xvfb-when-display-star.md)
 
 Sandbox browsers skip default app installation. On a virtual display they also leave profile
 extensions unloaded, so a later policy reload can take effect without a native administrator
@@ -1611,7 +1612,9 @@ with no candidate under test, whose agent is idle). It fetches the clone,
 then decides the armed merges in arm order. An armed merge lives with the run that armed it
 (`TaskStatus::keeps_an_armed_merge`): while the task runs, its run is only held (no capacity,
 a subscription switch) or it waits in the queue to start again, it stays armed, also across a
-restart; once the run ended (the task was closed, stopped or failed) the next pass ends it and
+restart (a saved arm not later than the task's latest recorded merge wait was decided already and
+is dropped, [decision 0452](decisions/0452-a-recorded-merge-wait-consumes-every-earlier-saved-arm.md));
+once the run ended (the task was closed, stopped or failed) the next pass ends it and
 says so (a pull request merged meanwhile is said to be merged), and Yulius leaves the pull
 request as it is:
 
@@ -4363,8 +4366,11 @@ The dispatcher keeps each lane's last run (`CiState::lane_runs`); a run takes th
 checkouts last built what it builds on (`preferred_lanes`: a candidate's members' own runs, a pull
 request's previous run), and each job's output names it
 ([decision 0358](decisions/0358-tests-run-in-shards-and-a-run-starts-from-the-build-it-builds-on.md)).
-A failed job's kept failing tests are recorded (`ci_test_failures`, with the run's commit); one
-that failed in the same job on two pull requests within 48 hours, at heads whose merge bases are
+A failed job's kept failing tests are recorded (`ci_test_failures`, with the run's commit), except
+a pull request's failure whose block names a file that pull request changed
+(`failed_test_blocks`, `named_changed_file`, `App::ci_changed_paths`): that failure is the change's
+own ([decision 0453](decisions/0453-a-failure-naming-its-own-changed-file-makes-no-test-flaky.md)).
+One that failed in the same job on two pull requests within 48 hours, at heads whose merge bases are
 all on the integration branch (`GitPort::merge_bases`), while the integration branch did not fail it
 (`yulius_domain::ci::flaky`), is quarantined with an issue filed through the GitHub port, one at
 a time (`ci_quarantine`, `App::ci_note_failing_tests`). Every later job of the sandbox gets the list in

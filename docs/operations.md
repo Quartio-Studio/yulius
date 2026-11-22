@@ -1696,6 +1696,9 @@ involved.
   the integration branch (a chained one) count as one. Closing the issue ends the quarantine within
   an hour and forgets the test's failures
   ([ADR-0356](decisions/0356-a-test-failing-on-two-pull-requests-is-quarantined-with-an-issue.md)).
+  A pull request's failure whose output names a file that pull request changed is taken as the
+  change's own and does not count; the job's output says so
+  ([ADR-0453](decisions/0453-a-failure-naming-its-own-changed-file-makes-no-test-flaky.md)).
 - `YULIUS_CI_LANES` (host-sized, a [resource limit](#resource-limits); 2 below 32 CPUs) runs of one sandbox take a checkout at once; the CI budget, not the lanes, decides how many of their jobs run. Each lane past the first
   keeps its own job checkouts and caches (`ci/jobs/<job>[.<n>]@<lane>`, `ci/cache/<job>[.<n>]@<lane>`), so
   budget its disk too. A run takes the free lane whose checkouts last built what it builds on: a

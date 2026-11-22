@@ -511,7 +511,9 @@ If a reservation skips past all available slots, land an empty extension first w
 - [0450](0450-attribute-integration-test-failures-in-first-parent-order.md) Attribute integration test failures in first-parent order.
 <!-- ADR 0450 -->
 <!-- ADR 0451 -->
+- [0452](0452-a-recorded-merge-wait-consumes-every-earlier-saved-arm.md) A recorded merge wait consumes every earlier saved arm.
 <!-- ADR 0452 -->
+- [0453](0453-a-failure-naming-its-own-changed-file-makes-no-test-flaky.md): a pull request's failing test whose kept block names a file that pull request changed (whole, after a `/`, or as a printed relative path of two components or more) is its change's own and is not recorded, so it makes no test flaky; the job's output says so; rejected: moving fixture_hygiene to a script, a never-quarantine list, the test's own file only, a rerun (SPEC-618, #1545)
 <!-- ADR 0453 -->
 - [0454](0454-terminal-output-reaches-only-the-screen-of-the-run-that-printed-it.md) Terminal output, released tails and snapshots reach a task's hub only while it shows the run that printed them.
 <!-- ADR 0454 -->

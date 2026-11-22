@@ -606,25 +606,30 @@ impl App {
                     continue;
                 }
             };
-            if let (Some(span), Some(receipt)) = (last, receipt) {
-                // A reviewed move to a new head keeps its activation stamp.
-                if span.started_at.0 >= entry.armed_at {
-                    self.save_armed(&task_id, None);
-                    lock_slot(&runtime).last_armed_at = span.started_at.0;
-                    continue;
-                }
-                if receipt.superseded_at.is_none()
-                    && !matches!(
-                        self.deps
-                            .store
-                            .retire_singleton(&task_id, &span, self.now())
-                            .await,
-                        Ok(true)
-                    )
-                {
-                    complete = false;
-                    continue;
-                }
+            // Only a final decision records a merge wait, stamped with the activation it
+            // decided, and every later activation is stamped after it: an entry not later than
+            // the verdict is a leftover whose clear failed, of the ordinary queue as of a
+            // singleton (SPEC-615 CMA-001). A reviewed move to a new head keeps its stamp.
+            if let Some(span) = &last
+                && span.started_at.0 >= entry.armed_at
+            {
+                self.save_armed(&task_id, None);
+                lock_slot(&runtime).last_armed_at = span.started_at.0;
+                continue;
+            }
+            // An older singleton decision gives way to this later activation.
+            if let (Some(span), Some(receipt)) = (last, receipt)
+                && receipt.superseded_at.is_none()
+                && !matches!(
+                    self.deps
+                        .store
+                        .retire_singleton(&task_id, &span, self.now())
+                        .await,
+                    Ok(true)
+                )
+            {
+                complete = false;
+                continue;
             }
             let Ok(record) = self.deps.store.task(&task_id).await else {
                 complete = false;
