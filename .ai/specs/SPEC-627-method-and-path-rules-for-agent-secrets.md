@@ -110,12 +110,12 @@ like `{"methods": ["GET"], "path": "/v1/*"}`.
 ## Plan
 
 - [x] Spec, ADR and step plan for method and path rules
-- [ ] Rule parsing, matching and path guards in the domain
-- [ ] Rules stored with the secret and editable through the API
-- [ ] Proxy refuses a request outside a secret's rules, audited
-- [ ] Secrets page shows and edits a secret's rules
-- [ ] secrets_list shows rules to agents and the Superagent
-- [ ] Docs: SPEC-002, product, architecture, api and changes
+- [x] Rule parsing, matching and path guards in the domain
+- [x] Rules stored with the secret and editable through the API
+- [x] Proxy refuses a request outside a secret's rules, audited
+- [x] Secrets page shows and edits a secret's rules
+- [x] secrets_list shows rules to agents and the Superagent
+- [x] Docs: SPEC-002, product, architecture, api and changes
 - [ ] Independent security-minded review approved on the exact head
 
 ## Acceptance criteria
@@ -135,8 +135,9 @@ like `{"methods": ["GET"], "path": "/v1/*"}`.
 - **AC-6** (MPR-001, MPR-006) The API stores, returns and replaces rules, refuses invalid ones with
   422, and refuses a stale edit (409) instead of writing older rules back.
 - **AC-7** (MPR-007) The Secrets page edits and shows rules; `secrets_list` shows them.
-- **AC-8** Through the real proxy (CONNECT, TLS interception, a TLS upstream), a matching `GET`
-  reaches the upstream with the value and a `POST` gets the 403 text and never reaches it.
+- **AC-8** Through the real proxy (CONNECT and TLS interception, and a plain `http://` request,
+  with a TLS upstream), the policy decides by each request's method as sent: a method it refuses
+  gets the 403 text and never reaches the upstream, and a `GET` on the same connection does.
 
 ## Test plan
 
@@ -144,9 +145,11 @@ like `{"methods": ["GET"], "path": "/v1/*"}`.
   matching (`*` across `/`, whole match, case-sensitive, query ignored), path guards.
 - App integration tests (`crates/yulius/tests/secrets_rules.rs`, new): AC-1 to AC-6 through the
   HTTP API and `egress_apply`, including the audit rows.
-- Proxy test: AC-8 through `EgressProxy` with the app's real policy and a TLS upstream.
+- Proxy test (`yulius-egress` `tests/proxy.rs`): AC-8 through `EgressProxy` with a TLS upstream
+  and a policy that refuses `DELETE`; the app's policy itself is AC-1 to AC-5.
 - Store test: rules round-trip and the compare-and-set.
 - e2e (`secrets.e2e.ts`): editing rules on the Secrets page and the card showing them (AC-7).
+- `secrets_list` for a task agent (`secrets_rules.rs`) and the Superagent (`cockpit.rs`) (AC-7).
 - Each new test is first run without the production change and seen to fail.
 
 ## Decisions
