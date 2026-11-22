@@ -4190,6 +4190,14 @@ flowchart LR
     screen -.->|"no live run: the terminal shows it"| view["task terminal"]
 ```
 
+The hub shows one run's screen at a time: `TaskRuntime::screen_of` names it, set by the run's
+attach together with the hub's reset and kept after the run ends until the next attach. Each run's
+reader writes its output, released redaction tails, snapshots and reattachments through
+`TaskRuntime::on_screen_of`, which writes only while the hub shows that run, under the lock the
+attach takes. Output of a replaced run that arrives late is dropped
+([ADR-0454](decisions/0454-terminal-output-reaches-only-the-screen-of-the-run-that-printed-it.md),
+[SPEC-614](../.ai/specs/SPEC-614-a-delayed-terminal-output-chunk-must-not.md)).
+
 ## Run metrics
 
 A run's tokens, turns and active time are computed from its own transcript lines and its

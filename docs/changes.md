@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-22
 
+- Terminal output of a replaced run that arrives late, a released redaction tail included, no longer draws on the replacement run's screen or reaches its viewers. [SPEC-614](../.ai/specs/SPEC-614-a-delayed-terminal-output-chunk-must-not.md)
 - A live task keeps its session slot while its open PR has an unresolved integration failure. The PR watcher verifies when the slot can be released. [SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
 - CI shards unpack their test binaries on disk, and bootstrap uses disk for cold builds of pinned tools. [CI build storage](decisions/0438-quality-passes-have-own-jobs-and-test-partitions-share-a-build.md)
 - A red integration branch gets one repair owner among the working tasks. Finished tasks keep their outcomes on their deliveries. Staging serves inherited requests with the verified fix. When nobody is working, the project CI and Status APIs identify the failing test, merge owner and run to retry. [SPEC-612](../.ai/specs/SPEC-612-a-failed-after-merge-gate-wakes-only-the.md)

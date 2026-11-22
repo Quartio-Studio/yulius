@@ -27,10 +27,10 @@ The supervisor already records the run whose screen the hub shows: `TaskRuntime:
 ## Plan
 
 - [x] Specify binding live terminal output to its run
-- [ ] Reproduce an old run's held chunk drawing on its replacement
-- [ ] Reproduce a delayed tail release drawing on the replacement
-- [ ] Bind output, snapshots and tail releases to the run that produced them
-- [ ] Record the decision and update the architecture and changes documents
+- [x] Reproduce an old run's held chunk drawing on its replacement
+- [x] Reproduce a delayed tail release drawing on the replacement
+- [x] Bind output, snapshots and tail releases to the run that produced them
+- [x] Record the decision and update the architecture and changes documents
 - [ ] Verify the touched suites and obtain independent approval
 
 ## Acceptance criteria
@@ -45,6 +45,6 @@ Both reproductions run in `crates/yulius/tests/parking/replaced_output.rs` with 
 
 ## Decisions
 
-- Bind output to the producing attempt with the existing `screen_of` record rather than a new run token in the hub. `screen_of` is already the supervisor's record of whose screen the hub shows, used to save a run's final screen and to check the Codex input screen, so one record answers all three. The hub stays agnostic of runs. ADR to be recorded with the fix.
+- Bind output to the producing attempt with the existing `screen_of` record rather than a new run token in the hub. `screen_of` is already the supervisor's record of whose screen the hub shows, used to save a run's final screen and to check the Codex input screen, so one record answers all three. The hub stays agnostic of runs. [ADR-0454](../../docs/decisions/0454-terminal-output-reaches-only-the-screen-of-the-run-that-printed-it.md)
 - Hold `screen_of` while writing the hub (lock order `screen_of` → hub screen). `Hub` methods never call out while holding their lock, so no path takes the two in the other order.
 - The reattach path still replaces the task's active writer with the old run's if the old run's host answers a reattach after a replacement attached. That is input, not output, and is outside this change; it is reported separately if reproduced.

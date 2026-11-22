@@ -513,6 +513,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0451 -->
 <!-- ADR 0452 -->
 <!-- ADR 0453 -->
+- [0454](0454-terminal-output-reaches-only-the-screen-of-the-run-that-printed-it.md) Terminal output, released tails and snapshots reach a task's hub only while it shows the run that printed them.
 <!-- ADR 0454 -->
 <!-- ADR 0455 -->
 <!-- ADR 0456 -->
