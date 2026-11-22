@@ -1636,7 +1636,7 @@ struct CopyBudget {
 /// at any name, only regular files are copied and none is waited on, within
 /// [`MAX_AUX_DEPTH`], [`MAX_AUX_ENTRIES`] and `bytes`, what the transcript left of
 /// [`MAX_COPIED_BYTES`].
-fn copy_dir_below(anchor: &Path, src: &Path, dest: &Path, bytes: u64) -> AppResult<()> {
+pub(crate) fn copy_dir_below(anchor: &Path, src: &Path, dest: &Path, bytes: u64) -> AppResult<()> {
     use nix::errno::Errno;
     let Ok(below) = src.strip_prefix(anchor) else {
         return Err(AppError::Internal(

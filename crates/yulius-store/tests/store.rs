@@ -3586,7 +3586,11 @@ async fn fork_links_persist_and_outlive_a_deleted_source() -> R {
         store.insert_fork(&fork("t3", 6)?).await?;
     }
     let store = SqliteStore::open(&path)?;
-    let (t1, t2, t3) = (TaskId::parse("t1")?, TaskId::parse("t2")?, TaskId::parse("t3")?);
+    let (t1, t2, t3) = (
+        TaskId::parse("t1")?,
+        TaskId::parse("t2")?,
+        TaskId::parse("t3")?,
+    );
     assert_eq!(store.fork_of(&t2).await?, Some(fork("t2", 5)?));
     assert_eq!(store.fork_of(&t1).await?, None, "the source is no fork");
     let forks: Vec<TaskId> = store
@@ -3599,7 +3603,10 @@ async fn fork_links_persist_and_outlive_a_deleted_source() -> R {
     assert!(store.delete_task(&t1).await?);
     let kept = store.fork_of(&t2).await?.ok_or("fork kept")?;
     assert_eq!(kept.source_task_id, None);
-    assert_eq!((kept.source_number, kept.source_title.as_str()), (1, "Source task"));
+    assert_eq!(
+        (kept.source_number, kept.source_title.as_str()),
+        (1, "Source task")
+    );
     assert!(store.delete_task(&t3).await?);
     assert_eq!(store.fork_of(&t3).await?, None);
     Ok(())

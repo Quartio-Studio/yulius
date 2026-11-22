@@ -42,6 +42,7 @@ pub mod error;
 pub mod events;
 pub mod files;
 pub mod finish;
+pub mod forks;
 pub mod github_admin;
 pub mod github_callback;
 pub mod global_superagent;

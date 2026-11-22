@@ -169,6 +169,12 @@ pub struct TaskSummary {
     /// Tasks chained to run after this one.
     #[serde(default)]
     pub next: Vec<ChainLink>,
+    /// The task this one was forked from (SPEC-628 FRK-008): its conversation and commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forked_from: Option<Box<ForkOrigin>>,
+    /// The tasks forked from this one, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forks: Vec<ForkLink>,
     /// A prompt typed into the session that Yulius held for a decision (TSK-013).
     #[serde(default)]
     pub held_prompt: Option<Box<HeldPrompt>>,
@@ -294,6 +300,61 @@ pub struct ChainLink {
     /// plain "run after" chain.
     #[serde(default)]
     pub rule: Option<String>,
+}
+
+/// Where a fork came from (SPEC-628 FRK-008): the source task when it was forked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForkOrigin {
+    /// The source task's id; null once it was deleted.
+    pub task_id: Option<String>,
+    /// Its number.
+    pub number: u32,
+    /// Its title when it was forked.
+    pub title: String,
+    /// Its branch.
+    pub branch: String,
+    /// The commit of its branch the fork started from.
+    pub commit: String,
+    /// The session whose copy the fork continued.
+    pub session_id: String,
+    /// When it was forked (RFC 3339).
+    pub forked_at: String,
+}
+
+/// A task forked from this one (SPEC-628 FRK-008).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForkLink {
+    /// The fork's id.
+    pub task_id: String,
+    /// Its number.
+    pub number: u32,
+    /// Its title.
+    pub title: String,
+    /// Its status wire name.
+    pub status: String,
+    /// The commit it started from.
+    pub commit: String,
+}
+
+/// `POST /api/tasks/{tid}/fork` (SPEC-628 FRK-001): a new task continues a copy of this task's
+/// conversation from its branch's head, on the same harness.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ForkTask {
+    /// What the fork should do differently: its first message (at most 64 KiB).
+    #[serde(default)]
+    pub message: Option<String>,
+    /// Title; "Fork of #N: <title>" when absent.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Model of the source's harness; the harness default when absent.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Effort; the default when absent.
+    #[serde(default)]
+    pub effort: Option<String>,
+    /// Subscription of the harness's provider; the pool's choice when absent.
+    #[serde(default)]
+    pub account_id: Option<String>,
 }
 
 /// What a task's agent asked a person to do (SPEC-134 CDT-004, `needs_you`).

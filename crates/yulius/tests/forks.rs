@@ -1,0 +1,389 @@
+//! Forked tasks (SPEC-628): a fork continues a copy of its source's conversation (a fixture
+//! conversation in the source's transcript) from the source branch's head, on its own branch and
+//! worktree, and the source goes on untouched.
+//!
+//! End to end: supervisor → detached `yulius ptyhost` → fake agent, which copies the forked
+//! transcript under its new session id as `claude --resume <id> --fork-session` does; real
+//! worktrees over a local origin.
+
+use crate::pool_supervision::{
+    ScriptedUsage, build_with, new_task, runtime, screen, seed, stop, task, temp, wait_for,
+};
+use crate::support;
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::Arc;
+use std::time::Duration;
+
+use support::TestResult;
+use support::agents::FakeAgentOptions;
+use yulius_app::auth::AuthContext;
+use yulius_app::context::App;
+use yulius_app::error::AppError;
+use yulius_app::lifecycle::NewTask;
+use yulius_app::model::{StepRecord, TaskMode, TaskOrigin, TaskRecord};
+use yulius_contracts::api::tasks::ForkTask;
+use yulius_domain::harness::Harness;
+use yulius_domain::ids::{SandboxId, StepId, TaskId, UserId};
+use yulius_domain::time::Timestamp;
+use yulius_ptyhost::test_support::locate_fake_agent;
+
+type BoxError = Box<dyn std::error::Error>;
+
+/// What the source said before it was forked: the fork's agent must have it.
+const FIXTURE_WORD: &str = "pelican-fixture-628";
+
+fn git(dir: &Path, args: &[&str]) -> Result<String, BoxError> {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.com")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.com")
+        .output()?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
+async fn ctx(app: &App, user: &UserId) -> Result<AuthContext, BoxError> {
+    Ok(AuthContext {
+        user: app.deps.store.user(user).await?.ok_or("user")?,
+        csrf_token: None,
+        session_hash: None,
+        token: None,
+    })
+}
+
+async fn ready(app: &Arc<App>, id: &TaskId) -> TestResult {
+    wait_for("the run", Duration::from_secs(30), || {
+        let (app, id) = (app.clone(), id.clone());
+        async move { screen(&app, &id).contains("FAKE-AGENT READY") }
+    })
+    .await
+}
+
+/// The Claude transcript of `session` in `task`'s worktree.
+fn transcript(app: &App, task: &TaskRecord, session: &str) -> Result<PathBuf, BoxError> {
+    let worktree = task.worktree_path.as_deref().ok_or("no worktree")?;
+    let sandboxes = app.config.data_dir.join("sandboxes");
+    Ok(app.deps.harness.claude_transcript(
+        &sandboxes.join(task.sandbox_id.as_str()).join("home"),
+        Path::new(worktree),
+        session,
+    ))
+}
+
+async fn latest_session(app: &App, id: &TaskId) -> Result<String, BoxError> {
+    Ok(app
+        .deps
+        .store
+        .provider_sessions(id)
+        .await?
+        .pop()
+        .ok_or("no session")?
+        .session_id)
+}
+
+/// SPEC-628 FRK-004..008: the fork resumes a copy of the source's conversation, with `cwd` its
+/// own worktree, from the source branch's head commit; the source's record, plan, transcript,
+/// branch and live run are unchanged; both pages link the two.
+#[test]
+fn a_fork_continues_the_sources_conversation_and_branch_and_leaves_the_source_alone() -> TestResult
+{
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            transcript: true,
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, probe, agent)?;
+        let (sandbox, user) = seed(&app, &data, &["a1"]).await?;
+        let source_id = new_task(&app, &sandbox, &user, "Parser").await?;
+        ready(&app, &source_id).await?;
+        let mut source = task(&app, &source_id).await?;
+        let source_session = latest_session(&app, &source_id).await?;
+        let source_transcript = transcript(&app, &source, &source_session)?;
+        // The fixture conversation in the source's transcript (the fake writes one only for a
+        // turn), ending in a line still being written.
+        let fixture = [
+            serde_json::json!({
+                "type": "user", "sessionId": source_session,
+                "cwd": source.worktree_path, "timestamp": "2026-11-22T10:00:00.000Z",
+                "uuid": "fixture-user-1",
+                "message": {"role": "user", "content": format!("remember {FIXTURE_WORD}")}
+            }),
+            serde_json::json!({
+                "type": "assistant", "sessionId": source_session,
+                "cwd": source.worktree_path, "timestamp": "2026-11-22T10:00:01.000Z",
+                "uuid": "fixture-assistant-1", "parentUuid": "fixture-user-1",
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "Noted."}]}
+            }),
+        ];
+        let mut text = std::fs::read_to_string(&source_transcript).unwrap_or_default();
+        for record in &fixture {
+            text.push_str(&format!("{record}\n"));
+        }
+        text.push_str("{\"type\":\"assistant\",\"partial");
+        std::fs::create_dir_all(source_transcript.parent().ok_or("folder")?)?;
+        std::fs::write(&source_transcript, &text)?;
+        // Committed and uncommitted work in the source's worktree.
+        let worktree = PathBuf::from(source.worktree_path.as_deref().ok_or("worktree")?);
+        std::fs::write(worktree.join("work.txt"), "committed\n")?;
+        git(&worktree, &["add", "work.txt"])?;
+        git(&worktree, &["commit", "-q", "-m", "source work"])?;
+        std::fs::write(worktree.join("draft.txt"), "uncommitted\n")?;
+        let head = git(&worktree, &["rev-parse", "HEAD"])?;
+        let step = StepRecord {
+            id: StepId::parse("step-src-1")?,
+            task_id: source_id.clone(),
+            ordinal: 1,
+            title: "Parse the header".into(),
+            status: "done".into(),
+            note: Some("kept".into()),
+            updated_by: Some("agent".into()),
+            updated_at: Some(Timestamp(5)),
+            effort: 2,
+        };
+        app.deps
+            .store
+            .replace_steps(
+                &source_id,
+                std::slice::from_ref(&step),
+                "agent",
+                Timestamp(5),
+            )
+            .await?;
+        source = task(&app, &source_id).await?;
+        let source_attempt = app
+            .deps
+            .store
+            .live_attempt(&source_id)
+            .await?
+            .ok_or("source run")?;
+
+        let summary = app
+            .fork_task(
+                &ctx(&app, &user).await?,
+                source_id.as_str(),
+                &ForkTask {
+                    message: Some("Try a hand-written parser instead.".into()),
+                    ..ForkTask::default()
+                },
+            )
+            .await?;
+        let fork_id = TaskId::parse(&summary.id)?;
+        assert_eq!(summary.title, "Fork of #1: Parser");
+        assert_eq!(summary.harness, "claude");
+        ready(&app, &fork_id).await?;
+        let fork = task(&app, &fork_id).await?;
+
+        // FRK-006: a copy of the source's session under a new id Yulius named.
+        let attempt = app
+            .deps
+            .store
+            .live_attempt(&fork_id)
+            .await?
+            .ok_or("fork run")?;
+        let launch = std::fs::read_to_string(Path::new(&attempt.run_dir).join("fake-launch.txt"))?;
+        assert!(
+            launch.contains(&format!("session_id: \"{source_session}\"")),
+            "{launch}"
+        );
+        assert!(
+            launch.contains("fork: Some(SessionFork { session_id: Some("),
+            "{launch}"
+        );
+        let sessions = app.deps.store.provider_sessions(&fork_id).await?;
+        assert_eq!(
+            sessions.len(),
+            1,
+            "only the fork's own session: {sessions:?}"
+        );
+        let fork_session = sessions[0].session_id.clone();
+        assert_ne!(fork_session, source_session);
+        // The agent read the fixture conversation, its `cwd` now the fork's worktree, and got
+        // the opening message after it; the line still being written stayed out.
+        let fork_text = std::fs::read_to_string(transcript(&app, &fork, &fork_session)?)?;
+        let records: Vec<serde_json::Value> = fork_text
+            .lines()
+            .map(serde_json::from_str)
+            .collect::<Result<_, _>>()?;
+        let carried = records
+            .iter()
+            .find(|r| r["uuid"] == "fixture-user-1")
+            .ok_or("the fixture conversation is not in the fork")?;
+        assert_eq!(carried["sessionId"], fork_session.as_str());
+        assert_eq!(
+            carried["cwd"],
+            fork.worktree_path.as_deref().ok_or("worktree")?
+        );
+        assert!(!fork_text.contains("partial"));
+        wait_for("the opening turn", Duration::from_secs(30), || {
+            let (app, id) = (app.clone(), fork_id.clone());
+            async move { screen(&app, &id).contains("Try a hand-written parser instead.") }
+        })
+        .await?;
+        let opening = screen(&app, &fork_id);
+        assert!(opening.contains("a fork of task #1"), "{opening}");
+
+        // FRK-005: its own branch and worktree, at the source's head; no uncommitted work.
+        let fork_tree = PathBuf::from(fork.worktree_path.as_deref().ok_or("worktree")?);
+        assert_ne!(fork.branch, source.branch);
+        assert_ne!(fork_tree, worktree);
+        assert_eq!(git(&fork_tree, &["rev-parse", "HEAD"])?, head);
+        assert!(fork_tree.join("work.txt").exists());
+        assert!(!fork_tree.join("draft.txt").exists());
+        // A later commit of the source leaves the fork where it started.
+        std::fs::write(worktree.join("more.txt"), "later\n")?;
+        git(&worktree, &["add", "more.txt"])?;
+        git(&worktree, &["commit", "-q", "-m", "later"])?;
+        let fork_branch = fork.branch.clone().ok_or("branch")?;
+        assert_eq!(git(&fork_tree, &["rev-parse", &fork_branch])?, head);
+
+        // FRK-001: the plan is a copy, statuses and notes kept.
+        let steps = app.deps.store.steps(&fork_id).await?;
+        assert_eq!(steps.len(), 1);
+        assert_eq!(
+            (
+                steps[0].title.as_str(),
+                steps[0].status.as_str(),
+                steps[0].note.as_deref()
+            ),
+            ("Parse the header", "done", Some("kept"))
+        );
+        assert_ne!(steps[0].id, step.id);
+
+        // FRK-004: the source is untouched and its run goes on.
+        let after = task(&app, &source_id).await?;
+        assert_eq!(
+            (
+                &after.status,
+                &after.branch,
+                &after.worktree_path,
+                &after.prompt
+            ),
+            (
+                &source.status,
+                &source.branch,
+                &source.worktree_path,
+                &source.prompt
+            )
+        );
+        assert_eq!(std::fs::read_to_string(&source_transcript)?, text);
+        assert_eq!(app.deps.store.steps(&source_id).await?, vec![step]);
+        assert_eq!(latest_session(&app, &source_id).await?, source_session);
+        let live = app
+            .deps
+            .store
+            .live_attempt(&source_id)
+            .await?
+            .ok_or("source run")?;
+        assert_eq!(live.id, source_attempt.id);
+
+        // FRK-008: each page links the other.
+        let fork_summary = app.task_summary(&fork).await?;
+        let origin = fork_summary.forked_from.ok_or("forked_from")?;
+        assert_eq!(
+            (
+                origin.task_id.as_deref(),
+                origin.number,
+                origin.commit.as_str()
+            ),
+            (Some(source_id.as_str()), 1, head.as_str())
+        );
+        assert_eq!(origin.session_id, source_session);
+        let source_summary = app.task_summary(&after).await?;
+        assert_eq!(source_summary.forks.len(), 1);
+        assert_eq!(source_summary.forks[0].task_id, fork_id.as_str());
+
+        stop(&app, &fork_id).await?;
+        stop(&app, &source_id).await?;
+        Ok::<_, BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+async fn closed_task(
+    app: &Arc<App>,
+    sandbox: &SandboxId,
+    user: &UserId,
+    harness: Harness,
+) -> Result<TaskRecord, BoxError> {
+    Ok(app
+        .create_task_internal(NewTask {
+            sandbox: sandbox.clone(),
+            created_by: user.clone(),
+            prompt: "Never ran".into(),
+            harness,
+            title: None,
+            workflow_id: None,
+            steps: Vec::new(),
+            model: None,
+            effort: None,
+            origin: TaskOrigin::Ui,
+            automation_run: None,
+            start: false,
+            mode: TaskMode::Prompt,
+            supertask: false,
+        })
+        .await?)
+}
+
+/// SPEC-628 FRK-002, FRK-003: an Antigravity task, a task without a conversation, a message over
+/// 64 KiB and a model of another harness are refused, and nothing is created.
+#[test]
+fn forks_that_cannot_continue_are_refused_and_create_nothing() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let app = build_with(&data, &fake, probe, FakeAgentOptions::default())?;
+        let (sandbox, user) = seed(&app, &data, &["a1"]).await?;
+        let ctx = ctx(&app, &user).await?;
+        let agy = closed_task(&app, &sandbox, &user, Harness::Antigravity).await?;
+        let unstarted = closed_task(&app, &sandbox, &user, Harness::ClaudeCode).await?;
+        let count = || async { app.deps.store.tasks(&sandbox, true).await.map(|t| t.len()) };
+        let before = count().await?;
+        let refusal = |result: Result<_, AppError>| match result {
+            Err(AppError::Invalid(text)) => Ok(text),
+            other => Err(format!("expected a refusal, got {other:?}")),
+        };
+        let text = refusal(
+            app.fork_task(&ctx, agy.id.as_str(), &ForkTask::default())
+                .await,
+        )?;
+        assert!(text.contains("Antigravity cannot fork"), "{text}");
+        let text = refusal(
+            app.fork_task(&ctx, unstarted.id.as_str(), &ForkTask::default())
+                .await,
+        )?;
+        assert!(text.contains("no conversation to fork yet"), "{text}");
+        let long = ForkTask {
+            message: Some("x".repeat(64 * 1024 + 1)),
+            ..ForkTask::default()
+        };
+        let text = refusal(app.fork_task(&ctx, unstarted.id.as_str(), &long).await)?;
+        assert!(text.contains("64 KiB"), "{text}");
+        let codex_model = ForkTask {
+            model: Some("gpt-6.2-sol".into()),
+            ..ForkTask::default()
+        };
+        refusal(
+            app.fork_task(&ctx, unstarted.id.as_str(), &codex_model)
+                .await,
+        )?;
+        assert_eq!(count().await?, before, "nothing was created");
+        Ok::<_, BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}

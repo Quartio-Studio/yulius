@@ -6,8 +6,9 @@ use std::path::PathBuf;
 use serde_json::{Value, json};
 use yulius_domain::harness::Harness;
 use yulius_harness::launch::{
-    CockpitRequest, CockpitYulius, Credential, ForkSession, LaunchError, LaunchMode, LaunchPlan, LaunchRequest,
-    McpServerSpec, McpTransport, PRIVATE_FILE_MODE, PlannedFile, plan_cockpit, plan_launch,
+    CockpitRequest, CockpitYulius, Credential, ForkSession, LaunchError, LaunchMode, LaunchPlan,
+    LaunchRequest, McpServerSpec, McpTransport, PRIVATE_FILE_MODE, PlannedFile, plan_cockpit,
+    plan_launch,
 };
 use yulius_harness::secret::Secret;
 
@@ -2057,7 +2058,12 @@ fn codex_fork_argv() -> TestResult {
     let tail: Vec<&str> = plan.argv.iter().skip(at).map(String::as_str).collect();
     assert_eq!(
         tail,
-        ["fork", CODEX_SESSION, "--", "You are task #7, a fork of #3."]
+        [
+            "fork",
+            CODEX_SESSION,
+            "--",
+            "You are task #7, a fork of #3."
+        ]
     );
     assert!(!plan.argv.iter().any(|a| a == "resume"));
     assert_eq!(plan.session_id, None);

@@ -254,6 +254,32 @@ impl App {
         prepared: Option<Option<Timestamp>>,
         harness_drawn: bool,
     ) -> AppResult<TaskRecord> {
+        self.create_task_inner(req, (after, rule), prepared, harness_drawn, None)
+            .await
+    }
+
+    /// Creates a fork (SPEC-628 FRK-001): its record, stored transcript and copied plan are
+    /// written before it starts, on the subscription the person named if any.
+    ///
+    /// # Errors
+    /// As [`App::create_task_internal`]; a failure writing the fork removes the task again.
+    pub(crate) async fn create_task_forked(
+        self: &Arc<Self>,
+        req: NewTask,
+        fork: crate::forks::PendingFork,
+    ) -> AppResult<TaskRecord> {
+        self.create_task_inner(req, (None, None), None, false, Some(fork))
+            .await
+    }
+
+    async fn create_task_inner(
+        self: &Arc<Self>,
+        req: NewTask,
+        (after, rule): (Option<&TaskRecord>, Option<&Rule>),
+        prepared: Option<Option<Timestamp>>,
+        harness_drawn: bool,
+        fork: Option<crate::forks::PendingFork>,
+    ) -> AppResult<TaskRecord> {
         let store = &self.deps.store;
         if prepared.is_some() && (after.is_some() || rule.is_some() || req.supertask) {
             return Err(prepared_alone());
@@ -391,6 +417,15 @@ impl App {
         if harness_drawn {
             store.record_harness_draw(&task.id, now).await?;
         }
+        let mut account = None;
+        if let Some(fork) = fork {
+            account = fork.account.clone();
+            if let Err(err) = self.record_fork(&task, fork).await {
+                // A fork without its record would start as a new conversation: none is left.
+                let _ = store.delete_task(&task.id).await;
+                return Err(err);
+            }
+        }
         store
             .audit(
                 now,
@@ -416,7 +451,7 @@ impl App {
             let id = task.id.clone();
             tokio::spawn(async move {
                 if let Err(err) = app
-                    .start_run(&id, RunStart::Fresh { prompt: None }, None)
+                    .start_run(&id, RunStart::Fresh { prompt: None }, account)
                     .await
                 {
                     tracing::warn!(error = %err, task = %id, "task failed to start");
