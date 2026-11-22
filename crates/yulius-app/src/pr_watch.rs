@@ -1974,11 +1974,10 @@ impl App {
     }
 
     /// Capacity reads never contact GitHub. A cold or expired observation holds the owner.
-    pub(crate) async fn delivery_candidate_blocks(
+    pub(crate) async fn local_candidate_blocks(
         &self,
         task: &TaskRecord,
         record: Option<&crate::delivery::DeliveryRecord>,
-        verify_host: bool,
     ) -> AppResult<bool> {
         let Some(record) = record.filter(|r| r.stage == DeliveryStage::PrOpen) else {
             return Ok(false);
@@ -1986,14 +1985,9 @@ impl App {
         let Some(pr) = record.pr_number else {
             return Ok(true);
         };
-        let Some((span, decision)) = self.candidate_receipt(task, pr).await? else {
+        let Some((span, _)) = self.candidate_receipt(task, pr).await? else {
             return Ok(false);
         };
-        if verify_host {
-            let sandbox = self.dlv_sandbox_of(task).await?;
-            self.observe_candidate_pull(task, &sandbox, &span, &decision)
-                .await?;
-        }
         let runtime = self.runtime(&task.id);
         let observation = runtime
             .candidate_observation
@@ -2021,7 +2015,14 @@ impl App {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
         };
+        let change_observation = || {
+            runtime
+                .arm_writer
+                .try_write()
+                .map_err(|_| AppError::Conflict("The session’s delivery is being checked.".into()))
+        };
         let generation = {
+            let _writer = change_observation()?;
             let mut observed = lock();
             observed.generation = observed.generation.wrapping_add(1);
             observed.obsolete = None;
@@ -2034,6 +2035,7 @@ impl App {
             .candidate_pull_signal(task, sandbox, decision, &pull)
             .is_none()
         {
+            let _writer = change_observation()?;
             let mut observed = lock();
             if observed.generation == generation {
                 observed.obsolete =

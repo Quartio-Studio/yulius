@@ -68,7 +68,8 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Verify the current model and subscription before accepting a named Continue
 - [x] Order parking and replacement merge requests through run settlement
 - [x] Deliver the recorded integration failure once to an already parked owner
-- [ ] Hold the original owner’s session and successor while its open delivery cannot be verified
+- [ ] Hold the original owner’s session slot while its open delivery cannot be verified
+- [ ] Verify live owners when constructing and releasing dependent tasks or closing their sessions
 - [ ] Render verified live integration status in the terminal, sidebar and Task Info
 - [ ] Deliver bounded Codex goal continuation to dev
 - [ ] Recover screens from tasks parked before the upgrade
@@ -92,7 +93,7 @@ Use the fake Codex executable, its rollout, real PTY shutdown and the applicatio
 
 ## Decisions
 
-An achieved live owner with a recorded failed singleton keeps its session slot and its chained successor until the hosted pull request verifies that the decision is obsolete. Capacity reads stay local. A later arm or changed delivery invalidates an in-flight completion check. A rule waiting for all tasks includes unverified owners. Compound rules keep the relevant merge writers through successor admission. A close based on Done rechecks its owner under the same writer.
+An achieved live owner with a recorded failed singleton keeps its session slot until the watcher verifies that the hosted PR closed or the candidate inputs changed. Capacity reads stay local and bind the observation to the exact saved decision and branch. A launch holds shared delivery guards for the owners it clears until it reserves the slot. A watcher checks again on a later pass if a launch holds that guard.
 
 An automatic continuation for a parked PR owner verifies the recorded integration decision before launching. A human decision or unavailable capacity leaves the original session parked. The next watcher pass checks the PR again before delivering a prompt.
 
@@ -128,12 +129,12 @@ The SQLite query returning a parked task includes the latest attempt ID in the s
 
 ## Evidence
 
-- In run `8b6ad1aa-0839-4b96-9c55-321e7ea3dc0e`, the second concurrent all-tasks request recorded `#1 done` for an Answered owner, and a real queued launch reached Running after the first capacity row rearmed during the second row’s check. The session limit was one.
+- Reopening PR #1481 during a peer's final session reservation triggered two premature hosted reads in `9c8d1cf5-7838-4342-aeee-17db761e72dd`. With the observation ordered against reservation, the next watcher pass delivered the shard 2 latency reason once to the same live task. All 687 scoped tests passed in `52c2c3e8-d0a0-4128-b74f-066cddbf18b3`, including every delivery and agent hook test. The fixture uses SQLite, Git, a real PTY and a simulated GitHub service.
+- Hand check in `09b5c791-ca32-4bf6-9014-ba1f3ce4d2ee`. Removing only the guard before invalidating the cached PR observation increased the hosted read count from one to three while the reservation was paused. The guard was restored.
 
-- Review of `5235d48ce` found the all-tasks rule omitted an achieved owner and archive admitted a replacement arm after the Done read. Both reproduced in `8c3e28e9-57ac-4ae8-8dcd-fe51941be91f`. The compound-rule regression reproduced a queued successor in `5f0879fa-e2bd-47f1-8d36-9dc3c01055d4` using the second task’s allocated number. The reverse-order close regression accepted a replacement arm while the terminal reader was settling Close in `9ac22a6e-b068-4394-af2c-fbe7517e084d`. All four passed with the guarded claims. Run `d3b562ba-da99-4084-b959-f267923a29a1` passed 675 scoped tests. The integrated revision `6ef3e2a28` passed 646 in `0205a695-505f-490b-8266-0f67d3fd34da`.
+- Removing the final multi-owner delivery check by hand admitted a second live session under a one-session limit in `b86f378e-069a-4afd-9e35-ad19c7d532b0`. Restoring the check kept the peer queued.
 
-- On the step 47 baseline, all seven admission regressions failed in run `6512297f-8dc6-4d2f-b64e-21e7ea81aea4`. Capacity reported a free slot and the successor entered Queued. The initial implementation passed all 279 parking, PR watcher and Done tests in `d76f3d5c-04aa-4ae5-adb6-9ac3b3c4d403`. All 293 delivery, hook, intake and limit tests passed in `d76099b6-7384-4ff3-920a-86e6eca26983`.
-- Hand check for the final candidate read. Removing it released the successor and freed the occupied slot in all three targeted tests in `2aa9e50d-eca3-4f95-b76e-94708fd9d7fe`. The guard was restored.
+- The baseline called an occupied session free in `6512297f-8dc6-4d2f-b64e-21e7ea81aea4`. Run `8b6ad1aa-0839-4b96-9c55-321e7ea3dc0e` admitted a queued launch after the first owner rearmed during the second owner’s check. Removing the final candidate read by hand also freed the occupied slot in `2aa9e50d-eca3-4f95-b76e-94708fd9d7fe`.
 
 - PR #1670 merged into dev at `20c04fd9f` after head `62c08ec9d` passed Yulius CI run `5494c81f-a93d-4129-adf2-6de7fe6bfe7e`. The integrated hook, delivery and parking run passed 467 of 469 checks. Both remaining failures concern the separately tracked PR lookup timeout. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/20c04fd9f32a75de80c317541b33568fccb5ce6f)
 

@@ -469,14 +469,7 @@ impl App {
     /// and delete close such a task's session, as the UI offers them.
     pub(crate) async fn shows_done(&self, task: &TaskRecord) -> bool {
         let requested = self.browser_requests(&task.sandbox_id).await;
-        let Ok(record) = self.deps.store.delivery(&task.id).await else {
-            return false;
-        };
         matches!(self.task_group(task, &requested).await, Ok(TaskGroup::Done))
-            && self
-                .hold_live_delivery(task, record.as_ref())
-                .await
-                .is_some()
     }
 
     /// A task's sidebar group (`AttentionFacts::group`), so Home's cards and the sandbox tabs
@@ -563,28 +556,7 @@ impl App {
                 let requested = requests
                     .get_or_init(|| self.browser_requests(&task.sandbox_id))
                     .await;
-                let group = self.task_group(task, requested).await?;
-                if for_start_rule && group == TaskGroup::Done && task.status == TaskStatus::Running
-                {
-                    let settled = match self.deps.store.delivery(&task.id).await {
-                        // Answered with no delivery never becomes a #N done prerequisite.
-                        Ok(None) if task.activity != Some(yulius_domain::task::Activity::Done) => {
-                            true
-                        }
-                        Ok(record) => self
-                            .hold_live_delivery(task, record.as_ref())
-                            .await
-                            .is_some(),
-                        Err(_) => false,
-                    };
-                    crate::race::reached(
-                        crate::race::Point::StartRuleLiveChecked,
-                        std::path::Path::new(task.id.as_str()),
-                    );
-                    if settled { group } else { TaskGroup::Working }
-                } else {
-                    group
-                }
+                self.task_group(task, requested).await?
             };
             groups.push(group);
         }

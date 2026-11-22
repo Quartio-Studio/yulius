@@ -374,13 +374,6 @@ impl App {
             .task(&task.id)
             .await?
             .ok_or(crate::error::AppError::NotFound)?;
-        if current.status == yulius_domain::task::TaskStatus::Running
-            && runtime.closing_or_settling()
-        {
-            return Err(crate::error::AppError::Conflict(
-                "The session is closing. Resume it before arming the merge.".into(),
-            ));
-        }
         if !current.status.keeps_an_armed_merge() {
             return Err(crate::error::AppError::Conflict(format!(
                 "The task is {}. Resume it before arming the merge.",

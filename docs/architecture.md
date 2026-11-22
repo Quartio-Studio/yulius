@@ -2207,16 +2207,13 @@ the recorded PR and current open PRs on the task branch through the same lookup 
 for parking. A waiting successor requires settled checks.
 An externally opened replacement can hold the successor after the recorded delivery merged.
 Yulius rechecks local work, durable CI and the owner’s state after the remote reads.
-For a live owner with an achieved goal, an unreadable open delivery or a current failed
-single-PR candidate also holds its successor and session slot. The PR watcher and
-successor check can verify that the recorded head or base changed, or that the PR
-closed. Capacity accounting reads that observation locally for up to two watch intervals.
-A restart, a new decision or a failed verification requires another hosted observation.
-A start rule for all outstanding tasks includes an owner that cannot be cleared locally.
-Compound Done rules and session capacity recheck the live owners together. They hold
-shared read guards until the successor enters the queue or the launch reserves a slot.
-Merge requests take the exclusive writer. Overlapping reads can both omit an Answered
-task with no open delivery. Archive and delete recheck the delivery before claiming a finished session’s close.
+A live owner with an achieved goal keeps its session slot if its open delivery cannot
+be read or its recorded single-PR failure still applies. The PR watcher can establish
+that the PR closed, its ownership changed, or its head or integration base moved.
+Capacity accounting can use that observation for two watch intervals. A new decision,
+an unsuccessful read or a restart requires fresh verification. Before reserving a slot,
+a launch rechecks the owners it would omit and holds their delivery read guards through
+the reservation. A concurrent watcher retries on its next pass.
 An explicit `#N merged` rule follows the recorded merge.
 
 The individual HTTP task detail verifies both recorded and branch PRs.

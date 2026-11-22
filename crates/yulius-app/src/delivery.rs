@@ -5237,12 +5237,30 @@ impl App {
     /// shell runs, and the goal is achieved or no declared work is left with the change merged. The
     /// session limit counts tasks by it (SES-101), many times a minute.
     pub(crate) async fn task_is_done_locally(&self, task: &TaskRecord) -> bool {
-        let Some((task, record)) = self.local_completion(task.clone()).await else {
+        use yulius_domain::task::{Activity, TaskStatus};
+        if task.status != TaskStatus::Running
+            || !task.activity.is_some_and(Activity::is_idle)
+            || self.background_shells_of(&task.id).unwrap_or(0) > 0
+        {
             return false;
-        };
-        self.hold_live_delivery(&task, record.as_ref())
-            .await
-            .is_some()
+        }
+        // Yulius merges it and tells its agent, an achieved goal's too (SPEC-487 CHN-001).
+        if self.delivery_will_wake_task(&task.id).await {
+            return false;
+        }
+        if task.activity == Some(Activity::Done) {
+            return true;
+        }
+        // One reading of its delivery for the whole decision: a merge recorded between two
+        // readings would be "no news due" by the first and "merged" by the second.
+        let record = self.deps.store.delivery(&task.id).await.ok().flatten();
+        if self.pr_news_due_of(task, record.as_ref(), false).await {
+            return false;
+        }
+        if self.work_left(&task.id).await {
+            return false;
+        }
+        matches!(record, Some(record) if past_merge(&record.stage))
     }
 
     /// Read the task-local part of capacity eligibility. Its delivery is rechecked
@@ -5272,6 +5290,37 @@ impl App {
             return None;
         }
         Some((task, record))
+    }
+
+    /// Keep the checked delivery stable until the capacity reservation is made.
+    pub(crate) async fn hold_live_delivery(
+        &self,
+        task: &TaskRecord,
+        record: Option<&DeliveryRecord>,
+    ) -> Option<tokio::sync::OwnedRwLockReadGuard<()>> {
+        let writer = self
+            .runtime(&task.id)
+            .arm_writer
+            .clone()
+            .try_read_owned()
+            .ok()?;
+        let store = &self.deps.store;
+        if self
+            .local_candidate_blocks(task, record)
+            .await
+            .unwrap_or(true)
+            || self.delivery_will_wake_task(&task.id).await
+            || store.delivery(&task.id).await.ok()?.as_ref() != record
+        {
+            return None;
+        }
+        let now = store.task(&task.id).await.ok()??;
+        (now.status == task.status
+            && now.activity == task.activity
+            && now.archived_at == task.archived_at
+            && now.branch == task.branch
+            && now.worktree_path == task.worktree_path)
+            .then_some(writer)
     }
 
     /// Whether work the task declared is left (SPEC-491 DON-004): steps of its plan not
@@ -5309,62 +5358,17 @@ impl App {
         if parked {
             return self.parked_predecessor_done(task).await.unwrap_or(false);
         }
+        if running && task.activity == Some(Activity::Done) {
+            return true;
+        }
+        // One reading of its delivery for the whole decision: a merge recorded between two
+        // readings would be "no news due" by the first and "merged" by the second.
         let Ok(record) = self.deps.store.delivery(&task.id).await else {
             return false;
         };
-        if running
-            && self
-                .delivery_candidate_blocks(task, record.as_ref(), true)
-                .await
-                .unwrap_or(true)
-        {
-            return false;
-        }
-        let done = (running && task.activity == Some(Activity::Done))
-            || self.done_by_delivery(task, record.as_ref()).await;
-        done && (!running
-            || self
-                .hold_live_delivery(task, record.as_ref())
-                .await
-                .is_some())
-    }
-
-    /// Recheck the delivery after any hosted read, including a new arm or a decision
-    /// written while the ordinary head's checks were being read.
-    pub(crate) async fn hold_live_delivery(
-        &self,
-        task: &TaskRecord,
-        record: Option<&DeliveryRecord>,
-    ) -> Option<tokio::sync::OwnedRwLockReadGuard<()>> {
-        let writer = self
-            .runtime(&task.id)
-            .arm_writer
-            .clone()
-            .try_read_owned()
-            .ok()?;
-        let store = &self.deps.store;
-        if self
-            .delivery_candidate_blocks(task, record, false)
-            .await
-            .unwrap_or(true)
-            || self.delivery_will_wake_task(&task.id).await
-            || store.delivery(&task.id).await.ok()?.as_ref() != record
-        {
-            return None;
-        }
-        let now = store.task(&task.id).await.ok()??;
-        (now.status == task.status
-            && now.activity == task.activity
-            && now.archived_at == task.archived_at
-            && now.branch == task.branch
-            && now.worktree_path == task.worktree_path)
-            .then_some(writer)
-    }
-
-    async fn done_by_delivery(&self, task: &TaskRecord, record: Option<&DeliveryRecord>) -> bool {
         // Yulius still has news of its pull request for its agent (an armed merge, a merge not
         // said yet): it goes on by itself, so it is not Done (SPEC-487 CHN-001, CHN-002).
-        if self.pr_news_due_of(task, record, false).await {
+        if self.pr_news_due_of(task, record.as_ref(), false).await {
             return false;
         }
         // A pull request makes a task Done only when no work it declared is left: its plan is
@@ -5399,7 +5403,7 @@ impl App {
         {
             Ok(observed) => match observed.pr_state() {
                 // Merged on GitHub before the record says so: its news is as due as then.
-                PrState::Merged => !self.pr_news_due_of(task, Some(record), true).await,
+                PrState::Merged => !self.pr_news_due_of(task, Some(&record), true).await,
                 PrState::Open => {
                     let Some(pull) = observed.pr.as_ref() else {
                         return false;

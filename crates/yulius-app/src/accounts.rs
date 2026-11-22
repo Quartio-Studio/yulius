@@ -1631,13 +1631,11 @@ impl App {
                 Ok(Some(record)) => record,
                 _ => continue,
             };
-            if let Ok(delivery) = store.delivery(&task).await
-                && self.task_is_done_locally(&record).await
-            {
+            if self.task_is_done_locally(&record).await {
                 closes.push(tokio::spawn(async move {
                     // A session that could not be closed (typed into meanwhile, or not ending in
                     // time) still never stays on it: it moves, or stops.
-                    if let Err(err) = app.close_selected_and_wait(&task, Some((&record, delivery.as_ref()))).await {
+                    if let Err(err) = app.close_task_and_wait(&task).await {
                         tracing::warn!(task = %task, error = %err, "closing a Done task on a removed subscription failed; moving it");
                         app.move_off_removed(&task, &gone.0, gone.1).await;
                     }
