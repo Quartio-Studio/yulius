@@ -120,6 +120,7 @@ What Yulius does today (SPEC-001 ROT-003/004/007/010, SPEC-447, SPEC-611):
 - [x] Move idle tasks off a subscription past the threshold every two minutes
 - [x] Tell each move and each task that cannot move, once
 - [x] Document the rebalance in product, operations, architecture and changes
+- [x] Answer the first review: goal sessions parked, the idle claim, untested guards
 - [ ] Pass the independent review of the exact head
 
 ## Acceptance criteria
