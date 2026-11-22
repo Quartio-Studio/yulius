@@ -503,7 +503,9 @@ impl BrowserManager {
     /// and reaps it. Returns whether one was running.
     ///
     /// # Errors
-    /// [`BrowserError::NotReaped`] when the process survived SIGKILL.
+    /// [`BrowserError::NotReaped`] when the process survived SIGKILL, and
+    /// [`BrowserError::DisplayNotStopped`] when the X server of a display that failed to start
+    /// still does.
     pub async fn shutdown(&self, sandbox: &SandboxId) -> Result<bool, BrowserError> {
         let Some(slot) = lock(&self.slots).get(sandbox).cloned() else {
             return Ok(false);
@@ -620,14 +622,19 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
         let root = tempfile::tempdir()?;
         let real = resolve_executable(Path::new("Xvfb")).ok();
-        let fake = FakeXvfb::new(root.path(), real.as_deref(), "silent")?;
+        // Controller setup fails at once; without Xvfb, readiness fails after a short wait.
+        let failing = if real.is_some() { "no-xtest" } else { "silent" };
+        let fake = FakeXvfb::new(root.path(), real.as_deref(), failing)?;
         let chromium = root.path().join("chromium");
         std::fs::write(&chromium, "#!/bin/sh\nexit 3\n")?;
         std::fs::set_permissions(&chromium, std::fs::Permissions::from_mode(0o755))?;
         let mut display = crate::DisplayConfig::new(root.path().join("displays"));
+        stop_faults::private_displays(&mut display, 1);
         display.xvfb = fake.program.clone();
         display.max_size = (320, 240);
-        display.startup_timeout = Duration::from_millis(300);
+        if real.is_none() {
+            display.startup_timeout = Duration::from_millis(300);
+        }
         let mut config = BrowserConfig::new(chromium, root.path().join("profiles"));
         config.display = DisplayMode::Virtual(display);
         config.default_viewport = (320, 240);
@@ -654,6 +661,10 @@ mod tests {
         assert!(not_stopped(manager.ensure(&sandbox, &profile).await));
         assert!(not_stopped(manager.restart(&sandbox, &profile).await));
         assert!(manager.reap_idle(Instant::now()).await.is_empty());
+        assert!(matches!(
+            manager.shutdown(&sandbox).await,
+            Err(BrowserError::DisplayNotStopped { .. })
+        ));
         assert_eq!(fake.starts(), first, "no second X server started");
         assert!(stop_faults::running(first[0]));
 

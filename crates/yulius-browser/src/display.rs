@@ -396,11 +396,7 @@ impl std::fmt::Display for DisplayStartFailure {
     }
 }
 
-impl std::error::Error for DisplayStartFailure {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.error)
-    }
-}
+impl std::error::Error for DisplayStartFailure {}
 
 /// An Xvfb whose display failed to start and that then survived SIGKILL (SPEC-616 XS-001): its
 /// process handle, cookie and runtime directory are kept until a later stop reaps it.
@@ -553,6 +549,14 @@ pub(crate) mod stop_faults {
                 .filter_map(|line| line.trim().parse().ok())
                 .collect()
         }
+    }
+
+    /// Display numbers of their own for one test (`slot` tells a process's tests apart): above
+    /// the default `:100..:199` other tests use, and per process, so that no other X server
+    /// starts on them meanwhile and every start of the test is its own.
+    pub(crate) fn private_displays(config: &mut super::DisplayConfig, slot: u32) {
+        config.first_display = 1000 + (std::process::id() % 4000) * 8 + slot * 4;
+        config.display_count = 4;
     }
 
     /// Whether `pid` is a live process (a zombie counts until reaped).
@@ -1110,13 +1114,13 @@ mod tests {
             let fake = stop_faults::FakeXvfb::new(root.path(), real.as_deref(), mode)?;
             let sandbox = SandboxId::parse("stranded-display")?;
             let mut config = DisplayConfig::new(root.path().join("displays"));
+            stop_faults::private_displays(&mut config, 0);
             config.xvfb = fake.program.clone();
             config.max_size = (320, 240);
-            config.startup_timeout = if mode == "silent" {
-                Duration::from_millis(300)
-            } else {
-                Duration::from_secs(10)
-            };
+            let real_start = DisplayMode::Virtual(config.clone());
+            if mode == "silent" {
+                config.startup_timeout = Duration::from_millis(300);
+            }
             let mode_config = DisplayMode::Virtual(config);
             let dir = root.path().join("displays").join(sandbox.as_str());
             let cookie = dir.join(XAUTHORITY_FILE);
@@ -1166,9 +1170,10 @@ mod tests {
             stranded.stop(quick).await?;
             assert!(!stop_faults::running(pid), "{mode}: stopped once it may");
             assert!(!cookie.exists(), "{mode}: its cookie goes with it");
+            assert!(!dir.exists(), "{mode}: and its runtime directory");
             if real.is_some() {
                 fake.set_mode("real")?;
-                let display = VirtualDisplay::start(&mode_config, &sandbox, (320, 240))
+                let display = VirtualDisplay::start(&real_start, &sandbox, (320, 240))
                     .await?
                     .ok_or("no display")?;
                 assert!(display.is_alive(), "{mode}");

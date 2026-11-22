@@ -459,3 +459,22 @@ impl BrowserPort for UnavailableBrowser {
         Vec::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SPEC-616 XS-002: an X server that survived its display's failed start is an internal
+    /// failure for tools and viewers, like any other process that survived SIGKILL.
+    #[test]
+    fn a_display_whose_x_server_survived_is_an_internal_failure() {
+        let error = BrowserError::DisplayNotStopped {
+            display: ":101".into(),
+            pid: 4242,
+            cause: "virtual display: the X server has no XTEST extension".into(),
+        };
+        let failure = failure(error);
+        assert_eq!(failure.kind, BrowserFailureKind::Internal);
+        assert!(failure.message.contains("pid 4242"), "{}", failure.message);
+    }
+}

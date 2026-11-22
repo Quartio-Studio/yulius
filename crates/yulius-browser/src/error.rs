@@ -198,7 +198,7 @@ pub enum BrowserError {
     /// A virtual display failed to start, and its X server then survived SIGKILL: the sandbox's
     /// browser keeps it and stops it again before the sandbox gets another display (SPEC-616).
     #[error(
-        "virtual display {display} failed to start ({cause}), and its X server (pid {pid}) did not exit after SIGKILL; it is stopped again before this sandbox gets another display"
+        "{cause}; then the X server of display {display} (pid {pid}) did not exit after SIGKILL, and this sandbox gets no other display until it is stopped"
     )]
     DisplayNotStopped {
         /// The display name, e.g. `:101`.

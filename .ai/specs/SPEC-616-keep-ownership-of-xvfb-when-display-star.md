@@ -43,8 +43,10 @@ The browser slot already keeps a display or browser whose stop failed. `BrowserS
 A real process cannot be made to survive SIGKILL without root (a process in uninterruptible sleep). A test-only seam (`display::stop_faults`, compiled only in this crate's unit tests) makes the display's stop report "not reaped" without signalling, keyed by the display's runtime directory. The Xvfb really keeps running, as in the real double failure. A fake Xvfb script records each start. It can sleep without listening (readiness timeout), exec the real Xvfb with `-tst` (no XTEST, so controller setup fails), or exec the real Xvfb unchanged (success). Parts that need the real Xvfb skip with a note where it is missing, as the existing display tests do.
 
 - Display unit tests: both failure points, a stranded handle whose retry fails while held and succeeds once released. Cookie kept, then removed. Process alive, then gone. A fresh start succeeds.
-- Manager unit test: `ensure` while stuck twice, with one Xvfb start recorded. After release `ensure` stops the stranded server and starts a new Xvfb.
-- Run `yulius-browser` tests in full, the `yulius` wiring tests that map `BrowserError`, and `scripts/dev quick`.
+- Manager unit test: `ensure` twice, `restart`, an idle reap and `shutdown` while held, with one Xvfb start recorded. After release `ensure` stops the stranded server and starts a new Xvfb.
+- Each test starts its X servers on display numbers of its own (`stop_faults::private_displays`, from `:1000` and per process), so no other test's server takes its numbers.
+- Wiring unit test: `DisplayNotStopped` is an internal failure for tools (`crates/yulius/src/wiring/browser.rs`).
+- Run `yulius-browser` tests in full, the wiring test and `scripts/dev quick`.
 
 ## Decisions
 
@@ -52,7 +54,7 @@ A real process cannot be made to survive SIGKILL without root (a process in unin
 - `start_xvfb` still tries one quick stop itself, so a failed start leaves no process behind in the ordinary case. Only a failed stop hands the process on.
 - The error is a new variant, not `Display(String)`. An unreaped process is an internal failure, and the variant names the pid and display.
 - Fault injection uses a test-only seam at the display's stop. A cfg(test) field on `DisplayConfig` would break its `Clone`/`PartialEq`. A flag inside `Supervised` would change every process.
-- A cancelled start (the caller's future dropped mid-start) still drops the process handle, whose drop sends SIGKILL. That case is outside #1519.
+- A cancelled start (the caller's future dropped mid-start) still drops the process handle, whose drop sends SIGKILL. That case is outside #1519 and was on dev before. It is tracked in [#1688](https://github.com/Quartio-Studio/yulius/issues/1688).
 - No ADR: this extends the existing rule that a browser slot keeps what it could not stop (SPEC-570) to one more leftover. It takes no new lasting decision.
 
 ## Evidence
@@ -68,4 +70,10 @@ Reproduction: the double failure was injected with the test-only seam `display::
 - `scripts/cargo clippy -p yulius-browser -p yulius --all-features --all-targets -- -D warnings`: clean.
 - `scripts/dev quick`: repository contracts passed, `cargo fmt --check` clean.
 - Not tested: a real process that survives SIGKILL. That needs a process in uninterruptible sleep, which an unprivileged test cannot produce, so the seam stands in for it. A cancelled display start (the caller's future dropped) still drops the handle, whose drop sends SIGKILL. That is outside #1519.
+- Review round 1 (head `a5779e04f`) requested changes. The reviewer wrote: "both new tests share display numbers `:100..` with every other test that starts an Xvfb and fail when another start lands at the same moment" (in its runs, 15 of 18 failed with six processes running both tests). It also listed minor gaps: no `shutdown` assertion while held, no test of the tool mapping, no check that the runtime directory is removed, and `shutdown`'s `# Errors`. Answers:
+  - Each test now uses a private display range. Real starts get the normal 10 s timeout, and the manager test fails through `no-xtest` when Xvfb exists. 36 parallel copies of both tests beside the clipboard tests on `:100..` (six processes at a time, six rounds) all passed (`target/spec616-contention.log`).
+  - Added the `shutdown` and runtime-directory assertions, the wiring test `a_display_whose_x_server_survived_is_an_internal_failure` (ok), and the `shutdown` doc.
+  - Nits: `DisplayStartFailure` no longer repeats its error as `source`. The message now reads "<cause>; then the X server of display :N (pid P) did not exit after SIGKILL, and this sandbox gets no other display until it is stopped", which stays true when a later retry succeeds. `stop_xvfb` keeps its `dir` argument, because the fault seam is keyed by it and it costs nothing in production.
+  - The pre-existing cancellation gap is filed as #1688.
+  - After the fixes: `scripts/cargo test -p yulius-browser --all-features` (76, 11, 40, 19, 6 passed), clippy on both crates clean, `scripts/dev quick` passed.
 - Security scan: Vidoc is switched off for this project in Yulius (disabled, not passed).
