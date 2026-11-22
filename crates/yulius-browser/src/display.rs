@@ -378,7 +378,7 @@ pub(crate) struct DisplayStartFailure {
     pub(crate) error: BrowserError,
     /// The X server that survived its stop, still owned: the caller stops it again before the
     /// sandbox gets another display.
-    pub(crate) stranded: Option<StrandedXvfb>,
+    pub(crate) stranded: Option<Box<StrandedXvfb>>,
 }
 
 impl From<BrowserError> for DisplayStartFailure {
@@ -470,13 +470,13 @@ async fn abandon(
         let _ = std::fs::remove_file(xauthority);
         return error.into();
     }
-    let stranded = StrandedXvfb {
+    let stranded = Box::new(StrandedXvfb {
         process,
         number,
         dir: dir.to_owned(),
         xauthority: xauthority.to_owned(),
         cause: error.to_string(),
-    };
+    });
     let error = stranded.error();
     warn!(%error, "a virtual display that failed to start could not be stopped");
     DisplayStartFailure {

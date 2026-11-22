@@ -173,7 +173,7 @@ enum BrowserState {
     },
     /// A display failed to start and its X server survived the stop (SPEC-616): stopped again
     /// before anything else starts for the sandbox.
-    Stranded(StrandedXvfb),
+    Stranded(Box<StrandedXvfb>),
     Unpublished(Arc<BrowserInstance>),
     Ready(Arc<BrowserInstance>),
 }

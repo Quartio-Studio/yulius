@@ -25,10 +25,10 @@ The browser slot already keeps a display or browser whose stop failed. `BrowserS
 
 ## Plan
 
-- [ ] Keep a failed display start's surviving Xvfb and report its failed stop
-- [ ] Strand the Xvfb the same way when X controller setup fails
-- [ ] Retry the stranded Xvfb's stop in the browser slot before any replacement display
-- [ ] Document the stranded display in the architecture and changes
+- [x] Keep a failed display start's surviving Xvfb and report its failed stop
+- [x] Strand the Xvfb the same way when X controller setup fails
+- [x] Retry the stranded Xvfb's stop in the browser slot before any replacement display
+- [x] Document the stranded display in the architecture and changes
 - [ ] Answer the independent review of the delivery
 
 ## Acceptance criteria
@@ -53,3 +53,19 @@ A real process cannot be made to survive SIGKILL without root (a process in unin
 - The error is a new variant, not `Display(String)`. An unreaped process is an internal failure, and the variant names the pid and display.
 - Fault injection uses a test-only seam at the display's stop. A cfg(test) field on `DisplayConfig` would break its `Clone`/`PartialEq`. A flag inside `Supervised` would change every process.
 - A cancelled start (the caller's future dropped mid-start) still drops the process handle, whose drop sends SIGKILL. That case is outside #1519.
+- No ADR: this extends the existing rule that a browser slot keeps what it could not stop (SPEC-570) to one more leftover. It takes no new lasting decision.
+
+## Evidence
+
+Reproduction: the double failure was injected with the test-only seam `display::stop_faults`. While a display's runtime directory is held, its X server's stop reports "not reaped" and sends no signal, so the server keeps running, like one in uninterruptible sleep. The stand-in `FakeXvfb` records each start's pid. It fails readiness (`silent`), fails X controller setup (the real Xvfb with `-tst`, no XTEST), or runs the real Xvfb.
+
+- `scripts/cargo test -p yulius-browser --all-features --lib a_failed_display_start_keeps_the_xvfb_it_could_not_stop`: ok (real Xvfb 21.1 present, both failure points ran). Without a fault a failed start leaves no process and no cookie. With the fault: `DisplayNotStopped` names the pid and cause, is `Internal` for viewers, the Xvfb runs and its cookie stays. A retry while held fails the same way. After release the retry reaps it and removes the cookie, and a new start succeeds.
+- `scripts/cargo test -p yulius-browser --all-features --lib a_stranded_xvfb_is_stopped_before_the_sandbox_gets_another_display`: ok. `ensure`, `ensure`, `restart` all fail with `DisplayNotStopped`, the idle reaper stops nothing, and one Xvfb start is recorded with that Xvfb still running. After release `ensure` stops it, starts a second real Xvfb (the stand-in Chrome then exits: `ExitedEarly`), and cleans that up.
+- Mutation checks by hand (committed first, restored with `git checkout`, log in ignored `target/spec616-mutations.log`):
+  - M1, the slot drops the stranded server instead of keeping it: the manager test fails at `assertion left == right failed: no second X server started`.
+  - M2, `abandon` ignores the failed stop (dev's behaviour): both tests fail (display test at the kept-handle check, manager test at `DisplayNotStopped`).
+- `scripts/cargo test -p yulius-browser --all-features`: unit 76, cdp 11, instance 40, manager 19, real_chromium 6 passed.
+- `scripts/cargo clippy -p yulius-browser -p yulius --all-features --all-targets -- -D warnings`: clean.
+- `scripts/dev quick`: repository contracts passed, `cargo fmt --check` clean.
+- Not tested: a real process that survives SIGKILL. That needs a process in uninterruptible sleep, which an unprivileged test cannot produce, so the seam stands in for it. A cancelled display start (the caller's future dropped) still drops the handle, whose drop sends SIGKILL. That is outside #1519.
+- Security scan: Vidoc is switched off for this project in Yulius (disabled, not passed).
