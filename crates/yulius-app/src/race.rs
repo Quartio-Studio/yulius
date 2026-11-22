@@ -196,6 +196,11 @@ pub enum Point {
     /// viewer's; a stop that came while it launched has not asked it to end yet. The path is the
     /// task id.
     RunAttached,
+    /// A held tail of a task terminal's output is about to be shown, its quiet time over
+    /// (SPEC-614, #1624). The path is the attempt id of the run that printed it.
+    TerminalTailReady,
+    /// A held tail's release is over, shown or dropped (SPEC-614). The path is the attempt id.
+    TerminalTailDone,
     /// The leftovers view (SPEC-329's CI, #923): the kept sandboxes' store rows were read; the
     /// scan's state is not read yet. The path is the data directory.
     LeftoversView,
