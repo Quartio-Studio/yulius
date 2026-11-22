@@ -17,6 +17,7 @@ pub mod briefing;
 pub mod capacity;
 pub mod cd;
 pub mod ci;
+pub mod commands;
 pub mod connection_health;
 pub mod connections;
 pub mod context_full;

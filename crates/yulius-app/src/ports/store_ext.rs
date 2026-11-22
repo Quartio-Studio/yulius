@@ -858,6 +858,58 @@ pub trait CdStore: Send + Sync {
     ) -> AppResult<Vec<yulius_domain::rollback::ReleaseRecord>>;
 }
 
+/// A project's brokered command as stored (SPEC-626 BRK-001): the definition is one JSON
+/// document ([`yulius_contracts::api::commands::CommandDefinition`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandRecord {
+    /// Its id.
+    pub id: String,
+    /// Its project.
+    pub sandbox_id: SandboxId,
+    /// Its name, unique in the project.
+    pub name: String,
+    /// The definition, as JSON.
+    pub definition: String,
+    /// The agent secret it was saved with (BRK-003): its runs get no other.
+    pub secret_id: String,
+    /// Who created it (user id).
+    pub created_by: String,
+    /// When.
+    pub created_at: Timestamp,
+    /// Who changed it last (user id).
+    pub updated_by: String,
+    /// When.
+    pub updated_at: Timestamp,
+}
+
+/// Brokered commands (SPEC-626, migration 0089).
+#[async_trait]
+pub trait CommandStore: Send + Sync {
+    /// A project's commands, by name.
+    async fn commands_in(&self, sandbox: &SandboxId) -> AppResult<Vec<CommandRecord>>;
+    /// One command of a project by its id.
+    async fn command(&self, sandbox: &SandboxId, id: &str) -> AppResult<Option<CommandRecord>>;
+    /// One command of a project by its name.
+    async fn command_named(
+        &self,
+        sandbox: &SandboxId,
+        name: &str,
+    ) -> AppResult<Option<CommandRecord>>;
+    /// Stores a new command.
+    ///
+    /// # Errors
+    /// `Conflict` when the project has a command of that name.
+    async fn insert_command(&self, command: &CommandRecord) -> AppResult<()>;
+    /// Replaces a command's name and definition only while it was last changed at `read_at`;
+    /// `false` when it changed meanwhile or is gone.
+    ///
+    /// # Errors
+    /// `Conflict` when the new name is another command's.
+    async fn update_command(&self, command: &CommandRecord, read_at: Timestamp) -> AppResult<bool>;
+    /// Removes a command; `false` when it was gone.
+    async fn delete_command(&self, sandbox: &SandboxId, id: &str) -> AppResult<bool>;
+}
+
 /// One handoff as stored (SPEC-512 HOF-003..HOF-006).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HandoffRecord {
@@ -1293,6 +1345,14 @@ pub trait NeedsYouStore: Send + Sync {
         request: Option<&crate::needs_you::NeedsYouRecord>,
         at: Timestamp,
     ) -> AppResult<bool>;
+    /// Records a system request only for this live attempt and only while the
+    /// task has no open request. Returns whether the request was inserted.
+    async fn ask_for_live_attempt(
+        &self,
+        task: &TaskId,
+        attempt: &yulius_domain::ids::AttemptId,
+        request: &crate::needs_you::NeedsYouRecord,
+    ) -> AppResult<bool>;
     /// Ends the request at `at` only while it still asks `action`, in one step: a request made
     /// meanwhile stays. `true` when it ended one.
     async fn end_task_needs_you_asking(
@@ -1445,6 +1505,7 @@ pub trait ExtensionStores:
     + DigestStore
     + NoticeStore
     + HandoffStore
+    + CommandStore
     + StagingStore
     + crate::ports::session_docs::SessionDocStore
     + NoteStore
@@ -1474,6 +1535,7 @@ impl<T> ExtensionStores for T where
         + DigestStore
         + NoticeStore
         + HandoffStore
+        + CommandStore
         + StagingStore
         + crate::ports::session_docs::SessionDocStore
         + NoteStore

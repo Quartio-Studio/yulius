@@ -97,6 +97,13 @@ pub enum UiEvent {
         /// New account view (boxed: it is by far the largest payload; the JSON is the same).
         account: Box<AccountView>,
     },
+    /// A project's brokered commands or their waiting runs changed (SPEC-626 BRK-002): an open
+    /// Secrets page reads them again.
+    #[serde(rename = "commands.updated")]
+    CommandsUpdated {
+        /// The project.
+        sandbox_id: String,
+    },
     /// A task's handoffs changed (SPEC-512 HOF-004): its page reads them again.
     #[serde(rename = "handoffs.updated")]
     HandoffsUpdated {

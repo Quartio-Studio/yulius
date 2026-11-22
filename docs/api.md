@@ -2106,6 +2106,23 @@ do its CD runs (dev: all; production: those its `[cd.<name>]` `variables` names;
 | PUT | `/api/sandboxes/{sid}/variables` | `{variables: [{name, value, description?}], only_new?: bool}` → `{created, changed, unchanged, existing}` (names): creates or changes each, all checked before any is written and each outcome decided in one transaction; `only_new` (the secrets import) leaves an existing one as it is (`existing`). Write access. `name` follows agent secret names; `value` one line, ≤ 4096 bytes, may be empty; `description` ≤ 1000 characters, absent keeps the stored one. 422 for a bad entry, a name given twice, more than 200 in the body or in the project; 409 when a name is an agent secret of the project (its own, or a global one switched on for it). Audited `variable.create` / `variable.update` (name and changed fields, never the value) |
 | DELETE | `/api/sandboxes/{sid}/variables/{name}` | → 204 (404 when there is none). Write access. Audited `variable.delete` |
 
+**Brokered commands** — a project's CLIs that need an agent secret as a file, run by agents
+outside their sandbox ([SPEC-626](../.ai/specs/SPEC-626-brokered-commands-a-cli-that-needs-a-key.md),
+[ADR-0459](decisions/0459-brokered-commands-run-in-the-production-holder-with-a-temporary-key-file.md)).
+
+| Method | Path | Body → Response |
+| --- | --- | --- |
+| GET | `/api/sandboxes/{sid}/commands` | (read) → `{items: [Command], can_edit}`; `Command` is the definition plus `{id, secret_ready, version, created_by, created_at, updated_by, updated_at, can_edit}` (`secret_ready`: its runs get the secret it was saved with: that NAME still resolves to it there and it is no production secret). Env values are not secret and are shown |
+| POST | `/api/sandboxes/{sid}/commands` | (administer) `{name, description?, binary, secret, tasks?: [n], approve?: "always" (default)\|"send"\|"never", send_flags?, approval_minutes?: 1-60 (10), timeout_seconds?: 1-1800 (600), fixed?, subcommands?, refuse?, slashes?, env?: {NAME: value}}` → 201 `Command`. 422 for a name outside 1-40 of `a-z0-9-`, a binary that is no absolute normalised path, a placeholder other than `{keyfile}`, `{home}` and (in `env` only) `{secret}`, an env name Yulius sets (`PATH`, `HOME`, `TMPDIR`, `LD_*`, `YULIUS_*`), `send` without `send_flags`, a binary under `/proc`, `/sys`, `/dev`, `/run`, `/tmp`, `/var/tmp`, `/home`, `/root` or the data directory or with spaces or non-ASCII, flags or subcommands outside letters, digits, `_`, `.`, `:` and `-`, an invisible character, a definition over 16 KiB, a secret that is missing, personal or a production one, an unknown field; 403 unless the caller manages the secret (a global one: instance administrators); for a secret with `auto_allow` off 403 for an API token and `403 reauth_required` without a fresh two-factor unlock (ADR-0317); 409 for a name taken; audited `command.define` (the definition, redacted, no value). The command keeps the secret's id: another secret of that NAME later reaches none of its runs until it is saved again |
+| PUT | `/api/sandboxes/{sid}/commands/{id}?version=N` | (administer) the same body and checks → `Command`; 409 when it changed since `version` (the `version` the editor read) or meanwhile, or for a name taken; 404 for another project's id; audited `command.update` |
+| DELETE | `/api/sandboxes/{sid}/commands/{id}` | (administer) → 204; audited `command.remove` |
+
+Each change publishes `commands.updated` `{"sandbox_id"}`. Task agents and the Superagent list
+them with the MCP tool `commands_list` (pre-allowed for the Superagent): name, description,
+binary, `fixed`, `subcommands`, `refuse`, `slashes`, env names (never values), `approve`,
+`send_flags`, `approval_minutes`, `timeout_seconds`, `secret`, `secret_ready`, `tasks` and, for a
+task's agent, `you_may_run`.
+
 ## UI event stream
 
 `WS /api/events` → JSON: `{"type":"task.updated","task":TaskSummary}`, `{"type":"task.control_taken_back","task_id","sandbox_id","number","title","by"}` (only to the person a task was taken back from, SPEC-490 OWN-010), `{"type":"task.control_taken", same fields}` (only to the person a task was taken from without asking, SPEC-510 TKC-002), `{"type":"task.removed",

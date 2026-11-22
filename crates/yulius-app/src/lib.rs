@@ -24,6 +24,7 @@ pub mod chains;
 pub mod ci;
 pub mod claude_code;
 pub mod cockpit;
+pub mod commands;
 pub mod connection_health;
 pub mod context;
 pub mod context_full;

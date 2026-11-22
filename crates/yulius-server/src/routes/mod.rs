@@ -8,6 +8,7 @@ mod automations;
 mod browser;
 mod cd;
 mod ci;
+mod commands;
 mod delivery;
 mod digest;
 mod events;
@@ -313,6 +314,14 @@ pub fn public() -> Router<AppState> {
         .route(
             "/api/sandboxes/{sid}/handoffs",
             get(handoffs::sandbox).put(handoffs::set_sandbox),
+        )
+        .route(
+            "/api/sandboxes/{sid}/commands",
+            get(commands::list).post(commands::create),
+        )
+        .route(
+            "/api/sandboxes/{sid}/commands/{id}",
+            put(commands::update).delete(commands::delete),
         )
         .route("/api/tasks/{tid}/handoffs", get(handoffs::task))
         .route("/api/tasks/{tid}/handoffs/{hid}", post(handoffs::answer))

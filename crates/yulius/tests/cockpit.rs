@@ -1748,6 +1748,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "ci_rerun",
             "ci_run",
             "ci_runs",
+            "commands_list",
             "docker_restart",
             "instance",
             "instance_update",
@@ -8415,5 +8416,70 @@ async fn interpreter_value_requests_only_rotate_existing_secrets_of_the_requeste
     .await?;
     assert_eq!(answer.body["stored"], "updated", "{}", answer.body);
     assert!(!tokio::time::timeout(WAIT, rotate).await??.1);
+    Ok(())
+}
+
+/// SPEC-626 BRK-004, AC-2 (review round 1): the Superagent lists its project's brokered commands
+/// as defined, without a value, and is not told whether a task may run one.
+#[tokio::test]
+async fn the_superagent_lists_its_projects_brokered_commands() -> TestResult {
+    use yulius_domain::ids::UserId;
+
+    let f = fixture().await?;
+    add_apify_key(&f).await?;
+    // Stored as an administrator's definition (the fixture's alice only writes).
+    {
+        use yulius_app::ports::store_ext::{CommandRecord, CommandStore as _};
+        use yulius_app::ports::vault::VaultStore as _;
+        let secret =
+            f.h.store
+                .vault_agent_in(&sid())
+                .await?
+                .into_iter()
+                .find(|r| r.name == "APIFY_KEY")
+                .ok_or("secret")?;
+        let definition = json!({
+            "name": "scrape",
+            "binary": "/usr/local/bin/scrape",
+            "secret": "APIFY_KEY",
+            "fixed": ["--token-file", "{keyfile}"],
+            "approve": "never",
+        });
+        let definition: yulius_contracts::api::commands::CommandDefinition =
+            serde_json::from_value(definition)?;
+        let now = f.h.app.now();
+        f.h.store
+            .insert_command(&CommandRecord {
+                id: "cmd-scrape".into(),
+                sandbox_id: sid(),
+                name: "scrape".into(),
+                definition: serde_json::to_string(&definition)?,
+                secret_id: secret.id,
+                created_by: "u-alice".into(),
+                created_at: now,
+                updated_by: "u-alice".into(),
+                updated_at: now,
+            })
+            .await?;
+    }
+    cockpit_id(&f, &f.alice).await?;
+    let token =
+        f.h.app
+            .cockpit_mcp_token(&UserId::parse("u-alice")?, &sid())
+            .ok_or("token")?;
+    let (listed, is_error) = cockpit_tool(&f, &token, "commands_list", json!({})).await?;
+    assert!(!is_error, "{listed}");
+    let listed = match listed {
+        Value::String(text) => serde_json::from_str(&text)?,
+        other => other,
+    };
+    assert_eq!(listed["commands"][0]["name"], "scrape", "{listed}");
+    assert_eq!(
+        listed["commands"][0]["fixed"],
+        json!(["--token-file", "{keyfile}"])
+    );
+    assert_eq!(listed["commands"][0]["secret_ready"], true);
+    assert_eq!(listed["commands"][0]["you_may_run"], Value::Null);
+    assert!(!listed.to_string().contains(SECRET_VALUE), "{listed}");
     Ok(())
 }

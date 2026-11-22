@@ -510,6 +510,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0449 -->
 - [0450](0450-attribute-integration-test-failures-in-first-parent-order.md) Attribute integration test failures in first-parent order.
 <!-- ADR 0450 -->
+- [0451](0451-repaint-an-unreadable-codex-terminal-before-typing.md) Repaint an unreadable Codex terminal before typing.
 <!-- ADR 0451 -->
 - [0452](0452-a-recorded-merge-wait-consumes-every-earlier-saved-arm.md) A recorded merge wait consumes every earlier saved arm.
 <!-- ADR 0452 -->
@@ -524,12 +525,14 @@ If a reservation skips past all available slots, land an empty extension first w
 - [0457](0457-new-tasks-default-to-claude-code-on-opus-5-5.md): New tasks default to Claude Code on Opus 5.5 when nothing is chosen; supersedes 0422 and 0426.
 <!-- ADR 0457 -->
 <!-- ADR 0458 -->
+- [0459](0459-brokered-commands-run-in-the-production-holder-with-a-temporary-key-file.md): Brokered commands run in the production holder with a temporary key file; amends SPEC-002 ADR-20
 <!-- ADR 0459 -->
 <!-- ADR 0460 -->
 <!-- ADR 0461 -->
 - [0462](0462-notices-carry-a-key-and-an-expiry-and-the-newest-per-key-wins.md): Notices carry a key and an expiry, and the newest per key wins
 <!-- ADR 0462 -->
 <!-- ADR 0463 -->
+- [0464](0464-a-codex-goal-continues-on-its-own-red-yulius-ci-run.md): A Codex goal whose plan is finished continues on its own red Yulius CI run at its current head; extends 0428.
 <!-- ADR 0464 -->
 <!-- ADR 0465 -->
 <!-- ADR 0466 -->
