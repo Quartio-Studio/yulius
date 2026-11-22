@@ -129,6 +129,9 @@ The SQLite query returning a parked task includes the latest attempt ID in the s
 
 ## Evidence
 
+- PR #1679 run `a4cf8907-9726-44f9-ad63-575d039ded21` failed before executing shard 2. Nextest exhausted `/tmp` while unpacking the 45-binary archive for the quarantine listing. The shard regression failed on the default extraction path before the fix. Both nextest commands now unpack in a private directory on disk. [Test build contract](../../docs/decisions/0438-quality-passes-have-own-jobs-and-test-partitions-share-a-build.md)
+
+- Hand check of the CI repair. Removing the extraction arguments reproduced the missing disk path in the quarantine listing. Restored code passed the xtask CLI tests. With a real nextest domain archive, both extraction passes used the same private disk directory, all 316 selected shard-2 tests passed in `89d7355e-3d95-48c0-810c-d00aed5e4db0`, and the extraction directory was removed.
 - Independent review approved `209c14add834c30963b982028e2a834bc198435d` for session capacity. Its fresh session passed all 78 candidate tests in `c1d4b94e-1ec2-42ab-8a9a-a4ec8a06c86b`. The review's documentation correction removed the obsolete statement about which method counts occupied slots.
 
 - All 688 scoped tests passed in `90908811-75d5-4039-a4d8-aa09fe7495db`. Restoring the raw final PR read by hand made the peer see a free slot again in `5cbff53b-d244-4a9b-8cc4-29c5828892d9`. The guarded read was restored. Clippy and repository quick checks passed. Vidoc was disabled.

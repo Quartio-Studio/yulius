@@ -275,6 +275,20 @@ fn execute_in(task: &str, after_quick: bool, archive: Option<&str>) -> io::Resul
                 args.extend(["--locked", "--workspace", "--all-features"]);
             }
             args.extend(["--profile", "ci"]);
+            let scratch = archive.and_then(|_| {
+                env::var_os("YULIUS_BUILD_SCRATCH").or_else(|| env::var_os("YULIUS_CI_CACHE"))
+            });
+            let extracted = scratch.map(tempfile::tempdir_in).transpose()?;
+            if let Some(dir) = &extracted {
+                let path = dir.path().to_str().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "non-UTF-8 extraction directory",
+                    )
+                })?;
+                // Both the quarantine list and run unpack the archive into this private directory.
+                args.extend(["--extract-to", path, "--extract-overwrite"]);
+            }
             // Tests Yulius CI quarantined as flaky are left out (SPEC-497 OFC-002), each in its
             // own binary where this head builds it.
             let names = std::env::var("YULIUS_CI_QUARANTINE").unwrap_or_default();

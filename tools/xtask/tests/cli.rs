@@ -313,7 +313,16 @@ fn both_shards_list_quarantine_and_run_using_the_archive() -> std::io::Result<()
     let record = stubs.dir.join("archive-calls");
     for index in 1..=2 {
         std::fs::write(&record, "")?;
-        let out = Command::new(env!("CARGO_BIN_EXE_xtask"))
+        let scratch = stubs.dir.join(format!("disk-{index}"));
+        std::fs::create_dir(&scratch)?;
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_xtask"));
+        cmd.env_remove("YULIUS_BUILD_SCRATCH")
+            .env("YULIUS_CI_CACHE", &scratch);
+        if index == 1 {
+            cmd.env("YULIUS_BUILD_SCRATCH", &scratch)
+                .env("YULIUS_CI_CACHE", stubs.dir.join("unused-cache"));
+        }
+        let out = cmd
             .args(["test", "--archive-file", "test build.tar.zst"])
             .env("CARGO", stubs.dir.join("cargo"))
             .env("PYTHON", stubs.dir.join("python"))
@@ -333,6 +342,20 @@ fn both_shards_list_quarantine_and_run_using_the_archive() -> std::io::Result<()
                 "-E not (test(=flaky_test)) --partition hash:{index}/2"
             )),
             "{calls}"
+        );
+        for call in calls
+            .lines()
+            .filter(|call| call.starts_with("cargo nextest "))
+        {
+            assert!(
+                call.contains(&format!("--extract-to {}/", scratch.display())),
+                "archive extraction would fall back to the job's bounded /tmp: {call}"
+            );
+        }
+        assert_eq!(
+            std::fs::read_dir(&scratch)?.count(),
+            0,
+            "the extracted binaries should be reclaimed"
         );
         assert!(!calls.contains("--workspace --all-features"), "{calls}");
         assert_eq!(
