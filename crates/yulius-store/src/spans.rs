@@ -642,6 +642,7 @@ mod tests {
             cache_write: None,
             turns: Some(1),
             active_ms: Some(active),
+            parts: Vec::new(),
         };
         store
             .put_metrics(&attempt, &task, &metrics(100, 1_000), Timestamp(590))

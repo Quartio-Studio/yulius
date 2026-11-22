@@ -932,7 +932,6 @@ function tokenTiles(tokens) {
     capacityTile('zap', 'API cost (7 days)', cost === null ? '—' : `≈ ${usd(cost)}`, [
       'Recorded runs at standard API prices',
       Number.isFinite(t.ultrafast_cost_usd) ? `≈ ${usd(t.ultrafast_cost_usd)} if eligible Codex runs used Ultrafast` : null,
-      week ? 'Separate Codex subagent sessions excluded' : null,
       day && Number.isFinite(day.cost_usd) ? `last 24 h ≈ ${usd(day.cost_usd)}` : 'last 24 h: —',
       [unpriced && `${unpriced} ${unpriced === 1 ? 'run' : 'runs'} without a model price`,
         unknown && `${unknown} ${unknown === 1 ? 'run' : 'runs'} without usage`].filter(Boolean).join(' · '),

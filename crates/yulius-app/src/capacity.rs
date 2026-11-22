@@ -1358,6 +1358,7 @@ fn token_run(r: crate::model::TokenRunRecord) -> TokenRun {
         output: m.output_tokens,
         cache_read: m.cache_read,
         cache_write: m.cache_write,
+        parts: m.parts,
     }
 }
 
@@ -1459,6 +1460,7 @@ mod tests {
                 output: Some(1_000_000),
                 cache_read: Some(1_000_000),
                 cache_write: Some(1_000_000),
+                parts: Vec::new(),
             };
             let runs = [
                 run("gpt-6.2-astra", -170, -166), // only half in the window

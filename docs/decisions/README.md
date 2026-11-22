@@ -515,7 +515,9 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0452 -->
 - [0453](0453-a-failure-naming-its-own-changed-file-makes-no-test-flaky.md): a pull request's failing test whose kept block names a file that pull request changed (whole, after a `/`, or as a printed relative path of two components or more) is its change's own and is not recorded, so it makes no test flaky; the job's output says so; rejected: moving fixture_hygiene to a script, a never-quarantine list, the test's own file only, a rerun (SPEC-618, #1545)
 <!-- ADR 0453 -->
+- [0454](0454-terminal-output-reaches-only-the-screen-of-the-run-that-printed-it.md) Terminal output, released tails and snapshots reach a task's hub only while it shows the run that printed them.
 <!-- ADR 0454 -->
+- [0455](0455-count-codex-subagents-under-their-sessions-run-by-model.md). A Codex run counts its session's subagents' responses once, in the run whose window holds them, and prices them at the model that answered; amends 0440's one model per run.
 <!-- ADR 0455 -->
 - [0456](0456-the-tunnel-custodian-runs-the-departing-servers-own-image.md): The tunnel custodian runs the departing server's own image.
 <!-- ADR 0456 -->

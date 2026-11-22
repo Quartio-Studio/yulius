@@ -173,6 +173,62 @@ fn walk_rollouts<T>(
     Ok(None)
 }
 
+/// A date folder of a Codex sessions folder, `YYYY/MM/DD`, as numbers.
+pub type RolloutDay = (u32, u32, u32);
+
+/// The date folder a rollout `<sessions>/YYYY/MM/DD/rollout-….jsonl` is in.
+#[must_use]
+pub fn rollout_day(rollout: &Path) -> Option<RolloutDay> {
+    let day = rollout.parent()?;
+    let month = day.parent()?;
+    let year = month.parent()?;
+    let number = |dir: &Path| dir.file_name()?.to_str()?.parse::<u32>().ok();
+    Some((number(year)?, number(month)?, number(day)?))
+}
+
+/// Calls `visit` for every rollout file in the date folders of `sessions_dir` from `first` on
+/// (SPEC-619 CSA-6): earlier years, months and days are not listed. Links are not followed.
+///
+/// # Errors
+/// An error when more than [`MAX_WALK_ENTRIES`] entries would be examined; other I/O errors
+/// except a missing directory.
+pub fn walk_codex_days(
+    sessions_dir: &Path,
+    first: RolloutDay,
+    mut visit: impl FnMut(&fs::DirEntry) -> io::Result<()>,
+) -> io::Result<()> {
+    let number = |entry: &fs::DirEntry| entry.file_name().to_str()?.parse::<u32>().ok();
+    let mut budget = MAX_WALK_ENTRIES;
+    for year in sorted_entries(sessions_dir, &mut budget)? {
+        let Some(y) = number(&year).filter(|y| *y >= first.0) else {
+            continue;
+        };
+        if !is_real_dir(&year)? {
+            continue;
+        }
+        for month in sorted_entries(&year.path(), &mut budget)? {
+            let Some(m) = number(&month).filter(|m| (y, *m) >= (first.0, first.1)) else {
+                continue;
+            };
+            if !is_real_dir(&month)? {
+                continue;
+            }
+            for day in sorted_entries(&month.path(), &mut budget)? {
+                if number(&day).is_none_or(|d| (y, m, d) < first) || !is_real_dir(&day)? {
+                    continue;
+                }
+                for file in sorted_entries(&day.path(), &mut budget)? {
+                    if is_rollout_name(&file.file_name().to_string_lossy()) && is_real_file(&file)?
+                    {
+                        visit(&file)?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn is_rollout_name(name: &str) -> bool {
     name.starts_with("rollout-") && name.ends_with(".jsonl")
 }

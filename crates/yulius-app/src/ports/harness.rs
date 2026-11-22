@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use yulius_domain::harness::Harness;
 use yulius_domain::task::GoalOutcome;
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::{AccountUsage, LimitScope, TokenUsage};
+use yulius_domain::usage::{AccountUsage, LimitScope, ModelTokens, TokenUsage};
 
 use crate::error::AppResult;
 use crate::model::Secret;
@@ -321,6 +321,9 @@ pub struct UsageSnapshot {
     /// Active agent time (ms): the union of the turns' spans, a turn in progress up to the
     /// newest line (MET-001). `None` before the first turn.
     pub active_ms: Option<u64>,
+    /// The parts of `tokens` that another model than `model` answered: a Codex subagent's
+    /// (SPEC-619 CSA-4).
+    pub parts: Vec<ModelTokens>,
 }
 
 /// Which lines of a session transcript a watch reads (SPEC-087 MET-002).

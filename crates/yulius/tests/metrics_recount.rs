@@ -132,6 +132,7 @@ fn stored(db: &Path, attempt: &str) -> Result<(MetricsRecord, i64), Box<dyn std:
                     cache_write: n(4)?,
                     turns: r.get::<_, Option<u32>>(5)?,
                     active_ms: n(6)?,
+                    parts: Vec::new(),
                 },
                 r.get(7)?,
             ))
@@ -188,6 +189,7 @@ async fn old_runs_get_their_transcripts_figures_once() -> TestResult {
             cache_write: Some(300 + 40 + 20 + 10 + 30 + 5 + 5 + 5 + 100),
             turns: Some(3),
             active_ms: Some(220_200),
+            parts: Vec::new(),
         },
         "its own lines and its background agent's, up to the next run's start: 7 answers were 3 \
          turns, and its active time was lost"

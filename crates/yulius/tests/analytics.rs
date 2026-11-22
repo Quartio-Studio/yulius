@@ -219,6 +219,7 @@ async fn seed_cohort(h: &support::Harness) -> TestResult {
         cache_write: None,
         turns: Some(3),
         active_ms: Some(600_000),
+        parts: Vec::new(),
     };
     attempt(
         h,

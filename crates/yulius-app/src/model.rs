@@ -1002,6 +1002,9 @@ pub struct MetricsRecord {
     pub turns: Option<u32>,
     /// Active milliseconds.
     pub active_ms: Option<u64>,
+    /// The parts of the tokens that another model than `model` answered: a Codex subagent's
+    /// (SPEC-619 CSA-4).
+    pub parts: Vec<yulius_domain::usage::ModelTokens>,
 }
 
 /// What recounting a run recorded before SPEC-087 from its transcript did (SPEC-091 RCT-004).

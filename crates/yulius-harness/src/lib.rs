@@ -15,6 +15,7 @@ pub mod claude_config;
 pub mod claude_plugins;
 mod cleanup_permission;
 pub mod codex;
+pub mod codex_children;
 pub mod guard_client;
 pub mod hook_client;
 pub mod launch;

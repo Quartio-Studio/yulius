@@ -696,6 +696,30 @@ impl TaskRuntime {
         written
     }
 
+    /// Runs `write` on the hub only while it shows the screen of `run`, under the lock an
+    /// attach takes to switch the screen to its run: output, snapshots and reattachments of a
+    /// replaced run never reach its replacement's screen (SPEC-614, #1624).
+    pub(crate) fn on_screen_of(&self, run: &AttemptId, write: impl FnOnce(&Hub)) {
+        let shown = self
+            .screen_of
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if shown.as_ref() == Some(run) {
+            write(&self.hub);
+        }
+    }
+
+    /// Makes the hub show `run`'s screen (SPEC-301 LRS-001): `restore` resets it under the lock
+    /// [`Self::on_screen_of`] checks, so nothing of the previous run is drawn after it.
+    fn show_screen_of(&self, run: &AttemptId, restore: impl FnOnce(&Hub)) {
+        let mut shown = self
+            .screen_of
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        restore(&self.hub);
+        *shown = Some(run.clone());
+    }
+
     fn check_codex_input_screen(&self, attempt: &AttemptId) -> AppResult<()> {
         if self.screen_withheld()
             || !self
@@ -1777,6 +1801,7 @@ pub(crate) fn metrics_of(snapshot: UsageSnapshot) -> MetricsRecord {
         cache_write: snapshot.tokens.cache_write,
         turns: u32::try_from(snapshot.turns).ok().filter(|t| *t > 0),
         active_ms: snapshot.active_ms.filter(|ms| *ms > 0),
+        parts: snapshot.parts,
     }
 }
 
@@ -4592,19 +4617,18 @@ impl App {
             .hub
             .controller_size()
             .unwrap_or((welcome.cols, welcome.rows));
-        runtime.hub.restore(
-            welcome.seq,
-            &screen,
-            cols,
-            rows,
-            crate::hub::ScreenUpdate::Host {
-                rendered: welcome.rendered_at((cols, rows)),
-            },
-        );
         // The hub shows this run from now on (SPEC-301 LRS-001).
-        if let Ok(mut shown) = runtime.screen_of.lock() {
-            *shown = Some(attempt.id.clone());
-        }
+        runtime.show_screen_of(&attempt.id, |hub| {
+            hub.restore(
+                welcome.seq,
+                &screen,
+                cols,
+                rows,
+                crate::hub::ScreenUpdate::Host {
+                    rendered: welcome.rendered_at((cols, rows)),
+                },
+            );
+        });
         if (cols, rows) != (welcome.cols, welcome.rows)
             && let Err(err) = self.resize_run(task_id, cols, rows).await
         {
@@ -4620,13 +4644,14 @@ impl App {
             loop {
                 match reader.next().await {
                     Ok(Some(RunEvent::Output { seq, bytes })) => {
-                        app.terminal_output(&scrub, &tid, &sandbox, seq, &bytes)
+                        app.terminal_output(&scrub, (&tid, &aid), &sandbox, seq, &bytes)
                             .await;
                     }
                     Ok(Some(RunEvent::Snapshot { seq, bytes })) => {
                         let (cols, rows) = app.runtime(&tid).hub.size();
                         let screen = app.terminal_snapshot(&scrub, &sandbox, &bytes).await;
-                        app.runtime(&tid).hub.reset(seq, &screen, cols, rows);
+                        app.runtime(&tid)
+                            .on_screen_of(&aid, |hub| hub.reset(seq, &screen, cols, rows));
                     }
                     Ok(Some(RunEvent::Exit(exit))) => {
                         crate::race::reached(
@@ -4678,15 +4703,17 @@ impl App {
                                         codex_submit_hold,
                                         writer: again.writer,
                                     });
-                                    rt.hub.restore(
-                                        again.welcome.seq,
-                                        &screen,
-                                        again.welcome.cols,
-                                        again.welcome.rows,
-                                        crate::hub::ScreenUpdate::Host {
-                                            rendered: again.welcome.rendered,
-                                        },
-                                    );
+                                    rt.on_screen_of(&aid, |hub| {
+                                        hub.restore(
+                                            again.welcome.seq,
+                                            &screen,
+                                            again.welcome.cols,
+                                            again.welcome.rows,
+                                            crate::hub::ScreenUpdate::Host {
+                                                rendered: again.welcome.rendered,
+                                            },
+                                        );
+                                    });
                                     reader = again.reader;
                                     continue;
                                 }
@@ -9373,6 +9400,32 @@ mod tests {
         assert!(runtime.park_committed());
         runtime.retain_park_for_attached_run(&replacement);
         assert!(!runtime.park_committed());
+        Ok(())
+    }
+
+    /// SPEC-614 TRO-001, TRO-003: the hub takes a run's writes only while it shows that run, and
+    /// an attach resets the hub while it holds the lock those writes check.
+    #[test]
+    fn the_hub_takes_writes_only_of_the_run_it_shows() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = super::TaskRuntime::new();
+        let old = super::AttemptId::parse("old-run")?;
+        let new = super::AttemptId::parse("new-run")?;
+        let wrote = |run: &super::AttemptId| {
+            let mut wrote = false;
+            runtime.on_screen_of(run, |_| wrote = true);
+            wrote
+        };
+        assert!(!wrote(&old), "no run's screen is shown yet");
+        runtime.show_screen_of(&old, |hub| hub.output(1, b"old"));
+        assert!(wrote(&old));
+        assert!(!wrote(&new));
+        let mut locked = false;
+        runtime.show_screen_of(&new, |_| {
+            locked = runtime.screen_of.try_lock().is_err();
+        });
+        assert!(locked, "the reset runs under the lock the writes check");
+        assert!(!wrote(&old), "the replaced run writes nothing");
+        assert!(wrote(&new));
         Ok(())
     }
 

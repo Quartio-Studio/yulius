@@ -63,19 +63,26 @@ pub fn observe_line(line: &str) -> Vec<Observed> {
             model: owned_str(payload, "model"),
         }],
         "response_item" => observe_item(payload, at),
-        "token_usage_record" => match (owned_str(payload, "response_id"), obj_of(payload, "usage"))
-        {
-            // The response's key: a line read twice, or one a resumed run reads again, counts once.
-            (Some(response), Some(usage)) => vec![Observed::AssistantMessage {
-                message_id: format!("codex-{response}"),
-                model: None,
-                usage: token_usage(usage),
-            }],
-            _ => vec![Observed::Malformed],
-        },
+        "token_usage_record" => vec![response_usage(payload, None).unwrap_or(Observed::Malformed)],
         "compacted" => vec![Observed::Compacted],
         _ => observe_event(payload, at),
     }
+}
+
+/// The response a `token_usage_record` payload counts, answered by `model`; `None` without a
+/// response id or usage. The response id is its key: a line read twice, one a resumed run reads
+/// again or one a subagent's rollout repeats counts once.
+pub(crate) fn response_usage(
+    payload: &Map<String, Value>,
+    model: Option<String>,
+) -> Option<Observed> {
+    let response = str_of(payload, "response_id")?;
+    let usage = obj_of(payload, "usage")?;
+    Some(Observed::AssistantMessage {
+        message_id: format!("codex-{response}"),
+        model,
+        usage: token_usage(usage),
+    })
 }
 
 /// When the session of a rollout started, from its first line (`session_meta`): the payload's

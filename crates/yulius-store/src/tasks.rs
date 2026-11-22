@@ -14,6 +14,7 @@ use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AccountId, AttemptId, SandboxId, TaskId, UserId};
 use yulius_domain::task::{Activity, AttemptState, TaskStatus};
 use yulius_domain::time::Timestamp;
+use yulius_domain::usage::{ModelTokens, TokenUsage};
 
 use crate::{SqliteStore, bad_column, db, to_i64, to_u32, to_u64};
 
@@ -218,21 +219,75 @@ pub(crate) fn metrics_from_row(row: &Row<'_>) -> rusqlite::Result<MetricsRecord>
         cache_write: opt_u64(row.get("cache_write")?),
         turns: row.get::<_, Option<i64>>("turns")?.map(to_u32),
         active_ms: opt_u64(row.get("active_ms")?),
+        parts: parts_from_json(row.get("model_parts")?)?,
     })
+}
+
+/// The `model_parts` column (SPEC-619 CSA-4): `NULL` for none.
+pub(crate) fn parts_json(parts: &[ModelTokens]) -> Option<String> {
+    parts_value(parts).map(|parts| parts.to_string())
+}
+
+fn parts_value(parts: &[ModelTokens]) -> Option<serde_json::Value> {
+    (!parts.is_empty()).then(|| {
+        serde_json::Value::Array(
+            parts
+                .iter()
+                .map(|part| {
+                    serde_json::json!({
+                        "model": part.model,
+                        "input_tokens": part.usage.input,
+                        "output_tokens": part.usage.output,
+                        "cache_read": part.usage.cache_read,
+                        "cache_write": part.usage.cache_write,
+                    })
+                })
+                .collect(),
+        )
+    })
+}
+
+fn parts_from_json(text: Option<String>) -> rusqlite::Result<Vec<ModelTokens>> {
+    let Some(text) = text else {
+        return Ok(Vec::new());
+    };
+    let bad = || bad_column("model_parts", &text);
+    let serde_json::Value::Array(items) = serde_json::from_str(&text).map_err(|_| bad())? else {
+        return Err(bad());
+    };
+    items
+        .iter()
+        .map(|item| {
+            let tokens = |key: &str| item.get(key).and_then(serde_json::Value::as_u64);
+            Ok(ModelTokens {
+                model: item
+                    .get("model")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(bad)?
+                    .to_owned(),
+                usage: TokenUsage {
+                    input: tokens("input_tokens"),
+                    output: tokens("output_tokens"),
+                    cache_read: tokens("cache_read"),
+                    cache_write: tokens("cache_write"),
+                },
+            })
+        })
+        .collect()
 }
 
 /// An attempt's stored figures as JSON, `None` without a row (SPEC-091 RCT-004).
 fn stored_metrics_json(c: &rusqlite::Connection, attempt: &str) -> AppResult<Option<String>> {
     let row = c
         .query_row(
-            "SELECT model, input_tokens, output_tokens, cache_read, cache_write, turns, active_ms FROM metrics WHERE attempt_id = ?1",
+            "SELECT model, input_tokens, output_tokens, cache_read, cache_write, turns, active_ms, model_parts FROM metrics WHERE attempt_id = ?1",
             [attempt],
             metrics_from_row,
         )
         .optional()
         .map_err(db)?;
     Ok(row.map(|m| {
-        serde_json::json!({
+        let mut figures = serde_json::json!({
             "model": m.model,
             "input_tokens": m.input_tokens,
             "output_tokens": m.output_tokens,
@@ -240,8 +295,11 @@ fn stored_metrics_json(c: &rusqlite::Connection, attempt: &str) -> AppResult<Opt
             "cache_write": m.cache_write,
             "turns": m.turns,
             "active_ms": m.active_ms,
-        })
-        .to_string()
+        });
+        if let Some(parts) = parts_value(&m.parts) {
+            figures["model_parts"] = parts;
+        }
+        figures.to_string()
     }))
 }
 
@@ -1581,10 +1639,11 @@ impl TaskStore for SqliteStore {
         );
         self.call(move |c| {
             c.execute(
-                "INSERT INTO metrics (attempt_id, task_id, model, input_tokens, output_tokens, cache_read, cache_write, turns, active_ms, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) ON CONFLICT(attempt_id) DO UPDATE SET model = excluded.model, \
+                "INSERT INTO metrics (attempt_id, task_id, model, input_tokens, output_tokens, cache_read, cache_write, turns, active_ms, updated_at, model_parts) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) ON CONFLICT(attempt_id) DO UPDATE SET model = excluded.model, \
                  input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens, cache_read = excluded.cache_read, \
-                 cache_write = excluded.cache_write, turns = excluded.turns, active_ms = excluded.active_ms, updated_at = excluded.updated_at",
+                 cache_write = excluded.cache_write, turns = excluded.turns, active_ms = excluded.active_ms, updated_at = excluded.updated_at, \
+                 model_parts = excluded.model_parts",
                 params![
                     a,
                     t,
@@ -1595,7 +1654,8 @@ impl TaskStore for SqliteStore {
                     m.cache_write.map(to_i64),
                     m.turns.map(i64::from),
                     m.active_ms.map(to_i64),
-                    at.0
+                    at.0,
+                    parts_json(&m.parts)
                 ],
             )
             .map_err(db)?;
@@ -1608,7 +1668,7 @@ impl TaskStore for SqliteStore {
         let t = task.as_str().to_owned();
         self.call(move |c| {
             let mut stmt = c
-                .prepare("SELECT model, input_tokens, output_tokens, cache_read, cache_write, turns, active_ms FROM metrics WHERE task_id = ?1")
+                .prepare("SELECT model, input_tokens, output_tokens, cache_read, cache_write, turns, active_ms, model_parts FROM metrics WHERE task_id = ?1")
                 .map_err(db)?;
             let rows = stmt.query_map([t], metrics_from_row).map_err(db)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(db)
@@ -1754,10 +1814,11 @@ impl TaskStore for SqliteStore {
             };
             if let Some(m) = m {
                 tx.execute(
-                    "INSERT INTO metrics (attempt_id, task_id, model, input_tokens, output_tokens, cache_read, cache_write, turns, active_ms, updated_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) ON CONFLICT(attempt_id) DO UPDATE SET model = COALESCE(excluded.model, metrics.model), \
+                    "INSERT INTO metrics (attempt_id, task_id, model, input_tokens, output_tokens, cache_read, cache_write, turns, active_ms, updated_at, model_parts) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) ON CONFLICT(attempt_id) DO UPDATE SET model = COALESCE(excluded.model, metrics.model), \
                      input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens, cache_read = excluded.cache_read, \
-                     cache_write = excluded.cache_write, turns = excluded.turns, active_ms = excluded.active_ms, updated_at = excluded.updated_at",
+                     cache_write = excluded.cache_write, turns = excluded.turns, active_ms = excluded.active_ms, updated_at = excluded.updated_at, \
+                     model_parts = excluded.model_parts",
                     params![
                         a,
                         task,
@@ -1768,7 +1829,8 @@ impl TaskStore for SqliteStore {
                         m.cache_write.map(to_i64),
                         m.turns.map(i64::from),
                         m.active_ms.map(to_i64),
-                        at.0
+                        at.0,
+                        parts_json(&m.parts)
                     ],
                 )
                 .map_err(db)?;
