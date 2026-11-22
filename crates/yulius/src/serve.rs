@@ -777,12 +777,7 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     let result = drain_with_handoff(
         http,
         shutdown,
-        crate::wiring::tunnel_handoff::deposit(
-            &egress,
-            &handoff_directory,
-            &app.config.yulius_exe,
-            outbound_relays,
-        ),
+        crate::wiring::tunnel_handoff::deposit(&egress, &handoff_directory, outbound_relays),
     )
     .await;
     #[cfg(not(target_os = "linux"))]
