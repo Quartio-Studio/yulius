@@ -65,7 +65,9 @@ much chaos"). Task #609.
   task), every text an agent or person wrote that could carry what those reached is withheld from
   `tasks_list`, `task_get`, `session_read` and `sessions_search`: the request, step titles and
   notes, the current step, wait history, the waiting texts (`needs_you`, `needs_you_notice`,
-  `attention`, `held_prompt`, `wait_reason`), claim notes, the screen and the transcript. The
+  `attention`, `held_prompt`, `wait_reason`), claim notes, the screen and the transcript; claim
+  notes and the current step also from `scopes_list`, `scope_claim`'s overlaps and
+  `task_create`'s planned overlaps. The
   answer says `withheld` and why. Its number, title, status, `shows`, branch, spec path, step
   counts, owner, PR and stage, claim patterns and `waits_for` stay.
 - **PSV-005** No write path: the read view adds no tool and no argument that messages, starts,
@@ -89,7 +91,7 @@ much chaos"). Task #609.
 | `owner` (login) | always | Shown on every task row; a GitHub login, no email. |
 | `delivery`: stage, PR number, merge armed | always | The pull request is public to the repository's readers; the stage is Yulius's own label. |
 | `claims`: patterns | always | Repository paths, already in `scopes_list`. |
-| `claims`: notes | unless PSV-004 | Agent text. |
+| `claims`: notes (also in `scopes_list`, `scope_claim` and `task_create` overlaps, with `their_step`) | unless PSV-004 | Agent text. |
 | `waits_for` | always | Yulius's own fixed sentences; they carry no agent or person text. |
 | `screen` (20 lines) | unless PSV-004 | What the task page's terminal shows members, redacted of agent secrets; withheld when personal tools could have printed personal data. |
 | transcript (`session_read`, `sessions_search`) | unless PSV-004 | Readable by members today, redacted of agent secrets; never part of `task_get`. |
