@@ -32,7 +32,7 @@ use yulius_domain::ids::SandboxId;
 
 use crate::encoder::FfmpegStart;
 use crate::error::BrowserError;
-use crate::process::{StopTimeouts, Supervised, passed_env};
+use crate::process::{NotReaped, StopTimeouts, Supervised, passed_env};
 use crate::video::{VideoHub, VideoSubscription, VideoUnavailable};
 use crate::xserver::{self, XController, XSendError};
 
@@ -370,17 +370,214 @@ pub fn stop_orphaned_displays(runtime_root: &Path) -> usize {
     stopped
 }
 
+/// A display start that failed ([`VirtualDisplay::start`]): why, and the X server it started
+/// when that could not be stopped either (SPEC-616).
+#[derive(Debug)]
+pub(crate) struct DisplayStartFailure {
+    /// What the caller reports.
+    pub(crate) error: BrowserError,
+    /// The X server that survived its stop, still owned: the caller stops it again before the
+    /// sandbox gets another display.
+    pub(crate) stranded: Option<Box<StrandedXvfb>>,
+}
+
+impl From<BrowserError> for DisplayStartFailure {
+    fn from(error: BrowserError) -> Self {
+        Self {
+            error,
+            stranded: None,
+        }
+    }
+}
+
+impl std::fmt::Display for DisplayStartFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
+impl std::error::Error for DisplayStartFailure {}
+
+/// An Xvfb whose display failed to start and that then survived SIGKILL (SPEC-616 XS-001): its
+/// process handle, cookie and runtime directory are kept until a later stop reaps it.
+#[derive(Debug)]
+pub(crate) struct StrandedXvfb {
+    process: Supervised,
+    number: u32,
+    dir: PathBuf,
+    xauthority: PathBuf,
+    /// Why the display did not start.
+    cause: String,
+}
+
+impl StrandedXvfb {
+    fn error(&self) -> BrowserError {
+        BrowserError::DisplayNotStopped {
+            display: format!(":{}", self.number),
+            pid: self.process.pid(),
+            cause: self.cause.clone(),
+        }
+    }
+
+    /// Stops the X server again; once it is reaped, removes its cookie and runtime directory.
+    ///
+    /// # Errors
+    /// [`BrowserError::DisplayNotStopped`] while the server survives SIGKILL.
+    pub(crate) async fn stop(&self, timeouts: StopTimeouts) -> Result<(), BrowserError> {
+        let timeouts = StopTimeouts {
+            graceful: Duration::ZERO,
+            ..timeouts
+        };
+        stop_xvfb(&self.process, &self.dir, timeouts)
+            .await
+            .map_err(|NotReaped| self.error())?;
+        let _ = std::fs::remove_file(&self.xauthority);
+        let _ = std::fs::remove_dir(&self.dir);
+        info!(display = self.number, "stranded virtual display stopped");
+        Ok(())
+    }
+}
+
+/// Stops a display's X server (the one place a test can make it survive, [`stop_faults`]).
+async fn stop_xvfb(
+    process: &Supervised,
+    dir: &Path,
+    timeouts: StopTimeouts,
+) -> Result<(), NotReaped> {
+    #[cfg(test)]
+    if stop_faults::held(dir) {
+        return Err(NotReaped);
+    }
+    #[cfg(not(test))]
+    let _ = dir;
+    process.terminate(timeouts).await.map(|_| ())
+}
+
+/// Stops the X server of a display that failed to start with `error` and removes its cookie;
+/// keeps the server, cookie and directory when it survives (SPEC-616 XS-001, XS-004).
+async fn abandon(
+    process: Supervised,
+    number: u32,
+    dir: &Path,
+    xauthority: &Path,
+    error: BrowserError,
+) -> DisplayStartFailure {
+    if stop_xvfb(&process, dir, quick_stop()).await.is_ok() {
+        let _ = std::fs::remove_file(xauthority);
+        return error.into();
+    }
+    let stranded = Box::new(StrandedXvfb {
+        process,
+        number,
+        dir: dir.to_owned(),
+        xauthority: xauthority.to_owned(),
+        cause: error.to_string(),
+    });
+    let error = stranded.error();
+    warn!(%error, "a virtual display that failed to start could not be stopped");
+    DisplayStartFailure {
+        error,
+        stranded: Some(stranded),
+    }
+}
+
+/// Test-only fault injection: a display's X server that survives SIGKILL (a process in
+/// uninterruptible sleep), which an unprivileged test cannot produce. While a display's runtime
+/// directory is held, [`stop_xvfb`] reports its server not reaped and sends no signal, so the
+/// server really keeps running.
+#[cfg(test)]
+pub(crate) mod stop_faults {
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    static HELD: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+    fn held_dirs() -> std::sync::MutexGuard<'static, Vec<PathBuf>> {
+        HELD.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Makes the stops of the display in `dir` fail.
+    pub(crate) fn hold(dir: &Path) {
+        held_dirs().push(dir.to_owned());
+    }
+
+    /// Lets them succeed again.
+    pub(crate) fn release(dir: &Path) {
+        held_dirs().retain(|held| held != dir);
+    }
+
+    pub(super) fn held(dir: &Path) -> bool {
+        held_dirs().iter().any(|held| held == dir)
+    }
+
+    /// An `Xvfb` stand-in that records each start's pid in `starts` and acts as the `mode`
+    /// file says: `silent` never accepts connections, `no-xtest` runs the real Xvfb without
+    /// XTEST (the X controller's setup fails), `real` runs the real Xvfb.
+    pub(crate) struct FakeXvfb {
+        pub(crate) program: PathBuf,
+        dir: PathBuf,
+    }
+
+    impl FakeXvfb {
+        /// Writes the script into `dir`, starting in `mode`; `real` is the real Xvfb, if any.
+        pub(crate) fn new(dir: &Path, real: Option<&Path>, mode: &str) -> std::io::Result<Self> {
+            use std::os::unix::fs::PermissionsExt as _;
+            let real = real.map_or_else(|| "/nonexistent/Xvfb".into(), |p| p.display().to_string());
+            let dir = dir.to_owned();
+            let program = dir.join("Xvfb");
+            let script = format!(
+                "#!/bin/sh\necho $$ >> '{d}/starts'\ncase \"$(cat '{d}/mode')\" in\n  silent) exec /bin/sleep 600 ;;\n  no-xtest) exec '{real}' \"$@\" -tst ;;\n  *) exec '{real}' \"$@\" ;;\nesac\n",
+                d = dir.display()
+            );
+            std::fs::write(&program, script)?;
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))?;
+            let fake = Self { program, dir };
+            fake.set_mode(mode)?;
+            Ok(fake)
+        }
+
+        pub(crate) fn set_mode(&self, mode: &str) -> std::io::Result<()> {
+            std::fs::write(self.dir.join("mode"), mode)
+        }
+
+        /// The pids of the servers started so far.
+        pub(crate) fn starts(&self) -> Vec<i32> {
+            std::fs::read_to_string(self.dir.join("starts"))
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| line.trim().parse().ok())
+                .collect()
+        }
+    }
+
+    /// Display numbers of their own for one test (`slot` tells a process's tests apart): above
+    /// the default `:100..:199` other tests use, and per process, so that no other X server
+    /// starts on them meanwhile and every start of the test is its own.
+    pub(crate) fn private_displays(config: &mut super::DisplayConfig, slot: u32) {
+        config.first_display = 1000 + (std::process::id() % 4000) * 8 + slot * 4;
+        config.display_count = 4;
+    }
+
+    /// Whether `pid` is a live process (a zombie counts until reaped).
+    pub(crate) fn running(pid: i32) -> bool {
+        super::process_alive(pid)
+    }
+}
+
 impl VirtualDisplay {
     /// Starts a display for `sandbox` sized for `css` (CSS pixels).
     ///
     /// # Errors
     /// [`BrowserError::Display`] when Xvfb is missing, no display number is free, the server
-    /// does not come up or lacks XTest. A failed start leaves no process behind.
+    /// does not come up or lacks XTest. A failed start leaves no process behind, except an X
+    /// server that survived its stop: that one is returned in the failure, with
+    /// [`BrowserError::DisplayNotStopped`], for the caller to stop again (SPEC-616).
     pub(crate) async fn start(
         mode: &DisplayMode,
         sandbox: &SandboxId,
         css: (u32, u32),
-    ) -> Result<Option<Self>, BrowserError> {
+    ) -> Result<Option<Self>, DisplayStartFailure> {
         match mode {
             DisplayMode::Headless => Ok(None),
             DisplayMode::Virtual(config) => Self::start_xvfb(config, sandbox, css).await.map(Some),
@@ -408,7 +605,7 @@ impl VirtualDisplay {
         config: &DisplayConfig,
         sandbox: &SandboxId,
         css: (u32, u32),
-    ) -> Result<Self, BrowserError> {
+    ) -> Result<Self, DisplayStartFailure> {
         use rand::RngExt as _;
         let xvfb = crate::discovery::resolve_executable(&config.xvfb)
             .map_err(|_| display_error(format!("{} not found", config.xvfb.display())))?;
@@ -456,9 +653,8 @@ impl VirtualDisplay {
                     let x = match started {
                         Ok(x) => x,
                         Err(problem) => {
-                            let _ = process.terminate(quick_stop()).await;
-                            let _ = std::fs::remove_file(&xauthority);
-                            return Err(display_error(problem));
+                            let error = display_error(problem);
+                            return Err(abandon(process, number, &dir, &xauthority, error).await);
                         }
                     };
                     info!(sandbox = %sandbox, display = number, pid = process.pid(), "virtual display started");
@@ -479,21 +675,21 @@ impl VirtualDisplay {
                     });
                 }
                 Ready::Taken => {
+                    // The server already exited and was reaped (that is how a taken number
+                    // shows): this stop only clears its process group and cannot fail.
                     let _ = process.terminate(quick_stop()).await;
                 }
                 Ready::Failed(error) => {
-                    let _ = process.terminate(quick_stop()).await;
-                    let _ = std::fs::remove_file(&xauthority);
-                    return Err(error);
+                    return Err(abandon(process, number, &dir, &xauthority, error).await);
                 }
             }
         }
         let _ = std::fs::remove_file(&xauthority);
-        Err(display_error(format!(
+        Err(DisplayStartFailure::from(display_error(format!(
             "no free display number in :{}..:{}",
             config.first_display,
             last.saturating_sub(1)
-        )))
+        ))))
     }
 
     /// The display name, e.g. `:101` (`fake` for the test double).
@@ -888,6 +1084,103 @@ mod tests {
             stop_orphaned_displays(Path::new("/nonexistent/yulius-displays")),
             0
         );
+    }
+
+    /// SPEC-616 XS-001, XS-004, XS-005 (#1519): a display whose start fails, once in readiness
+    /// and once in the X controller's setup, keeps the Xvfb it could not stop, with its cookie,
+    /// and reports the failed stop; once a stop succeeds the cookie goes and a new start works.
+    #[tokio::test]
+    async fn a_failed_display_start_keeps_the_xvfb_it_could_not_stop()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let real = crate::resolve_executable(Path::new("Xvfb")).ok();
+        if real.is_none() {
+            eprintln!("Xvfb unavailable; only the readiness failure is checked");
+        }
+        let modes: &[(&str, &str)] = if real.is_some() {
+            &[
+                ("silent", "did not accept connections"),
+                ("no-xtest", "XTEST"),
+            ]
+        } else {
+            &[("silent", "did not accept connections")]
+        };
+        let quick = StopTimeouts {
+            graceful: Duration::ZERO,
+            term: Duration::from_secs(2),
+            kill: Duration::from_secs(5),
+        };
+        for &(mode, cause) in modes {
+            let root = tempfile::tempdir()?;
+            let fake = stop_faults::FakeXvfb::new(root.path(), real.as_deref(), mode)?;
+            let sandbox = SandboxId::parse("stranded-display")?;
+            let mut config = DisplayConfig::new(root.path().join("displays"));
+            stop_faults::private_displays(&mut config, 0);
+            config.xvfb = fake.program.clone();
+            config.max_size = (320, 240);
+            let real_start = DisplayMode::Virtual(config.clone());
+            if mode == "silent" {
+                config.startup_timeout = Duration::from_millis(300);
+            }
+            let mode_config = DisplayMode::Virtual(config);
+            let dir = root.path().join("displays").join(sandbox.as_str());
+            let cookie = dir.join(XAUTHORITY_FILE);
+
+            // Without a fault, a failed start leaves nothing behind.
+            let failure = VirtualDisplay::start(&mode_config, &sandbox, (320, 240))
+                .await
+                .err()
+                .ok_or("the display started")?;
+            assert!(failure.stranded.is_none(), "{mode}: {failure}");
+            assert!(
+                failure.error.to_string().contains(cause),
+                "{mode}: {failure}"
+            );
+            assert!(
+                !fake.starts().into_iter().any(stop_faults::running),
+                "{mode}"
+            );
+            assert!(!cookie.exists(), "{mode}");
+
+            stop_faults::hold(&dir);
+            let failure = VirtualDisplay::start(&mode_config, &sandbox, (320, 240))
+                .await
+                .err()
+                .ok_or("the display started")?;
+            let pid = *fake.starts().last().ok_or("no Xvfb started")?;
+            let reported = |error: &BrowserError| {
+                matches!(error, BrowserError::DisplayNotStopped { pid: p, cause: c, .. }
+                    if i32::try_from(*p) == Ok(pid) && c.contains(cause))
+            };
+            assert!(reported(&failure.error), "{mode}: {:?}", failure.error);
+            assert_eq!(
+                failure.error.viewer_code(),
+                yulius_contracts::browser::ViewerErrorCode::Internal
+            );
+            let stranded = failure.stranded.ok_or("the Xvfb was let go")?;
+            assert!(
+                stop_faults::running(pid),
+                "{mode}: the Xvfb is still running"
+            );
+            assert!(cookie.exists(), "{mode}: its cookie is kept while it runs");
+            let again = stranded.stop(quick).await;
+            assert!(again.as_ref().is_err_and(reported), "{mode}: {again:?}");
+            assert!(stop_faults::running(pid) && cookie.exists(), "{mode}");
+
+            stop_faults::release(&dir);
+            stranded.stop(quick).await?;
+            assert!(!stop_faults::running(pid), "{mode}: stopped once it may");
+            assert!(!cookie.exists(), "{mode}: its cookie goes with it");
+            assert!(!dir.exists(), "{mode}: and its runtime directory");
+            if real.is_some() {
+                fake.set_mode("real")?;
+                let display = VirtualDisplay::start(&real_start, &sandbox, (320, 240))
+                    .await?
+                    .ok_or("no display")?;
+                assert!(display.is_alive(), "{mode}");
+                display.stop(quick).await?;
+            }
+        }
+        Ok(())
     }
 
     #[test]

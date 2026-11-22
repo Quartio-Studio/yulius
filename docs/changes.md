@@ -7,6 +7,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-22
 
 - A merge the ordinary queue already decided is not armed again after a restart when removing its saved entry failed. A later re-arm of the same head keeps its place, and an unreadable verdict keeps the saved arm until it can be reconciled. [SPEC-615](../.ai/specs/SPEC-615-a-consumed-merge-arm-stays-consumed-acro.md)
+- A sandbox display that fails to start keeps its Xvfb when stopping it fails too. The browser stops it again before the sandbox gets another X server, and reports the failed stop. [SPEC-616](../.ai/specs/SPEC-616-keep-ownership-of-xvfb-when-display-star.md)
 - A pull request's failing test that names a file the pull request changed no longer counts towards a flaky-test quarantine, so a content check such as fixture_hygiene keeps failing only the pull request that breaks it. [ADR-0453](decisions/0453-a-failure-naming-its-own-changed-file-makes-no-test-flaky.md), [SPEC-618](../.ai/specs/SPEC-618-make-the-quarantined-fixture-hygiene-tes.md)
 - A live task keeps its session slot while its open PR has an unresolved integration failure. The PR watcher verifies when the slot can be released. [SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md)
 - CI shards unpack their test binaries on disk, and bootstrap uses disk for cold builds of pinned tools. [CI build storage](decisions/0438-quality-passes-have-own-jobs-and-test-partitions-share-a-build.md)
