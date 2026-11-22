@@ -48,3 +48,12 @@ Both reproductions run in `crates/yulius/tests/parking/replaced_output.rs` with 
 - Bind output to the producing attempt with the existing `screen_of` record rather than a new run token in the hub. `screen_of` is already the supervisor's record of whose screen the hub shows, used to save a run's final screen and to check the Codex input screen, so one record answers all three. The hub stays agnostic of runs. [ADR-0454](../../docs/decisions/0454-terminal-output-reaches-only-the-screen-of-the-run-that-printed-it.md)
 - Hold `screen_of` while writing the hub (lock order `screen_of` → hub screen). `Hub` methods never call out while holding their lock, so no path takes the two in the other order.
 - The reattach path still replaces the task's active writer with the old run's if the old run's host answers a reattach after a replacement attached. That is input, not output, and is outside this change; it is reported separately if reproduced.
+
+## Evidence
+
+- On `ac74e686c` (reproductions, no fix), `scripts/cargo test -p yulius --test main parking::replaced_output` failed both tests deterministically. The held chunk test showed `Old run chunk held in transit` below the replacement's `Text for the second run only` on the hub screen; the tail test showed `tail_value` there.
+- With the fix (`ddd33c675`), both tests passed, including the replacement's later output reaching the screen and a viewer, and the parked screen staying until the replacement attached.
+- `scripts/cargo test -p yulius-app --lib --features test-support`: 700 passed.
+- `scripts/cargo test -p yulius --test main -- parking:: supervision:: secrets_redaction:: first_message:: shells task_message:: live_ui_terminal::`: 318 passed, 4 ignored.
+- `scripts/cargo clippy -p yulius-app -p yulius --all-targets --all-features -- -D warnings` and `scripts/dev quick` passed.
+- Security scan: Vidoc is turned off for this project in Yulius (disabled, not passed).
