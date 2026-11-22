@@ -43,11 +43,9 @@ fn rules_column(row: &Row<'_>) -> rusqlite::Result<Vec<SecretRule>> {
     let stored: Vec<serde_json::Value> = serde_json::from_str(&text).map_err(|_| bad())?;
     let mut pairs: Vec<(Vec<String>, String)> = Vec::with_capacity(stored.len());
     for rule in &stored {
-        let methods: Option<Vec<String>> = rule["methods"].as_array().and_then(|list| {
-            list.iter()
-                .map(|m| m.as_str().map(str::to_owned))
-                .collect()
-        });
+        let methods: Option<Vec<String>> = rule["methods"]
+            .as_array()
+            .and_then(|list| list.iter().map(|m| m.as_str().map(str::to_owned)).collect());
         match (methods, rule["path"].as_str()) {
             (Some(methods), Some(path)) => pairs.push((methods, path.to_owned())),
             _ => return Err(bad()),

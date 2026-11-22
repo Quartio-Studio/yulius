@@ -14,8 +14,11 @@ const MAX_METHOD_BYTES: usize = 32;
 
 /// Headers some servers take over the request's method, so a `GET` rule would let a `DELETE`
 /// through: a request that uses a secret with rules may not carry them (MPR-004).
-pub const METHOD_OVERRIDE_HEADERS: &[&str] =
-    &["x-http-method-override", "x-http-method", "x-method-override"];
+pub const METHOD_OVERRIDE_HEADERS: &[&str] = &[
+    "x-http-method-override",
+    "x-http-method",
+    "x-method-override",
+];
 
 /// One allow rule: a request whose method is one of `methods` and whose path matches `path`
 /// (`*` matching any run of characters, `/` included).
@@ -56,7 +59,9 @@ impl SecretRule {
             )));
         }
         let path = path.trim();
-        let printable = path.bytes().all(|b| b.is_ascii_graphic() && b != b'?' && b != b'#');
+        let printable = path
+            .bytes()
+            .all(|b| b.is_ascii_graphic() && b != b'?' && b != b'#');
         if !path.starts_with('/')
             || path.len() > MAX_PATTERN_BYTES
             || !printable
@@ -159,8 +164,7 @@ fn glob(pattern: &str, text: &str) -> bool {
         [first, .., last] => (*first, *last),
         [] => return text.is_empty(),
     };
-    if text.len() < first.len() + last.len() || !text.starts_with(first) || !text.ends_with(last)
-    {
+    if text.len() < first.len() + last.len() || !text.starts_with(first) || !text.ends_with(last) {
         return false;
     }
     let mut rest = &text[first.len()..text.len() - last.len()];
@@ -190,16 +194,28 @@ mod tests {
         assert!(read.matches("GET", "/repos/acme/app/issues"));
         assert!(read.matches("HEAD", "/repos/"));
         assert!(!read.matches("POST", "/repos/acme/app/issues"));
-        assert!(!read.matches("get", "/repos/acme"), "methods are compared as sent");
-        assert!(!read.matches("GET", "/repos"), "the slash is part of the pattern");
-        assert!(!read.matches("GET", "/user/repos/x"), "a pattern matches the whole path");
+        assert!(
+            !read.matches("get", "/repos/acme"),
+            "methods are compared as sent"
+        );
+        assert!(
+            !read.matches("GET", "/repos"),
+            "the slash is part of the pattern"
+        );
+        assert!(
+            !read.matches("GET", "/user/repos/x"),
+            "a pattern matches the whole path"
+        );
         assert!(!read.matches("GET", "/Repos/x"), "case-sensitive");
 
         let middle = rule(&["POST"], "/v1/*/messages/*.json")?;
         assert!(middle.matches("POST", "/v1/a/b/messages/c/d.json"));
         assert!(middle.matches("POST", "/v1//messages/.json"));
         assert!(!middle.matches("POST", "/v1/a/messages/c.jsonx"));
-        assert!(!middle.matches("POST", "/v1/messages/c.json"), "both literal slashes needed");
+        assert!(
+            !middle.matches("POST", "/v1/messages/c.json"),
+            "both literal slashes needed"
+        );
 
         let exact = rule(&["GET"], "/user")?;
         assert!(exact.matches("GET", "/user"));
@@ -275,7 +291,12 @@ mod tests {
         ] {
             assert!(unsafe_path(bad).is_some(), "{bad}");
         }
-        for fine in ["/v1/a.b/c", "/api/v4/projects/group%2Fproject", "/v1/./x", "/"] {
+        for fine in [
+            "/v1/a.b/c",
+            "/api/v4/projects/group%2Fproject",
+            "/v1/./x",
+            "/",
+        ] {
             assert!(unsafe_path(fine).is_none(), "{fine}");
         }
     }

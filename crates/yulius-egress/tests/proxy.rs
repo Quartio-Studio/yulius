@@ -438,9 +438,15 @@ async fn the_policy_sees_each_requests_method() -> TestResult {
             "DELETE /v1/items/7 is outside the rules",
             "{scheme}"
         );
-        assert!(setup.seen.lock().map_err(|_| "lock")?.is_empty(), "{scheme}");
+        assert!(
+            setup.seen.lock().map_err(|_| "lock")?.is_empty(),
+            "{scheme}"
+        );
     }
-    let allowed = client.get(format!("https://{BOUND}/v1/items/7")).send().await?;
+    let allowed = client
+        .get(format!("https://{BOUND}/v1/items/7"))
+        .send()
+        .await?;
     assert_eq!(allowed.status(), 200);
     let seen = setup.seen.lock().map_err(|_| "lock")?.clone();
     assert_eq!(seen.len(), 1);

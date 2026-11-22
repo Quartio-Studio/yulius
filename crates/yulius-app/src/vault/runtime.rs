@@ -889,6 +889,7 @@ impl App {
                     "scope": scope,
                     "hosts": r.hosts,
                     "requested_hosts": r.requested_hosts,
+                    "rules": super::agents::rule_views(&r.rules),
                     "adds": injection_of(r).describe(),
                     "placeholder": format!("{PLACEHOLDER_PREFIX}{}", r.name),
                     "fields": r.fields,
@@ -922,6 +923,7 @@ impl App {
                 "variables": variables,
                 "how_to_use": [
                     "This session uses the project's agent secrets as a task's agent does, without seeing them: Yulius' proxy adds a secret to requests for its bound hosts (call them normally, for example curl https://<host>/...), and in code or CLIs the environment variable NAME holds the placeholder yulius-secret-NAME (for example Authorization: Bearer $NAME), which the proxy replaces for the bound hosts only. Several secrets on one host and header: choose with the request header X-Yulius-Secret: NAME. Secrets added after this session started have no variable yet: write the placeholder.",
+                    RULES_HOW,
                     "Website sign-in in the project browser: browser_fill_secret types the value into a field of a page on a bound host (open it with browser_open, find the field with browser_snapshot); a login's user name is in the description (older secrets may also store a user name or a two-factor seed: field username or totp).",
                     "A secret with no hosts (or not the one you need) is sent nowhere yet: work out the service's API host from its description and documentation and ask for it with secret_request_hosts; a person allows it on the Secrets page (they may be the person in front of you: give them the link). For a secret with auto_allow: true its creator let agents set it up: the hosts you ask for are bound at once, so ask only for the service's own documented hosts.",
                     "Code that runs outside the proxy (a deploy script, ssh, a deployed app) reads its keys from the git-ignored .env of this repository: put a secret there with secret_copy_to_env, never by writing the file yourself (you would write [secret:NAME]). A person allows each secret once (env_files: allowed); until then the call asks them. A multi-line key (stored with literal \\n) is written as its file, line breaks and final line break included.",
@@ -944,6 +946,7 @@ impl App {
                 "HTTP APIs: call the bound host normally (for example curl https://<host>/...). Yulius' proxy adds the credential to requests for that host only; you never send or see it.",
                 "Code and CLIs that need a key: use the environment variable NAME (it holds the placeholder yulius-secret-NAME) or the placeholder itself in the header, Basic credentials or query the service expects (for example Authorization: Bearer $NAME, X-Api-Key: $NAME, curl -u user:$NAME); the proxy replaces it for the bound hosts only. Secrets added after this session started have no variable yet: write the placeholder.",
                 "Several secrets on one host and one header: choose with the request header X-Yulius-Secret: NAME.",
+                RULES_HOW,
                 "Website sign-in in the project browser: browser_fill_secret types the value into a field of a page on a bound host; a login's user name is in the description (older secrets may also store a user name or a two-factor seed: field username or totp).",
                 "Code that runs outside Yulius' proxy (a deployed app, a deploy script) reads its keys from the project's git-ignored .env, named without values in the tracked .env.example. Put an agent secret there with secret_copy_to_env, never by writing or editing the file: you would write [secret:NAME], not the value. A person allows each secret once (env_files: allowed); until then the call asks them.",
                 "A secret that is in a file you can reach (a key in ~/.ssh, a key or token you generated without printing it) becomes a new agent secret with secret_create_from_file: Yulius reads the file, so neither you nor anyone sees the value. Never print the file or ask a person to paste it. The new secret has no hosts and no .env allowance until a person allows them.",
@@ -1265,6 +1268,9 @@ impl App {
     }
 }
 
+/// How a secret's method and path rules work, for `secrets_list` (SPEC-627 MPR-007).
+const RULES_HOW: &str = "A secret with rules (for example {\"methods\": [\"GET\"], \"path\": \"/repos/*\"}, * matching anything, also /) goes only into requests whose method and path (without the query) match one; a request outside its rules that would use it (its placeholder, X-Yulius-Secret or the header it adds) is refused with 403 saying why, and nothing is sent. Use the requests its rules allow; when the work needs another, say so to a person who manages it (they change rules on the Secrets page). Rules: [] means any request to its hosts.";
+
 #[async_trait]
 impl EgressPolicy for App {
     async fn egress_client(&self, token: &str) -> Option<EgressClient> {
@@ -1366,7 +1372,10 @@ impl EgressPolicy for App {
         let check = RuleCheck::of(&request);
         let mut denied: Vec<&VaultSecretRecord> = Vec::new();
         let named = used.iter().chain(chosen.iter());
-        for (record, _) in bound.iter().filter(|(r, _)| named.clone().any(|n| n == &r.name)) {
+        for (record, _) in bound
+            .iter()
+            .filter(|(r, _)| named.clone().any(|n| n == &r.name))
+        {
             if !check.fits(record) {
                 denied.push(record);
             }

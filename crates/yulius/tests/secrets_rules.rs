@@ -135,7 +135,10 @@ async fn rules_are_stored_shown_replaced_and_validated() -> TestResult {
         .as_array()
         .and_then(|a| a.iter().find(|s| s["name"] == "GH_READ"))
         .ok_or("listed")?;
-    assert_eq!(seen["rules"][0]["path"], "/repos/*", "readers see the rules");
+    assert_eq!(
+        seen["rules"][0]["path"], "/repos/*",
+        "readers see the rules"
+    );
 
     let patch = |body: Value, creds: &Creds| {
         let (router, path, creds) = (
@@ -200,65 +203,80 @@ async fn a_secret_with_rules_is_sent_only_for_matching_requests() -> TestResult 
                "rules": [{"methods": ["GET"], "path": "/repos/*"}]}),
     )
     .await?;
-    add(&w, json!({"name": "OPEN_TOKEN", "hosts": [HOST], "value": OPEN})).await?;
+    add(
+        &w,
+        json!({"name": "OPEN_TOKEN", "hosts": [HOST], "value": OPEN}),
+    )
+    .await?;
     let s1 = client(&w).await?;
     let read = [("authorization", "Bearer yulius-secret-GH_READ")];
 
-    let get = w
-        .h
-        .app
-        .egress_apply(&s1, request("GET", "/repos/acme/app/issues?state=open", &read))
-        .await;
+    let get =
+        w.h.app
+            .egress_apply(
+                &s1,
+                request("GET", "/repos/acme/app/issues?state=open", &read),
+            )
+            .await;
     assert_eq!(outcome(&get), Ok(Some(format!("Bearer {READ}"))));
 
-    let post = w
-        .h
-        .app
-        .egress_apply(&s1, request("POST", "/repos/acme/app/issues", &read))
-        .await;
+    let post =
+        w.h.app
+            .egress_apply(&s1, request("POST", "/repos/acme/app/issues", &read))
+            .await;
     let message = refusal(&post)?;
-    for part in ["GH_READ", "POST", "/repos/acme/app/issues", HOST, "GET /repos/*"] {
+    for part in [
+        "GH_READ",
+        "POST",
+        "/repos/acme/app/issues",
+        HOST,
+        "GET /repos/*",
+    ] {
         assert!(message.contains(part), "{part}: {message}");
     }
     assert!(!message.contains(READ));
 
-    let outside = w
-        .h
-        .app
-        .egress_apply(&s1, request("GET", "/user", &read))
-        .await;
+    let outside =
+        w.h.app
+            .egress_apply(&s1, request("GET", "/user", &read))
+            .await;
     let message = refusal(&outside)?;
     assert!(message.contains("GET /user"), "{message}");
 
     // The placeholder in the query uses it too.
-    let query = w
-        .h
-        .app
-        .egress_apply(
-            &s1,
-            request("DELETE", "/repos/acme?token=yulius-secret-GH_READ", &[]),
-        )
-        .await;
+    let query =
+        w.h.app
+            .egress_apply(
+                &s1,
+                request("DELETE", "/repos/acme?token=yulius-secret-GH_READ", &[]),
+            )
+            .await;
     refusal(&query)?;
 
     // A secret without rules on the same host: every method and path, as before.
     for (method, path) in [("POST", "/repos/acme/app/issues"), ("DELETE", "/user")] {
-        let open = w
-            .h
-            .app
-            .egress_apply(
-                &s1,
-                request(method, path, &[("authorization", "Bearer yulius-secret-OPEN_TOKEN")]),
-            )
-            .await;
-        assert_eq!(outcome(&open), Ok(Some(format!("Bearer {OPEN}"))), "{method}");
+        let open =
+            w.h.app
+                .egress_apply(
+                    &s1,
+                    request(
+                        method,
+                        path,
+                        &[("authorization", "Bearer yulius-secret-OPEN_TOKEN")],
+                    ),
+                )
+                .await;
+        assert_eq!(
+            outcome(&open),
+            Ok(Some(format!("Bearer {OPEN}"))),
+            "{method}"
+        );
     }
     // No secret used: forwarded untouched.
-    let none = w
-        .h
-        .app
-        .egress_apply(&s1, request("POST", "/markdown", &[]))
-        .await;
+    let none =
+        w.h.app
+            .egress_apply(&s1, request("POST", "/markdown", &[]))
+            .await;
     assert_eq!(outcome(&none), Ok(None));
     Ok(())
 }
@@ -283,9 +301,13 @@ async fn injection_follows_the_rules() -> TestResult {
     .await?;
     let s1 = client(&w).await?;
     let app = &w.h.app;
-    let get = app.egress_apply(&s1, request("GET", "/v1/items", &[])).await;
+    let get = app
+        .egress_apply(&s1, request("GET", "/v1/items", &[]))
+        .await;
     assert_eq!(outcome(&get), Ok(Some(format!("Bearer {READ}"))));
-    let post = app.egress_apply(&s1, request("POST", "/v1/items", &[])).await;
+    let post = app
+        .egress_apply(&s1, request("POST", "/v1/items", &[]))
+        .await;
     assert_eq!(outcome(&post), Ok(Some(format!("Bearer {OPEN}"))));
     let delete = app
         .egress_apply(&s1, request("DELETE", "/v1/items", &[]))
@@ -324,7 +346,11 @@ async fn paths_and_overrides_that_could_escape_the_rules_are_refused() -> TestRe
                "rules": [{"methods": ["GET"], "path": "/v1/*"}]}),
     )
     .await?;
-    add(&w, json!({"name": "OPEN_TOKEN", "hosts": [HOST], "value": OPEN})).await?;
+    add(
+        &w,
+        json!({"name": "OPEN_TOKEN", "hosts": [HOST], "value": OPEN}),
+    )
+    .await?;
     let s1 = client(&w).await?;
     let read = ("authorization", "Bearer yulius-secret-GH_READ");
     for path in [
@@ -334,36 +360,43 @@ async fn paths_and_overrides_that_could_escape_the_rules_are_refused() -> TestRe
         "/v1/x%5Cadmin",
         "/v1/admin%00/read",
     ] {
-        let decision = w.h.app.egress_apply(&s1, request("GET", path, &[read])).await;
+        let decision =
+            w.h.app
+                .egress_apply(&s1, request("GET", path, &[read]))
+                .await;
         refusal(&decision).map_err(|e| format!("{path}: {e}"))?;
     }
-    for header in ["x-http-method-override", "x-http-method", "x-method-override"] {
-        let decision = w
-            .h
-            .app
-            .egress_apply(&s1, request("GET", "/v1/items", &[read, (header, "DELETE")]))
-            .await;
+    for header in [
+        "x-http-method-override",
+        "x-http-method",
+        "x-method-override",
+    ] {
+        let decision =
+            w.h.app
+                .egress_apply(
+                    &s1,
+                    request("GET", "/v1/items", &[read, (header, "DELETE")]),
+                )
+                .await;
         refusal(&decision).map_err(|e| format!("{header}: {e}"))?;
     }
-    let slash = w
-        .h
-        .app
-        .egress_apply(&s1, request("GET", "/v1/projects/group%2Fapp", &[read]))
-        .await;
+    let slash =
+        w.h.app
+            .egress_apply(&s1, request("GET", "/v1/projects/group%2Fapp", &[read]))
+            .await;
     assert_eq!(outcome(&slash), Ok(Some(format!("Bearer {READ}"))));
     // A secret without rules is not held to them.
-    let open = w
-        .h
-        .app
-        .egress_apply(
-            &s1,
-            request(
-                "GET",
-                "/v1/../admin",
-                &[("authorization", "Bearer yulius-secret-OPEN_TOKEN")],
-            ),
-        )
-        .await;
+    let open =
+        w.h.app
+            .egress_apply(
+                &s1,
+                request(
+                    "GET",
+                    "/v1/../admin",
+                    &[("authorization", "Bearer yulius-secret-OPEN_TOKEN")],
+                ),
+            )
+            .await;
     assert_eq!(outcome(&open), Ok(Some(format!("Bearer {OPEN}"))));
     Ok(())
 }
@@ -382,27 +415,28 @@ async fn refusals_are_audited_once_per_run_without_values() -> TestResult {
     let s1 = client(&w).await?;
     let read = [("authorization", "Bearer yulius-secret-GH_READ")];
     for _ in 0..3 {
-        let post = w
-            .h
-            .app
-            .egress_apply(&s1, request("POST", "/repos/acme/issues?secret=q", &read))
-            .await;
+        let post =
+            w.h.app
+                .egress_apply(&s1, request("POST", "/repos/acme/issues?secret=q", &read))
+                .await;
         refusal(&post)?;
     }
-    let delete = w
-        .h
-        .app
-        .egress_apply(&s1, request("DELETE", "/repos/acme", &read))
-        .await;
+    let delete =
+        w.h.app
+            .egress_apply(&s1, request("DELETE", "/repos/acme", &read))
+            .await;
     refusal(&delete)?;
     let refused = activity(&w, "vault.agent.refused").await?;
     assert_eq!(refused.len(), 2, "{refused:?}");
-    let details: Vec<&str> = refused.iter().filter_map(|e| e["detail"].as_str()).collect();
+    let details: Vec<&str> = refused
+        .iter()
+        .filter_map(|e| e["detail"].as_str())
+        .collect();
     for (method, path) in [("POST", "/repos/acme/issues"), ("DELETE", "/repos/acme")] {
         assert!(
-            details
-                .iter()
-                .any(|d| d.contains("GH_READ") && d.contains(&format!("{method} {path}")) && d.contains(HOST)),
+            details.iter().any(|d| d.contains("GH_READ")
+                && d.contains(&format!("{method} {path}"))
+                && d.contains(HOST)),
             "{method} {path}: {details:?}"
         );
     }
@@ -416,5 +450,40 @@ async fn refusals_are_audited_once_per_run_without_values() -> TestResult {
         activity(&w, "vault.agent.use").await?.is_empty(),
         "nothing was sent"
     );
+    Ok(())
+}
+
+/// AC-7 (MPR-007): a task's agent reads each secret's rules in `secrets_list`, and how they work.
+#[tokio::test]
+async fn secrets_list_shows_the_rules_to_agents() -> TestResult {
+    let w = world().await?;
+    add(
+        &w,
+        json!({"name": "GH_READ", "hosts": [HOST], "value": READ,
+               "rules": [{"methods": ["GET"], "path": "/repos/*"}]}),
+    )
+    .await?;
+    add(
+        &w,
+        json!({"name": "OPEN_TOKEN", "hosts": [HOST], "value": OPEN}),
+    )
+    .await?;
+    let listed = support::mcp_tool(&w.h, TOKEN, "secrets_list", json!({})).await?;
+    let listed = support::tool_text(&listed);
+    let secret = |name: &str| {
+        listed["secrets"]
+            .as_array()
+            .and_then(|a| a.iter().find(|s| s["name"] == name))
+            .cloned()
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        secret("GH_READ")["rules"],
+        json!([{"methods": ["GET"], "path": "/repos/*"}])
+    );
+    assert_eq!(secret("OPEN_TOKEN")["rules"], json!([]));
+    let how = listed["how_to_use"].to_string();
+    assert!(how.contains("rules") && how.contains("403"), "{how}");
+    assert!(!listed.to_string().contains(READ));
     Ok(())
 }

@@ -19,8 +19,8 @@ use crate::time::Timestamp;
 
 pub use hosts::HostPattern;
 pub use names::SecretName;
-pub use rules::SecretRule;
 pub use ordinary::{OrdinaryText, ordinary_text};
+pub use rules::SecretRule;
 
 /// Errors validating vault input. Messages never contain secret values.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
