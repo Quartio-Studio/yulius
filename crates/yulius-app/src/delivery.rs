@@ -5234,8 +5234,7 @@ impl App {
     }
 
     /// The part of [`App::task_is_done`] that needs no GitHub call: the turn ended, no background
-    /// shell runs, and the goal is achieved or no declared work is left with the change merged. The
-    /// session limit counts tasks by it (SES-101), many times a minute.
+    /// shell runs, and the goal is achieved or no declared work is left with the change merged.
     pub(crate) async fn task_is_done_locally(&self, task: &TaskRecord) -> bool {
         use yulius_domain::task::{Activity, TaskStatus};
         if task.status != TaskStatus::Running

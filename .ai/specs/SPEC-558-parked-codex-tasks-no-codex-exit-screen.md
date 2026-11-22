@@ -68,7 +68,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Verify the current model and subscription before accepting a named Continue
 - [x] Order parking and replacement merge requests through run settlement
 - [x] Deliver the recorded integration failure once to an already parked owner
-- [ ] Hold the original owner’s session slot while its open delivery cannot be verified
+- [x] Hold the original owner’s session slot while its open delivery cannot be verified
 - [ ] Verify live owners when constructing and releasing dependent tasks or closing their sessions
 - [ ] Render verified live integration status in the terminal, sidebar and Task Info
 - [ ] Deliver bounded Codex goal continuation to dev
@@ -128,6 +128,8 @@ The final parking check compares the owner’s saved singleton decision with the
 The SQLite query returning a parked task includes the latest attempt ID in the same snapshot. Admission checks that ID under the launch lock after caller preflight. A message can wait while another turn resumes and parks, so task status alone cannot identify the session the sender observed. Only a matching parked attempt can restore Codex lineage or accept the prompt. Bulk messages, Telegram replies and remote restarts carry the attempt from their first task lookup through dispatch. They check the caller’s current access before acting.
 
 ## Evidence
+
+- Independent review approved `209c14add834c30963b982028e2a834bc198435d` for session capacity. Its fresh session passed all 78 candidate tests in `c1d4b94e-1ec2-42ab-8a9a-a4ec8a06c86b`. The review's documentation correction removed the obsolete statement about which method counts occupied slots.
 
 - All 688 scoped tests passed in `90908811-75d5-4039-a4d8-aa09fe7495db`. Restoring the raw final PR read by hand made the peer see a free slot again in `5cbff53b-d244-4a9b-8cc4-29c5828892d9`. The guarded read was restored. Clippy and repository quick checks passed. Vidoc was disabled.
 
