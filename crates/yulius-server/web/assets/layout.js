@@ -322,7 +322,11 @@ function createStatusPanel(ctx, button) {
   function open() {
     el = h('div', { class: 'status-pop', role: 'dialog', 'aria-label': 'Status' }, skeleton('Loading status…', 3, { block: true }));
     el.addEventListener('click', (event) => {
-      if (event.target.closest('a[data-route]') && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) close();
+      const link = event.target.closest('a[data-route]');
+      if (!link || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      close();
+      // A link to the page already shown changes nothing that would take the keyboard.
+      if (new URL(link.href).hash === location.hash) button.focus();
     });
     document.body.append(el);
     button.setAttribute('aria-expanded', 'true');

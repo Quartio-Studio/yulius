@@ -17,6 +17,6 @@ export function gateNotices(sandbox, notices, canRun) {
       h('strong', null, `Unresolved integration gate for ${sandbox.name || sandbox.slug}`),
       h('ul', null, failures),
       'No task is working on the repair. ',
-      h('a', { href: href(path), dataset: { route: path, focusKey: path } }, canRun ? 'Review and run again' : 'Review the run'),
+      h('a', { href: href(path), dataset: { route: path, focusKey: `${project}/ci#gate-run` } }, canRun ? 'Review and run again' : 'Review the run'),
       canRun ? [' · ', h('a', { href: href(project), dataset: { route: project, focusKey: project } }, 'Start a task')] : null))];
 }

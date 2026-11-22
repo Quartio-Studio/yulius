@@ -101,7 +101,7 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
     return () => { destroyed = true; clearTimeout(poll); view.dispose(); leftRun.set(sandbox.id, shownRun); };
   }
   const noticesHost = h('div', { hidden: true });
-  const overviewSection = h('section', { class: 'stack', role: 'region', 'aria-label': 'CI overview', tabindex: -1 }, noticesHost, runsHost);
+  const overviewSection = h('section', { class: 'stack ci-overview', role: 'region', 'aria-label': 'CI overview', tabindex: -1 }, noticesHost, runsHost);
   host.append(overviewSection, hygieneHost);
 
   let last = { runs: [] };

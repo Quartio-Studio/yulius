@@ -464,6 +464,7 @@ test('a project gate notice identifies the introducing merge and retries the aff
   await browser.locator('.btn-status').click();
   const panel = screen.getByRole('dialog', 'Status');
   await expect(panel.getByText(failure)).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
   await expect(panel.getByRole('link', 'Start a task')).toHaveAttribute('href', /#\/s\/studio$/);
   await panel.getByRole('link', 'Review and run again').click();
   await expect(panel).toBeHidden();
@@ -478,9 +479,11 @@ test('readers can inspect the untracked failure in project CI and Status', async
   await expect(screen.getByText(failure)).toBeVisible();
   await expect(screen.getByRole('link', 'Start a task')).toHaveCount(0);
   await expect(screen.getByRole('link', 'Review the run')).toHaveAttribute('href', /run=ci_t1$/);
+  expect(await axeViolations(browser)).toEqual([]);
   await browser.locator('.btn-status').click();
   const panel = screen.getByRole('dialog', 'Status');
   await expect(panel.getByText(failure)).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
   await expect(panel.getByRole('link', 'Start a task')).toHaveCount(0);
   await panel.getByRole('link', 'Review the run').click();
   const run = screen.getByRole('region', 'CI run');
@@ -559,6 +562,11 @@ test('a cleared CI gate notice releases keyboard focus without opening a run', a
   });
   await expect(start).toHaveCount(0, { timeout: 15000 });
   await expect.poll(() => browser.evaluate(() => document.activeElement?.getAttribute('aria-label'))).toBe('CI overview');
+  // Focused by script, the overview draws no frame around every card (SPEC-321).
+  expect(await browser.evaluate(() => {
+    const style = getComputedStyle(document.activeElement as Element);
+    return [style.boxShadow, style.outlineStyle];
+  })).toEqual(['none', 'none']);
   await browser.keyboard.press('Enter');
   await expect(screen.getByRole('heading', 'Runs')).toBeVisible();
   await expect(browser).toHaveURL(/#\/s\/studio\/ci$/);
@@ -597,4 +605,33 @@ test('an integration gate cancelled before the jobs ran names the verdict and it
   });
   await browser.locator('.btn-status').click();
   await expect(screen.getByRole('dialog', 'Status').getByText(/cancelled · first seen at 7713224a587f.*task #12/)).toBeVisible();
+});
+
+test('a focused review link keeps the keyboard when a newer red run replaces the affected one', async ({ app, browser, screen }) => {
+  type Mock = { __yuliusMock: { ci: { sb_studio: { gate_notices: { run_id: string }[] } } } };
+  await app.open(mock('/s/studio/ci', '&gate_notice=1'));
+  const moveRun = (run: string) => browser.evaluate((id) => {
+    for (const notice of (window as unknown as Mock).__yuliusMock.ci.sb_studio.gate_notices) notice.run_id = id;
+  }, run);
+  const focused = () => browser.evaluate(() => (document.activeElement as HTMLAnchorElement | null)?.getAttribute('href') ?? document.activeElement?.tagName);
+  await screen.getByRole('link', 'Review and run again').focus();
+  await moveRun('ci_s4');
+  await expect.poll(focused, { timeout: 15000 }).toMatch(/run=ci_s4$/);
+
+  await browser.locator('.btn-status').click();
+  const panel = screen.getByRole('dialog', 'Status');
+  await panel.getByRole('link', 'Review and run again').focus();
+  await moveRun('ci_gate');
+  await expect.poll(focused, { timeout: 15000 }).toMatch(/run=ci_gate$/);
+});
+
+test('a Status repair link to the page already shown returns the keyboard to the Status button', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&gate_notice=1'));
+  await browser.locator('.btn-status').click();
+  const panel = screen.getByRole('dialog', 'Status');
+  await panel.getByRole('link', 'Start a task').focus();
+  await browser.keyboard.press('Enter');
+  await expect(panel).toBeHidden();
+  await expect(browser).toHaveURL(/#\/s\/studio$/);
+  await expect.poll(() => browser.evaluate(() => document.activeElement?.classList.contains('btn-status'))).toBe(true);
 });
