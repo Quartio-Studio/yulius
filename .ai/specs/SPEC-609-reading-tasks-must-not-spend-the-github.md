@@ -1,6 +1,6 @@
 ---
 yulius-task: 70138e35-5fd4-4a6e-992f-34354142a209
-status: in-progress
+status: done
 ---
 
 # SPEC-609 Reading tasks within the GitHub request budget
@@ -38,7 +38,7 @@ The hour ending at the warning and GitHub's quota window also differ. If the rep
 - [x] Serve budget evidence in instance status and the Status panel
 - [x] Persist confirmed reopenings across a restart before any display read
 - [x] Keep fresh prerequisite verification when scheduling after all tasks
-- [ ] Verify the behavior, obtain independent review and deliver to dev
+- [x] Verify the behavior, obtain independent review and deliver to dev
 
 ## Acceptance criteria
 
@@ -79,3 +79,5 @@ The final recovery checks cover an open follow-up that disappears from a branch 
 The prerequisite regression created a task with `after_all_tasks` between an external failing follow-up opening and the next reconciliation tick. Its rule included the parked predecessor. The existing request-purpose inheritance already gives this action a fresh read. The cold-display regression now seeds a finished spec in the database and checks that the numbered endpoint was actually read. An expired memory-only listing can clear, while a durably confirmed follow-up survives omission. The full browser suite passed 1,325 tests with one existing skip.
 
 On the isolated pre-fix head fa770bd0d, the chain queued its successor while the omitted confirmed PR was failing, and the task showed merged #1 after temporary #3 vanished instead of showing failing #2. Both regressions passed after the candidate set included the stored follow-up. With two independently persisted open follow-ups targeting different bases, the one-number query showed healthy #3 while omitted #2 was behind. Verification now takes the union of stored, listed and tracked numbers. Verification admits up to 30 distinct PRs. With more candidates the prerequisite stays chained and no numbered reads start.
+
+All 265 tests in the complete `delivery` and `agent_hooks` modules passed with process isolation after merging #540’s review-round repair and #592’s timeout repair from dev. The bounded follow-up control failed on d868c20c1 and passed after the fix, including the 31-PR overflow and release after the checks settle. Independent review approved 30fcf2f8a. The Status panel and MCP counter tests passed on synthetic responses. No historical per-purpose export exists, and the verification did not induce a live installation shortage.

@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed for SPEC-609.
+Accepted for SPEC-609.
 
 ## Context
 
