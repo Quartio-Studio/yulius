@@ -328,7 +328,11 @@ watching, steering and unblocking.
   prompt box, it does (the text goes to the agent with the message); nobody else's message
   does. It sees which tasks wait for the person and why without anything pasted to it (what
   a task's agent asked, why a task is flagged, a prompt Yulius held, who paused it; `tasks_list`
-  shows the same to a task's agent, without a held prompt's words), reads the end of a
+  shows the same to a task's agent, without a held prompt's words; `task_get` also gives a task's
+  agent a neighbour's owner, pull request and delivery stage, claimed paths, what it waits for and
+  its screen's last lines, read-only, so tasks look before overlapping work instead of asking a
+  person to relay a status; a task that holds its owner's personal secrets shows other people's
+  tasks only its shape, ADR-0460), reads the end of a
   session in one call, passes the person's answer on, dismisses a request they call settled
   and decides a held prompt as its card does. It says where a task's merge stands and why a
   pull request that passed has not merged yet, lists the project's merge queue and merge
