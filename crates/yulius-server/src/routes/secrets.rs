@@ -96,7 +96,7 @@ fn no_store(mut response: Response) -> Response {
 
 /// `403 reauth_required` with what is missing: a two-factor code (or setting it up), or, to set
 /// it up, a recent sign-in or confirmation.
-fn reauth_required(status: ReauthStatus) -> Response {
+pub(crate) fn reauth_required(status: ReauthStatus) -> Response {
     let message = if status.two_factor == "locked" {
         "Too many wrong codes: confirm it is you (password or GitHub sign-in), then enter a code."
     } else if status.two_factor == "on" {

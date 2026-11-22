@@ -12,6 +12,7 @@ mod automations;
 mod capacity;
 mod cd;
 mod ci;
+mod commands;
 mod coordination;
 pub mod crypto;
 mod delivery;
@@ -225,6 +226,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0083_terminal_pulls.sql"),
     include_str!("migrations/0086_inherited_staging.sql"),
     include_str!("migrations/0087_metrics_model_parts.sql"),
+    // Schema version 88 (SPEC-626 BRK-001); 0089 is the reserved file number.
+    include_str!("migrations/0089_brokered_commands.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -561,6 +564,7 @@ mod tests {
             (85, include_str!("migrations/0083_terminal_pulls.sql")),
             (86, include_str!("migrations/0086_inherited_staging.sql")),
             (87, include_str!("migrations/0087_metrics_model_parts.sql")),
+            (88, include_str!("migrations/0089_brokered_commands.sql")),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -569,7 +573,7 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 87, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 88, "a new migration is pinned here too");
     }
 
     #[test]

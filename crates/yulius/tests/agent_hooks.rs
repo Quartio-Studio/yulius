@@ -2860,6 +2860,156 @@ async fn goal_stop_restores_working_when_the_turn_was_last_seen_waiting() -> Tes
     Ok(())
 }
 
+/// The PR watcher already pasted run `id`'s failure into the session (SPEC-578): what is
+/// left after that is the agent's own Stop.
+fn told_red_run(f: &Fixture, id: &str) -> TestResult {
+    std::fs::write(
+        f.h.app
+            .config
+            .data_dir
+            .join(yulius_app::pr_watch::PR_NOTICES_FILE),
+        serde_json::to_vec(&json!({f.task.as_str(): {"pr": 1461, "keys": {"run": id}}}))?,
+    )?;
+    Ok(())
+}
+
+/// The task's own pull request failed Yulius CI at `sha`.
+async fn red_ordinary_run(f: &Fixture, id: &str, sha: &str, at: i64) -> TestResult {
+    super::delivery::insert_ci_attempt(
+        &f.h.store,
+        id,
+        sha,
+        yulius_domain::ci::CiRef::PullRequest(1461),
+        yulius_domain::ci::RunState::Failed,
+        at,
+        &[],
+    )
+    .await
+}
+
+/// Quartio-v2 #325 stopped after five of seven steps with its pull request red (SPEC-558
+/// AC-3): either unfinished condition alone continues the goal, up to the Stop bound. The
+/// decision reads no GitHub: a held checks lookup cannot delay or change it (ADR-0447).
+#[tokio::test]
+async fn codex_goal_stop_continues_the_325_shape_and_a_red_pr_alone() -> TestResult {
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Step 1").await?;
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    let steps: Vec<_> = (1..=7)
+        .map(|n| {
+            let status = match n {
+                1..=5 => "done",
+                6 => "in_progress",
+                _ => "pending",
+            };
+            json!({"title": format!("Step {n}"), "status": status})
+        })
+        .collect();
+    f.h.app
+        .tool_steps_set(&ctx, &json!({"steps": steps}))
+        .await?;
+    install_compatibility_pull(&f).await?;
+    let head = crate::pr_watch::git(&f.worktree, &["rev-parse", "HEAD"])?;
+    red_ordinary_run(&f, "red-at-head", head.trim(), 10).await?;
+    told_red_run(&f, "red-at-head")?;
+    let hold = f.h.github.hold_checks();
+    let stop = stop_of(&f, Agent::Codex).await?;
+    assert_eq!(stop["decision"], "block", "{stop}");
+    assert!(
+        stop["reason"]
+            .as_str()
+            .is_some_and(|s| s.contains("Step 6")),
+        "{stop}"
+    );
+    // The plan is finished; only the red pull request is left.
+    for n in [6, 7] {
+        f.h.app
+            .tool_step_update(&ctx, &json!({"ordinal": n, "status": "done"}))
+            .await?;
+    }
+    for _ in 0..yulius_app::hooks::MAX_GATE_BLOCKS {
+        let stop = tokio::time::timeout(
+            yulius_harness::hook_client::HOOK_TIMEOUT,
+            stop_of(&f, Agent::Codex),
+        )
+        .await
+        .map_err(|_| "the Codex hook client timed out")??;
+        assert_eq!(stop["decision"], "block", "{stop}");
+        assert!(
+            stop["reason"]
+                .as_str()
+                .is_some_and(|s| s.contains("#1461") && s.contains("failed")),
+            "{stop}"
+        );
+        assert_ne!(activity(&f).await?, Some(Activity::NeedsAttention));
+    }
+    let stop = stop_of(&f, Agent::Codex).await?;
+    assert!(stop["decision"].is_null(), "{stop}");
+    assert_eq!(activity(&f).await?, Some(Activity::NeedsAttention));
+    f.h.github.release_checks(&hold);
+    Ok(())
+}
+
+/// Only a failure at the head the Codex goal is on continues it: a later passing run, or a
+/// failure of a commit the agent has moved past, ends the turn and spends no attempt.
+#[tokio::test]
+async fn codex_goal_stop_ends_once_its_head_moved_past_the_red_run() -> TestResult {
+    let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Finish compatibility").await?;
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    f.h.app
+        .tool_step_update(&ctx, &json!({"ordinal": 1, "status": "done"}))
+        .await?;
+    install_compatibility_pull(&f).await?;
+    let head = crate::pr_watch::git(&f.worktree, &["rev-parse", "HEAD"])?;
+    told_red_run(&f, "red-earlier-head")?;
+    red_ordinary_run(
+        &f,
+        "red-earlier-head",
+        "0123456789abcdef0123456789abcdef01234567",
+        10,
+    )
+    .await?;
+    let stop = stop_of(&f, Agent::Codex).await?;
+    assert!(stop["decision"].is_null(), "{stop}");
+    super::delivery::insert_ci_attempt(
+        &f.h.store,
+        "green-at-head",
+        head.trim(),
+        yulius_domain::ci::CiRef::PullRequest(1461),
+        yulius_domain::ci::RunState::Passed,
+        11,
+        &[],
+    )
+    .await?;
+    let stop = stop_of(&f, Agent::Codex).await?;
+    assert!(stop["decision"].is_null(), "{stop}");
+    let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
+    assert_eq!(task.gate_blocks, 0);
+    Ok(())
+}
+
+/// Claude Code's native goal evaluator and Antigravity's own goal end their turns: the red
+/// pull request continues only a Codex goal (SPEC-558 PKR-003).
+#[tokio::test]
+async fn a_red_pr_continues_no_other_harnesss_finished_goal() -> TestResult {
+    for agent_kind in [Agent::ClaudeCode, Agent::Antigravity] {
+        let f = task_with_open_step(agent_kind, TaskMode::Goal, "Finish compatibility").await?;
+        let ctx = f.h.app.agent_context(TOKEN).await?;
+        f.h.app
+            .tool_step_update(&ctx, &json!({"ordinal": 1, "status": "done"}))
+            .await?;
+        install_compatibility_pull(&f).await?;
+        let head = crate::pr_watch::git(&f.worktree, &["rev-parse", "HEAD"])?;
+        told_red_run(&f, "red-at-head")?;
+        red_ordinary_run(&f, "red-at-head", head.trim(), 10).await?;
+        let stop = stop_of(&f, agent_kind).await?;
+        assert!(
+            !stop["reason"].as_str().is_some_and(|s| s.contains("#1461")),
+            "{agent_kind:?}: {stop}"
+        );
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn goal_stop_counts_consecutive_attempts_on_unresolved_work() -> TestResult {
     for replace in [false, true] {

@@ -525,12 +525,14 @@ If a reservation skips past all available slots, land an empty extension first w
 - [0457](0457-new-tasks-default-to-claude-code-on-opus-5-5.md): New tasks default to Claude Code on Opus 5.5 when nothing is chosen; supersedes 0422 and 0426.
 <!-- ADR 0457 -->
 <!-- ADR 0458 -->
+- [0459](0459-brokered-commands-run-in-the-production-holder-with-a-temporary-key-file.md): Brokered commands run in the production holder with a temporary key file; amends SPEC-002 ADR-20
 <!-- ADR 0459 -->
 - [0460](0460-a-task-reads-its-neighbours-status-and-never-steers-them.md): A task reads its neighbours' status (owner, PR and stage, claims, waits, screen) read-only and never steers them; a personal task shows other people's tasks only its shape.
 <!-- ADR 0460 -->
 <!-- ADR 0461 -->
 <!-- ADR 0462 -->
 <!-- ADR 0463 -->
+- [0464](0464-a-codex-goal-continues-on-its-own-red-yulius-ci-run.md): A Codex goal whose plan is finished continues on its own red Yulius CI run at its current head; extends 0428.
 <!-- ADR 0464 -->
 <!-- ADR 0465 -->
 <!-- ADR 0466 -->
