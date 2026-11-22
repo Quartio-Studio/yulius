@@ -37,14 +37,40 @@ const FREE_TEXT: [&str; 9] = [
 
 impl App {
     /// Refuses a task's agent whose owner may not view its project now: disabled, or without
-    /// read access (PSV-003, the rule of SPEC-490). A person's own callers were checked by their
-    /// bearer.
+    /// read access (PSV-003, the rule of SPEC-490). The access is the settled one (a cached
+    /// decision within the staleness bound, else GitHub is asked), so reading the task list
+    /// spends no GitHub request per call; an access that cannot be decided refuses. A person's
+    /// own callers were checked by their bearer.
     ///
     /// # Errors
-    /// `Forbidden` for a disabled owner, the access errors of [`App::require`].
+    /// `Forbidden` for a disabled owner or one without read access; `NotFound` for a removed
+    /// project; the errors of [`App::settled_access_level`].
     pub(crate) async fn require_reader(&self, caller: &ProjectCaller) -> AppResult<()> {
-        if caller.task.is_some() {
-            self.person_authority(caller, Action::View).await?;
+        if caller.task.is_none() {
+            return Ok(());
+        }
+        let store = &self.deps.store;
+        let user = store
+            .user(&caller.user)
+            .await?
+            .filter(|user| user.disabled_at.is_none())
+            .ok_or_else(|| {
+                AppError::Forbidden("the person this task acts for is disabled".into())
+            })?;
+        let sandbox = store
+            .sandbox(&caller.sandbox)
+            .await?
+            .filter(|sandbox| sandbox.removed_at.is_none())
+            .ok_or(AppError::NotFound)?;
+        if !self
+            .settled_access_level(&user, &sandbox)
+            .await?
+            .allows(Action::View)
+        {
+            return Err(AppError::Forbidden(format!(
+                "@{} can no longer view this project, so their task reads none of its tasks",
+                user.label()
+            )));
         }
         Ok(())
     }

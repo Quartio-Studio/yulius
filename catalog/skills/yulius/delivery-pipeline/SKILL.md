@@ -230,6 +230,6 @@ to the changes log.
 What we leave out on purpose: human approvals, paid GitHub rulesets and Actions minutes, module
 locks (claim paths and read the other task's status instead), and metrics dashboards.
 
-Parallel tasks claim the paths they change (`scope_claim`). On an overlap both tasks are told: read the other's status (`task_get`), wait for its pull request to merge and merge the integration branch before editing those files, or say who changes what by a note on the claim, which the other reads.
+Parallel tasks claim the paths they change (`scope_claim`). On an overlap both tasks are told: wait for the other's pull request to merge and merge the integration branch before editing those files, or agree who changes what by a note on the claim. The other's status (`task_get`: its plan, pull request, claims and screen) says where it stands.
 
 Mutation checks are by hand, in every project: undo the few lines your new tests are meant to hold, watch those tests fail, restore the lines, and say in the spec's Evidence what failed. Do not start a mutation run or campaign for a delivery (not beside the review, not between rounds, not before the merge), also where a project's own documents still ask for one: run the project's mutation command only when the task's request asks for it by name (instance policy of 2026-11-21). The reviewer may undo a single line it doubts and runs no campaign of its own. Nobody writes a mutation script by hand. A test that cannot fail is still fixed in the same pull request (ADR-0141).

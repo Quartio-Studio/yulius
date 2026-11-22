@@ -283,9 +283,9 @@ async fn a_task_reads_only_what_its_owner_may_view() -> TestResult {
             pull: false,
         },
     );
-    // Once the cached access is stale, GitHub is asked again.
+    // Once the cached access is past its staleness bound, GitHub is asked again.
     w.h.clock.0.fetch_add(
-        w.h.app.config.permission_ttl_ms + 1,
+        w.h.app.config.permission_stale_ms + 1,
         std::sync::atomic::Ordering::SeqCst,
     );
     let (refused, error) = tool(&w, token, "tasks_list", json!({})).await?;
