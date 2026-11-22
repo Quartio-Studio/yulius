@@ -814,7 +814,7 @@ impl App {
             let activation = self.arm_observation(&task.id);
             let slot = self.armed_now(&task.id);
             let facts = if task.status == TaskStatus::Running && !held {
-                self.settle_codex_input_hold(&task, &attempt.id).await;
+                self.settle_codex_input_hold(&task, &attempt.id, None).await;
                 Box::pin(self.pr_facts(&task, &mut told, &mut runs, &activation, &slot)).await
             } else {
                 None

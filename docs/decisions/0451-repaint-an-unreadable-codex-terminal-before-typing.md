@@ -10,7 +10,7 @@ The model picker can be cropped or partway through a redraw. After reattachment,
 
 ## Decision
 
-Use a temporary PTY size change to request a repaint from the attached child. Restore the original dimensions, including when the host reconnects midway through the probe, and judge the current screen before sending input. An unreadable screen after the bounded probe raises a Needs you on the task. Keep an owed PR event pending until submission succeeds. A private message stays with its sender to resend. Its Needs you stays open when the screen becomes readable.
+Use a temporary PTY size change to request a repaint from the attached child. Restore the original dimensions, including when the host reconnects or the server restarts midway through the probe, and judge the current screen before sending input. An unreadable screen after the bounded probe raises a Needs you on the task. Keep an owed PR event pending until submission succeeds. Before the first temporary resize, atomically record the intended width and height in the run directory. Later viewer resizes update that record. A retrying automatic prompt releases its own request once the terminal is readable. A private message stays with its sender to resend. Its Needs you stays open when the screen becomes readable.
 
 ## Alternatives
 

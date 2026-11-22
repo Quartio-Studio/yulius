@@ -49,7 +49,8 @@ use crate::vault::reach::Holder;
 pub const MAX_MESSAGE_BYTES: usize = MAX_PROMPT_BYTES;
 
 /// The owner action specific to a held Codex screen.
-const CODEX_NOTICE_ACTION: &str = "Inspect the Codex terminal. Dismiss any model picker and check for unsent text. If the prompt stays unreadable, stop and continue the session. Yulius will retry the pending notice.";
+const CODEX_NOTICE_ACTION: &str = "Inspect the Codex terminal. Dismiss any model picker and check for unsent text. If the prompt stays unreadable, stop and continue the session. Check delivery of the pending instruction.";
+const CODEX_AUTOMATIC_ACTION: &str = "Inspect the Codex terminal and dismiss any picker. Check for unsent text. If this automatic instruction still needs to run after its retries end, resend it from the prompt.";
 const CODEX_MESSAGE_ACTION: &str = "Inspect the Codex terminal. Dismiss any model picker, check the composer for unsent text, and retry the message. If the prompt stays unreadable, stop and continue the session.";
 
 /// Time between the paste and its separate Enter.
@@ -65,6 +66,14 @@ pub fn clean_message(text: &str) -> String {
         .collect::<String>()
         .trim()
         .to_owned()
+}
+
+fn pasted_notice(paste: &[u8]) -> std::borrow::Cow<'_, str> {
+    let text = paste
+        .strip_prefix(b"\x1b[200~")
+        .and_then(|text| text.strip_suffix(b"\x1b[201~"))
+        .unwrap_or_default();
+    String::from_utf8_lossy(text)
 }
 
 /// `prefix` and the logins `who` as `@a, @b` (SPEC-512 ANS-002); empty for nobody.
@@ -974,6 +983,13 @@ impl App {
             Typed::Notice(attempt) => Some(attempt),
             _ => codex_attempt.as_ref(),
         };
+        if let Some(attempt) = &codex_attempt
+            && matches!(from, Sender::Yulius | Sender::YuliusLastTry)
+            && !matches!(what, Typed::Notice(_))
+        {
+            self.settle_codex_input_hold(task, attempt, Some(&pasted_notice(paste)))
+                .await;
+        }
         let write = async |input| {
             if let Some(attempt) = observed {
                 runtime
@@ -989,7 +1005,7 @@ impl App {
         };
         if let Err(err) = pasted {
             runtime.message_typed_ms.store(before, Ordering::SeqCst);
-            self.report_codex_input_hold(task, codex_attempt.as_ref(), what, paste, &err)
+            self.report_codex_input_hold(task, codex_attempt.as_ref(), from, what, paste, &err)
                 .await?;
             return Err(err);
         }
@@ -1029,7 +1045,7 @@ impl App {
             if past_draft {
                 runtime.sent_past_draft.store(false, Ordering::SeqCst);
             }
-            self.report_codex_input_hold(task, codex_attempt.as_ref(), what, paste, &err)
+            self.report_codex_input_hold(task, codex_attempt.as_ref(), from, what, paste, &err)
                 .await?;
             return Err(AppError::Conflict(format!(
                 "the message was pasted into task #{}'s session but not submitted ({}): it may \
@@ -1078,6 +1094,7 @@ impl App {
         &self,
         task: &TaskRecord,
         attempt: Option<&AttemptId>,
+        from: Sender,
         what: Typed<'_>,
         paste: &[u8],
         err: &AppError,
@@ -1089,25 +1106,19 @@ impl App {
         let AppError::Conflict(problem) = err else {
             return Ok(());
         };
-        if problem != CODEX_UNREADABLE
-            && !(problem == CODEX_PICKER && matches!(what, Typed::Notice(_)))
-        {
+        let machine = matches!(from, Sender::Yulius | Sender::YuliusLastTry);
+        if problem != CODEX_UNREADABLE && !(problem == CODEX_PICKER && machine) {
             return Ok(());
         }
-        let happened = match what {
-            Typed::Notice(_) => {
-                let text = paste
-                    .strip_prefix(b"\x1b[200~")
-                    .and_then(|t| t.strip_suffix(b"\x1b[201~"))
-                    .unwrap_or_default();
-                String::from_utf8_lossy(text)
-            }
-            _ => "A message could not be submitted to Codex.".into(),
-        };
-        let action = if matches!(what, Typed::Notice(_)) {
-            CODEX_NOTICE_ACTION
+        let happened = if machine {
+            pasted_notice(paste)
         } else {
-            CODEX_MESSAGE_ACTION
+            "A message could not be submitted to Codex.".into()
+        };
+        let action = match (from, what) {
+            (Sender::Yulius, Typed::Notice(_)) => CODEX_NOTICE_ACTION,
+            (Sender::Yulius, _) => CODEX_MESSAGE_ACTION,
+            _ => CODEX_MESSAGE_ACTION,
         };
         self.ask_for_blocked_input(task, attempt, &happened, problem, action)
             .await
@@ -1146,18 +1157,37 @@ impl App {
         Ok(())
     }
 
-    /// A held PR notice can be retried once the inspected terminal is safe again.
-    pub(crate) async fn settle_codex_input_hold(&self, task: &TaskRecord, attempt: &AttemptId) {
-        if task.harness == Harness::Codex
-            && let Ok(Some(request)) = self.deps.store.task_needs_you(&task.id).await
-            && request.action == CODEX_NOTICE_ACTION
+    /// Release the request belonging to this retry. A private send and an
+    /// automatic prompt whose retry window ended stay actionable for the owner.
+    pub(crate) async fn settle_codex_input_hold(
+        &self,
+        task: &TaskRecord,
+        attempt: &AttemptId,
+        prompt: Option<&str>,
+    ) {
+        if task.harness != Harness::Codex {
+            return;
+        }
+        let Ok(Some(request)) = self.deps.store.task_needs_you(&task.id).await else {
+            return;
+        };
+        let matches = match prompt {
+            None => request.action == CODEX_NOTICE_ACTION,
+            Some(text) if request.action == CODEX_AUTOMATIC_ACTION => {
+                let text = self.redact_notice_text(&task.sandbox_id, text).await;
+                request.happened
+                    == crate::attention::shown_line(&text, crate::needs_you::MAX_HAPPENED_CHARS)
+            }
+            Some(_) => false,
+        };
+        if matches
             && self
                 .existing_runtime(&task.id)
                 .is_some_and(|rt| rt.codex_ready_for_retry(attempt))
             && self
                 .deps
                 .store
-                .end_task_needs_you_asking(&task.id, CODEX_NOTICE_ACTION, self.now())
+                .end_task_needs_you_at(&task.id, request.at, self.now())
                 .await
                 == Ok(true)
         {

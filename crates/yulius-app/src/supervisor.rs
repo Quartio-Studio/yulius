@@ -177,15 +177,18 @@ impl<'a> SessionInput<'a> {
 
 struct ActiveRun {
     attempt_id: AttemptId,
-    codex_submit_hold: Option<CodexSubmitHold>,
+    codex_input: Option<CodexInput>,
     writer: Box<dyn RunWriter>,
 }
 
 /// A Codex paste can remain in the composer if no Enter followed it. The run
 /// directory records the pending paste before it goes to the PTY.
-struct CodexSubmitHold {
+struct CodexInput {
     marker: PathBuf,
     state: CodexPaste,
+    /// Size to recover if the server disappears during the temporary resize. Once
+    /// a run has used a probe, deliberate viewer resizes supersede its saved size.
+    repaint_size: Option<(u16, u16)>,
 }
 
 #[derive(PartialEq, Eq)]
@@ -195,7 +198,7 @@ enum CodexPaste {
     Recovering,
 }
 
-impl CodexSubmitHold {
+impl CodexInput {
     fn load(run_dir: &str) -> Self {
         let marker = Path::new(run_dir).join("codex-submit-held");
         let state = if marker.try_exists().unwrap_or(true) {
@@ -203,7 +206,45 @@ impl CodexSubmitHold {
         } else {
             CodexPaste::Idle
         };
-        Self { marker, state }
+        let repaint_size = Self::read_repaint_size(&marker.with_file_name("codex-repaint-size"));
+        Self {
+            marker,
+            state,
+            repaint_size,
+        }
+    }
+
+    fn read_repaint_size(path: &Path) -> Option<(u16, u16)> {
+        use std::io::Read as _;
+        let mut file = std::fs::File::open(path).ok()?;
+        let mut bytes = [0; 4];
+        if file.metadata().ok()?.len() != 4 {
+            return None;
+        }
+        file.read_exact(&mut bytes).ok()?;
+        let [c1, c2, r1, r2] = bytes;
+        let size = (u16::from_be_bytes([c1, c2]), u16::from_be_bytes([r1, r2]));
+        let dimensions =
+            yulius_contracts::ptyhost::MIN_DIMENSION..=yulius_contracts::ptyhost::MAX_DIMENSION;
+        (dimensions.contains(&size.0) && dimensions.contains(&size.1)).then_some(size)
+    }
+
+    fn remember_size(&mut self, size: (u16, u16)) -> AppResult<()> {
+        if self.repaint_size == Some(size) {
+            return Ok(());
+        }
+        let path = self.marker.with_file_name("codex-repaint-size");
+        let temporary = path.with_extension("tmp");
+        let [c1, c2] = size.0.to_be_bytes();
+        let [r1, r2] = size.1.to_be_bytes();
+        write_private_file(&temporary, &[c1, c2, r1, r2])
+            .and_then(|()| std::fs::rename(temporary, path))
+            .map_err(|err| {
+                tracing::warn!(error = %err, "could not preserve Codex terminal geometry");
+                AppError::Conflict(CODEX_UNREADABLE.into())
+            })?;
+        self.repaint_size = Some(size);
+        Ok(())
     }
 
     fn record(&mut self) -> AppResult<()> {
@@ -656,7 +697,7 @@ impl TaskRuntime {
         if let SessionInput::Viewer(bytes) = input {
             return run.writer.input(bytes).await;
         }
-        if let Some(hold) = &mut run.codex_submit_hold {
+        if let Some(hold) = &mut run.codex_input {
             if let Err(err) = self.check_codex_input_screen(&run.attempt_id) {
                 if matches!(input, SessionInput::Submit) && hold.state == CodexPaste::InFlight {
                     hold.state = CodexPaste::Recovering;
@@ -687,7 +728,7 @@ impl TaskRuntime {
         }
         self.last_input_ms.store(now.0, Ordering::SeqCst);
         let written = run.writer.input(input.bytes()).await;
-        if let Some(hold) = &mut run.codex_submit_hold
+        if let Some(hold) = &mut run.codex_input
             && hold.state == CodexPaste::InFlight
         {
             if written.is_err() {
@@ -719,7 +760,7 @@ impl TaskRuntime {
             && self.run.try_lock().is_ok_and(|slot| {
                 slot.as_ref().is_some_and(|run| {
                     run.attempt_id == *attempt
-                        && run.codex_submit_hold.as_ref().is_some_and(|hold| {
+                        && run.codex_input.as_ref().is_some_and(|hold| {
                             hold.state == CodexPaste::Idle
                                 || self.hub.prompt_box_shown_empty(Harness::Codex)
                         })
@@ -761,6 +802,11 @@ impl TaskRuntime {
                 return Ok(());
             }
             let (cols, rows) = rt.hub.size();
+            let input = run
+                .codex_input
+                .as_mut()
+                .ok_or_else(|| AppError::Conflict("the observed session is not Codex".into()))?;
+            input.remember_size((cols, rows))?;
             let other = if cols < 1000 { cols + 1 } else { cols - 1 };
             for width in [other, cols] {
                 let watch = rt.hub.watch();
@@ -4608,9 +4654,11 @@ impl App {
         // can type into it (F 2026-10-13: input right after the banner was refused as "not
         // running" on a fast machine).
         let codex = attempt.harness == Harness::Codex;
+        let codex_input = codex.then(|| CodexInput::load(&attempt.run_dir));
+        let repaint_size = codex_input.as_ref().and_then(|input| input.repaint_size);
         *runtime.run.lock().await = Some(ActiveRun {
             attempt_id: attempt.id.clone(),
-            codex_submit_hold: codex.then(|| CodexSubmitHold::load(&attempt.run_dir)),
+            codex_input,
             writer: attached.writer,
         });
         runtime.retain_park_for_attached_run(&attempt.id);
@@ -4639,6 +4687,7 @@ impl App {
         let (cols, rows) = runtime
             .hub
             .controller_size()
+            .or(repaint_size)
             .unwrap_or((welcome.cols, welcome.rows));
         runtime.hub.restore(
             welcome.seq,
@@ -4653,7 +4702,8 @@ impl App {
         if let Ok(mut shown) = runtime.screen_of.lock() {
             *shown = Some(attempt.id.clone());
         }
-        if (cols, rows) != (welcome.cols, welcome.rows)
+        if ((cols, rows) != (welcome.cols, welcome.rows)
+            || repaint_size.is_some_and(|size| size != (cols, rows)))
             && let Err(err) = self.resize_run(task_id, cols, rows).await
         {
             tracing::debug!(task = %task_id, error = %err, "viewer size after attach failed");
@@ -4727,14 +4777,14 @@ impl App {
                                         tracing::warn!(attempt = %aid, error = %err, "could not restore PTY size on reconnect");
                                         continue;
                                     }
-                                    let codex_submit_hold = run
+                                    let codex_input = run
                                         .as_mut()
                                         .filter(|run| run.attempt_id == aid)
-                                        .and_then(|run| run.codex_submit_hold.take())
-                                        .or_else(|| codex.then(|| CodexSubmitHold::load(&run_dir)));
+                                        .and_then(|run| run.codex_input.take())
+                                        .or_else(|| codex.then(|| CodexInput::load(&run_dir)));
                                     *run = Some(ActiveRun {
                                         attempt_id: aid.clone(),
-                                        codex_submit_hold,
+                                        codex_input,
                                         writer: again.writer,
                                     });
                                     rt.hub.restore(
@@ -6992,6 +7042,11 @@ impl App {
         let (cols, rows) = (cols.clamp(10, 1000), rows.clamp(5, 1000));
         let runtime = self.runtime(task_id);
         let mut run = runtime.run.lock().await;
+        if let Some(input) = run.as_mut().and_then(|run| run.codex_input.as_mut())
+            && input.repaint_size.is_some()
+        {
+            input.remember_size((cols, rows))?;
+        }
         runtime.hub.resize(cols, rows);
         crate::race::reached(
             crate::race::Point::TerminalResizeOwnsWriter,

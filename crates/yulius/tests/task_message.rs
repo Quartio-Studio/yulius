@@ -1898,6 +1898,113 @@ fn unreadable_codex_raises_the_undelivered_ci_notice_on_the_task() -> TestResult
 }
 
 #[test]
+fn restarting_the_server_during_a_codex_repaint_restores_the_childs_size() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let first = runtime()?;
+    let (id, listener, size) = first.block_on(async {
+        let (app, id, caller, listener) = codex_with_pr_news(&data).await?;
+        let rt = app.runtime(&id);
+        let size = rt.hub.size();
+        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("attempt")?;
+        let token: [u8; 32] = app
+            .deps
+            .crypto
+            .open(&attempt.host_token)?
+            .try_into()
+            .map_err(|_| "invalid fixture token")?;
+        paint_codex(&app, &id, "\x1b[?1049h\x1b[?25l\x1b[H\x1b[J");
+        let (writing, target) = (Arc::clone(&app), id.clone());
+        tokio::spawn(async move { send(&writing, &caller, &target).await });
+        wait_for("temporary width", Duration::from_secs(3), || async {
+            rt.hub.size() != size
+        })
+        .await?;
+        let observed = app
+            .deps
+            .session_host
+            .attach(Path::new(&attempt.run_dir), &token)
+            .await?;
+        assert_ne!(
+            observed.welcome.cols, size.0,
+            "host is at probe width before shutdown"
+        );
+        Ok::<_, Error>((id, listener, size))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+    runtime()?.block_on(async {
+        let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+        let app = start_on_listener(
+            &data,
+            &fake,
+            fake_agent(),
+            tokio::net::TcpListener::from_std(listener)?,
+            Arc::new(ScriptedUsage::default()),
+            Arc::new(ShiftedClock(AtomicI64::new(0))),
+        )
+        .await?;
+        app.reconcile().await?;
+        assert_eq!(
+            app.runtime(&id).hub.size(),
+            size,
+            "reattached viewer geometry"
+        );
+        app.send_input(&id, b"/size\r").await?;
+        let expected = format!("SIZE {} {}", size.1, size.0);
+        wait_for(
+            "child's recovered PTY size",
+            Duration::from_secs(5),
+            || async { screen(&app, &id).contains(&expected) },
+        )
+        .await?;
+        stop(&app, &id).await
+    })
+}
+
+#[test]
+fn a_refused_codex_outage_wake_resumes_on_repaint_without_an_owner_resend() -> TestResult {
+    use yulius_domain::time::Timestamp;
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let (app, id, _, _) = codex_with_pr_news(&data).await?;
+        // The Stop hook can mark the task idle before the rollout watcher reads
+        // the turn timestamps that make the outage wake eligible.
+        let runtime = app.runtime(&id);
+        let round = runtime.transcript_rounds();
+        wait_for("outage turn replay", Duration::from_secs(15), || async {
+            runtime.transcript_rounds() >= round + 2
+        })
+        .await?;
+        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("attempt")?;
+        let answered = Path::new(&attempt.run_dir).join(yulius_app::outage::STOP_ANSWERED_FILE);
+        if answered.exists() {
+            std::fs::remove_file(answered)?;
+        }
+        // The last recorded turn closed during this simulated outage.
+        let (down, started) = (Timestamp(1), Timestamp(i64::MAX - 1));
+        paint_codex(&app, &id, "\x1b[?1049h\x1b[?25l\x1b[H\x1b[J");
+        assert!(app.wake_after_outage(down, started, false).await.is_empty());
+        assert!(app.deps.store.task_needs_you(&id).await?.is_some());
+        paint_codex(&app, &id, CODEX_EMPTY_COMPOSER);
+        assert!(
+            app.watch_prs(&yulius_app::pr_watch::WatchBounds::default())
+                .await
+                .is_empty(),
+            "the PR watcher cannot clear an undelivered outage wake"
+        );
+        assert_eq!(
+            app.wake_after_outage(down, started, false).await,
+            std::slice::from_ref(&id)
+        );
+        wait_for("delivered outage wake", Duration::from_secs(5), || async {
+            screen(&app, &id).contains("ECHO: Yulius is back; continue")
+        })
+        .await?;
+        assert!(app.deps.store.task_needs_you(&id).await?.is_none());
+        stop(&app, &id).await
+    })
+}
+
+#[test]
 fn a_reconnecting_host_restores_the_width_of_an_interrupted_codex_repaint() -> TestResult {
     use yulius_app::hub::HubFrame;
     let (_dir, data) = data_dir()?;
