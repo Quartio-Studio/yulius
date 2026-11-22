@@ -161,7 +161,8 @@ impl GateFailures {
         }
     }
 
-    /// Classify observed failures, or failures still open because a green run skipped their job.
+    /// Describe every still-open failure. A job that failed here without identifying its tests
+    /// gives no evidence that its cause is the same as an earlier job failure.
     pub(super) fn describe(
         &self,
         verdict: &GateVerdict,
@@ -184,28 +185,28 @@ impl GateFailures {
                 new.push(name.to_owned());
             }
         };
-        if verdict.state == RunState::Passed {
-            for (test, (origin, _)) in &self.tests {
-                classify(test, Some(origin));
-            }
-            for (job, origin) in &self.unknown {
-                classify(job, Some(origin));
-            }
-            if new.is_empty() && inherited.is_empty() {
-                return None;
-            }
-        } else {
-            for job in &verdict.jobs {
-                for test in &job.tests {
-                    classify(test, self.tests.get(test).map(|(origin, _)| origin));
-                }
-                if job.unknown {
-                    classify(&job.name, None);
-                }
-            }
-            if new.is_empty() && inherited.is_empty() {
-                new.push(verdict.state.as_str().to_owned());
-            }
+        for (test, (origin, _)) in &self.tests {
+            classify(test, Some(origin));
+        }
+        let mut unidentified: BTreeSet<&str> = verdict
+            .jobs
+            .iter()
+            .filter(|job| job.unknown)
+            .map(|job| job.name.as_str())
+            .collect();
+        if verdict.state != RunState::Passed
+            && !verdict.jobs.iter().any(|job| !job.passed && !job.skipped)
+        {
+            unidentified.insert(verdict.state.as_str());
+        }
+        for (job, origin) in &self.unknown {
+            classify(
+                job,
+                (!unidentified.contains(job.as_str())).then_some(origin),
+            );
+        }
+        if new.is_empty() && inherited.is_empty() {
+            return None;
         }
         let only_inherited = new.is_empty();
         let mut parts = Vec::new();

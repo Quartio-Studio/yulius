@@ -610,6 +610,59 @@ async fn unsuccessful_reruns_keep_unresolved_jobs_at_the_same_revision_after_ret
 }
 
 #[tokio::test]
+async fn a_red_descendant_records_inheritance_from_observed_and_unobserved_jobs() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "origin").await?;
+    let origin = land(&f, "origin", "broken").await?;
+    let first = named_gate(&f, &origin, &["full::broken"]).await?;
+    f.h.store.execute_for_tests(&format!("UPDATE ci_jobs SET state='failed', failures='---- quick::broken stdout ----' WHERE id='{first}-quick'")).await?;
+    let number =
+        f.h.store
+            .task(&TaskId::parse("origin")?)
+            .await?
+            .ok_or("origin")?
+            .number;
+    for (task, state) in [("skipped", "skipped"), ("short", "cancelled")] {
+        agent(&f, task).await?;
+        let sha = land(&f, task, task).await?;
+        let run = gate(&f, &sha, RunState::Failed).await?;
+        f.h.store.execute_for_tests(&format!("UPDATE ci_jobs SET state='{state}', failures=NULL, reason='stopped early: job quick failed' WHERE id='{run}-full';
+            UPDATE ci_jobs SET state='failed', failures='---- quick::broken stdout ----' WHERE id='{run}-quick'")).await?;
+        let asked = ask(&f, task).await?;
+        settle(&f).await?;
+        let receipt = request(&f, asked["id"].as_str().ok_or("receipt")?).await?;
+        assert_eq!(receipt.state, StagingState::Inherited, "{receipt:?}");
+        let note = receipt.note.ok_or("inheritance note")?;
+        for test in ["full::broken", "quick::broken"] {
+            assert!(
+                note.contains(&format!("{test} from {} (task #{number})", &origin[..12])),
+                "{note}"
+            );
+        }
+    }
+    agent(&f, "mixed").await?;
+    let sha = land(&f, "mixed", "mixed").await?;
+    let run = gate(&f, &sha, RunState::Failed).await?;
+    f.h.store.execute_for_tests(&format!("UPDATE ci_jobs SET state='skipped', failures=NULL WHERE id='{run}-full';
+        UPDATE ci_jobs SET state='failed', failures='---- quick::new stdout ----' WHERE id='{run}-quick'")).await?;
+    let asked = ask(&f, "mixed").await?;
+    settle(&f).await?;
+    let receipt = request(&f, asked["id"].as_str().ok_or("mixed receipt")?).await?;
+    assert_eq!(receipt.state, StagingState::GateFailed);
+    let note = receipt.note.ok_or("mixed note")?;
+    assert!(
+        note.contains("new failures: quick::new")
+            && note.contains(&format!(
+                "full::broken from {} (task #{number})",
+                &origin[..12]
+            )),
+        "{note}"
+    );
+    assert!(!note.contains("quick::broken"), "{note}");
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_green_rerun_that_skips_an_unresolved_job_keeps_the_notice_and_staging_wait() -> TestResult
 {
     let f = fixture(&staging_toml()).await?;
