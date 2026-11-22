@@ -34,7 +34,7 @@ On 21 November task #588 received a fix-forward instruction for a test already f
 - [x] Deliver candidate scheduling independently
 - [x] Verify the incident regressions and review the delivery
 - [x] Deliver the isolated quality-job compiler cache repair
-- [ ] Deliver the reviewed integration failure ownership backend
+- [x] Deliver the reviewed integration failure ownership backend
 - [ ] Deliver the project CI and Status repair actions on the verified API
 
 ## Acceptance criteria
@@ -83,3 +83,4 @@ The ownership and staging regressions first ran on the combined implementation. 
 - In CI run `9b898c87-816d-4b23-875a-1889e12b9112`, three real compiler-cache tests failed to record a warm hit. All three reproduced on the 1 GiB temporary filesystem with and without `YULIUS_BUILD_SCRATCH`. The pinned mbx reported a default minimum free-space reserve of 5 GiB. With a 64 MiB reserve scoped to the fixtures, all three passed in the same environment. The quality job's complete Python suite passed all 278 tests. [Issue #1680](https://github.com/Quartio-Studio/yulius/issues/1680)
 - Independent review approved the isolated repair at `962f83552` after running the three failing cases on the 1 GiB filesystem.
 - The isolated quality repair landed in PR #1678 at `ff4ed8b89` on green Yulius CI run `bd55499c-3190-4dda-8383-df1c12dc6f49`.
+- Independent review approved the restored backend at `b6e0354fe` against the cache repair landing. All 4,743 tests selected across seven affected Rust binaries passed in run `4142574f-9cf0-4c82-8e04-dfbcef340678` with 24 configured skips. The seven incident regressions, all 166 file contracts, and 28 task-page and list Chromium cases also passed.
