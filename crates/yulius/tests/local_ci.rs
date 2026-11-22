@@ -5060,6 +5060,8 @@ async fn a_failure_naming_its_own_changed_file_makes_no_test_flaky() -> TestResu
     sync_and_settle(&f).await?;
     open_pull(&f, 2, "feat/two", "origin/dev", "crates/app/tests/two.rs")?;
     sync_and_settle(&f).await?;
+    assert!(issue_titles(&f)?.is_empty(), "each pull request broke it");
+    assert!(f.h.store.quarantined_tests(None).await?.is_empty());
     for (reference, file) in [("pr/1", "feature.txt"), ("pr/2", "crates/app/tests/two.rs")] {
         let job = job_of(&f, "reference", reference).await?;
         assert_eq!(job["state"], "failed", "{job}");
@@ -5073,8 +5075,6 @@ async fn a_failure_naming_its_own_changed_file_makes_no_test_flaky() -> TestResu
             "{output}"
         );
     }
-    assert!(issue_titles(&f)?.is_empty(), "each pull request broke it");
-    assert!(f.h.store.quarantined_tests(None).await?.is_empty());
     // Failures that name a file the change did not touch count as before.
     open_pull(&f, 3, "feat/three", "origin/dev", "three.txt")?;
     open_pull(&f, 4, "feat/four", "origin/dev", "four.txt")?;
