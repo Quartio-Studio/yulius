@@ -8483,3 +8483,43 @@ async fn the_superagent_lists_its_projects_brokered_commands() -> TestResult {
     assert!(!listed.to_string().contains(SECRET_VALUE), "{listed}");
     Ok(())
 }
+
+/// SPEC-624 (review round 2): the Superagent reads its person's notices without an audit entry,
+/// and a dismissal through it is audited as a change.
+#[tokio::test]
+async fn the_superagents_notice_dismissal_is_audited() -> TestResult {
+    use yulius_app::notices::NewNotice;
+    use yulius_app::ports::store::AuditStore as _;
+    use yulius_domain::notice::{NoticeKey, NoticeTone};
+    use yulius_domain::notify::NoticeKind;
+    let f = fixture().await?;
+    cockpit_id(&f, &f.alice).await?;
+    let alice = yulius_domain::ids::UserId::parse("u-alice")?;
+    let token = f.h.app.cockpit_mcp_token(&alice, &sid()).ok_or("token")?;
+    let posted =
+        f.h.app
+            .post_notice(NewNotice::new(
+                Some(sid()),
+                NoticeKey::parse("gate:quick::a")?,
+                NoticeKind::Failed,
+                NoticeTone::Error,
+                "quick::a fails",
+            ))
+            .await?;
+    let (listed, is_error) = cockpit_tool(&f, &token, "notices_list", json!({})).await?;
+    assert!(!is_error, "{listed}");
+    assert_eq!(listed["notices"][0]["id"], json!(posted.id), "{listed}");
+    let (dismissed, is_error) =
+        cockpit_tool(&f, &token, "notice_dismiss", json!({"id": posted.id})).await?;
+    assert!(!is_error, "{dismissed}");
+    let audited: Vec<Value> =
+        f.h.store
+            .audit_details("s1", "superagent.tool", 50)
+            .await?
+            .iter()
+            .filter_map(|detail| serde_json::from_str(detail).ok())
+            .collect();
+    let tools: Vec<&str> = audited.iter().filter_map(|d| d["tool"].as_str()).collect();
+    assert_eq!(tools, ["notice_dismiss"], "{audited:?}");
+    Ok(())
+}

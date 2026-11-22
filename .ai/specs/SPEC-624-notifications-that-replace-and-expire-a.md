@@ -136,7 +136,8 @@ or snoozing; changing who a notice reaches (the event bus rule stays the only ru
 - [x] People read and dismiss their notices over HTTP and the person tools
 - [x] Telegram replaces a keyed notice's earlier message in the chat
 - [x] The digest lists live notices under a key and hides expired ones
-- [ ] Independent review of the notice core, every finding answered
+- [x] Independent review of the notice core, every finding answered
+- [ ] The notice core's round-2 review notes are fixed
 - [ ] Subscription problems are keyed notices that end with the problem
 - [ ] Unrepaired integration failures are keyed notices for the project's people
 - [ ] The bell shows server notices and keys and expires every entry
@@ -173,7 +174,7 @@ or snoozing; changing who a notice reaches (the event bus rule stays the only ru
 - **AC-11** (NTC-011) A browser whose localStorage holds old entries without `expires` loads them
   with defaults and drops those already past them. A server notice and an older local entry with
   the same key become one entry, and an entry is hidden at its expiry while the page stays open.
-- **AC-12** (migration) A store at schema 87 with digests and Telegram rows migrates. The rows
+- **AC-12** (migration) A store at the schema before 0091 (88 after dev's 0089) with digests and Telegram rows migrates. The rows
   are kept and the notice tables are empty and usable.
 
 ## Test plan

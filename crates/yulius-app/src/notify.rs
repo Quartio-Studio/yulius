@@ -76,8 +76,8 @@ struct Notice {
     headline: String,
     text: String,
     about: Option<crate::ports::notify::SentAbout>,
-    /// Its project and key (`<sandbox or ->:<key>`): the bot's next message with them replaces
-    /// this one in the chat (SPEC-624 NTC-007, NTC-008).
+    /// Its project, recipient and key (`<sandbox or ->:<recipient or ->:<key>`): the bot's next
+    /// message with them replaces this one in the chat (SPEC-624 NTC-007, NTC-008).
     scope: Option<String>,
 }
 

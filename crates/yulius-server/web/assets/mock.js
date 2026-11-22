@@ -1381,7 +1381,8 @@ const GUEST_PAGES = ['attachments', 'browser', 'ci', 'files', 'git', 'intake', '
 /** The server's `guest_may_reach` (crates/yulius-server/src/auth.rs). */
 function guestMayReach(method, path) {
   path = path.replace(/\/$/, '');
-  if (['/api/me', '/api/me/notes', '/api/me/digest', '/api/auth/logout', '/api/events', '/api/archived-tasks', '/api/previews/authorize'].includes(path)) return true;
+  if (['/api/me', '/api/me/notes', '/api/me/digest', '/api/me/notices', '/api/auth/logout', '/api/events', '/api/archived-tasks', '/api/previews/authorize'].includes(path)) return true;
+  if (method === 'DELETE' && /^\/api\/me\/notices\/[^/]+$/.test(path)) return true;
   if (path === '/api/sandboxes') return method === 'GET';
   if (/^\/api\/(tasks|sessions|shells)\/.+/.test(path)) return true;
   const match = /^\/api\/sandboxes\/([^/]+)(?:\/([^/]+))?/.exec(path);

@@ -200,7 +200,7 @@ impl NoticeStore for SqliteStore {
                     "SELECT {COLS} FROM notices n \
                      WHERE (n.user_id IS NULL OR n.user_id = ?1) \
                        AND (n.sandbox_id IN (SELECT value FROM json_each(?4)) \
-                            OR (n.sandbox_id IS NULL AND ?5)) \
+                            OR (n.sandbox_id IS NULL AND (?5 OR n.user_id = ?1))) \
                        AND (n.admin_only = 0 OR ?6) \
                        AND (n.expires_at IS NULL OR n.expires_at > ?2) \
                        AND NOT EXISTS (SELECT 1 FROM notice_dismissals d \
@@ -686,6 +686,17 @@ mod tests {
         assert_eq!(
             ids(&store.live_notices(&u1, &guest, Timestamp(30), 2).await?),
             ["mine"]
+        );
+        // An instance-wide notice addressed to the guest is theirs, as the event stream says
+        // (review round 2).
+        let theirs = NoticeRecord {
+            user: Some(u1.clone()),
+            ..notice("theirs", None, "watch:x", 25)
+        };
+        store.put_notice(&theirs, 200).await?;
+        assert_eq!(
+            ids(&store.live_notices(&u1, &guest, Timestamp(30), 3).await?),
+            ["theirs", "mine"]
         );
         Ok(())
     }

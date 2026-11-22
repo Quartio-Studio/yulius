@@ -3150,11 +3150,15 @@ Notices for people carry a key and an expiry
   project or none, an optional recipient, `admin_only`, a `NoticeKey`
   (`yulius_domain::notice`), a category (the Telegram choice), a tone, texts, a link, `decision`
   and an optional `Expiry`. It resolves the expiry (`notice_expiry`: a decision never expires
-  and refuses an expiry), cuts and redacts the texts as the project's transcripts are, and stores
-  the notice. `NoticeStore::put_notice` (migration 0091, `notices`) deletes the notice with the
-  same project, recipient and key, and its dismissals, inserts the new one and keeps the scope's
-  newest 200, all in one transaction. The notice is then published as `notice.posted` in an
-  envelope with its project, recipient and `admin_only`.
+  and refuses an expiry), redacts the texts as the project's transcripts are, then puts the
+  title on one line and cuts both, and stores the notice. Keys of the derived notices (`task:`,
+  `control:`, `needs-you:`, `digest`) are refused. `NoticeStore::put_notice` (migration 0091,
+  `notices`) deletes the notice with the same project, recipient and key, and its dismissals,
+  inserts the new one and keeps 200 per scope, decisions first and then the newest, all in one
+  transaction. Posts and removals run one at a time (`POSTING`). The notice is then published as
+  `notice.posted` in an envelope with its project, recipient and `admin_only`. Pages hear
+  `notice.removed` for each notice the cap drops, and for a replaced notice whose `admin_only`
+  changed. A post that the cap would drop at once (its scope holds 200 decisions) is refused.
 - **Reading.** `App::notices_for` reads the live, undismissed notices addressed to the person or
   to nobody in particular. The store applies the reader's reach before its limit: the projects
   holding such notices that they can see, instance-wide notices unless they are a guest, and

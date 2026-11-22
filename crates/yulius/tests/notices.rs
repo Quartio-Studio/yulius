@@ -637,3 +637,125 @@ async fn texts_are_redacted_whole_and_links_and_keys_checked() -> TestResult {
     }
     Ok(())
 }
+
+/// Review round 2: pages hear of each notice the cap drops; a notice dropped at once (its scope
+/// is full of decisions) is refused, not published; a replacement that narrows who sees the
+/// notice tells the others it is gone; a title is one line.
+#[tokio::test]
+async fn the_cap_and_a_narrowed_replacement_are_heard() -> TestResult {
+    use yulius_app::notices::NOTICES_KEPT;
+    let p = people().await?;
+    for n in 0..NOTICES_KEPT {
+        p.w.h.clock.0.fetch_add(1, Ordering::SeqCst);
+        p.w.h
+            .app
+            .post_notice(gate(&p.shop, &format!("t{n}"), "Red")?)
+            .await?;
+    }
+    let mut events = p.w.h.app.events.subscribe();
+    p.w.h.clock.0.fetch_add(1, Ordering::SeqCst);
+    p.w.h
+        .app
+        .post_notice(gate(&p.shop, "newest", "Newest")?)
+        .await?;
+    let removed = events.recv().await?;
+    assert!(
+        matches!(&removed.event, UiEvent::NoticeRemoved { key, .. } if key == "gate:t0"),
+        "{:?}",
+        removed.event
+    );
+    assert!(matches!(
+        events.recv().await?.event,
+        UiEvent::NoticePosted { .. }
+    ));
+
+    // A replacement for administrators only: the project's other people drop the old one.
+    let narrowed = NewNotice {
+        admin_only: true,
+        ..gate(&p.shop, "newest", "For administrators")?
+    };
+    p.w.h.app.post_notice(narrowed).await?;
+    let gone = events.recv().await?;
+    assert!(
+        matches!(&gone.event, UiEvent::NoticeRemoved { key, .. } if key == "gate:newest"),
+        "{:?}",
+        gone.event
+    );
+    assert!(!gone.admin_only, "the old notice's people hear it");
+    assert!(matches!(
+        events.recv().await?.event,
+        UiEvent::NoticePosted { .. }
+    ));
+
+    // A title is one line.
+    let lines =
+        p.w.h
+            .app
+            .post_notice(gate(&p.shop, "lines", "first\nsecond\tthird")?)
+            .await?;
+    assert_eq!(lines.title, "first second third");
+    Ok(())
+}
+
+/// Review round 2: a scope full of decisions refuses a notice that would be dropped at once.
+#[tokio::test]
+async fn a_scope_full_of_decisions_refuses_a_report() -> TestResult {
+    use yulius_app::notices::NOTICES_KEPT;
+    let p = people().await?;
+    for n in 0..NOTICES_KEPT {
+        p.w.h.clock.0.fetch_add(1, Ordering::SeqCst);
+        p.w.h
+            .app
+            .post_notice(NewNotice {
+                decision: true,
+                ..gate(&p.shop, &format!("d{n}"), "Decide")?
+            })
+            .await?;
+    }
+    let mut events = p.w.h.app.events.subscribe();
+    let refused =
+        p.w.h
+            .app
+            .post_notice(gate(&p.shop, "report", "Report")?)
+            .await;
+    assert!(
+        matches!(&refused, Err(yulius_app::error::AppError::Capacity(_))),
+        "{refused:?}"
+    );
+    assert!(events.try_recv().is_err(), "nothing was published");
+    Ok(())
+}
+
+/// Review round 2: `notice_dismiss` takes only a notice of its project or an instance-wide one,
+/// and the Cockpit audits it as a change.
+#[tokio::test]
+async fn a_dismissal_names_its_own_project() -> TestResult {
+    let p = people().await?;
+    let other = support::seed_sandbox(&p.w.h, "s2", "other", "u-alice")
+        .await?
+        .id;
+    p.w.grant("alice", "acme/other", "push");
+    let elsewhere =
+        p.w.h
+            .app
+            .post_notice(gate(&other, "x", "Elsewhere")?)
+            .await?;
+    let (error, said, _) = remote(
+        &p,
+        &p.alice.2,
+        "notice_dismiss",
+        json!({"project": "acme/shop", "id": elsewhere.id}),
+    )
+    .await?;
+    assert!(error, "a notice of another project: {said}");
+    assert_eq!(listed(&p, &p.alice.1).await?.len(), 1);
+    let (error, said, _) = remote(
+        &p,
+        &p.alice.2,
+        "notice_dismiss",
+        json!({"project": "acme/other", "id": elsewhere.id}),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    Ok(())
+}

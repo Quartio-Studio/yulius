@@ -137,6 +137,14 @@ pub fn notice_view(notice: &NoticeRecord) -> NoticeView {
     }
 }
 
+/// `text` on one line: runs of whitespace and control characters become one space.
+fn one_line(text: &str) -> String {
+    text.split(|c: char| c.is_whitespace() || c.is_control())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn cut(text: &str, max: usize) -> String {
     let text = text.trim();
     if text.chars().count() <= max {
@@ -189,8 +197,9 @@ impl App {
         let sandbox = new.sandbox.as_ref();
         // Redacted whole, then cut: a cut first could leave a secret's prefix that no longer
         // matches (review round 1).
+        // One line: a title is a list's bullet in the digest and the chat (review round 2).
         let title = cut(
-            &self.redact_posted_notice(sandbox, new.title.clone()).await,
+            &one_line(&self.redact_posted_notice(sandbox, new.title.clone()).await),
             TITLE_MAX,
         );
         let detail = match new.detail.as_deref().map(str::trim) {
@@ -225,8 +234,24 @@ impl App {
         };
         let _posting = POSTING.lock().await;
         let put = self.deps.store.put_notice(&notice, NOTICES_KEPT).await?;
+        // A notice its scope's decisions leave no room for is dropped at once: refused, and
+        // nobody heard of it (review round 2).
+        if put.dropped.iter().any(|d| d.id == notice.id) {
+            return Err(AppError::Capacity(format!(
+                "this project and recipient already hold {NOTICES_KEPT} notices that wait for a \
+                 decision; remove some first"
+            )));
+        }
         for dropped in &put.dropped {
             self.publish_removed(dropped);
+        }
+        // A replacement that reaches fewer people tells the others the old one is gone.
+        if let Some(old) = put
+            .replaced
+            .as_ref()
+            .filter(|old| old.admin_only != notice.admin_only)
+        {
+            self.publish_removed(old);
         }
         self.events.publish_envelope(envelope_of(
             &notice,
