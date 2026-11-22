@@ -4061,7 +4061,7 @@ hands on alone leaves one end later
 flowchart LR
     prompt["prompt / wake-up\n(hook, user line)"] --> working
     stop["clean Stop hook"] -->|"turn may settle"| idle["waiting / done"]
-    stop -->|"goal has actionable plan or spec work, or a Codex goal's red PR, within retry bound"| working
+    stop -->|"goal has actionable plan or spec work, or a Codex goal's own red CI run, within retry bound"| working
     turn["turn_duration:\npending background agents"] --> bg["+ background work\n(shown Working)"]
     launch["transcript: monitor started,\nagent launched (until it ends)"] --> bg
     idle --> bg
@@ -4074,7 +4074,7 @@ flowchart LR
 ```
 
 A goal task with unfinished declared work receives a bounded continuation at Stop. The native goal evaluator, a person with a pending decision, background work or pending delivery news can own the next turn. [ADR-0428](decisions/0428-a-goal-turn-continues-its-declared-work.md)
-A Codex goal has no native evaluator, so its own pull request counts as declared work too: within the same probe budget the Stop gate reads it through the display verifier the task list uses, and with the plan and spec finished, failing checks, or open checks it could not read in time, continue the goal under the same retry bound ([SPEC-558](../.ai/specs/SPEC-558-parked-codex-tasks-no-codex-exit-screen.md) PKR-003, [SPEC-621](../.ai/specs/SPEC-621-finish-540-on-claude-code-parked-codex-t.md)).
+A Codex goal has no native evaluator, so its own red pull request counts as declared work too: once the PR watcher has pasted the failure (SPEC-578), a Stop with the plan and spec finished continues the goal under the same retry bound when the task's latest Yulius CI run for its open pull request failed at the commit its worktree is on. The read is local (delivery record, durable CI run, worktree `HEAD`); no GitHub request is made at Stop. [ADR-0464](decisions/0464-a-codex-goal-continues-on-its-own-red-yulius-ci-run.md)
 
 A `needs_attention` flag keeps its reason with the task
 ([SPEC-472](../.ai/specs/SPEC-472-hey-i-have-a-bug-in-produt-sanbox-this-h.md),

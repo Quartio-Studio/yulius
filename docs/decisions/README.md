@@ -529,6 +529,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0461 -->
 <!-- ADR 0462 -->
 <!-- ADR 0463 -->
+- [0464](0464-a-codex-goal-continues-on-its-own-red-yulius-ci-run.md): A Codex goal whose plan is finished continues on its own red Yulius CI run at its current head; extends 0428.
 <!-- ADR 0464 -->
 <!-- ADR 0465 -->
 <!-- ADR 0466 -->
