@@ -1,6 +1,6 @@
 ---
 yulius-task: 9a60dad8-697d-4edb-92fe-729524e293ae
-status: done
+status: in-progress
 ---
 
 # SPEC-625 — Task agents read the status of their project's other tasks, read-only
@@ -109,6 +109,7 @@ much chaos"). Task #609.
 - [x] Skills and catalog: look before overlapping work, no relay requests
 - [x] Docs: api, product, architecture, changes
 - [x] Independent review approves the exact head
+- [ ] Answer every independent review finding on the exact head
 
 ## Acceptance criteria
 
