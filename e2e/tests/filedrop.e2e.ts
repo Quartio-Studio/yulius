@@ -182,7 +182,7 @@ test('a read-only terminal refuses dropped files', async ({ app, browser }) => {
 });
 
 test('files dropped or pasted on the new-task prompt sit in its text, at the caret', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio', '&codex=1'));
+  await app.open(mock('/s/studio'));
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.fill('Fix the layout in ');
   await installDrop(browser);

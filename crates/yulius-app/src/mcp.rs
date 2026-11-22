@@ -274,7 +274,7 @@ fn cockpit_only_tool_descriptors() -> Vec<ToolDescriptor> {
             input_schema: schema(json!({
                 "sandbox": {"type": "string", "description": "The sandbox's slug (or owner/name) from sandboxes_list; not this one"},
                 "prompt": {"type": "string", "description": "The request for the new task, complete (what, why, where, done when)"},
-                "harness": {"type": "string", "enum": ["auto", "claude", "codex", "antigravity"], "description": "With no harness, a model selects its agent. With both omitted, the task uses Codex (Ultrafast on ChatGPT Pro 500). Use auto without a model to draw uniformly across harnesses with non-exhausted subscriptions."},
+                "harness": {"type": "string", "enum": ["auto", "claude", "codex", "antigravity"], "description": format!("With no harness, a model selects its agent. With both omitted, the task uses Claude Code on {DEFAULT_CLAUDE_MODEL}. Use auto without a model to draw uniformly across harnesses with non-exhausted subscriptions.")},
                 "title": {"type": "string", "description": "Short title (derived from the prompt when absent)"},
                 "workflow": {"type": "string", "description": "Workflow id or name of that sandbox, or \"auto\""},
                 "mode": {"type": "string", "enum": ["goal", "prompt", "auto"]},
@@ -466,10 +466,10 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "task_create".into(),
-            description: "Create and start a new task in this project (another agent session with its own branch, on the agent harness names, else the one a model implies, else your task's own when called from a task, else Codex), e.g. when the user says \"create a task from that\" or a follow-up should run separately. It is created like New task in the UI, on behalf of the person you work for; write the prompt as a complete request (what, why, where, done when). With after_task it waits until that task is done: its agent finished, no work it declared is left (its plan is complete and its spec, if any, says done) and its pull request is merged, or open and would merge as it is, with nothing of it left to come (a merge Yulius is about to make, or one its agent was not told of yet, is not done); with start_rule until the rule is true (`#12 merged` when the merge itself matters); with after_all_tasks until every task of the project with work still coming is done; prepared, it waits until the person starts it, or until start_at. The answer's start_rule is the rule as stored. A supertask (for broad work such as security hardening or one-shotting the product) waits for the project's running tasks, then runs alone: every other task of the project waits for it, so create one only when the person asks. Tools create at most 20 tasks an hour per project.".into(),
+            description: "Create and start a new task in this project (another agent session with its own branch, on the agent harness names, else the one a model implies, else your task's own when called from a task, else Claude Code), e.g. when the user says \"create a task from that\" or a follow-up should run separately. It is created like New task in the UI, on behalf of the person you work for; write the prompt as a complete request (what, why, where, done when). With after_task it waits until that task is done: its agent finished, no work it declared is left (its plan is complete and its spec, if any, says done) and its pull request is merged, or open and would merge as it is, with nothing of it left to come (a merge Yulius is about to make, or one its agent was not told of yet, is not done); with start_rule until the rule is true (`#12 merged` when the merge itself matters); with after_all_tasks until every task of the project with work still coming is done; prepared, it waits until the person starts it, or until start_at. The answer's start_rule is the rule as stored. A supertask (for broad work such as security hardening or one-shotting the product) waits for the project's running tasks, then runs alone: every other task of the project waits for it, so create one only when the person asks. Tools create at most 20 tasks an hour per project.".into(),
             input_schema: schema(json!({
                 "prompt": {"type": "string", "description": "The request for the new task"},
-                "harness": {"type": "string", "enum": ["auto", "claude", "codex", "antigravity"], "description": "With no harness, a model selects its agent. With both omitted, a running task inherits its own agent for the follow-up. CLI and Superagent calls default to Codex (Ultrafast on ChatGPT Pro 500). Use auto without a model to draw uniformly across harnesses with non-exhausted subscriptions."},
+                "harness": {"type": "string", "enum": ["auto", "claude", "codex", "antigravity"], "description": format!("With no harness, a model selects its agent. With both omitted, a running task inherits its own agent for the follow-up. CLI and Superagent calls default to Claude Code on {DEFAULT_CLAUDE_MODEL}. Use auto without a model to draw uniformly across harnesses with non-exhausted subscriptions.")},
                 "title": {"type": "string", "description": "Short title (derived from the prompt when absent)"},
                 "workflow": {"type": "string", "description": "Workflow id or name from workflows_list, or \"auto\" to let Yulius choose"},
                 "mode": {"type": "string", "enum": ["goal", "prompt", "auto"], "description": "goal (default): the task works until its definition of done holds; prompt: one plain prompt"},
@@ -1411,11 +1411,15 @@ mod tests {
                 .unwrap_or_default()
         };
         let (here, there) = (schema_of("task_create"), schema_of("sandbox_task_create"));
+        // SPEC-620 CDM-004: with harness and model omitted, the task runs Claude Code on Opus 5.5.
+        let harness = there["properties"]["harness"]["description"]
+            .as_str()
+            .unwrap_or_default();
         assert!(
-            there["properties"]["harness"]["description"]
-                .as_str()
-                .is_some_and(|description| description.contains("Codex")
-                    && description.contains("Ultrafast on ChatGPT Pro 500"))
+            harness.contains(&format!(
+                "the task uses Claude Code on {DEFAULT_CLAUDE_MODEL}"
+            )) && !harness.contains("Codex"),
+            "{harness}"
         );
         for field in ["model", "effort"] {
             assert!(
@@ -1826,8 +1830,21 @@ mod tests {
                 .unwrap_or_default()
                 .to_owned()
         };
-        assert!(described("harness").contains("Codex"));
-        assert!(described("harness").contains("Ultrafast on ChatGPT Pro 500"));
+        // SPEC-620 CDM-004: the CLI's and the Superagents' default is Claude Code on Opus 5.5.
+        assert!(
+            described("harness").contains(&format!(
+                "CLI and Superagent calls default to Claude Code on {DEFAULT_CLAUDE_MODEL}"
+            )) && !described("harness").contains("Codex"),
+            "{}",
+            described("harness")
+        );
+        assert!(
+            tool_descriptors()
+                .into_iter()
+                .find(|t| t.name == "task_create")
+                .is_some_and(|t| t.description.contains("else Claude Code)")),
+            "task_create names Claude Code as the last default"
+        );
         for model in ["gpt-6.2-astra", DEFAULT_CLAUDE_MODEL, "gemini-4-neon"] {
             assert!(described("model").contains(model), "{model}");
         }

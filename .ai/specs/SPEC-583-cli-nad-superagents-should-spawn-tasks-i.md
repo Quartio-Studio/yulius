@@ -7,6 +7,8 @@ status: done
 
 [SPEC-607](SPEC-607-codex-tasks-run-at-high-effort-unless-th.md) supersedes the inherited effort used in this release.
 
+[SPEC-620](SPEC-620-make-opus-and-claude-default-model.md) supersedes SPA-001: these callers now default to Claude Code on Opus 5.5.
+
 ## Goal
 
 A person can run `yulius task create` or ask either Superagent to start a task and get GPT-6.2 Astra at extra high effort, with Ultrafast on eligible subscriptions.

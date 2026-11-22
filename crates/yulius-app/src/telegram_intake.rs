@@ -365,9 +365,12 @@ impl App {
                 prompt.push_str(&format!("\n- {path}"));
             }
         }
+        // A message names no agent: Claude Code on its defaults, Opus 5.5 at high (SPEC-620).
         let req = CreateTask {
             prompt,
-            harness: String::new(),
+            harness: yulius_domain::harness::Harness::ClaudeCode
+                .as_str()
+                .to_owned(),
             workflow_id: None,
             model: None,
             effort: None,

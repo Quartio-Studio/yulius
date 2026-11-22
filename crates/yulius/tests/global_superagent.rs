@@ -281,7 +281,6 @@ async fn the_global_superagent_works_in_every_sandbox_of_its_person() -> TestRes
     assert!(instructions.contains("in sync"), "{instructions}");
 
     // Every sandbox of alice's, at once, as alice.
-    crate::codex::connect_codex(&f.h.app).await?;
     let (projects, is_error) = cockpit_tool(&f, &token, "projects_list", json!({})).await?;
     assert!(!is_error, "{projects}");
     let shown: Vec<&str> = projects["projects"]
@@ -310,7 +309,8 @@ async fn the_global_superagent_works_in_every_sandbox_of_its_person() -> TestRes
             .await?
             .ok_or("task")?;
     assert_eq!(task.sandbox_id, sandbox("s2"));
-    assert_eq!(task.harness, yulius_domain::harness::Harness::Codex);
+    // On Claude Code by default (SPEC-620).
+    assert_eq!(task.harness, yulius_domain::harness::Harness::ClaudeCode);
     assert_eq!(f.h.app.task_summary(&task).await?.harness_choice, "chosen");
     assert_eq!(task.created_by, UserId::parse("u-alice")?);
     assert_eq!(task.origin, TaskOrigin::Agent);

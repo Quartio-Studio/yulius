@@ -369,13 +369,18 @@ impl App {
         };
         let model = opt_str(args, "model")?;
         // Inherit a running parent task's harness. The CLI and Superagents have no parent
-        // task and use the ordinary Codex launch defaults (SPEC-583).
+        // task and use Claude Code's launch defaults, Opus 5.5 at high (SPEC-620).
         let harness = match opt_str(args, "harness")? {
             Some(named) => named,
             None => model
                 .as_deref()
                 .map(Harness::implied_by)
-                .unwrap_or_else(|| caller.task.as_ref().map_or(Harness::Codex, |t| t.harness))
+                .unwrap_or_else(|| {
+                    caller
+                        .task
+                        .as_ref()
+                        .map_or(Harness::ClaudeCode, |t| t.harness)
+                })
                 .as_str()
                 .to_owned(),
         };

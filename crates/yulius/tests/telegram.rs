@@ -2023,6 +2023,7 @@ async fn with_intake_a_message_starts_a_task_and_a_photo_is_its_attachment() -> 
     let w = world().await?;
     set_bot(&w, TOKEN_A).await?;
     signed_in_subscription(&w).await?;
+    crate::codex::connect_codex(&w.h.app).await?;
     // The project's folder, where its attachments live.
     std::fs::create_dir_all(w.h.app.config.data_dir.join("sandboxes/s1"))?;
     link(&w, &w.alice, 100).await?;
@@ -2036,6 +2037,14 @@ async fn with_intake_a_message_starts_a_task_and_a_photo_is_its_attachment() -> 
     assert_eq!(tasks.len(), 1, "{tasks:?}");
     assert_eq!(tasks[0]["origin"], "telegram");
     assert_eq!(tasks[0]["owner"]["login"], "alice", "{}", tasks[0]);
+    // SPEC-620 CDM-001: a message names no agent, so the task runs Claude Code, chosen and not
+    // drawn, even with Codex usable too.
+    assert_eq!(
+        (&tasks[0]["harness"], &tasks[0]["harness_choice"]),
+        (&json!("claude"), &json!("chosen")),
+        "{}",
+        tasks[0]
+    );
 
     let before = w.fake.sent_to(100).len();
     w.fake.raw(

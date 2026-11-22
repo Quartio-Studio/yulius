@@ -24,7 +24,8 @@ Codex tasks keep their selected model when Yulius sends a message near a subscri
 New and resumed sessions hide the rate-limit model switch reminder. A visible reminder holds
 automated messages until the picker is dismissed. [SPEC-603](../.ai/specs/SPEC-603-codex-s-rate-limit-prompt-must-not-switc.md)
 
-Tasks created by the CLI or either Superagent default to Codex when harness and model are omitted.
+Tasks created by the CLI or either Superagent run Claude Code on Opus 5.5 at High effort when harness and model are omitted. [SPEC-620](../.ai/specs/SPEC-620-make-opus-and-claude-default-model.md)
+A task started with a Telegram message runs Claude Code on Opus 5.5 too.
 A task created with a `gpt-*` model and no explicit agent selects Codex.
 A task keeps its agent for life, and a Codex task moves only between Codex subscriptions. On ChatGPT Pro 500,
 Codex defaults to Ultrafast for models that support it. A Codex
@@ -63,7 +64,7 @@ agent it names (`F 2026-11-19 Random harness`,
 superseding the no-draw part of [SPEC-514](../.ai/specs/SPEC-514-make-sure-harnesses-doesnt-change-themse.md)
 / [ADR-0368](decisions/0368-a-tasks-agent-is-set-never-drawn.md)).
 
-The composer and Settings start on Codex default in a browser without a saved model. A saved Random choice or specific model takes precedence. [SPEC-587](../.ai/specs/SPEC-587-codex-should-be-default-for-example-bart.md)
+The composer and Settings start on Opus 5.5 (Claude Code) in a browser without a saved model. A saved Random choice or specific model, Codex default included, takes precedence. [SPEC-620](../.ai/specs/SPEC-620-make-opus-and-claude-default-model.md)
 
 The composer and Settings offer individual Codex and Gemini models grouped by provider. Each model
 shows its supported effort levels. Choosing a model that cannot use the saved effort restores the

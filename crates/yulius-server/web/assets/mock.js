@@ -1508,10 +1508,13 @@ route('GET', `/api/sandboxes/${ID}/tasks`, ({ db, p, query }) => {
   const archived = query.get('archived') === 'true';
   return db.tasks.filter((t) => t.sandbox_id === p[0] && t.archived === archived).map(summary);
 });
-/** The effective model and effort, retaining each omitted task setting (SPEC-561). */
+/**
+ * The effective model and effort, retaining each omitted task setting (SPEC-561): each agent's
+ * default, Opus 5.5 at high for Claude Code (SPEC-493, SPEC-462).
+ */
 function taskModelSettings(harness, options = {}) {
-  const model = options.model || (harness === 'codex' ? 'gpt-6.2-astra' : harness === 'antigravity' ? 'gemini-4-neon' : 'claude-opus-4');
-  const effort = options.effort || (harness === 'claude' ? 'default' : DEFAULT_EFFORT);
+  const model = options.model || (harness === 'codex' ? 'gpt-6.2-astra' : harness === 'antigravity' ? 'gemini-4-neon' : 'claude-opus-5-5');
+  const effort = options.effort || DEFAULT_EFFORT;
   return { model, model_default: !options.model, effort, effort_default: !options.effort };
 }
 route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
@@ -3970,7 +3973,8 @@ route('POST', `/api/sandboxes/${ID}/superagent/requests/${ID}`, async ({ db, p, 
   const opts = request.view.options || {};
   const prepared = opts.prepared === true;
   const model = opts.model?.trim();
-  const named = opts.harness?.trim() || (model ? undefined : 'codex');
+  // With neither agent nor model, Claude Code (SPEC-620 CDM-001).
+  const named = opts.harness?.trim() || (model ? undefined : 'claude');
   const drawn = named === 'auto' && !model;
   const harness = drawn ? drawHarness(db) : chosenHarness(named, model);
   const task = {
