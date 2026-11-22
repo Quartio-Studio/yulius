@@ -397,6 +397,12 @@ pub trait IntakeStore: Send + Sync {
     async fn chain(&self, task: &TaskId) -> AppResult<Option<crate::intake::ChainRecord>>;
     /// Tasks chained after `task`, oldest first.
     async fn chain_successors(&self, task: &TaskId) -> AppResult<Vec<crate::intake::ChainRecord>>;
+    /// Records where the fork `fork.task_id` came from (SPEC-628 FRK-004).
+    async fn insert_fork(&self, fork: &crate::intake::ForkRecord) -> AppResult<()>;
+    /// Where a task came from, when it is a fork.
+    async fn fork_of(&self, task: &TaskId) -> AppResult<Option<crate::intake::ForkRecord>>;
+    /// The forks of `task`, oldest first.
+    async fn forks_from(&self, task: &TaskId) -> AppResult<Vec<crate::intake::ForkRecord>>;
     /// Sets or clears why a chained task needs a person.
     async fn set_chain_blocked(&self, task: &TaskId, reason: Option<&str>) -> AppResult<()>;
     /// Sets the time a prepared task starts by itself, or clears it (SPEC-105).
