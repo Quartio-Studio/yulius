@@ -1077,10 +1077,10 @@ impl TranscriptWatch for Watch {
                 }
                 Err(err) if !self.children_warned => {
                     self.children_warned = true;
-                    tracing::warn!(error = %err, "a Codex subagent's rollout could not be read");
+                    tracing::warn!(error = %err, "Codex subagents' rollouts could not be listed or read");
                 }
                 Err(err) => {
-                    tracing::debug!(error = %err, "a Codex subagent's rollout could not be read");
+                    tracing::debug!(error = %err, "Codex subagents' rollouts could not be listed or read");
                 }
             }
             if children.bounded() && !self.children_bounded {

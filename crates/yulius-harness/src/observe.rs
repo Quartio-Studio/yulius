@@ -591,10 +591,15 @@ mod tests {
             model: Some(model),
             usage,
         };
+        // A name too long is left out while there is still room for parts.
+        acc.observe_child(&answer(99, "m".repeat(MODEL_PART_BYTES + 1)));
+        acc.observe_child(&answer(98, "x".into()));
+        assert_eq!(acc.model_parts().len(), 1, "{:?}", acc.model_parts());
+        let mut acc = UsageAccumulator::new();
         for n in 0..MAX_MODEL_PARTS + 4 {
             acc.observe_child(&answer(n, format!("model-{n:02}")));
         }
-        acc.observe_child(&answer(99, "m".repeat(MODEL_PART_BYTES + 1)));
+        acc.observe_child(&answer(99, "m".repeat(MODEL_PART_BYTES)));
         acc.observe_child(&answer(100, "model-00".into()));
         let parts = acc.model_parts();
         assert_eq!(parts.len(), MAX_MODEL_PARTS);

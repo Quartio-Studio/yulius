@@ -10,10 +10,11 @@
 //!
 //! [`CodexChildren`] finds the descendants of one session, at any depth, and follows their
 //! rollouts over a run's window ([`LinesSince`]). Discovery is bounded (CSA-6): only date
-//! folders from the day before the session's own are listed, only files changed since the
-//! window began are examined, each file's first line is read once and at most
-//! [`SESSION_META_BYTES`] of it, at most [`MAX_EXAMINED`] files are examined and
-//! [`MAX_CHILDREN`] followed, and the folders are listed at most every [`LIST_INTERVAL`].
+//! folders from the day before the session's own are listed, only files changed since
+//! [`MODIFIED_SLACK`] before the window began are examined, each file's first line is read
+//! once and at most [`SESSION_META_BYTES`] of it (an incomplete one again once the file grew),
+//! at most [`MAX_EXAMINED`] files are examined and [`MAX_CHILDREN`] followed, and the folders
+//! are listed at most every [`LIST_INTERVAL`].
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, BufRead as _, Read as _};
@@ -191,7 +192,10 @@ impl CodexChildren {
             if self.examined.contains_key(&path) || path == self.rollout {
                 return Ok(());
             }
-            let meta = entry.metadata()?;
+            // A file removed since it was listed is no rollout to read.
+            let Ok(meta) = entry.metadata() else {
+                return Ok(());
+            };
             if changed_since.is_some_and(|since| meta.modified().is_ok_and(|at| at < since))
                 || self.pending.get(&path) == Some(&meta.len())
             {
@@ -206,13 +210,15 @@ impl CodexChildren {
                 && !self.pending.contains_key(&path)
             {
                 self.bounded = true;
-                break;
+                continue;
             }
             match read_link(&path) {
-                // Its first line is still being written: read again once the file grew.
-                Err(()) => {
+                // Its first line is still being written: read again once the file grew. One that
+                // could not be opened now is read again at the next listing.
+                Err(()) if tail::open_regular(&path).is_ok() => {
                     self.pending.insert(path, len);
                 }
+                Err(()) => {}
                 Ok(link) => {
                     self.pending.remove(&path);
                     self.examined.insert(path, link);
@@ -850,6 +856,63 @@ pub(crate) mod tests {
         assert_eq!(children.pending.get(&partial), Some(&13));
         assert!(drain(&mut children)?.is_empty());
         assert_eq!((children.examined.len(), children.pending.len()), (1, 1));
+        Ok(())
+    }
+
+    /// CSA-6: a file whose first line is incomplete is read again only once its length changed,
+    /// and counts toward the examined bound, which says it was reached.
+    #[test]
+    fn incomplete_first_lines_wait_for_the_file_to_grow() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let day = "2026/11/21";
+        let root = Rollout::new(dir.path(), day, "2026-11-21T09:00:00.000Z", ROOT, None).write()?;
+        let child = Rollout::new(
+            dir.path(),
+            day,
+            "2026-11-21T09:01:00.000Z",
+            "01a1f900-0000-7000-8000-000000000001",
+            Some(ROOT),
+        )
+        .response("2026-11-21T09:01:02.000Z", "resp_1", 1, 1);
+        let complete = format!("{}\n", child.lines.join("\n"));
+        let first = complete.find('\n').ok_or("a first line")?;
+        // The first line with a space for its newline: JSON whitespace, the same length.
+        let partial = format!("{} ", &complete[..first]);
+        let path = child.path.clone();
+        fs::create_dir_all(dir.path().join(day))?;
+        fs::write(&path, &partial)?;
+        let other = dir
+            .path()
+            .join(day)
+            .join("rollout-2026-11-21T09-02-00-01a1f900-0000-7000-8000-000000000002.jsonl");
+        fs::write(&other, "{")?;
+        let mut children = CodexChildren::between(&root, None, None);
+        children.interval = Duration::ZERO;
+        children.max_examined = 1;
+        assert!(drain(&mut children)?.is_empty());
+        assert_eq!(
+            children.pending.len(),
+            1,
+            "the other is not read: {:?}",
+            children.pending
+        );
+        assert!(children.bounded());
+        // Completed at the same length: not read again until it grows.
+        fs::write(&path, format!("{}\n", &complete[..first]))?;
+        assert!(drain(&mut children)?.is_empty());
+        assert!(children.examined.is_empty());
+        children.max_examined = 4;
+        let more = Rollout::new(dir.path(), day, "2026-11-21T09:01:00.000Z", "x", None)
+            .response_of(
+                Some("01a1f900-0000-7000-8000-000000000001"),
+                "2026-11-21T09:01:03.000Z",
+                "resp_2",
+                1,
+                2,
+            );
+        fs::write(&path, format!("{complete}{}\n", more.lines[1]))?;
+        assert_eq!(drain(&mut children)?.len(), 2);
         Ok(())
     }
 
