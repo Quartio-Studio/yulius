@@ -565,13 +565,20 @@ fn the_composer_offers_antigravity_on_its_default_model() -> TestResult {
     );
     assert!(
         mock.contains("import { DEFAULT_EFFORT } from './models.js';")
-            && mock.contains(
-                "const effort = options.effort || (harness === 'claude' ? 'default' : DEFAULT_EFFORT);"
-            )
+            && mock.contains("const effort = options.effort || DEFAULT_EFFORT;")
             && models.contains(&format!(
                 "export const DEFAULT_EFFORT = '{DEFAULT_ANTIGRAVITY_EFFORT}';"
             )),
         "the mock must use the shared {DEFAULT_ANTIGRAVITY_EFFORT} effort when Antigravity effort is omitted"
+    );
+    // SPEC-620: a Claude Code task without a model or effort runs the server's defaults in the
+    // mock too, Opus 5.5 at the same shared effort.
+    use yulius_domain::harness::{DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL};
+    assert!(
+        mock.contains(&format!(
+            "harness === 'antigravity' ? '{DEFAULT_ANTIGRAVITY_MODEL}' : '{DEFAULT_CLAUDE_MODEL}');"
+        )) && DEFAULT_CLAUDE_EFFORT == DEFAULT_ANTIGRAVITY_EFFORT,
+        "the mock creates a Claude Code task without a model on another default"
     );
     assert!(
         mock.contains(&format!(
