@@ -278,7 +278,18 @@ fn execute_in(task: &str, after_quick: bool, archive: Option<&str>) -> io::Resul
             let scratch = archive.and_then(|_| {
                 env::var_os("YULIUS_BUILD_SCRATCH").or_else(|| env::var_os("YULIUS_CI_CACHE"))
             });
-            let extracted = scratch.map(tempfile::tempdir_in).transpose()?;
+            let extracted = scratch
+                .map(|parent| {
+                    let mut builder = tempfile::Builder::new();
+                    builder.prefix("nextest-");
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt as _;
+                        builder.permissions(std::fs::Permissions::from_mode(0o700));
+                    }
+                    builder.tempdir_in(parent)
+                })
+                .transpose()?;
             if let Some(dir) = &extracted {
                 let path = dir.path().to_str().ok_or_else(|| {
                     io::Error::new(
