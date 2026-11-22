@@ -1193,6 +1193,14 @@ pub trait NeedsYouStore: Send + Sync {
         request: Option<&crate::needs_you::NeedsYouRecord>,
         at: Timestamp,
     ) -> AppResult<bool>;
+    /// Records a system request only for this live attempt and only while the
+    /// task has no open request. Returns whether the request was inserted.
+    async fn ask_for_live_attempt(
+        &self,
+        task: &TaskId,
+        attempt: &yulius_domain::ids::AttemptId,
+        request: &crate::needs_you::NeedsYouRecord,
+    ) -> AppResult<bool>;
     /// Ends the request at `at` only while it still asks `action`, in one step: a request made
     /// meanwhile stays. `true` when it ended one.
     async fn end_task_needs_you_asking(

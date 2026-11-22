@@ -83,10 +83,10 @@ For an explicit restart of stopped Codex work, the supervisor carries a continua
 
 The generated Codex configuration hides the rate-limit model switch reminder. If a live terminal
 shows the picker or its resized alternate grid has yet to repaint, the terminal writer holds
-automated pastes and submits. The PR watch can deliver
+automated pastes and submits. For an indeterminate screen, the supervisor saves the viewer size in the run directory, requests a redraw at a temporary width and restores the saved size under the same writer lock. If the server restarts during that probe, reattachment restores the saved size. Later viewer resizes update it, and drop it when it cannot be saved. The PR watch can deliver
 its pending notice after the picker closes. The run directory records the paste before it is sent.
 A successful Enter clears the record. After an interrupted submission or server reattachment,
-a confirmed empty composer clears it.
+a confirmed empty composer clears it. An inconclusive probe opens Needs you on the observed live attempt. A pending PR notice or automatic prompt (the wake after an outage) releases its own request at its next send once the screen is readable; a person's message keeps its request until they resend it. [Decision 0451](decisions/0451-repaint-an-unreadable-codex-terminal-before-typing.md)
 [Decision 0443](decisions/0443-hold-codex-input-at-the-rate-limit-model-picker.md)
 
 ```mermaid
@@ -3316,8 +3316,9 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
 - When a test fails, first-parent gate evidence identifies its origin. Candidate runs are queued
   one at a time. The queue records inherited tests and completes those requests in revision
   order once a verified deployment contains them. One available worker owns the red branch.
-  Other workers receive the assignee's number. With no worker available, CI and Status return
-  the unresolved tests, their origins and the latest affected run. [ADR-0450](decisions/0450-attribute-integration-test-failures-in-first-parent-order.md)
+  Other workers receive the assignee's number. When no worker is available, CI and Status show
+  each unresolved test and its introducing merge. Writers can retry the latest affected run
+  or start a task in that project. [ADR-0450](decisions/0450-attribute-integration-test-failures-in-first-parent-order.md)
 - **Pick.**
   - Revisions are ordered by their first-parent position on the verified head
     (`Git::first_parent_position`, in the CD mirror).
