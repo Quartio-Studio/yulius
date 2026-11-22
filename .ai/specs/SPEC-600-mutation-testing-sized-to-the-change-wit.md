@@ -33,6 +33,7 @@ On 2026-11-21 the owner measured 105 minutes waiting for mutation tests in 22 Co
 - [x] Deliver disposable targets for built-in Cargo commands
 - [x] Deliver external Cargo commands and cache reuse, then request staging
 - [x] Verify the shared delivery regression fix before requesting staging again
+- [x] Verify the parking regressions before requesting replacement staging
 
 ## Acceptance criteria
 
@@ -166,3 +167,8 @@ The final independent review approved b9c15e428 on dev base 13a632c40. All 49 la
 Staging request 00316b3b-4411-48a3-95b7-6c9bb6b34770 left staging unchanged. Run 4ab3206f-78fd-4deb-9ad3-f854ebeff382 on merged revision 9eb21d694 failed one of the 2,987 tests in shard 2. The test `delivery::agents_merge_only_through_gated_tools` expected the Claude Code task's current review list to be empty after merge. It received the completed reviewer’s approval for pull request 1. Task #589 introduced the merged-round read in #1648, the preceding member of the same train, and owns the compatibility correction. [Review-round specification](SPEC-605-record-the-review-rounds-of-codex-tasks.md)
 
 On dev base 3b95efbd8 the focused delivery test reproduced the gate failure locally, returning one completed review instead of the empty list. This branch integrated task #589's correction ddf2a8809 with the existing delivery assertion intact. On the corrected tree, the original failure, the Codex merged-review test and the shared merged-review analytics test all passed. The broader delivery, review and Codex review-hook selection passed all 152 tests in 32.175 seconds. The next staging request is for the corrected merged revision.
+
+Staging request 8857e740-ebeb-4882-8d6f-c77ad54c4b20 left staging unchanged after the full gate on 792913c65. Run a79b0198-cb8e-44ef-96a7-c6f41b5da233 reported 17 distinct failing tests across both Rust shards. The same selection reproduced all 17 locally on that revision. Fourteen concerned parking an idle run, two concerned parked-task status during an unavailable read, and one concerned the review of a delivered pull request. The 49 disposable Cargo and compiler-cache tests passed in 39.377 seconds. Task #589 delivered the attached idle-run fixtures and the combined review-round correction in #1669 (2c386072c). Task #592 delivered the two parked-status deadline checks in #1671 (f76fa603b). [Parking and review fixtures](SPEC-605-record-the-review-rounds-of-codex-tasks.md) and [parked-task status](SPEC-608-a-github-rate-limit-must-not-show-finish.md)
+
+
+After #1669 landed, all 15 review and idle-parking cases passed locally. After #1671 landed, the same 17 tests that failed in staging passed together on dev base f76fa603b. The blocked browser read kept the recorded PR without an owner notice. Overlapping Git timeouts retained a previously observed PR failure until a completed read cleared it. Both owning fixes are in this branch through its integration base. The follow-up change records the verification for a new staging request.
