@@ -64,11 +64,11 @@ in their session's run (SPEC-087 MET-004).
 ## Plan
 
 - [x] Write and validate the spec
-- [ ] Find a thread's child rollouts with bounded discovery
-- [ ] Count child responses with their model in the historical recount
-- [ ] Count child responses in the live watch, agreeing with the recount
-- [ ] Store and price the per-model parts of a run
-- [ ] Recount recent Codex runs and update the estimate's disclosure and docs
+- [x] Find a thread's child rollouts with bounded discovery
+- [x] Count child responses with their model in the historical recount
+- [x] Count child responses in the live watch, agreeing with the recount
+- [x] Store and price the per-model parts of a run
+- [x] Recount recent Codex runs and update the estimate's disclosure and docs
 - [ ] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
@@ -102,3 +102,10 @@ them. Each new test fails without its change.
   rollouts at start, and older figures do not feed the estimate.
 
 ## Evidence
+
+- New tests: `codex_children::tests` (5: descendants only, nested, fork copy, unrelated session and fork; windows across a resume; date-folder and mtime skips with a partial first line; bounds and the listing interval), `recount::tests::a_codex_run_counts_its_subagents_once_by_model`, `wiring::harness::tests::the_live_watch_and_the_recount_agree_on_a_codex_runs_subagents`, `pricing::tests::a_runs_parts_are_priced_at_their_own_models`, `capacity::tests::a_runs_subagent_parts_are_priced_at_their_models`, the parts case of `accounts::tests::a_subscriptions_cost_counts_only_priced_runs_with_usage`, `tests::codex_runs_of_the_last_week_are_recounted_and_parts_are_kept` (store) and the two capacity-panel checks in `subscriptions.e2e.ts`.
+- Hand mutation checks: dropping the subagent loop of `count_codex_run` failed the recount test; dropping `observe_child` in the watch failed the agreement test (`output Some(1), not 11`); pricing every run with no parts failed the capacity and subscription-cost tests. Each passed again once restored.
+- Test binaries run in full: `yulius-domain`, `yulius-store`, `yulius-harness` and `yulius-app` (1,724 tests); the `yulius` library tests with the `metrics_recount`, `analytics`, `subscription_pool`, `codex` and `capacity` integration files (775 tests); `subscriptions.e2e.ts` (50 tests). `scripts/dev quick` passed.
+- Real rollouts (the sandbox's 662, read only, private data kept out of the repository): a throwaway probe built on `count_codex_run` matched an independent Python sum of distinct `token_usage_record`s per thread tree for the 8 sessions with most children. The largest, with 234 children, counts 4,277,946 output tokens instead of the main rollout's 3,293,469, read in 0.8 s. Two Sol sessions get an Astra part (4,848 and 5,438 output tokens).
+- Not tested: a nested subagent (depth 2) written by a real Codex; no retained rollout has one, so its `session_id` is not known. Either link (parent or session) admits it.
+- Vidoc is switched off for this project in Yulius: no security scan ran.
