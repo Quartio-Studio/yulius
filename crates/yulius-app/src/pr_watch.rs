@@ -180,6 +180,10 @@ pub struct Told {
     /// The last key typed of each kind.
     #[serde(default)]
     pub keys: BTreeMap<String, String>,
+    /// Event keys an admitted Codex notice already failed to submit. A second
+    /// refusal raises that exact notice to the owner. Older receipts start empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub deferred_keys: BTreeMap<String, String>,
     /// The progress string last seen.
     #[serde(default)]
     pub progress: String,
@@ -822,6 +826,7 @@ impl App {
             let activation = self.arm_observation(&task.id);
             let slot = self.armed_now(&task.id);
             let facts = if task.status == TaskStatus::Running && !held {
+                self.settle_codex_input_hold(&task, &attempt.id, None).await;
                 Box::pin(self.pr_facts(&task, &mut told, &mut runs, &activation, &slot)).await
             } else {
                 None
@@ -953,7 +958,7 @@ impl App {
                             stamp();
                             true
                         };
-                        self.type_into_session_if(
+                        self.type_into_session_written(
                             &task,
                             paste.as_bytes(),
                             Typed::Notice(&attempt.id),
@@ -963,13 +968,23 @@ impl App {
                         .await
                     } else {
                         stamp();
-                        self.type_into_session(
+                        self.type_into_session_written(
                             &task,
                             paste.as_bytes(),
                             Typed::Notice(&attempt.id),
                             Sender::Yulius,
+                            None::<std::future::Ready<bool>>,
                         )
                         .await
+                    };
+                    // Only the writer's refusal counts towards raising the notice: a person's
+                    // hold before the write is SPEC-480's to report (review round 1).
+                    let (result, write_refused) = match result {
+                        Ok(written) => {
+                            let refused = written.is_err();
+                            (written, refused)
+                        }
+                        Err(held) => (Err(held), false),
                     };
                     let put_back = || {
                         if let Some(previous) = before {
@@ -981,6 +996,7 @@ impl App {
                     };
                     match result {
                         Ok(()) => {
+                            next.deferred_keys.clear();
                             tracing::info!(task = %task.id, pr = facts.pr, "told the task about its pull request");
                             if is_armed_check_in {
                                 next.armed_check_in_ms = facts.now_ms;
@@ -992,15 +1008,40 @@ impl App {
                         // Not ready for input, or a person is typing or may have a draft in
                         // the prompt box (SPEC-480): the next pass tries again. The pull request
                         // it saw open is kept, so its merge is still told.
-                        Err(AppError::Conflict(why)) => {
-                            put_back();
-                            tracing::debug!(task = %task.id, why, "a pull request notice waits");
-                            untold(told, &next)
-                        }
                         Err(err) => {
                             put_back();
-                            tracing::warn!(task = %task.id, error = %err, "could not tell the task about its pull request");
-                            untold(told, &next)
+                            if matches!(err, AppError::Conflict(_)) {
+                                tracing::debug!(task = %task.id, error = %err, "a pull request notice waits");
+                            } else {
+                                tracing::warn!(task = %task.id, error = %err, "could not tell the task about its pull request");
+                            }
+                            let mut pending = untold(told, &next);
+                            if write_refused
+                                && has_new_event
+                                && task.harness == yulius_domain::harness::Harness::Codex
+                            {
+                                if pending.deferred_keys == next.keys {
+                                    let action = "Inspect the terminal and resolve the reported delivery problem. Clear this request so Yulius can retry the pending pull request notice.";
+                                    if let Err(record_err) = self
+                                        .ask_for_blocked_input(
+                                            &task,
+                                            &attempt.id,
+                                            &text,
+                                            &err.public_message(),
+                                            action,
+                                        )
+                                        .await
+                                    {
+                                        tracing::warn!(task = %task.id, error = %record_err, "could not raise undelivered PR news");
+                                    }
+                                    // Raised: once the request is cleared, the next refusal
+                                    // counts afresh instead of raising it again at once.
+                                    pending.deferred_keys.clear();
+                                } else {
+                                    pending.deferred_keys.clone_from(&next.keys);
+                                }
+                            }
+                            pending
                         }
                     }
                 }
