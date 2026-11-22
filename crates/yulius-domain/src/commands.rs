@@ -96,7 +96,7 @@ const NOT_BINARY_DIRS: &[&str] = &[
 
 /// Why a binary path is refused (BRK-001): absolute and normalised, with no `.`, `..` or empty
 /// component, at most [`MAX_BINARY`] bytes of printable ASCII without spaces, and not in a folder
-/// of [`NOT_BINARY_DIRS`]. The caller refuses the data directory too.
+/// of `NOT_BINARY_DIRS`. The caller refuses the data directory too.
 #[must_use]
 pub fn binary_refusal(binary: &str) -> Option<String> {
     let Some(rest) = binary.strip_prefix('/') else {
@@ -189,7 +189,7 @@ fn word_char(b: u8) -> bool {
 }
 
 /// Why a flag of `refuse` or `send_flags` is refused: one or two dashes, then a letter or digit
-/// and [`word_char`]s (no space, `=` or invisible character, which would never match).
+/// and `word_char` characters (no space, `=` or invisible character, which would never match).
 #[must_use]
 pub fn flag_refusal(flag: &str) -> Option<String> {
     let name = flag.strip_prefix("--").or_else(|| flag.strip_prefix('-'));
