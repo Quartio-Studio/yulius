@@ -149,3 +149,39 @@ Backend pull request (Plan items 1–7):
   403.
 - `scripts/dev quick` passed. The security scan is switched off for this project in Yulius
   (`yulius security-scan` prints "Security scan disabled"): not run, not passed.
+
+Review round 1 (Fable 5.2, head `9ae710d21`): request changes, 3 major, 4 minor, 2 nits, all own
+code. Answered:
+
+- The named subscription was lost in a queue wait, and the queue could start a fork before its
+  record existed. A fork is now inserted `prepared`. `start_fork` writes its record, copy and plan,
+  then `queue_task` moves it from `prepared` to `queued` with its start and subscription in one
+  step. A failure removes the task, the stored copy and the staged copy. Tests:
+  `forks::a_codex_fork_waits_with_its_subscription_then_resumes_its_own_session` (kept
+  `account_id`, the run on the named subscription after the source freed the only slot) and
+  `forks::a_queue_pass_before_the_forks_record_starts_nothing` (race point `ForkInserted`, a
+  `drain_queue_now` in between leaves it `prepared` with no run).
+- Relaunch paths: the Codex test continues the stopped fork, and the second launch resumes the
+  fork's own session with `fork: None`.
+  `forks::a_fork_whose_first_launch_failed_launches_as_a_fork_again` covers a launch failure
+  before any process: the lineage stays empty and the next launch is a fork again.
+  `forks::the_task_fork_tool_forks_a_task_of_the_project` covers a successful `task_fork`. The
+  refusal test adds another provider's subscription and an unknown one (429). It now counts
+  archived and other tasks, and it checks that nothing was staged.
+- Minor: the copy runs in 64 KiB chunks and is cut after its last newline, with a unit test for
+  lines longer than a chunk. The steps are read before staging. `fork_base` returns store
+  errors. The fake copies the forked transcript before it prints READY. Nits: the refusals now say
+  that a branch or transcript can also be gone after a task ended.
+- The reviewer's real Codex run, quoted: "**Codex 0.170.0**, with Yulius's argv order
+  (`--no-daemon -C … -m … fork <id> -- <prompt>`): the request carried the source conversation
+  plus the new prompt. The SessionStart hook named the new id (`source: "fork"`), and the source
+  rollout stayed byte-identical."
+- Mutation checks by hand: without the subscription in the kept start, the Codex test failed
+  (forks.rs:477). With the fork inserted `queued`, the race test failed.
+- Merged origin/dev (brokered commands): migration 0092 is schema version 89, and the Cockpit
+  serves 86 tools. dev's `a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment`
+  failed on dev itself: `commands_list` had been added without the test's expectation. It is fixed
+  in its own commit.
+- After the fixes: `scripts/cargo nextest run -p yulius-store -p yulius-app -p yulius-harness
+  -p yulius-contracts -p yulius-server`: 1227 passed. `scripts/cargo nextest run -p yulius -E
+  'binary_id(yulius::main)'`: 2636 passed, 24 skipped.

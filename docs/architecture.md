@@ -2338,7 +2338,9 @@ task of the same project and harness that continues a copy of another task's con
 source is only read. Its id, number, title, branch, the branch's commit and its latest session
 become a `task_forks` row (migration 0092). For Claude Code, the transcript's complete lines and
 side files are copied to `<data>/transcripts/<fork id>/`. The fork's steps are a copy of the
-source's. The row, the copy and the steps are written before the fork's first start.
+source's. The fork is inserted `prepared`, which the queue never starts; once the row, the copy
+and the steps are written, one store step moves it to `queued` with its start and the
+subscription the person named (`queued_start`), so a queue wait keeps that choice.
 `ensure_worktree` starts the fork's branch at the recorded commit. While the fork has no session
 of its own, `launch_attempt` places the stored copy in the fork worktree's project folder, with
 `cwd` rewritten, and launches `SessionMode::Resume { fork }`. For Claude Code that is

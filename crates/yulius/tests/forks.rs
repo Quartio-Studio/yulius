@@ -663,3 +663,76 @@ fn a_queue_pass_before_the_forks_record_starts_nothing() -> TestResult {
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// SPEC-628 FRK-001: the `task_fork` tool forks a task of the project for the person the calling
+/// agent works for, with origin `agent`, and answers the new task and where it came from.
+#[test]
+fn the_task_fork_tool_forks_a_task_of_the_project() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), agent)?;
+        let (sandbox, user) = seed(&app, &data, &["a1"]).await?;
+        let source_id = new_task(&app, &sandbox, &user, "Parser").await?;
+        ready(&app, &source_id).await?;
+        let source = task(&app, &source_id).await?;
+        let source_session = latest_session(&app, &source_id).await?;
+        let path = transcript(&app, &source, &source_session)?;
+        std::fs::create_dir_all(path.parent().ok_or("folder")?)?;
+        std::fs::write(&path, "{\"type\":\"user\",\"uuid\":\"fixture-user-1\"}\n")?;
+        // The calling agent: another task of the project with a run that holds this token.
+        let caller = closed_task(&app, &sandbox, &user, Harness::ClaudeCode).await?;
+        let token = "tok-fork-caller-0123456789abcdef";
+        app.deps
+            .store
+            .insert_attempt(&yulius_app::model::AttemptRecord {
+                id: yulius_domain::ids::AttemptId::parse("a-fork-caller")?,
+                task_id: caller.id.clone(),
+                seq: 1,
+                harness: Harness::ClaudeCode,
+                account_id: None,
+                provider_session_id: None,
+                launch_kind: yulius_app::model::LaunchKind::New,
+                model: None,
+                state: yulius_domain::task::AttemptState::Live,
+                run_dir: "/nonexistent/run".into(),
+                token_hash: app.deps.crypto.sha256_hex(token.as_bytes()),
+                host_token: app.deps.crypto.seal(&[1u8; 32])?,
+                ptyhost_pid: None,
+                child_pid: None,
+                started_at: app.now(),
+                ended_at: None,
+                exit_code: None,
+                exit_reason: None,
+            })
+            .await?;
+        let request: yulius_contracts::mcp::RpcRequest = serde_json::from_value(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "task_fork", "arguments": {"number": source.number, "message": "Try another parser."},
+                "_meta": {"yulius/structured": true}}
+        }))?;
+        let response = app.mcp_handle(token, request).await.ok_or("no response")?;
+        let result = serde_json::to_value(&response)?["result"].clone();
+        assert_ne!(result["isError"], serde_json::json!(true), "{result}");
+        let answer = &result["structuredContent"];
+        assert_eq!(answer["forked_from"]["number"], serde_json::json!(source.number), "{result}");
+        assert_eq!(answer["forked_from"]["task_id"], source_id.as_str());
+        let fork_id = TaskId::parse(answer["task"]["task_id"].as_str().ok_or("task_id")?)?;
+        let fork = task(&app, &fork_id).await?;
+        assert_eq!(fork.origin, TaskOrigin::Agent);
+        assert_eq!(fork.created_by, user);
+        let origin = app.deps.store.fork_of(&fork_id).await?.ok_or("fork record")?;
+        assert_eq!(origin.message.as_deref(), Some("Try another parser."));
+        ready(&app, &fork_id).await?;
+        stop(&app, &fork_id).await?;
+        stop(&app, &source_id).await?;
+        Ok::<_, BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
