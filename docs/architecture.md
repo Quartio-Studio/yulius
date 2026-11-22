@@ -103,6 +103,8 @@ flowchart LR
 
 The capacity estimator reads the model and four token classes stored per attempt. It uses Standard GPT-6 prices for Codex and reports a weekly Ultrafast scenario for eligible models. The attempt totals lack per-response speed settings and cover the task session. [Decision 0440](decisions/0440-estimate-codex-work-at-standard-and-ultrafast-api-prices.md)
 
+A Codex run's totals include the responses of its session's subagents, which Codex writes to rollouts of their own in the sandbox's shared sessions folder. The watch and the recount find them by `parent_thread_id`, count each response once in the run whose window holds it, and store the parts other models answered (`metrics.model_parts`), which the estimator prices at their own models. [Decision 0455](decisions/0455-count-codex-subagents-under-their-sessions-run-by-model.md)
+
 A Codex subscription signs in with `codex login --device-auth` in the login terminal (the
 provided CLI, its `CODEX_HOME` in the sign-in's own folder with credentials kept in a file),
 takes an OpenAI API key, or takes the `auth.json` of a ChatGPT sign-in made elsewhere; each is
