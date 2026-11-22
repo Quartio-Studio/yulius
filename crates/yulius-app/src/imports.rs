@@ -375,6 +375,18 @@ impl App {
         ctx: &AuthContext,
         req: &OnboardPlanRequest,
     ) -> AppResult<OnboardPlan> {
+        crate::ports::github::for_purpose(
+            crate::ports::github::GitHubPurpose::Imports,
+            self.onboard_plan_inner(ctx, req),
+        )
+        .await
+    }
+
+    async fn onboard_plan_inner(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        req: &OnboardPlanRequest,
+    ) -> AppResult<OnboardPlan> {
         if req.sessions.len() > MAX_SESSIONS_PER_IMPORT {
             return Err(AppError::Invalid(format!(
                 "at most {MAX_SESSIONS_PER_IMPORT} sessions per request"
@@ -538,6 +550,18 @@ impl App {
     /// `Invalid` manifests and non-GitHub or foreign repositories, `Forbidden` without the
     /// needed permission, `Upstream` GitHub/Git failures.
     pub async fn create_import(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        req: &CreateImportRequest,
+    ) -> AppResult<CreateImportResponse> {
+        crate::ports::github::for_purpose(
+            crate::ports::github::GitHubPurpose::Imports,
+            self.create_import_inner(ctx, req),
+        )
+        .await
+    }
+
+    async fn create_import_inner(
         self: &Arc<Self>,
         ctx: &AuthContext,
         req: &CreateImportRequest,
@@ -837,6 +861,18 @@ impl App {
     /// # Errors
     /// `Conflict` while files are incomplete or another completion is applying.
     pub async fn complete_import(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        job_id: &str,
+    ) -> AppResult<ImportResult> {
+        crate::ports::github::for_purpose(
+            crate::ports::github::GitHubPurpose::Imports,
+            self.complete_import_inner(ctx, job_id),
+        )
+        .await
+    }
+
+    async fn complete_import_inner(
         self: &Arc<Self>,
         ctx: &AuthContext,
         job_id: &str,

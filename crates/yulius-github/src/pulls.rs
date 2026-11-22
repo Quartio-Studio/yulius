@@ -192,6 +192,29 @@ impl GitHubClient {
         Ok(wire.into())
     }
 
+    /// Confirms a contradictory display observation against the numbered resource.
+    ///
+    /// # Errors
+    /// Reports a display pause, inaccessible pull or network error.
+    pub async fn confirm_pull(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<PullRequest, GitHubError> {
+        repo_args(owner, repo)?;
+        let url = self.api_url(&["repos", owner, repo, "pulls", &number.to_string()])?;
+        let call = Call::new(Method::GET, url, Some(token.expose()));
+        let reply = self
+            .inner
+            .display
+            .read_after(call, &self.inner.transport, Some(std::time::Instant::now()))
+            .await?;
+        let wire: WirePull = decode(&reply)?;
+        Ok(wire.into())
+    }
+
     /// Sets the title of pull request `number`; its body, base and state stay.
     ///
     /// # Errors

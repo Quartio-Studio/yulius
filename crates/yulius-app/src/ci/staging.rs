@@ -326,6 +326,18 @@ impl App {
         sandbox: &SandboxRecord,
         env: &str,
     ) -> AppResult<()> {
+        crate::ports::github::for_purpose(
+            crate::ports::github::GitHubPurpose::Staging,
+            self.staging_advance_inner(sandbox, env),
+        )
+        .await
+    }
+
+    async fn staging_advance_inner(
+        self: &Arc<Self>,
+        sandbox: &SandboxRecord,
+        env: &str,
+    ) -> AppResult<()> {
         let lock = queue_lock(&sandbox.id);
         let _queue = lock.lock().await;
         let store = &self.deps.store;
@@ -867,7 +879,25 @@ impl App {
             if landing.is_none() && receipt_pr.is_none() {
                 return Ok(None);
             }
-            let Some(target) = self.staging_target(sandbox).await?.1 else {
+            let displaying = crate::ports::github::current_purpose()
+                == crate::ports::github::GitHubPurpose::Display;
+            // A receipt describes this landing. Its verified config stays readable locally.
+            // The actual deploy independently authorizes the current integration head.
+            let local = if displaying && let Some(sha) = &landing {
+                self.cd_verified_config(sandbox, sha).await.ok()
+            } else {
+                None
+            };
+            let target = if let Some(config) = local {
+                config.merge_first().cloned()
+            } else if displaying && self.github_budget().await?.display_paused {
+                return Err(AppError::Capacity(
+                    "Live staging status refresh is paused to reserve GitHub requests for delivery.".into(),
+                ));
+            } else {
+                self.staging_target(sandbox).await?.1
+            };
+            let Some(target) = target else {
                 return Ok(None);
             };
             let requests = match &landing {
@@ -882,6 +912,7 @@ impl App {
         };
         let (landing, target, requests) = match read.await {
             Ok(found) => found?,
+            Err(AppError::Capacity(note)) => return Some(note),
             Err(err) => {
                 tracing::warn!(task = %task.id, error = %err, "delivery_status: staging could not be read");
                 return None;

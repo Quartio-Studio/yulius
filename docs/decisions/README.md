@@ -502,6 +502,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0445 -->
 - [0446](0446-keep-github-availability-separate-from-task-state.md): Keep GitHub availability separate from task state.
 <!-- ADR 0446 -->
+- [0447](0447-task-display-shares-github-reads-and-yields-to-delivery.md): Task display shares GitHub reads and yields to delivery.
 <!-- ADR 0447 -->
 - [0448](0448-repository-file-readers-run-before-merge.md): Repository file readers run before merge.
 <!-- ADR 0448 -->

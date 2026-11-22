@@ -71,6 +71,7 @@ aho-corasick = { workspace = true }
 
 [dev-dependencies]
 ring = { workspace = true }
+h2 = "0.4.20"
 yulius-app = { workspace = true, features = ["test-support"] }
 yulius-ptyhost = { workspace = true, features = ["test-support"] }
 yulius-store = { workspace = true, features = ["test-support"] }

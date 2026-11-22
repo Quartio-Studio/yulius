@@ -78,6 +78,8 @@ Yulius's own Rust builds share compiled artifacts across task worktrees and CI l
 
 Agent and CI build scratch is disk-backed. Deliveries check their tests by hand. A task can request a mutation campaign by name. [Decision 0439](decisions/0439-delivery-checks-mutations-by-hand-and-builds-on-disk.md)
 
+The Status panel shows how many GitHub App requests remain and which operations used them. At the reserve, task display yields requests to delivery. A completed pull request can still be read locally. [ADR-0447](decisions/0447-task-display-shares-github-reads-and-yields-to-delivery.md)
+
 ## Who it is for
 
 A small team (2-5 people; the founders are superadmins) that works with several Claude

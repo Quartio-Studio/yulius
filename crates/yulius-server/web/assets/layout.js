@@ -511,10 +511,25 @@ export function renderStatus(data) {
         statTile('disk', 'Disk', diskPct === null ? '—' : percentText(diskPct), diskPct, vm.disk_total_bytes ? `${bytes(vm.disk_used_bytes)} of ${bytes(vm.disk_total_bytes)}` : null),
         sessionsTile(sessions)),
       h('div', { class: 'status-facts' }, facts)),
+    data.github_budget ? githubBudgetSection(data.github_budget) : null,
     sandboxes.length ? statusSection('sandboxes', 'folder', 'Sandboxes', `${liveTotal} running in ${busy} of ${sandboxes.length}`, h('div', { class: 'status-rows' }, sandboxRows), false) : null,
     statusSection('accounts', 'user', 'Subscriptions', accounts.length ? accountSummary : 'none yet',
       accounts.length === 0 ? h('div', { class: 'muted small' }, 'No subscriptions yet.') : h('div', { class: 'account-list' }, [...troubled, ...accounts.filter((a) => !troubled.includes(a))].map((a) => accountUsage(a, { foldable: true, open: troubled.includes(a), showEmail: a.in_use_by !== undefined }))), troubled.length > 0 || accounts.length <= 3),
   ];
+}
+
+function githubBudgetSection(budget) {
+  const labels = { display: 'Display reads', ci_statuses: 'CI statuses', merges: 'Merges', staging: 'Staging queue', imports: 'Imports', other: 'Other' };
+  const summary = budget.remaining == null ? 'Remaining quota unknown' : `${budget.remaining.toLocaleString()} of ${budget.limit.toLocaleString()} remaining`;
+  const reset = budget.resets_at ? new Date(budget.resets_at * 1000).toLocaleTimeString() : null;
+  return statusSection('github', 'pulse', 'GitHub API', summary, h('div', { class: 'status-rows' },
+    budget.display_paused ? h('p', null, 'Display refreshes paused to reserve requests for delivery.') : null,
+    reset ? h('p', null, `Quota resets at ${reset}.`) : null,
+    h('p', null, budget.resets_at ? 'Installation requests from this server in this quota window' : 'Recent installation requests from this server'),
+    budget.used != null ? h('p', null, `${budget.used.toLocaleString()} requests charged by GitHub. At least ${(budget.unattributed_minimum ?? 0).toLocaleString()} are unattributed.`) : null,
+    ...Object.entries(labels).map(([key, label]) => h('div', { class: 'status-row' },
+      h('span', { class: 'status-row-name' }, label), h('span', { class: 'status-count' }, String(budget.attempts[key] || 0)))),
+    h('p', null, `${budget.not_modified} unchanged responses used no primary quota.`)), budget.display_paused);
 }
 
 /** Initials for an account's avatar: from the email's name part, else from the label. */

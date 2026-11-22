@@ -2192,12 +2192,38 @@ async fn delivery_status_asks_a_merged_task_for_its_staging_request() -> TestRes
         )),
         "{asks}"
     );
+    // The agent's delivery_status reads this receipt locally even at the reserve.
+    let mut budget = yulius_app::ports::github::GitHubBudget::empty();
+    budget.display_paused = true;
+    *f.h.github.budget_view.lock().map_err(|_| "budget")? = Some(budget);
+    f.h.github
+        .branch_read_purposes
+        .lock()
+        .map_err(|_| "purposes")?
+        .clear();
+    let paused = delivery_text(&f, "t1").await?;
+    assert!(paused.contains("has no staging request"), "{paused}");
+    assert!(
+        f.h.github
+            .branch_read_purposes
+            .lock()
+            .map_err(|_| "purposes")?
+            .is_empty()
+    );
     f.h.store
         .execute_for_tests("UPDATE tasks SET activity = 'waiting' WHERE id = 't1'")
         .await?;
     let mut updates = f.h.app.events.subscribe();
     let ci = gate(&f, &r1, RunState::Passed).await?;
     let asked = ask(&f, "t1").await?;
+    assert_eq!(
+        f.h.github
+            .branch_read_purposes
+            .lock()
+            .map_err(|_| "purposes")?
+            .first(),
+        Some(&yulius_app::ports::github::GitHubPurpose::Staging)
+    );
     settle(&f).await?;
     let id = asked["id"].as_str().ok_or("id")?;
     let done = request(&f, id).await?;
@@ -2228,6 +2254,12 @@ async fn delivery_status_asks_a_merged_task_for_its_staging_request() -> TestRes
     );
     assert!(!after.contains("has no staging request"), "{after}");
     let r2 = land(&f, "t1", "two.txt").await?;
+    let cold = delivery_text(&f, "t1").await?;
+    assert!(
+        cold.contains("Live staging status refresh is paused"),
+        "{cold}"
+    );
+    *f.h.github.budget_view.lock().map_err(|_| "budget")? = None;
     let later = delivery_text(&f, "t1").await?;
     assert!(
         later.contains(&r2[..12]) && later.contains("already has its staging deployment"),

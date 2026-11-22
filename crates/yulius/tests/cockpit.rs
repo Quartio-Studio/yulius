@@ -7874,9 +7874,39 @@ async fn the_superagent_reads_the_instance_and_a_superadmins_updates_it() -> Tes
             .ok_or("alice's cockpit token")?;
     let said = |record: &Value| record.to_string();
 
+    let mut budget = yulius_app::ports::github::GitHubBudget::empty();
+    budget
+        .attempts
+        .insert(yulius_app::ports::github::GitHubPurpose::Merges, 29);
+    budget.remaining = Some(471);
+    budget.limit = Some(5000);
+    budget.display_paused = true;
+    *f.h.github
+        .budget_view
+        .lock()
+        .map_err(|_| "budget fixture")? = Some(budget);
     let (instance, is_error) = cockpit_tool(&f, &token, "instance", json!({})).await?;
     assert!(!is_error, "{instance}");
     assert!(instance["status"]["vm"].is_object(), "{instance}");
+    for purpose in [
+        "display",
+        "ci_statuses",
+        "merges",
+        "staging",
+        "imports",
+        "other",
+    ] {
+        assert!(
+            instance["status"]["github_budget"]["attempts"][purpose].is_u64(),
+            "{purpose}: {instance}"
+        );
+    }
+    assert_eq!(
+        instance["status"]["github_budget"]["attempts"]["merges"],
+        29
+    );
+    assert_eq!(instance["status"]["github_budget"]["remaining"], 471);
+    assert_eq!(instance["status"]["github_budget"]["display_paused"], true);
     assert!(instance["status"]["sessions"].is_object(), "{instance}");
     assert!(instance["update"]["current"].is_object(), "{instance}");
 

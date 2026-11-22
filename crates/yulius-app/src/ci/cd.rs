@@ -2788,10 +2788,18 @@ impl App {
         // The merge-first staging target changes only through its queue (SPEC-575 MFS-004).
         if let Some(sandbox) = self.deps.store.sandbox(&ctx.task.sandbox_id).await?
             && !sandbox.is_playground()
-            && let Ok((head, Some(target))) = self.staging_target(&sandbox).await
+            && let Ok((head, Some(target))) = crate::ports::github::for_purpose(
+                crate::ports::github::GitHubPurpose::Staging,
+                self.staging_target(&sandbox),
+            )
+            .await
             && target.name == env
         {
-            let request = self.staging_request(&sandbox, &env, ctx, &head).await?;
+            let request = crate::ports::github::for_purpose(
+                crate::ports::github::GitHubPurpose::Staging,
+                self.staging_request(&sandbox, &env, ctx, &head),
+            )
+            .await?;
             self.publish_staging_task(&request).await;
             let text = if request.state.is_pending() {
                 format!(

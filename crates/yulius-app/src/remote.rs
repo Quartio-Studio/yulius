@@ -788,7 +788,11 @@ impl App {
                         let outcome = if tool == "project_change" {
                             app.remote_change(&who, &actor, &place, &input).await
                         } else {
-                            app.remote_change_merge(&who, &actor, &place, &input).await
+                            crate::ports::github::for_purpose(
+                                crate::ports::github::GitHubPurpose::Merges,
+                                app.remote_change_merge(&who, &actor, &place, &input),
+                            )
+                            .await
                         };
                         app.audit_remote(&owner, &tool, Some(&place.id), outcome.is_ok())
                             .await;

@@ -41,6 +41,9 @@ pub struct ParkedPr {
 /// A task in lists and events.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskSummary {
+    /// The installation is reserving its remaining requests for delivery.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub github_display_paused: bool,
     /// Whether the server groups a parked task under Needs you. Staging can wake a parked task.
     /// Other tasks and summaries from earlier servers omit it.
     #[serde(default, skip_serializing_if = "Option::is_none")]

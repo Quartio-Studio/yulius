@@ -3327,6 +3327,7 @@ dependencies = [
  "console",
  "flate2",
  "futures",
+ "h2",
  "hex",
  "http-body-util",
  "nix 0.31.3",
@@ -3479,6 +3480,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
+ "yulius-contracts",
  "yulius-domain",
 ]
 

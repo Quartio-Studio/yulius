@@ -1110,7 +1110,7 @@ test('at phone width every Status section head fits the panel and shows its whol
   await browser.locator('.btn-status').click();
   await expect(browser.locator('.status-pop .account-fold').first()).toBeVisible();
   const heads = await sectionHeads(browser);
-  expect(heads.map((h) => h.title)).toEqual(['Machine', 'Sandboxes', 'Subscriptions']);
+  expect(heads.map((h) => h.title)).toEqual(['Machine', 'GitHub API', 'Sandboxes', 'Subscriptions']);
   // SSF-001: nothing in a head is wider than it is shown, and no summary ends past the panel.
   for (const head of heads) {
     expect(head.wider, `${head.title} head`).toEqual([]);
