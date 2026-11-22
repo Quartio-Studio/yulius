@@ -8,6 +8,8 @@
 //! branch fails is broken there, not flaky). Its failures are named as the failing tests' blocks
 //! name them (nextest's `crate tests::name`, libtest's `tests::name`,
 //! [`super::failures::failed_test_names`]); only a name [`quarantinable`] accepts is quarantined.
+//! A pull request's failure whose block names a file it changed ([`named_changed_file`]) is taken
+//! as the change's own and does not count (SPEC-618, ADR-0453).
 //!
 //! A quarantined test is told to every CI job of its project in its environment: the names one
 //! per line in [`QUARANTINE_ENV`], and a nextest filter of their test paths in
@@ -96,6 +98,74 @@ pub fn is_flaky(
         pulls[i + 1..]
             .iter()
             .any(|b| a.reference != b.reference && !related(&a.sha, &b.sha))
+    })
+}
+
+/// The first of `changed` (the files a pull request changed, repository paths) that a failing
+/// test's kept `block` names: such a failure is the change's own, not a sign that the test is
+/// flaky (SPEC-618 FOC-001). A test that checks the repository's content names the file it
+/// refuses, and fails in every pull request that breaks its rule.
+///
+/// A path is named whole, also after any `/` when it is nested (an absolute path of the checkout
+/// ends with it), or as a printed relative path of at least two components that ends it (a test
+/// running in its crate prints `tests/x.rs` for `crates/app/tests/x.rs`); never continued by a
+/// path character or inside a word. So changed `src/lib.rs` is named by `crates/other/src/lib.rs`
+/// too: such a match only keeps a failure from counting, a delayed quarantine (FOC-002).
+///
+/// # Examples
+/// ```
+/// use yulius_domain::ci::flaky::named_changed_file;
+/// let changed = ["crates/app/tests/moves.rs".to_owned(), "README.md".to_owned()];
+/// let block = "tests/moves.rs:404: sk-ant- and 35 token characters";
+/// assert_eq!(named_changed_file(block, &changed), Some("crates/app/tests/moves.rs"));
+/// assert_eq!(named_changed_file("assertion failed: the race lost", &changed), None);
+/// assert_eq!(named_changed_file("panicked at crates/web/tests/moves.rs:4", &changed), None);
+/// ```
+#[must_use]
+pub fn named_changed_file<'a>(block: &str, changed: &'a [String]) -> Option<&'a str> {
+    changed
+        .iter()
+        .map(String::as_str)
+        .find(|path| names_path(block, path))
+}
+
+/// Whether `text` names repository path `path` (see [`named_changed_file`]).
+fn names_path(text: &str, path: &str) -> bool {
+    if path.is_empty() {
+        return false;
+    }
+    // An absolute path of the checkout ends with a nested path; a top-level file's name alone is
+    // too common for that (`x/README.md` is another file).
+    if mentions(text, path, path.contains('/')) {
+        return true;
+    }
+    path.match_indices('/')
+        .map(|(at, _)| &path[at + 1..])
+        .filter(|rest| rest.contains('/'))
+        .any(|rest| mentions(text, rest, false))
+}
+
+/// Whether `text` holds `word` as a whole path: not continued on its right, and on its left at
+/// the text's start, after a character no path holds, after `./`, or (`after_slash`) after `/`.
+fn mentions(text: &str, word: &str, after_slash: bool) -> bool {
+    let in_path = |c: char| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '/');
+    text.match_indices(word).any(|(at, _)| {
+        let before = &text[..at];
+        let starts = match before.chars().next_back() {
+            None => true,
+            Some('/') if after_slash => true,
+            Some('/') => before
+                .strip_suffix("./")
+                .is_some_and(|b| !b.chars().next_back().is_some_and(in_path)),
+            Some(c) => !in_path(c),
+        };
+        let after = &text[at + word.len()..];
+        let ends = match after.chars().next() {
+            None => true,
+            Some('.') => !after[1..].starts_with(|c: char| c.is_alphanumeric()),
+            Some(c) => !in_path(c),
+        };
+        starts && ends
     })
 }
 
@@ -238,6 +308,68 @@ mod tests {
             now,
             unrelated
         ));
+    }
+
+    /// SPEC-618 FOC-002: a changed file is named whole, after an absolute path's boundary, or as
+    /// a relative path of two components or more that the block prints; never inside another
+    /// path or word.
+    #[test]
+    fn a_block_names_a_changed_file_by_its_path() {
+        let changed = [
+            "crates/yulius/tests/subscription_moves.rs".to_owned(),
+            "crates/other/src/lib.rs".to_owned(),
+            "README.md".to_owned(),
+        ];
+        let named = |block: &str| named_changed_file(block, &changed);
+        let moves = Some("crates/yulius/tests/subscription_moves.rs");
+        // fixture_hygiene's own words (PR #1470), at a line's start, after `./` or a checkout.
+        assert_eq!(
+            named("    tests/subscription_moves.rs:404: sk-ant- and 35 token characters"),
+            moves
+        );
+        assert_eq!(named("tests/subscription_moves.rs"), moves);
+        assert_eq!(named("see ./tests/subscription_moves.rs."), moves);
+        assert_eq!(
+            named("panicked at crates/yulius/tests/subscription_moves.rs:9:5:"),
+            moves
+        );
+        assert_eq!(
+            named("(/ci/job/crates/yulius/tests/subscription_moves.rs)"),
+            moves
+        );
+        assert_eq!(named("`yulius/tests/subscription_moves.rs`"), moves);
+        assert_eq!(
+            named("crates/other/src/lib.rs:3"),
+            Some("crates/other/src/lib.rs")
+        );
+        // Printed in its crate: two components stand for the nested file.
+        assert_eq!(named("src/lib.rs:4"), Some("crates/other/src/lib.rs"));
+        assert_eq!(named("README.md is stale"), Some("README.md"));
+        for none in [
+            // One component is too little to stand for a nested file.
+            "subscription_moves.rs:404",
+            // Inside another path or word.
+            "crates/yulius-app/src/lib.rs:4",
+            "web/tests/subscription_moves.rs:1",
+            "a./tests/subscription_moves.rs",
+            "tests/subscription_moves.rs.bak",
+            "tests/subscription_moves.rsx",
+            "tests/subscription_moves.rs/x",
+            "docs/README.md",
+            "NOT_README.md",
+            "assertion failed: the race lost",
+            "",
+        ] {
+            assert_eq!(named(none), None, "{none:?}");
+        }
+        // A nested path after any `/`: a delay at worst, never a wrong quarantine (review round 1).
+        let one_crate = ["src/lib.rs".to_owned()];
+        assert_eq!(
+            named_changed_file("panicked at crates/other/src/lib.rs:3:5", &one_crate),
+            Some("src/lib.rs")
+        );
+        assert_eq!(named_changed_file("x", &[String::new()]), None);
+        assert_eq!(named_changed_file("anything", &[]), None);
     }
 
     /// SPEC-497 OFC-002: the nextest filter of quarantined tests names test paths only (a binary

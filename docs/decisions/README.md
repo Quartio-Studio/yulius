@@ -512,6 +512,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0450 -->
 <!-- ADR 0451 -->
 <!-- ADR 0452 -->
+- [0453](0453-a-failure-naming-its-own-changed-file-makes-no-test-flaky.md): a pull request's failing test whose kept block names a file that pull request changed (whole, after a `/`, or as a printed relative path of two components or more) is its change's own and is not recorded, so it makes no test flaky; the job's output says so; rejected: moving fixture_hygiene to a script, a never-quarantine list, the test's own file only, a rerun (SPEC-618, #1545)
 <!-- ADR 0453 -->
 <!-- ADR 0454 -->
 <!-- ADR 0455 -->
