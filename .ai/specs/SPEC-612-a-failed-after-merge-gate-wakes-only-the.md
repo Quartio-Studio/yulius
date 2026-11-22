@@ -32,7 +32,10 @@ On 21 November task #588 received a fix-forward instruction for a test already f
 - [x] Show people the rerun and start-task actions when no worker remains
 - [x] Preserve unresolved job evidence across reruns of the same revision
 - [x] Deliver candidate scheduling independently
-- [ ] Verify the incident regressions and review the delivery
+- [x] Verify the incident regressions and review the delivery
+- [x] Deliver the isolated quality-job compiler cache repair
+- [ ] Deliver the reviewed integration failure ownership backend
+- [ ] Deliver the project CI and Status repair actions on the verified API
 
 ## Acceptance criteria
 
@@ -43,11 +46,13 @@ On 21 November task #588 received a fix-forward instruction for a test already f
 
 ## Test plan
 
+For the quality repair, reproduce the three real compiler-cache misses on the job’s 1 GiB temporary filesystem. Exercise the same builds with the fixture’s own free-space reserve. Verify the complete Python quality suite with cache-hit and integrity assertions intact.
+
 Exercise real staging requests against a temporary Git repository and recorded CI verdicts. Inspect notification recipients, request history, served revision and project-visible Status. Check a passing rerun and an unrelated failing job. Run affected tests, repository contracts and the UI checks before independent review.
 
 ## Decisions
 
-The first delivery covers CI inventory reuse and admission. The second covers staging queue order, failure history, task input and project notices. Request staging once after both deliveries.
+The first delivery covers CI inventory reuse and admission. The owner assigned this task the independent quality-job repair on 22 November. Deliver the cache fixture repair first, then the reviewed failure ownership backend and the project CI and Status actions. Ask for staging once after the last merge.
 
 Running each candidate once in order preserves evidence of mixed failures and accepts a fix from any task. Reuse existing gate and deployment receipts. Only a verified descendant can satisfy an inherited delivery. A durable project assignment follows the lowest-numbered eligible worker initially and survives other tasks joining. A person can resume finished work. See ADR-0450.
 
@@ -66,3 +71,7 @@ The ownership and staging results below were measured on the combined implementa
 - On the third reviewed head, a partial rerun at the same SHA lost the first job error. The corrected comparison passed all 50 staging and parked-candidate cases, including a test that prunes both earlier attempts, checks both failures still target the current run, then clears them on a full pass.
 - A retained pull-request verdict that skipped its after-merge job incorrectly covered the integration head after 201 more admissions. The regression observed only the old PR run. The scheduler now checks the integration reference and actual full-suite coverage when extending its inventory, retaining configuration refusals in admission order.
 - Independent review approved inventory head `b47237a65`. All four scheduler regressions passed on the corrected binary, including the skipped PR and later configuration refusal.
+
+- PR #1678 and PR #1679 reproduced the same three compiler-cache misses. The full local backend suite passed 3,438 selected tests at reviewed head `904d7f8e0`. Its delivery is preserved at `e2534692d` while the assigned quality repair merges independently.
+- In CI run `9b898c87-816d-4b23-875a-1889e12b9112`, three real compiler-cache tests failed to record a warm hit. All three reproduced on the 1 GiB temporary filesystem with and without `YULIUS_BUILD_SCRATCH`. The pinned mbx reported a default minimum free-space reserve of 5 GiB. With a 64 MiB reserve scoped to the fixtures, all three passed in the same environment. The quality job's complete Python suite passed all 278 tests. [Issue #1680](https://github.com/Quartio-Studio/yulius/issues/1680)
+- Independent review approved the isolated repair at `962f83552` after running the three failing cases on the 1 GiB filesystem.
