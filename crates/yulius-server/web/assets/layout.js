@@ -290,13 +290,21 @@ function createStatusPanel(ctx, button) {
   let onDoc = null;
   let onKey = null;
 
+  let requested = 0;
+  let displayed = 0;
   async function load() {
-    if (!el) return;
+    const panel = el;
+    if (!panel) return;
+    const request = ++requested;
+    // Polls may overlap. Accept a response only while its panel is open and no newer
+    // response has been shown. A slow first response can still draw while the next is pending.
+    const current = () => el === panel && request >= displayed;
     try {
       const data = await ctx.api.get('/api/status');
-      if (!el) return;
+      if (!current()) return;
+      displayed = request;
       const render = () => {
-        if (el) keepFocus(el, () => setChildren(el, renderStatus(data || {}, ctx.store.state.sandboxes)), el);
+        if (current()) keepFocus(panel, () => setChildren(panel, renderStatus(data || {}, ctx.store.state.sandboxes)), panel);
       };
       render();
       clearTimeout(expiry);
@@ -304,8 +312,10 @@ function createStatusPanel(ctx, button) {
         expiry = setTimeout(render, Math.min(data.github_reset_at_ms - Date.now(), 2_147_483_647));
       }
     } catch (error) {
+      if (!current()) return;
+      displayed = request;
       clearTimeout(expiry);
-      if (el) setChildren(el, h('div', { class: 'status-section' }, h('div', { class: 'placeholder placeholder-error' }, error.message)));
+      setChildren(panel, h('div', { class: 'status-section' }, h('div', { class: 'placeholder placeholder-error' }, error.message)));
     }
   }
 

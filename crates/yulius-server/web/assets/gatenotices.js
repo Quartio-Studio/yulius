@@ -9,12 +9,12 @@ export function gateNotices(sandbox, notices, canRun) {
   const path = `${project}/ci?run=${encodeURIComponent(notices[0].run_id)}`;
   const failures = notices.map((notice) => {
     const origin = notice.merge_task ? `task #${notice.merge_task}` : 'untracked merge';
-    return h('li', null, `${notice.test} failed at ${notice.revision.slice(0, 12)} (${origin})`);
+    return h('li', null, `${notice.test} · first seen at ${notice.revision.slice(0, 12)} (${origin})`);
   });
   return [h('div', { class: 'banner banner-warn', role: 'status' },
     icon('warn', { size: 16 }),
     h('div', { class: 'banner-text' },
-      h('strong', null, sandbox.name || sandbox.slug),
+      h('strong', null, `Unresolved integration gate for ${sandbox.name || sandbox.slug}`),
       h('ul', null, failures),
       'No task is working on the repair. ',
       h('a', { href: href(path), dataset: { route: path, focusKey: path } }, canRun ? 'Review and run again' : 'Review the run'),
