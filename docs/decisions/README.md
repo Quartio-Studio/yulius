@@ -510,6 +510,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0449 -->
 - [0450](0450-attribute-integration-test-failures-in-first-parent-order.md) Attribute integration test failures in first-parent order.
 <!-- ADR 0450 -->
+- [0451](0451-repaint-an-unreadable-codex-terminal-before-typing.md) Repaint an unreadable Codex terminal before typing.
 <!-- ADR 0451 -->
 <!-- ADR 0452 -->
 <!-- ADR 0453 -->

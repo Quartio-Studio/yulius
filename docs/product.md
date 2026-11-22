@@ -22,7 +22,7 @@ window. An idle Codex task moved to another subscription keeps Waiting or Done.
 
 Codex tasks keep their selected model when Yulius sends a message near a subscription limit.
 New and resumed sessions hide the rate-limit model switch reminder. A visible reminder holds
-automated messages until the picker is dismissed. [SPEC-603](../.ai/specs/SPEC-603-codex-s-rate-limit-prompt-must-not-switc.md)
+automated messages until the picker is dismissed. If an idle terminal is unreadable, Yulius asks it to repaint. After a two-second probe, a still-unreadable terminal raises Needs you. An undelivered PR notice stays pending. [SPEC-613](../.ai/specs/SPEC-613-an-idle-codex-session-takes-messages-aft.md) [SPEC-603](../.ai/specs/SPEC-603-codex-s-rate-limit-prompt-must-not-switc.md)
 
 Tasks created by the CLI or either Superagent default to Codex when harness and model are omitted.
 A task created with a `gpt-*` model and no explicit agent selects Codex.

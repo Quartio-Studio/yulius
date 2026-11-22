@@ -616,21 +616,26 @@ impl Drop for Finalizing<'_> {
 /// (the agent keeps working on its current subscription meanwhile).
 pub const SWITCH_COOLDOWN_MS: i64 = 10 * 60 * 1000;
 
+pub(crate) const CODEX_UNREADABLE: &str =
+    "Codex's terminal could not confirm a safe input screen after a repaint";
+pub(crate) const CODEX_PICKER: &str = "Codex's rate-limit model picker is open. Choose Keep current model or dismiss the picker in the terminal.";
+
 impl TaskRuntime {
     /// The paste needs immediate writer access. Its Enter can wait, but both belong to the
     /// attempt that the watcher observed. A switch attaches a new writer to this runtime.
-    pub(crate) async fn write_notice(
+    pub(crate) async fn write_observed(
         &self,
         attempt: &AttemptId,
         now: Timestamp,
         input: SessionInput<'_>,
+        immediate_paste: bool,
     ) -> AppResult<()> {
         let mut run = match input {
-            SessionInput::Paste(_) | SessionInput::ContinuePaste(_) => self
+            SessionInput::Paste(_) | SessionInput::ContinuePaste(_) if immediate_paste => self
                 .run
                 .try_lock()
                 .map_err(|_| AppError::Conflict("the session writer is busy".into()))?,
-            SessionInput::Submit | SessionInput::Viewer(_) => self.run.lock().await,
+            _ => self.run.lock().await,
         };
         let run = run
             .as_mut()
@@ -695,29 +700,85 @@ impl TaskRuntime {
         written
     }
 
-    fn check_codex_input_screen(&self, attempt: &AttemptId) -> AppResult<()> {
-        if self.screen_withheld()
-            || !self
-                .screen_of
-                .lock()
-                .is_ok_and(|shown| shown.as_ref() == Some(attempt))
-        {
+    pub(crate) fn screen_attempt(&self) -> Option<AttemptId> {
+        self.screen_of.lock().ok()?.clone()
+    }
+
+    /// Only the live, redacted screen of the observed attempt can admit input.
+    pub(crate) fn codex_input_screen(&self, attempt: &AttemptId) -> AppResult<Option<bool>> {
+        if self.screen_withheld() || self.screen_attempt().as_ref() != Some(attempt) {
             return Err(AppError::Conflict(
                 "the live Codex screen is unavailable".into(),
             ));
         }
-        match self.hub.codex_rate_limit_picker_shown() {
+        Ok(self.hub.codex_rate_limit_picker_shown())
+    }
+
+    pub(crate) fn codex_ready_for_retry(&self, attempt: &AttemptId) -> bool {
+        matches!(self.codex_input_screen(attempt), Ok(Some(false)))
+            && self.run.try_lock().is_ok_and(|slot| {
+                slot.as_ref().is_some_and(|run| {
+                    run.attempt_id == *attempt
+                        && run.codex_submit_hold.as_ref().is_some_and(|hold| {
+                            hold.state == CodexPaste::Idle
+                                || self.hub.prompt_box_shown_empty(Harness::Codex)
+                        })
+                })
+            })
+    }
+
+    fn check_codex_input_screen(&self, attempt: &AttemptId) -> AppResult<()> {
+        match self.codex_input_screen(attempt)? {
             Some(false) => Ok(()),
-            Some(true) => Err(AppError::Conflict(
-                "Codex's rate-limit model picker is open. Choose Keep current model \
-                 or dismiss the picker in the terminal."
-                    .into(),
-            )),
-            None => Err(AppError::Conflict(
-                "the Codex terminal is waiting for a visible input cursor before it can take this message"
-                    .into(),
-            )),
+            Some(true) => Err(AppError::Conflict(CODEX_PICKER.into())),
+            None => Err(AppError::Conflict(CODEX_UNREADABLE.into())),
         }
+    }
+
+    /// A cancelled send may stop waiting, but the resize pair still restores the
+    /// viewer's geometry. The worker owns only the repaint, never the message.
+    pub(crate) async fn repaint_codex_input(
+        self: &Arc<Self>,
+        attempt: &AttemptId,
+    ) -> AppResult<()> {
+        if self.codex_input_screen(attempt)?.is_some() {
+            return Ok(());
+        }
+        let rt = Arc::clone(self);
+        let attempt = attempt.clone();
+        tokio::spawn(async move {
+            let mut slot = rt
+                .run
+                .try_lock()
+                .map_err(|_| AppError::Conflict("the session writer is busy".into()))?;
+            let run = slot
+                .as_mut()
+                .filter(|run| run.attempt_id == attempt)
+                .ok_or_else(|| {
+                    AppError::Conflict("the observed session is no longer attached".into())
+                })?;
+            if rt.codex_input_screen(&attempt)?.is_some() {
+                return Ok(());
+            }
+            let (cols, rows) = rt.hub.size();
+            let other = if cols < 1000 { cols + 1 } else { cols - 1 };
+            for width in [other, cols] {
+                let watch = rt.hub.watch();
+                let since = rt.hub.output_seq();
+                rt.hub.resize(width, rows);
+                if let Err(err) = run.writer.resize(width, rows).await {
+                    rt.hub.resize(cols, rows);
+                    tracing::warn!(%attempt, error = %err, "Codex repaint resize failed");
+                    return Err(AppError::Conflict(CODEX_UNREADABLE.into()));
+                }
+                rt.hub
+                    .settle(watch, since, Duration::from_millis(750))
+                    .await;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(AppError::internal)?
     }
 
     /// Consumes the reader's request only for the attempt whose end was recorded.
@@ -7017,8 +7078,8 @@ impl App {
     pub async fn resize_run(&self, task_id: &TaskId, cols: u16, rows: u16) -> AppResult<()> {
         let (cols, rows) = (cols.clamp(10, 1000), rows.clamp(5, 1000));
         let runtime = self.runtime(task_id);
-        runtime.hub.resize(cols, rows);
         let mut run = runtime.run.lock().await;
+        runtime.hub.resize(cols, rows);
         crate::race::reached(
             crate::race::Point::TerminalResizeOwnsWriter,
             Path::new(task_id.as_str()),

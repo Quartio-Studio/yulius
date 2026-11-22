@@ -83,10 +83,10 @@ For an explicit restart of stopped Codex work, the supervisor carries a continua
 
 The generated Codex configuration hides the rate-limit model switch reminder. If a live terminal
 shows the picker or its resized alternate grid has yet to repaint, the terminal writer holds
-automated pastes and submits. The PR watch can deliver
+automated pastes and submits. For an indeterminate message screen the supervisor requests a child redraw at a temporary width and restores the original size under the same writer lock. The PR watch can deliver
 its pending notice after the picker closes. The run directory records the paste before it is sent.
 A successful Enter clears the record. After an interrupted submission or server reattachment,
-a confirmed empty composer clears it.
+a confirmed empty composer clears it. An inconclusive probe opens Needs you on the observed live attempt. [Decision 0451](decisions/0451-repaint-an-unreadable-codex-terminal-before-typing.md)
 [Decision 0443](decisions/0443-hold-codex-input-at-the-rate-limit-model-picker.md)
 
 ```mermaid

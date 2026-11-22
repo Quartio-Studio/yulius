@@ -407,10 +407,16 @@ impl RunWriter for Writer {
     }
 
     async fn resize(&mut self, cols: u16, rows: u16) -> AppResult<()> {
-        self.0
-            .send(ClientFrame::Resize { cols, rows })
-            .await
-            .map_err(|e| upstream("session resize", e))
+        let resize = self.0.send(ClientFrame::Resize { cols, rows });
+        match tokio::time::timeout(std::time::Duration::from_millis(250), resize).await {
+            Ok(result) => result.map_err(|e| upstream("session resize", e)),
+            Err(_) => {
+                // A timeout can interrupt a frame. Close the write half before the
+                // supervisor can reuse it. The host reader will reconnect.
+                let _ = self.0.shutdown().await;
+                Err(AppError::Upstream("session resize timed out".into()))
+            }
+        }
     }
 
     async fn signal(&mut self, signal: RunSignal) -> AppResult<()> {
