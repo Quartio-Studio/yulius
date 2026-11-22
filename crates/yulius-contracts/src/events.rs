@@ -109,6 +109,23 @@ pub enum UiEvent {
         /// The digest (boxed: the JSON is the same).
         digest: Box<crate::api::digest::DigestView>,
     },
+    /// A notice was posted or replaced one with its key (SPEC-624 NTC-007), to the people it
+    /// reaches.
+    #[serde(rename = "notice.posted")]
+    NoticePosted {
+        /// The notice (boxed: the JSON is the same).
+        notice: Box<crate::api::notices::NoticeView>,
+    },
+    /// A notice was removed by its producer (SPEC-624 NTC-006): pages drop it.
+    #[serde(rename = "notice.removed")]
+    NoticeRemoved {
+        /// Its id.
+        id: String,
+        /// Its project, if any.
+        sandbox_id: Option<String>,
+        /// Its key.
+        key: String,
+    },
     /// An instance update changed (a new `main` was found, or a run moved): clients refetch
     /// `GET /api/update` (SPEC-002 ADR-18). `phase` is the running update's phase, if any.
     #[serde(rename = "update.updated")]

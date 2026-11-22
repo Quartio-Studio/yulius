@@ -90,6 +90,8 @@ const REMOTE_TOOLS: &[(&str, Reach, Action)] = &[
     ("attachments_trash", Reach::Project, Action::Work),
     ("sessions_search", Reach::Project, Action::View),
     ("session_read", Reach::Project, Action::View),
+    ("notices_list", Reach::Project, Action::View),
+    ("notice_dismiss", Reach::Project, Action::View),
     ("ci_runs", Reach::Project, Action::View),
     ("ci_run", Reach::Project, Action::View),
     ("ci_rerun", Reach::Project, Action::Work),

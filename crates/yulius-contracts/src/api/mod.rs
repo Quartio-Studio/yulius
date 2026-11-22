@@ -19,6 +19,7 @@ pub mod leftovers;
 pub mod mcp;
 pub mod migration;
 pub mod notes;
+pub mod notices;
 pub mod sandboxes;
 pub mod secrets;
 pub mod sessions;

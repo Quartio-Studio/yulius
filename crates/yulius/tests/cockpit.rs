@@ -1752,6 +1752,8 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "instance",
             "instance_update",
             "merge_queue",
+            "notice_dismiss",
+            "notices_list",
             "onboarding_start",
             "person_ask",
             "promote",
