@@ -534,7 +534,7 @@ pub const LAST_VALID_NOTE: &str = "judged by the integration branch's last valid
 
 /// How a run refused for the integration branch's invalid `yulius.toml` begins its reason: it
 /// is queued again once that file is valid (SPEC-504 CFG-002).
-const DEV_INVALID_PREFIX: &str = "yulius.toml is invalid on ";
+pub const DEV_INVALID_PREFIX: &str = "yulius.toml is invalid on ";
 
 /// The job of a run refused for its `yulius.toml` (SPEC-504 CFG-002).
 pub const CONFIG_JOB: &str = "yulius.toml";
@@ -1722,10 +1722,14 @@ impl App {
                 ));
             }
         }
+        let integration_head = targets.iter().find_map(|(target, _)| {
+            matches!(&target.reference, CiRef::Branch(branch) if branch == &profile.integration_branch)
+                .then_some(target)
+        });
         let runs = self
             .deps
             .store
-            .ci_planning_runs(&sandbox.id, PLAN_RUNS)
+            .ci_planning_runs(&sandbox.id, PLAN_RUNS, integration_head)
             .await?;
         let facts = ordinary_run_facts(&runs, view.problem.is_none());
         let only_targets: Vec<Target> = targets.iter().map(|(t, _)| t.clone()).collect();
@@ -1759,6 +1763,15 @@ impl App {
             }
         }
         for target in plan.queue {
+            if matches!(&target.reference, CiRef::Branch(branch) if branch == &profile.integration_branch)
+                && self.deps.store.active_ci_runs().await?.iter().any(|r| {
+                    r.sandbox_id == sandbox.id && matches!(r.reference, CiRef::Candidate(_))
+                })
+            {
+                // A non-supersedable full candidate is already using the integration gate.
+                // The next inventory picks up the current branch head after its verdict.
+                continue;
+            }
             if let Some((_, gate)) = targets.iter().find(|(t, _)| *t == target) {
                 // A branch commit whose tree a run already passed (a squash merge of an
                 // up-to-date pull request) reuses that result instead of running again: every
