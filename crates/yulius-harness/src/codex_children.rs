@@ -916,6 +916,49 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// CSA-6: at the examined bound a new file is skipped, and a pending file that grew is
+    /// still read, also when it sorts after the new one.
+    #[test]
+    fn a_pending_file_that_grew_is_read_at_the_bound() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let day = "2026/11/21";
+        let root = Rollout::new(dir.path(), day, "2026-11-21T09:00:00.000Z", ROOT, None).write()?;
+        let child = Rollout::new(
+            dir.path(),
+            day,
+            "2026-11-21T09:02:00.000Z",
+            "01a1f900-0000-7000-8000-000000000002",
+            Some(ROOT),
+        )
+        .response("2026-11-21T09:02:02.000Z", "resp_pending", 1, 3);
+        let complete = format!("{}\n", child.lines.join("\n"));
+        let path = child.path.clone();
+        fs::create_dir_all(dir.path().join(day))?;
+        fs::write(&path, "{")?;
+        let mut children = CodexChildren::between(&root, None, None);
+        children.interval = Duration::ZERO;
+        children.max_examined = 1;
+        assert!(drain(&mut children)?.is_empty());
+        assert_eq!(children.pending.len(), 1);
+        // A new rollout sorting first, and the pending one now complete.
+        Rollout::new(
+            dir.path(),
+            day,
+            "2026-11-21T09:01:00.000Z",
+            "01a1f900-0000-7000-8000-000000000001",
+            Some(ROOT),
+        )
+        .response("2026-11-21T09:01:02.000Z", "resp_new", 1, 1)
+        .write()?;
+        fs::write(&path, &complete)?;
+        assert_eq!(
+            counted(&drain(&mut children)?),
+            vec![entry_unknown("resp_pending", 3)]
+        );
+        assert!(children.bounded());
+        Ok(())
+    }
+
     /// A followed rollout that cannot be read fails the poll (a recount is then not counted);
     /// once it can be read again, its new lines count.
     #[test]
