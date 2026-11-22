@@ -38,6 +38,7 @@ mod updates;
 mod users;
 mod variables;
 mod vault;
+mod watches;
 mod workflows;
 
 use std::path::Path;
@@ -231,6 +232,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0089_brokered_commands.sql"),
     // Schema version 89 (SPEC-624); 0091 is the reserved file number.
     include_str!("migrations/0091_keyed_expiring_notices.sql"),
+    // Schema version 90 (SPEC-630); 0093 is the reserved file number.
+    include_str!("migrations/0093_script_watches.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -572,6 +575,7 @@ mod tests {
                 89,
                 include_str!("migrations/0091_keyed_expiring_notices.sql"),
             ),
+            (90, include_str!("migrations/0093_script_watches.sql")),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -580,7 +584,7 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 89, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 90, "a new migration is pinned here too");
     }
 
     #[test]

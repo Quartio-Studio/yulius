@@ -882,6 +882,147 @@ pub struct CommandRecord {
     pub updated_at: Timestamp,
 }
 
+/// A script watch as stored (SPEC-630 WCH-001): its definition and its state between runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchRecord {
+    /// Its id (`wt_…`).
+    pub id: String,
+    /// Its project.
+    pub sandbox_id: SandboxId,
+    /// Its name, unique in the project.
+    pub name: String,
+    /// The bash script.
+    pub script: String,
+    /// An interval in seconds; `None` for a cron watch.
+    pub every_seconds: Option<i64>,
+    /// A cron expression; `None` for an interval watch.
+    pub cron: Option<String>,
+    /// The cron expression's UTC offset, minutes.
+    pub utc_offset_minutes: i32,
+    /// Its notices' expiry as given (SPEC-624 NTC-002); `None`: a day.
+    pub expiry: Option<String>,
+    /// A run's timeout, seconds.
+    pub timeout_seconds: u32,
+    /// Agent secret names its runs get through the egress proxy (WCH-004).
+    pub secrets: Vec<String>,
+    /// Its owner, who gets its notices.
+    pub owner: UserId,
+    /// `ui` or `agent`.
+    pub created_via: String,
+    /// When created.
+    pub created_at: Timestamp,
+    /// When its definition changed last.
+    pub updated_at: Timestamp,
+    /// Paused by a person.
+    pub paused: bool,
+    /// When it was created or last resumed: where its schedule counts from.
+    pub since: Timestamp,
+    /// Why it ended (exit 3), if it did.
+    pub ended_reason: Option<String>,
+    /// When it ended.
+    pub ended_at: Option<Timestamp>,
+    /// The state its runs leave.
+    pub state: WatchState,
+}
+
+/// What a watch's runs leave on it (WCH-005, WCH-007, WCH-010).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WatchState {
+    /// The run going now: its id and when it started (a restart finds it here).
+    pub running: Option<(String, Timestamp)>,
+    /// When its last run started.
+    pub last_started_at: Option<Timestamp>,
+    /// When its last run ended.
+    pub last_ended_at: Option<Timestamp>,
+    /// Its last run's exit code, when it exited.
+    pub last_exit: Option<i32>,
+    /// Why its last run failed, if it did.
+    pub last_failure: Option<String>,
+    /// What its last run printed (cut).
+    pub last_output: Option<String>,
+    /// The tail of its last run's error output.
+    pub last_errors: Option<String>,
+    /// Failures in a row.
+    pub failures: u32,
+    /// The warning was posted for this streak.
+    pub warned: bool,
+    /// Runs so far.
+    pub runs: u32,
+    /// Posts so far.
+    pub posts: u32,
+    /// When it last posted.
+    pub last_posted_at: Option<Timestamp>,
+}
+
+/// A post a watch could not store yet (WCH-008): the newest per notice key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchPending {
+    /// Its watch.
+    pub watch_id: String,
+    /// Its notice key.
+    pub key: String,
+    /// The notice as JSON; `None`: remove the notice of `key`.
+    pub body: Option<String>,
+    /// When it was queued.
+    pub queued_at: Timestamp,
+}
+
+/// How a run's end changes its watch, in one transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchRunEnd {
+    /// The state after the run (`running` cleared).
+    pub state: WatchState,
+    /// It ended the watch, with this reason (exit 3).
+    pub ended: Option<String>,
+    /// Posts to keep as pending, replacing those of their keys.
+    pub pending: Vec<WatchPending>,
+}
+
+/// Script watches (SPEC-630, migration 0093).
+#[async_trait]
+pub trait WatchStore: Send + Sync {
+    /// Every watch of every project (the scheduler's view; a project has at most 20).
+    async fn all_watches(&self) -> AppResult<Vec<WatchRecord>>;
+    /// A project's watches, by name.
+    async fn watches_in(&self, sandbox: &SandboxId) -> AppResult<Vec<WatchRecord>>;
+    /// One watch by id.
+    async fn watch(&self, id: &str) -> AppResult<Option<WatchRecord>>;
+    /// Stores a new watch, unless its project has `max` already.
+    ///
+    /// # Errors
+    /// `Conflict` when the project has a watch of that name, or `max` watches.
+    async fn insert_watch(&self, watch: &WatchRecord, max: usize) -> AppResult<()>;
+    /// Replaces a watch's definition (name, script, schedule, expiry, timeout, secrets,
+    /// `updated_at`, `since`) only while it was last changed at `read_at`; `false` when it changed
+    /// meanwhile or is gone.
+    ///
+    /// # Errors
+    /// `Conflict` when the new name is another watch's.
+    async fn update_watch(&self, watch: &WatchRecord, read_at: Timestamp) -> AppResult<bool>;
+    /// Pauses or resumes a watch; a resume also ends its end and counts its schedule from `at`.
+    /// `false` when it is gone.
+    async fn set_watch_paused(&self, id: &str, paused: bool, at: Timestamp) -> AppResult<bool>;
+    /// Removes a watch and its pending posts; `false` when it was gone.
+    async fn delete_watch(&self, id: &str) -> AppResult<bool>;
+    /// Records that run `run_id` of a watch started at `at`, only when none is going; `false`
+    /// when one is, or the watch is gone.
+    async fn watch_run_started(&self, id: &str, run_id: &str, at: Timestamp) -> AppResult<bool>;
+    /// Records the end of run `run_id`: its state, its end of the watch and its pending posts, in
+    /// one transaction; `false` (nothing written) when that run is not the watch's going run.
+    async fn watch_run_ended(&self, id: &str, run_id: &str, end: &WatchRunEnd)
+    -> AppResult<bool>;
+    /// Every pending post, oldest first.
+    async fn watch_pending(&self) -> AppResult<Vec<WatchPending>>;
+    /// Keeps `pending`, replacing the pending post of its watch and key.
+    async fn put_watch_pending(&self, pending: &WatchPending) -> AppResult<()>;
+    /// Drops a pending post once it was stored, only while it is the one queued at `queued_at`
+    /// (a newer one of the same key stays).
+    async fn drop_watch_pending(&self, watch_id: &str, key: &str, queued_at: Timestamp)
+    -> AppResult<()>;
+    /// Counts a post on its watch.
+    async fn watch_posted(&self, id: &str, at: Timestamp) -> AppResult<()>;
+}
+
 /// Brokered commands (SPEC-626, migration 0089).
 #[async_trait]
 pub trait CommandStore: Send + Sync {
@@ -1506,6 +1647,7 @@ pub trait ExtensionStores:
     + NoticeStore
     + HandoffStore
     + CommandStore
+    + WatchStore
     + StagingStore
     + crate::ports::session_docs::SessionDocStore
     + NoteStore
@@ -1536,6 +1678,7 @@ impl<T> ExtensionStores for T where
         + NoticeStore
         + HandoffStore
         + CommandStore
+        + WatchStore
         + StagingStore
         + crate::ports::session_docs::SessionDocStore
         + NoteStore

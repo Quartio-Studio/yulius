@@ -55,4 +55,5 @@ pub mod time;
 pub mod update;
 pub mod usage;
 pub mod vault;
+pub mod watch;
 pub mod workflow_format;
