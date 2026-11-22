@@ -99,8 +99,9 @@ like `{"methods": ["GET"], "path": "/v1/*"}`.
   to no new server, so it needs no two-factor unlock (ADR-0317 is about new servers). No agent tool
   sets or changes rules.
 - **MPR-007 Showing.** `AgentSecretView` has `rules` (every reader of the list). The Secrets page
-  shows a secret's rules on its card and lets a manager edit them in the add and edit dialogs (one
-  rule per line, `GET, HEAD /repos/*`; empty: any request). `secrets_list`, for task agents and
+  shows a secret's rules on its card beside its hosts and lets a manager edit them in its Edit
+  dialog (one rule per line, `GET, HEAD /repos/*`; empty: any request); the Add dialog stays a name,
+  a value and a description (SPEC-121), so rules are set after adding, as hosts are. `secrets_list`, for task agents and
   the Superagent, lists each secret's `rules` and says how they work.
 - **MPR-008 Unchanged.** A secret without rules is sent exactly as before (placeholders, injection,
   `X-Yulius-Secret`, 409 for ambiguous injection). Opaque tunnels, the browser's proxy and

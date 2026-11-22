@@ -402,6 +402,7 @@ const ACTIONS = {
   'vault.agent.hosts_cleared': 'removed the hosts of production secret',
   'vault.agent.delete': 'deleted agent secret',
   'vault.agent.use': 'used',
+  'vault.agent.refused': 'was refused, outside its rules,',
   'vault.agent.fill': 'typed',
   'vault.agent.redacted': 'had redacted',
   'vault.agent.request': 'asked for hosts of',
@@ -494,6 +495,13 @@ function agentForm(ctx, secret, scope = 'sandbox') {
     form.hosts = h('input', { class: 'input mono', 'aria-label': 'Hosts', value: secret.hosts.join(', '), placeholder: 'api.example.com', autocomplete: 'off' });
     parts.push(field('Hosts', form.hosts, 'The only destinations it is sent to or typed into, comma-separated (*.example.com for subdomains). Agents ask for them; empty sends it nowhere.'));
   }
+  // Method and path rules (SPEC-627), set after adding, as hosts are; a production secret goes
+  // through no proxy.
+  if (secret && !secret.cd_prod) {
+    form.rules = h('textarea', { class: 'textarea mono', rows: 2, 'aria-label': 'Rules', placeholder: 'GET, HEAD /repos/*' });
+    form.rules.value = rulesText(secret.rules || []);
+    parts.push(field('Only these requests', form.rules, 'Optional. One rule per line: methods, then a path where * matches anything (also /). Other requests that would use it are refused. Empty: any request to its hosts.'));
+  }
   if (secret && secret.injection !== 'none') {
     form.injection = h('select', { class: 'select' },
       h('option', { value: 'bearer' }, 'Authorization: Bearer <value>'),
@@ -527,6 +535,12 @@ function agentForm(ctx, secret, scope = 'sandbox') {
         out.expect_hosts = secret.hosts;
       }
     }
+    if (form.rules) {
+      // Sent only when changed, so an edit keeps rules the dialog did not touch.
+      const parsed = parseRules(form.rules.value);
+      if (parsed.error) out.rules_error = parsed.error;
+      else if (rulesText(parsed.rules) !== rulesText(secret.rules || [])) out.rules = parsed.rules;
+    }
     if (form.injection) {
       out.injection = form.injection.value;
       out.header_name = out.injection === 'header' ? form.header.value.trim() : null;
@@ -536,6 +550,23 @@ function agentForm(ctx, secret, scope = 'sandbox') {
     return out;
   };
   return form;
+}
+
+/** Rules as the form shows them: `GET, HEAD /repos/*`, one per line. */
+function rulesText(rules) {
+  return rules.map((r) => `${r.methods.join(', ')} ${r.path}`).join('\n');
+}
+
+/** The form's rules: each line's methods (comma or space separated) and its path (from the first /). */
+function parseRules(text) {
+  const rules = [];
+  for (const line of text.split('\n').map((l) => l.trim()).filter(Boolean)) {
+    const at = line.indexOf('/');
+    const methods = (at < 0 ? '' : line.slice(0, at)).split(/[\s,]+/).filter(Boolean).map((m) => m.toUpperCase());
+    if (!methods.length) return { error: `“${line}”: write the methods, then a path starting with /, e.g. GET /v1/*.` };
+    rules.push({ methods, path: line.slice(at) });
+  }
+  return { rules };
 }
 
 /** A host as people read it: a wildcard says it covers any subdomain. */
@@ -619,6 +650,8 @@ function agentHosts(ctx, secret, act, changed) {
   const parts = [];
   if (secret.hosts.length) parts.push(h('div', { class: 'chips' }, secret.hosts.map((name) => iconBadge('globe', name, '', 'Bound host'))));
   else if (!secret.requested_hosts.length) parts.push(h('span', { class: 'muted small' }, secret.auto_allow ? 'Not sent anywhere yet: agents bind its hosts when they need them.' : 'Not sent anywhere yet: agents ask for its hosts and you allow them here.'));
+  // Its rules (SPEC-627), beside the hosts they apply to.
+  if (secret.hosts.length && (secret.rules || []).length) parts.push(h('div', { class: 'chips', 'aria-label': 'Rules' }, secret.rules.map((r) => iconBadge('shield', `${r.methods.join(', ')} ${r.path}`, '', 'Only requests matching a rule get it'))));
   if (secret.requested_hosts.length) {
     // The answer names the hosts shown here: the server refuses it if an agent asked for more
     // meanwhile, so nothing is allowed unseen (SPEC-121).
@@ -896,6 +929,7 @@ function mountAgents(ctx, sandbox, host, actions, scope = 'sandbox') {
         if (!secret && !values.value) return invalid(form.value, 'Enter the value.');
         if (values.value && [...values.value].length < 8) return invalid(form.value, 'At least 8 characters: shorter values cannot be recognised and hidden.');
         if (values.injection === 'header' && !values.header_name) return invalid(form.header, 'Name the header.');
+        if (values.rules_error) return invalid(form.rules, values.rules_error);
         if (values.injection === 'basic' && !secret.has_username && !values.username) return invalid(form.username, 'Basic credentials need a user name.');
         // A new host of a secret allowed use by use, or letting agents set it up, needs the
         // two-factor code (ADR-0317); closing its dialog keeps the form open.
