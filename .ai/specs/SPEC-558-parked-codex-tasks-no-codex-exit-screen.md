@@ -95,6 +95,8 @@ Use the fake Codex executable, its rollout, real PTY shutdown and the applicatio
 
 ## Decisions
 
+A live owner with a completed goal and a recorded failed single-PR candidate occupies a session slot until the PR watcher verifies that the hosted PR closed or its candidate inputs changed. Capacity reads stay local. A launch holds the owners’ delivery read guards until it reserves the slot. The watcher retries on its next pass when a launch holds the guard.
+
 SPEC-612 supersedes the automatic continuation delivered by this spec. The parked PR owner retains its recorded integration decision and a person can resume its original session.
 
 Parking and a replacement merge request share the task’s merge writer at admission. If the writer is busy or a merge is armed, the idle pass leaves the session live. Once the park commits, a new merge request checks the committed run and durable task state before it can arm. Stop, close, or loss can settle that same run and release its park marker. Final admission checks the attached attempt while holding the end-intent lock. An exit reader already settling the run takes precedence over an earlier idle observation.
@@ -129,6 +131,9 @@ The SQLite query returning a parked task includes the latest attempt ID in the s
 
 ## Evidence
 
+- PR #1679 delivered the independent CI repair at `8855f295b` after train run `ef126991-55f1-49dc-95d9-149239145159` passed. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/8855f295bb920bab9e0e632c02b65b2ca0676182)
+- In run `51de5931-74ec-42ba-9793-12dca4f3b115` the queued peer saw a free session for an unreadable open delivery and again for a missing PR number. Restoring the capacity checks held the live owner’s slot in both cases. Run `928d10ec-890d-4db7-b3e5-c2d55719e169` passed all 70 candidate tests, including a reopened PR during reservation, a replacement merge on an earlier owner, verified external closure and a parked task that waits for a person.
+- Hand checks on the saved capacity change. Replacing the guarded final PR read with a raw lookup let a peer see a free session in `5cbff53b-d244-4a9b-8cc4-29c5828892d9`. Removing the guard before the initial refresh let two extra hosted reads overtake reservation in `09b5c791-ca32-4bf6-9014-ba1f3ce4d2ee`. Both guards are present in the restored live watcher.
 - The isolated CI repair precedes delivery of the reviewed session-capacity change preserved at `5f216ef4e`. The user's host report traced the gate failure on both protected branches to the installed 1 GiB run tmpfs at `aabf37091`; the same error ended main run `c51054f9-4e67-440e-abd7-8d0b3ba35e05`.
 - The cold tools-cache test reproduced Cargo’s default temporary target for a registry install. Removing the explicit disk target by hand reproduced it again. The restored bootstrap reclaims the target after an install failure on both the job scratch and the tools-cache fallback.
 
