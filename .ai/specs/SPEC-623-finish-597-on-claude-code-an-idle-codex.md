@@ -1,6 +1,6 @@
 ---
 yulius-task: fbb3f169-44ed-404c-ae2d-de7992b135ef
-status: in-progress
+status: done
 ---
 
 # SPEC-623. Finish #597: an idle Codex session takes messages after a restart
@@ -29,11 +29,11 @@ At the handover, step 6 had two parts:
 ## Plan
 
 - [x] Take over #597's branch onto current dev
-- [ ] Resume a refused automatic wake once the Codex screen is readable
-- [ ] Keep viewer resizes working when the size record cannot be saved
-- [ ] Re-run SPEC-613's evidence on current dev
-- [ ] Update the spec, ADR, architecture and changes
-- [ ] Fresh independent review of the finished change
+- [x] Resume a refused automatic wake once the Codex screen is readable
+- [x] Keep viewer resizes working when the size record cannot be saved
+- [x] Re-run SPEC-613's evidence on current dev
+- [x] Update the spec, ADR, architecture and changes
+- [x] Fresh independent review of the finished change
 
 ## Acceptance criteria
 
@@ -50,3 +50,15 @@ Integration tests in `crates/yulius/tests/task_message.rs` with the fake Codex a
 ## Decisions
 
 Continue SPEC-613's [Decision 0451](../../docs/decisions/0451-repaint-an-unreadable-codex-terminal-before-typing.md). An automatic prompt is matched to its request by its redacted text, so a wake releases only its own request and never a private message's or another sender's. Saving the size is a best effort for a viewer resize: the viewer's choice is authoritative, and a stale record is overwritten at the next probe.
+
+## Evidence
+
+- Takeover: `feat/597-an-idle-codex-session-takes-messages-aft` (9f3298fbf) merged into this branch, then `origin/dev` at 2a6e07423 and fb01043e6. The three conflicts in `supervisor.rs` kept SPEC-614's screen lock (`show_screen_of`, `on_screen_of`) around the restores that now use the recovered size.
+- At the handover, `scripts/cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^task_message::.*codex/)'` ran 16 tests: 15 passed and `a_refused_codex_outage_wake_resumes_on_repaint_without_an_owner_resend` failed. No wake was delivered (`left: []`) because the refused wake had raised the private-message action, which no retry releases.
+- FIN-001: an automatic prompt now raises `CODEX_AUTOMATIC_ACTION`. The wake test passes. `an_outage_wake_leaves_a_private_messages_codex_request_open` passes too. A mutant that let any automatic send release any request (`matches || prompt.is_some()`) made it fail. A mutant that skipped only the action check survived, because the redacted-text comparison also guards the release.
+- FIN-002: `a_viewer_resize_reaches_codex_when_its_size_record_cannot_be_saved` failed before the fix with `Conflict("Codex's terminal could not confirm a safe input screen after a repaint")`. After the fix the resize returns Ok, the hub is at 100×30 and the child reports `SIZE 30 100`.
+- The handover's own size test, `restarting_the_server_during_a_codex_repaint_restores_the_childs_size`, passes. It stops the first server while the host is at the probe width, and the replacement server and the child report the intended size.
+- SPEC-613 re-run on current dev: `scripts/cargo nextest run --no-fail-fast -p yulius -p yulius-app -p yulius-store --lib --bin yulius --test main` ran 4,124 tests, and all passed. The default profile skipped 24.
+- The same Codex and outage filter (19 tests) was run against dev's versions of the eight changed source files. 11 failed: reattached repaint, unreadable screen to Needs you, PR-news escalation, picker refusal raising PR news, wake resume, private request, and size recovery on cancel, reconnect, server replacement and unsaved record. The 8 tests from SPEC-603's picker protection passed there as on the branch.
+- `scripts/dev quick` and `scripts/dev lint` passed. `scripts/dev security` printed "Security scan disabled: Vidoc is turned off in Yulius". Nothing was scanned; this is disabled, not passed.
+- Not tested: the real screen condition of task #596 on 22 November remains unknown (SPEC-613 Evidence). The fixtures use the fake Codex agent's synthetic grids, not a live Codex CLI.

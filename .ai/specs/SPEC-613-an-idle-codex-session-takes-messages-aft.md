@@ -1,6 +1,6 @@
 ---
 yulius-task: 704a2d0c-2d19-49bd-9816-fcb5b0ffa2b6
-status: in-progress
+status: done
 ---
 
 # SPEC-613. An idle Codex session takes messages after a restart
@@ -26,8 +26,8 @@ On 22 November 2026, task #596 had an idle prompt after reattachment. Six sends 
 - [x] Raise undeliverable messages on the task and retain PR news
 - [x] Verify restart, retry and picker protection
 - [x] Restore the PTY size on reconnect and keep private messages actionable
-- [ ] Recover the intended size and automatic wake across server replacement
-- [ ] Approve the fix for merge into dev and a staging request
+- [x] Recover the intended size and automatic wake across server replacement
+- [x] Approve the fix for merge into dev and a staging request
 
 ## Acceptance criteria
 
@@ -53,3 +53,4 @@ Use the attached terminal and its current child output as the source of truth. A
 - Manually removing first-refusal picker escalation made the strengthened picker test fail with “picker refusal did not raise PR news”. The escalation was restored.
 - After the review fixes and task #596’s delivery changes were integrated, the same five-binary command ran 4,097 tests. All passed, including the reconnect geometry check, the private resend check and the first-refusal picker assertion. The default profile skipped 24 tests. The branch also includes both requested CI repairs from PRs #1678 and #1679.
 - Independent review of `75224ce8c` found that a fresh server inherited the temporary PTY width if the old server stopped mid-probe. The new regression observed the host at the temporary width before shutdown, then saw 121 columns on replacement instead of 120. With the intended size saved, both the new server and the child reported 120.
+- Task #597 stopped on 22 November 2026 at step 6. [SPEC-623](SPEC-623-finish-597-on-claude-code-an-idle-codex.md) (task #607) finished step 6, re-ran this evidence on current dev and delivered the change.
