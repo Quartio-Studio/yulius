@@ -6,11 +6,11 @@ Accepted for SPEC-617.
 
 ## Context
 
-On an orderly Linux restart the departing server hands its established opaque tunnels to a short-lived custodian, `yulius sandbox-host hold-tunnels`, which holds them for the successor (SPEC-577). The server started the custodian from the executable path that it resolved at startup. When that file was missing or still being written at shutdown, the spawn failed with `NotFound` or `ExecutableFileBusy`. The handoff was then dropped and every tunnel closed. In issue #1676 this happened during a concurrent build that rewrote `target/debug/yulius`. A package upgrade or a manual install can also change the file at that path before the service restarts. The binary at the path can also be a different version from the server that deposits.
+On an orderly Linux restart the departing server hands its established opaque tunnels to a short-lived custodian, `yulius sandbox-host hold-tunnels`, which holds them for the successor (SPEC-577). The server started the custodian from the executable path that it resolved at startup. When that file was missing or still being written at shutdown, the spawn failed with `NotFound` or `ExecutableFileBusy`. The handoff was then dropped and every tunnel closed. Issue #1676's failures came during full test runs while builds in the same `target/` were rewriting `target/debug/yulius`. Removing or rewriting that path during shutdown reproduced the same failure every time. A package upgrade or a manual install can also change the file at that path before the service restarts. The binary at the path can also be a different version from the server that deposits.
 
 ## Decision
 
-The departing server starts the custodian from `/proc/self/exe`, the image it is running. The custodian is always the depositor's own build. Removing, replacing or rewriting the install path no longer affects the handoff. The library function `custodian::deposit` still takes the executable as a parameter, so tests can supply the built binary.
+The departing server starts the custodian from `/proc/self/exe`, the image it is running. The custodian is always the depositor's own build. Removing, replacing or rewriting the install path no longer affects the handoff. The library function `custodian::deposit` still takes the executable as a parameter, so tests can supply the built binary. The helper's `argv[0]` is `yulius`, so command-line views such as `ps -ef` and `pgrep -f` still name it. Its kernel command name is `exe`, which is what `ps -e` and `top` show.
 
 ## Alternatives
 

@@ -1,6 +1,7 @@
 //! SPEC-577. Exercise the production helper as a separate process.
 use std::io;
 use std::os::fd::{AsFd as _, OwnedFd};
+use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -68,6 +69,52 @@ async fn a_successor_adopts_the_original_unix_and_tcp_peers_once() -> io::Result
                 .await
                 .is_err_and(|e| e.kind() == io::ErrorKind::NotFound)
         );
+        Ok(())
+    })
+    .await?
+}
+
+// The departing server runs the helper from /proc/self/exe; its command line still names Yulius.
+#[tokio::test]
+async fn the_waiting_helper_names_itself_yulius_in_process_lists() -> io::Result<()> {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let dir = tempfile::tempdir()?;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
+        let (_held, left) = UnixStream::pair()?;
+        let (_other, right) = UnixStream::pair()?;
+        let pair = Pair {
+            established: None,
+            expires: None,
+            sockets: [left.into_std()?.into(), right.into_std()?.into()],
+            state: b"named".to_vec(),
+        };
+        deposit(
+            Path::new(env!("CARGO_BIN_EXE_yulius")),
+            dir.path(),
+            vec![pair],
+        )
+        .await?;
+        let mut helpers = Vec::new();
+        for task in std::fs::read_dir("/proc/self/task")? {
+            // A runtime thread can exit during the scan.
+            let Ok(children) = std::fs::read_to_string(task?.path().join("children")) else {
+                continue;
+            };
+            for pid in children.split_whitespace() {
+                let Ok(line) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+                    continue;
+                };
+                let args: Vec<_> = line.split(|b| *b == 0).collect();
+                // Sibling tests in the same process have helpers of their own directories.
+                if args.contains(&b"hold-tunnels".as_slice())
+                    && args.contains(&dir.path().as_os_str().as_bytes())
+                {
+                    helpers.push(String::from_utf8_lossy(args[0]).into_owned());
+                }
+            }
+        }
+        assert_eq!(helpers, ["yulius"]);
+        assert_eq!(adopt(dir.path()).await?.len(), 1);
         Ok(())
     })
     .await?
