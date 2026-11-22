@@ -503,3 +503,31 @@ test('Status keeps the open integration gate visible as an outstanding problem',
   });
   expect(health).toEqual(['Everything is running normally', null]);
 });
+
+for (const resolved of [false, true]) {
+  test(`Status keeps keyboard repair actions in their project when its notice ${resolved ? 'clears' : 'moves'}`, async ({ app, browser, screen }) => {
+    type Mock = { __yuliusMock: { ci: Record<string, { gate_notices: { test: string; revision: string; run_id: string; merge_task: number }[] }> } };
+    await app.open(mock('/s/studio/ci'));
+    await browser.evaluate(() => {
+      (window as unknown as Mock).__yuliusMock.ci.sb_product.gate_notices =
+        [{ test: 'product::gate', revision: '7713224a587f', run_id: 'ci_p1', merge_task: 12 }];
+    });
+    await browser.locator('.btn-status').click();
+    const panel = screen.getByRole('dialog', 'Status');
+    await panel.getByRole('link', 'Start a task').focus();
+    await browser.evaluate((cleared) => {
+      const ci = (window as unknown as Mock).__yuliusMock.ci;
+      ci.sb_studio.gate_notices = [{ test: 'studio::new', revision: 'ef02b192abba', run_id: 'ci_s2', merge_task: 15 }];
+      if (cleared) ci.sb_product.gate_notices = [];
+    }, resolved);
+    await expect(panel.getByText(/studio::new failed at/)).toBeVisible({ timeout: 15000 });
+    await browser.keyboard.press('Enter');
+    if (resolved) {
+      await expect(panel).toBeVisible();
+      await expect(browser).toHaveURL(/#\/s\/studio\/ci$/);
+    } else {
+      await expect(browser).toHaveURL(/#\/s\/product$/);
+      await expect(screen.getByRole('textbox', 'Task prompt')).toBeVisible();
+    }
+  });
+}

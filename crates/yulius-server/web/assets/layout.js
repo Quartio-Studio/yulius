@@ -295,7 +295,9 @@ function createStatusPanel(ctx, button) {
     try {
       const data = await ctx.api.get('/api/status');
       if (!el) return;
-      const render = () => { if (el) keepFocus(el, () => setChildren(el, renderStatus(data || {}, ctx.store.state.sandboxes))); };
+      const render = () => {
+        if (el) keepFocus(el, () => setChildren(el, renderStatus(data || {}, ctx.store.state.sandboxes)), el);
+      };
       render();
       clearTimeout(expiry);
       if (githubWaitText(data?.github_reset_at_ms)) {

@@ -17,6 +17,6 @@ export function gateNotices(sandbox, notices, canRun) {
       h('strong', null, sandbox.name || sandbox.slug),
       h('ul', null, failures),
       'No task is working on the repair. ',
-      h('a', { href: href(path), dataset: { route: path } }, canRun ? 'Review and run again' : 'Review the run'),
-      canRun ? [' · ', h('a', { href: href(project), dataset: { route: project } }, 'Start a task')] : null))];
+      h('a', { href: href(path), dataset: { route: path, focusKey: path } }, canRun ? 'Review and run again' : 'Review the run'),
+      canRun ? [' · ', h('a', { href: href(project), dataset: { route: project, focusKey: project } }, 'Start a task')] : null))];
 }
