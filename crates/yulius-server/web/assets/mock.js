@@ -392,7 +392,7 @@ function seed(params) {
     { id: 'usr_4', github_login: 'old-contractor', display_name: 'old-contractor', is_instance_admin: false, disabled: true, github_linked: true, two_factor: 'pending' },
   ];
   db.runs = []; // EnvironmentRun records, newest last
-  db.ci = seedCi();
+  db.ci = seedCi(params);
   db.cd = seedCd();
   const pastRun = (n, env, kind, by, ago) => ({ run_id: `run_seed_${n}`, sandbox_id: 'sb_product', environment: env, kind, state: 'succeeded', command: kind === 'manual' ? null : 'node scripts/deployer.mjs --target dev-vm', commit: 'b7e9f01c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a', requested_by: by, output: kind === 'manual' ? `${by} confirmed ${env}.` : 'deploying… done in 2m 14s', exit_code: kind === 'manual' ? null : 0, started_at: iso(ago), ended_at: iso(ago - 2 * MIN), startedMs: Date.now() - ago - 1e9 });
   db.runs.push(pastRun(1, 'dev-vm', 'command', 'mkarp', 2 * DAY + HOUR), pastRun(2, 'dev-vm', 'manual', 'mkarp', 2 * DAY + 30 * MIN), pastRun(3, 'rollout', 'manual', 'anna-q', 2 * DAY - HOUR), pastRun(4, 'dev-vm', 'command', 'mkarp', 3 * HOUR));
@@ -2266,12 +2266,17 @@ function ciRun(id, reference, sha, state, minutesAgo, { failJob = null, skipJob 
   };
 }
 
-function seedCi() {
+function seedCi(params) {
   const studioGate = { source: 'yulius_toml', jobs: CI_JOBS.map(({ name, command, matrix }) => ({ name, command, matrix })) };
   return {
     sb_studio: {
       gate: studioGate, gate_problem: null, status_access: null, actions_workflows: [],
+      gate_notices: params.get('gate_notice') === '1' ? [
+        { revision: '7713224a587f', run_id: 'ci_gate', merge_task: 12, test: 'delivery::gate' },
+        { revision: 'ef02b192abba', run_id: 'ci_gate', merge_task: 15, test: 'queue::serve' },
+      ] : [],
       runs: [
+        ...(params.get('gate_notice') === '1' ? [ciRun('ci_gate', 'branch/quartio', 'ef02b192abba', 'failed', 3, { failJob: 'test (2/2)' })] : []),
         ciRun('ci_s4', 'branch/quartio', '9f3c2a1b7e4d', 'running', 1),
         // SPEC-162: a passed run whose "test (2/2)" exited with the skip code.
         ciRun('ci_s3', 'pr/221', '4be81c0d2a9f', 'passed', 22, { skipJob: 'test (2/2)' }),
@@ -2295,7 +2300,10 @@ function seedCi() {
     },
     sb_three: {
       gate: { source: 'profile', jobs: [{ name: 'gate', command: 'make ci', matrix: null }] }, gate_problem: null, status_access: null, actions_workflows: [],
-      runs: [ciRun('ci_t1', 'branch/dev', '77aa01bc3d4e', 'passed', 180)],
+      gate_notices: params.get('gate_notice') === 'reader' ? [{ revision: '77aa01bc3d4e', run_id: 'ci_t1', merge_task: null, test: 'store::retry' }] : [],
+      runs: [params.get('gate_notice') === 'reader'
+        ? ciRun('ci_t1', 'branch/dev', '77aa01bc3d4e', 'failed', 180, { failJob: 'test (1/2)' })
+        : ciRun('ci_t1', 'branch/dev', '77aa01bc3d4e', 'passed', 180)],
       hygiene: { scanned_at: null, notes: [], items: [] },
     },
   };
@@ -2331,7 +2339,7 @@ function ciOverview(db, sid) {
   const ci = ciOf(db, sid);
   return {
     gate: clone(ci.gate), gate_problem: ci.gate_problem, gate_fallback: ci.gate_fallback || null, runs: ci.runs.map((r) => ciSummary(progressCi(r, db.ciRunMs))),
-    can_run: (RANK[sandbox.access] || 0) >= RANK.write, status_access: ci.status_access, actions_workflows: ci.actions_workflows.slice(),
+    gate_notices: ci.gate_notices || [], can_run: (RANK[sandbox.access] || 0) >= RANK.write, status_access: ci.status_access, actions_workflows: ci.actions_workflows.slice(),
   };
 }
 
@@ -4772,7 +4780,7 @@ route('GET', '/api/status', ({ db }) => {
     vm: { cpu_percent: 22 + Math.sin(wobble) * 9, cpu_count: 8, memory_used_bytes: 9.4 * 2 ** 30, memory_total_bytes: 16 * 2 ** 30, disk_used_bytes: 141 * 2 ** 30, disk_total_bytes: null, load: [1.21, 0.97, 0.74], load_1m: 1.21, uptime_s: 9 * 86400 + 3600 * 4 },
     sessions: { live: db.tasks.filter((t) => t.status === 'running').length, limit: db.sessionLimit, queued: db.tasks.filter((t) => t.status === 'queued').length + db.sessionQueue },
     // Tasks with a live process (TaskStatus::is_live), not the cards' "working" count (#170).
-    sandboxes: db.sandboxes.map((s) => ({ id: s.id, slug: s.slug, name: s.name, live_sessions: db.tasks.filter((t) => t.sandbox_id === s.id && !t.archived && ['starting', 'running', 'switching', 'stopping'].includes(t.status)).length })),
+    sandboxes: db.sandboxes.map((s) => ({ id: s.id, slug: s.slug, name: s.name, gate_notices: db.ci[s.id]?.gate_notices || [], live_sessions: db.tasks.filter((t) => t.sandbox_id === s.id && !t.archived && ['starting', 'running', 'switching', 'stopping'].includes(t.status)).length })),
     accounts: db.accounts.map((a) => (admin
       ? { label: a.label, ...(a.email ? { email: a.email } : {}), provider: a.provider, status: a.status, usage: a.usage, id: a.id, last_error: a.last_error, in_use_by: a.in_use_by }
       : { label: a.label, provider: a.provider, status: a.status, usage: a.usage, id: a.id })),

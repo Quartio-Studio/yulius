@@ -1,6 +1,7 @@
 // Global layout pieces (SPEC-001 §6.1): thin sandbox tab row with the Status panel, and the
 // left sidebar with navigation, the active task list and the user menu at its foot.
 
+import { gateNotices } from './gatenotices.js';
 import { DRAG_TAB_HINT, h, icon, iconButton, openMenu, setChildren, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused, prChip, skeleton, bar, skeletonOf } from './dom.js';
 import { bytes, duration, dateTime, resetLabel, compact, accountEmail, plausibleEmail } from './format.js';
 import { agentOfProvider } from './agents.js';
@@ -294,7 +295,7 @@ function createStatusPanel(ctx, button) {
     try {
       const data = await ctx.api.get('/api/status');
       if (!el) return;
-      const render = () => { if (el) keepFocus(el, () => setChildren(el, renderStatus(data || {}))); };
+      const render = () => { if (el) keepFocus(el, () => setChildren(el, renderStatus(data || {}, ctx.store.state.sandboxes))); };
       render();
       clearTimeout(expiry);
       if (githubWaitText(data?.github_reset_at_ms)) {
@@ -308,6 +309,9 @@ function createStatusPanel(ctx, button) {
 
   function open() {
     el = h('div', { class: 'status-pop', role: 'dialog', 'aria-label': 'Status' }, skeleton('Loading status…', 3, { block: true }));
+    el.addEventListener('click', (event) => {
+      if (event.target.closest('a[data-route]') && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) close();
+    });
     document.body.append(el);
     button.setAttribute('aria-expanded', 'true');
     offFocus = popoverFocus(el, button, close);
@@ -449,7 +453,7 @@ export function githubWaitText(reset) {
  * zero. Account last_error/in_use_by are present for admins only (their presence marks an admin's
  * view); every signed-in person gets the id (SPEC-447).
  */
-export function renderStatus(data) {
+export function renderStatus(data, projects = []) {
   const vm = data.vm || {};
   const memPct = pct(vm.memory_used_bytes, vm.memory_total_bytes);
   const diskPct = pct(vm.disk_used_bytes, vm.disk_total_bytes);
@@ -500,9 +504,15 @@ export function renderStatus(data) {
   const limited = accounts.filter((a) => stateNow.get(a) === 'limited').length;
   const accountSummary = [`${ready} ready`, limited ? `${limited} at the limit` : null, troubled.length ? `${troubled.length} need attention` : null].filter(Boolean);
 
+  const warnings = sandboxes.flatMap((sandbox) => {
+    const project = projects.find((p) => p.id === sandbox.id);
+    return gateNotices(sandbox, sandbox.gate_notices, allows(project?.access, 'write'));
+  });
+
   return [
+    ...warnings,
     githubWait ? h('div', { class: 'github-wait', role: 'status' }, githubWait) : null,
-    githubWait && health.tone === 'ok' ? null : h('div', { class: ['status-health', `health-${health.tone}`] }, icon(health.icon, { size: 16 }), h('span', null, health.text)),
+    (githubWait || warnings.length) && health.tone === 'ok' ? null : h('div', { class: ['status-health', `health-${health.tone}`] }, icon(health.icon, { size: 16 }), h('span', null, health.text)),
     h('div', { class: 'status-section' },
       h('h2', null, 'Machine'),
       h('div', { class: 'stat-tiles' },
@@ -1232,7 +1242,7 @@ export function createSidebar(ctx) {
     row.el.dataset.group = info.group;
     row.el.dataset.tone = info.tone;
     const owner = otherOwner(task, ctx.store.state.me?.user?.login);
-    row.link.title = `Task #${task.number} ${task.title} — ${info.label}${info.detail ? `: ${info.detail}` : ''}${row.pr && !info.label.includes(`PR #${row.pr.number}`) ? ` · PR #${row.pr.number}` : ''}${task.branch ? ` · ${task.branch}` : ''}${task.account_label ? ` · on ${task.account_label}` : ''}${owner ? ` · owned by @${owner}` : ''} · ${row.time.text}`;
+    row.link.title = `Task #${task.number} ${task.title} — ${info.label}${task.staging_outcome ? ` · ${task.staging_outcome}` : ''}${info.detail ? `: ${info.detail}` : ''}${row.pr && !info.label.includes(`PR #${row.pr.number}`) ? ` · PR #${row.pr.number}` : ''}${task.branch ? ` · ${task.branch}` : ''}${task.account_label ? ` · on ${task.account_label}` : ''}${owner ? ` · owned by @${owner}` : ''} · ${row.time.text}`;
     row.owner.hidden = !owner;
     row.owner.textContent = owner ? initials(owner).toUpperCase() : '';
     if (owner) row.owner.title = `@${owner} owns this task`;

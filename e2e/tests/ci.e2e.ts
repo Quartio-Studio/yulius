@@ -450,3 +450,56 @@ test('an invalid yulius.toml on dev runs its last valid gate and says so (SPEC-5
   // Each run judged by it says so.
   await expect(screen.getByText(/judged by the integration branch's last valid yulius\.toml/)).toBeVisible();
 });
+
+test('a project gate notice identifies the introducing merge and retries the affected run in Status', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci', '&gate_notice=1'));
+  const failure = /delivery::gate failed at 7713224a587f.*task #12/;
+  await expect(screen.getByText(failure)).toBeVisible();
+  await expect(screen.getByText(/queue::serve failed at ef02b192abba.*task #15/)).toBeVisible();
+  await expect(screen.getByRole('link', 'Start a task')).toHaveCount(1);
+  await screen.getByRole('link', 'Start a task').click();
+  await expect(browser).toHaveURL(/#\/s\/studio$/);
+  await expect(screen.getByRole('textbox', 'Task prompt')).toBeVisible();
+
+  await browser.locator('.btn-status').click();
+  const panel = screen.getByRole('dialog', 'Status');
+  await expect(panel.getByText(failure)).toBeVisible();
+  await expect(panel.getByRole('link', 'Start a task')).toHaveAttribute('href', /#\/s\/studio$/);
+  await panel.getByRole('link', 'Review and run again').click();
+  await expect(panel).toBeHidden();
+  await expect(browser).toHaveURL(/#\/s\/studio\/ci\?run=ci_gate$/);
+  await screen.getByRole('region', 'CI run').getByRole('button', 'Run again: quartio at ef02b19').click();
+  await expect(screen.getByText('quartio queued again.')).toBeVisible();
+});
+
+test('readers can inspect the untracked failure in project CI and Status', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/sandbox-3/ci', '&gate_notice=reader'));
+  const failure = /store::retry failed at 77aa01bc3d4e.*untracked merge/;
+  await expect(screen.getByText(failure)).toBeVisible();
+  await expect(screen.getByRole('link', 'Start a task')).toHaveCount(0);
+  await expect(screen.getByRole('link', 'Review the run')).toHaveAttribute('href', /run=ci_t1$/);
+  await browser.locator('.btn-status').click();
+  const panel = screen.getByRole('dialog', 'Status');
+  await expect(panel.getByText(failure)).toBeVisible();
+  await expect(panel.getByRole('link', 'Start a task')).toHaveCount(0);
+  await panel.getByRole('link', 'Review the run').click();
+  const run = screen.getByRole('region', 'CI run');
+  await expect(run).toBeVisible();
+  await expect(run.getByRole('button', /^Run again/)).toHaveCount(0);
+});
+
+test('Status keeps the open integration gate visible as an outstanding problem', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/ci'));
+  const health = await browser.evaluate(async () => {
+    const module = '/assets/layout.js';
+    const { renderStatus } = await import(module);
+    const sandbox = { id: 's1', slug: 'studio', name: 'Studio' };
+    const notice = { run_id: 'ci_gate', revision: '7713224a587f', test: 'delivery::gate', merge_task: 12 };
+    return [[], [notice]].map((gate_notices) => {
+      const panel = document.createElement('div');
+      panel.append(...renderStatus({ sandboxes: [{ ...sandbox, gate_notices }] }).filter(Boolean));
+      return panel.querySelector('.status-health')?.textContent ?? null;
+    });
+  });
+  expect(health).toEqual(['Everything is running normally', null]);
+});

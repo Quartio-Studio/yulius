@@ -567,7 +567,9 @@ test('a mounted task clears the staging wait when the outcome is delivered', asy
   await expect(strip).toHaveText(/Waiting for staging to deploy and verify/);
   await touchStudioTask(browser, 12, { staging_wait: null, staging_outcome: 'Staging gate failed · delivery::gate at 7713224a587f' });
   await expect(strip).toHaveText(/Your turn.*Staging gate failed.*delivery::gate/);
-  await expect(screen.getByRole('region', 'Needs you').getByRole('link', /Checkout API/)).toBeVisible();
+  const listed = screen.getByRole('region', 'Needs you').getByRole('link', /Checkout API/);
+  await expect(listed).toBeVisible();
+  await expect(listed).toHaveAttribute('title', /Staging gate failed.*delivery::gate at 7713224a587f/);
 });
 
 test('a parked detail supplies and clears the staging wait in the shared list', async ({ app, browser }) => {
