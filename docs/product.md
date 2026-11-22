@@ -22,7 +22,7 @@ window. An idle Codex task moved to another subscription keeps Waiting or Done.
 
 Codex tasks keep their selected model when Yulius sends a message near a subscription limit.
 New and resumed sessions hide the rate-limit model switch reminder. A visible reminder holds
-automated messages until the picker is dismissed. [SPEC-603](../.ai/specs/SPEC-603-codex-s-rate-limit-prompt-must-not-switc.md)
+automated messages until the picker is dismissed. If an idle terminal is unreadable, Yulius asks it to repaint. After a two-second probe, a still-unreadable terminal raises Needs you. An undelivered PR notice or wake after an outage stays pending until the screen is readable. [SPEC-613](../.ai/specs/SPEC-613-an-idle-codex-session-takes-messages-aft.md) [SPEC-603](../.ai/specs/SPEC-603-codex-s-rate-limit-prompt-must-not-switc.md)
 
 Tasks created by the CLI or either Superagent run Claude Code on Opus 5.5 at High effort when harness and model are omitted. [SPEC-620](../.ai/specs/SPEC-620-make-opus-and-claude-default-model.md)
 A task started with a Telegram message runs Claude Code on Opus 5.5 too.
@@ -624,7 +624,8 @@ watching, steering and unblocking.
       or staging wait. Finished tasks keep the outcome on their delivery. Later deliveries
       record inherited failures and complete when staging serves the verified fix.
     - Working tasks hear the failing tests and their introducing merges. One worker takes the repair.
-      With no worker available, the project CI and Status APIs return the unresolved tests and the run a writer can retry.
+      With no worker available, project CI and Status name the tests and their introducing merges.
+      Writers can rerun the affected revision or start a task in the project.
     - A person can deploy the revision staging verified while the next dev revision is being checked. [ADR-0425](decisions/0425-pin-a-production-deploy-to-verified-dev.md)
   - Each task tests locally first with the project's `[local]` deployment inside its own sandbox.
   - New projects with such a target are bootstrapped this way, and onboarded ones get one task
