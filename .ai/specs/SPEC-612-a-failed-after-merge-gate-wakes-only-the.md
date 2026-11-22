@@ -33,7 +33,7 @@ On 21 November task #588 received a fix-forward instruction for a test already f
 - [x] Preserve unresolved job evidence across reruns of the same revision
 - [x] Deliver candidate scheduling independently
 - [x] Verify the incident regressions and review the delivery
-- [ ] Deliver the isolated quality-job compiler cache repair
+- [x] Deliver the isolated quality-job compiler cache repair
 - [ ] Deliver the reviewed integration failure ownership backend
 - [ ] Deliver the project CI and Status repair actions on the verified API
 
@@ -74,3 +74,4 @@ The ownership and staging results below were measured on the combined implementa
 
 - PR #1678 and PR #1679 reproduced the same three compiler-cache misses. The full local backend suite passed 3,438 selected tests at reviewed head `904d7f8e0`. Its delivery is preserved at `e2534692d` while the assigned quality repair merges independently.
 - In CI run `9b898c87-816d-4b23-875a-1889e12b9112`, three real compiler-cache tests failed to record a warm hit. All three reproduced on the 1 GiB temporary filesystem with and without `YULIUS_BUILD_SCRATCH`. The pinned mbx reported a default minimum free-space reserve of 5 GiB. With a 64 MiB reserve scoped to the fixtures, all three passed in the same environment. The quality job's complete Python suite passed all 278 tests. [Issue #1680](https://github.com/Quartio-Studio/yulius/issues/1680)
+- Independent review approved the isolated repair at `962f83552` after running the three failing cases on the 1 GiB filesystem.
