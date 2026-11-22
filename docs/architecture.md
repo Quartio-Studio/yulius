@@ -1034,7 +1034,7 @@ sequenceDiagram
 
 ## Moving a task off its subscription
 
-A task leaves its subscription for three reasons besides the pool's own rotation
+A task leaves its subscription for four reasons besides the pool's own rotation
 ([SPEC-447](../.ai/specs/SPEC-447-subscriptions-switch-by-hand-delete-one.md),
 [decision 0288](decisions/0288-a-person-moves-a-task-between-subscriptions-and-removing-one-moves-its-tasks.md)):
 a person chooses another from the task (`POST /api/tasks/{tid}/switch`), a person removes the
@@ -1046,11 +1046,31 @@ the launch pauses the task. A removal deletes the row first, so `choose_account`
 stored accounts, can never pick it again, then ends every run on it. `App::tell_left` writes the
 one-line notice and, with nothing usable left, the task's Needs you, which `end_pause` ends.
 
+The fourth is the rebalance pass ([SPEC-629](../.ai/specs/SPEC-629-move-idle-tasks-off-a-nearly-used-up-sub.md),
+[decision 0461](decisions/0461-move-idle-tasks-off-a-subscription-past-a-per-harness-threshold.md),
+`rebalance.rs`): every 2 minutes (`start_rebalance_loop`, the first pass 3 minutes after start)
+`App::rebalance_now` looks at the running tasks whose activity is idle (`waiting`, `done`) and
+whose live run is on a subscription past its harness's rebalance threshold
+(`AppConfig::rebalance`, `YULIUS_REBALANCE_PERCENT_<HARNESS>`, carried as
+`RotationInput::rebalance`). `rebalance::idle_move` names the best candidate below the threshold
+(placement ranks every candidate past it after every one below it, `rotation::past_rebalance`)
+or says nothing has room. A task running on its pin (`tasks.pinned_account_id`, written by a
+person's `switch` or `continue` with an `account_id`, cleared by one without and by the
+subscription's removal) is not moved, and a parked task resumes on its pin while it can take it
+(`App::pinned_start`). Before a move, `agent_cli::kept_idle` asks the facts a restart for a newer
+Claude Code asks (a keystroke, a draft, a person's pause, an update, background work, Claude
+Code's queue, an unread prompt); the move then goes through `move_task` with the reason
+`rebalance: <subscription> <how full it is>`, writes one terminal line and sends the task's owner
+`task.rebalanced`, which the notification center keys per move. A task with nowhere to go is told
+once per episode (`TaskRuntime::rebalance_no_room`, in memory).
+
 ```mermaid
 flowchart LR
   P["Person: Run #N on…"] -->|"switch_task (Trigger::Manual, < 100 %)"| M["move_task"]
   D["Person: Remove"] -->|"delete row, close Done sessions"| M
   R["Claude refuses (AccessLost)"] -->|"rotate the interrupted task"| M
+  B["Rebalance pass (every 2 min)"] -->|"idle, unpinned, past the threshold: idle_move"| M
+  B -->|"nothing below the threshold"| N["Told once: terminal, task.rebalanced"]
   R -->|"launch credential still current"| A["Mark subscription relogin"]
   M -->|"switch_from: end run, start_run_if"| C{"choose_account"}
   C -->|"a subscription"| RUN["Same session on it"]

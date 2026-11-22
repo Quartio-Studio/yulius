@@ -26,7 +26,8 @@ What Yulius does today (SPEC-001 ROT-003/004/007/010, SPEC-447, SPEC-611):
   (Claude and Antigravity: 5 points below the threshold, Codex: 10 % left), then unknown usage,
   then tight accounts. Inside a tier Claude ranks by use-it-or-lose-it score, Codex by the most
   remaining quota (SPEC-611). A Claude subscription at 96 % with an earlier weekly reset can
-  therefore beat one at 94 %, and a Codex one at 96 % beats nothing in its tier.
+  therefore beat one at 94 %; nothing keeps a nearly used-up subscription out of placement
+  until 98 %.
 - A task moves proactively only at a turn boundary (the Stop hook, or a hookless run's turn
   end flagged by `record_account_usage`) and only past 98 %. A task that is already idle when
   its subscription crosses the threshold waits, then hits the limit or pauses at its next turn.
@@ -78,11 +79,14 @@ What Yulius does today (SPEC-001 ROT-003/004/007/010, SPEC-447, SPEC-611):
   (the pool moved it at a usage limit or at 98 % at a turn boundary, the pinned subscription was
   removed or refused, or the person chose another), and when its subscription is removed.
 - **RBL-006** Each move is told once: the task's terminal says it in one line ("↻ Claude
-  a-first is at 96 % of its 5-hour window: this idle session continues on Claude b-second."),
-  the task's info lists the switch with that reason, and the task's person gets one
-  notification center entry (event `task.rebalanced`, keyed per move).
+  a-first is at 96% of its 5-hour window: this idle session continues on Claude b-second."),
+  the task's info lists the switch with the reason `rebalance: Claude a-first is at 96% of its
+  5-hour window`, and the task's person (its owner) gets one notification center entry
+  ("#12 Checkout moved to Claude b-second", event `task.rebalanced`, keyed by the run it left).
+  The switch's own lines ("↻ Yulius continues this session on another Claude subscription…")
+  stay as for any move.
 - **RBL-007** An idle, unpinned task on a subscription past the threshold with no subscription
-  below it says so once per episode: one terminal line ("⏸ Claude a-first is at 97 % of its
+  below it says so once per episode: one terminal line ("⏸ Claude a-first is at 97% of its
   week and no other Claude subscription has room: this task stays on it and moves when one
   has.") and one notification center entry keyed per task, subscription and episode. The
   episode ends when the task moves or its subscription is below the threshold again; a Yulius
@@ -97,7 +101,7 @@ What Yulius does today (SPEC-001 ROT-003/004/007/010, SPEC-447, SPEC-611):
 - [x] Decide idle moves in the domain: move, stay, or nothing has room
 - [x] Pin a task to the subscription a person chose
 - [x] Move idle tasks off a subscription past the threshold every two minutes
-- [ ] Tell each move and each task that cannot move, once
+- [x] Tell each move and each task that cannot move, once
 - [ ] Document the rebalance in product, operations, architecture and changes
 - [ ] Pass the independent review of the exact head
 
